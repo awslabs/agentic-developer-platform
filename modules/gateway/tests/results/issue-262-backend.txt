@@ -1,0 +1,101 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.12, pytest-8.3.4, pluggy-1.6.0 -- /home/runner/_work/_tool/Python/3.12.12/x64/bin/python
+cachedir: .pytest_cache
+rootdir: /home/runner/_work/bedrock-gateway/bedrock-gateway
+configfile: pyproject.toml
+plugins: anyio-4.12.1, timeout-2.3.1, cov-6.0.0, asyncio-0.25.0
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=function
+collecting ... collected 24 items
+
+tests/test_agent_onboarding.py::TestAgentOnboardRequestSchema::test_valid_request PASSED [  4%]
+tests/test_agent_onboarding.py::TestAgentOnboardRequestSchema::test_valid_request_with_all_fields PASSED [  8%]
+tests/test_agent_onboarding.py::TestAgentOnboardRequestSchema::test_invalid_role_arn_format PASSED [ 12%]
+tests/test_agent_onboarding.py::TestAgentOnboardRequestSchema::test_invalid_role_arn_not_a_role PASSED [ 16%]
+tests/test_agent_onboarding.py::TestAgentOnboardRequestSchema::test_invalid_agent_name_for_k8s PASSED [ 20%]
+tests/test_agent_onboarding.py::TestAgentOnboardRequestSchema::test_agent_name_k8s_valid_with_dashes PASSED [ 25%]
+tests/test_agent_onboarding.py::TestAgentOnboardRequestSchema::test_invalid_level PASSED [ 29%]
+tests/test_agent_onboarding.py::TestAgentOnboardRequestSchema::test_budget_must_be_positive PASSED [ 33%]
+tests/test_agent_onboarding.py::TestAgentOnboardRequestSchema::test_cross_account_role_arn_valid PASSED [ 37%]
+tests/test_agent_onboarding.py::TestAgentOnboardRequestSchema::test_invalid_github_scope PASSED [ 41%]
+tests/test_agent_onboarding.py::TestAgentOnboardResponseSchema::test_response_structure PASSED [ 45%]
+tests/test_agent_onboarding.py::TestAgentOnboardingServiceOnboard::test_onboard_success PASSED [ 50%]
+tests/test_agent_onboarding.py::TestAgentOnboardingServiceOnboard::test_onboard_with_team_uses_team_namespace PASSED [ 54%]
+tests/test_agent_onboarding.py::TestAgentOnboardingServiceOnboard::test_onboard_with_budget PASSED [ 58%]
+tests/test_agent_onboarding.py::TestAgentOnboardingServiceOnboard::test_onboard_cross_account_role PASSED [ 62%]
+tests/test_agent_onboarding.py::TestAgentOnboardingServiceOnboard::test_onboard_conflict_error PASSED [ 66%]
+tests/test_agent_onboarding.py::TestAgentOnboardingServiceValidateRole::test_validate_role_exists PASSED [ 70%]
+tests/test_agent_onboarding.py::TestAgentOnboardingServiceValidateRole::test_validate_role_not_found PASSED [ 75%]
+tests/test_agent_onboarding.py::TestAgentOnboardingServiceValidateRole::test_validate_role_invalid_arn_format PASSED [ 79%]
+tests/test_agent_onboarding.py::TestAgentOnboardingServiceIRSATrustPolicy::test_build_irsa_trust_policy_snippet PASSED [ 83%]
+tests/test_agent_onboarding.py::TestAgentOnboardingServiceIRSATrustPolicy::test_irsa_trust_policy_contains_service_account PASSED [ 87%]
+tests/test_agent_onboarding.py::TestAgentOnboardingServiceLevelToScope::test_level_personal_to_personal PASSED [ 91%]
+tests/test_agent_onboarding.py::TestAgentOnboardingServiceLevelToScope::test_level_team_to_shared PASSED [ 95%]
+tests/test_agent_onboarding.py::TestAgentOnboardingServiceLevelToScope::test_level_org_to_shared PASSED [100%]
+
+=============================== warnings summary ===============================
+src/admin/schemas.py:32
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/admin/schemas.py:32: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class OrganizationResponse(BaseModel):
+
+src/admin/schemas.py:65
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/admin/schemas.py:65: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class PoolAccountResponse(BaseModel):
+
+src/shared/schemas/budget.py:41
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/budget.py:41: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BudgetResponse(BaseModel):
+
+src/shared/schemas/budget.py:64
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/budget.py:64: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BudgetUsageResponse(BaseModel):
+
+src/shared/schemas/admin.py:26
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/admin.py:26: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class DepartmentResponse(BaseModel):
+
+src/shared/schemas/admin.py:67
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/admin.py:67: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class TeamResponse(BaseModel):
+
+src/shared/schemas/admin.py:108
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/admin.py:108: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class UserResponse(BaseModel):
+
+src/shared/schemas/admin.py:145
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/admin.py:145: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountResponse(BaseModel):
+
+src/auth/schemas.py:13
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:13: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountCreate(BaseModel):
+
+src/auth/schemas.py:32
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:32: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountUpdate(BaseModel):
+
+src/auth/schemas.py:44
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:44: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountResponse(BaseModel):
+
+src/auth/schemas.py:69
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:69: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class TenantInfo(BaseModel):
+
+src/auth/schemas.py:94
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:94: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class TokenClaims(BaseModel):
+
+src/auth/schemas.py:123
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:123: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class AWSCallerIdentity(BaseModel):
+
+src/auth/schemas.py:136
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:136: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountListResponse(BaseModel):
+
+../../_tool/Python/3.12.12/x64/lib/python3.12/site-packages/passlib/utils/__init__.py:854
+  /home/runner/_work/_tool/Python/3.12.12/x64/lib/python3.12/site-packages/passlib/utils/__init__.py:854: DeprecationWarning: 'crypt' is deprecated and slated for removal in Python 3.13
+    from crypt import crypt as _crypt
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 24 passed, 16 warnings in 0.71s ========================

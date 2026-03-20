@@ -1,0 +1,24 @@
+apiVersion: eks.amazonaws.com/v1
+kind: TargetGroupBinding
+metadata:
+  name: bedrockgateway-tgb
+  namespace: bedrockgw
+  labels:
+    app.kubernetes.io/name: bedrockgateway
+    app.kubernetes.io/part-of: bedrock-gateway
+spec:
+  # The Terraform-created target group ARN
+  # This will be updated during deployment with the actual ARN from AWS
+  targetGroupARN: PLACEHOLDER_TARGET_GROUP_ARN
+  targetType: ip
+  serviceRef:
+    name: bedrockgateway
+    port: 80
+  networking:
+    ingress:
+      - from:
+          - securityGroup:
+              groupID: PLACEHOLDER_ALB_SECURITY_GROUP_ID
+        ports:
+          - protocol: TCP
+            port: 8080

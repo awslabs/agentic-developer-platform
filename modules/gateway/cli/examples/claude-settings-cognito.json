@@ -1,0 +1,17 @@
+{
+  "$comment": "Claude Code settings for Bedrock Gateway with Cognito JWT Auth",
+  "$instructions": "Copy to ~/.claude/settings.json and update GATEWAY_URL and apiKeyHelper path",
+
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://<CLOUDFRONT_DOMAIN>/api"
+  },
+  "apiKeyHelper": "bash ~/bin/bg-cognito-auth.sh token",
+  "apiKeyHelperTtlMs": 3300000,
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch"
+    ]
+  },
+  "model": "global.anthropic.claude-opus-4-6-v1"
+}

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/claude-code/main/settings.schema.json",
+
+  "// INSTRUCTIONS": "Copy this file to ~/.claude/settings.json and update the values below",
+  "// GATEWAY_URL": "Replace https://gateway.example.com with your BedrockGateway URL",
+  "// AWS_PROFILE": "Optional: Set your AWS profile if using SSO with a non-default profile",
+
+  "env": {
+    "// env": "Environment variables passed to Claude Code and apiKeyHelper",
+
+    "ANTHROPIC_BEDROCK_BASE_URL": "https://gateway.example.com",
+    "// ANTHROPIC_BEDROCK_BASE_URL": "Your BedrockGateway URL for Bedrock API compatibility",
+
+    "CLAUDE_CODE_USE_BEDROCK": "1",
+    "// CLAUDE_CODE_USE_BEDROCK": "Enable Bedrock mode in Claude Code",
+
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH": "1",
+    "// CLAUDE_CODE_SKIP_BEDROCK_AUTH": "Skip native Bedrock auth - gateway handles it",
+
+    "BG_GATEWAY_URL": "https://gateway.example.com",
+    "// BG_GATEWAY_URL": "Gateway URL for bg-auth.sh credential exchange"
+  },
+
+  "apiKeyHelper": "~/bin/bg-auth.sh",
+  "// apiKeyHelper": "Path to bg-auth.sh script - retrieves token from gateway",
+
+  "apiKeyHelperTtlMs": 300000,
+  "// apiKeyHelperTtlMs": "Token refresh interval: 300000ms = 5 minutes",
+
+  "permissions": {
+    "// permissions": "Optional: Configure tool permissions for Claude Code",
+
+    "allow": [],
+    "// allow_note": "Tools to always allow (empty = prompt for all)",
+
+    "deny": []
+  },
+
+  "// ALTERNATIVE_CONFIGS": "Below are alternative configurations for different setups",
+
+  "// M2M_CONFIG": {
+    "// description": "For EKS containers with IRSA/Pod Identity",
+    "// note": "No apiKeyHelper needed - configure in Dockerfile environment",
+    "env": {
+      "ANTHROPIC_BEDROCK_BASE_URL": "https://gateway.example.com",
+      "CLAUDE_CODE_USE_BEDROCK": "1",
+      "CLAUDE_CODE_SKIP_BEDROCK_AUTH": "1",
+      "BG_GATEWAY_URL": "https://gateway.example.com"
+    }
+  },
+
+  "// SSO_PROFILE_CONFIG": {
+    "// description": "For AWS SSO with specific profile",
+    "apiKeyHelper": "~/bin/bg-auth.sh --profile my-sso-profile",
+    "// note": "Specify your AWS profile if not using default"
+  },
+
+  "// DEBUG_CONFIG": {
+    "// description": "Enable debug logging for troubleshooting",
+    "apiKeyHelper": "~/bin/bg-auth.sh --debug"
+  }
+}

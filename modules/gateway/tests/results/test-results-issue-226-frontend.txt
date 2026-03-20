@@ -1,0 +1,198 @@
+=== TypeScript Check ===
+TypeScript check PASSED
+
+=== Vitest Results ===
+[?25l
+[1m[7m[36m RUN [39m[27m[22m [36mv3.0.0 [39m[90m/home/runner/_work/bedrock-gateway/bedrock-gateway/frontend[39m
+
+ [32m✓[39m src/__tests__/hooks/usePermissions.test.ts [2m([22m[2m19 tests[22m[2m)[22m[90m 183[2mms[22m[39m
+ [32m✓[39m src/__tests__/components/ProtectedRoute.test.tsx [2m([22m[2m21 tests[22m[2m)[22m[90m 239[2mms[22m[39m
+ [31m❯[39m src/__tests__/services/auth.test.ts [2m([22m[2m31 tests[22m[2m | [22m[31m3 failed[39m[2m)[22m[33m 317[2mms[22m[39m
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mPKCE Challenge Generation[2m > [22mgenerates a PKCE challenge with verifier and challenge
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mPKCE Challenge Generation[2m > [22mgenerates unique challenges each time
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mPKCE Verifier Storage[2m > [22mstores and retrieves PKCE verifier
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mPKCE Verifier Storage[2m > [22mclears verifier after retrieval
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mPKCE Verifier Storage[2m > [22mreturns null when no verifier stored
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mLogin URL Building[2m > [22mbuilds login URL with PKCE parameters
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mLogin URL Building[2m > [22mstores PKCE verifier when building login URL
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mLogout URL Building[2m > [22mbuilds logout URL with client_id and logout_uri
+[31m   [31m×[31m Auth Service - OAuth PKCE[2m > [22mToken Exchange[2m > [22mexchanges authorization code for tokens[90m 50[2mms[22m[31m[39m
+[31m     → expected "spy" to be called with arguments: [ …(2) ][90m
+
+Received: 
+
+[31m[90m
+
+Number of calls: [1m0[22m
+[31m[39m
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mToken Exchange[2m > [22mthrows error on failed token exchange
+[31m   [31m×[31m Auth Service - OAuth PKCE[2m > [22mToken Refresh[2m > [22mrefreshes access token using refresh token[90m 10[2mms[22m[31m[39m
+[31m     → expected "spy" to be called at least once[39m
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mToken Refresh[2m > [22mthrows error on failed token refresh
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mToken Storage[2m > [22mstores all tokens in sessionStorage
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mToken Storage[2m > [22mclears all tokens from sessionStorage
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mToken Expiration Check[2m > [22mreturns true when no token expiry is stored
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mToken Expiration Check[2m > [22mreturns true when token is expired
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mToken Expiration Check[2m > [22mreturns true when token expires within buffer time
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mToken Expiration Check[2m > [22mreturns false when token has time remaining
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mToken Parsing[2m > [22mparses valid JWT payload
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mToken Parsing[2m > [22mreturns null for invalid token format
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mToken Parsing[2m > [22mreturns null for malformed payload
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mID Token to User Parsing[2m > [22mparses Cognito ID token to User object
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mID Token to User Parsing[2m > [22massigns platform admin role for platform_admin custom role
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mgetCurrentUser[2m > [22mfetches current user from API
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mgetCurrentUser[2m > [22mreturns null on error
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mlogout[2m > [22mclears tokens on logout
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mlogout[2m > [22mclears tokens even if API call fails
+[31m   [31m×[31m Auth Service - OAuth PKCE[2m > [22mhandleOAuthCallback[2m > [22mexchanges code for tokens and returns user[90m 14[2mms[22m[31m[39m
+[31m     → expected 'mock-access-token' to be 'new-access-token' // Object.is equality[39m
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mhandleOAuthCallback[2m > [22mthrows error when PKCE verifier is missing
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mrefreshToken[2m > [22muses stored refresh token to get new tokens
+   [32m✓[39m Auth Service - OAuth PKCE[2m > [22mrefreshToken[2m > [22mthrows error when no refresh token available
+ [32m✓[39m src/__tests__/services/admin.test.ts [2m([22m[2m20 tests[22m[2m)[22m[90m 178[2mms[22m[39m
+ [32m✓[39m src/__tests__/services/dashboard.test.ts [2m([22m[2m12 tests[22m[2m)[22m[90m 95[2mms[22m[39m
+ [32m✓[39m src/__tests__/services/budget.test.ts [2m([22m[2m17 tests[22m[2m)[22m[90m 149[2mms[22m[39m
+ [32m✓[39m src/__tests__/services/pool.test.ts [2m([22m[2m15 tests[22m[2m)[22m[90m 120[2mms[22m[39m
+ [32m✓[39m src/__tests__/services/logs.test.ts [2m([22m[2m17 tests[22m[2m)[22m[90m 143[2mms[22m[39m
+ [32m✓[39m src/__tests__/contexts/AuthContext.test.tsx [2m([22m[2m15 tests[22m[2m)[22m[33m 553[2mms[22m[39m
+ [32m✓[39m src/__tests__/hooks/useLocalStorage.test.ts [2m([22m[2m23 tests[22m[2m)[22m[33m 318[2mms[22m[39m
+ [32m✓[39m src/__tests__/contexts/ToastContext.test.tsx [2m([22m[2m22 tests[22m[2m)[22m[33m 712[2mms[22m[39m
+ [32m✓[39m src/__tests__/hooks/useDebounce.test.ts [2m([22m[2m18 tests[22m[2m)[22m[90m 213[2mms[22m[39m
+[90mstderr[2m | src/__tests__/components/budget/BudgetFormModal.test.tsx[2m > [22m[2mBudgetFormModal[2m > [22m[2mModal Rendering[2m > [22m[2mrenders create modal when no editData provided
+[22m[39mCognito teams endpoint unavailable, using manual input
+Cognito teams endpoint unavailable, using manual input
+
+ [32m✓[39m src/__tests__/components/ErrorBoundary.test.tsx [2m([22m[2m19 tests[22m[2m)[22m[33m 755[2mms[22m[39m
+[90mstderr[2m | src/__tests__/components/ratelimit/RateLimitFormModal.test.tsx[2m > [22m[2mRateLimitFormModal[2m > [22m[2mModal Rendering[2m > [22m[2mrenders create modal when no editData provided
+[22m[39mCognito teams endpoint unavailable, using manual input
+Cognito teams endpoint unavailable, using manual input
+
+[90mstderr[2m | src/__tests__/components/budget/BudgetFormModal.test.tsx[2m > [22m[2mBudgetFormModal[2m > [22m[2mForm Fields[2m > [22m[2mshows form labels in create mode
+[22m[39mCognito teams endpoint unavailable, using manual input
+Cognito teams endpoint unavailable, using manual input
+
+[90mstderr[2m | src/__tests__/components/ratelimit/RateLimitFormModal.test.tsx[2m > [22m[2mRateLimitFormModal[2m > [22m[2mForm Fields[2m > [22m[2mshows form labels in create mode
+[22m[39mCognito teams endpoint unavailable, using manual input
+Cognito teams endpoint unavailable, using manual input
+
+[90mstderr[2m | src/__tests__/components/budget/BudgetFormModal.test.tsx[2m > [22m[2mBudgetFormModal[2m > [22m[2mModal Actions[2m > [22m[2mcalls onClose when cancel button is clicked
+[22m[39mCognito teams endpoint unavailable, using manual input
+Cognito teams endpoint unavailable, using manual input
+
+[90mstderr[2m | src/__tests__/components/ratelimit/RateLimitFormModal.test.tsx[2m > [22m[2mRateLimitFormModal[2m > [22m[2mModal Actions[2m > [22m[2mcalls onClose when cancel button is clicked
+[22m[39mCognito teams endpoint unavailable, using manual input
+Cognito teams endpoint unavailable, using manual input
+
+ [32m✓[39m src/__tests__/components/budget/BudgetFormModal.test.tsx [2m([22m[2m10 tests[22m[2m)[22m[33m 988[2mms[22m[39m
+   [33m[2m✓[22m[39m BudgetFormModal[2m > [22mModal Rendering[2m > [22mrenders create modal when no editData provided [33m309[2mms[22m[39m
+ [32m✓[39m src/__tests__/components/ratelimit/RateLimitFormModal.test.tsx [2m([22m[2m10 tests[22m[2m)[22m[33m 996[2mms[22m[39m
+   [33m[2m✓[22m[39m RateLimitFormModal[2m > [22mModal Rendering[2m > [22mrenders create modal when no editData provided [33m366[2mms[22m[39m
+[90mstderr[2m | src/__tests__/components/shared/EntitySelector.test.tsx[2m > [22m[2mEntitySelector[2m > [22m[2mEntity Type Selection[2m > [22m[2mrenders entity type selector with label
+[22m[39mCognito teams endpoint unavailable, using manual input
+
+[90mstderr[2m | src/__tests__/components/shared/EntitySelector.test.tsx[2m > [22m[2mEntitySelector[2m > [22m[2mEntity Type Selection[2m > [22m[2mcalls onEntityTypeChange when entity type is changed
+[22m[39mCognito teams endpoint unavailable, using manual input
+
+[90mstderr[2m | src/__tests__/components/shared/EntitySelector.test.tsx[2m > [22m[2mEntitySelector[2m > [22m[2mEntity ID Selection - User[2m > [22m[2mshows manual input for user type
+[22m[39mCognito users endpoint unavailable, using manual input
+
+[90mstderr[2m | src/__tests__/components/shared/EntitySelector.test.tsx[2m > [22m[2mEntitySelector[2m > [22m[2mEntity ID Selection - Team[2m > [22m[2mfetches teams when entity type is team
+[22m[39mCognito teams endpoint unavailable, using manual input
+
+ [32m✓[39m src/__tests__/hooks/usePagination.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 101[2mms[22m[39m
+ [31m❯[39m src/__tests__/services/api.test.ts [2m([22m[2m12 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[90m 84[2mms[22m[39m
+   [32m✓[39m ApiClient[2m > [22mGET requests[2m > [22mmakes GET request with correct URL
+[31m   [31m×[31m ApiClient[2m > [22mGET requests[2m > [22mincludes authorization header when token is present[90m 9[2mms[22m[31m[39m
+[31m     → expected "spy" to be called with arguments: [ Any<String>, ObjectContaining{…} ][90m
+
+Received: 
+
+[1m  1st spy call:
+
+[22m[2m  [[22m
+[32m-   Any<String>,[90m
+[32m-   ObjectContaining {[90m
+[32m-     "headers": ObjectContaining {[90m
+[32m-       "Authorization": "Bearer test-token",[90m
+[31m+   "http://localhost:3000/api/test",[90m
+[31m+   {[90m
+[31m+     "headers": {[90m
+[31m+       "Content-Type": "application/json",[90m
+[2m      },[22m
+[31m+     "method": "GET",[90m
+[31m+     "signal": undefined,[90m
+[2m    },[22m
+[2m  ][22m
+[31m[90m
+
+Number of calls: [1m1[22m
+[31m[39m
+   [32m✓[39m ApiClient[2m > [22mPOST requests[2m > [22mmakes POST request with body
+   [32m✓[39m ApiClient[2m > [22mError handling[2m > [22mthrows error for non-ok responses
+   [32m✓[39m ApiClient[2m > [22mError handling[2m > [22mhandles 401 by clearing token
+   [32m✓[39m ApiClient[2m > [22mResponse handling[2m > [22mhandles empty response
+   [32m✓[39m ApiClient[2m > [22mResponse handling[2m > [22mparses JSON response
+   [32m✓[39m buildQueryString[2m > [22mbuilds empty string for empty params
+   [32m✓[39m buildQueryString[2m > [22mbuilds query string from params
+   [32m✓[39m buildQueryString[2m > [22mignores null and undefined values
+   [32m✓[39m buildQueryString[2m > [22mignores empty strings
+   [32m✓[39m buildQueryString[2m > [22mhandles string values
+[90mstderr[2m | src/__tests__/components/shared/EntitySelector.test.tsx[2m > [22m[2mEntitySelector[2m > [22m[2mEntity ID Selection - Department[2m > [22m[2mfetches departments when entity type is department
+[22m[39mCognito departments endpoint unavailable, using manual input
+
+ [32m✓[39m src/__tests__/hooks/useApi.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 71[2mms[22m[39m
+ [32m✓[39m src/__tests__/components/ui/Table.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[90m 125[2mms[22m[39m
+[90mstderr[2m | src/__tests__/components/shared/EntitySelector.test.tsx[2m > [22m[2mEntitySelector[2m > [22m[2mLoading State[2m > [22m[2mshows loading state while fetching entities
+[22m[39mCognito departments endpoint unavailable, using manual input
+
+[90mstderr[2m | src/__tests__/components/shared/EntitySelector.test.tsx[2m > [22m[2mEntitySelector[2m > [22m[2mError Handling[2m > [22m[2mfalls back to manual input on fetch error
+[22m[39mCognito departments endpoint unavailable, using manual input
+
+[90mstderr[2m | src/__tests__/components/shared/EntitySelector.test.tsx[2m > [22m[2mEntitySelector[2m > [22m[2mEmpty Results[2m > [22m[2mfalls back to manual input when no entities found
+[22m[39mCognito departments endpoint unavailable, using manual input
+
+ [31m❯[39m src/__tests__/components/shared/EntitySelector.test.tsx [2m([22m[2m8 tests[22m[2m | [22m[31m3 failed[39m[2m)[22m[33m 2692[2mms[22m[39m
+
+=== Build Check ===
+
+> bedrockgateway-admin@0.1.0 build
+> tsc && vite build
+
+[36mvite v6.1.0 [32mbuilding for production...[36m[39m
+transforming...
+[32m✓[39m 773 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                                  [39m[1m[2m  0.48 kB[22m[1m[22m[2m │ gzip:   0.31 kB[22m
+[2mdist/[22m[2massets/[22m[35mindex-C7yxzCT-.css                   [39m[1m[2m 34.83 kB[22m[1m[22m[2m │ gzip:   7.07 kB[22m
+[2mdist/[22m[2massets/[22m[36mSpinner-DIr6jrJE.js                  [39m[1m[2m  0.44 kB[22m[1m[22m[2m │ gzip:   0.32 kB[22m[2m │ map:     1.02 kB[22m
+[2mdist/[22m[2massets/[22m[36mCard-Bme2CLFo.js                     [39m[1m[2m  0.69 kB[22m[1m[22m[2m │ gzip:   0.35 kB[22m[2m │ map:     2.47 kB[22m
+[2mdist/[22m[2massets/[22m[36mNotFound-DpSgN5gU.js                 [39m[1m[2m  0.82 kB[22m[1m[22m[2m │ gzip:   0.46 kB[22m[2m │ map:     1.27 kB[22m
+[2mdist/[22m[2massets/[22m[36mStatCard-DyPspGUK.js                 [39m[1m[2m  1.06 kB[22m[1m[22m[2m │ gzip:   0.55 kB[22m[2m │ map:     2.35 kB[22m
+[2mdist/[22m[2massets/[22m[36mBadge-DnsIC2_X.js                    [39m[1m[2m  1.26 kB[22m[1m[22m[2m │ gzip:   0.59 kB[22m[2m │ map:     3.09 kB[22m
+[2mdist/[22m[2massets/[22m[36mSelect-DsgtA7Qe.js                   [39m[1m[2m  1.41 kB[22m[1m[22m[2m │ gzip:   0.70 kB[22m[2m │ map:     3.68 kB[22m
+[2mdist/[22m[2massets/[22m[36mButton-BkivnSLQ.js                   [39m[1m[2m  1.58 kB[22m[1m[22m[2m │ gzip:   0.83 kB[22m[2m │ map:     3.60 kB[22m
+[2mdist/[22m[2massets/[22m[36mTabs-BuupCyUG.js                     [39m[1m[2m  1.58 kB[22m[1m[22m[2m │ gzip:   0.77 kB[22m[2m │ map:     4.60 kB[22m
+[2mdist/[22m[2massets/[22m[36mLogin-DZj2WIG7.js                    [39m[1m[2m  1.59 kB[22m[1m[22m[2m │ gzip:   0.79 kB[22m[2m │ map:     4.55 kB[22m
+[2mdist/[22m[2massets/[22m[36mAuthCallback-DJhKZBpg.js             [39m[1m[2m  1.94 kB[22m[1m[22m[2m │ gzip:   0.95 kB[22m[2m │ map:     6.10 kB[22m
+[2mdist/[22m[2massets/[22m[36mdashboard-Lzl2DfvQ.js                [39m[1m[2m  2.09 kB[22m[1m[22m[2m │ gzip:   0.82 kB[22m[2m │ map:     7.19 kB[22m
+[2mdist/[22m[2massets/[22m[36mModal-7B83rb0d.js                    [39m[1m[2m  2.19 kB[22m[1m[22m[2m │ gzip:   1.07 kB[22m[2m │ map:     5.59 kB[22m
+[2mdist/[22m[2massets/[22m[36mbudget-B3wKzH8t.js                   [39m[1m[2m  2.44 kB[22m[1m[22m[2m │ gzip:   0.85 kB[22m[2m │ map:    13.02 kB[22m
+[2mdist/[22m[2massets/[22m[36mTable-CkUZDw9p.js                    [39m[1m[2m  2.49 kB[22m[1m[22m[2m │ gzip:   1.01 kB[22m[2m │ map:     6.49 kB[22m
+[2mdist/[22m[2massets/[22m[36mInput-CVhYjacx.js                    [39m[1m[2m  2.50 kB[22m[1m[22m[2m │ gzip:   0.70 kB[22m[2m │ map:     5.72 kB[22m
+[2mdist/[22m[2massets/[22m[36madmin-CldavZIm.js                    [39m[1m[2m  2.63 kB[22m[1m[22m[2m │ gzip:   0.76 kB[22m[2m │ map:    17.83 kB[22m
+[2mdist/[22m[2massets/[22m[36mAlert-DsQjM3ry.js                    [39m[1m[2m  3.15 kB[22m[1m[22m[2m │ gzip:   1.05 kB[22m[2m │ map:     6.03 kB[22m
+[2mdist/[22m[2massets/[22m[36mDeleteConfirmationModal-Dv_ogkkC.js  [39m[1m[2m  4.25 kB[22m[1m[22m[2m │ gzip:   1.68 kB[22m[2m │ map:    14.98 kB[22m
+[2mdist/[22m[2massets/[22m[36mRateLimitManagement-Bgmp2L_L.js      [39m[1m[2m  7.82 kB[22m[1m[22m[2m │ gzip:   2.77 kB[22m[2m │ map:    29.42 kB[22m
+[2mdist/[22m[2massets/[22m[36mBudgetManagement-sCxAbG55.js         [39m[1m[2m  7.85 kB[22m[1m[22m[2m │ gzip:   2.87 kB[22m[2m │ map:    26.14 kB[22m
+[2mdist/[22m[2massets/[22m[36mAgentManagement-BmlS-8Zq.js          [39m[1m[2m  8.12 kB[22m[1m[22m[2m │ gzip:   2.69 kB[22m[2m │ map:    26.32 kB[22m
+[2mdist/[22m[2massets/[22m[36mPlatformDashboard-Clbhif7n.js        [39m[1m[2m  9.66 kB[22m[1m[22m[2m │ gzip:   2.48 kB[22m[2m │ map:    26.78 kB[22m
+[2mdist/[22m[2massets/[22m[36mClaudeSetup-DEmwSjrk.js              [39m[1m[2m 10.13 kB[22m[1m[22m[2m │ gzip:   2.53 kB[22m[2m │ map:    19.11 kB[22m
+[2mdist/[22m[2massets/[22m[36mOrgDashboard-nPIN0ShA.js             [39m[1m[2m 10.28 kB[22m[1m[22m[2m │ gzip:   3.14 kB[22m[2m │ map:    27.67 kB[22m
+[2mdist/[22m[2massets/[22m[36mMyChats-RQRQRcgE.js                  [39m[1m[2m 10.38 kB[22m[1m[22m[2m │ gzip:   2.67 kB[22m[2m │ map:    28.78 kB[22m
+[2mdist/[22m[2massets/[22m[36mformat-C2PHLYyc.js                   [39m[1m[2m 12.07 kB[22m[1m[22m[2m │ gzip:   4.37 kB[22m[2m │ map:    47.29 kB[22m
+[2mdist/[22m[2massets/[22m[36mLogViewer-B_nq4ul4.js                [39m[1m[2m 12.21 kB[22m[1m[22m[2m │ gzip:   3.98 kB[22m[2m │ map:    36.41 kB[22m
+[2mdist/[22m[2massets/[22m[36mDepartmentDashboard-k_jk9UDy.js      [39m[1m[2m 14.47 kB[22m[1m[22m[2m │ gzip:   4.58 kB[22m[2m │ map:    48.28 kB[22m
+[2mdist/[22m[2massets/[22m[36mindex-BFjQU0AU.js                    [39m[1m[2m272.44 kB[22m[1m[22m[2m │ gzip:  87.20 kB[22m[2m │ map: 1,425.46 kB[22m
+[2mdist/[22m[2massets/[22m[36mUsageChart-yF4xA_hi.js               [39m[1m[2m394.58 kB[22m[1m[22m[2m │ gzip: 108.55 kB[22m[2m │ map: 1,697.32 kB[22m
+[32m✓ built in 7.99s[39m

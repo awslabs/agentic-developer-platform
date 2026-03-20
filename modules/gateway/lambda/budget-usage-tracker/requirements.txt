@@ -1,0 +1,8 @@
+# Budget Usage Tracker Lambda Dependencies
+# Issue #234: Budget Usage Tracking Lambda
+
+# PostgreSQL driver (Lambda-compatible binary wheel)
+psycopg2-binary>=2.9.9
+
+# AWS SDK (included in Lambda runtime but listed for local testing)
+boto3>=1.34.0

@@ -1,0 +1,39 @@
+name: Deploy to EKS (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      module:
+        required: true
+        type: string
+      namespace:
+        required: true
+        type: string
+      cluster_name:
+        required: false
+        type: string
+        default: adp-dev-eks
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ inputs.cluster_name }} --region us-east-1
+
+      - name: Deploy
+        working-directory: modules/${{ inputs.module }}/k8s
+        run: |
+          kubectl apply -f . -n ${{ inputs.namespace }}
+          kubectl rollout status deployment/${{ inputs.module }} -n ${{ inputs.namespace }} --timeout=300s

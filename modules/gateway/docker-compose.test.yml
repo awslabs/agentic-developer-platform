@@ -1,0 +1,140 @@
+version: "3.8"
+
+# Docker Compose configuration for local test environment
+# Used for running integration and E2E tests with real service dependencies
+
+services:
+  # PostgreSQL database for testing
+  postgres:
+    image: postgres:16-alpine
+    container_name: bedrockgw-test-postgres
+    environment:
+      POSTGRES_USER: bedrockgw_test
+      POSTGRES_PASSWORD: test_password_do_not_use_in_prod
+      POSTGRES_DB: bedrockgw_test
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bedrockgw_test -d bedrockgw_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bedrockgw-test-network
+
+  # Redis for rate limiting tests
+  redis:
+    image: redis:7-alpine
+    container_name: bedrockgw-test-redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bedrockgw-test-network
+
+  # LocalStack for mocking AWS services (STS, Bedrock)
+  localstack:
+    image: localstack/localstack:3.0
+    container_name: bedrockgw-test-localstack
+    environment:
+      - SERVICES=sts,iam
+      - DEBUG=0
+      - DEFAULT_REGION=us-east-1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    ports:
+      - "4566:4566"
+      - "4510-4559:4510-4559"
+    volumes:
+      - localstack_test_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - bedrockgw-test-network
+
+  # BedrockGateway application in test mode
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bedrockgw-test-app
+    environment:
+      - TESTING=1
+      - DATABASE_URL=postgresql+asyncpg://bedrockgw_test:test_password_do_not_use_in_prod@postgres:5432/bedrockgw_test
+      - REDIS_URL=redis://redis:6379/0
+      - AWS_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - JWT_SECRET_KEY=test-secret-key-do-not-use-in-production
+      - LOG_LEVEL=DEBUG
+      # Issue #144: Tracing disabled in test mode
+      - BG_OTEL_ENABLED=false
+      - OTEL_ENABLED=false
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - bedrockgw-test-network
+
+  # Test runner service
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bedrockgw-test-runner
+    environment:
+      - TESTING=1
+      - DATABASE_URL=postgresql+asyncpg://bedrockgw_test:test_password_do_not_use_in_prod@postgres:5432/bedrockgw_test
+      - REDIS_URL=redis://redis:6379/0
+      - AWS_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - JWT_SECRET_KEY=test-secret-key-do-not-use-in-production
+      - GATEWAY_URL=http://app:8000
+    volumes:
+      - .:/app
+      - test_results:/app/test-results
+    working_dir: /app
+    command: >
+      bash -c "
+        pip install -e '.[dev]' &&
+        pytest tests/integration/ tests/e2e/ -v --tb=short --junitxml=/app/test-results/results.xml
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    networks:
+      - bedrockgw-test-network
+
+networks:
+  bedrockgw-test-network:
+    driver: bridge
+
+volumes:
+  postgres_test_data:
+  localstack_test_data:
+  test_results:

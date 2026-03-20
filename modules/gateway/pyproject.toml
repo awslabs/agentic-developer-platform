@@ -1,0 +1,75 @@
+[project]
+name = "bedrockgateway"
+version = "0.1.0"
+description = "Multi-tenant SaaS proxy for Amazon Bedrock"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn==0.34.0",
+    "sqlalchemy[asyncio]==2.0.46",
+    "asyncpg==0.30.0",
+    "alembic==1.14.1",
+    "pydantic==2.12.5",
+    "pydantic-settings==2.12.0",
+    "boto3==1.36.0",
+    "httpx==0.28.1",
+    "redis==5.2.1",
+    "prometheus-client==0.22.0",
+    "passlib[bcrypt]==1.7.4",
+    "PyJWT[crypto]==2.10.1",
+    "python-json-logger==2.0.7",
+    "email-validator==2.1.1",
+    # Issue #143: Chat logging uses boto3 with asyncio.to_thread for async S3/Comprehend
+    # No additional deps needed; aioboto3 could be added for native async support if needed
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.0",
+    "pytest-cov==6.0.0",
+    "fakeredis==2.26.2",
+    "moto==5.0.27",
+    "ruff==0.9.6",
+    "pytest-timeout==2.3.1",
+]
+# Issue #144: OpenTelemetry/X-Ray tracing dependencies (Phase 2)
+tracing = [
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-instrumentation-fastapi>=0.41b0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
+    "opentelemetry-propagator-aws-xray>=1.0.0",
+    "opentelemetry-sdk-extension-aws>=2.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 150
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/cli/conftest.py" = ["N802", "E501"]
+"tests/shared/test_logging_middleware.py" = ["F841"]
+# UP042: str+Enum to StrEnum migration deferred - pre-existing pattern across codebase
+"src/admin/config.py" = ["UP042"]
+"src/admin/schemas.py" = ["UP042"]
+"src/proxy/schemas.py" = ["UP042"]
+"src/ratelimit/models.py" = ["UP042"]
+"src/shared/schemas/budget.py" = ["UP042"]
+"src/usage/config.py" = ["UP042"]

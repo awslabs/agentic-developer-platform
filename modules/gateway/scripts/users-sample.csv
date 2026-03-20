@@ -1,0 +1,6 @@
+email,name,github_username,org_id,department_id,team_id,role
+admin@example.com,Admin User,admin-github,acme,engineering,platform,admin
+dev1@example.com,Developer One,dev1-github,acme,engineering,platform,developer
+dev2@example.com,Developer Two,dev2-github,acme,engineering,data,developer
+lead@example.com,Team Lead,lead-github,acme,engineering,platform,team-lead
+viewer@example.com,Viewer User,viewer-github,acme,product,design,viewer

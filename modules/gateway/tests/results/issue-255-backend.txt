@@ -1,0 +1,121 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.12, pytest-8.3.4, pluggy-1.6.0 -- /home/runner/_work/_tool/Python/3.12.12/x64/bin/python
+cachedir: .pytest_cache
+rootdir: /home/runner/_work/bedrock-gateway/bedrock-gateway
+configfile: pyproject.toml
+plugins: anyio-4.12.1, timeout-2.3.1, cov-6.0.0, asyncio-0.25.0
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=function
+collecting ... collected 44 items
+
+tests/admin/test_policy_scoping.py::TestGenerateResourcePrefix::test_platform_level_prefix PASSED [  2%]
+tests/admin/test_policy_scoping.py::TestGenerateResourcePrefix::test_org_level_prefix PASSED [  4%]
+tests/admin/test_policy_scoping.py::TestGenerateResourcePrefix::test_team_level_prefix PASSED [  6%]
+tests/admin/test_policy_scoping.py::TestGenerateResourcePrefix::test_app_level_prefix PASSED [  9%]
+tests/admin/test_policy_scoping.py::TestGenerateResourcePrefix::test_user_level_prefix PASSED [ 11%]
+tests/admin/test_policy_scoping.py::TestGenerateResourcePrefix::test_explicit_short_code_mapping PASSED [ 13%]
+tests/admin/test_policy_scoping.py::TestGenerateResourcePrefix::test_truncation_fallback PASSED [ 15%]
+tests/admin/test_policy_scoping.py::TestGenerateResourcePrefix::test_prefix_stays_within_limit PASSED [ 18%]
+tests/admin/test_policy_scoping.py::TestGenerateResourcePrefix::test_invalid_level_raises_error PASSED [ 20%]
+tests/admin/test_policy_scoping.py::TestGenerateResourcePrefix::test_missing_hierarchy_value_raises_error PASSED [ 22%]
+tests/admin/test_policy_scoping.py::TestGenerateResourcePrefix::test_all_hierarchy_levels_valid PASSED [ 25%]
+tests/admin/test_policy_scoping.py::TestGeneratePermissionBoundary::test_permission_boundary_structure PASSED [ 27%]
+tests/admin/test_policy_scoping.py::TestGeneratePermissionBoundary::test_permission_boundary_includes_deny_dangerous PASSED [ 29%]
+tests/admin/test_policy_scoping.py::TestGeneratePermissionBoundary::test_permission_boundary_scoped_resources PASSED [ 31%]
+tests/admin/test_policy_scoping.py::TestGeneratePermissionBoundary::test_permission_boundary_includes_observability PASSED [ 34%]
+tests/admin/test_policy_scoping.py::TestGeneratePermissionBoundary::test_permission_boundary_is_valid_json PASSED [ 36%]
+tests/admin/test_policy_scoping.py::TestGenerateAgentPolicy::test_infra_agent_policy PASSED [ 38%]
+tests/admin/test_policy_scoping.py::TestGenerateAgentPolicy::test_app_dev_agent_policy PASSED [ 40%]
+tests/admin/test_policy_scoping.py::TestGenerateAgentPolicy::test_monitoring_agent_policy PASSED [ 43%]
+tests/admin/test_policy_scoping.py::TestGenerateAgentPolicy::test_security_agent_policy PASSED [ 45%]
+tests/admin/test_policy_scoping.py::TestGenerateAgentPolicy::test_general_agent_only_gateway_access PASSED [ 47%]
+tests/admin/test_policy_scoping.py::TestGenerateAgentPolicy::test_all_agent_types_have_gateway_access PASSED [ 50%]
+tests/admin/test_policy_scoping.py::TestGenerateAgentPolicy::test_all_agent_types_have_observability PASSED [ 52%]
+tests/admin/test_policy_scoping.py::TestGenerateAgentPolicy::test_invalid_agent_type_raises_error PASSED [ 54%]
+tests/admin/test_policy_scoping.py::TestGenerateAgentPolicy::test_agent_policy_is_valid_json PASSED [ 56%]
+tests/admin/test_policy_scoping.py::TestGenerateTrustPolicy::test_trust_policy_structure PASSED [ 59%]
+tests/admin/test_policy_scoping.py::TestGenerateTrustPolicy::test_trust_policy_oidc_conditions PASSED [ 61%]
+tests/admin/test_policy_scoping.py::TestGenerateTrustPolicy::test_trust_policy_federated_principal PASSED [ 63%]
+tests/admin/test_policy_scoping.py::TestGenerateTrustPolicy::test_trust_policy_is_valid_json PASSED [ 65%]
+tests/admin/test_policy_scoping.py::TestGenerateRequiredTags::test_required_tags_include_hierarchy PASSED [ 68%]
+tests/admin/test_policy_scoping.py::TestGenerateRequiredTags::test_required_tags_include_managed_by PASSED [ 70%]
+tests/admin/test_policy_scoping.py::TestGenerateRequiredTags::test_required_tags_only_include_relevant_levels PASSED [ 72%]
+tests/admin/test_policy_scoping.py::TestGenerateRequiredTags::test_required_tags_invalid_level PASSED [ 75%]
+tests/admin/test_policy_scoping.py::TestGenerateTagEnforcementStatements::test_tag_enforcement_includes_all_hierarchy_levels PASSED [ 77%]
+tests/admin/test_policy_scoping.py::TestGenerateTagEnforcementStatements::test_tag_enforcement_includes_taggable_actions PASSED [ 79%]
+tests/admin/test_policy_scoping.py::TestGenerateTagEnforcementStatements::test_tag_enforcement_skips_empty_values PASSED [ 81%]
+tests/admin/test_policy_scoping.py::TestGenerateTagEnforcementStatements::test_tag_enforcement_empty_hierarchy PASSED [ 84%]
+tests/admin/test_policy_scoping.py::TestPolicyTemplates::test_all_agent_types_have_actions PASSED [ 86%]
+tests/admin/test_policy_scoping.py::TestPolicyTemplates::test_dangerous_actions_list PASSED [ 88%]
+tests/admin/test_policy_scoping.py::TestPolicyTemplates::test_observability_actions_are_read_only PASSED [ 90%]
+tests/admin/test_policy_scoping.py::TestPolicyTemplates::test_hierarchy_short_codes_lowercase PASSED [ 93%]
+tests/admin/test_policy_scoping.py::TestPolicyTemplates::test_hierarchy_levels_order PASSED [ 95%]
+tests/admin/test_policy_scoping.py::TestIntegration::test_full_policy_generation_workflow PASSED [ 97%]
+tests/admin/test_policy_scoping.py::TestIntegration::test_general_agent_minimal_permissions PASSED [100%]
+
+=============================== warnings summary ===============================
+src/admin/schemas.py:32
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/admin/schemas.py:32: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class OrganizationResponse(BaseModel):
+
+src/admin/schemas.py:65
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/admin/schemas.py:65: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class PoolAccountResponse(BaseModel):
+
+src/shared/schemas/budget.py:41
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/budget.py:41: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BudgetResponse(BaseModel):
+
+src/shared/schemas/budget.py:64
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/budget.py:64: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BudgetUsageResponse(BaseModel):
+
+src/shared/schemas/admin.py:26
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/admin.py:26: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class DepartmentResponse(BaseModel):
+
+src/shared/schemas/admin.py:67
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/admin.py:67: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class TeamResponse(BaseModel):
+
+src/shared/schemas/admin.py:108
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/admin.py:108: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class UserResponse(BaseModel):
+
+src/shared/schemas/admin.py:145
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/admin.py:145: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountResponse(BaseModel):
+
+src/auth/schemas.py:13
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:13: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountCreate(BaseModel):
+
+src/auth/schemas.py:32
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:32: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountUpdate(BaseModel):
+
+src/auth/schemas.py:44
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:44: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountResponse(BaseModel):
+
+src/auth/schemas.py:69
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:69: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class TenantInfo(BaseModel):
+
+src/auth/schemas.py:94
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:94: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class TokenClaims(BaseModel):
+
+src/auth/schemas.py:123
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:123: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class AWSCallerIdentity(BaseModel):
+
+src/auth/schemas.py:136
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:136: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountListResponse(BaseModel):
+
+../../_tool/Python/3.12.12/x64/lib/python3.12/site-packages/passlib/utils/__init__.py:854
+  /home/runner/_work/_tool/Python/3.12.12/x64/lib/python3.12/site-packages/passlib/utils/__init__.py:854: DeprecationWarning: 'crypt' is deprecated and slated for removal in Python 3.13
+    from crypt import crypt as _crypt
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 44 passed, 16 warnings in 0.08s ========================

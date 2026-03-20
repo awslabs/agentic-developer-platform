@@ -1,0 +1,309 @@
+# Local values for CloudFront configuration
+locals {
+  # Use PriceClass_100 (US/EU only) for dev/test, PriceClass_All for prod
+  price_class = var.price_class != "" ? var.price_class : (
+    var.environment == "prod" ? "PriceClass_All" : "PriceClass_100"
+  )
+
+  # Origin ID for S3 bucket
+  s3_origin_id = "${var.name_prefix}-frontend-origin"
+
+  # Origin ID for ALB (API backend)
+  alb_origin_id = "${var.name_prefix}-api-origin"
+
+  # Origin ID for VPC Origin (when using internal ALB)
+  vpc_origin_id = "${var.name_prefix}-vpc-api-origin"
+
+  # Determine which origin to use for API traffic
+  # VPC Origin takes precedence when enabled and configured
+  api_origin_enabled = var.enable_vpc_origin || var.alb_domain_name != ""
+  use_vpc_origin     = var.enable_vpc_origin && var.internal_alb_arn != ""
+}
+
+# Origin Access Control for S3 (recommended over OAI)
+resource "aws_cloudfront_origin_access_control" "frontend" {
+  name                              = "${var.name_prefix}-frontend-oac"
+  description                       = "OAC for ${var.name_prefix} frontend S3 bucket"
+  origin_access_control_origin_type = "s3"
+  signing_behavior                  = "always"
+  signing_protocol                  = "sigv4"
+}
+
+# Response Headers Policy with security headers
+resource "aws_cloudfront_response_headers_policy" "security_headers" {
+  name    = "${var.name_prefix}-security-headers"
+  comment = "Security headers for ${var.name_prefix} frontend"
+
+  security_headers_config {
+    # Strict-Transport-Security
+    strict_transport_security {
+      access_control_max_age_sec = 31536000
+      include_subdomains         = true
+      preload                    = true
+      override                   = true
+    }
+
+    # X-Content-Type-Options
+    content_type_options {
+      override = true
+    }
+
+    # X-Frame-Options
+    frame_options {
+      frame_option = "DENY"
+      override     = true
+    }
+
+    # X-XSS-Protection (legacy but still useful for older browsers)
+    xss_protection {
+      mode_block = true
+      protection = true
+      override   = true
+    }
+
+    # Referrer-Policy
+    referrer_policy {
+      referrer_policy = "strict-origin-when-cross-origin"
+      override        = true
+    }
+
+    # Content-Security-Policy
+    content_security_policy {
+      content_security_policy = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:; frame-ancestors 'none'"
+      override                = true
+    }
+  }
+}
+
+# CloudFront Function to strip /api prefix before forwarding to ALB origin
+resource "aws_cloudfront_function" "strip_api_prefix" {
+  name    = "${var.name_prefix}-strip-api-prefix"
+  runtime = "cloudfront-js-2.0"
+  comment = "Strips /api prefix from URI before forwarding to ALB"
+  publish = true
+
+  code = <<-EOF
+    function handler(event) {
+      var request = event.request;
+      request.uri = request.uri.replace(/^\/api/, '');
+      if (request.uri === '') request.uri = '/';
+      return request;
+    }
+  EOF
+}
+
+# =============================================================================
+# CloudFront VPC Origin for Internal ALB
+# =============================================================================
+# VPC Origins allow CloudFront to connect to private resources within a VPC.
+# This is used when the ALB is internal (not internet-facing), making CloudFront
+# the sole ingress point for all traffic.
+#
+# NOTE: The VPC Origin is typically created in the backend-deploy workflow
+# after the Ingress ALB is created by EKS, since the ALB ARN is dynamic.
+# This resource is here for Terraform-managed deployments where the ALB ARN
+# is known at plan time.
+
+resource "aws_cloudfront_vpc_origin" "api" {
+  count = local.use_vpc_origin ? 1 : 0
+
+  vpc_origin_endpoint_config {
+    name                   = "${var.name_prefix}-api-vpc-origin"
+    arn                    = var.internal_alb_arn
+    http_port              = 80
+    https_port             = 443
+    origin_protocol_policy = "http-only"
+
+    origin_ssl_protocols {
+      items    = ["TLSv1.2"]
+      quantity = 1
+    }
+  }
+
+  tags = merge(var.common_tags, {
+    Name    = "${var.name_prefix}-vpc-origin"
+    Service = "cdn"
+    Purpose = "api-vpc-origin"
+  })
+}
+
+# CloudFront Distribution
+resource "aws_cloudfront_distribution" "frontend" {
+  enabled             = true
+  is_ipv6_enabled     = true
+  default_root_object = "index.html"
+  comment             = "${var.name_prefix} frontend distribution"
+  price_class         = local.price_class
+
+  # Custom domain aliases (if provided)
+  aliases = var.custom_domain_name != "" ? [var.custom_domain_name] : []
+
+  # S3 Origin with OAC
+  origin {
+    domain_name              = var.s3_bucket_regional_domain_name
+    origin_id                = local.s3_origin_id
+    origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
+  }
+
+  # ALB Origin for API backend (internet-facing ALB - custom origin)
+  # This is used when the ALB is public and CloudFront connects directly via domain name
+  dynamic "origin" {
+    for_each = var.alb_domain_name != "" && !local.use_vpc_origin ? [1] : []
+    content {
+      domain_name = var.alb_domain_name
+      origin_id   = local.alb_origin_id
+
+      custom_origin_config {
+        http_port              = 80
+        https_port             = 443
+        origin_protocol_policy = "http-only"
+        origin_ssl_protocols   = ["TLSv1.2"]
+        # Use configured timeout for SSE streaming support (default 30s is too short)
+        origin_read_timeout      = var.vpc_origin_read_timeout
+        origin_keepalive_timeout = var.vpc_origin_keepalive_timeout
+      }
+    }
+  }
+
+  # VPC Origin for API backend (internal ALB - VPC Origin)
+  # This is used when the ALB is internal and CloudFront connects via VPC Origin
+  # NOTE: VPC Origins are referenced by their ARN in the domain_name field
+  # and configured with vpc_origin_config block
+  dynamic "origin" {
+    for_each = local.use_vpc_origin ? [1] : []
+    content {
+      # For VPC Origin, domain_name is the VPC Origin ARN
+      domain_name = aws_cloudfront_vpc_origin.api[0].arn
+      origin_id   = local.vpc_origin_id
+
+      # VPC Origin specific configuration
+      vpc_origin_config {
+        vpc_origin_id            = aws_cloudfront_vpc_origin.api[0].id
+        origin_read_timeout      = var.vpc_origin_read_timeout
+        origin_keepalive_timeout = var.vpc_origin_keepalive_timeout
+      }
+    }
+  }
+
+  # API Cache Behavior — proxy /api/* to ALB (no caching, forward all headers)
+  # Uses either custom origin (internet-facing ALB) or VPC origin (internal ALB)
+  dynamic "ordered_cache_behavior" {
+    for_each = local.api_origin_enabled ? [1] : []
+    content {
+      path_pattern     = "/api/*"
+      allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+      cached_methods   = ["GET", "HEAD"]
+      target_origin_id = local.use_vpc_origin ? local.vpc_origin_id : local.alb_origin_id
+
+      viewer_protocol_policy = "redirect-to-https"
+
+      # Disable caching for API requests (critical for SSE streaming)
+      cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+      origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+
+      # Strip /api prefix before forwarding to ALB
+      function_association {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.strip_api_prefix.arn
+      }
+
+      compress = true
+    }
+  }
+
+  # Default Cache Behavior
+  default_cache_behavior {
+    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = local.s3_origin_id
+
+    # Viewer protocol policy: redirect-to-https
+    viewer_protocol_policy = "redirect-to-https"
+
+    # Use CachingOptimized managed cache policy
+    cache_policy_id = data.aws_cloudfront_cache_policy.caching_optimized.id
+
+    # Use response headers policy for security headers
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security_headers.id
+
+    # Compress automatically
+    compress = true
+  }
+
+  # Custom error responses for SPA routing (403 and 404 → /index.html with 200)
+  custom_error_response {
+    error_caching_min_ttl = 10
+    error_code            = 403
+    response_code         = 200
+    response_page_path    = "/index.html"
+  }
+
+  custom_error_response {
+    error_caching_min_ttl = 10
+    error_code            = 404
+    response_code         = 200
+    response_page_path    = "/index.html"
+  }
+
+  # Viewer certificate (custom domain or CloudFront default)
+  viewer_certificate {
+    cloudfront_default_certificate = var.custom_domain_name == ""
+    acm_certificate_arn            = var.custom_domain_name != "" ? var.acm_certificate_arn : null
+    ssl_support_method             = var.custom_domain_name != "" ? "sni-only" : null
+    minimum_protocol_version       = var.custom_domain_name != "" ? "TLSv1.2_2021" : "TLSv1"
+  }
+
+  # Restrictions (no geo restrictions by default)
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+
+  # Logging configuration (optional)
+  dynamic "logging_config" {
+    for_each = var.log_bucket_domain_name != "" ? [1] : []
+    content {
+      bucket          = var.log_bucket_domain_name
+      prefix          = var.log_prefix
+      include_cookies = false
+    }
+  }
+
+  # WAF Web ACL association (optional)
+  web_acl_id = var.waf_web_acl_arn != "" ? var.waf_web_acl_arn : null
+
+  tags = merge(var.common_tags, {
+    Name    = "${var.name_prefix}-cloudfront"
+    Service = "cdn"
+    Purpose = "frontend-distribution"
+  })
+
+  # Wait for OAC to be created before distribution
+  depends_on = [aws_cloudfront_origin_access_control.frontend]
+
+  # The API origin (ALB/VPC Origin) and /api/* cache behavior are managed
+  # dynamically by the backend-deploy workflow because the Ingress ALB is
+  # created by EKS, not Terraform. Ignore changes to prevent drift.
+  lifecycle {
+    ignore_changes = [
+      origin,
+      ordered_cache_behavior,
+    ]
+  }
+}
+
+# Data source for AWS managed CachingOptimized cache policy
+data "aws_cloudfront_cache_policy" "caching_optimized" {
+  name = "Managed-CachingOptimized"
+}
+
+# Data source for AWS managed CachingDisabled cache policy (for API proxy)
+data "aws_cloudfront_cache_policy" "caching_disabled" {
+  name = "Managed-CachingDisabled"
+}
+
+# Data source for AWS managed AllViewer origin request policy (forwards all headers/cookies/query strings)
+data "aws_cloudfront_origin_request_policy" "all_viewer" {
+  name = "Managed-AllViewer"
+}

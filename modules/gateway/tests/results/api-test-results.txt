@@ -1,0 +1,63 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.4, pluggy-1.6.0 -- /home/runner/_work/bedrock-gateway/bedrock-gateway/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/runner/_work/bedrock-gateway/bedrock-gateway
+configfile: pyproject.toml
+plugins: anyio-4.12.1, timeout-2.3.1, asyncio-0.25.0, cov-6.0.0
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=function
+collecting ... collected 46 items
+
+tests/integration/test_live_api.py::TestHealthConnectivity::test_health_endpoint PASSED [  2%]
+tests/integration/test_live_api.py::TestHealthConnectivity::test_ready_endpoint PASSED [  4%]
+tests/integration/test_live_api.py::TestHealthConnectivity::test_v1_health_endpoint PASSED [  6%]
+tests/integration/test_live_api.py::TestProxyBedrock::test_v1_messages_anthropic_format PASSED [  8%]
+tests/integration/test_live_api.py::TestProxyBedrock::test_v1_messages_streaming PASSED [ 10%]
+tests/integration/test_live_api.py::TestProxyBedrock::test_model_invoke_bedrock_format PASSED [ 13%]
+tests/integration/test_live_api.py::TestProxyBedrock::test_model_invoke_with_response_stream PASSED [ 15%]
+tests/integration/test_live_api.py::TestProxyBedrock::test_bedrock_invoke_passthrough PASSED [ 17%]
+tests/integration/test_live_api.py::TestProxyBedrock::test_v1_chat_completions_openai_format PASSED [ 19%]
+tests/integration/test_live_api.py::TestProxyBedrock::test_v1_models_list PASSED [ 21%]
+tests/integration/test_live_api.py::TestProxyBedrock::test_v1_messages_count_tokens PASSED [ 23%]
+tests/integration/test_live_api.py::TestAdminAPI::test_list_organizations PASSED [ 26%]
+tests/integration/test_live_api.py::TestAdminAPI::test_get_organization SKIPPED [ 28%]
+tests/integration/test_live_api.py::TestAdminAPI::test_list_departments SKIPPED [ 30%]
+tests/integration/test_live_api.py::TestAdminAPI::test_get_usage_timeseries SKIPPED [ 32%]
+tests/integration/test_live_api.py::TestAdminAPI::test_get_user_roles PASSED [ 34%]
+tests/integration/test_live_api.py::TestAdminAPI::test_get_my_chats PASSED [ 36%]
+tests/integration/test_live_api.py::TestAdminAPI::test_get_org_dashboard SKIPPED [ 39%]
+tests/integration/test_live_api.py::TestAdminAPI::test_list_budgets SKIPPED [ 41%]
+tests/integration/test_live_api.py::TestAdminAPI::test_list_ratelimits SKIPPED [ 43%]
+tests/integration/test_live_api.py::TestBudgetCRUD::test_budget_crud_cycle SKIPPED [ 45%]
+tests/integration/test_live_api.py::TestRateLimitCRUD::test_ratelimit_crud_cycle SKIPPED [ 47%]
+tests/integration/test_live_api.py::TestAuthentication::test_request_without_token_returns_401 PASSED [ 50%]
+tests/integration/test_live_api.py::TestAuthentication::test_request_with_invalid_token_returns_401 PASSED [ 52%]
+tests/integration/test_live_api.py::TestAuthentication::test_request_with_malformed_token_returns_401 PASSED [ 54%]
+tests/integration/test_live_api.py::TestAuthentication::test_request_with_valid_token_returns_200 PASSED [ 56%]
+tests/integration/test_live_api.py::TestAuthentication::test_x_api_key_header_works PASSED [ 58%]
+tests/integration/test_live_api.py::TestAuthentication::test_auth_me_endpoint PASSED [ 60%]
+tests/integration/test_live_api.py::TestDatabaseConnectivity::test_sequential_admin_calls_with_gaps PASSED [ 63%]
+tests/integration/test_live_api.py::TestDatabaseConnectivity::test_concurrent_requests PASSED [ 65%]
+tests/integration/test_live_api.py::TestValidation::test_missing_required_fields_returns_422 PASSED [ 67%]
+tests/integration/test_live_api.py::TestValidation::test_invalid_entity_type_returns_422 SKIPPED [ 69%]
+tests/integration/test_live_api.py::TestValidation::test_negative_budget_amount_returns_422 SKIPPED [ 71%]
+tests/integration/test_live_api.py::TestValidation::test_nonexistent_org_id_handling SKIPPED [ 73%]
+tests/integration/test_live_api.py::TestUsageAPI::test_get_usage_summary PASSED [ 76%]
+tests/integration/test_live_api.py::TestUsageAPI::test_get_usage_by_model PASSED [ 78%]
+tests/integration/test_live_api.py::TestUsageAPI::test_get_usage_timeline PASSED [ 80%]
+tests/integration/test_live_api.py::TestUsageAPI::test_get_usage_logs SKIPPED [ 82%]
+tests/integration/test_live_api.py::TestBudgetsAPI::test_get_organization_budget_overview PASSED [ 84%]
+tests/integration/test_live_api.py::TestBudgetsAPI::test_get_budget_alerts PASSED [ 86%]
+tests/integration/test_live_api.py::TestRateLimitsAPI::test_list_rate_limits PASSED [ 89%]
+tests/integration/test_live_api.py::TestServiceAccounts::test_list_service_accounts PASSED [ 91%]
+tests/integration/test_live_api.py::TestServiceAccounts::test_list_org_service_accounts SKIPPED [ 93%]
+tests/integration/test_live_api.py::TestAgentsAPI::test_list_agents SKIPPED [ 95%]
+tests/integration/test_live_api.py::TestPoolStatus::test_get_pool_status PASSED [ 97%]
+tests/integration/test_live_api.py::TestAdminLogs::test_query_logs SKIPPED [100%]
+
+=============================== warnings summary ===============================
+tests/integration/test_live_api.py::TestHealthConnectivity::test_health_endpoint
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/.venv/lib/python3.12/site-packages/botocore/auth.py:425: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    datetime_now = datetime.datetime.utcnow()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================== 31 passed, 15 skipped, 1 warning in 28.12s ==================

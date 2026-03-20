@@ -1,0 +1,11 @@
+timestamp,model,type,http_status,total_latency_ms,bedrock_estimated_ms,gateway_overhead_ms,bedrock_pct,auth_ms,budget_check_ms,ratelimit_check_ms,serialize_ms,bedrock_ms,bedrock_ttfb_ms,logging_total_ms,path
+2026-02-27T00:06:17.132141+00:00,global.anthropic.claude-opus-4-6-v1,streaming,200,26732.3,26729.2,3.1,100.0,0,0,0,0,0,0.1,3.1,/model/global.anthropic.claude-opus-4-6-v1/invoke-with-response-stream
+2026-02-27T00:13:15.901834+00:00,global.anthropic.claude-opus-4-6-v1,streaming,200,26718.2,26647.0,71.2,99.7,0,0,0,0,0,0.3,71.2,/model/global.anthropic.claude-opus-4-6-v1/invoke-with-response-stream
+2026-02-27T00:06:43.131808+00:00,global.anthropic.claude-opus-4-6-v1,non-streaming,200,25740.9,25738.0,2.9,100.0,0,0,0,0.0,25738.0,0,25740.4,/model/global.anthropic.claude-opus-4-6-v1/invoke
+2026-02-26T23:35:00.364226+00:00,global.anthropic.claude-opus-4-6-v1,non-streaming,200,1968.8,1966.4,2.4,99.9,0,0,0,0.1,1966.4,0,1968.5,/model/global.anthropic.claude-opus-4-6-v1/invoke
+2026-02-26T23:42:46.729674+00:00,global.anthropic.claude-opus-4-6-v1,non-streaming,200,1921.8,1918.8,3.0,99.8,0,0,0,0.0,1918.8,0,1921.1,/model/global.anthropic.claude-opus-4-6-v1/invoke
+2026-02-26T23:47:59.883559+00:00,global.anthropic.claude-opus-4-6-v1,non-streaming,200,1916.6,1913.5,3.1,99.8,0,0,0,0.0,1913.5,0,1915.8,/model/global.anthropic.claude-opus-4-6-v1/invoke
+2026-02-26T23:34:55.807569+00:00,global.anthropic.claude-opus-4-6-v1,non-streaming,200,1914.1,1911.9,2.2,99.9,0,0,0,0.0,1911.9,0,1913.8,/model/global.anthropic.claude-opus-4-6-v1/invoke
+2026-02-26T23:42:03.433757+00:00,us.anthropic.claude-haiku-4-5-20251001-v1:0,streaming,200,863.5,853.3,10.2,98.8,0,0,0,0,0,0.6,10.2,/model/us.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream
+2026-02-26T23:52:34.913972+00:00,us.anthropic.claude-haiku-4-5-20251001-v1:0,streaming,200,807.9,805.7,2.2,99.7,0,0,0,0,0,0.0,2.2,/model/us.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream
+2026-02-26T23:52:58.650464+00:00,us.anthropic.claude-haiku-4-5-20251001-v1:0,streaming,200,724.0,722.5,1.5,99.8,0,0,0,0,0,0.1,1.5,/model/us.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream

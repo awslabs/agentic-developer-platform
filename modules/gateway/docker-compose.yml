@@ -1,0 +1,58 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      BG_DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/bedrockgw
+      BG_REDIS_URL: redis://redis:6379
+      BG_AWS_REGION: us-east-1
+      BG_LOG_LEVEL: DEBUG
+      # Issue #144: Tracing config (disabled by default for local dev)
+      BG_OTEL_ENABLED: "false"
+      BG_OTEL_SERVICE_NAME: "bedrock-gateway"
+      BG_OTEL_EXPORTER_ENDPOINT: "http://otel-collector:4317"
+      OTEL_ENABLED: "false"
+      OTEL_SERVICE_NAME: "bedrock-gateway"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: bedrockgw
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  # Issue #144: OpenTelemetry Collector for local tracing development
+  # Uncomment to enable local trace collection (exports to stdout)
+  # otel-collector:
+  #   image: public.ecr.aws/aws-observability/aws-otel-collector:latest
+  #   ports:
+  #     - "4317:4317"  # gRPC OTLP receiver
+  #     - "4318:4318"  # HTTP OTLP receiver
+  #     - "8888:8888"  # Prometheus metrics
+  #   environment:
+  #     AWS_REGION: us-east-1
+  #   command: ["--config=/dev/null"]  # Minimal config for local dev
+
+volumes:
+  pgdata:

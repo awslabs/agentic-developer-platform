@@ -1,0 +1,153 @@
+# Dockerfile.agent - Example Dockerfile for Claude Code agent containers
+#
+# This Dockerfile creates a container image for running Claude Code agents
+# in EKS/Kubernetes with M2M (machine-to-machine) authentication.
+#
+# The container uses IRSA (IAM Roles for Service Accounts) or EKS Pod Identity
+# to automatically obtain AWS credentials, which are then exchanged for a
+# BedrockGateway token.
+#
+# Build:
+#   docker build -f Dockerfile.agent -t claude-agent:latest .
+#
+# Required IAM Role:
+#   The service account's IAM role must be registered as a service account
+#   in BedrockGateway before the container can authenticate.
+#
+# Environment Variables (set at runtime via Kubernetes):
+#   BG_GATEWAY_URL      - BedrockGateway URL (required)
+#   AWS_REGION          - AWS region (defaults to us-east-1)
+#   BG_DEBUG            - Set to "true" for debug logging (optional)
+#
+
+# Use a stable base image with necessary tools
+FROM python:3.12-slim-bookworm AS base
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    jq \
+    unzip \
+    ca-certificates \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install AWS CLI v2
+RUN curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
+    && unzip -q awscliv2.zip \
+    && ./aws/install \
+    && rm -rf awscliv2.zip aws
+
+# Create non-root user for running the agent
+RUN useradd -m -s /bin/bash agent \
+    && mkdir -p /home/agent/bin /home/agent/.claude \
+    && chown -R agent:agent /home/agent
+
+# Switch to agent user
+USER agent
+WORKDIR /home/agent
+
+# Copy bg-auth.sh and make executable
+COPY --chown=agent:agent cli/bg-auth.sh /home/agent/bin/bg-auth.sh
+RUN chmod +x /home/agent/bin/bg-auth.sh
+
+# Set up PATH
+ENV PATH="/home/agent/bin:${PATH}"
+
+# Set Claude Code environment variables for Bedrock Gateway
+# Note: BG_GATEWAY_URL must be provided at runtime
+ENV CLAUDE_CODE_USE_BEDROCK="1" \
+    CLAUDE_CODE_SKIP_BEDROCK_AUTH="1" \
+    AWS_REGION="us-east-1"
+
+# Create Claude Code settings file
+# This will be configured at runtime via environment variables
+RUN cat > /home/agent/.claude/settings.json << 'EOF'
+{
+  "env": {
+    "CLAUDE_CODE_USE_BEDROCK": "1",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH": "1"
+  },
+  "apiKeyHelper": "~/bin/bg-auth.sh"
+}
+EOF
+
+# Install Claude Code (uncomment when available)
+# RUN pip install --user claude-code
+
+# Health check script that verifies AWS credentials and gateway connectivity
+COPY --chown=agent:agent <<'HEALTHCHECK' /home/agent/bin/healthcheck.sh
+#!/bin/bash
+set -e
+
+# Check if required environment variables are set
+if [ -z "$BG_GATEWAY_URL" ]; then
+    echo "ERROR: BG_GATEWAY_URL not set"
+    exit 1
+fi
+
+# Check AWS credentials (IRSA/Pod Identity should provide these)
+if ! aws sts get-caller-identity --output json >/dev/null 2>&1; then
+    echo "ERROR: AWS credentials not available"
+    exit 1
+fi
+
+# Check gateway connectivity
+if ! curl -sf "${BG_GATEWAY_URL}/health" >/dev/null 2>&1; then
+    echo "WARN: Cannot reach gateway health endpoint"
+    # Don't fail - gateway might have different health path
+fi
+
+echo "OK"
+exit 0
+HEALTHCHECK
+
+RUN chmod +x /home/agent/bin/healthcheck.sh
+
+# Set entrypoint to run health check then start agent
+COPY --chown=agent:agent <<'ENTRYPOINT' /home/agent/entrypoint.sh
+#!/bin/bash
+set -e
+
+echo "Starting Claude Code Agent Container"
+echo "======================================"
+
+# Validate configuration
+if [ -z "$BG_GATEWAY_URL" ]; then
+    echo "ERROR: BG_GATEWAY_URL environment variable is required"
+    exit 1
+fi
+
+# Update Claude settings with runtime gateway URL
+export ANTHROPIC_BEDROCK_BASE_URL="$BG_GATEWAY_URL"
+
+# Run health check
+echo "Running health check..."
+/home/agent/bin/healthcheck.sh
+
+# Get initial token to verify authentication works
+echo "Verifying gateway authentication..."
+if BG_DEBUG="${BG_DEBUG:-false}" /home/agent/bin/bg-auth.sh >/dev/null; then
+    echo "Authentication successful"
+else
+    echo "ERROR: Failed to authenticate with gateway"
+    exit 1
+fi
+
+# Execute the main command
+echo "Starting agent..."
+exec "$@"
+ENTRYPOINT
+
+RUN chmod +x /home/agent/entrypoint.sh
+
+ENTRYPOINT ["/home/agent/entrypoint.sh"]
+
+# Default command - override in Kubernetes deployment
+CMD ["bash", "-c", "echo 'Container ready. Override CMD to run your agent workflow.'"]
+
+# Labels
+LABEL org.opencontainers.image.title="Claude Code Agent" \
+      org.opencontainers.image.description="Claude Code agent with BedrockGateway M2M authentication" \
+      org.opencontainers.image.vendor="BedrockGateway" \
+      org.opencontainers.image.version="1.0.0"

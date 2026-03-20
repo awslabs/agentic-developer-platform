@@ -1,0 +1,43 @@
+name: Platform Infra Apply
+
+on:
+  push:
+    paths:
+      - 'platform/infra/**'
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  TF_VAR_environment: dev
+
+jobs:
+  apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.5.0"
+
+      - name: Terraform Init
+        working-directory: platform/infra
+        run: terraform init -backend-config="../../environments/dev/backend.tfvars"
+
+      - name: Terraform Apply
+        working-directory: platform/infra
+        run: terraform apply -var-file="../../environments/dev/platform.tfvars" -auto-approve

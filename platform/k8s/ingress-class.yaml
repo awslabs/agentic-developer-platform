@@ -1,0 +1,9 @@
+# Shared ALB Ingress Class for all ADP modules
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: adp-alb
+  annotations:
+    ingressclass.kubernetes.io/is-default-class: "false"
+spec:
+  controller: ingress.k8s.aws/alb

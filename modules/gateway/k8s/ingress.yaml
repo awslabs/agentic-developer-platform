@@ -1,0 +1,88 @@
+# =============================================================================
+# Bedrock Gateway Ingress Configuration
+# =============================================================================
+# This Ingress creates an ALB managed by the AWS Load Balancer Controller.
+#
+# SECURITY NOTE:
+# The ALB scheme is currently "internet-facing" which allows direct public access.
+# For production environments, this should be changed to "internal" after
+# CloudFront VPC Origin is configured. See Issue #115.
+#
+# TO SWITCH TO INTERNAL ALB (after CloudFront VPC Origin is verified):
+# 1. Change alb.ingress.kubernetes.io/scheme to "internal"
+# 2. Uncomment the alb.ingress.kubernetes.io/subnets annotation
+# 3. Verify all traffic flows through CloudFront /api/* path
+# 4. Confirm direct ALB access times out from public internet
+# =============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bedrockgateway
+  namespace: bedrockgw
+  labels:
+    app.kubernetes.io/name: bedrockgateway
+    app.kubernetes.io/part-of: bedrock-gateway
+  annotations:
+    # ==========================================================================
+    # ALB Scheme Configuration
+    # ==========================================================================
+    # Current: internet-facing (ALB is publicly accessible)
+    # Target:  internal (ALB is only accessible via CloudFront VPC Origin)
+    #
+    # CRITICAL: Do NOT change to "internal" until CloudFront VPC Origin is
+    # fully verified and working. Switching prematurely will break all traffic!
+    #
+    # Verification checklist before switching to internal:
+    # [ ] CloudFront VPC Origin created and pointing to ALB
+    # [ ] /api/* CloudFront behavior uses VPC Origin with 180s timeout
+    # [ ] Frontend works through CloudFront (no mixed content, no failed fetches)
+    # [ ] CLI bg-auth.sh works with BG_GATEWAY_URL=https://<cloudfront>/api
+    # [ ] Claude Code SSE streaming works through CloudFront without timeouts
+    # [ ] Health check accessible at https://<cloudfront>/api/health
+    # ==========================================================================
+    alb.ingress.kubernetes.io/scheme: internal
+    # For internet-facing ALB, use: internet-facing
+    # alb.ingress.kubernetes.io/scheme: internet-facing
+
+    # ==========================================================================
+    # Subnet Configuration (for internal ALB)
+    # ==========================================================================
+    # When switching to internal, specify the private subnet IDs.
+    # The AWS Load Balancer Controller will place the ALB in these subnets.
+    # Get private subnet IDs from: terraform output -raw private_subnet_ids
+    # Format: comma-separated list of subnet IDs
+    # ==========================================================================
+    # alb.ingress.kubernetes.io/subnets: subnet-xxxxx,subnet-yyyyy
+    alb.ingress.kubernetes.io/subnets: subnet-062da0530aa00ab3a,subnet-071df2eeb8c4e011e
+
+    # ==========================================================================
+    # Standard ALB Configuration
+    # ==========================================================================
+    # Use AWS Load Balancer Controller (EKS Auto Mode managed)
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/success-codes: "200"
+    # ALB idle timeout — must be >= API Gateway integration timeout (900s)
+    # to prevent the ALB from dropping long-running Bedrock requests.
+    # Default is 60s which causes 504s for requests >60s.
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=900
+    # Group ingresses under a single ALB (optional, allows multiple services to share ALB)
+    alb.ingress.kubernetes.io/group.name: bedrockgw
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: bedrockgateway
+                port:
+                  number: 80

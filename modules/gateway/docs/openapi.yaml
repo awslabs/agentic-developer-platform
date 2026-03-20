@@ -1,0 +1,1984 @@
+openapi: 3.0.3
+info:
+  title: Bedrock Gateway API
+  description: |
+    Multi-tenant SaaS proxy for Amazon Bedrock with Cognito authentication,
+    cascading budget management, rate limiting, and an admin dashboard.
+
+    ## Authentication
+
+    All API endpoints require authentication via one of:
+    - **Cognito JWT Bearer Token**: `Authorization: Bearer <access_token>`
+    - **Legacy Token Exchange**: `POST /auth/exchange` (deprecated)
+
+    Human users authenticate via Cognito PKCE flow using the `bg-cognito-auth.sh` CLI.
+    Agents/services use Cognito `client_credentials` flow for M2M authentication.
+
+    ## Rate Limiting
+
+    Rate limits are enforced at organization, department, team, and user levels.
+    When rate limited, responses include:
+    - `Retry-After` header
+    - `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` headers
+
+    ## Budget Enforcement
+
+    Budget limits cascade from organization to user level.
+    When budget is exceeded (hard mode), requests are rejected with 429.
+    Response headers include: `X-Budget-Remaining-USD`, `X-Budget-Period`
+  version: 1.0.0
+  contact:
+    name: Platform Team
+    email: platform@company.com
+  license:
+    name: Private
+    url: https://company.com/license
+
+servers:
+  - url: https://{cloudfront_domain}/api
+    description: Production Gateway via CloudFront
+    variables:
+      cloudfront_domain:
+        default: gateway.company.com
+        description: CloudFront distribution domain
+  - url: http://localhost:8080
+    description: Local development server
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: authentication
+    description: Authentication and service account management
+  - name: proxy
+    description: Bedrock proxy endpoints (OpenAI, Anthropic, Bedrock formats)
+  - name: admin
+    description: Administrative CRUD operations
+  - name: budgets
+    description: Budget configuration and enforcement
+  - name: ratelimits
+    description: Rate limit configuration and status
+  - name: usage
+    description: Usage tracking and analytics
+  - name: health
+    description: Health check endpoints
+
+paths:
+  # ==========================================================================
+  # Authentication Endpoints
+  # ==========================================================================
+  /auth/exchange:
+    post:
+      tags: [authentication]
+      summary: "[DEPRECATED] Exchange AWS credentials for gateway token"
+      description: |
+        **DEPRECATED**: Use Cognito JWT authentication instead.
+        - Human users: Use PKCE flow with bg-cognito-auth.sh
+        - Agents/Services: Use client_credentials flow with Cognito App Client
+      deprecated: true
+      operationId: exchangeCredentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthExchangeRequest'
+      responses:
+        '200':
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthExchangeResponse'
+        '401':
+          description: Invalid AWS credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Access denied - unknown organization or unregistered service account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/me:
+    get:
+      tags: [authentication]
+      summary: Get current user information
+      description: Returns information about the currently authenticated user
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: User information returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUserResponse'
+        '401':
+          description: Invalid or expired token
+
+  /auth/logout:
+    post:
+      tags: [authentication]
+      summary: Logout current user
+      operationId: logout
+      responses:
+        '200':
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Logout successful
+
+  /auth/revoke:
+    post:
+      tags: [authentication]
+      summary: Revoke current token
+      operationId: revokeToken
+      responses:
+        '200':
+          description: Token revoked successfully
+        '401':
+          description: Invalid or expired token
+
+  /auth/service-accounts:
+    post:
+      tags: [authentication]
+      summary: Create a new service account
+      description: Register an IAM role as a service account for M2M authentication
+      operationId: createServiceAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountCreate'
+      responses:
+        '201':
+          description: Service account created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountResponse'
+        '403':
+          description: Insufficient permissions
+        '409':
+          description: Service account already exists
+    get:
+      tags: [authentication]
+      summary: List service accounts
+      operationId: listServiceAccounts
+      parameters:
+        - name: department_id
+          in: query
+          schema:
+            type: string
+        - name: team_id
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: List of service accounts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountListResponse'
+
+  /auth/service-accounts/{service_account_id}:
+    get:
+      tags: [authentication]
+      summary: Get service account details
+      operationId: getServiceAccount
+      parameters:
+        - name: service_account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Service account details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountResponse'
+        '404':
+          description: Service account not found
+    put:
+      tags: [authentication]
+      summary: Update service account
+      operationId: updateServiceAccount
+      parameters:
+        - name: service_account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceAccountUpdate'
+      responses:
+        '200':
+          description: Service account updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceAccountResponse'
+    delete:
+      tags: [authentication]
+      summary: Delete service account
+      operationId: deleteServiceAccount
+      parameters:
+        - name: service_account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Service account deleted
+
+  /auth/admin/cleanup-tokens:
+    post:
+      tags: [authentication]
+      summary: Clean up expired tokens
+      description: Administrative endpoint to remove expired tokens from database
+      operationId: cleanupExpiredTokens
+      responses:
+        '200':
+          description: Cleanup completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  tokens_cleaned:
+                    type: integer
+
+  /auth/admin/revoke-user-tokens/{user_id}:
+    post:
+      tags: [authentication]
+      summary: Revoke all tokens for a user
+      operationId: revokeAllUserTokens
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tokens revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  tokens_revoked:
+                    type: integer
+
+  # ==========================================================================
+  # Proxy Endpoints
+  # ==========================================================================
+  /v1/chat/completions:
+    post:
+      tags: [proxy]
+      summary: Create chat completion (OpenAI-compatible)
+      description: |
+        Proxy endpoint that translates OpenAI chat completion format to Bedrock.
+        Supports streaming responses via Server-Sent Events.
+      operationId: createChatCompletion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenAIChatCompletionRequest'
+      responses:
+        '200':
+          description: Chat completion response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIChatCompletionResponse'
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream of completion chunks
+        '403':
+          description: Model not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelNotAllowedError'
+        '429':
+          description: Rate limited or budget exceeded
+
+  /v1/models:
+    get:
+      tags: [proxy]
+      summary: List available models
+      description: Returns models filtered by caller's org/team permissions
+      operationId: listModels
+      responses:
+        '200':
+          description: List of available models
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelsListResponse'
+
+  /v1/messages:
+    post:
+      tags: [proxy]
+      summary: Create message (Anthropic Messages format)
+      description: |
+        Proxy endpoint that forwards Anthropic Messages format to Bedrock.
+        Supports anthropic-beta and anthropic-version headers.
+      operationId: createMessage
+      parameters:
+        - name: anthropic-version
+          in: header
+          schema:
+            type: string
+        - name: anthropic-beta
+          in: header
+          schema:
+            type: string
+          description: Comma-separated list of beta features
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnthropicMessagesRequest'
+      responses:
+        '200':
+          description: Message response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnthropicMessagesResponse'
+            text/event-stream:
+              schema:
+                type: string
+
+  /v1/messages/count_tokens:
+    post:
+      tags: [proxy]
+      summary: Count tokens for a messages request
+      operationId: countTokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CountTokensRequest'
+      responses:
+        '200':
+          description: Token count
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CountTokensResponse'
+
+  /bedrock/invoke:
+    post:
+      tags: [proxy]
+      summary: Invoke Bedrock model (pass-through)
+      description: |
+        Direct pass-through to Bedrock InvokeModel API.
+        Preserves anthropic_beta and anthropic_version body fields.
+      operationId: invokeModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                  description: Model ID or alias
+              additionalProperties: true
+      responses:
+        '200':
+          description: Model response
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /bedrock/invoke-with-response-stream:
+    post:
+      tags: [proxy]
+      summary: Invoke Bedrock model with streaming
+      description: |
+        Direct pass-through to Bedrock InvokeModelWithResponseStream API.
+        Works with CLAUDE_CODE_SKIP_BEDROCK_AUTH=1.
+      operationId: invokeModelStream
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+              additionalProperties: true
+      responses:
+        '200':
+          description: Streaming model response
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /v1/health:
+    get:
+      tags: [health]
+      summary: Proxy service health check
+      operationId: proxyHealthCheck
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: healthy
+                  service:
+                    type: string
+                    example: proxy
+
+  # ==========================================================================
+  # Admin Endpoints
+  # ==========================================================================
+  /admin/organizations:
+    post:
+      tags: [admin]
+      summary: Create a new organization
+      operationId: createOrganization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationCreateRequest'
+      responses:
+        '201':
+          description: Organization created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationResponse'
+    get:
+      tags: [admin]
+      summary: List organizations
+      operationId: listOrganizations
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: List of organizations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationListResponse'
+
+  /admin/organizations/{org_id}:
+    get:
+      tags: [admin]
+      summary: Get organization details
+      operationId: getOrganization
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Organization details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationResponse'
+    put:
+      tags: [admin]
+      summary: Update organization
+      operationId: updateOrganization
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationUpdateRequest'
+      responses:
+        '200':
+          description: Organization updated
+    delete:
+      tags: [admin]
+      summary: Delete organization
+      operationId: deleteOrganization
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Organization deleted
+
+  /admin/organizations/{org_id}/departments:
+    post:
+      tags: [admin]
+      summary: Create department
+      operationId: createDepartment
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DepartmentCreateRequest'
+      responses:
+        '201':
+          description: Department created
+    get:
+      tags: [admin]
+      summary: List departments
+      operationId: listDepartments
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of departments
+
+  /admin/organizations/{org_id}/departments/{dept_id}/teams:
+    post:
+      tags: [admin]
+      summary: Create team
+      operationId: createTeam
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: dept_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeamCreateRequest'
+      responses:
+        '201':
+          description: Team created
+    get:
+      tags: [admin]
+      summary: List teams in department
+      operationId: listTeams
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: dept_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of teams
+
+  /admin/organizations/{org_id}/teams/{team_id}/users:
+    post:
+      tags: [admin]
+      summary: Add user to team
+      operationId: addUser
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: team_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+      responses:
+        '201':
+          description: User added
+    get:
+      tags: [admin]
+      summary: List users in team
+      operationId: listUsersTeam
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: team_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of users
+
+  /admin/agents:
+    post:
+      tags: [admin]
+      summary: Create agent (Cognito App Client for M2M)
+      description: Creates a Cognito App Client for machine-to-machine authentication
+      operationId: createAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentCreateRequest'
+      responses:
+        '201':
+          description: Agent created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+    get:
+      tags: [admin]
+      summary: List agents
+      operationId: listAgents
+      parameters:
+        - name: org_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of agents
+
+  /admin/agents/{client_id}:
+    get:
+      tags: [admin]
+      summary: Get agent details
+      operationId: getAgent
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent details
+    put:
+      tags: [admin]
+      summary: Update agent metadata
+      operationId: updateAgent
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent updated
+    delete:
+      tags: [admin]
+      summary: Delete agent
+      operationId: deleteAgent
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Agent deleted
+
+  /admin/agents/{client_id}/credentials:
+    get:
+      tags: [admin]
+      summary: Get agent credentials
+      description: Returns client_id and client_secret for M2M authentication
+      operationId: getAgentCredentials
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentCredentialsResponse'
+
+  /admin/pool/status:
+    get:
+      tags: [admin]
+      summary: Get Bedrock pool status
+      operationId: getPoolStatus
+      responses:
+        '200':
+          description: Pool status
+
+  /admin/pool/accounts:
+    post:
+      tags: [admin]
+      summary: Add account to Bedrock pool
+      operationId: addPoolAccount
+      responses:
+        '201':
+          description: Account added
+
+  /admin/pool/accounts/{account_id}:
+    delete:
+      tags: [admin]
+      summary: Remove account from Bedrock pool
+      operationId: removePoolAccount
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Account removed
+
+  /admin/logs:
+    get:
+      tags: [admin]
+      summary: Query request logs
+      operationId: queryLogs
+      parameters:
+        - name: org_id
+          in: query
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          schema:
+            type: string
+        - name: start_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: status_code
+          in: query
+          schema:
+            type: integer
+        - name: path_pattern
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Log entries
+
+  /admin/dashboard/platform:
+    get:
+      tags: [admin]
+      summary: Get platform admin dashboard
+      operationId: getPlatformDashboard
+      responses:
+        '200':
+          description: Platform dashboard data
+
+  /admin/dashboard/org/{org_id}:
+    get:
+      tags: [admin]
+      summary: Get organization dashboard
+      operationId: getOrgDashboard
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Organization dashboard data
+
+  # ==========================================================================
+  # Budget Endpoints
+  # ==========================================================================
+  /budgets:
+    post:
+      tags: [budgets]
+      summary: Create budget configuration
+      operationId: createBudget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetCreateRequest'
+      responses:
+        '201':
+          description: Budget created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetResponse'
+
+  /budgets/{budget_id}:
+    get:
+      tags: [budgets]
+      summary: Get budget configuration
+      operationId: getBudget
+      parameters:
+        - name: budget_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Budget configuration
+    put:
+      tags: [budgets]
+      summary: Update budget configuration
+      operationId: updateBudget
+      parameters:
+        - name: budget_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetUpdateRequest'
+      responses:
+        '200':
+          description: Budget updated
+    delete:
+      tags: [budgets]
+      summary: Delete budget configuration
+      operationId: deleteBudget
+      parameters:
+        - name: budget_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Budget deleted
+
+  /budgets/entity/{entity_type}/{entity_id}:
+    get:
+      tags: [budgets]
+      summary: Get budgets for entity
+      operationId: getBudgetsForEntity
+      parameters:
+        - name: entity_type
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/EntityType'
+        - name: entity_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Budget configurations
+
+  /budgets/status/{entity_type}/{entity_id}:
+    get:
+      tags: [budgets]
+      summary: Get budget status
+      operationId: getBudgetStatus
+      parameters:
+        - name: entity_type
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/EntityType'
+        - name: entity_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: period_type
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/PeriodType'
+      responses:
+        '200':
+          description: Budget status
+
+  /budgets/usage/{entity_type}/{entity_id}:
+    get:
+      tags: [budgets]
+      summary: Get budget usage
+      operationId: getBudgetUsage
+      parameters:
+        - name: entity_type
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/EntityType'
+        - name: entity_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: period_type
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/PeriodType'
+      responses:
+        '200':
+          description: Budget usage
+
+  /budgets/calculate-cost:
+    post:
+      tags: [budgets]
+      summary: Calculate cost for token usage
+      operationId: calculateCost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CostCalculationRequest'
+      responses:
+        '200':
+          description: Cost calculation
+
+  /budgets/record-cost:
+    post:
+      tags: [budgets]
+      summary: Record cost against budgets
+      operationId: recordCost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CostRecordRequest'
+      responses:
+        '204':
+          description: Cost recorded
+
+  /budgets/organization/overview:
+    get:
+      tags: [budgets]
+      summary: Get organization budget overview
+      operationId: getOrganizationBudgetOverview
+      responses:
+        '200':
+          description: Budget overview
+
+  /budgets/organization/alerts:
+    get:
+      tags: [budgets]
+      summary: Get budget alerts
+      operationId: getBudgetAlerts
+      parameters:
+        - name: threshold_percent
+          in: query
+          schema:
+            type: number
+            default: 80
+      responses:
+        '200':
+          description: Budget alerts
+
+  # ==========================================================================
+  # Rate Limit Endpoints
+  # ==========================================================================
+  /ratelimits:
+    get:
+      tags: [ratelimits]
+      summary: List rate limit configurations
+      operationId: listRateLimits
+      parameters:
+        - name: entity_type
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Rate limit configurations
+
+  /ratelimits/{entity_type}/{entity_id}:
+    get:
+      tags: [ratelimits]
+      summary: Get rate limit configuration
+      operationId: getRateLimits
+      parameters:
+        - name: entity_type
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: entity_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Rate limit configuration
+    put:
+      tags: [ratelimits]
+      summary: Configure rate limits
+      operationId: configureRateLimits
+      parameters:
+        - name: entity_type
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: entity_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RateLimitConfigRequest'
+      responses:
+        '200':
+          description: Rate limits configured
+    delete:
+      tags: [ratelimits]
+      summary: Delete rate limit configuration
+      operationId: deleteRateLimits
+      parameters:
+        - name: entity_type
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: entity_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Rate limits deleted
+
+  /ratelimits/{entity_type}/{entity_id}/status:
+    get:
+      tags: [ratelimits]
+      summary: Get rate limit status
+      operationId: getRateLimitStatus
+      parameters:
+        - name: entity_type
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: entity_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Rate limit status
+
+  # ==========================================================================
+  # Usage Endpoints
+  # ==========================================================================
+  /usage/summary:
+    get:
+      tags: [usage]
+      summary: Get usage summary
+      operationId: getUsageSummary
+      parameters:
+        - name: org_id
+          in: query
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: department_id
+          in: query
+          schema:
+            type: string
+        - name: model
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Usage summary
+
+  /usage/organizations:
+    get:
+      tags: [usage]
+      summary: Get usage by organization
+      operationId: getUsageByOrganization
+      responses:
+        '200':
+          description: Usage by organization
+
+  /usage/models:
+    get:
+      tags: [usage]
+      summary: Get usage by model
+      operationId: getUsageByModel
+      parameters:
+        - name: org_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Usage by model
+
+  /usage/timeline:
+    get:
+      tags: [usage]
+      summary: Get usage timeline
+      operationId: getUsageTimeline
+      parameters:
+        - name: org_id
+          in: query
+          schema:
+            type: string
+        - name: interval
+          in: query
+          schema:
+            type: string
+            enum: [hourly, daily, weekly, monthly]
+            default: daily
+      responses:
+        '200':
+          description: Usage timeline
+
+  /usage/users:
+    get:
+      tags: [usage]
+      summary: Get usage by user
+      operationId: getUsageByUser
+      parameters:
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Usage by user
+
+  /usage/departments:
+    get:
+      tags: [usage]
+      summary: Get usage by department
+      operationId: getUsageByDepartment
+      parameters:
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Usage by department
+
+  /usage/logs:
+    get:
+      tags: [usage]
+      summary: Get usage logs
+      operationId: getUsageLogs
+      parameters:
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          schema:
+            type: string
+        - name: model
+          in: query
+          schema:
+            type: string
+        - name: status_code
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Usage logs
+
+  # ==========================================================================
+  # Health Endpoints
+  # ==========================================================================
+  /health:
+    get:
+      tags: [health]
+      summary: Application health check
+      operationId: healthCheck
+      security: []
+      responses:
+        '200':
+          description: Application is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: healthy
+
+  /ready:
+    get:
+      tags: [health]
+      summary: Readiness check
+      description: Returns 200 only when database connection is established
+      operationId: readinessCheck
+      security: []
+      responses:
+        '200':
+          description: Application is ready
+        '503':
+          description: Application is not ready
+
+  /metrics:
+    get:
+      tags: [health]
+      summary: Prometheus metrics
+      operationId: prometheusMetrics
+      security: []
+      responses:
+        '200':
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Cognito JWT access token
+
+  schemas:
+    # Authentication Schemas
+    AuthExchangeRequest:
+      type: object
+      required:
+        - aws_access_key_id
+        - aws_secret_access_key
+        - aws_session_token
+      properties:
+        aws_access_key_id:
+          type: string
+        aws_secret_access_key:
+          type: string
+        aws_session_token:
+          type: string
+
+    AuthExchangeResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        user_id:
+          type: string
+        org_id:
+          type: string
+        team_id:
+          type: string
+        department_id:
+          type: string
+        account_type:
+          type: string
+          enum: [human, service]
+
+    CurrentUserResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        org_id:
+          type: string
+        department_id:
+          type: string
+        team_id:
+          type: string
+        account_type:
+          type: string
+        is_admin:
+          type: boolean
+        expires_at:
+          type: string
+          format: date-time
+
+    ServiceAccountCreate:
+      type: object
+      required:
+        - name
+        - department_id
+        - team_id
+        - iam_role_arn
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        department_id:
+          type: string
+        team_id:
+          type: string
+        iam_role_arn:
+          type: string
+          maxLength: 512
+
+    ServiceAccountUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        department_id:
+          type: string
+        team_id:
+          type: string
+        iam_role_arn:
+          type: string
+
+    ServiceAccountResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+        department_id:
+          type: string
+        team_id:
+          type: string
+        iam_role_arn:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ServiceAccountListResponse:
+      type: object
+      properties:
+        service_accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceAccountResponse'
+        total_count:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
+
+    # Proxy Schemas
+    OpenAIChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          example: claude-3.5-sonnet
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+                enum: [system, user, assistant, tool]
+              content:
+                oneOf:
+                  - type: string
+                  - type: array
+        stream:
+          type: boolean
+          default: false
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+        max_tokens:
+          type: integer
+          minimum: 1
+        stop:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        tools:
+          type: array
+          items:
+            type: object
+
+    OpenAIChatCompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          default: chat.completion
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              message:
+                type: object
+                properties:
+                  role:
+                    type: string
+                  content:
+                    type: string
+              finish_reason:
+                type: string
+        usage:
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+            completion_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+
+    AnthropicMessagesRequest:
+      type: object
+      required:
+        - model
+        - messages
+        - max_tokens
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+                enum: [user, assistant]
+              content:
+                oneOf:
+                  - type: string
+                  - type: array
+        max_tokens:
+          type: integer
+        system:
+          type: string
+        stream:
+          type: boolean
+          default: false
+        temperature:
+          type: number
+        tools:
+          type: array
+
+    AnthropicMessagesResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          default: message
+        role:
+          type: string
+          default: assistant
+        content:
+          type: array
+          items:
+            type: object
+        model:
+          type: string
+        stop_reason:
+          type: string
+        usage:
+          type: object
+          properties:
+            input_tokens:
+              type: integer
+            output_tokens:
+              type: integer
+
+    CountTokensRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+        messages:
+          type: array
+        system:
+          type: string
+
+    CountTokensResponse:
+      type: object
+      properties:
+        input_tokens:
+          type: integer
+
+    ModelsListResponse:
+      type: object
+      properties:
+        object:
+          type: string
+          default: list
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              object:
+                type: string
+                default: model
+              created:
+                type: integer
+              owned_by:
+                type: string
+
+    ModelNotAllowedError:
+      type: object
+      properties:
+        error:
+          type: string
+          default: model_not_allowed
+        model:
+          type: string
+        allowed_models:
+          type: array
+          items:
+            type: string
+        message:
+          type: string
+
+    # Admin Schemas
+    OrganizationCreateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        aws_accounts:
+          type: array
+          items:
+            type: string
+        role_mappings:
+          type: object
+        settings:
+          type: object
+
+    OrganizationUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        aws_accounts:
+          type: array
+          items:
+            type: string
+        role_mappings:
+          type: object
+        settings:
+          type: object
+
+    OrganizationResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        aws_accounts:
+          type: array
+          items:
+            type: string
+        role_mappings:
+          type: object
+        settings:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+
+    OrganizationListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationResponse'
+        total:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
+        has_more:
+          type: boolean
+
+    DepartmentCreateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        budget_limit:
+          type: number
+
+    TeamCreateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+
+    UserCreateRequest:
+      type: object
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        role:
+          type: string
+
+    AgentCreateRequest:
+      type: object
+      required:
+        - name
+        - org_id
+      properties:
+        name:
+          type: string
+        org_id:
+          type: string
+        department_id:
+          type: string
+        team_id:
+          type: string
+
+    AgentResponse:
+      type: object
+      properties:
+        client_id:
+          type: string
+        name:
+          type: string
+        org_id:
+          type: string
+        department_id:
+          type: string
+        team_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    AgentCredentialsResponse:
+      type: object
+      properties:
+        client_id:
+          type: string
+        client_secret:
+          type: string
+        token_endpoint:
+          type: string
+        scope:
+          type: string
+
+    # Budget Schemas
+    EntityType:
+      type: string
+      enum:
+        - org
+        - department
+        - team
+        - user
+        - service_account
+
+    PeriodType:
+      type: string
+      enum:
+        - daily
+        - weekly
+        - monthly
+
+    EnforcementMode:
+      type: string
+      enum:
+        - soft
+        - hard
+
+    BudgetCreateRequest:
+      type: object
+      required:
+        - entity_type
+        - entity_id
+        - period_type
+        - budget_amount_usd
+      properties:
+        entity_type:
+          $ref: '#/components/schemas/EntityType'
+        entity_id:
+          type: string
+        period_type:
+          $ref: '#/components/schemas/PeriodType'
+        budget_amount_usd:
+          type: number
+          minimum: 0
+        enforcement_mode:
+          $ref: '#/components/schemas/EnforcementMode'
+          default: hard
+
+    BudgetUpdateRequest:
+      type: object
+      properties:
+        budget_amount_usd:
+          type: number
+          minimum: 0
+        enforcement_mode:
+          $ref: '#/components/schemas/EnforcementMode'
+
+    BudgetResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        entity_type:
+          $ref: '#/components/schemas/EntityType'
+        entity_id:
+          type: string
+        period_type:
+          $ref: '#/components/schemas/PeriodType'
+        budget_amount_usd:
+          type: number
+        enforcement_mode:
+          $ref: '#/components/schemas/EnforcementMode'
+        org_id:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+
+    CostCalculationRequest:
+      type: object
+      required:
+        - model_name
+        - tokens_in
+        - tokens_out
+      properties:
+        model_name:
+          type: string
+        tokens_in:
+          type: integer
+          minimum: 0
+        tokens_out:
+          type: integer
+          minimum: 0
+
+    CostRecordRequest:
+      type: object
+      required:
+        - entity_type
+        - entity_id
+        - model_name
+        - tokens_in
+        - tokens_out
+      properties:
+        entity_type:
+          $ref: '#/components/schemas/EntityType'
+        entity_id:
+          type: string
+        model_name:
+          type: string
+        tokens_in:
+          type: integer
+        tokens_out:
+          type: integer
+        request_cost_usd:
+          type: number
+
+    # Rate Limit Schemas
+    RateLimitConfigRequest:
+      type: object
+      properties:
+        rpm:
+          type: integer
+          minimum: 1
+          description: Requests per minute
+        tpm:
+          type: integer
+          minimum: 1
+          description: Tokens per minute
+        concurrent_requests:
+          type: integer
+          minimum: 1
+          description: Maximum concurrent requests
+        burst_size:
+          type: integer
+          minimum: 1
+          description: Token bucket burst size
+
+    # Error Response
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          type: object

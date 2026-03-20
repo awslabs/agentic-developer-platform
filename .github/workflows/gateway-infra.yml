@@ -1,0 +1,54 @@
+name: Gateway Infra
+
+on:
+  push:
+    paths:
+      - 'modules/gateway/infra/**'
+    branches:
+      - main
+  pull_request:
+    paths:
+      - 'modules/gateway/infra/**'
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  TF_VAR_environment: dev
+
+jobs:
+  terraform:
+    name: Terraform ${{ github.event_name == 'pull_request' && 'Plan' || 'Apply' }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'pull_request' && 'development' || 'production' }}
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.5.0"
+
+      - name: Terraform Init
+        working-directory: modules/gateway/infra
+        run: terraform init -backend-config="../../../environments/dev/modules/gateway-backend.tfvars"
+
+      - name: Terraform Plan
+        working-directory: modules/gateway/infra
+        run: terraform plan -var-file="../../../environments/dev/modules/gateway.tfvars" -out=tfplan
+
+      - name: Terraform Apply
+        if: github.event_name != 'pull_request'
+        working-directory: modules/gateway/infra
+        run: terraform apply tfplan

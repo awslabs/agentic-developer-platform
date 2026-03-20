@@ -1,0 +1,103 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bedrockgateway-config
+  namespace: bedrockgw
+  labels:
+    app.kubernetes.io/name: bedrockgateway
+    app.kubernetes.io/part-of: bedrock-gateway
+data:
+  # =============================================================================
+  # ConfigMap Template for Bedrock Gateway
+  # =============================================================================
+  # This ConfigMap uses placeholder tokens (__PLACEHOLDER__) that are replaced
+  # at deploy time by the backend-deploy workflow using sed.
+  #
+  # All environment variables use the BG_ prefix to match the Pydantic settings
+  # model in src/shared/config.py (model_config = {"env_prefix": "BG_"})
+  # =============================================================================
+
+  # AWS Configuration
+  BG_AWS_REGION: "__AWS_REGION__"
+
+  # Environment (dev, test, prod)
+  BG_ENVIRONMENT: "__ENVIRONMENT__"
+
+  # RDS Database Configuration - IAM authentication (passwordless)
+  BG_RDS_IAM_AUTH: "true"
+  BG_RDS_HOST: "__DB_HOST__"
+  BG_RDS_PORT: "5432"
+  BG_RDS_USERNAME: "__DB_USER__"
+  BG_RDS_DBNAME: "__DB_NAME__"
+
+  # Fallback DATABASE_URL (used when RDS_IAM_AUTH is false, e.g., local dev)
+  BG_DATABASE_URL: "postgresql+asyncpg://__DB_USER__@__DB_HOST__:5432/__DB_NAME__"
+
+  # Redis / ElastiCache Configuration
+  BG_REDIS_URL: "rediss://__REDIS_HOST__:__REDIS_PORT__/0"
+
+  # Cognito OAuth Configuration
+  BG_COGNITO_USER_POOL_ID: "__COGNITO_USER_POOL_ID__"
+  BG_COGNITO_CLIENT_ID: "__COGNITO_CLIENT_ID__"
+  BG_COGNITO_DOMAIN: "__COGNITO_DOMAIN__"
+
+  # CORS allowed origins - CloudFront frontend URL and localhost for development
+  CORS_ALLOWED_ORIGINS: "__CORS_ALLOWED_ORIGINS__"
+
+  # Issue #133: SECURITY FIX - BG_TOKEN_SECRET_KEY REMOVED from ConfigMap
+  # =============================================================================
+  # The legacy token secret key is now stored in AWS Secrets Manager for security.
+  # DO NOT add BG_TOKEN_SECRET_KEY to ConfigMap - it must be mounted from a
+  # Kubernetes Secret that's populated from Secrets Manager.
+  #
+  # The deployment workflow should:
+  # 1. Generate or retrieve the secret from AWS Secrets Manager
+  # 2. Create a Kubernetes Secret from it (see k8s/deployment.yaml)
+  # 3. Reference via secretKeyRef in the deployment env section
+  #
+  # For production, use External Secrets Operator or similar to sync from
+  # AWS Secrets Manager to Kubernetes Secrets automatically.
+  # =============================================================================
+
+  # Logging Configuration
+  BG_LOG_LEVEL: "INFO"
+
+  # =============================================================================
+  # Chat Logging Configuration (Issue #143)
+  # =============================================================================
+  # Async chat logging captures full conversation logs (prompts + responses)
+  # with sensitive data scrubbing and stores them in S3.
+  #
+  # Scrub levels:
+  # - off: No scrubbing (debugging only, not for production)
+  # - basic: Headers + regex patterns (fast, no AWS API calls)
+  # - standard: Headers + regex + Amazon Comprehend PII detection (recommended)
+  # =============================================================================
+  BG_CHAT_LOGGING_ENABLED: "__CHAT_LOGGING_ENABLED__"
+  BG_CHAT_LOGGING_BUCKET: "__CHAT_LOGGING_BUCKET__"
+  BG_CHAT_LOGGING_SCRUB_LEVEL: "__CHAT_LOGGING_SCRUB_LEVEL__"
+  BG_CHAT_LOGGING_EXCLUDE_MODELS: ""
+
+  # =============================================================================
+  # API Gateway Authentication Headers (Issue #241)
+  # =============================================================================
+  # When requests come through API Gateway with the Lambda authorizer, the
+  # authorizer validates the request and passes identity headers to the backend:
+  # - X-Auth-Source: jwt | iam
+  # - X-Agent-Id, X-Agent-OrgId, X-Agent-TeamId, etc.
+  #
+  # Set to "true" to trust these headers from API Gateway.
+  # CloudFront requests continue to use JWT validation directly.
+  # =============================================================================
+  BG_TRUST_APIGW_HEADERS: "__TRUST_APIGW_HEADERS__"
+
+  # =============================================================================
+  # Agent Registry DynamoDB Table (Issue #260)
+  # =============================================================================
+  # When requests come through API Gateway /agent/* path with AWS_IAM auth,
+  # FastAPI extracts the IAM identity and looks up the agent in DynamoDB.
+  # This table stores the agent registry with the by-role-arn GSI.
+  # Note: BG_ prefix required to match Pydantic settings env_prefix="BG_"
+  # =============================================================================
+  BG_AGENT_REGISTRY_TABLE: "__AGENT_REGISTRY_TABLE__"
+  AGENT_REGISTRY_TABLE: "__AGENT_REGISTRY_TABLE__"

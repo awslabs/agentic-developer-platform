@@ -1,0 +1,271 @@
+# k8s-agent.yaml - Example Kubernetes manifest for Claude Code agent deployment
+#
+# This manifest demonstrates how to deploy a Claude Code agent container in EKS
+# with M2M (machine-to-machine) authentication using IRSA (IAM Roles for Service Accounts).
+#
+# Prerequisites:
+#   1. EKS cluster with OIDC provider configured
+#   2. IAM role with trust policy for the service account
+#   3. Service account registered in BedrockGateway admin
+#   4. Container image built from Dockerfile.agent
+#
+# Usage:
+#   1. Update the namespace, service account, and image references
+#   2. Set the IAM role ARN annotation
+#   3. Configure the gateway URL in the ConfigMap
+#   4. Apply: kubectl apply -f k8s-agent.yaml
+#
+---
+# Namespace for the agent deployment
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: claude-agents
+  labels:
+    app.kubernetes.io/name: claude-agents
+    app.kubernetes.io/component: ai-agents
+---
+# ConfigMap for agent configuration
+# Contains non-sensitive configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: claude-agent-config
+  namespace: claude-agents
+  labels:
+    app.kubernetes.io/name: claude-agent
+data:
+  # BedrockGateway URL - UPDATE THIS
+  BG_GATEWAY_URL: "https://gateway.example.com"
+
+  # AWS Region for Bedrock
+  AWS_REGION: "us-east-1"
+
+  # Enable debug logging (set to "true" for troubleshooting)
+  BG_DEBUG: "false"
+
+  # Claude Code settings
+  CLAUDE_CODE_USE_BEDROCK: "1"
+  CLAUDE_CODE_SKIP_BEDROCK_AUTH: "1"
+---
+# ServiceAccount with IRSA annotation
+# This provides AWS credentials to the pod via EKS Pod Identity webhook
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: claude-agent-sa
+  namespace: claude-agents
+  labels:
+    app.kubernetes.io/name: claude-agent
+  annotations:
+    # UPDATE THIS: Set your IAM role ARN
+    # The role must:
+    #   1. Have a trust policy allowing this service account to assume it
+    #   2. Be registered as a service account in BedrockGateway
+    #
+    # Example trust policy:
+    # {
+    #   "Version": "2012-10-17",
+    #   "Statement": [{
+    #     "Effect": "Allow",
+    #     "Principal": {
+    #       "Federated": "arn:aws:iam::ACCOUNT_ID:oidc-provider/oidc.eks.REGION.amazonaws.com/id/OIDC_ID"
+    #     },
+    #     "Action": "sts:AssumeRoleWithWebIdentity",
+    #     "Condition": {
+    #       "StringEquals": {
+    #         "oidc.eks.REGION.amazonaws.com/id/OIDC_ID:sub": "system:serviceaccount:claude-agents:claude-agent-sa",
+    #         "oidc.eks.REGION.amazonaws.com/id/OIDC_ID:aud": "sts.amazonaws.com"
+    #       }
+    #     }
+    #   }]
+    # }
+    eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/claude-agent-role"
+---
+# Deployment for the Claude Code agent
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claude-agent
+  namespace: claude-agents
+  labels:
+    app.kubernetes.io/name: claude-agent
+    app.kubernetes.io/component: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: claude-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: claude-agent
+        app.kubernetes.io/component: agent
+      annotations:
+        # Force pod restart when config changes
+        checksum/config: "UPDATE_ON_CONFIG_CHANGE"
+    spec:
+      serviceAccountName: claude-agent-sa
+
+      # Security context for the pod
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      containers:
+        - name: claude-agent
+          # UPDATE THIS: Your container image
+          image: your-registry/claude-agent:latest
+          imagePullPolicy: Always
+
+          # Environment from ConfigMap
+          envFrom:
+            - configMapRef:
+                name: claude-agent-config
+
+          # Additional environment variables
+          env:
+            # IRSA injects these automatically via the webhook:
+            # - AWS_ROLE_ARN
+            # - AWS_WEB_IDENTITY_TOKEN_FILE
+            # The AWS SDK automatically uses web identity credentials
+
+            # Set ANTHROPIC_BEDROCK_BASE_URL from gateway URL
+            - name: ANTHROPIC_BEDROCK_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: claude-agent-config
+                  key: BG_GATEWAY_URL
+
+          # Resource limits
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+
+          # Security context for the container
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+
+          # Health checks
+          livenessProbe:
+            exec:
+              command:
+                - /home/agent/bin/healthcheck.sh
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          readinessProbe:
+            exec:
+              command:
+                - /home/agent/bin/healthcheck.sh
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          # Volume mounts
+          volumeMounts:
+            # Workspace for agent files
+            - name: workspace
+              mountPath: /home/agent/workspace
+            # Temp directory
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: workspace
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+
+      # Node selection (optional)
+      # nodeSelector:
+      #   node-type: agent
+
+      # Tolerations (optional)
+      # tolerations:
+      #   - key: "dedicated"
+      #     operator: "Equal"
+      #     value: "agents"
+      #     effect: "NoSchedule"
+
+      # Restart policy
+      restartPolicy: Always
+
+      # Termination grace period
+      terminationGracePeriodSeconds: 30
+---
+# Optional: HorizontalPodAutoscaler for scaling agents
+# apiVersion: autoscaling/v2
+# kind: HorizontalPodAutoscaler
+# metadata:
+#   name: claude-agent-hpa
+#   namespace: claude-agents
+# spec:
+#   scaleTargetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: claude-agent
+#   minReplicas: 1
+#   maxReplicas: 10
+#   metrics:
+#     - type: Resource
+#       resource:
+#         name: cpu
+#         target:
+#           type: Utilization
+#           averageUtilization: 70
+---
+# Optional: PodDisruptionBudget for high availability
+# apiVersion: policy/v1
+# kind: PodDisruptionBudget
+# metadata:
+#   name: claude-agent-pdb
+#   namespace: claude-agents
+# spec:
+#   minAvailable: 1
+#   selector:
+#     matchLabels:
+#       app.kubernetes.io/name: claude-agent
+---
+# Optional: NetworkPolicy to restrict egress
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: claude-agent-netpol
+#   namespace: claude-agents
+# spec:
+#   podSelector:
+#     matchLabels:
+#       app.kubernetes.io/name: claude-agent
+#   policyTypes:
+#     - Egress
+#   egress:
+#     # Allow DNS
+#     - to:
+#         - namespaceSelector: {}
+#           podSelector:
+#             matchLabels:
+#               k8s-app: kube-dns
+#       ports:
+#         - protocol: UDP
+#           port: 53
+#     # Allow HTTPS to gateway and AWS services
+#     - to:
+#         - ipBlock:
+#             cidr: 0.0.0.0/0
+#       ports:
+#         - protocol: TCP
+#           port: 443

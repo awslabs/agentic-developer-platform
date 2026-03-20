@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bedrockgateway
+  namespace: bedrockgw
+  labels:
+    app.kubernetes.io/name: bedrockgateway
+    app.kubernetes.io/part-of: bedrock-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bedrockgateway
+  template:
+    metadata:
+      labels:
+        app: bedrockgateway
+        app.kubernetes.io/name: bedrockgateway
+        app.kubernetes.io/part-of: bedrock-gateway
+    spec:
+      serviceAccountName: gateway-service
+      containers:
+        - name: bedrockgateway
+          image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/bedrockgw-dev-backend:IMAGE_TAG
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          envFrom:
+            - configMapRef:
+                name: bedrockgateway-config
+          env:
+            - name: BG_LOG_FORMAT
+              value: "json"
+            - name: BG_LOG_LEVEL
+              value: "INFO"
+            # Issue #133: SECURITY FIX - Token secret now from Secrets Manager
+            # The BG_TOKEN_SECRET_KEY is stored in AWS Secrets Manager and synced
+            # to a Kubernetes Secret. The deploy workflow must create this secret:
+            #   kubectl create secret generic bedrockgateway-secrets \
+            #     --from-literal=token-secret-key=$(aws secretsmanager get-secret-value ...)
+            - name: BG_TOKEN_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bedrockgateway-secrets
+                  key: token-secret-key
+                  optional: true  # Optional for local dev; required in production
+            # Issue #144: Tracing configuration
+            # X-Ray tracing via CloudWatch Observability addon's OTLP receiver
+            - name: BG_OTEL_ENABLED
+              value: "true"
+            - name: BG_OTEL_SERVICE_NAME
+              value: "bedrock-gateway"
+            - name: BG_OTEL_EXPORTER_ENDPOINT
+              value: "http://cloudwatch-agent.amazon-cloudwatch.svc.cluster.local:4315"
+            - name: OTEL_ENABLED
+              value: "true"
+            - name: OTEL_SERVICE_NAME
+              value: "bedrock-gateway"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://cloudwatch-agent.amazon-cloudwatch.svc.cluster.local:4315"
+      # Pod topology spread constraints for HA across availability zones
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: bedrockgateway
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: bedrockgateway

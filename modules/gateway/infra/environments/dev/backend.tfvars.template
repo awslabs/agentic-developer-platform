@@ -1,0 +1,8 @@
+# Terraform S3 Backend Configuration for Dev Environment
+# This is a template file - ACCOUNT_ID will be substituted at runtime
+
+bucket         = "bedrockgw-terraform-state-${ACCOUNT_ID}"
+key            = "dev/terraform.tfstate"
+region         = "us-east-1"
+use_lockfile   = true
+encrypt        = true

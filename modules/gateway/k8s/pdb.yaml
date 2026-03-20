@@ -1,0 +1,13 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: bedrockgateway-pdb
+  namespace: bedrockgw
+  labels:
+    app.kubernetes.io/name: bedrockgateway
+    app.kubernetes.io/part-of: bedrock-gateway
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: bedrockgateway

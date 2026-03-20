@@ -1,0 +1,34 @@
+# ADP Module Namespaces
+# Each module runs in its own namespace for isolation
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: adp-gateway
+  labels:
+    app.kubernetes.io/part-of: adp
+    app.kubernetes.io/component: gateway
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: adp-agent-runtime
+  labels:
+    app.kubernetes.io/part-of: adp
+    app.kubernetes.io/component: agent-runtime
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: adp-skill-registry
+  labels:
+    app.kubernetes.io/part-of: adp
+    app.kubernetes.io/component: skill-registry
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: adp-observability
+  labels:
+    app.kubernetes.io/part-of: adp
+    app.kubernetes.io/component: observability

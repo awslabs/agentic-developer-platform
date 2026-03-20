@@ -1,0 +1,105 @@
+name: Gateway Deploy
+
+on:
+  push:
+    paths:
+      - 'modules/gateway/src/**'
+      - 'modules/gateway/Dockerfile'
+      - 'modules/gateway/k8s/**'
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  MODULE: gateway
+  NAMESPACE: adp-gateway
+
+jobs:
+  deploy-backend:
+    name: Deploy Backend
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        working-directory: modules/gateway
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE: adp-gateway
+        run: |
+          docker build -t $REGISTRY/$IMAGE:${{ github.sha }} -t $REGISTRY/$IMAGE:latest .
+          docker push $REGISTRY/$IMAGE:${{ github.sha }}
+          docker push $REGISTRY/$IMAGE:latest
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name adp-dev-eks --region ${{ env.AWS_REGION }}
+
+      - name: Deploy to EKS
+        working-directory: modules/gateway/k8s
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Update image tag in deployment
+          sed -i "s|image:.*|image: ${{ steps.ecr.outputs.registry }}/adp-gateway:${IMAGE_TAG}|" deployment.yaml
+          kubectl apply -f . -n ${{ env.NAMESPACE }}
+          kubectl rollout status deployment/gateway -n ${{ env.NAMESPACE }} --timeout=300s
+
+  deploy-frontend:
+    name: Deploy Frontend
+    runs-on: ubuntu-latest
+    environment: production
+    needs: deploy-backend
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: modules/gateway/frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: modules/gateway/frontend
+        env:
+          VITE_API_URL: "/api/gateway"
+        run: |
+          npm ci
+          npm run build
+
+      - name: Deploy to S3
+        run: |
+          BUCKET=$(aws ssm get-parameter --name "/adp/dev/gateway/frontend-bucket" --query "Parameter.Value" --output text)
+          aws s3 sync modules/gateway/frontend/dist/ "s3://${BUCKET}/" --delete
+
+      - name: Invalidate CloudFront
+        run: |
+          DIST_ID=$(aws ssm get-parameter --name "/adp/dev/gateway/cloudfront-id" --query "Parameter.Value" --output text)
+          aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"

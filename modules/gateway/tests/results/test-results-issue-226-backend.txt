@@ -1,0 +1,154 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.4, pluggy-1.6.0 -- /home/runner/_work/bedrock-gateway/bedrock-gateway/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/runner/_work/bedrock-gateway/bedrock-gateway
+configfile: pyproject.toml
+plugins: anyio-4.12.1, asyncio-0.25.0, timeout-2.3.1, cov-6.0.0
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=function
+collecting ... collected 77 items
+
+tests/admin/test_cognito_service.py::TestCreateUser::test_create_user_success PASSED [  1%]
+tests/admin/test_cognito_service.py::TestCreateUser::test_create_user_already_exists PASSED [  2%]
+tests/admin/test_cognito_service.py::TestCreateUser::test_create_user_suppressed_invitation PASSED [  3%]
+tests/admin/test_cognito_service.py::TestDeleteUser::test_delete_user_success PASSED [  5%]
+tests/admin/test_cognito_service.py::TestDeleteUser::test_delete_user_not_found PASSED [  6%]
+tests/admin/test_cognito_service.py::TestDeleteUser::test_delete_user_by_sub PASSED [  7%]
+tests/admin/test_cognito_service.py::TestAddUserToGroup::test_add_user_to_group_success PASSED [  9%]
+tests/admin/test_cognito_service.py::TestAddUserToGroup::test_add_user_to_group_user_not_found PASSED [ 10%]
+tests/admin/test_cognito_service.py::TestAddUserToGroup::test_add_user_to_group_group_not_found PASSED [ 11%]
+tests/admin/test_cognito_service.py::TestCreateOrgGroup::test_create_org_group_success PASSED [ 12%]
+tests/admin/test_cognito_service.py::TestCreateOrgGroup::test_create_org_group_already_exists PASSED [ 14%]
+tests/admin/test_cognito_service.py::TestDeleteOrgGroup::test_delete_org_group_success PASSED [ 15%]
+tests/admin/test_cognito_service.py::TestDeleteOrgGroup::test_delete_org_group_not_found PASSED [ 16%]
+tests/admin/test_cognito_service.py::TestGetUser::test_get_user_success PASSED [ 18%]
+tests/admin/test_cognito_service.py::TestGetUser::test_get_user_not_found PASSED [ 19%]
+tests/admin/test_cognito_service.py::TestListUsersInGroup::test_list_users_in_group_success PASSED [ 20%]
+tests/admin/test_cognito_service.py::TestListUsersInGroup::test_list_users_in_group_not_found PASSED [ 22%]
+tests/admin/test_cognito_service.py::TestUpdateUserAttributes::test_update_user_attributes_success PASSED [ 23%]
+tests/admin/test_cognito_service.py::TestUpdateUserAttributes::test_update_user_attributes_user_not_found PASSED [ 24%]
+tests/admin/test_cognito_service.py::TestServiceInitialization::test_init_with_env_vars PASSED [ 25%]
+tests/admin/test_cognito_service.py::TestServiceInitialization::test_init_with_explicit_values PASSED [ 27%]
+tests/admin/test_cognito_service.py::TestServiceInitialization::test_lazy_client_initialization PASSED [ 28%]
+tests/admin/test_cognito_service.py::TestListUsersByOrg::test_list_users_by_org_success PASSED [ 29%]
+tests/admin/test_cognito_service.py::TestListUsersByOrg::test_list_users_by_org_with_pagination PASSED [ 31%]
+tests/admin/test_cognito_service.py::TestListUsersByOrg::test_list_users_by_org_empty PASSED [ 32%]
+tests/admin/test_cognito_service.py::TestListUsersByOrg::test_list_users_by_org_with_cognito_pagination PASSED [ 33%]
+tests/admin/test_cognito_service.py::TestListGroups::test_list_groups_success PASSED [ 35%]
+tests/admin/test_cognito_service.py::TestListGroups::test_list_groups_with_prefix PASSED [ 36%]
+tests/admin/test_cognito_service.py::TestListGroups::test_list_groups_with_pagination PASSED [ 37%]
+tests/admin/test_cognito_service.py::TestListGroups::test_list_groups_empty PASSED [ 38%]
+tests/admin/test_cognito_service.py::TestGetUniqueDepartments::test_get_unique_departments_success PASSED [ 40%]
+tests/admin/test_cognito_service.py::TestGetUniqueDepartments::test_get_unique_departments_empty PASSED [ 41%]
+tests/admin/test_cognito_service.py::TestGetUniqueDepartments::test_get_unique_departments_sorted PASSED [ 42%]
+tests/admin/test_cognito_service.py::TestGetUserAttribute::test_get_user_attribute_found PASSED [ 44%]
+tests/admin/test_cognito_service.py::TestGetUserAttribute::test_get_user_attribute_not_found PASSED [ 45%]
+tests/admin/test_cognito_service.py::TestGetUserAttribute::test_get_user_attribute_empty_attributes PASSED [ 46%]
+tests/admin/test_routes.py::TestOrganizationEndpoints::test_create_organization PASSED [ 48%]
+tests/admin/test_routes.py::TestOrganizationEndpoints::test_list_organizations PASSED [ 49%]
+tests/admin/test_routes.py::TestOrganizationEndpoints::test_get_organization PASSED [ 50%]
+tests/admin/test_routes.py::TestOrganizationEndpoints::test_update_organization PASSED [ 51%]
+tests/admin/test_routes.py::TestOrganizationEndpoints::test_delete_organization PASSED [ 53%]
+tests/admin/test_routes.py::TestPoolEndpoints::test_get_pool_status PASSED [ 54%]
+tests/admin/test_routes.py::TestPoolEndpoints::test_add_pool_account PASSED [ 55%]
+tests/admin/test_routes.py::TestPoolEndpoints::test_delete_pool_account PASSED [ 57%]
+tests/admin/test_routes.py::TestBudgetConfigEndpoints::test_get_budget_config PASSED [ 58%]
+tests/admin/test_routes.py::TestBudgetConfigEndpoints::test_update_budget_config PASSED [ 59%]
+tests/admin/test_routes.py::TestRateLimitConfigEndpoints::test_get_ratelimit_config PASSED [ 61%]
+tests/admin/test_routes.py::TestRateLimitConfigEndpoints::test_update_ratelimit_config PASSED [ 62%]
+tests/admin/test_routes.py::TestDashboardEndpoints::test_get_platform_dashboard PASSED [ 63%]
+tests/admin/test_routes.py::TestDashboardEndpoints::test_get_org_dashboard PASSED [ 64%]
+tests/admin/test_routes.py::TestBudgetListCreateDeleteEndpoints::test_list_budgets PASSED [ 66%]
+tests/admin/test_routes.py::TestBudgetListCreateDeleteEndpoints::test_create_budget PASSED [ 67%]
+tests/admin/test_routes.py::TestBudgetListCreateDeleteEndpoints::test_delete_budget PASSED [ 68%]
+tests/admin/test_routes.py::TestRateLimitListCreateDeleteEndpoints::test_list_ratelimits PASSED [ 70%]
+tests/admin/test_routes.py::TestRateLimitListCreateDeleteEndpoints::test_create_ratelimit PASSED [ 71%]
+tests/admin/test_routes.py::TestRateLimitListCreateDeleteEndpoints::test_delete_ratelimit PASSED [ 72%]
+tests/admin/test_routes.py::TestValidation::test_create_organization_invalid_name PASSED [ 74%]
+tests/admin/test_routes.py::TestValidation::test_add_pool_account_invalid_account_id PASSED [ 75%]
+tests/admin/test_routes.py::TestValidation::test_add_pool_account_invalid_role_arn PASSED [ 76%]
+tests/admin/test_routes.py::TestValidation::test_pagination_invalid_page PASSED [ 77%]
+tests/admin/test_routes.py::TestValidation::test_pagination_invalid_page_size PASSED [ 79%]
+tests/admin/test_routes.py::TestUserRolesEndpoint::test_get_available_roles PASSED [ 80%]
+tests/admin/test_routes.py::TestUsageTimeseriesEndpoint::test_get_usage_timeseries PASSED [ 81%]
+tests/admin/test_routes.py::TestUsageTimeseriesEndpoint::test_get_usage_timeseries_default_params PASSED [ 83%]
+tests/admin/test_routes.py::TestMyChatsEndpoints::test_get_my_chats PASSED [ 84%]
+tests/admin/test_routes.py::TestMyChatsEndpoints::test_get_my_chats_with_filters PASSED [ 85%]
+tests/admin/test_routes.py::TestMyChatsEndpoints::test_get_my_chats_pagination PASSED [ 87%]
+tests/admin/test_routes.py::TestMyChatsEndpoints::test_get_chat_detail PASSED [ 88%]
+tests/admin/test_routes.py::TestMyChatsEndpoints::test_get_chat_detail_not_found PASSED [ 89%]
+tests/admin/test_routes.py::TestMyChatsEndpoints::test_get_chat_detail_with_chat_logging PASSED [ 90%]
+tests/admin/test_routes.py::TestCognitoUserListEndpoint::test_list_cognito_users PASSED [ 92%]
+tests/admin/test_routes.py::TestCognitoUserListEndpoint::test_list_cognito_users_pagination PASSED [ 93%]
+tests/admin/test_routes.py::TestCognitoUserListEndpoint::test_list_cognito_users_not_configured PASSED [ 94%]
+tests/admin/test_routes.py::TestCognitoTeamListEndpoint::test_list_cognito_teams PASSED [ 96%]
+tests/admin/test_routes.py::TestCognitoTeamListEndpoint::test_list_cognito_teams_with_prefix PASSED [ 97%]
+tests/admin/test_routes.py::TestCognitoDepartmentListEndpoint::test_list_cognito_departments PASSED [ 98%]
+tests/admin/test_routes.py::TestCognitoDepartmentListEndpoint::test_list_cognito_departments_empty PASSED [100%]
+
+=============================== warnings summary ===============================
+src/admin/schemas.py:32
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/admin/schemas.py:32: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class OrganizationResponse(BaseModel):
+
+src/admin/schemas.py:65
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/admin/schemas.py:65: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class PoolAccountResponse(BaseModel):
+
+src/shared/schemas/budget.py:40
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/budget.py:40: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BudgetResponse(BaseModel):
+
+src/shared/schemas/budget.py:63
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/budget.py:63: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BudgetUsageResponse(BaseModel):
+
+src/shared/schemas/admin.py:26
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/admin.py:26: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class DepartmentResponse(BaseModel):
+
+src/shared/schemas/admin.py:67
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/admin.py:67: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class TeamResponse(BaseModel):
+
+src/shared/schemas/admin.py:108
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/admin.py:108: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class UserResponse(BaseModel):
+
+src/shared/schemas/admin.py:145
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/shared/schemas/admin.py:145: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountResponse(BaseModel):
+
+src/auth/schemas.py:13
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:13: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountCreate(BaseModel):
+
+src/auth/schemas.py:32
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:32: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountUpdate(BaseModel):
+
+src/auth/schemas.py:44
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:44: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountResponse(BaseModel):
+
+src/auth/schemas.py:69
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:69: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class TenantInfo(BaseModel):
+
+src/auth/schemas.py:94
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:94: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class TokenClaims(BaseModel):
+
+src/auth/schemas.py:123
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:123: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class AWSCallerIdentity(BaseModel):
+
+src/auth/schemas.py:136
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/src/auth/schemas.py:136: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountListResponse(BaseModel):
+
+.venv/lib/python3.12/site-packages/passlib/utils/__init__.py:854
+  /home/runner/_work/bedrock-gateway/bedrock-gateway/.venv/lib/python3.12/site-packages/passlib/utils/__init__.py:854: DeprecationWarning: 'crypt' is deprecated and slated for removal in Python 3.13
+    from crypt import crypt as _crypt
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 77 passed, 16 warnings in 2.24s ========================
