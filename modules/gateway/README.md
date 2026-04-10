@@ -45,59 +45,225 @@ Bedrock Gateway enables organizations to provide secure, controlled access to Am
 - **Admin Dashboard**: React UI for onboarding, configuration, and usage monitoring
 - **Cross-Account Pool**: Round-robin Bedrock calls across multiple AWS accounts
 
-## Quick Start
+## Prerequisites
 
-### Prerequisites
+- AWS CLI v2 configured with admin access
+- Terraform >= 1.14
+- Docker
+- kubectl
+- Node.js >= 22 (frontend)
+- Python >= 3.12 (backend)
+- GitHub CLI (`gh`) — for CI/CD workflow management
 
-- AWS CLI configured with admin access
-- Terraform >= 1.5
-- kubectl configured for your cluster
-- Node.js >= 18 (for frontend development)
-- Python >= 3.11 (for backend development)
+## Setup Guide — From Scratch to Production
 
-### 1. Deploy Infrastructure
+This guide walks through the complete setup: bootstrapping the Terraform state backend, provisioning infrastructure, deploying the application, and configuring CI/CD.
+
+### Step 0: Clone the Repository
 
 ```bash
-cd infra
-
-# Initialize and apply Terraform
-terraform init
-terraform apply -var="environment=dev"
-
-# Note the outputs:
-# - cloudfront_domain_name
-# - cognito_user_pool_id
-# - cognito_client_id
+git clone https://github.com/aws-e/adp.git
+cd adp/modules/gateway
 ```
 
-### 2. Deploy Backend
+### Step 1: Bootstrap Terraform State Backend
+
+Before any Terraform commands can run, you need an S3 bucket for state storage and a DynamoDB table for state locking. The repo includes a bootstrap script that creates these.
 
 ```bash
-# Build and push container
-docker build -t bedrockgw-backend .
-aws ecr get-login-password | docker login --username AWS --password-stdin <account>.dkr.ecr.us-east-1.amazonaws.com
-docker tag bedrockgw-backend:latest <account>.dkr.ecr.us-east-1.amazonaws.com/bedrockgw-dev-backend:latest
-docker push <account>.dkr.ecr.us-east-1.amazonaws.com/bedrockgw-dev-backend:latest
+# From the repo root
+cd platform/scripts
 
-# Deploy to EKS
-kubectl apply -f k8s/
+# Set your target region and environment
+export AWS_REGION=us-east-1
+export ENVIRONMENT=dev
+
+# Run the bootstrap script (requires AWS CLI with admin access)
+./bootstrap.sh
 ```
 
-### 3. Deploy Frontend
+This script will:
+1. Detect your AWS account ID via `aws sts get-caller-identity`
+2. Create S3 bucket `adp-terraform-state-<ACCOUNT_ID>` with versioning, encryption, and public access block
+3. Create DynamoDB table `adp-terraform-locks` (PAY_PER_REQUEST)
+4. Replace `ACCOUNT_ID` placeholders in all `environments/**/*.tfvars` files
+
+After bootstrap, verify:
+```bash
+aws s3 ls | grep adp-terraform-state
+aws dynamodb describe-table --table-name adp-terraform-locks --query 'Table.TableStatus'
+```
+
+### Step 2: Deploy Platform Infrastructure (Optional)
+
+If you don't already have a shared VPC and EKS cluster, deploy the platform-level infrastructure first:
 
 ```bash
-cd frontend
-npm install
-npm run build
+cd platform/infra
 
-# Upload to S3
-aws s3 sync dist/ s3://bedrockgw-dev-frontend/ --delete
+terraform init -backend-config=../../environments/dev/backend.tfvars
+terraform plan -var-file=../../environments/dev/platform.tfvars
+terraform apply -var-file=../../environments/dev/platform.tfvars
+```
+
+This creates the base VPC, EKS cluster, ECR repositories, and IAM roles. Review `environments/dev/platform.tfvars` to customize:
+
+```hcl
+environment = "dev"
+aws_region  = "us-east-1"
+vpc_cidr    = "10.0.0.0/16"
+eks_node_instance_types = ["m5.large", "m5.xlarge"]
+eks_node_desired_size   = 2
+```
+
+### Step 3: Deploy Gateway Infrastructure
+
+The gateway module provisions its own resources (Cognito, RDS, Redis, CloudFront, S3, etc.) on top of the platform.
+
+```bash
+cd modules/gateway/infra
+
+terraform init -backend-config=../../../environments/dev/modules/gateway-backend.tfvars
+terraform plan -var-file=../../../environments/dev/modules/gateway.tfvars
+terraform apply -var-file=../../../environments/dev/modules/gateway.tfvars
+```
+
+Review `environments/dev/modules/gateway.tfvars` to customize:
+
+```hcl
+environment           = "dev"
+aws_region            = "us-east-1"
+rds_instance_class    = "db.t3.medium"
+rds_allocated_storage = 20
+redis_node_type       = "cache.t3.micro"
+cognito_domain_prefix = "adp-gateway-dev"
+```
+
+Note the Terraform outputs — you'll need these for the next steps:
+- `cloudfront_domain_name`
+- `cognito_user_pool_id`
+- `cognito_client_id`
+- `ecr_repository_url`
+
+**Infrastructure modules provisioned:**
+
+| Module | Resources |
+|--------|-----------|
+| `networking` | VPC, subnets, security groups |
+| `eks` | EKS Auto Mode cluster, node groups, IRSA |
+| `rds` | PostgreSQL with IAM auth |
+| `redis` | ElastiCache Redis (optional) |
+| `cognito` | User Pool, Identity Pool, App Clients |
+| `cloudfront` | CDN with VPC Origin to internal ALB |
+| `s3-frontend` | S3 bucket for React SPA |
+| `ecr` | Container registry |
+| `cloudtrail` | Audit logging |
+| `cloudwatch-dashboard` | Latency dashboard |
+| `s3-chat-logs` | Chat log storage (optional) |
+| `budget-lambda` | Usage tracking Lambdas (optional) |
+| `api-gateway` | REST API with 15min timeout (optional) |
+| `lambda-authorizer` | JWT + IAM auth for API Gateway (optional) |
+
+### Step 4: Deploy the Backend
+
+```bash
+cd modules/gateway
+
+# Build the container
+docker build -t adp-gateway .
+
+# Push to ECR
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+REGISTRY="${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
+
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $REGISTRY
+docker tag adp-gateway:latest $REGISTRY/adp-gateway:latest
+docker push $REGISTRY/adp-gateway:latest
+
+# Configure kubectl
+aws eks update-kubeconfig --name adp-dev-eks --region us-east-1
+
+# Create the secrets (token secret from Secrets Manager)
+kubectl create secret generic bedrockgateway-secrets \
+  --from-literal=token-secret-key=$(aws secretsmanager get-secret-value \
+    --secret-id /adp/dev/gateway/token-secret --query SecretString --output text) \
+  -n adp-gateway
+
+# Deploy k8s manifests
+kubectl apply -f k8s/ -n adp-gateway
+
+# Verify rollout
+kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s
+```
+
+### Step 5: Deploy the Frontend
+
+```bash
+cd modules/gateway/frontend
+
+npm ci
+VITE_API_URL="/api/gateway" npm run build
+
+# Upload to S3 (get bucket name from Terraform output or SSM)
+BUCKET=$(aws ssm get-parameter --name "/adp/dev/gateway/frontend-bucket" --query "Parameter.Value" --output text)
+aws s3 sync dist/ "s3://${BUCKET}/" --delete
 
 # Invalidate CloudFront cache
-aws cloudfront create-invalidation --distribution-id <dist-id> --paths "/*"
+DIST_ID=$(aws ssm get-parameter --name "/adp/dev/gateway/cloudfront-id" --query "Parameter.Value" --output text)
+aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
 ```
 
-### 4. Configure Claude Code
+### Step 6: Configure GitHub Actions CI/CD
+
+The repo includes three workflows for automated builds and deployments. To enable them:
+
+1. **Create an IAM OIDC identity provider** for GitHub Actions in your AWS account:
+   ```bash
+   aws iam create-open-id-connect-provider \
+     --url https://token.actions.githubusercontent.com \
+     --client-id-list sts.amazonaws.com \
+     --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
+   ```
+
+2. **Create an IAM role** for GitHub Actions with trust policy for your repo:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Effect": "Allow",
+       "Principal": {
+         "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+       },
+       "Action": "sts:AssumeRoleWithWebIdentity",
+       "Condition": {
+         "StringEquals": {
+           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+         },
+         "StringLike": {
+           "token.actions.githubusercontent.com:sub": "repo:aws-e/adp:*"
+         }
+       }
+     }]
+   }
+   ```
+   Attach policies for ECR, EKS, S3, CloudFront, SSM, and Terraform state access.
+
+3. **Set the GitHub repository secret**:
+   ```bash
+   gh secret set AWS_ROLE_ARN --body "arn:aws:iam::<ACCOUNT_ID>:role/<role-name>" --repo aws-e/adp
+   ```
+
+**Workflow summary:**
+
+| Workflow | File | Trigger | What it does |
+|----------|------|---------|-------------|
+| Gateway CI | `gateway-ci.yml` | PR/push to `src/`, `tests/`, `pyproject.toml` | Lint → Test → Docker build |
+| Gateway Deploy | `gateway-deploy.yml` | Push to main (`src/`, `Dockerfile`, `k8s/`) | ECR push → EKS deploy → S3 sync → CF invalidation |
+| Gateway Infra | `gateway-infra.yml` | Push/PR to `infra/**` | Terraform plan (PR) / apply (merge) |
+| Platform Infra Plan | `platform-infra-plan.yml` | Platform infra changes | Terraform plan |
+| Platform Infra Apply | `platform-infra-apply.yml` | Platform infra changes | Terraform apply |
+
+### Step 7: Configure Claude Code
 
 ```bash
 # Install CLI helper
@@ -109,6 +275,64 @@ bg-cognito-auth.sh login --gateway-url https://<cloudfront-domain>/api
 
 # Use Claude Code
 CLAUDE_CODE_USE_BEDROCK=1 claude
+```
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BEDROCK_BASE_URL": "https://your-gateway.cloudfront.net/api",
+    "CLAUDE_CODE_USE_BEDROCK": "1",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH": "1"
+  },
+  "apiKeyHelper": "~/bin/bg-cognito-auth.sh token",
+  "apiKeyHelperTtlMs": 3300000
+}
+```
+
+## Local Development (Quick Path)
+
+For local development without deploying infrastructure:
+
+```bash
+cd modules/gateway
+
+# Start backend + Postgres + Redis
+docker compose up
+
+# Backend is available at http://localhost:8080
+# Postgres at localhost:5432 (postgres/postgres)
+# Redis at localhost:6379
+```
+
+For backend development without Docker:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Run locally (requires Postgres and Redis running)
+uvicorn src.app:create_app --factory --reload --port 8080
+
+# Run tests
+pytest tests/ -v
+
+# Lint
+ruff check src/ tests/
+ruff format src/ tests/
+```
+
+For frontend development:
+
+```bash
+cd frontend
+npm install
+npm run dev       # Dev server at http://localhost:5173
+npm test          # Run tests
+npm run lint      # Lint
+npm run build     # Production build
 ```
 
 ## Authentication
@@ -172,22 +396,6 @@ bg-cognito-auth.sh token    # Output access token (for apiKeyHelper)
 --region <region>           # AWS region (default: us-east-1)
 ```
 
-### Claude Code Configuration
-
-Add to `~/.claude/settings.json`:
-
-```json
-{
-  "env": {
-    "ANTHROPIC_BEDROCK_BASE_URL": "https://your-gateway.cloudfront.net/api",
-    "CLAUDE_CODE_USE_BEDROCK": "1",
-    "CLAUDE_CODE_SKIP_BEDROCK_AUTH": "1"
-  },
-  "apiKeyHelper": "~/bin/bg-cognito-auth.sh token",
-  "apiKeyHelperTtlMs": 3300000
-}
-```
-
 ## Project Structure
 
 ```
@@ -216,7 +424,9 @@ bedrock-gateway/
 │   ├── deployment.yaml     # Gateway deployment
 │   ├── service.yaml        # ClusterIP service
 │   ├── ingress.yaml        # ALB Ingress (internal)
-│   └── configmap.yaml      # Environment configuration
+│   ├── configmap.yaml      # Environment configuration
+│   ├── pdb.yaml            # Pod disruption budget
+│   └── namespace.yaml      # Namespace definition
 ├── cli/                    # CLI tools
 │   └── bg-cognito-auth.sh  # Cognito authentication CLI
 ├── docs/                   # Documentation
@@ -224,54 +434,14 @@ bedrock-gateway/
 │   ├── database-schema.md  # Database table documentation
 │   ├── sequence-diagrams.md # Mermaid sequence diagrams
 │   └── traceability-matrix.md # Requirements to code mapping
-├── aidlc-docs/             # AI-DLC process documents
-│   └── inception/          # Requirements, user stories, architecture
-├── agent_learning/         # Operational learnings for AI agents
+├── alembic/                # Database migrations
+│   └── versions/           # Migration scripts
+├── docker-compose.yml      # Local development stack
+├── Dockerfile              # Production container build
 └── .github/workflows/      # CI/CD pipelines
-```
-
-## Development
-
-### Backend
-
-```bash
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies
-pip install -e ".[dev]"
-
-# Run locally
-uvicorn src.main:app --reload --port 8080
-
-# Run tests
-pytest tests/ -v
-
-# Lint
-ruff check src/ tests/
-ruff format src/ tests/
-```
-
-### Frontend
-
-```bash
-cd frontend
-
-# Install dependencies
-npm install
-
-# Development server
-npm run dev
-
-# Build for production
-npm run build
-
-# Run tests
-npm test
-
-# Lint
-npm run lint
+    ├── gateway-ci.yml      # Lint, test, build on PR
+    ├── gateway-deploy.yml  # Deploy backend + frontend on merge
+    └── gateway-infra.yml   # Terraform plan/apply
 ```
 
 ## API Endpoints
@@ -321,53 +491,9 @@ npm run lint
 
 See [docs/openapi.yaml](docs/openapi.yaml) for the complete API specification.
 
-## Deployment
+## Distributed Request Tracing
 
-### Infrastructure (Terraform)
-
-```bash
-cd infra
-
-# Plan changes
-terraform plan -var="environment=dev"
-
-# Apply changes
-terraform apply -var="environment=dev"
-
-# Destroy (caution!)
-terraform destroy -var="environment=dev"
-```
-
-### Backend (GitHub Actions)
-
-The `backend-deploy.yml` workflow:
-1. Runs on push to `main` when `src/` changes
-2. Builds Docker image
-3. Pushes to ECR
-4. Updates EKS deployment
-5. Creates/updates CloudFront VPC Origin
-
-### Frontend (GitHub Actions)
-
-The `frontend-deploy.yml` workflow:
-1. Runs on push to `main` when `frontend/` changes
-2. Builds React app
-3. Uploads to S3
-4. Invalidates CloudFront cache
-
-## Detailed Documentation
-
-- [AWS Architecture](aidlc-docs/inception/application-design/aws-architecture.md) - Current cloud architecture
-- [OpenAPI Specification](docs/openapi.yaml) - Complete API reference
-- [Database Schema](docs/database-schema.md) - All tables and relationships
-- [Sequence Diagrams](docs/sequence-diagrams.md) - Key flow visualizations
-- [Requirements Traceability](docs/traceability-matrix.md) - Requirements to code mapping
-- [Requirements Document](aidlc-docs/inception/requirements/requirements.md) - Functional requirements
-- [User Stories](aidlc-docs/inception/user-stories/stories.md) - User story definitions
-
-## Distributed Request Tracing (Issue #144)
-
-### Phase 1: X-Gateway-Timing Header
+### X-Gateway-Timing Header
 
 Every proxy response includes an `X-Gateway-Timing` header with per-segment latency breakdown:
 
@@ -375,23 +501,11 @@ Every proxy response includes an `X-Gateway-Timing` header with per-segment late
 X-Gateway-Timing: auth=5ms;model_resolve=1ms;budget_check=12ms;ratelimit_check=3ms;bedrock=1847ms;serialize=2ms;total=1870ms
 ```
 
-Segments tracked:
-- `auth` — JWT validation (Cognito JWKS lookup + token verification)
-- `model_resolve` — Model alias resolution + access check
-- `budget_check` — Budget enforcement middleware (DB query)
-- `ratelimit_check` — Rate limit enforcement middleware
-- `bedrock` — Actual Bedrock InvokeModel API call
-- `serialize` — Response parsing and serialization
-- `total` — End-to-end gateway time
-
-The timing breakdown is also included in structured JSON logs for each request.
-
-### Phase 2: AWS X-Ray Distributed Tracing (Opt-in)
+### AWS X-Ray Distributed Tracing (Opt-in)
 
 Full distributed tracing with X-Ray via OpenTelemetry. Enable by setting:
 
 ```bash
-# Environment variables
 BG_OTEL_ENABLED=true
 BG_OTEL_SERVICE_NAME=bedrock-gateway
 BG_OTEL_EXPORTER_ENDPOINT=http://localhost:4317
@@ -400,7 +514,7 @@ BG_OTEL_EXPORTER_ENDPOINT=http://localhost:4317
 Requires:
 - OpenTelemetry Collector sidecar (see `k8s/otel-collector-config.yaml`)
 - X-Ray IAM permissions (set `enable_xray_tracing = true` in Terraform)
-- Install tracing dependencies: `pip install ".[tracing]"`
+- Tracing dependencies: `pip install ".[tracing]"`
 
 ## Security
 
@@ -410,6 +524,15 @@ Requires:
 - **RDS IAM Auth**: Database authentication via IAM (no passwords)
 - **Tenant Isolation**: All queries include `org_id` filter; data is logically isolated
 - **Credential Handling**: AWS credentials used once for STS validation, never stored
+
+## Detailed Documentation
+
+- [OpenAPI Specification](docs/openapi.yaml) - Complete API reference
+- [Database Schema](docs/database-schema.md) - All tables and relationships
+- [Sequence Diagrams](docs/sequence-diagrams.md) - Key flow visualizations
+- [Requirements Traceability](docs/traceability-matrix.md) - Requirements to code mapping
+- [Security Review](docs/security-review.md) - Security assessment
+- [Budget & Rate Limiting](docs/budget-ratelimit.md) - Budget and rate limit design
 
 ## License
 
