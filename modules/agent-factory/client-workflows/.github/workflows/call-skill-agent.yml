@@ -1,0 +1,21 @@
+name: "Call @skill-agent from ADP"
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  call-skill-agent:
+    if: github.event.label.name == 'skill-agent'
+    uses: aws-innovate/adp/.github/workflows/skill-agent.yml@main
+    with:
+      issue_number: ${{ github.event.issue.number }}
+      repo_owner: ${{ github.repository_owner }}
+      repo_name: ${{ github.event.repository.name }}
+      target_repo: ${{ github.repository }}
+    secrets: inherit

@@ -1,0 +1,149 @@
+# =============================================================================
+# Runner IAM — IRSA role for GitHub Actions runner pods
+# =============================================================================
+# Extracted from github-actions-runner/infrastructure/iam.tf
+# Uses the shared EKS OIDC provider instead of creating a new one.
+# =============================================================================
+
+# Permissions boundary
+resource "aws_iam_policy" "runner_boundary" {
+  name        = "${var.name_prefix}-runner-boundary"
+  description = "Permissions boundary for GitHub runner pods"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowBroadAccess"
+        Effect = "Allow"
+        Action = [
+          "ec2:*", "s3:*", "lambda:*", "dynamodb:*", "rds:*",
+          "ecs:*", "ecr:*", "elasticloadbalancing:*", "autoscaling:*",
+          "cloudformation:*", "cloudwatch:*", "logs:*", "sns:*", "sqs:*",
+          "apigateway:*", "route53:*", "cloudfront:*", "acm:*",
+          "amplify:*",
+          "secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret",
+          "ssm:*", "kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*",
+          "iam:CreateRole", "iam:CreatePolicy", "iam:AttachRolePolicy",
+          "iam:PutRolePolicy", "iam:PassRole", "iam:TagRole", "iam:TagPolicy",
+          "iam:CreateServiceLinkedRole", "iam:GetRole", "iam:GetPolicy",
+          "iam:GetRolePolicy", "iam:ListRolePolicies",
+          "iam:ListRoles", "iam:ListPolicies", "iam:ListAttachedRolePolicies",
+          "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy",
+          "sts:AssumeRole", "sts:GetCallerIdentity",
+          "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream",
+          "events:*", "stepfunctions:*", "cognito-idp:*", "elasticache:*",
+          "eks:DescribeCluster", "eks:ListClusters",
+          "sagemaker:*"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "DenyDangerousActions"
+        Effect = "Deny"
+        Action = [
+          "iam:CreateUser", "iam:DeleteUser",
+          "iam:CreateLoginProfile", "iam:UpdateLoginProfile",
+          "iam:CreateAccessKey", "iam:UpdateAccessKey",
+          "organizations:*", "account:*",
+          "aws-portal:*", "billing:*",
+          "budgets:ModifyBudget", "budgets:DeleteBudget", "ce:*"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# IRSA role for runner pods
+resource "aws_iam_role" "runner" {
+  name                 = "${var.name_prefix}-runner-role"
+  permissions_boundary = aws_iam_policy.runner_boundary.arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = var.oidc_provider_arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringLike = {
+          "${replace(var.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:${var.runner_namespace}*:github-runner-sa"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "runner_permissions" {
+  name = "runner-permissions"
+  role = aws_iam_role.runner.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "BroadAWSAccess"
+        Effect = "Allow"
+        Action = [
+          "ec2:*", "s3:*", "lambda:*", "dynamodb:*", "rds:*",
+          "ecs:*", "ecr:*", "elasticloadbalancing:*", "autoscaling:*",
+          "cloudformation:*", "cloudwatch:*", "logs:*", "sns:*", "sqs:*",
+          "apigateway:*", "route53:*", "cloudfront:*", "acm:*",
+          "amplify:*",
+          "ssm:*", "events:*", "stepfunctions:*", "cognito-idp:*",
+          "elasticache:*", "eks:DescribeCluster", "eks:ListClusters"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "BedrockAccess"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = [
+          "arn:aws:bedrock:*::foundation-model/anthropic.*",
+          "arn:aws:bedrock:*:${var.account_id}:inference-profile/*"
+        ]
+      },
+      {
+        Sid    = "SecretsManagerAccess"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:adp/*"
+      },
+      {
+        Sid    = "KMSAccess"
+        Effect = "Allow"
+        Action = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        Resource = "*"
+      },
+      {
+        Sid    = "IAMManagement"
+        Effect = "Allow"
+        Action = [
+          "iam:CreateRole", "iam:CreatePolicy", "iam:AttachRolePolicy",
+          "iam:PutRolePolicy", "iam:PassRole", "iam:TagRole", "iam:TagPolicy",
+          "iam:CreateServiceLinkedRole", "iam:GetRole", "iam:GetPolicy",
+          "iam:GetRolePolicy", "iam:ListRoles", "iam:ListPolicies",
+          "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
+          "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "STSAccess"
+        Effect = "Allow"
+        Action = ["sts:AssumeRole", "sts:GetCallerIdentity"]
+        Resource = "*"
+      }
+    ]
+  })
+}

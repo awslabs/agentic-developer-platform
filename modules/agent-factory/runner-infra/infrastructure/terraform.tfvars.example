@@ -1,0 +1,7 @@
+# Copy this file to terraform.tfvars and fill in your values
+
+aws_region      = "us-east-1"
+project_name    = "github-arc-runner"
+environment     = "prod"
+cluster_version = "1.35"
+github_org      = "YOUR_GITHUB_ORG"

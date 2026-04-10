@@ -1,0 +1,202 @@
+name: 'Setup Beads'
+description: 'Install and configure Beads CLI for ADP agents'
+
+inputs:
+  dynamodb-table:
+    description: 'DynamoDB table for Dolt manifest storage'
+    required: false
+    default: 'adp-beads-manifest'
+  s3-bucket:
+    description: 'S3 bucket for Dolt data chunks'
+    required: false
+    default: 'adp-beads-state-193832579677'
+  s3-region:
+    description: 'AWS region for DynamoDB and S3'
+    required: false
+    default: 'us-east-1'
+  database-name:
+    description: 'Dolt database name base (will be suffixed with issue number if provided)'
+    required: false
+    default: 'adp'
+  issue-number:
+    description: 'Issue number for per-issue database isolation'
+    required: false
+    default: ''
+  sync-on-start:
+    description: 'Pull state from S3 on setup'
+    required: false
+    default: 'true'
+
+outputs:
+  beads-version:
+    description: 'Installed beads version'
+    value: ${{ steps.install.outputs.version }}
+  initialized:
+    description: 'Whether beads was initialized'
+    value: ${{ steps.init.outputs.initialized }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Beads CLI
+      id: install
+      shell: bash
+      run: |
+        echo "=== Installing Beads CLI ==="
+
+        # Check if already installed
+        if command -v bd &>/dev/null; then
+          BD_VERSION=$(bd version 2>/dev/null | head -1 || echo "unknown")
+          echo "Beads CLI already installed: $BD_VERSION"
+          echo "version=$BD_VERSION" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # Install via official script
+        # Note: The installer exits with error if bd not in PATH yet, so we ignore its exit code
+        # and do our own verification after updating PATH
+        curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash || true
+
+        # Add to PATH for this job (GITHUB_PATH takes effect in next step, export for current step)
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+        export PATH="$HOME/.local/bin:$PATH"
+
+        # Verify installation worked
+        if [ -f "$HOME/.local/bin/bd" ] || command -v bd &>/dev/null; then
+          BD_VERSION=$(bd version 2>/dev/null | head -1 || echo "unknown")
+          echo "version=$BD_VERSION" >> $GITHUB_OUTPUT
+          echo "Beads CLI installed: $BD_VERSION"
+        else
+          echo "ERROR: Beads installation failed"
+          exit 1
+        fi
+
+        # Install Dolt if not present (manual install to avoid sudo requirement)
+        if ! command -v dolt &>/dev/null && [ ! -f "$HOME/.local/bin/dolt" ]; then
+          echo "Installing Dolt to ~/.local/bin..."
+          DOLT_VERSION=$(curl -fsSL https://api.github.com/repos/dolthub/dolt/releases/latest | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+          echo "Latest Dolt version: $DOLT_VERSION"
+          curl -fsSL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/dolt-linux-amd64.tar.gz" -o /tmp/dolt.tar.gz
+          tar -xzf /tmp/dolt.tar.gz -C /tmp
+          mv /tmp/dolt-linux-amd64/bin/dolt "$HOME/.local/bin/"
+          rm -rf /tmp/dolt.tar.gz /tmp/dolt-linux-amd64
+          echo "Dolt installed: $(dolt version 2>/dev/null | head -1 || echo 'unknown')"
+        fi
+
+    - name: Initialize Beads
+      id: init
+      shell: bash
+      env:
+        AWS_REGION: ${{ inputs.s3-region }}
+        AWS_DEFAULT_REGION: ${{ inputs.s3-region }}
+        DYNAMODB_TABLE: ${{ inputs.dynamodb-table }}
+        S3_BUCKET: ${{ inputs.s3-bucket }}
+        DATABASE_NAME_BASE: ${{ inputs.database-name }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+        SYNC_ON_START: ${{ inputs.sync-on-start }}
+      run: |
+        echo "=== Initializing Beads ==="
+
+        # Ensure PATH includes beads
+        export PATH="$HOME/.local/bin:$PATH"
+
+        # Create per-issue database name if issue number provided
+        if [ -n "$ISSUE_NUMBER" ]; then
+          DATABASE_NAME="${DATABASE_NAME_BASE}-issue-${ISSUE_NUMBER}"
+          echo "Using per-issue database: $DATABASE_NAME"
+        else
+          DATABASE_NAME="$DATABASE_NAME_BASE"
+          echo "Using shared database: $DATABASE_NAME (no issue number provided)"
+        fi
+
+        # Export for use in subsequent steps
+        echo "BEADS_DATABASE_NAME=$DATABASE_NAME" >> $GITHUB_ENV
+
+        # Build the remote URL
+        REMOTE_URL=""
+        if [ -n "$DYNAMODB_TABLE" ] && [ -n "$S3_BUCKET" ]; then
+          REMOTE_URL="aws://[${DYNAMODB_TABLE}:${S3_BUCKET}]/${DATABASE_NAME}"
+          echo "Remote URL: $REMOTE_URL"
+        fi
+
+        # Check if already initialized (look for .beads/dolt directory)
+        if [ -d ".beads/dolt" ]; then
+          echo "Found existing .beads/dolt directory"
+          # Verify bd can read the database
+          if bd ready --json >/dev/null 2>&1; then
+            echo "Beads already initialized and working"
+            echo "initialized=true" >> $GITHUB_OUTPUT
+          else
+            echo "WARNING: .beads/dolt exists but bd ready failed - removing and re-cloning"
+            rm -rf .beads
+          fi
+        fi
+
+        # Always initialize with bd init to get proper structure
+        if [ ! -d ".beads/dolt" ]; then
+          echo "Initializing beads..."
+          BD_INIT_OUTPUT=$(bd init --stealth 2>&1) || true
+          echo "bd init output: $BD_INIT_OUTPUT"
+
+          # Verify initialization
+          if [ -d ".beads/dolt" ]; then
+            echo ".beads/dolt directory created successfully"
+          else
+            echo "ERROR: .beads/dolt directory was not created"
+            ls -la .beads 2>/dev/null || echo "No .beads directory at all"
+            echo "initialized=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+        fi
+
+        # Configure AWS remote using bd commands (handles sql-server gracefully)
+        if [ -n "$REMOTE_URL" ]; then
+          echo "Configuring Dolt AWS remote: $REMOTE_URL (region: $AWS_REGION)"
+
+          # Use bd dolt commands which work with the running sql-server
+          bd dolt remote remove origin 2>/dev/null || true
+
+          # Add remote - bd dolt handles this through the sql-server
+          echo "Adding remote with bd dolt..."
+          if bd dolt remote add origin "$REMOTE_URL" 2>&1; then
+            echo "Remote added successfully via bd"
+          else
+            echo "bd dolt remote add failed, trying to stop server and use raw dolt..."
+
+            # Stop server and try raw dolt as fallback
+            if [ -f ".beads/dolt-server.pid" ]; then
+              DOLT_PID=$(cat .beads/dolt-server.pid 2>/dev/null)
+              [ -n "$DOLT_PID" ] && kill -9 "$DOLT_PID" 2>/dev/null || true
+              sleep 2
+            fi
+
+            # Find database directory
+            DOLT_DB_DIR=$(find .beads/dolt -maxdepth 1 -type d -name "*" ! -name ".*" | head -1)
+            [ -z "$DOLT_DB_DIR" ] && DOLT_DB_DIR=".beads/dolt/adp"
+
+            cd "$DOLT_DB_DIR"
+            dolt remote remove origin 2>/dev/null || true
+            dolt remote add origin "$REMOTE_URL" 2>&1 || echo "Raw dolt remote add also failed"
+            cd - >/dev/null
+          fi
+
+          echo "Checking remotes:"
+          bd dolt remote list 2>&1 || echo "Failed to list remotes"
+        fi
+
+        echo "initialized=true" >> $GITHUB_OUTPUT
+
+        # Note: Sync is handled by the agent using bd dolt commands
+        # Raw dolt commands don't have proper AWS credential access in this environment
+        # The agent will run bd dolt pull/push which handles credentials correctly
+        echo "Beads initialized - agent will handle remote sync"
+
+        # Final verification
+        echo "=== Final Beads State ==="
+        echo "Working directory: $(pwd)"
+        ls -la .beads 2>/dev/null || echo "No .beads directory"
+        ls -la .beads/dolt 2>/dev/null || echo "No .beads/dolt directory"
+        # Test bd ready to confirm it's working
+        echo "Testing bd ready:"
+        bd ready --json 2>&1 || echo "bd ready failed"
+        echo "=== Beads setup complete ==="

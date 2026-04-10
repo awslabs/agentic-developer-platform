@@ -1,0 +1,27 @@
+name: "Call @agent-reviewer from ADP"
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to review'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  call-agent-reviewer:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent-reviewer'
+    uses: aws-innovate/adp/.github/workflows/agent-reviewer.yml@main
+    with:
+      issue_number: ${{ fromJSON(inputs.issue_number || '0') || github.event.issue.number }}
+      repo_owner: ${{ github.repository_owner }}
+      repo_name: ${{ github.event.repository.name }}
+      target_repo: ${{ github.repository }}
+    secrets: inherit

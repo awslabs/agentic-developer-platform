@@ -1,0 +1,329 @@
+name: "@agent-pt-superpower - Superpower Prototype"
+
+# Prototype agent that uses the Superpowers plugin from obra/superpowers
+# This agent can be triggered in parallel with other agents on any issue
+# to compare workflow approaches.
+
+on:
+  issues:
+    types: [labeled]
+  workflow_call:
+    inputs:
+      issue_number:
+        description: 'Issue number to work on'
+        required: true
+        type: number
+      repo_owner:
+        description: 'Repository owner'
+        required: true
+        type: string
+      repo_name:
+        description: 'Repository name'
+        required: true
+        type: string
+      target_repo:
+        description: 'Full target repo (owner/name) to checkout and work on'
+        required: true
+        type: string
+
+concurrency:
+  group: agent-pt-superpower-${{ inputs.issue_number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  work:
+    if: github.event_name == 'workflow_call' || github.event.label.name == 'agent-pt-superpower'
+    runs-on: arc-runner-org
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    env:
+      ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+      REPO_OWNER: ${{ inputs.repo_owner || github.repository_owner }}
+      REPO_NAME: ${{ inputs.repo_name || github.event.repository.name }}
+      TARGET_REPO: ${{ inputs.target_repo || github.repository }}
+
+    steps:
+      - name: Install AWS CLI
+        run: |
+          if ! command -v aws &>/dev/null; then
+            curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install
+          fi
+
+      - name: Get App Credentials from AWS Secrets Manager
+        id: aws-secrets
+        run: |
+          echo "Fetching GitHub App credentials from AWS Secrets Manager..."
+          GH_APP_ID=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-ops-id --query SecretString --output text --region us-east-1)
+          GH_APP_KEY=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-ops-key --query SecretString --output text --region us-east-1)
+          echo "::add-mask::$GH_APP_KEY"
+          echo "app_id=$GH_APP_ID" >> $GITHUB_OUTPUT
+          echo "app_key<<EOF" >> $GITHUB_OUTPUT
+          echo "$GH_APP_KEY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          # Using dedicated OPS app for separate rate limits (5000 req/hr)
+          # --- Previous GitHub Secrets approach (commented for reference) ---
+          # app-id: ${{ secrets.GH_APP_OPS_ID }}
+          # private-key: ${{ secrets.GH_APP_OPS_PRIVATE_KEY }}
+          # Fallback to shared app if OPS app has issues:
+          # app-id: ${{ vars.GH_APP_ID }}
+          # private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          # --- Now using AWS Secrets Manager ---
+          app-id: ${{ steps.aws-secrets.outputs.app_id }}
+          private-key: ${{ steps.aws-secrets.outputs.app_key }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Remove trigger label
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl -s -X DELETE \
+            -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ env.TARGET_REPO }}/issues/$ISSUE_NUMBER/labels/agent-pt-superpower" || true
+
+      - name: Checkout ADP repository (for agent code)
+        uses: actions/checkout@v4
+        with:
+          repository: aws-e/adp
+          token: ${{ steps.app-token.outputs.token }}
+          path: adp-agent-src
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+
+      - name: Configure Git for GitHub App
+        env:
+          # --- Previous GitHub Secrets approach (commented for reference) ---
+          # GH_APP_ID: ${{ secrets.GH_APP_OPS_ID }}
+          # Fallback: GH_APP_ID: ${{ vars.GH_APP_ID }}
+          # --- Now using AWS Secrets Manager ---
+          GH_APP_ID: ${{ steps.aws-secrets.outputs.app_id }}
+        run: |
+          git config --global user.email "${GH_APP_ID}+adp-agent[bot]@users.noreply.github.com"
+          git config --global user.name "adp-agent[bot]"
+
+      - name: Install tools
+        run: |
+          # gh CLI
+          if ! command -v gh &>/dev/null; then
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt-get update -qq && sudo apt-get install -y -qq gh
+          fi
+          # AWS CLI
+          if ! command -v aws &>/dev/null; then
+            curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install
+          fi
+
+      - name: Setup Superpowers Plugin
+        run: |
+          # Create .claude directory structure for skills
+          mkdir -p .claude/skills
+
+          # 1. Load default skills from obra/superpowers
+          echo "Cloning Superpowers skills library..."
+          git clone --depth 1 https://github.com/obra/superpowers.git /tmp/superpowers
+          cp -r /tmp/superpowers/skills/* .claude/skills/
+          echo "Default superpowers skills installed"
+
+          # 2. Overlay project-specific skills from target repo (if they exist)
+          if [ -d "${{ github.workspace }}/target-repo/.claude/skills" ]; then
+            echo "Loading project-specific skills from target repo..."
+            cp -r ${{ github.workspace }}/target-repo/.claude/skills/* .claude/skills/
+            echo "Project-specific skills loaded"
+          else
+            echo "No project-specific skills found in target repo"
+          fi
+
+          # Note: Skills are loaded by agent-superpower.ts directly from .claude/skills/
+          echo "=== Available skills ==="
+          ls -la .claude/skills/
+
+          # 3. Auto-install CLIs for skills that require them
+          if [ -d ".claude/skills/skypilot" ]; then
+            echo "SkyPilot skill detected, installing CLI..."
+            sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip
+            pip3 install "skypilot[aws,kubernetes,lambda]" --quiet --break-system-packages
+            sky --version || echo "SkyPilot CLI installed"
+
+            # Get API server URL from AWS Parameter Store
+            SKYPILOT_API=$(aws ssm get-parameter --name /adp/skypilot/api-server-url --query Parameter.Value --output text 2>/dev/null || echo "")
+            if [ -z "$SKYPILOT_API" ]; then
+              SKYPILOT_API="http://skypilot-api.skypilot.svc.cluster.local:46580"
+              echo "Using default SkyPilot API URL"
+            fi
+
+            # Get service account token from AWS Secrets Manager
+            SKYPILOT_TOKEN=$(aws secretsmanager get-secret-value --secret-id adp/skypilot/service-account-token --query SecretString --output text --region us-east-1 2>/dev/null || echo "")
+
+            echo "Connecting to SkyPilot API: $SKYPILOT_API"
+            if [ -n "$SKYPILOT_TOKEN" ]; then
+              # Authenticate with service account token
+              sky api login -e "$SKYPILOT_API" --token "$SKYPILOT_TOKEN" && echo "Connected with service account token" || echo "Token auth failed, using local mode"
+            else
+              # Try without token (may work for in-cluster access)
+              sky api login -e "$SKYPILOT_API" 2>/dev/null && echo "Connected to SkyPilot API server" || echo "Using local SkyPilot mode"
+            fi
+          fi
+
+      - name: Setup Beads
+        id: beads
+        uses: ./adp-agent-src/modules/agent-factory/actions/setup-beads
+        with:
+          dynamodb-table: ${{ vars.BEADS_DYNAMODB_TABLE || 'adp-beads-manifest' }}
+          s3-bucket: ${{ vars.BEADS_S3_BUCKET || 'adp-beads-state-193832579677' }}
+          s3-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          database-name: ${{ vars.BEADS_DATABASE || 'adp' }}
+          issue-number: ${{ env.MAIN_ISSUE_NUMBER || github.event.issue.number }}
+          sync-on-start: 'true'
+
+      - name: Update board status to In Progress
+        uses: ./adp-agent-src/modules/agent-factory/actions/update-board-status
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ env.ISSUE_NUMBER }}
+          status: 'In Progress'
+          workflow-run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          owner: ${{ env.REPO_OWNER }}
+          repo: ${{ env.REPO_NAME }}
+
+      - name: Post start comment
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh issue comment $ISSUE_NUMBER --repo ${{ env.TARGET_REPO }} --body "## @agent-pt-superpower Started
+
+          **Status**: In Progress
+          **Started**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          **Mode**: Superpowers Plugin (obra/superpowers)
+
+          Using Superpowers workflow skills:
+          - brainstorming → writing-plans → subagent-driven-development
+          - test-driven-development, systematic-debugging
+          - requesting-code-review, finishing-a-development-branch
+
+          Working on task..."
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: adp-agent-src/modules/agent-factory/agent/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        run: npm ci
+
+      - name: Build agent
+        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        run: npm run build
+
+      - name: Run @agent-pt-superpower
+        id: agent
+        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ env.ISSUE_NUMBER }}
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          WORK_DIR: ${{ github.workspace }}/target-repo
+          CLAUDE_CODE_USE_BEDROCK: "1"
+          ANTHROPIC_MODEL: "global.anthropic.claude-opus-4-6-v1"
+          # Beads configuration (shared state)
+          BEADS_ENABLED: ${{ vars.BEADS_ENABLED || 'true' }}
+          BEADS_S3_BUCKET: ${{ vars.BEADS_S3_BUCKET || 'adp-agent-state' }}
+          BEADS_S3_REGION: ${{ vars.AWS_REGION || 'us-west-2' }}
+          BEADS_S3_PATH: beads/${{ github.event.repository.name }}
+          # Superpowers-specific
+          SUPERPOWERS_ENABLED: "true"
+          SUPERPOWERS_SKILLS_PATH: ${{ github.workspace }}/.claude/skills
+        run: npx ts-node src/agent-superpower.ts
+
+      - name: Commit and push changes
+        id: commit
+        if: success()
+        working-directory: ${{ github.workspace }}/target-repo
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # Remove only the temporary superpowers.md file (NOT .claude/skills which may be project files)
+          rm -f .claude/superpowers.md 2>/dev/null || true
+
+          # Find the project folder (projects/*-ISSUE_NUMBER)
+          PROJECT_FOLDER=$(ls -d projects/*-$ISSUE_NUMBER 2>/dev/null | head -1 || echo "")
+          if [ -z "$PROJECT_FOLDER" ]; then
+            PROJECT_FOLDER="projects/issue-$ISSUE_NUMBER"
+          fi
+          echo "Project folder: $PROJECT_FOLDER"
+
+          BRANCH_NAME="agent/issue-$ISSUE_NUMBER-superpower"
+          HAS_CHANGES="false"
+
+          # Check for uncommitted changes
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Found uncommitted changes, committing..."
+            git add -A
+            git commit -m "feat: Implementation for issue #$ISSUE_NUMBER
+
+            Project folder: $PROJECT_FOLDER
+            Generated by @agent-pt-superpower (using obra/superpowers workflow)
+
+            Co-Authored-By: adp-agent[bot] <${{ steps.aws-secrets.outputs.app_id }}+adp-agent[bot]@users.noreply.github.com>"
+            HAS_CHANGES="true"
+          fi
+
+          # Check for unpushed commits (agent may have committed during implementation)
+          UNPUSHED=$(git log origin/main..HEAD --oneline 2>/dev/null | wc -l || echo "0")
+          if [ "$UNPUSHED" -gt 0 ]; then
+            echo "Found $UNPUSHED unpushed commit(s)"
+            HAS_CHANGES="true"
+          fi
+
+          if [ "$HAS_CHANGES" = "true" ]; then
+            git checkout -b "$BRANCH_NAME" 2>/dev/null || git checkout "$BRANCH_NAME"
+            git push -u origin "$BRANCH_NAME" --force
+
+            echo "Changes committed and pushed"
+            echo "pr_created=true" >> $GITHUB_OUTPUT
+          else
+            echo "No changes to commit or push"
+            echo "pr_created=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify completion
+        if: always() && steps.agent.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh issue comment $ISSUE_NUMBER --repo ${{ env.TARGET_REPO }} --body "## @agent-pt-superpower Complete
+
+          **Completed**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          **Mode**: Superpowers Plugin
+
+          Work complete using Superpowers workflow. PR created for review."
+
+      - name: Handle failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh issue comment $ISSUE_NUMBER --repo ${{ env.TARGET_REPO }} --body "## @agent-pt-superpower Failed
+
+          Check [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          gh issue edit $ISSUE_NUMBER --repo ${{ env.TARGET_REPO }} --add-label "agent-failed"

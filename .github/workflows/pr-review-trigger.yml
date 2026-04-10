@@ -1,0 +1,121 @@
+name: "Trigger Reviewer on Agent PR"
+
+# When an agent creates a PR, automatically trigger the reviewer agent
+# on the original issue to review, fix issues, and merge the PR.
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+jobs:
+  trigger-reviewer:
+    # Only trigger for agent-created PRs (branch pattern: agent/issue-NNN)
+    if: startsWith(github.head_ref, 'agent/issue-')
+    runs-on: arc-runner-org
+    permissions:
+      issues: write
+      pull-requests: read
+
+    steps:
+      - name: Install AWS CLI
+        run: |
+          if ! command -v aws &>/dev/null; then
+            curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install
+          fi
+
+      - name: Get App Credentials from AWS Secrets Manager
+        id: aws-secrets
+        run: |
+          echo "Fetching GitHub App credentials from AWS Secrets Manager..."
+          GH_APP_ID=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-ops-id --query SecretString --output text --region us-east-1)
+          GH_APP_KEY=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-ops-key --query SecretString --output text --region us-east-1)
+          echo "::add-mask::$GH_APP_KEY"
+          echo "app_id=$GH_APP_ID" >> $GITHUB_OUTPUT
+          echo "app_key<<EOF" >> $GITHUB_OUTPUT
+          echo "$GH_APP_KEY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          # Using dedicated OPS app for separate rate limits (5000 req/hr)
+          # --- Previous GitHub Secrets approach (commented for reference) ---
+          # app-id: ${{ secrets.GH_APP_OPS_ID }}
+          # private-key: ${{ secrets.GH_APP_OPS_PRIVATE_KEY }}
+          # Fallback to shared app if OPS app has issues:
+          # app-id: ${{ vars.GH_APP_ID }}
+          # private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          # --- Now using AWS Secrets Manager ---
+          app-id: ${{ steps.aws-secrets.outputs.app_id }}
+          private-key: ${{ steps.aws-secrets.outputs.app_key }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Install gh CLI
+        run: |
+          if ! command -v gh &>/dev/null; then
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt-get update -qq && sudo apt-get install -y -qq gh
+          fi
+
+      - name: Extract issue number and trigger reviewer
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_BRANCH: ${{ github.head_ref }}
+        run: |
+          # Extract issue number from branch name
+          # Handles: agent/issue-258, agent/issue-258-superpower, etc.
+          ISSUE_NUM=$(echo "$PR_BRANCH" | sed -n 's/.*issue-\([0-9]*\).*/\1/p')
+
+          if [ -z "$ISSUE_NUM" ]; then
+            echo "Could not extract issue number from branch: $PR_BRANCH"
+            exit 0
+          fi
+
+          echo "PR #$PR_NUMBER created for issue #$ISSUE_NUM"
+          echo "Branch: $PR_BRANCH"
+          echo "URL: $PR_URL"
+
+          # Check if issue exists and is open (with retry for transient failures)
+          ISSUE_STATE=""
+          for i in 1 2 3; do
+            ISSUE_STATE=$(gh issue view "$ISSUE_NUM" -R "$GH_REPO" --json state --jq '.state' 2>/dev/null || echo "")
+            if [ -n "$ISSUE_STATE" ]; then
+              break
+            fi
+            echo "Retry $i: Failed to get issue state, waiting 2s..."
+            sleep 2
+          done
+
+          # If state is empty after retries, proceed anyway (label add will fail safely if issue doesn't exist)
+          if [ -z "$ISSUE_STATE" ]; then
+            echo "Warning: Could not get issue state after retries, proceeding anyway"
+          elif [ "$ISSUE_STATE" != "OPEN" ]; then
+            echo "Issue #$ISSUE_NUM is not open (state: $ISSUE_STATE), skipping reviewer trigger"
+            exit 0
+          fi
+
+          # Check if reviewer is already assigned/triggered
+          EXISTING_LABELS=$(gh issue view "$ISSUE_NUM" -R "$GH_REPO" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+          if echo "$EXISTING_LABELS" | grep -q "agent-reviewer"; then
+            echo "Reviewer already triggered for issue #$ISSUE_NUM, skipping"
+            exit 0
+          fi
+
+          # Add comment about PR being ready for review
+          gh issue comment "$ISSUE_NUM" -R "$GH_REPO" --body "## PR Ready for Review
+
+          PR: #$PR_NUMBER
+          Branch: \`$PR_BRANCH\`
+          URL: $PR_URL
+
+          Triggering @agent-reviewer to review, fix any issues, and merge."
+
+          # Trigger reviewer by adding label
+          echo "Triggering @agent-reviewer for issue #$ISSUE_NUM"
+          gh issue edit "$ISSUE_NUM" -R "$GH_REPO" --add-label "agent-reviewer"

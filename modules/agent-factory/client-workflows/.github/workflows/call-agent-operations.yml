@@ -1,0 +1,21 @@
+name: "Call @agent-operations from ADP"
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  call-agent-operations:
+    if: github.event.label.name == 'agent-operations'
+    uses: aws-innovate/adp/.github/workflows/agent-operations.yml@main
+    with:
+      issue_number: ${{ github.event.issue.number }}
+      repo_owner: ${{ github.repository_owner }}
+      repo_name: ${{ github.event.repository.name }}
+      target_repo: ${{ github.repository }}
+    secrets: inherit

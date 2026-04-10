@@ -1,0 +1,243 @@
+# PM Notification Handler
+# Triggered when agents complete tasks (pm-notify label)
+# Checks project state and assigns next tasks
+
+name: PM - Progress Handler
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: pm-notify-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  check-progress:
+    if: github.event.label.name == 'pm-notify'
+    runs-on: arc-runner-adp
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      REPO_OWNER: ${{ github.repository_owner }}
+      REPO_NAME: ${{ github.event.repository.name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      # 1. Remove notification label
+      - name: Remove pm-notify label
+        run: |
+          gh issue edit $ISSUE_NUMBER --remove-label "pm-notify" \
+            --repo $REPO_OWNER/$REPO_NAME || true
+
+      # 2. Checkout repository
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 3. Find associated project
+      - name: Find project and gather state
+        id: project-state
+        run: |
+          # Find which project this issue belongs to
+          # Search through org projects
+          PROJECTS=$(gh project list --owner $REPO_OWNER --format json)
+
+          # Find project containing this issue
+          for PROJECT_NUM in $(echo "$PROJECTS" | jq -r '.projects[].number'); do
+            ITEM=$(gh project item-list $PROJECT_NUM --owner $REPO_OWNER --format json | \
+              jq -r ".items[] | select(.content.number == $ISSUE_NUMBER)")
+
+            if [ -n "$ITEM" ]; then
+              echo "PROJECT_NUM=$PROJECT_NUM" >> $GITHUB_OUTPUT
+              PROJECT_ID=$(echo "$PROJECTS" | jq -r ".projects[] | select(.number == $PROJECT_NUM) | .id")
+              echo "PROJECT_ID=$PROJECT_ID" >> $GITHUB_OUTPUT
+              break
+            fi
+          done
+
+          # Get all project items with their statuses
+          if [ -n "$PROJECT_NUM" ]; then
+            gh project item-list $PROJECT_NUM --owner $REPO_OWNER --format json > /tmp/project-items.json
+            echo "Found project $PROJECT_NUM with items"
+          fi
+
+      # 4. Analyze completed task
+      - name: Analyze completion
+        id: analyze
+        run: |
+          # Get the issue that triggered this
+          ISSUE_DATA=$(gh issue view $ISSUE_NUMBER --json title,labels,body --repo $REPO_OWNER/$REPO_NAME)
+          ISSUE_TITLE=$(echo "$ISSUE_DATA" | jq -r '.title')
+
+          echo "Completed task: $ISSUE_TITLE"
+          echo "COMPLETED_ISSUE=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+          echo "COMPLETED_TITLE=$ISSUE_TITLE" >> $GITHUB_OUTPUT
+
+          # Check if this was a failure
+          LABELS=$(echo "$ISSUE_DATA" | jq -r '.labels[].name')
+          if echo "$LABELS" | grep -q "agent-failed"; then
+            echo "TASK_FAILED=true" >> $GITHUB_OUTPUT
+          else
+            echo "TASK_FAILED=false" >> $GITHUB_OUTPUT
+          fi
+
+      # 5. Find unblocked tasks
+      - name: Find unblocked tasks
+        id: unblocked
+        run: |
+          if [ ! -f /tmp/project-items.json ]; then
+            echo "No project items found"
+            exit 0
+          fi
+
+          # Find tasks where:
+          # - Status is Backlog or Todo
+          # - blocked_by field contains the completed issue
+          # - OR blocked_by is empty
+
+          COMPLETED="#$ISSUE_NUMBER"
+          UNBLOCKED_TASKS=""
+
+          # Parse items and find unblocked ones
+          cat /tmp/project-items.json | jq -c '.items[]' | while read -r item; do
+            STATUS=$(echo "$item" | jq -r '.status // "Unknown"')
+            BLOCKED_BY=$(echo "$item" | jq -r '.blocked_by // ""')
+            ITEM_NUM=$(echo "$item" | jq -r '.content.number')
+            ITEM_ID=$(echo "$item" | jq -r '.id')
+            ASSIGNED=$(echo "$item" | jq -r '.assigned_agent // ""')
+
+            # Skip if already in progress or done
+            if [ "$STATUS" = "In Progress" ] || [ "$STATUS" = "Done" ] || [ "$STATUS" = "Review" ]; then
+              continue
+            fi
+
+            # Check if this task is unblocked by completed issue
+            if echo "$BLOCKED_BY" | grep -q "#$ISSUE_NUMBER"; then
+              # Remove the completed issue from blocked_by
+              NEW_BLOCKED=$(echo "$BLOCKED_BY" | sed "s/#$ISSUE_NUMBER//g" | sed 's/^, //;s/, $//;s/, , /, /')
+
+              # If blocked_by is now empty, task is unblocked
+              if [ -z "$NEW_BLOCKED" ] || [ "$NEW_BLOCKED" = "," ]; then
+                echo "Task #$ITEM_NUM is now unblocked"
+                echo "$ITEM_NUM:$ITEM_ID:$ASSIGNED" >> /tmp/unblocked-tasks.txt
+              fi
+            fi
+          done
+
+          if [ -f /tmp/unblocked-tasks.txt ]; then
+            echo "UNBLOCKED_COUNT=$(wc -l < /tmp/unblocked-tasks.txt)" >> $GITHUB_OUTPUT
+          else
+            echo "UNBLOCKED_COUNT=0" >> $GITHUB_OUTPUT
+          fi
+
+      # 6. Assign unblocked tasks to agents
+      - name: Assign unblocked tasks
+        if: steps.unblocked.outputs.UNBLOCKED_COUNT > 0
+        run: |
+          PROJECT_ID="${{ steps.project-state.outputs.PROJECT_ID }}"
+
+          while IFS=: read -r TASK_NUM ITEM_ID ASSIGNED_AGENT; do
+            echo "Assigning task #$TASK_NUM to $ASSIGNED_AGENT"
+
+            # Update status to Todo (ready to work)
+            gh project item-edit --id "$ITEM_ID" \
+              --project-id "$PROJECT_ID" \
+              --field-id "$STATUS_FIELD_ID" \
+              --single-select-option-id "$TODO_OPTION_ID" || true
+
+            # Clear blocked_by field
+            gh project item-edit --id "$ITEM_ID" \
+              --project-id "$PROJECT_ID" \
+              --field-id "$BLOCKED_BY_FIELD_ID" \
+              --text "" || true
+
+            # Add agent trigger label
+            if [ -n "$ASSIGNED_AGENT" ]; then
+              AGENT_LABEL=$(echo "$ASSIGNED_AGENT" | sed 's/@//')
+              gh issue edit "$TASK_NUM" --add-label "$AGENT_LABEL" \
+                --repo $REPO_OWNER/$REPO_NAME || true
+
+              echo "Triggered $ASSIGNED_AGENT for task #$TASK_NUM"
+            fi
+          done < /tmp/unblocked-tasks.txt
+
+      # 7. Check phase completion
+      - name: Check phase completion
+        id: phase-check
+        run: |
+          if [ ! -f /tmp/project-items.json ]; then
+            exit 0
+          fi
+
+          # Count items by phase and status
+          INCEPTION_TOTAL=$(cat /tmp/project-items.json | jq '[.items[] | select(.phase == "Inception")] | length')
+          INCEPTION_DONE=$(cat /tmp/project-items.json | jq '[.items[] | select(.phase == "Inception" and .status == "Done")] | length')
+
+          CONSTRUCTION_TOTAL=$(cat /tmp/project-items.json | jq '[.items[] | select(.phase == "Construction")] | length')
+          CONSTRUCTION_DONE=$(cat /tmp/project-items.json | jq '[.items[] | select(.phase == "Construction" and .status == "Done")] | length')
+
+          echo "Inception: $INCEPTION_DONE/$INCEPTION_TOTAL"
+          echo "Construction: $CONSTRUCTION_DONE/$CONSTRUCTION_TOTAL"
+
+          # Check if Inception complete but Construction not started
+          if [ "$INCEPTION_DONE" = "$INCEPTION_TOTAL" ] && [ "$INCEPTION_TOTAL" -gt 0 ]; then
+            if [ "$CONSTRUCTION_TOTAL" = "0" ]; then
+              echo "PHASE_TRANSITION=inception_to_construction" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+          # Check if Construction complete
+          if [ "$CONSTRUCTION_DONE" = "$CONSTRUCTION_TOTAL" ] && [ "$CONSTRUCTION_TOTAL" -gt 0 ]; then
+            echo "PHASE_TRANSITION=construction_to_operations" >> $GITHUB_OUTPUT
+          fi
+
+      # 8. Post progress update
+      - name: Post progress update
+        run: |
+          UNBLOCKED="${{ steps.unblocked.outputs.UNBLOCKED_COUNT }}"
+          FAILED="${{ steps.analyze.outputs.TASK_FAILED }}"
+
+          if [ "$FAILED" = "true" ]; then
+            gh issue comment $ISSUE_NUMBER --body "## ⚠️ Task Failed - PM Notified
+
+            Task #$ISSUE_NUMBER failed. Please check the logs and retry.
+
+            **Unblocked tasks**: $UNBLOCKED"
+          else
+            gh issue comment $ISSUE_NUMBER --body "## 📋 Progress Update
+
+            Task #$ISSUE_NUMBER completed successfully.
+
+            **Newly unblocked tasks**: $UNBLOCKED
+
+            Next tasks have been assigned to agents."
+          fi
+
+      # 9. Handle phase transition if needed
+      - name: Handle phase transition
+        if: steps.phase-check.outputs.PHASE_TRANSITION != ''
+        run: |
+          TRANSITION="${{ steps.phase-check.outputs.PHASE_TRANSITION }}"
+
+          if [ "$TRANSITION" = "inception_to_construction" ]; then
+            echo "Transitioning from Inception to Construction"
+            # Trigger PM to create Construction tasks
+            # This would typically call the main PM agent
+            gh issue comment $ISSUE_NUMBER --body "## 🔄 Phase Transition
+
+            **Inception Phase Complete!**
+
+            Moving to Construction phase. Creating implementation tasks..."
+
+          elif [ "$TRANSITION" = "construction_to_operations" ]; then
+            echo "Transitioning from Construction to Operations"
+            gh issue comment $ISSUE_NUMBER --body "## 🔄 Phase Transition
+
+            **Construction Phase Complete!**
+
+            Moving to Operations phase. Creating deployment tasks..."
+          fi

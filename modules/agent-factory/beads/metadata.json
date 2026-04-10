@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "adp_beads_test",
+  "project_id": "571982b2-add8-469f-b4df-d46ec35a8cbe"
+}

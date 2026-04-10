@@ -1,0 +1,61 @@
+# Example workflow for EKS runners with centralized agent
+# Copy this to .github/workflows/ in any repository that needs the AI agent
+
+name: AI Agent Trigger (EKS)
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  run-agent:
+    # Replace <repo-name> with your repository name
+    # This must match the name used in: ./onboard-repo.sh <repo-name>
+    if: github.event.label.name == 'ai-agent'
+    runs-on: arc-runner-<repo-name>
+    
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+        with:
+          path: workspace
+
+      - name: Checkout agent from central repo
+        uses: actions/checkout@v4
+        with:
+          repository: PranavSharma1000/cc-sdk-agent
+          path: agent-repo
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "agent@github-arc-runner.local"
+          git config --global user.name "GitHub ARC Agent"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: agent-repo/.github-agent/agent/package-lock.json
+
+      - name: Install agent dependencies
+        working-directory: ./agent-repo/.github-agent/agent
+        run: npm ci
+
+      - name: Build agent
+        working-directory: ./agent-repo/.github-agent/agent
+        run: npm run build
+
+      - name: Run agent
+        working-directory: ./workspace
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          CLAUDE_CODE_USE_BEDROCK: "1"
+          ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+          SECRET_PREFIX: "github-ccsdk-agent"
+          AGENT_PATH: ${{ github.workspace }}/agent-repo/.github-agent/agent
+        run: node $AGENT_PATH/dist/index.js

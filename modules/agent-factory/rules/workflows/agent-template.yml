@@ -1,0 +1,137 @@
+# Template for individual agent workflows
+# Copy and customize for each agent type
+
+name: Agent - [AGENT_NAME]
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: agent-[name]-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  work:
+    # Trigger when agent's label is added
+    if: github.event.label.name == 'agent-[name]'
+    runs-on: arc-runner-adp
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      REPO_OWNER: ${{ github.repository_owner }}
+      REPO_NAME: ${{ github.event.repository.name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      # 1. Remove trigger label immediately (prevent re-trigger)
+      - name: Remove trigger label
+        run: |
+          gh issue edit $ISSUE_NUMBER --remove-label "agent-[name]" \
+            --repo $REPO_OWNER/$REPO_NAME || true
+
+      # 2. Checkout repository
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 3. Get project item ID and update status
+      - name: Update board status to In Progress
+        run: |
+          # Find project containing this issue
+          # Note: Adjust PROJECT_NUM for your project
+          PROJECT_NUM="${PROJECT_NUMBER:-8}"
+
+          # Get item ID
+          ITEM_ID=$(gh project item-list $PROJECT_NUM --owner $REPO_OWNER --format json | \
+            jq -r ".items[] | select(.content.number == $ISSUE_NUMBER) | .id")
+
+          if [ -n "$ITEM_ID" ] && [ "$ITEM_ID" != "null" ]; then
+            echo "ITEM_ID=$ITEM_ID" >> $GITHUB_ENV
+
+            # Get project ID
+            PROJECT_ID=$(gh project list --owner $REPO_OWNER --format json | \
+              jq -r ".projects[] | select(.number == $PROJECT_NUM) | .id")
+            echo "PROJECT_ID=$PROJECT_ID" >> $GITHUB_ENV
+
+            # Update status to In Progress
+            # Note: Replace STATUS_FIELD_ID and IN_PROGRESS_OPTION_ID with actual values
+            gh project item-edit --id "$ITEM_ID" \
+              --project-id "$PROJECT_ID" \
+              --field-id "$STATUS_FIELD_ID" \
+              --single-select-option-id "$IN_PROGRESS_OPTION_ID" || true
+          fi
+
+      # 4. Post start comment
+      - name: Post start comment
+        run: |
+          gh issue comment $ISSUE_NUMBER --body "## 🤖 @agent-[name] Started
+
+          **Status**: In Progress
+          **Started**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          Working on this task..."
+
+      # 5. Setup environment
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 6. Run agent logic
+      - name: Run agent
+        working-directory: ./.github-agent/agent
+        run: |
+          npm ci
+          npm run build
+          # Run agent-specific script
+          npx ts-node src/agent-[name].ts
+        env:
+          WORK_DIR: ${{ github.workspace }}
+          CLAUDE_CODE_USE_BEDROCK: "1"
+          ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+
+      # 7. Update board status on success
+      - name: Update board status to Done
+        if: success()
+        run: |
+          if [ -n "$ITEM_ID" ]; then
+            gh project item-edit --id "$ITEM_ID" \
+              --project-id "$PROJECT_ID" \
+              --field-id "$STATUS_FIELD_ID" \
+              --single-select-option-id "$DONE_OPTION_ID" || true
+          fi
+
+      # 8. Post completion and notify PM
+      - name: Notify completion
+        if: success()
+        run: |
+          gh issue comment $ISSUE_NUMBER --body "## ✅ @agent-[name] Complete
+
+          **Status**: Done
+          **Completed**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          @agent-pm - Ready for next steps."
+
+          # Add PM notification label
+          gh issue edit $ISSUE_NUMBER --add-label "pm-notify"
+
+      # 9. Handle failure
+      - name: Handle failure
+        if: failure()
+        run: |
+          gh issue comment $ISSUE_NUMBER --body "## ❌ @agent-[name] Failed
+
+          **Status**: Failed
+          **Time**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          Check [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
+
+          @agent-pm - Task failed, needs attention."
+
+          # Add failure label
+          gh issue edit $ISSUE_NUMBER --add-label "agent-failed"
+          gh issue edit $ISSUE_NUMBER --add-label "pm-notify"

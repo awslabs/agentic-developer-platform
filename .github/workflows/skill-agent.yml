@@ -1,0 +1,209 @@
+name: Skill-Driven Agent
+
+on:
+  issues:
+    types: [labeled]
+  workflow_call:
+    inputs:
+      issue_number:
+        description: 'Issue number to work on'
+        required: true
+        type: number
+      repo_owner:
+        description: 'Repository owner'
+        required: true
+        type: string
+      repo_name:
+        description: 'Repository name'
+        required: true
+        type: string
+      target_repo:
+        description: 'Full target repo (owner/name) to checkout and work on'
+        required: true
+        type: string
+
+concurrency:
+  group: skill-agent-${{ inputs.issue_number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    if: github.event_name == 'workflow_call' || github.event.label.name == 'skill-agent'
+    runs-on: arc-runner-org
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    env:
+      ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+      REPO_OWNER: ${{ inputs.repo_owner || github.repository_owner }}
+      REPO_NAME: ${{ inputs.repo_name || github.event.repository.name }}
+      TARGET_REPO: ${{ inputs.target_repo || github.repository }}
+
+    steps:
+      - name: Install AWS CLI
+        run: |
+          if ! command -v aws &>/dev/null; then
+            curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install
+          fi
+
+      - name: Get App Credentials from AWS Secrets Manager
+        id: aws-secrets
+        run: |
+          echo "Fetching GitHub App credentials from AWS Secrets Manager..."
+          GH_APP_ID=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-ops-id --query SecretString --output text --region us-east-1)
+          GH_APP_KEY=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-ops-key --query SecretString --output text --region us-east-1)
+          echo "::add-mask::$GH_APP_KEY"
+          echo "app_id=$GH_APP_ID" >> $GITHUB_OUTPUT
+          echo "app_key<<EOF" >> $GITHUB_OUTPUT
+          echo "$GH_APP_KEY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ steps.aws-secrets.outputs.app_id }}
+          private-key: ${{ steps.aws-secrets.outputs.app_key }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Remove trigger label
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl -s -X DELETE \
+            -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ env.TARGET_REPO }}/issues/${{ env.ISSUE_NUMBER }}/labels/skill-agent" || true
+
+      - name: Checkout ADP repository (for agent code)
+        uses: actions/checkout@v4
+        with:
+          repository: aws-e/adp
+          token: ${{ steps.app-token.outputs.token }}
+          path: adp-agent-src
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+
+      - name: Configure Git for GitHub App
+        env:
+          GH_APP_ID: ${{ steps.aws-secrets.outputs.app_id }}
+        run: |
+          git config --global user.email "${GH_APP_ID}+adp-agent[bot]@users.noreply.github.com"
+          git config --global user.name "adp-agent[bot]"
+
+      - name: Wait for Docker daemon
+        run: |
+          for i in $(seq 1 30); do
+            if docker info >/dev/null 2>&1; then echo "Docker ready"; break; fi
+            echo "Waiting... $i/30"; sleep 2
+          done
+
+      - name: Install tools
+        run: |
+          # kubectl
+          if ! command -v kubectl &>/dev/null; then
+            curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          fi
+          # AWS CLI
+          if ! command -v aws &>/dev/null; then
+            curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install
+          fi
+          # gh CLI
+          if ! command -v gh &>/dev/null; then
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt-get update -qq && sudo apt-get install -y -qq gh
+          fi
+          # Playwright (for webapp-testing skill)
+          pip install playwright 2>/dev/null || pip3 install playwright 2>/dev/null || true
+          playwright install chromium 2>/dev/null || true
+
+      - name: Configure kubectl
+        env:
+          AWS_REGION: us-east-1
+        run: |
+          aws eks update-kubeconfig --name bedrockgw-dev-eks-cluster --region $AWS_REGION || true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: adp-agent-src/modules/agent-factory/agent/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        run: npm ci
+
+      - name: Build agent
+        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        run: npm run build
+
+      - name: Setup project-specific tools
+        run: |
+          # Auto-install CLIs for skills that exist in target repo
+          if [ -d "${{ github.workspace }}/target-repo/.claude/skills/skypilot" ]; then
+            echo "SkyPilot skill detected, installing CLI..."
+            sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip
+            pip3 install "skypilot[aws,kubernetes,lambda]" --quiet --break-system-packages
+            sky --version || echo "SkyPilot CLI installed"
+
+            # Get API server URL from AWS Parameter Store
+            SKYPILOT_API=$(aws ssm get-parameter --name /adp/skypilot/api-server-url --query Parameter.Value --output text 2>/dev/null || echo "")
+            if [ -z "$SKYPILOT_API" ]; then
+              SKYPILOT_API="http://skypilot-api.skypilot.svc.cluster.local:46580"
+              echo "Using default SkyPilot API URL"
+            fi
+
+            # Get service account token from AWS Secrets Manager
+            SKYPILOT_TOKEN=$(aws secretsmanager get-secret-value --secret-id adp/skypilot/service-account-token --query SecretString --output text --region us-east-1 2>/dev/null || echo "")
+
+            echo "Connecting to SkyPilot API: $SKYPILOT_API"
+            if [ -n "$SKYPILOT_TOKEN" ]; then
+              # Authenticate with service account token
+              sky api login -e "$SKYPILOT_API" --token "$SKYPILOT_TOKEN" && echo "Connected with service account token" || echo "Token auth failed, using local mode"
+            else
+              # Try without token (may work for in-cluster access)
+              sky api login -e "$SKYPILOT_API" 2>/dev/null && echo "Connected to SkyPilot API server" || echo "Using local SkyPilot mode"
+            fi
+          fi
+
+      - name: Run Skill Agent
+        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ env.ISSUE_NUMBER }}
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          WORK_DIR: ${{ github.workspace }}/target-repo
+          CLAUDE_CODE_USE_BEDROCK: "1"
+          ANTHROPIC_MODEL: "global.anthropic.claude-opus-4-6-v1"
+          # Pass all available secrets as env vars for skills to use
+          WEBAPP_TEST_USERNAME: ${{ secrets.WEBAPP_TEST_USERNAME }}
+          WEBAPP_TEST_PASSWORD: ${{ secrets.WEBAPP_TEST_PASSWORD }}
+        run: npx ts-node src/skill-agent.ts
+
+      - name: Create PR if agent couldn't
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          cd ${{ github.workspace }}/target-repo
+
+          BRANCH="agent/issue-${{ env.ISSUE_NUMBER }}"
+          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+            echo "Branch $BRANCH exists — agent should have created the PR during execution"
+          else
+            echo "No branch $BRANCH found — agent may have used a different branch name"
+          fi

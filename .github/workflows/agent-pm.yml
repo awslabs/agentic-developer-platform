@@ -1,0 +1,192 @@
+name: "@agent-pm - Project Manager"
+
+on:
+  issues:
+    types: [labeled]
+  workflow_call:
+    inputs:
+      issue_number:
+        description: 'Issue number to work on'
+        required: true
+        type: number
+      repo_owner:
+        description: 'Repository owner'
+        required: true
+        type: string
+      repo_name:
+        description: 'Repository name'
+        required: true
+        type: string
+      target_repo:
+        description: 'Full target repo (owner/name) to checkout and work on'
+        required: true
+        type: string
+
+concurrency:
+  group: agent-pm-${{ inputs.issue_number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  orchestrate:
+    if: github.event_name == 'workflow_call' || github.event.label.name == 'agent-pm'
+    runs-on: arc-runner-org
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    env:
+      ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+      REPO_OWNER: ${{ inputs.repo_owner || github.repository_owner }}
+      REPO_NAME: ${{ inputs.repo_name || github.event.repository.name }}
+      TARGET_REPO: ${{ inputs.target_repo || github.repository }}
+
+    steps:
+      - name: Install AWS CLI
+        run: |
+          if ! command -v aws &>/dev/null; then
+            curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscliv2.zip /tmp/aws
+          fi
+
+      - name: Get App Credentials from AWS Secrets Manager
+        id: aws-secrets
+        run: |
+          echo "Fetching GitHub App credentials from AWS Secrets Manager..."
+          GH_APP_ID=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-pm-id --query SecretString --output text --region us-east-1)
+          GH_APP_KEY=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-pm-key --query SecretString --output text --region us-east-1)
+          echo "::add-mask::$GH_APP_KEY"
+          echo "app_id=$GH_APP_ID" >> $GITHUB_OUTPUT
+          echo "app_key<<EOF" >> $GITHUB_OUTPUT
+          echo "$GH_APP_KEY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          # Using dedicated PM app for separate rate limits (5000 req/hr)
+          # --- Previous GitHub Secrets approach (commented for reference) ---
+          # app-id: ${{ secrets.GH_APP_PM_ID }}
+          # private-key: ${{ secrets.GH_APP_PM_PRIVATE_KEY }}
+          # Fallback to shared app if PM app has issues:
+          # app-id: ${{ vars.GH_APP_ID }}
+          # private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          # --- Now using AWS Secrets Manager ---
+          app-id: ${{ steps.aws-secrets.outputs.app_id }}
+          private-key: ${{ steps.aws-secrets.outputs.app_key }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Remove trigger label
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl -s -X DELETE \
+            -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ env.TARGET_REPO }}/issues/${{ env.ISSUE_NUMBER }}/labels/agent-pm" || true
+
+      - name: Checkout ADP repository (for agent code)
+        uses: actions/checkout@v4
+        with:
+          repository: aws-e/adp
+          token: ${{ steps.app-token.outputs.token }}
+          path: adp-agent-src
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+
+      - name: Configure Git for GitHub App
+        env:
+          # --- Previous GitHub Secrets approach (commented for reference) ---
+          # GH_APP_ID: ${{ secrets.GH_APP_PM_ID }}
+          # Fallback: GH_APP_ID: ${{ vars.GH_APP_ID }}
+          # --- Now using AWS Secrets Manager ---
+          GH_APP_ID: ${{ steps.aws-secrets.outputs.app_id }}
+        run: |
+          # Configure git to use GitHub App identity for commits
+          git config --global user.email "${GH_APP_ID}+adp-agent[bot]@users.noreply.github.com"
+          git config --global user.name "adp-agent[bot]"
+
+      - name: Install gh CLI
+        run: |
+          if ! command -v gh &>/dev/null; then
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt-get update -qq && sudo apt-get install -y -qq gh
+          fi
+
+      - name: Setup Beads
+        id: beads
+        uses: ./adp-agent-src/modules/agent-factory/actions/setup-beads
+        with:
+          dynamodb-table: ${{ vars.BEADS_DYNAMODB_TABLE || 'adp-beads-manifest' }}
+          s3-bucket: ${{ vars.BEADS_S3_BUCKET || 'adp-beads-state-193832579677' }}
+          s3-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          database-name: ${{ vars.BEADS_DATABASE || 'adp' }}
+          issue-number: ${{ env.ISSUE_NUMBER }}
+          sync-on-start: 'true'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: adp-agent-src/modules/agent-factory/agent/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        run: npm ci
+
+      - name: Build agent
+        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        run: npm run build
+
+      - name: Run @agent-pm
+        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        env:
+          # Use App Token for gh CLI (has project/org permissions)
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          # App credentials for token refresh (tokens expire after 1 hour)
+          # --- Previous GitHub Secrets approach (commented for reference) ---
+          # GH_APP_ID: ${{ secrets.GH_APP_PM_ID }}
+          # GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PM_PRIVATE_KEY }}
+          # Fallback: GH_APP_ID: ${{ vars.GH_APP_ID }}
+          # Fallback: GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          # --- Now using AWS Secrets Manager ---
+          GH_APP_ID: ${{ steps.aws-secrets.outputs.app_id }}
+          GH_APP_PRIVATE_KEY: ${{ steps.aws-secrets.outputs.app_key }}
+          # Keep regular token available if needed for specific operations
+          GITHUB_ACTIONS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ env.ISSUE_NUMBER }}
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          WORK_DIR: ${{ github.workspace }}/target-repo
+          CLAUDE_CODE_USE_BEDROCK: "1"
+          ANTHROPIC_MODEL: "global.anthropic.claude-opus-4-6-v1"
+          # Beads configuration
+          BEADS_ENABLED: ${{ vars.BEADS_ENABLED || 'true' }}
+          BEADS_S3_BUCKET: ${{ vars.BEADS_S3_BUCKET || 'adp-agent-state' }}
+          BEADS_S3_REGION: ${{ vars.AWS_REGION || 'us-west-2' }}
+          BEADS_S3_PATH: beads/${{ env.REPO_NAME }}
+          # Token refresh configuration
+          TOKEN_REFRESH_ENABLED: 'true'
+        run: npx ts-node src/agent-pm.ts
+
+      - name: Post failure comment
+        if: failure()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh issue comment ${{ env.ISSUE_NUMBER }} --repo ${{ env.TARGET_REPO }} --body "## @agent-pm Failed
+
+          The agent encountered an error. Please check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
+
+          To retry, add the \`agent-pm\` label again."

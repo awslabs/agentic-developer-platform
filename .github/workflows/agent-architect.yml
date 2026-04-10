@@ -1,0 +1,254 @@
+name: "@agent-architect - System Architect"
+
+# Architect agent handles:
+# - Application design
+# - Architecture decisions
+# - Units generation
+# - Technical research
+
+on:
+  issues:
+    types: [labeled]
+  workflow_call:
+    inputs:
+      issue_number:
+        description: 'Issue number to work on'
+        required: true
+        type: number
+      repo_owner:
+        description: 'Repository owner'
+        required: true
+        type: string
+      repo_name:
+        description: 'Repository name'
+        required: true
+        type: string
+      target_repo:
+        description: 'Full target repo (owner/name) to checkout and work on'
+        required: true
+        type: string
+
+concurrency:
+  group: agent-architect-${{ inputs.issue_number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  work:
+    if: github.event_name == 'workflow_call' || github.event.label.name == 'agent-architect'
+    runs-on: arc-runner-org
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    env:
+      ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+      REPO_OWNER: ${{ inputs.repo_owner || github.repository_owner }}
+      REPO_NAME: ${{ inputs.repo_name || github.event.repository.name }}
+      TARGET_REPO: ${{ inputs.target_repo || github.repository }}
+
+    steps:
+      - name: Install AWS CLI
+        run: |
+          if ! command -v aws &>/dev/null; then
+            curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install
+          fi
+
+      - name: Get App Credentials from AWS Secrets Manager
+        id: aws-secrets
+        run: |
+          echo "Fetching GitHub App credentials from AWS Secrets Manager..."
+          GH_APP_ID=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-dev-id --query SecretString --output text --region us-east-1)
+          GH_APP_KEY=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-dev-key --query SecretString --output text --region us-east-1)
+          echo "::add-mask::$GH_APP_KEY"
+          echo "app_id=$GH_APP_ID" >> $GITHUB_OUTPUT
+          echo "app_key<<EOF" >> $GITHUB_OUTPUT
+          echo "$GH_APP_KEY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          # Using dedicated DEV app for separate rate limits (5000 req/hr)
+          # --- Previous GitHub Secrets approach (commented for reference) ---
+          # app-id: ${{ secrets.GH_APP_DEV_ID }}
+          # private-key: ${{ secrets.GH_APP_DEV_PRIVATE_KEY }}
+          # Fallback to shared app if DEV app has issues:
+          # app-id: ${{ vars.GH_APP_ID }}
+          # private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          # --- Now using AWS Secrets Manager ---
+          app-id: ${{ steps.aws-secrets.outputs.app_id }}
+          private-key: ${{ steps.aws-secrets.outputs.app_key }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Remove trigger label
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl -s -X DELETE \
+            -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ env.TARGET_REPO }}/issues/$ISSUE_NUMBER/labels/agent-architect" || true
+
+      - name: Checkout ADP repository (for agent code)
+        uses: actions/checkout@v4
+        with:
+          repository: aws-e/adp
+          token: ${{ steps.app-token.outputs.token }}
+          path: adp-agent-src
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+
+      - name: Configure Git for GitHub App
+        env:
+          # --- Previous GitHub Secrets approach (commented for reference) ---
+          # GH_APP_ID: ${{ secrets.GH_APP_DEV_ID }}
+          # Fallback: GH_APP_ID: ${{ vars.GH_APP_ID }}
+          # --- Now using AWS Secrets Manager ---
+          GH_APP_ID: ${{ steps.aws-secrets.outputs.app_id }}
+        run: |
+          git config --global user.email "${GH_APP_ID}+adp-agent[bot]@users.noreply.github.com"
+          git config --global user.name "adp-agent[bot]"
+
+      - name: Install tools
+        run: |
+          if ! command -v gh &>/dev/null; then
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt-get update -qq && sudo apt-get install -y -qq gh
+          fi
+
+      - name: Setup Beads
+        id: beads
+        uses: ./adp-agent-src/modules/agent-factory/actions/setup-beads
+        with:
+          dynamodb-table: ${{ vars.BEADS_DYNAMODB_TABLE || 'adp-beads-manifest' }}
+          s3-bucket: ${{ vars.BEADS_S3_BUCKET || 'adp-beads-state-193832579677' }}
+          s3-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          database-name: ${{ vars.BEADS_DATABASE || 'adp' }}
+          issue-number: ${{ env.MAIN_ISSUE_NUMBER || github.event.issue.number }}
+          sync-on-start: 'true'
+
+      - name: Update board status to In Progress
+        uses: ./adp-agent-src/modules/agent-factory/actions/update-board-status
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          issue-number: ${{ env.ISSUE_NUMBER }}
+          status: 'In Progress'
+          workflow-run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          owner: ${{ env.REPO_OWNER }}
+          repo: ${{ env.REPO_NAME }}
+
+      - name: Post start comment
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh issue comment $ISSUE_NUMBER --repo ${{ env.TARGET_REPO }} --body "## @agent-architect Started
+
+          **Status**: In Progress
+          **Started**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          **Logs**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          Working on architecture/design..."
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: adp-agent-src/modules/agent-factory/agent/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        run: npm ci
+
+      - name: Build agent
+        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        run: npm run build
+
+      - name: Run @agent-architect
+        id: agent
+        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ env.ISSUE_NUMBER }}
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          WORK_DIR: ${{ github.workspace }}/target-repo
+          AGENT_TYPE: architect
+          CLAUDE_CODE_USE_BEDROCK: "1"
+          ANTHROPIC_MODEL: "global.anthropic.claude-opus-4-6-v1"
+          # Beads configuration (shared state)
+          BEADS_ENABLED: ${{ vars.BEADS_ENABLED || 'true' }}
+          BEADS_S3_BUCKET: ${{ vars.BEADS_S3_BUCKET || 'adp-agent-state' }}
+          BEADS_S3_REGION: ${{ vars.AWS_REGION || 'us-west-2' }}
+          BEADS_S3_PATH: beads/${{ github.event.repository.name }}
+        run: npx ts-node src/agent-worker.ts
+
+      # GitHub App tokens expire after 1 hour - refresh for long-running agents
+      - name: Refresh GitHub App Token
+        id: refresh-token
+        if: always()
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ steps.aws-secrets.outputs.app_id }}
+          private-key: ${{ steps.aws-secrets.outputs.app_key }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Commit and push changes
+        id: commit
+        if: success()
+        working-directory: ${{ github.workspace }}/target-repo
+        env:
+          GH_TOKEN: ${{ steps.refresh-token.outputs.token }}
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "docs: Architecture/design for issue #$ISSUE_NUMBER
+
+            Generated by @agent-architect
+
+            Co-Authored-By: adp-agent[bot] <${{ steps.aws-secrets.outputs.app_id }}+adp-agent[bot]@users.noreply.github.com>"
+
+            BRANCH_NAME="agent/issue-$ISSUE_NUMBER"
+            git checkout -b "$BRANCH_NAME" 2>/dev/null || git checkout "$BRANCH_NAME"
+            git push -u origin "$BRANCH_NAME" --force
+
+            echo "Changes committed and pushed"
+            echo "pr_created=true" >> $GITHUB_OUTPUT
+          else
+            echo "No changes to commit"
+            echo "pr_created=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify completion
+        if: always() && steps.agent.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ steps.refresh-token.outputs.token }}
+        run: |
+          gh issue comment $ISSUE_NUMBER --repo ${{ env.TARGET_REPO }} --body "## @agent-architect Complete
+
+          **Completed**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          Work complete. PR will trigger reviewer, and merging will close the issue."
+
+      # NOTE: Status stays "In Progress" - will become "Done" when PR is merged
+      # and GitHub auto-closes the issue (via "Closes #NNN" in PR body)
+
+      - name: Handle failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ steps.refresh-token.outputs.token }}
+        run: |
+          gh issue comment $ISSUE_NUMBER --repo ${{ env.TARGET_REPO }} --body "## @agent-architect Failed
+
+          Check [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          gh issue edit $ISSUE_NUMBER --repo ${{ env.TARGET_REPO }} --add-label "agent-failed"

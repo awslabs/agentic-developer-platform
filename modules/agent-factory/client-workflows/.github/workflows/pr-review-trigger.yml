@@ -1,0 +1,112 @@
+name: "Trigger Reviewer on PR"
+
+# Automatically triggers the reviewer agent when a PR is opened or updated.
+# Extracts the linked issue number from the branch name (e.g. agent/issue-42)
+# or PR body (Closes #42), then dispatches the reviewer workflow.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+jobs:
+  trigger-reviewer:
+    runs-on: arc-runner-org
+    permissions:
+      issues: write
+      pull-requests: read
+
+    steps:
+      - name: Install AWS CLI
+        run: |
+          if ! command -v aws &>/dev/null; then
+            curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install
+          fi
+
+      - name: Get App Credentials from AWS Secrets Manager
+        id: aws-secrets
+        run: |
+          GH_APP_ID=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-ops-id --query SecretString --output text --region us-east-1)
+          GH_APP_KEY=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-ops-key --query SecretString --output text --region us-east-1)
+          echo "::add-mask::$GH_APP_KEY"
+          echo "app_id=$GH_APP_ID" >> $GITHUB_OUTPUT
+          echo "app_key<<EOF" >> $GITHUB_OUTPUT
+          echo "$GH_APP_KEY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ steps.aws-secrets.outputs.app_id }}
+          private-key: ${{ steps.aws-secrets.outputs.app_key }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Install gh CLI
+        run: |
+          if ! command -v gh &>/dev/null; then
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt-get update -qq && sudo apt-get install -y -qq gh
+          fi
+
+      - name: Extract issue number and trigger reviewer
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_BRANCH: ${{ github.head_ref }}
+        run: |
+          ISSUE_NUM=$(echo "$PR_BRANCH" | sed -n 's/.*issue-\([0-9]*\).*/\1/p')
+
+          # Also try extracting from PR body (Closes #NNN)
+          if [ -z "$ISSUE_NUM" ]; then
+            ISSUE_NUM=$(gh pr view "$PR_NUMBER" -R "$GH_REPO" --json body --jq '.body' 2>/dev/null | grep -oP 'Closes #\K[0-9]+' | head -1 || echo "")
+          fi
+
+          if [ -z "$ISSUE_NUM" ]; then
+            echo "No linked issue found for PR #$PR_NUMBER (branch: $PR_BRANCH)"
+            echo "Creating a review issue for this PR..."
+
+            PR_TITLE=$(gh pr view "$PR_NUMBER" -R "$GH_REPO" --json title --jq '.title' 2>/dev/null)
+            ISSUE_NUM=$(gh issue create -R "$GH_REPO" \
+              --title "Review: $PR_TITLE (PR #$PR_NUMBER)" \
+              --body "Auto-created for PR review. PR #$PR_NUMBER, branch: $PR_BRANCH" \
+              --json number --jq '.number' 2>/dev/null || echo "")
+
+            if [ -z "$ISSUE_NUM" ]; then
+              echo "Failed to create review issue, skipping"
+              exit 0
+            fi
+            echo "Created review issue #$ISSUE_NUM"
+          fi
+
+          echo "PR #$PR_NUMBER created for issue #$ISSUE_NUM"
+
+          # Check if issue is open
+          ISSUE_STATE=$(gh issue view "$ISSUE_NUM" -R "$GH_REPO" --json state --jq '.state' 2>/dev/null || echo "")
+          if [ "$ISSUE_STATE" != "OPEN" ] && [ -n "$ISSUE_STATE" ]; then
+            echo "Issue #$ISSUE_NUM is not open (state: $ISSUE_STATE), skipping"
+            exit 0
+          fi
+
+          # Check if reviewer already triggered
+          if gh issue view "$ISSUE_NUM" -R "$GH_REPO" --json labels --jq '.labels[].name' 2>/dev/null | grep -q "agent-reviewer"; then
+            echo "Reviewer already triggered for issue #$ISSUE_NUM"
+            exit 0
+          fi
+
+          # Post comment and trigger reviewer via workflow_dispatch
+          gh issue comment "$ISSUE_NUM" -R "$GH_REPO" --body "## PR Ready for Review
+
+          PR: #$PR_NUMBER
+          Branch: \`$PR_BRANCH\`
+          URL: $PR_URL
+
+          Triggering @agent-reviewer to review, fix any issues, and merge."
+
+          # Trigger reviewer directly via workflow_dispatch (avoids label event issues)
+          gh workflow run call-agent-reviewer.yml -R "$GH_REPO" -f issue_number="$ISSUE_NUM" || \
+            gh issue edit "$ISSUE_NUM" -R "$GH_REPO" --add-label "agent-reviewer"
+          echo "Reviewer triggered for issue #$ISSUE_NUM"

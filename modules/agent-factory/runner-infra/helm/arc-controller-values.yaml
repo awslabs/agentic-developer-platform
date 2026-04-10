@@ -1,0 +1,7 @@
+# ARC Controller Helm Values
+
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: arc-controller-sa

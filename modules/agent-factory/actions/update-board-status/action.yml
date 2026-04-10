@@ -1,0 +1,211 @@
+name: 'Update Project Board Status'
+description: 'Efficiently update GitHub Project board status with verify-and-retry to handle async automation race conditions'
+
+inputs:
+  token:
+    description: 'GitHub token with project permissions'
+    required: true
+  issue-number:
+    description: 'Issue number to update'
+    required: true
+  status:
+    description: 'Target status (Todo, In Progress, Review, Done)'
+    required: true
+  workflow-run-url:
+    description: 'Optional workflow run URL to set'
+    required: false
+    default: ''
+  owner:
+    description: 'Repository owner'
+    required: true
+  repo:
+    description: 'Repository name'
+    required: true
+  skip-if-rate-limited:
+    description: 'Skip update if rate limited instead of failing'
+    required: false
+    default: 'true'
+  verify-and-retry:
+    description: 'Verify status after update and retry if overwritten (handles async automation race)'
+    required: false
+    default: 'true'
+  max-retries:
+    description: 'Maximum retry attempts if status is overwritten'
+    required: false
+    default: '3'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Update board status
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+        TARGET_STATUS: ${{ inputs.status }}
+        WORKFLOW_RUN_URL: ${{ inputs.workflow-run-url }}
+        REPO_OWNER: ${{ inputs.owner }}
+        REPO_NAME: ${{ inputs.repo }}
+        SKIP_IF_RATE_LIMITED: ${{ inputs.skip-if-rate-limited }}
+        VERIFY_AND_RETRY: ${{ inputs.verify-and-retry }}
+        MAX_RETRIES: ${{ inputs.max-retries }}
+      run: |
+        # Optimized board update with verify-and-retry to handle async automation race conditions
+        # GitHub's "Pull request linked" automation can overwrite status after we set it
+
+        update_board() {
+          # Query the issue directly to get its project item info
+          QUERY='
+          query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              issue(number: $number) {
+                projectItems(first: 1) {
+                  nodes {
+                    id
+                    project {
+                      id
+                      number
+                      fields(first: 20) {
+                        nodes {
+                          ... on ProjectV2SingleSelectField {
+                            id
+                            name
+                            options { id name }
+                          }
+                          ... on ProjectV2Field {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }'
+
+          # Execute query - directly gets the issue's project info
+          RESULT=$(gh api graphql -f query="$QUERY" -f owner="$REPO_OWNER" -f repo="$REPO_NAME" -F number="$ISSUE_NUMBER" 2>&1) || {
+            if echo "$RESULT" | grep -q "rate limit"; then
+              echo "::warning::Rate limited, skipping board update"
+              if [ "$SKIP_IF_RATE_LIMITED" = "true" ]; then
+                return 0
+              fi
+              return 1
+            fi
+            echo "::error::GraphQL query failed: $RESULT"
+            return 1
+          }
+
+          # Extract project data from the issue's projectItems
+          PROJECT_ITEM=$(echo "$RESULT" | jq -r '.data.repository.issue.projectItems.nodes[0] // empty')
+
+          if [ -z "$PROJECT_ITEM" ] || [ "$PROJECT_ITEM" = "null" ]; then
+            echo "::warning::Issue #$ISSUE_NUMBER is not in any project board"
+            return 0
+          fi
+
+          ITEM_ID=$(echo "$PROJECT_ITEM" | jq -r '.id')
+          PROJECT_ID=$(echo "$PROJECT_ITEM" | jq -r '.project.id')
+          PROJECT_NUM=$(echo "$PROJECT_ITEM" | jq -r '.project.number')
+
+          # Get field IDs from the project
+          STATUS_FIELD_ID=$(echo "$PROJECT_ITEM" | jq -r '.project.fields.nodes[] | select(.name == "Status") | .id')
+          TARGET_OPTION_ID=$(echo "$PROJECT_ITEM" | jq -r --arg status "$TARGET_STATUS" '.project.fields.nodes[] | select(.name == "Status") | .options[]? | select(.name == $status) | .id')
+          WORKFLOW_RUN_FIELD_ID=$(echo "$PROJECT_ITEM" | jq -r '.project.fields.nodes[] | select(.name == "workflow_run") | .id // empty')
+
+          echo "Project #$PROJECT_NUM ($PROJECT_ID), Item: $ITEM_ID, Status Field: $STATUS_FIELD_ID"
+
+          # Update status if we have all required IDs
+          if [ -n "$STATUS_FIELD_ID" ] && [ -n "$TARGET_OPTION_ID" ]; then
+            gh api graphql -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { singleSelectOptionId: $optionId }
+                }) {
+                  projectV2Item { id }
+                }
+              }
+            ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$STATUS_FIELD_ID" -f optionId="$TARGET_OPTION_ID" 2>&1 || {
+              echo "::warning::Failed to update status"
+            }
+            echo "Updated status to $TARGET_STATUS"
+          fi
+
+          # Update workflow_run URL if provided and field exists
+          if [ -n "$WORKFLOW_RUN_URL" ] && [ -n "$WORKFLOW_RUN_FIELD_ID" ]; then
+            gh api graphql -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $text: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { text: $text }
+                }) {
+                  projectV2Item { id }
+                }
+              }
+            ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$WORKFLOW_RUN_FIELD_ID" -f text="$WORKFLOW_RUN_URL" 2>&1 || {
+              echo "::warning::Failed to update workflow_run URL"
+            }
+            echo "Updated workflow_run URL"
+          fi
+        }
+
+        # Verify current status matches target
+        verify_status() {
+          VERIFY_QUERY='
+          query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              issue(number: $number) {
+                projectItems(first: 1) {
+                  nodes {
+                    fieldValues(first: 10) {
+                      nodes {
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          name
+                          field { ... on ProjectV2SingleSelectField { name } }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }'
+
+          CURRENT_STATUS=$(gh api graphql -f query="$VERIFY_QUERY" -f owner="$REPO_OWNER" -f repo="$REPO_NAME" -F number="$ISSUE_NUMBER" 2>/dev/null | \
+            jq -r '.data.repository.issue.projectItems.nodes[0].fieldValues.nodes[] | select(.field.name == "Status") | .name // empty')
+
+          echo "$CURRENT_STATUS"
+        }
+
+        # Main execution with verify-and-retry
+        update_board
+
+        if [ "$VERIFY_AND_RETRY" = "true" ]; then
+          echo "Verifying status update..."
+          sleep 2  # Wait for async automations to fire
+
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            CURRENT=$(verify_status)
+            if [ "$CURRENT" = "$TARGET_STATUS" ]; then
+              echo "✓ Status verified: $CURRENT"
+              break
+            else
+              echo "::warning::Status mismatch! Expected '$TARGET_STATUS' but found '$CURRENT' (attempt $attempt/$MAX_RETRIES)"
+              if [ "$attempt" -lt "$MAX_RETRIES" ]; then
+                echo "Retrying status update..."
+                sleep 1
+                update_board
+                sleep 2  # Wait again for any async effects
+              else
+                echo "::warning::Failed to set status after $MAX_RETRIES attempts. Final status: $CURRENT"
+              fi
+            fi
+          done
+        fi
