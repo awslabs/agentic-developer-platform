@@ -1,112 +1,236 @@
-# ADP - Agentic Developer Platform
+# ADP — Agentic Developer Platform
 
-A comprehensive platform for building and deploying AI-powered developer tools.
+Multi-tenant AI infrastructure for developer tools. Three modules: a Bedrock proxy gateway, autonomous code agents, and an MCP gateway.
 
 ## Modules
 
-| Module | Description | Status |
-|--------|-------------|--------|
-| [gateway](modules/gateway/) | Bedrock proxy with auth, budgets, rate limiting | Active |
-| agent-runtime | Agent execution runtime | Planned |
-| skill-registry | Skill/tool registry | Planned |
-| observability | Metrics and tracing dashboard | Planned |
+| Module | Path | What it does | Status |
+|--------|------|-------------|--------|
+| [Gateway](modules/gateway/) | `modules/gateway/` | Multi-tenant Bedrock proxy with Cognito auth, budgets, rate limiting, admin UI | Active |
+| [Agent Factory](modules/agent-factory/) | `modules/agent-factory/` | Autonomous code agents (Claude SDK + Bedrock) triggered by GitHub issue labels | Active |
+| [MCP Gateway](modules/mcp-gateway/) | `modules/mcp-gateway/` | MCP server gateway for agent messaging and tool routing | In Progress |
 
 ## Architecture
 
 ```
-                          Internet
-                              |
-                    +---------v---------+
-                    |    CloudFront     |
-                    +----+----+----+----+
-                         |    |    |
-            +------------+    |    +------------+
-            |                 |                 |
-   /api/gateway/*      /api/agents/*    /api/skills/*
-            |                 |                 |
-            v                 v                 v
-    +-------+-------+ +-------+-------+ +-------+-------+
-    |    Gateway    | | Agent Runtime | | Skill Registry|
-    |   (FastAPI)   | |   (FastAPI)   | |   (FastAPI)   |
-    +-------+-------+ +-------+-------+ +-------+-------+
-            |                 |                 |
-            +--------+--------+---------+-------+
-                     |                  |
-              +------v------+    +------v------+
-              |    EKS      |    |    RDS      |
-              |  (Shared)   |    | (Per-module)|
-              +-------------+    +-------------+
+                              Internet
+                                 │
+                    ┌────────────▼───────────┐
+                    │       CloudFront       │
+                    └────────────┬───────────┘
+                                 │
+                ┌────────────────┼────────────────┐
+                │                │                │
+     ┌──────────▼──────┐  ┌─────▼──────┐  ┌─────▼──────┐
+     │  S3 (Admin UI)  │  │ Internal   │  │ API Gateway│
+     │  React+Tailwind │  │ ALB (EKS)  │  │ (optional) │
+     └─────────────────┘  └─────┬──────┘  └─────┬──────┘
+                                │                │
+                    ┌───────────▼────────────────▼┐
+                    │     Shared EKS Cluster      │
+                    │         (adp-dev-eks)        │
+                    │                              │
+                    │  ┌─────────┐  ┌───────────┐ │
+                    │  │ Gateway │  │ARC Runners│ │
+                    │  │  Pods   │  │  (Agents) │ │
+                    │  └────┬────┘  └─────┬─────┘ │
+                    └───────┼─────────────┼───────┘
+                            │             │
+              ┌─────────────┼─────────────┼──────────────┐
+              │             │             │              │
+     ┌────────▼───┐  ┌─────▼────┐  ┌─────▼────┐  ┌─────▼────┐
+     │    RDS     │  │  Redis   │  │ Bedrock  │  │ Secrets  │
+     │ PostgreSQL │  │(optional)│  │ (Claude) │  │ Manager  │
+     └────────────┘  └──────────┘  └──────────┘  └──────────┘
 ```
 
-## Quick Start
+## Prerequisites
 
-### Prerequisites
-
-- AWS CLI configured with admin access
+- AWS CLI v2 with admin access
 - Terraform >= 1.5
-- kubectl
-- Node.js >= 18
-- Python >= 3.11
+- Docker
+- kubectl + Helm v3
+- Node.js >= 22
+- Python >= 3.12
+- GitHub CLI (`gh`)
 
-### 1. Bootstrap Platform
+## Deployment Order
+
+Everything builds on the shared platform. Deploy in this order:
+
+```
+1. Bootstrap          →  S3 bucket + DynamoDB for Terraform state
+2. Platform Infra     →  VPC, EKS, ECR, IAM (shared by all modules)
+3. Module Infra       →  Per-module resources (pick what you need)
+4. App Deployment     →  Containers, frontend, k8s manifests
+```
+
+## Step 1: Bootstrap Terraform State Backend
 
 ```bash
-# Set up Terraform state backend
-./platform/scripts/bootstrap.sh
+cd platform/scripts
+export AWS_REGION=us-east-1
+export ENVIRONMENT=dev
+./bootstrap.sh
+```
 
-# Deploy shared infrastructure (VPC, EKS, ECR)
+Creates `adp-terraform-state-<ACCOUNT_ID>` S3 bucket and `adp-terraform-locks` DynamoDB table. Also replaces `ACCOUNT_ID` placeholders in `environments/**/*.tfvars`.
+
+## Step 2: Deploy Shared Platform
+
+```bash
 cd platform/infra
-terraform init -backend-config="../../environments/dev/backend.tfvars"
-terraform apply -var-file="../../environments/dev/platform.tfvars"
+terraform init -backend-config=../../environments/dev/backend.tfvars
+terraform apply -var-file=../../environments/dev/platform.tfvars
 ```
 
-### 2. Deploy Gateway Module
+This provisions the shared VPC, EKS cluster (`adp-dev-eks`), ECR repositories, and base IAM roles. All modules deploy onto this.
+
+## Step 3: Deploy Modules
+
+Pick the modules you need. Each has its own Terraform and deployment steps.
+
+### Gateway (Bedrock Proxy)
+
+Multi-tenant proxy for Amazon Bedrock with Cognito auth, cascading budgets, rate limiting, and an admin dashboard.
 
 ```bash
-# Deploy gateway infrastructure (RDS, Redis, Cognito, CloudFront)
+# Infrastructure (RDS, Redis, Cognito, CloudFront, S3, etc.)
 cd modules/gateway/infra
-terraform init -backend-config="../../../environments/dev/modules/gateway-backend.tfvars"
-terraform apply -var-file="../../../environments/dev/modules/gateway.tfvars"
+terraform init -backend-config=../../../environments/dev/modules/gateway-backend.tfvars
+terraform apply -var-file=../../../environments/dev/modules/gateway.tfvars
 
-# Deploy to EKS
-kubectl apply -f ../k8s/ -n adp-gateway
+# Backend (Docker → ECR → EKS)
+cd modules/gateway
+docker build -t adp-gateway .
+# Push to ECR, then:
+kubectl apply -f k8s/ -n adp-gateway
+
+# Frontend (React → S3 → CloudFront)
+cd modules/gateway/frontend
+npm ci && npm run build
+aws s3 sync dist/ s3://<frontend-bucket>/ --delete
 ```
 
-### 3. Add New Module
+Full details: [modules/gateway/README.md](modules/gateway/README.md)
+
+### Agent Factory (Code Agents)
+
+Autonomous AI agents that implement GitHub issues using Claude on Bedrock.
 
 ```bash
-./platform/scripts/add-module.sh my-new-module
+# Infrastructure (Runner IAM, ARC controller, Secrets Manager, beads state)
+cd modules/agent-factory/infra
+terraform init -backend-config=../../../environments/dev/modules/agent-factory-backend.tfvars
+terraform apply -var-file=terraform.tfvars
+
+# Store GitHub App credentials
+aws secretsmanager put-secret-value --secret-id adp/gh-app-dev-id --secret-string "<APP_ID>"
+aws secretsmanager put-secret-value --secret-id adp/gh-app-dev-key --secret-string "$(cat key.pem)"
+
+# Test: label any issue with "agent-developer"
+gh issue edit <NUMBER> --repo aws-e/adp --add-label "agent-developer"
 ```
+
+Full details: [modules/agent-factory/SETUP-GUIDE.md](modules/agent-factory/SETUP-GUIDE.md)
+
+### MCP Gateway
+
+MCP server gateway for agent messaging and tool routing. In progress.
+
+See: [modules/mcp-gateway/](modules/mcp-gateway/)
+
+## Local Development (No AWS Required)
+
+For the gateway, you can run locally with Docker Compose:
+
+```bash
+cd modules/gateway
+docker compose up
+# Backend at http://localhost:8080, Postgres at :5432, Redis at :6379
+```
+
+For the agent runtime:
+
+```bash
+cd modules/agent-factory/agent
+npm install
+npm run build
+npm test
+```
+
+## CI/CD Workflows
+
+All workflows live in `.github/workflows/`:
+
+| Workflow | Trigger | Module |
+|----------|---------|--------|
+| `gateway-ci.yml` | PR to `modules/gateway/src/**` | Gateway — lint, test, Docker build |
+| `gateway-deploy.yml` | Push to main (`modules/gateway/src/**`) | Gateway — ECR, EKS, S3, CloudFront |
+| `gateway-infra.yml` | Push/PR to `modules/gateway/infra/**` | Gateway — Terraform plan/apply |
+| `platform-infra-plan.yml` | Platform infra changes | Platform — Terraform plan |
+| `platform-infra-apply.yml` | Platform infra changes | Platform — Terraform apply |
+| `agent-developer.yml` | `agent-developer` label | Agent Factory — code implementation |
+| `agent-architect.yml` | `agent-architect` label | Agent Factory — architecture design |
+| `agent-pm.yml` | `agent-pm` label | Agent Factory — project management |
+| `agent-reviewer.yml` | `agent-reviewer` label | Agent Factory — code review + merge |
+| `agent-product.yml` | `agent-product` label | Agent Factory — requirements analysis |
+| `agent-operations.yml` | `agent-operations` label | Agent Factory — infrastructure + deploy |
+| `pr-review-trigger.yml` | PR from `agent/*` branch | Agent Factory — auto-triggers reviewer |
+| `skill-agent.yml` | `skill-agent` label | Agent Factory — skill-driven agent |
 
 ## Directory Structure
 
 ```
 adp/
-├── platform/           # Shared platform infrastructure
-│   ├── infra/          # Terraform (VPC, EKS, ECR)
-│   ├── k8s/            # Cluster-wide K8s resources
-│   └── scripts/        # Platform scripts
+├── platform/                    # Shared infrastructure
+│   ├── infra/                   # Terraform (VPC, EKS, ECR, IAM)
+│   ├── k8s/                     # Cluster-wide K8s resources
+│   └── scripts/                 # bootstrap.sh, add-module.sh
 │
-├── libs/               # Shared libraries
-│   ├── python/         # Python packages
-│   └── typescript/     # TypeScript/React packages
+├── modules/
+│   ├── gateway/                 # Bedrock Gateway
+│   │   ├── src/                 # Python backend (FastAPI)
+│   │   ├── frontend/            # React admin UI
+│   │   ├── infra/               # Terraform (RDS, Cognito, CloudFront, etc.)
+│   │   ├── k8s/                 # K8s manifests
+│   │   ├── lambda/              # Lambda functions (authorizer, budget tracker)
+│   │   ├── cloudwatch-agent/    # Log subscription + monitoring
+│   │   ├── cli/                 # Claude Code auth CLI
+│   │   ├── tests/               # pytest suite
+│   │   └── docs/                # OpenAPI spec, schema docs
+│   │
+│   ├── agent-factory/           # Code Agents
+│   │   ├── agent/               # TypeScript agent runtime (Claude SDK)
+│   │   ├── rules/               # Agent personas, phases, templates
+│   │   ├── infra/               # Terraform (runner IAM, ARC, secrets, beads)
+│   │   ├── actions/             # GitHub composite actions
+│   │   ├── client-workflows/    # Reusable workflow callers for other repos
+│   │   ├── runner-infra/        # Reference: standalone runner setup
+│   │   ├── docker/              # github-token-refresher
+│   │   └── scripts/             # Build, deploy, onboarding
+│   │
+│   └── mcp-gateway/             # MCP Gateway
+│       ├── docker/              # agent-mail MCP server
+│       ├── scripts/             # Deploy scripts
+│       └── *.md                 # Requirements, design docs
 │
-├── modules/            # Application modules
-│   ├── gateway/        # Bedrock Gateway
-│   ├── agent-runtime/  # (Planned)
-│   └── ...
-│
-├── environments/       # Environment configs (dev/staging/prod)
-│
-└── .github/workflows/  # CI/CD pipelines
+├── environments/                # Terraform var files (dev/staging/prod)
+├── libs/                        # Shared libraries (Python, TypeScript)
+├── .github/workflows/           # All CI/CD + agent workflows
+└── docs/                        # Cross-module documentation
 ```
 
-## Development
+## Documentation
 
-See individual module READMEs for development instructions:
-
-- [Gateway Development](modules/gateway/README.md)
+| Doc | Location |
+|-----|----------|
+| Gateway README | [modules/gateway/README.md](modules/gateway/README.md) |
+| Gateway OpenAPI Spec | [modules/gateway/docs/openapi.yaml](modules/gateway/docs/openapi.yaml) |
+| Agent Factory Setup | [modules/agent-factory/SETUP-GUIDE.md](modules/agent-factory/SETUP-GUIDE.md) |
+| Agent Factory README | [modules/agent-factory/README.md](modules/agent-factory/README.md) |
+| MCP Gateway Requirements | [modules/mcp-gateway/mcp_gateway_requirements.md](modules/mcp-gateway/mcp_gateway_requirements.md) |
 
 ## License
 
-Private - Internal use only.
+Private — Internal use only.
