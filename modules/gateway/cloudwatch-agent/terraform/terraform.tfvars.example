@@ -1,0 +1,38 @@
+# CloudWatch Agent Configuration
+# Copy this file to terraform.tfvars and customize
+
+aws_region   = "us-east-1"
+project_name = "cloudwatch-agent"
+
+# GitHub configuration
+github_org         = "YourOrg"
+github_secret_name = "github-ccsdk-agent/github-pat"
+default_repo       = "your-default-repo"
+
+# Deduplication: minimum seconds between issues for same error
+cooldown_seconds = 300
+
+# Map log groups to GitHub repos
+# You can use exact names or patterns
+log_group_repo_map = {
+  "/aws/lambda/my-app"     = "my-app"
+  "/aws/lambda/api-server" = "api-server"
+  "/ecs/my-service"        = "my-service"
+  "my-app"                 = "my-app"  # Pattern match
+}
+
+# Log groups to automatically subscribe
+# Leave empty to add subscriptions manually or via tags
+log_groups = [
+  # {
+  #   name           = "/aws/lambda/my-app"
+  #   filter_pattern = "?ERROR ?Exception ?FATAL"
+  # },
+  # {
+  #   name           = "/aws/lambda/api-server"
+  #   filter_pattern = "?ERROR ?Exception ?CRITICAL"
+  # }
+]
+
+# Default error filter pattern
+error_filter_pattern = "?ERROR ?Exception ?FATAL ?CRITICAL"
