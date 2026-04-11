@@ -54,16 +54,53 @@ Multi-tenant AI infrastructure for developer tools. Three modules: a Bedrock pro
 - Python >= 3.12
 - GitHub CLI (`gh`)
 
-## Deployment Order
+## Deploy with Your AI Agent (Recommended)
 
-Everything builds on the shared platform. Deploy in this order:
+The fastest way to deploy ADP is to let your AI coding agent handle it. Open this repo in any AI-powered editor (Kiro, Claude Code, Cursor, Copilot) and say:
 
+> "Read AGENTS.md and deploy this platform"
+
+The agent will:
+1. Ask which modules you want (gateway, agent factory, or both)
+2. Ask for your GitHub org name and configure the repo for your org
+3. Run preflight checks and tell you what to install if anything is missing
+4. Deploy the shared platform (VPC, EKS, ECR)
+5. Deploy your chosen modules, verifying each step
+6. Guide you through GitHub App setup (for Agent Factory)
+7. Give you a final status summary with URLs and next steps
+
+The agent handles everything autonomously — it only asks you when it genuinely needs input (AWS credentials, GitHub org name, GitHub App creation).
+
+The deployment instructions live in three files for maximum tool compatibility:
+- `AGENTS.md` — universal (any agent can read this)
+- `CLAUDE.md` — Claude Code auto-reads this on startup
+- `.kiro/steering/deployment.md` — Kiro auto-loads this into context
+
+## Deploy with Scripts (Manual)
+
+If you prefer to run things yourself, three scripts handle the full lifecycle:
+
+```bash
+# 1. Configure for your GitHub org (required for Agent Factory)
+./platform/scripts/setup-org.sh <your-github-org>
+
+# 2. Validate your environment
+./platform/scripts/preflight-check.sh
+
+# 3. Deploy everything (runs in AWS via CodeBuild — only needs AWS CLI)
+./platform/scripts/deploy-all.sh
 ```
-1. Bootstrap          →  S3 bucket + DynamoDB for Terraform state
-2. Platform Infra     →  VPC, EKS, ECR, IAM (shared by all modules)
-3. Module Infra       →  Per-module resources (pick what you need)
-4. App Deployment     →  Containers, frontend, k8s manifests
-```
+
+Options for `deploy-all.sh`:
+- `--gateway-only` — deploy platform + gateway, skip agent factory
+- `--agent-factory-only` — deploy platform + agent factory, skip gateway
+- `--skip-frontend` — skip frontend build
+- `--local` — run Terraform/Docker/npm locally instead of CodeBuild
+- `--destroy` — tear down all infrastructure
+
+## Deploy Step-by-Step
+
+If you want full control over each phase:
 
 ## Step 1: Bootstrap Terraform State Backend
 
