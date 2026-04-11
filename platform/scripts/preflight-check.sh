@@ -37,7 +37,7 @@ echo "==================="
 # =============================================================================
 # 1. Required CLI tools
 # =============================================================================
-section "CLI Tools"
+section "CLI Tools — Deploy"
 
 # AWS CLI (always required)
 if command -v aws &>/dev/null; then
@@ -47,89 +47,70 @@ else
   fail "AWS CLI not installed. Install: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
 fi
 
-# Terraform
+# zip (needed for CodeBuild source packaging in default mode)
+if command -v zip &>/dev/null; then
+  pass "zip: available"
+elif [ "$LOCAL_MODE" = false ]; then
+  fail "zip not installed (needed to package source for CodeBuild)"
+else
+  warn "zip not installed (only needed for default AWS deploy)"
+fi
+
+# Terraform (only for --local)
 if command -v terraform &>/dev/null; then
   TF_VERSION=$(terraform version -json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['terraform_version'])" 2>/dev/null || terraform version | head -1)
   pass "Terraform: $TF_VERSION"
 elif [ "$LOCAL_MODE" = true ]; then
   fail "Terraform not installed (required for --local). Install: https://developer.hashicorp.com/terraform/install"
-else
-  warn "Terraform not installed (not needed for default AWS-only deploy, needed for --local)"
 fi
 
-# kubectl
-if command -v kubectl &>/dev/null; then
-  KUBECTL_VERSION=$(kubectl version --client -o json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['clientVersion']['gitVersion'])" 2>/dev/null || kubectl version --client 2>&1 | head -1)
-  pass "kubectl: $KUBECTL_VERSION"
-elif [ "$LOCAL_MODE" = true ]; then
-  fail "kubectl not installed (required for --local). Install: https://kubernetes.io/docs/tasks/tools/"
-else
-  warn "kubectl not installed (not needed for default deploy, needed for --local and monitoring)"
-fi
-
-# Helm
-if command -v helm &>/dev/null; then
-  pass "Helm: $(helm version --short 2>/dev/null)"
-else
-  warn "Helm not installed (optional, used for manual ARC runner setup)"
-fi
-
-# Docker
+# Docker (only for --local)
 if command -v docker &>/dev/null; then
   if docker info &>/dev/null; then
     pass "Docker: $(docker --version) (daemon running)"
-  else
-    if [ "$LOCAL_MODE" = true ]; then
-      fail "Docker installed but daemon not running. Start Docker Desktop or dockerd."
-    else
-      warn "Docker installed but daemon not running (not needed for default deploy)"
-    fi
+  elif [ "$LOCAL_MODE" = true ]; then
+    fail "Docker installed but daemon not running. Start Docker Desktop or dockerd."
   fi
 elif [ "$LOCAL_MODE" = true ]; then
   fail "Docker not installed (required for --local). Install: https://docs.docker.com/get-docker/"
-else
-  warn "Docker not installed (not needed for default AWS-only deploy)"
 fi
 
-# Node.js
+# Node.js (only for --local)
 if command -v node &>/dev/null; then
   NODE_VERSION=$(node --version)
   NODE_MAJOR=$(echo "$NODE_VERSION" | sed 's/v//' | cut -d. -f1)
   if [ "$NODE_MAJOR" -ge 22 ]; then
     pass "Node.js: $NODE_VERSION"
-  else
-    if [ "$LOCAL_MODE" = true ]; then
-      fail "Node.js $NODE_VERSION is too old (need >= 22). Update: https://nodejs.org/"
-    else
-      warn "Node.js $NODE_VERSION (need >= 22 for --local frontend builds)"
-    fi
+  elif [ "$LOCAL_MODE" = true ]; then
+    fail "Node.js $NODE_VERSION is too old (need >= 22). Update: https://nodejs.org/"
   fi
 elif [ "$LOCAL_MODE" = true ]; then
   fail "Node.js not installed (required for --local). Install: https://nodejs.org/"
-else
-  warn "Node.js not installed (not needed for default deploy)"
 fi
 
-# Python
-if command -v python3 &>/dev/null; then
-  PY_VERSION=$(python3 --version 2>&1)
-  pass "Python: $PY_VERSION"
+section "CLI Tools — Post-Deploy Validation"
+
+# kubectl (needed to verify pods, check logs, port-forward)
+if command -v kubectl &>/dev/null; then
+  KUBECTL_VERSION=$(kubectl version --client -o json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['clientVersion']['gitVersion'])" 2>/dev/null || kubectl version --client 2>&1 | head -1)
+  pass "kubectl: $KUBECTL_VERSION"
 else
-  warn "Python3 not installed (optional, used for local gateway development)"
+  warn "kubectl not installed — needed to verify deployment (pod status, logs, health checks)"
+  warn "  Install: https://kubernetes.io/docs/tasks/tools/"
 fi
 
-# GitHub CLI
+# GitHub CLI (optional, for agent testing)
 if command -v gh &>/dev/null; then
   pass "GitHub CLI: $(gh --version | head -1)"
 else
-  warn "GitHub CLI not installed (optional, used for agent testing and repo management)"
+  warn "GitHub CLI not installed — optional, used for agent testing and issue management"
 fi
 
-# zip (needed for CodeBuild source packaging)
-if command -v zip &>/dev/null; then
-  pass "zip: available"
+# curl (for health endpoint checks)
+if command -v curl &>/dev/null; then
+  pass "curl: available"
 else
-  warn "zip not installed (needed for default AWS deploy to package source for CodeBuild)"
+  warn "curl not installed — needed for health endpoint verification"
 fi
 
 # =============================================================================
@@ -305,9 +286,13 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 elif [ "$WARN" -gt 0 ]; then
   echo ""
-  echo -e "${YELLOW}Warnings are non-blocking but may cause issues for some deploy modes.${NC}"
-  echo "For default (AWS-only) deploy, you only need: AWS CLI + zip"
-  echo "For --local deploy, you also need: Terraform, Docker, Node.js >= 22, kubectl"
+  echo -e "${YELLOW}Warnings are non-blocking but may limit post-deploy validation.${NC}"
+  if [ "$LOCAL_MODE" = false ]; then
+    echo "Default (AWS) deploy requires only: aws + zip"
+    echo "Post-deploy validation also needs: kubectl, curl"
+  else
+    echo "Local deploy requires: aws, terraform, docker, node >= 22, kubectl"
+  fi
   exit 0
 else
   echo ""
