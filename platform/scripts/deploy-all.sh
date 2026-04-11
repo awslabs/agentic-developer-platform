@@ -19,6 +19,7 @@ ENVIRONMENT="${ENVIRONMENT:-dev}"
 GATEWAY_ONLY=false
 DESTROY=false
 SKIP_FRONTEND=false
+USE_CI_IMAGE=false
 
 # Parse args
 for arg in "$@"; do
@@ -26,11 +27,13 @@ for arg in "$@"; do
     --gateway-only) GATEWAY_ONLY=true ;;
     --destroy) DESTROY=true ;;
     --skip-frontend) SKIP_FRONTEND=true ;;
+    --use-ci-image) USE_CI_IMAGE=true ;;
     --help)
-      echo "Usage: $0 [--gateway-only] [--skip-frontend] [--destroy]"
+      echo "Usage: $0 [--gateway-only] [--skip-frontend] [--use-ci-image] [--destroy]"
       echo ""
       echo "  --gateway-only    Deploy platform + gateway only (skip agent-factory)"
       echo "  --skip-frontend   Skip frontend build and S3 deploy"
+      echo "  --use-ci-image    Skip local Docker build, use latest image from ECR (built by CI)"
       echo "  --destroy         Tear down all infrastructure (reverse order)"
       echo ""
       echo "Environment variables:"
@@ -179,19 +182,40 @@ step "Step 4/6: Deploy gateway application"
 
 cd "$ROOT_DIR/modules/gateway"
 
-# Build and push container
-echo "Building gateway container..."
-docker build -t adp-gateway .
+if [ "$USE_CI_IMAGE" = true ]; then
+  # Use the latest image already in ECR (built by gateway-deploy.yml CI)
+  echo "Using latest image from ECR (--use-ci-image)..."
+  LATEST_TAG=$(aws ecr describe-images --repository-name adp-gateway --region "$AWS_REGION" \
+    --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' --output text 2>/dev/null) || true
+  if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "None" ]; then
+    fail "No image found in ECR. Run without --use-ci-image to build locally, or push via CI first."
+  fi
+  IMAGE_URI="$REGISTRY/adp-gateway:$LATEST_TAG"
+  ok "Using ECR image: $IMAGE_URI"
+else
+  # Build locally and push
+  echo "Building gateway container locally..."
+  docker build -t adp-gateway .
 
-echo "Pushing to ECR..."
-aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-docker tag adp-gateway:latest "$REGISTRY/adp-gateway:latest"
-docker push "$REGISTRY/adp-gateway:latest"
+  echo "Pushing to ECR..."
+  aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+  docker tag adp-gateway:latest "$REGISTRY/adp-gateway:latest"
+  docker push "$REGISTRY/adp-gateway:latest"
+  IMAGE_URI="$REGISTRY/adp-gateway:latest"
+  ok "Image pushed: $IMAGE_URI"
+fi
 
 # Deploy k8s manifests
 echo "Deploying to EKS..."
 kubectl create namespace adp-gateway --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -f k8s/ -n adp-gateway
+
+# Update image in deployment if we have a specific tag
+if [ "$IMAGE_URI" != "$REGISTRY/adp-gateway:latest" ]; then
+  sed "s|image:.*|image: $IMAGE_URI|" k8s/deployment.yaml | kubectl apply -f - -n adp-gateway
+  kubectl apply -f k8s/configmap.yaml -f k8s/service.yaml -f k8s/ingress.yaml -f k8s/namespace.yaml -n adp-gateway 2>/dev/null || true
+else
+  kubectl apply -f k8s/ -n adp-gateway
+fi
 kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || warn "Rollout not complete yet"
 
 ok "Gateway backend deployed"
