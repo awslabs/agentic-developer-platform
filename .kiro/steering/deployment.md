@@ -28,7 +28,67 @@ Execute these phases in order. Each phase has steps, verification, and troublesh
 
 ---
 
-### Phase 0: Preflight
+### Phase 0: Fork & Configure Repository
+
+**The Agent Factory requires this repo to be in your GitHub organization.** The agent workflows run via GitHub Actions, which needs the repo (and its workflows) in your org.
+
+**Ask the user:** "What is your GitHub organization name?"
+
+Then execute:
+
+```bash
+GITHUB_ORG="<user's org>"
+
+# Check if repo already exists in their org
+gh repo view "$GITHUB_ORG/adp" &>/dev/null && echo "EXISTS" || echo "MISSING"
+```
+
+**If MISSING**, fork or push the repo to their org:
+
+```bash
+# Option A: Fork (preserves link to upstream)
+gh repo fork aws-e/adp --org "$GITHUB_ORG" --clone=false
+
+# Option B: Create fresh repo and push (clean start)
+gh repo create "$GITHUB_ORG/adp" --private --source=. --push
+```
+
+**After the repo is in their org**, update the agent workflow references:
+
+```bash
+# Update all agent workflows to reference the user's org instead of aws-e
+for f in .github/workflows/agent-*.yml .github/workflows/pr-review-trigger.yml .github/workflows/skill-agent.yml; do
+  if [ -f "$f" ]; then
+    sed -i '' "s|repository: aws-e/adp|repository: $GITHUB_ORG/adp|g" "$f" 2>/dev/null || \
+    sed -i "s|repository: aws-e/adp|repository: $GITHUB_ORG/adp|g" "$f"
+  fi
+done
+
+# Also update client workflows if they'll onboard other repos
+for f in modules/agent-factory/client-workflows/.github/workflows/*.yml; do
+  if [ -f "$f" ]; then
+    sed -i '' "s|aws-e/adp|$GITHUB_ORG/adp|g" "$f" 2>/dev/null || \
+    sed -i "s|aws-e/adp|$GITHUB_ORG/adp|g" "$f"
+  fi
+done
+
+# Commit and push the changes
+git add -A
+git commit -m "chore: update workflow references to $GITHUB_ORG/adp"
+git push
+```
+
+**Tell the user:** "Repository configured in your org. Agent workflows will now reference $GITHUB_ORG/adp."
+
+**Also update the agent-factory terraform.tfvars** to use their org:
+```bash
+# This will be done in Phase 6, but note the org name for later
+echo "Will use github_org = \"$GITHUB_ORG\" for agent-factory infra"
+```
+
+---
+
+### Phase 1: Preflight
 
 **First, ask the user:** "Which modules do you want to deploy? Options:
 1. Everything (gateway + agent factory) — full platform
@@ -57,7 +117,7 @@ Run the preflight check to validate the environment:
 
 ---
 
-### Phase 1: Bootstrap Terraform State Backend
+### Phase 2: Bootstrap Terraform State Backend
 
 **What:** Creates an S3 bucket and DynamoDB table for Terraform state storage.
 
@@ -91,7 +151,7 @@ Expected: bucket listed, table status `ACTIVE`.
 
 ---
 
-### Phase 2: Deploy Shared Platform
+### Phase 3: Deploy Shared Platform
 
 **What:** VPC, EKS cluster, ECR repositories, base IAM roles. Takes ~15 minutes.
 
@@ -123,7 +183,7 @@ If no nodes yet, wait — EKS Auto Mode takes 3-5 minutes to provision. Check ev
 
 ---
 
-### Phase 3: Deploy Gateway Infrastructure
+### Phase 4: Deploy Gateway Infrastructure
 
 **Skip this phase if user chose "Agent Factory only".**
 
@@ -151,7 +211,7 @@ aws cognito-idp list-user-pools --max-results 5 --query 'UserPools[?starts_with(
 
 ---
 
-### Phase 4: Build and Deploy Gateway Backend
+### Phase 5: Build and Deploy Gateway Backend
 
 **Skip this phase if user chose "Agent Factory only".**
 
@@ -201,7 +261,7 @@ Common causes: missing configmap, missing secrets, RDS not reachable. Check and 
 
 ---
 
-### Phase 5: Build and Deploy Frontend
+### Phase 6: Build and Deploy Frontend
 
 **Skip this phase if user chose "Agent Factory only".**
 
@@ -238,7 +298,7 @@ Expected: 200.
 
 ---
 
-### Phase 6: Deploy Agent Factory
+### Phase 7: Deploy Agent Factory
 
 **Skip this phase if user chose "Gateway only".**
 
@@ -293,7 +353,7 @@ If all return values, tell the user: "GitHub App credentials verified. Agent Fac
 
 ---
 
-### Phase 7: Final Verification
+### Phase 8: Final Verification
 
 Run a comprehensive check of all deployed components:
 
