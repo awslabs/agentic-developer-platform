@@ -55,16 +55,17 @@ fail() { echo -e "${RED}✗ $1${NC}"; exit 1; }
 # =============================================================================
 step "Preflight checks"
 
-command -v aws >/dev/null 2>&1 || fail "aws CLI not found. Install: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
-
-if [ "$LOCAL_MODE" = true ]; then
-  command -v terraform >/dev/null 2>&1 || fail "terraform not found (required for --local)"
-  command -v kubectl >/dev/null 2>&1 || fail "kubectl not found (required for --local)"
-  command -v docker >/dev/null 2>&1 || fail "docker not found (required for --local)"
-  command -v node >/dev/null 2>&1 || fail "node not found (required for --local)"
+echo "Running preflight validation..."
+LOCAL_FLAG=""
+[ "$LOCAL_MODE" = true ] && LOCAL_FLAG="--local"
+if [ -f "$SCRIPT_DIR/preflight-check.sh" ]; then
+  bash "$SCRIPT_DIR/preflight-check.sh" $LOCAL_FLAG || fail "Preflight checks failed. Fix the issues above and retry."
+else
+  warn "preflight-check.sh not found, skipping validation"
 fi
 
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) || fail "AWS CLI not configured. Run: aws configure"
+command -v aws >/dev/null 2>&1 || fail "aws CLI not found"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) || fail "AWS CLI not configured"
 ok "AWS Account: $ACCOUNT_ID | Region: $AWS_REGION | Env: $ENVIRONMENT"
 
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"

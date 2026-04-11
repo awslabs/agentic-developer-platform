@@ -19,7 +19,18 @@ Shared infrastructure lives in `platform/infra/` (VPC, EKS, ECR, IAM).
 ### One-Command Deploy
 
 ```bash
+# First, validate your environment
+./platform/scripts/preflight-check.sh
+
+# Then deploy everything
 ./platform/scripts/deploy-all.sh
+```
+
+The preflight check validates: CLI tools (aws, terraform, docker, node, kubectl), AWS credentials, IAM permissions (S3, DynamoDB, EKS, ECR, IAM, CodeBuild, Bedrock, Secrets Manager, Cognito), existing infrastructure state, and environment config files. Run it before deploying to catch issues early.
+
+For local deploys, check with `--local` flag:
+```bash
+./platform/scripts/preflight-check.sh --local
 ```
 
 This runs everything in AWS via CodeBuild. The deployer only needs AWS CLI configured with admin access. The script handles: bootstrap → platform infra → gateway infra → Docker build → k8s deploy → frontend build → agent-factory infra.
