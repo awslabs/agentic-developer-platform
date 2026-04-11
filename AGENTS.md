@@ -37,54 +37,19 @@ Execute these phases in order. Each phase has steps, verification, and troublesh
 Then execute:
 
 ```bash
-GITHUB_ORG="<user's org>"
-
-# Check if repo already exists in their org
-gh repo view "$GITHUB_ORG/adp" &>/dev/null && echo "EXISTS" || echo "MISSING"
+./platform/scripts/setup-org.sh <GITHUB_ORG>
 ```
 
-**If MISSING**, fork or push the repo to their org:
+This script:
+1. Creates `$GITHUB_ORG/adp` repo if it doesn't exist (or verifies it does)
+2. Updates all agent workflow files to reference `$GITHUB_ORG/adp`
+3. Updates client workflows, docs, and deploy script
+4. Commits and pushes the changes
+5. Verifies GitHub Actions is enabled
 
-```bash
-# Option A: Fork (preserves link to upstream)
-gh repo fork aws-e/adp --org "$GITHUB_ORG" --clone=false
-
-# Option B: Create fresh repo and push (clean start)
-gh repo create "$GITHUB_ORG/adp" --private --source=. --push
-```
-
-**After the repo is in their org**, update the agent workflow references:
-
-```bash
-# Update all agent workflows to reference the user's org instead of aws-e
-for f in .github/workflows/agent-*.yml .github/workflows/pr-review-trigger.yml .github/workflows/skill-agent.yml; do
-  if [ -f "$f" ]; then
-    sed -i '' "s|repository: aws-e/adp|repository: $GITHUB_ORG/adp|g" "$f" 2>/dev/null || \
-    sed -i "s|repository: aws-e/adp|repository: $GITHUB_ORG/adp|g" "$f"
-  fi
-done
-
-# Also update client workflows if they'll onboard other repos
-for f in modules/agent-factory/client-workflows/.github/workflows/*.yml; do
-  if [ -f "$f" ]; then
-    sed -i '' "s|aws-e/adp|$GITHUB_ORG/adp|g" "$f" 2>/dev/null || \
-    sed -i "s|aws-e/adp|$GITHUB_ORG/adp|g" "$f"
-  fi
-done
-
-# Commit and push the changes
-git add -A
-git commit -m "chore: update workflow references to $GITHUB_ORG/adp"
-git push
-```
+If the user doesn't have `gh` CLI authenticated, ask them to run `gh auth login` first.
 
 **Tell the user:** "Repository configured in your org. Agent workflows will now reference $GITHUB_ORG/adp."
-
-**Also update the agent-factory terraform.tfvars** to use their org:
-```bash
-# This will be done in Phase 6, but note the org name for later
-echo "Will use github_org = \"$GITHUB_ORG\" for agent-factory infra"
-```
 
 ---
 
