@@ -30,6 +30,15 @@ Execute these phases in order. Each phase has steps, verification, and troublesh
 
 ### Phase 0: Preflight
 
+**First, ask the user:** "Which modules do you want to deploy? Options:
+1. Everything (gateway + agent factory) — full platform
+2. Gateway only — Bedrock proxy with admin dashboard
+3. Agent Factory only — autonomous code agents
+
+The shared platform (VPC, EKS) is always deployed as a foundation."
+
+Remember their choice — it determines which phases to execute.
+
 Run the preflight check to validate the environment:
 
 ```bash
@@ -116,6 +125,8 @@ If no nodes yet, wait — EKS Auto Mode takes 3-5 minutes to provision. Check ev
 
 ### Phase 3: Deploy Gateway Infrastructure
 
+**Skip this phase if user chose "Agent Factory only".**
+
 **What:** RDS PostgreSQL, ElastiCache Redis, Cognito, CloudFront, S3, ALB, ECR, CloudTrail. Takes ~10 minutes.
 
 **Tell the user:** "Deploying gateway infrastructure (database, auth, CDN). About 10 minutes."
@@ -141,6 +152,8 @@ aws cognito-idp list-user-pools --max-results 5 --query 'UserPools[?starts_with(
 ---
 
 ### Phase 4: Build and Deploy Gateway Backend
+
+**Skip this phase if user chose "Agent Factory only".**
 
 **What:** Build Docker image, push to ECR, deploy to EKS.
 
@@ -190,6 +203,8 @@ Common causes: missing configmap, missing secrets, RDS not reachable. Check and 
 
 ### Phase 5: Build and Deploy Frontend
 
+**Skip this phase if user chose "Agent Factory only".**
+
 **What:** Build React app, upload to S3, invalidate CloudFront.
 
 **Tell the user:** "Building and deploying the admin dashboard frontend."
@@ -223,11 +238,11 @@ Expected: 200.
 
 ---
 
-### Phase 6: Deploy Agent Factory (Optional)
+### Phase 6: Deploy Agent Factory
 
-**Ask the user:** "Do you want to deploy the Agent Factory (autonomous code agents)? This requires GitHub App setup. Yes/No?"
+**Skip this phase if user chose "Gateway only".**
 
-If yes:
+**If user chose "Agent Factory only" or "Everything":**
 
 **Tell the user:** "Agent Factory needs GitHub Apps for authentication. I'll deploy the infrastructure first, then guide you through the GitHub App setup."
 

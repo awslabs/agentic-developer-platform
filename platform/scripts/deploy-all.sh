@@ -21,6 +21,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
 GATEWAY_ONLY=false
+AGENT_FACTORY_ONLY=false
 DESTROY=false
 SKIP_FRONTEND=false
 LOCAL_MODE=false
@@ -28,17 +29,19 @@ LOCAL_MODE=false
 for arg in "$@"; do
   case $arg in
     --gateway-only) GATEWAY_ONLY=true ;;
+    --agent-factory-only) AGENT_FACTORY_ONLY=true ;;
     --destroy) DESTROY=true ;;
     --skip-frontend) SKIP_FRONTEND=true ;;
     --local) LOCAL_MODE=true ;;
     --help)
-      echo "Usage: $0 [--gateway-only] [--skip-frontend] [--local] [--destroy]"
+      echo "Usage: $0 [--gateway-only] [--agent-factory-only] [--skip-frontend] [--local] [--destroy]"
       echo ""
-      echo "  (default)         Everything runs in AWS via CodeBuild. Only needs: AWS CLI"
-      echo "  --local           Run Terraform/Docker/npm locally. Needs: AWS CLI, Terraform, Docker, Node, kubectl"
-      echo "  --gateway-only    Deploy platform + gateway only (skip agent-factory)"
-      echo "  --skip-frontend   Skip frontend build and deploy"
-      echo "  --destroy         Tear down all infrastructure"
+      echo "  (default)              Deploy all modules (platform + gateway + agent-factory)"
+      echo "  --gateway-only         Deploy platform + gateway only (skip agent-factory)"
+      echo "  --agent-factory-only   Deploy platform + agent-factory only (skip gateway)"
+      echo "  --skip-frontend        Skip frontend build and deploy"
+      echo "  --local                Run Terraform/Docker/npm locally"
+      echo "  --destroy              Tear down all infrastructure"
       exit 0
       ;;
   esac
@@ -462,21 +465,28 @@ fi
 # =============================================================================
 step "Step 3/6: Deploy gateway infrastructure"
 
-if [ "$LOCAL_MODE" = true ]; then
+if [ "$AGENT_FACTORY_ONLY" = true ]; then
+  echo "Skipping gateway infra (--agent-factory-only)"
+  ok "Skipped"
+elif [ "$LOCAL_MODE" = true ]; then
   cd "$ROOT_DIR/modules/gateway/infra"
   terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false
   terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" -auto-approve
+  ok "Gateway infrastructure deployed"
 else
   run_codebuild "adp-${ENVIRONMENT}-gateway-infra" "codebuild/bs-gateway-infra.yml"
+  ok "Gateway infrastructure deployed"
 fi
-ok "Gateway infrastructure deployed"
 
 # =============================================================================
 # Step 4: Build + deploy gateway
 # =============================================================================
 step "Step 4/6: Build and deploy gateway"
 
-if [ "$LOCAL_MODE" = true ]; then
+if [ "$AGENT_FACTORY_ONLY" = true ]; then
+  echo "Skipping gateway deploy (--agent-factory-only)"
+  ok "Skipped"
+elif [ "$LOCAL_MODE" = true ]; then
   cd "$ROOT_DIR/modules/gateway"
   docker build -t adp-gateway .
   aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
@@ -494,7 +504,7 @@ ok "Gateway deployed"
 # =============================================================================
 # Step 5: Frontend
 # =============================================================================
-if [ "$SKIP_FRONTEND" = false ]; then
+if [ "$SKIP_FRONTEND" = false ] && [ "$AGENT_FACTORY_ONLY" = false ]; then
   step "Step 5/6: Deploy frontend"
 
   if [ "$LOCAL_MODE" = true ]; then
