@@ -434,7 +434,53 @@ phases:
       - terraform apply -var-file=terraform.tfvars -auto-approve
 EOF
 
-  for f in bs-platform bs-gateway-infra bs-gateway-build bs-frontend bs-gateway-deploy bs-agent-factory; do
+  # --- Agent factory gateway build + deploy ---
+  cat > /tmp/bs-agent-gateway.yml << 'EOF'
+version: 0.2
+phases:
+  install:
+    commands:
+      - curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && chmod +x kubectl && mv kubectl /usr/local/bin/
+      - aws eks update-kubeconfig --name $EKS_CLUSTER --region $AWS_REGION
+  pre_build:
+    commands:
+      - REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+      - ECR_REPO="adp-agent-gateway"
+      - aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" 2>/dev/null || aws ecr create-repository --repository-name "$ECR_REPO" --region "$AWS_REGION"
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+  build:
+    commands:
+      - cd modules/agent-factory
+      - BUILD_DIR="/tmp/agent-gateway-build"
+      - rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
+      - cp -r gateway/app "$BUILD_DIR/app"
+      - cp -r agent "$BUILD_DIR/agent"
+      - cp gateway/Dockerfile "$BUILD_DIR/Dockerfile"
+      - cp gateway/entrypoint.sh "$BUILD_DIR/entrypoint.sh"
+      - docker build -t "$REGISTRY/$ECR_REPO:latest" "$BUILD_DIR"
+      - docker push "$REGISTRY/$ECR_REPO:latest"
+      - rm -rf "$BUILD_DIR"
+  post_build:
+    commands:
+      - cd modules/agent-factory/infra
+      - terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/agent-factory-backend.tfvars" -input=false -reconfigure 2>/dev/null || true
+      - INPUT_QUEUE_URL=$(terraform output -raw gateway_input_queue_url 2>/dev/null || echo "PENDING")
+      - RESPONSE_QUEUE_URL=$(terraform output -raw gateway_response_queue_url 2>/dev/null || echo "PENDING")
+      - SESSIONS_TABLE=$(terraform output -raw gateway_sessions_table 2>/dev/null || echo "PENDING")
+      - REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+      - AGENT_IMAGE="${REGISTRY}/adp-agent-gateway:latest"
+      - cd ../
+      - kubectl create namespace adp-gateway-agents --dry-run=client -o yaml | kubectl apply -f -
+      - |
+        sed -e "s|REPLACE_WITH_INPUT_QUEUE_URL|${INPUT_QUEUE_URL}|g" \
+            -e "s|REPLACE_WITH_RESPONSE_QUEUE_URL|${RESPONSE_QUEUE_URL}|g" \
+            -e "s|REPLACE_WITH_SESSIONS_TABLE_NAME|${SESSIONS_TABLE}|g" \
+            -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
+            gateway/k8s/keda-scaledjob.yaml | kubectl apply -f -
+      - echo "Agent gateway deployed"
+EOF
+
+  for f in bs-platform bs-gateway-infra bs-gateway-build bs-frontend bs-gateway-deploy bs-agent-factory bs-agent-gateway; do
     aws s3 cp "/tmp/${f}.yml" "s3://${STATE_BUCKET}/codebuild/${f}.yml" --region "$AWS_REGION" > /dev/null
     rm -f "/tmp/${f}.yml"
   done
@@ -532,7 +578,7 @@ fi
 # Step 6: Agent Factory
 # =============================================================================
 if [ "$GATEWAY_ONLY" = false ]; then
-  step "Step 6/6: Deploy agent-factory"
+  step "Step 6/7: Deploy agent-factory"
 
   if [ "$LOCAL_MODE" = true ]; then
     cd "$ROOT_DIR/modules/agent-factory/infra"
@@ -557,9 +603,44 @@ EOF
     run_codebuild "adp-${ENVIRONMENT}-agent-factory-infra" "codebuild/bs-agent-factory.yml"
   fi
   ok "Agent-factory deployed"
+
+  # --- Agent Gateway build + deploy (part of agent-factory) ---
+  step "Step 7/7: Build and deploy agent gateway"
+
+  if [ "$LOCAL_MODE" = true ]; then
+    cd "$ROOT_DIR/modules/agent-factory"
+    BUILD_DIR="/tmp/agent-gateway-build"
+    rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
+    cp -r gateway/app "$BUILD_DIR/app"
+    cp -r agent "$BUILD_DIR/agent"
+    cp gateway/Dockerfile "$BUILD_DIR/Dockerfile"
+    cp gateway/entrypoint.sh "$BUILD_DIR/entrypoint.sh"
+
+    aws ecr describe-repositories --repository-names "adp-agent-gateway" --region "$AWS_REGION" 2>/dev/null || \
+      aws ecr create-repository --repository-name "adp-agent-gateway" --region "$AWS_REGION" --no-cli-pager
+    aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+    docker build -t "$REGISTRY/adp-agent-gateway:latest" "$BUILD_DIR"
+    docker push "$REGISTRY/adp-agent-gateway:latest"
+    rm -rf "$BUILD_DIR"
+
+    kubectl create namespace adp-gateway-agents --dry-run=client -o yaml | kubectl apply -f -
+    INPUT_QUEUE_URL=$(cd infra && terraform output -raw gateway_input_queue_url 2>/dev/null || echo "PENDING")
+    RESPONSE_QUEUE_URL=$(cd infra && terraform output -raw gateway_response_queue_url 2>/dev/null || echo "PENDING")
+    SESSIONS_TABLE=$(cd infra && terraform output -raw gateway_sessions_table 2>/dev/null || echo "PENDING")
+    AGENT_IMAGE="$REGISTRY/adp-agent-gateway:latest"
+    sed -e "s|REPLACE_WITH_INPUT_QUEUE_URL|${INPUT_QUEUE_URL}|g" \
+        -e "s|REPLACE_WITH_RESPONSE_QUEUE_URL|${RESPONSE_QUEUE_URL}|g" \
+        -e "s|REPLACE_WITH_SESSIONS_TABLE_NAME|${SESSIONS_TABLE}|g" \
+        -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
+        gateway/k8s/keda-scaledjob.yaml | kubectl apply -f -
+  else
+    run_codebuild "adp-${ENVIRONMENT}-agent-gateway" "codebuild/bs-agent-gateway.yml"
+  fi
+  ok "Agent gateway deployed"
+
   warn "Store GitHub App creds in Secrets Manager (see modules/agent-factory/SETUP-GUIDE.md)"
 else
-  step "Step 6/6: Skipping agent-factory"
+  step "Step 6/7: Skipping agent-factory"
 fi
 
 # =============================================================================
@@ -573,5 +654,7 @@ echo "Gateway:   kubectl get pods -n adp-gateway (configure kubectl: aws eks upd
 CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query "Parameter.Value" --output text 2>/dev/null) || true
 [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ] && echo "Frontend:  https://${CF_DOMAIN}" && echo "API:       https://${CF_DOMAIN}/api/health"
 [ "$GATEWAY_ONLY" = false ] && echo "Agents:    kubectl get pods -n arc-runners"
+GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
+[ -n "$GW_WS" ] && [ "$GW_WS" != "" ] && echo "Gateway:   $GW_WS"
 echo ""
 echo "To destroy: $0 --destroy"

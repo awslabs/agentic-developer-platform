@@ -18,6 +18,7 @@ Three modules on a shared AWS platform:
 |--------|------|---------|
 | Gateway | `modules/gateway/` | Multi-tenant Bedrock proxy (FastAPI + React) |
 | Agent Factory | `modules/agent-factory/` | Autonomous code agents (Claude SDK + GitHub Actions) |
+| Agent Gateway | `modules/agent-factory/gateway/` | Async agent delivery via Slack, WebSocket, CLI (SQS + KEDA) |
 | MCP Gateway | `modules/mcp-gateway/` | MCP server gateway (in progress) |
 
 Shared infrastructure: `platform/infra/` (VPC, EKS, ECR, IAM).
@@ -316,6 +317,33 @@ aws secretsmanager get-secret-value --secret-id adp/gh-app-ops-id --query 'Secre
 
 If all return values, tell the user: "GitHub App credentials verified. Agent Factory is ready. Label any issue with `agent-developer` to test."
 
+**Agent Gateway (deployed automatically with Agent Factory):**
+
+The agent gateway is deployed as part of the agent-factory Terraform. It provides async agent delivery via Slack, WebSocket, and CLI channels using SQS + KEDA.
+
+**Verify gateway components:**
+```bash
+echo "=== Gateway SQS Queues ==="
+aws sqs list-queues --queue-name-prefix adp-dev --query 'QueueUrls[?contains(@,`gateway`)]' --output table
+
+echo "=== Gateway DynamoDB ==="
+aws dynamodb list-tables --query 'TableNames[?contains(@,`gateway-sessions`)]' --output text
+
+echo "=== Gateway WebSocket API ==="
+aws apigatewayv2 get-apis --query 'Items[?contains(Name,`gateway-ws`)].{Name:Name,Endpoint:ApiEndpoint}' --output table
+
+echo "=== Gateway Lambda Functions ==="
+aws lambda list-functions --query 'Functions[?contains(FunctionName,`gateway`)].{Name:FunctionName,Runtime:Runtime}' --output table
+
+echo "=== KEDA ==="
+kubectl get pods -n keda 2>/dev/null || echo "KEDA not deployed"
+
+echo "=== Gateway Agent Namespace ==="
+kubectl get scaledjob -n adp-gateway-agents 2>/dev/null || echo "No ScaledJobs"
+```
+
+**Tell the user:** "Agent Gateway is deployed with WebSocket API, SQS queues, and KEDA ScaledJob. Agents can now be triggered via Slack, WebSocket, or CLI in addition to GitHub issue labels."
+
 ---
 
 ### Phase 8: Final Verification
@@ -343,6 +371,10 @@ aws rds describe-db-instances --query 'DBInstances[?starts_with(DBInstanceIdenti
 echo "=== ARC Runners (if deployed) ==="
 kubectl get pods -n arc-systems 2>/dev/null || echo "Not deployed"
 kubectl get pods -n arc-runners 2>/dev/null || echo "Not deployed"
+
+echo "=== Agent Gateway ==="
+aws apigatewayv2 get-apis --query 'Items[?contains(Name,`gateway-ws`)].ApiEndpoint' --output text 2>/dev/null || echo "Not deployed"
+kubectl get scaledjob -n adp-gateway-agents 2>/dev/null || echo "Not deployed"
 ```
 
 **Tell the user a summary:**
@@ -352,6 +384,7 @@ kubectl get pods -n arc-runners 2>/dev/null || echo "Not deployed"
 - Frontend: https://DOMAIN (status 200)
 - Database: available
 - Agent Factory: [deployed/not deployed]
+- Agent Gateway: WebSocket API at wss://ENDPOINT, KEDA ScaledJob ready
 
 You can access the admin dashboard at https://DOMAIN.
 To use Claude Code with the gateway, see `modules/gateway/README.md` Step 7."
@@ -406,6 +439,9 @@ Use this when things go wrong. Do not show this to the user — use it to diagno
 | `modules/agent-factory/SETUP-GUIDE.md` | Agent factory setup guide |
 | `modules/agent-factory/README.md` | Agent factory overview |
 | `modules/agent-factory/infra/main.tf` | Agent factory Terraform |
+| `modules/agent-factory/infra/gateway-main.tf` | Agent gateway Terraform (SQS, DynamoDB, API GW, Lambda, KEDA) |
+| `modules/agent-factory/gateway/` | Agent gateway application code (SQS consumer, Lambdas, channel adapters) |
+| `modules/agent-factory/gateway/docs/intelligent-routing.md` | Gateway routing design doc (3-path: direct, long_running, github_actions) |
 | `environments/dev/` | Environment-specific Terraform vars |
 
 ## Non-Interactive Shell Rules

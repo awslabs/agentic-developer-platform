@@ -1,0 +1,214 @@
+"""
+Agent Gateway — Response Lambda (Thread-Aware)
+
+Routes agent responses to channels and manages per-thread re-enqueue:
+- Appends response to session messages + thread messages
+- Routes via channel routers (WebSocket, Slack, REST)
+- Checks thread for buffered user messages → re-enqueues if found
+- Clears thread processing lock when idle
+"""
+
+import json
+import logging
+import os
+import time
+import uuid
+from decimal import Decimal
+from typing import Any
+
+import boto3
+
+from routers.websocket import WebSocketRouter
+from routers.slack import SlackRouter
+from routers.rest import RestRouter
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+INPUT_QUEUE_URL = os.environ.get("INPUT_QUEUE_URL", "")
+SESSIONS_TABLE_NAME = os.environ.get("SESSIONS_TABLE_NAME", "")
+WS_API_ENDPOINT = os.environ.get("WS_API_ENDPOINT", "")
+WS_API_ID = os.environ.get("WS_API_ID", "")
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")
+REGION = os.environ.get("AWS_REGION_NAME", "us-east-1")
+
+sqs = boto3.client("sqs", region_name=REGION)
+dynamodb = boto3.resource("dynamodb", region_name=REGION)
+secrets_client = boto3.client("secretsmanager", region_name=REGION)
+sessions_table = dynamodb.Table(SESSIONS_TABLE_NAME) if SESSIONS_TABLE_NAME else None
+
+ws_router = WebSocketRouter(WS_API_ENDPOINT, sessions_table=sessions_table)
+slack_router = SlackRouter(secrets_client, environment=ENVIRONMENT)
+rest_router = RestRouter(sessions_table) if sessions_table else None
+
+
+def lambda_handler(event: dict, context) -> dict:
+    records = event.get("Records", [])
+    failures = []
+    for record in records:
+        try:
+            _process_response(json.loads(record["body"]))
+        except Exception as e:
+            logger.error("Failed: %s — %s", record.get("messageId"), e)
+            failures.append({"itemIdentifier": record.get("messageId", "")})
+    return {"batchItemFailures": failures} if failures else {"statusCode": 200}
+
+
+def _process_response(response: dict) -> None:
+    task_id = response.get("task_id", "")
+    session_id = response.get("session_id", "")
+    thread_id = response.get("thread_id", "")
+    content = response.get("result", response.get("content", ""))
+    channel = response.get("channel", "")
+    now = int(time.time())
+
+    logger.info("Response: task=%s session=%s thread=%s channel=%s", task_id, session_id, thread_id, channel)
+
+    # 1. Append to session messages
+    if session_id and sessions_table:
+        _append_response(session_id, content, task_id, now)
+
+    # 2. Route to channel
+    metadata = response.get("channel_metadata", response.get("platform_data", {}))
+    if response.get("connection_id"):
+        metadata["connection_id"] = response["connection_id"]
+    if session_id:
+        metadata["session_id"] = session_id
+
+    if channel in ("webchat", "websocket"):
+        ws_router.route(content, metadata, task_id)
+    elif channel == "slack":
+        slack_router.route(content, metadata, task_id)
+    elif channel in ("cli", "rest", "poll") and rest_router:
+        rest_router.route(content, metadata, task_id)
+    elif metadata.get("connection_id"):
+        ws_router.route(content, metadata, task_id)
+    elif rest_router:
+        rest_router.route(content, metadata, task_id)
+
+    # 3. Thread-aware re-enqueue (only for long_running threads)
+    if session_id and thread_id and sessions_table:
+        _check_thread_and_reenqueue(session_id, thread_id, response, now)
+    elif session_id and sessions_table:
+        # Legacy: no thread_id, clear session-level lock
+        _clear_session_processing(session_id)
+
+
+def _append_response(session_id: str, content: str, task_id: str, now: int):
+    try:
+        sessions_table.update_item(
+            Key={"session_id": session_id},
+            UpdateExpression=(
+                "SET messages = list_append(if_not_exists(messages, :e), :m), "
+                "last_response = :r, updated_at = :t"
+            ),
+            ExpressionAttributeValues={
+                ":m": [{"role": "assistant", "content": content[:10000], "timestamp": Decimal(str(now)), "task_id": task_id}],
+                ":e": [], ":r": content[:10000], ":t": now,
+            },
+        )
+    except Exception as e:
+        logger.warning("append_response failed: %s", e)
+
+
+def _check_thread_and_reenqueue(session_id: str, thread_id: str, original: dict, now: int):
+    """Check if the thread has buffered user messages and re-enqueue if so."""
+    try:
+        resp = sessions_table.get_item(
+            Key={"session_id": session_id},
+            ProjectionExpression="threads.#tid, connection_id, channel",
+            ExpressionAttributeNames={"#tid": thread_id},
+        )
+        session = resp.get("Item", {})
+        thread = session.get("threads", {}).get(thread_id, {})
+
+        if not thread:
+            return
+
+        thread_messages = thread.get("messages", [])
+
+        # Check for user messages in the thread buffer
+        has_pending = any(m.get("role") == "user" for m in thread_messages)
+
+        if has_pending and INPUT_QUEUE_URL:
+            new_task_id = str(uuid.uuid4())
+            last_user_msg = next(
+                (m.get("content", "") for m in reversed(thread_messages) if m.get("role") == "user"), ""
+            )
+
+            task = {
+                "task_id": new_task_id,
+                "session_id": session_id,
+                "thread_id": thread_id,
+                "connection_id": session.get("connection_id", original.get("connection_id", "")),
+                "channel": session.get("channel", original.get("channel", "webchat")),
+                "mode": "chat",
+                "agent_type": thread.get("persona", original.get("agent_type", "developer")),
+                "message": last_user_msg,
+                "channel_metadata": original.get("channel_metadata", {}),
+                "enqueued_at": now,
+            }
+
+            sqs.send_message(QueueUrl=INPUT_QUEUE_URL, MessageBody=json.dumps(task))
+            _set_thread_processing(session_id, thread_id, new_task_id)
+
+            # Clear the thread message buffer (they've been consumed)
+            _clear_thread_messages(session_id, thread_id)
+
+            logger.info("Re-enqueued: session=%s thread=%s task=%s", session_id, thread_id, new_task_id)
+        else:
+            _clear_thread_processing(session_id, thread_id)
+            logger.info("Thread %s/%s idle", session_id, thread_id)
+
+    except Exception as e:
+        logger.warning("Thread re-enqueue failed: %s", e)
+        _clear_thread_processing(session_id, thread_id)
+
+
+def _set_thread_processing(session_id: str, thread_id: str, task_id: str):
+    try:
+        sessions_table.update_item(
+            Key={"session_id": session_id},
+            UpdateExpression="SET threads.#tid.processing_task_id = :t",
+            ExpressionAttributeNames={"#tid": thread_id},
+            ExpressionAttributeValues={":t": task_id},
+        )
+    except Exception as e:
+        logger.warning("set_thread_processing failed: %s", e)
+
+
+def _clear_thread_processing(session_id: str, thread_id: str):
+    try:
+        sessions_table.update_item(
+            Key={"session_id": session_id},
+            UpdateExpression="SET threads.#tid.processing_task_id = :empty",
+            ExpressionAttributeNames={"#tid": thread_id},
+            ExpressionAttributeValues={":empty": ""},
+        )
+    except Exception as e:
+        logger.warning("clear_thread_processing failed: %s", e)
+
+
+def _clear_thread_messages(session_id: str, thread_id: str):
+    """Clear buffered messages from a thread after re-enqueue."""
+    try:
+        sessions_table.update_item(
+            Key={"session_id": session_id},
+            UpdateExpression="SET threads.#tid.messages = :empty",
+            ExpressionAttributeNames={"#tid": thread_id},
+            ExpressionAttributeValues={":empty": []},
+        )
+    except Exception as e:
+        logger.warning("clear_thread_messages failed: %s", e)
+
+
+def _clear_session_processing(session_id: str):
+    """Legacy: clear session-level lock for backward compatibility."""
+    try:
+        sessions_table.update_item(
+            Key={"session_id": session_id},
+            UpdateExpression="SET processing_task_id = :empty",
+            ExpressionAttributeValues={":empty": ""},
+        )
+    except Exception as e:
+        logger.warning("clear_session_processing failed: %s", e)

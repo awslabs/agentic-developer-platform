@@ -1,0 +1,84 @@
+---
+# ConfigMap for agent configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-gateway-config
+  namespace: adp-agents
+  labels:
+    app.kubernetes.io/name: agent-gateway
+    app.kubernetes.io/part-of: agent-gateway
+data:
+  INPUT_QUEUE_URL: "REPLACE_WITH_INPUT_QUEUE_URL"
+  RESPONSE_QUEUE_URL: "REPLACE_WITH_RESPONSE_QUEUE_URL"
+  SESSIONS_TABLE_NAME: "REPLACE_WITH_SESSIONS_TABLE_NAME"
+  AWS_REGION: "us-east-1"
+  AGENT_DIR: "/app/agent"
+  ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+---
+# KEDA ScaledJob — scales agent pods based on SQS queue depth
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: agent-gateway-worker
+  namespace: adp-agents
+  labels:
+    app.kubernetes.io/name: agent-gateway-worker
+    app.kubernetes.io/part-of: agent-gateway
+spec:
+  jobTargetRef:
+    parallelism: 1
+    completions: 1
+    backoffLimit: 2
+    activeDeadlineSeconds: 900
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: agent-gateway-worker
+      spec:
+        serviceAccountName: adp-agent
+        restartPolicy: Never
+        containers:
+          - name: agent-worker
+            image: REPLACE_WITH_AGENT_IMAGE
+            envFrom:
+              - configMapRef:
+                  name: agent-gateway-config
+            env:
+              - name: GITHUB_TOKEN
+                valueFrom:
+                  secretKeyRef:
+                    name: agent-gateway-secrets
+                    key: github-token
+                    optional: true
+              - name: GH_APP_ID
+                valueFrom:
+                  secretKeyRef:
+                    name: agent-gateway-secrets
+                    key: gh-app-id
+                    optional: true
+              - name: GH_APP_PRIVATE_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: agent-gateway-secrets
+                    key: gh-app-key
+                    optional: true
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "1Gi"
+              limits:
+                cpu: "2"
+                memory: "4Gi"
+  pollingInterval: 10
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  triggers:
+    - type: aws-sqs-queue
+      metadata:
+        queueURL: "REPLACE_WITH_INPUT_QUEUE_URL"
+        queueLength: "1"
+        awsRegion: "us-east-1"
+        identityOwner: operator
