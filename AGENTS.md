@@ -65,6 +65,44 @@ Shared infrastructure: `platform/infra/` (VPC, EKS, ECR, IAM).
 
 ## Deployment Playbook
 
+Before executing any phase, present this briefing to the user:
+
+---
+
+**Tell the user:**
+
+"Here's how the deployment will work:
+
+I'll handle the entire deployment for you. There are 10 phases, and only the first one needs your input — after that, everything is automated.
+
+**Phase 0 — GitHub Setup (~10 min, needs you)**
+I'll ask for your GitHub org name, repo name, and which modules you want. Then I'll open your browser 3 times to create GitHub Apps — you just click approve each time. This is the only part that needs you.
+
+**Phases 1-2 — Preflight + Bootstrap (~2 min, automated)**
+I'll check your tools and AWS permissions, then create the Terraform state backend (S3 bucket + DynamoDB table).
+
+**Phase 3 — Shared Platform (~15 min, automated)**
+I'll deploy the VPC, EKS cluster, ECR repos, and IAM roles via CodeBuild. This is the longest step — I'll poll the build and keep you updated.
+
+**Phases 4-5 — Agent Factory + Gateway (~10 min, automated)**
+I'll deploy the ARC runner infrastructure, KEDA, SQS queues, and WebSocket API for the agent delivery pipeline.
+
+**Phases 6-8 — Bedrock Gateway (~18 min, automated)**
+I'll deploy the database (RDS), auth (Cognito), CDN (CloudFront), build the Docker image, deploy to EKS, build the React frontend, and push to S3.
+
+**Phase 9 — Verification (~2 min, automated)**
+I'll validate every component using AWS CLI and kubectl, then give you a summary with URLs.
+
+**Total time: ~45 minutes. Estimated AWS cost for a test run: ~$5-10.**
+
+After Phase 0, you can step away — I'll handle everything and report back when it's done.
+
+Shall I proceed?"
+
+Wait for the user to confirm before starting Phase 0.
+
+---
+
 Execute these phases in order. Each phase has steps, verification, and troubleshooting.
 
 ---
