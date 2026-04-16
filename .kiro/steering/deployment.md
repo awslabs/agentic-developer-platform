@@ -300,21 +300,31 @@ terraform apply -var-file=terraform.tfvars -auto-approve
 **Ask the user:** "What is your GitHub organization name?" — Update `github_org` in terraform.tfvars before applying.
 
 **After infra deploys, tell the user:**
-"Agent Factory infrastructure is deployed. To activate the agents, you need to:
-1. Create 3 GitHub Apps (DEV, PM, OPS) — see `modules/agent-factory/SETUP-GUIDE.md` Step 1
-2. Store their credentials in Secrets Manager — see Step 2
-3. I cannot do this for you because it requires browser-based GitHub App creation.
+"Agent Factory infrastructure is deployed. Now let's create the GitHub Apps for agent authentication."
 
-Once you've created the apps and stored the credentials, tell me and I'll verify the setup."
+**Run the GitHub App creation script:**
 
-**When user confirms GitHub Apps are set up, verify:**
+```bash
+./platform/scripts/create-github-apps.sh <GITHUB_ORG>
+```
+
+This opens the browser 3 times (once per app: DEV, PM, OPS). The user clicks approve each time. The script then stores credentials in Secrets Manager and installs the apps on the ADP repo.
+
+**Ask the user:** "Do you have other repos where you want the agents to work? Give me a list of repo names."
+
+If they provide repos, re-run with the extra repos:
+```bash
+./platform/scripts/create-github-apps.sh <GITHUB_ORG> repo1 repo2 repo3
+```
+
+**Verify:**
 ```bash
 aws secretsmanager get-secret-value --secret-id adp/gh-app-dev-id --query 'SecretString' --output text
 aws secretsmanager get-secret-value --secret-id adp/gh-app-pm-id --query 'SecretString' --output text
 aws secretsmanager get-secret-value --secret-id adp/gh-app-ops-id --query 'SecretString' --output text
 ```
 
-If all return values, tell the user: "GitHub App credentials verified. Agent Factory is ready. Label any issue with `agent-developer` to test."
+If all return values, tell the user: "GitHub Apps created and installed. Agents are ready. Label any issue with `agent-developer` to test."
 
 ---
 
@@ -396,6 +406,8 @@ Use this when things go wrong. Do not show this to the user — use it to diagno
 |------|---------|
 | `platform/scripts/deploy-all.sh` | Automated deploy script (alternative to agent-driven deploy) |
 | `platform/scripts/preflight-check.sh` | Environment validation |
+| `platform/scripts/setup-org.sh` | Configure repo for your GitHub org |
+| `platform/scripts/create-github-apps.sh` | Create GitHub Apps + store creds + install on repos |
 | `platform/scripts/bootstrap.sh` | Creates Terraform state backend |
 | `platform/infra/main.tf` | Shared platform Terraform |
 | `modules/gateway/README.md` | Gateway detailed documentation |
