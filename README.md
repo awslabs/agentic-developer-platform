@@ -1,15 +1,18 @@
 # ADP — Agentic Developer Platform
 
-Multi-tenant AI infrastructure for developer tools. Four components on a shared AWS platform.
+Multi-tenant AI infrastructure for developer tools. Three modules on a shared AWS platform.
 
 ## Modules
 
 | Module | Path | What it does | Status |
 |--------|------|-------------|--------|
 | [Gateway](modules/gateway/) | `modules/gateway/` | Multi-tenant Bedrock proxy with Cognito auth, budgets, rate limiting, admin UI | Active |
-| [Agent Factory](modules/agent-factory/) | `modules/agent-factory/` | Autonomous code agents (Claude SDK + Bedrock) triggered by GitHub issue labels | Active |
-| [Agent Gateway](modules/agent-factory/gateway/) | `modules/agent-factory/gateway/` | Async agent delivery via Slack, WebSocket, CLI (API GW + SQS + KEDA) | Active |
+| [Agent Factory](modules/agent-factory/) | `modules/agent-factory/` | Autonomous code agents (Claude SDK + Bedrock) with async delivery via Slack, WebSocket, CLI | Active |
 | [MCP Gateway](modules/mcp-gateway/) | `modules/mcp-gateway/` | MCP server gateway for agent messaging and tool routing | In Progress |
+
+Agent Factory includes two sub-components:
+- Runners — ARC-based GitHub Actions runners on EKS, triggered by issue labels
+- Agent Gateway — async delivery pipeline (WebSocket API GW → SQS → KEDA ScaledJobs) for Slack, webchat, and CLI channels
 
 ## Architecture
 
