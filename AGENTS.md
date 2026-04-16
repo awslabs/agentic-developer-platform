@@ -75,6 +75,7 @@ Execute these phases in order. Each phase has steps, verification, and troublesh
 
 **Step 1: Ask the user:**
 - "What is your GitHub organization name?"
+- "What should the repo be called in your org? (default: adp)"
 - "Which modules do you want to deploy? (1) Everything, (2) Gateway only, (3) Agent Factory only"
 - "Do you have other repos where you want the agents to work? List the repo names."
 
@@ -83,7 +84,7 @@ Remember their answers for all subsequent phases.
 **Step 2: Configure the repo for their org:**
 
 ```bash
-./platform/scripts/setup-org.sh <GITHUB_ORG>
+./platform/scripts/setup-org.sh <GITHUB_ORG> <REPO_NAME>
 ```
 
 **Step 3: Create GitHub Apps (if deploying Agent Factory):**
