@@ -14,7 +14,7 @@ data:
   SESSIONS_TABLE_NAME: "REPLACE_WITH_SESSIONS_TABLE_NAME"
   AWS_REGION: "us-east-1"
   AGENT_DIR: "/app/agent"
-  ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+  ANTHROPIC_MODEL: "global.anthropic.claude-sonnet-4-6"
 ---
 # KEDA ScaledJob — scales agent pods based on SQS queue depth
 apiVersion: keda.sh/v1alpha1

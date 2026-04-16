@@ -20,7 +20,7 @@ import boto3
 logger = logging.getLogger(__name__)
 
 CLASSIFIER_MODEL = os.environ.get(
-    "CLASSIFIER_MODEL", "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    "CLASSIFIER_MODEL", "global.anthropic.claude-sonnet-4-6"
 )
 AWS_REGION = os.environ.get("AWS_REGION_NAME", "us-east-1")
 

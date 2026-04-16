@@ -233,7 +233,7 @@ The SQS consumer in the KEDA pod should use `claude-agent-sdk` Python directly i
 from claude_agent_sdk import AgentSession
 
 session = AgentSession(
-    model="us.anthropic.claude-sonnet-4-20250514-v1:0",
+    model="global.anthropic.claude-sonnet-4-6",
     system=persona.system_prompt,
     tools=[session_lookup_tool, dynamodb_tool, web_search_tool],
 )
