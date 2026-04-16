@@ -69,41 +69,47 @@ Execute these phases in order. Each phase has steps, verification, and troublesh
 
 ---
 
-### Phase 0: Fork & Configure Repository
+### Phase 0: GitHub Setup (Interactive — all user input happens here)
 
-**The Agent Factory requires this repo to be in your GitHub organization.** The agent workflows run via GitHub Actions, which needs the repo (and its workflows) in your org.
+**This is the only phase that needs the user's attention. Everything after is automated.**
 
-**Ask the user:** "What is your GitHub organization name?"
+**Step 1: Ask the user:**
+- "What is your GitHub organization name?"
+- "Which modules do you want to deploy? (1) Everything, (2) Gateway only, (3) Agent Factory only"
+- "Do you have other repos where you want the agents to work? List the repo names."
 
-Then execute:
+Remember their answers for all subsequent phases.
+
+**Step 2: Configure the repo for their org:**
 
 ```bash
 ./platform/scripts/setup-org.sh <GITHUB_ORG>
 ```
 
-This script:
-1. Creates `$GITHUB_ORG/adp` repo if it doesn't exist (or verifies it does)
-2. Updates all agent workflow files to reference `$GITHUB_ORG/adp`
-3. Updates client workflows, docs, and deploy script
-4. Commits and pushes the changes
-5. Verifies GitHub Actions is enabled
+**Step 3: Create GitHub Apps (if deploying Agent Factory):**
 
-If the user doesn't have `gh` CLI authenticated, ask them to run `gh auth login` first.
+```bash
+./platform/scripts/create-github-apps.sh <GITHUB_ORG> [extra-repo1 extra-repo2 ...]
+```
 
-**Tell the user:** "Repository configured in your org. Agent workflows will now reference $GITHUB_ORG/adp."
+This opens the browser 3 times (once per app: adp-agent-dev, adp-agent-pm, adp-agent-ops). The user clicks approve each time. The script stores credentials in Secrets Manager and installs the apps on the ADP repo plus any extra repos.
+
+If the user chose "Gateway only", skip this step.
+
+**Step 4: Verify:**
+```bash
+# Repo exists
+gh repo view <GITHUB_ORG>/adp --json name
+
+# GitHub Apps (if created)
+aws secretsmanager list-secrets --filter Key=name,Values=adp/gh-app --query 'SecretList[].Name'
+```
+
+**Tell the user:** "GitHub setup complete. Everything from here is automated. This will take about 30-45 minutes. I'll keep you updated."
 
 ---
 
-### Phase 1: Preflight
-
-**First, ask the user:** "Which modules do you want to deploy? Options:
-1. Everything (gateway + agent factory) — full platform
-2. Gateway only — Bedrock proxy with admin dashboard
-3. Agent Factory only — autonomous code agents
-
-The shared platform (VPC, EKS) is always deployed as a foundation."
-
-Remember their choice — it determines which phases to execute.
+### Phase 1: Preflight (Automated)
 
 Run the preflight check to validate the environment:
 
@@ -189,7 +195,76 @@ If no nodes yet, wait — EKS Auto Mode takes 3-5 minutes to provision. Check ev
 
 ---
 
-### Phase 4: Deploy Gateway Infrastructure
+### Phase 4: Deploy Agent Factory Infrastructure
+
+**Skip this phase if user chose "Gateway only".**
+
+**Tell the user:** "Deploying Agent Factory infrastructure (runner IAM, ARC controller, secrets, beads state). About 5 minutes."
+
+**Execute:**
+```bash
+cd modules/agent-factory/infra
+
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+cat > ../../../environments/dev/modules/agent-factory-backend.tfvars << EOF
+bucket         = "adp-terraform-state-${ACCOUNT_ID}"
+key            = "dev/modules/agent-factory/terraform.tfstate"
+region         = "us-east-1"
+encrypt        = true
+dynamodb_table = "adp-terraform-locks"
+EOF
+
+cat > terraform.tfvars << EOF
+environment      = "dev"
+aws_region       = "us-east-1"
+account_id       = "${ACCOUNT_ID}"
+github_org       = "<GITHUB_ORG>"
+runner_namespace = "arc-runners"
+EOF
+
+terraform init -backend-config=../../../environments/dev/modules/agent-factory-backend.tfvars -input=false
+terraform apply -var-file=terraform.tfvars -auto-approve
+```
+
+Use the `github_org` from Phase 0.
+
+**Verify (from `docs/deployment-manifest.md`):**
+```bash
+aws iam get-role --role-name adp-dev-agent-runner-role --query 'Role.Arn'
+kubectl get pods -n arc-systems
+kubectl describe sa github-runner-sa -n arc-runners | grep eks.amazonaws.com/role-arn
+aws secretsmanager list-secrets --filter Key=name,Values=adp/gh-app --query 'SecretList[].Name'
+```
+
+**Tell the user:** "Agent Factory deployed. ARC controller running, runner IAM configured, GitHub App credentials verified."
+
+---
+
+### Phase 5: Deploy Agent Gateway
+
+**Skip this phase if user chose "Gateway only".**
+
+**Tell the user:** "Deploying Agent Gateway (WebSocket API, SQS queues, KEDA). About 5 minutes."
+
+**Execute:**
+```bash
+cd modules/agent-factory/scripts
+./deploy-gateway.sh
+```
+
+**Verify:**
+```bash
+aws apigatewayv2 get-apis --query 'Items[?starts_with(Name,`adp`)].{Name:Name,Endpoint:ApiEndpoint}'
+aws sqs list-queues --queue-name-prefix adp --query 'QueueUrls'
+kubectl get pods -n keda
+kubectl get scaledjobs -n adp-gateway-agents
+```
+
+**Tell the user:** "Agent Gateway deployed. WebSocket API, SQS queues, and KEDA ScaledJob ready."
+
+---
+
+### Phase 6: Deploy Gateway Infrastructure
 
 **Skip this phase if user chose "Agent Factory only".**
 
@@ -217,7 +292,7 @@ aws cognito-idp list-user-pools --max-results 5 --query 'UserPools[?starts_with(
 
 ---
 
-### Phase 5: Build and Deploy Gateway Backend
+### Phase 7: Build and Deploy Gateway Backend
 
 **Skip this phase if user chose "Agent Factory only".**
 
@@ -267,7 +342,7 @@ Common causes: missing configmap, missing secrets, RDS not reachable. Check and 
 
 ---
 
-### Phase 6: Build and Deploy Frontend
+### Phase 8: Build and Deploy Frontend
 
 **Skip this phase if user chose "Agent Factory only".**
 
@@ -304,72 +379,7 @@ Expected: 200.
 
 ---
 
-### Phase 7: Deploy Agent Factory
-
-**Skip this phase if user chose "Gateway only".**
-
-**If user chose "Agent Factory only" or "Everything":**
-
-**Tell the user:** "Agent Factory needs GitHub Apps for authentication. I'll deploy the infrastructure first, then guide you through the GitHub App setup."
-
-**Execute infrastructure:**
-```bash
-cd modules/agent-factory/infra
-
-# Create backend config
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-cat > ../../../environments/dev/modules/agent-factory-backend.tfvars << EOF
-bucket         = "adp-terraform-state-${ACCOUNT_ID}"
-key            = "dev/modules/agent-factory/terraform.tfstate"
-region         = "us-east-1"
-encrypt        = true
-dynamodb_table = "adp-terraform-locks"
-EOF
-
-cat > terraform.tfvars << EOF
-environment      = "dev"
-aws_region       = "us-east-1"
-account_id       = "${ACCOUNT_ID}"
-github_org       = "GITHUB_ORG_HERE"
-runner_namespace = "arc-runners"
-EOF
-
-terraform init -backend-config=../../../environments/dev/modules/agent-factory-backend.tfvars -input=false
-terraform apply -var-file=terraform.tfvars -auto-approve
-```
-
-**Ask the user:** "What is your GitHub organization name?" — Update `github_org` in terraform.tfvars before applying.
-
-**After infra deploys, tell the user:**
-"Agent Factory infrastructure is deployed. Now let's create the GitHub Apps for agent authentication."
-
-**Run the GitHub App creation script:**
-
-```bash
-./platform/scripts/create-github-apps.sh <GITHUB_ORG>
-```
-
-This opens the browser 3 times (once per app: DEV, PM, OPS). The user clicks approve each time. The script then stores credentials in Secrets Manager and installs the apps on the ADP repo.
-
-**Ask the user:** "Do you have other repos where you want the agents to work? Give me a list of repo names."
-
-If they provide repos, re-run with the extra repos:
-```bash
-./platform/scripts/create-github-apps.sh <GITHUB_ORG> repo1 repo2 repo3
-```
-
-**Verify:**
-```bash
-aws secretsmanager get-secret-value --secret-id adp/gh-app-dev-id --query 'SecretString' --output text
-aws secretsmanager get-secret-value --secret-id adp/gh-app-pm-id --query 'SecretString' --output text
-aws secretsmanager get-secret-value --secret-id adp/gh-app-ops-id --query 'SecretString' --output text
-```
-
-If all return values, tell the user: "GitHub Apps created and installed. Agents are ready. Label any issue with `agent-developer` to test."
-
----
-
-### Phase 8: Final Verification
+### Phase 9: Final Verification
 
 Run a comprehensive check of all deployed components:
 
