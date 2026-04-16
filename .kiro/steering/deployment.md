@@ -73,6 +73,14 @@ Execute these phases in order. Each phase has steps, verification, and troublesh
 
 **This is the only phase that needs the user's attention. Everything after is automated.**
 
+**Pre-check:** Before starting, verify GitHub CLI is installed and authenticated:
+```bash
+command -v gh && gh auth status
+```
+If `gh` is not installed, tell the user: "Install GitHub CLI: https://cli.github.com/ then run `gh auth login`."
+If not authenticated, tell the user: "Run `gh auth login` and follow the prompts."
+Do not proceed until both pass.
+
 **Step 1: Ask the user:**
 - "What is your GitHub organization name?"
 - "What should the repo be called in your org? (default: adp)"
