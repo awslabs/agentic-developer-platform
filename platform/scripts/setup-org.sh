@@ -8,8 +8,9 @@ set -euo pipefail
 # references so Agent Factory works with your org.
 #
 # Usage:
-#   ./platform/scripts/setup-org.sh <github-org>
-#   ./platform/scripts/setup-org.sh my-company
+#   ./platform/scripts/setup-org.sh <github-org> [repo-name]
+#   ./platform/scripts/setup-org.sh my-company              # creates my-company/adp
+#   ./platform/scripts/setup-org.sh my-company platform-adp # creates my-company/platform-adp
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,10 +23,13 @@ fail() { echo -e "${RED}✗ $1${NC}"; exit 1; }
 
 # Validate args
 GITHUB_ORG="${1:-}"
+REPO_NAME="${2:-adp}"
 if [ -z "$GITHUB_ORG" ]; then
-  echo "Usage: $0 <github-org>"
+  echo "Usage: $0 <github-org> [repo-name]"
   echo ""
-  echo "Example: $0 my-company"
+  echo "Examples:"
+  echo "  $0 my-company              # creates my-company/adp"
+  echo "  $0 my-company platform-adp # creates my-company/platform-adp"
   echo ""
   echo "This script:"
   echo "  1. Creates the adp repo in your GitHub org (if it doesn't exist)"
@@ -47,22 +51,22 @@ echo ""
 # =============================================================================
 echo -e "${BLUE}Step 1: Repository setup${NC}"
 
-if gh repo view "$GITHUB_ORG/adp" &>/dev/null; then
-  ok "Repository $GITHUB_ORG/adp already exists"
+if gh repo view "$GITHUB_ORG/$REPO_NAME" &>/dev/null; then
+  ok "Repository $GITHUB_ORG/$REPO_NAME already exists"
 
   # Check if current remote points to the right place
   CURRENT_REMOTE=$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null || echo "")
-  if echo "$CURRENT_REMOTE" | grep -q "$GITHUB_ORG/adp"; then
-    ok "Git remote already points to $GITHUB_ORG/adp"
+  if echo "$CURRENT_REMOTE" | grep -q "$GITHUB_ORG/$REPO_NAME"; then
+    ok "Git remote already points to $GITHUB_ORG/$REPO_NAME"
   else
-    echo "Updating git remote to $GITHUB_ORG/adp..."
-    git -C "$ROOT_DIR" remote set-url origin "https://github.com/$GITHUB_ORG/adp.git"
+    echo "Updating git remote to $GITHUB_ORG/$REPO_NAME..."
+    git -C "$ROOT_DIR" remote set-url origin "https://github.com/$GITHUB_ORG/$REPO_NAME.git"
     ok "Git remote updated"
   fi
 else
-  echo "Creating repository $GITHUB_ORG/adp..."
-  gh repo create "$GITHUB_ORG/adp" --private --source="$ROOT_DIR" --push
-  ok "Repository created and code pushed to $GITHUB_ORG/adp"
+  echo "Creating repository $GITHUB_ORG/$REPO_NAME..."
+  gh repo create "$GITHUB_ORG/$REPO_NAME" --private --source="$ROOT_DIR" --push
+  ok "Repository created and code pushed to $GITHUB_ORG/$REPO_NAME"
 fi
 
 # =============================================================================
@@ -79,8 +83,8 @@ for f in "$ROOT_DIR"/.github/workflows/agent-*.yml \
          "$ROOT_DIR"/.github/workflows/skill-agent.yml; do
   if [ -f "$f" ]; then
     if grep -q "aws-e/adp" "$f" 2>/dev/null; then
-      sed -i '' "s|aws-e/adp|$GITHUB_ORG/adp|g" "$f" 2>/dev/null || \
-      sed -i "s|aws-e/adp|$GITHUB_ORG/adp|g" "$f"
+      sed -i '' "s|aws-e/adp|$GITHUB_ORG/$REPO_NAME|g" "$f" 2>/dev/null || \
+      sed -i "s|aws-e/adp|$GITHUB_ORG/$REPO_NAME|g" "$f"
       UPDATED=$((UPDATED+1))
     fi
   fi
@@ -90,8 +94,8 @@ done
 for f in "$ROOT_DIR"/modules/agent-factory/client-workflows/.github/workflows/*.yml; do
   if [ -f "$f" ]; then
     if grep -q "aws-e/adp" "$f" 2>/dev/null; then
-      sed -i '' "s|aws-e/adp|$GITHUB_ORG/adp|g" "$f" 2>/dev/null || \
-      sed -i "s|aws-e/adp|$GITHUB_ORG/adp|g" "$f"
+      sed -i '' "s|aws-e/adp|$GITHUB_ORG/$REPO_NAME|g" "$f" 2>/dev/null || \
+      sed -i "s|aws-e/adp|$GITHUB_ORG/$REPO_NAME|g" "$f"
       UPDATED=$((UPDATED+1))
     fi
   fi
@@ -101,8 +105,8 @@ done
 for f in "$ROOT_DIR"/AGENTS.md "$ROOT_DIR"/CLAUDE.md "$ROOT_DIR"/.kiro/steering/deployment.md; do
   if [ -f "$f" ]; then
     if grep -q "aws-e/adp" "$f" 2>/dev/null; then
-      sed -i '' "s|aws-e/adp|$GITHUB_ORG/adp|g" "$f" 2>/dev/null || \
-      sed -i "s|aws-e/adp|$GITHUB_ORG/adp|g" "$f"
+      sed -i '' "s|aws-e/adp|$GITHUB_ORG/$REPO_NAME|g" "$f" 2>/dev/null || \
+      sed -i "s|aws-e/adp|$GITHUB_ORG/$REPO_NAME|g" "$f"
       UPDATED=$((UPDATED+1))
     fi
   fi
@@ -135,7 +139,7 @@ if [ -n "$(git status --porcelain)" ]; then
   git commit -m "chore: configure ADP for GitHub org $GITHUB_ORG
 
 Updated workflow references, client workflows, docs, and deploy script
-to use $GITHUB_ORG/adp instead of aws-e/adp."
+to use $GITHUB_ORG/$REPO_NAME instead of aws-e/adp."
   git push
   ok "Changes committed and pushed"
 else
@@ -148,9 +152,9 @@ fi
 echo ""
 echo -e "${BLUE}Step 4: Verify GitHub Actions${NC}"
 
-ACTIONS_ENABLED=$(gh api "repos/$GITHUB_ORG/adp/actions/permissions" --jq '.enabled' 2>/dev/null || echo "unknown")
+ACTIONS_ENABLED=$(gh api "repos/$GITHUB_ORG/$REPO_NAME/actions/permissions" --jq '.enabled' 2>/dev/null || echo "unknown")
 if [ "$ACTIONS_ENABLED" = "true" ]; then
-  ok "GitHub Actions is enabled for $GITHUB_ORG/adp"
+  ok "GitHub Actions is enabled for $GITHUB_ORG/$REPO_NAME"
 else
   warn "Could not verify GitHub Actions status. Ensure Actions is enabled in repo Settings → Actions → General."
 fi
@@ -160,7 +164,7 @@ fi
 # =============================================================================
 echo ""
 echo "========================================="
-echo -e "${GREEN}Setup complete for $GITHUB_ORG/adp${NC}"
+echo -e "${GREEN}Setup complete for $GITHUB_ORG/$REPO_NAME${NC}"
 echo "========================================="
 echo ""
 echo "Next steps:"
