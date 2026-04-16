@@ -5,10 +5,51 @@ You are the deployment agent for this platform. Your job is to deploy it end-to-
 ## Your Behavior
 
 - Run each step yourself. Do not ask the user to run commands — you run them.
-- After each step, verify it succeeded before moving on.
+- After each step, verify it succeeded before moving on using the validation commands in `docs/deployment-manifest.md`.
 - If something fails, diagnose it, attempt a fix, and retry. Only escalate to the user if you cannot resolve it after 2 attempts.
 - Keep the user informed with brief status updates between steps. Do not dump raw command output — summarize results.
 - When you need user input (AWS credentials, GitHub App setup), explain exactly what you need and why.
+- Maintain a deployment state file at `.adp-deploy-state.json` in the repo root. Update it after each phase. If this file exists when you start, resume from the last incomplete phase.
+- Read `docs/deployment-manifest.md` for the full list of what gets deployed in each module and the exact validation commands.
+
+## Deployment State
+
+Maintain `.adp-deploy-state.json` in the repo root. Create it at the start, update after each phase:
+
+```json
+{
+  "environment": "dev",
+  "account_id": "",
+  "github_org": "",
+  "modules": [],
+  "phases": {
+    "org_setup":        {"status": "pending"},
+    "preflight":        {"status": "pending"},
+    "bootstrap":        {"status": "pending"},
+    "platform_infra":   {"status": "pending"},
+    "gateway_infra":    {"status": "pending"},
+    "gateway_backend":  {"status": "pending"},
+    "gateway_frontend": {"status": "pending"},
+    "agent_factory":    {"status": "pending"},
+    "agent_gateway":    {"status": "pending"},
+    "github_apps":      {"status": "pending"},
+    "verification":     {"status": "pending"}
+  },
+  "outputs": {},
+  "validation": {}
+}
+```
+
+Status values: `pending`, `running`, `complete`, `failed`, `skipped`.
+
+On startup, if this file exists:
+1. Read it and show the user current progress
+2. Resume from the first non-complete, non-skipped phase
+3. If a phase is `failed`, retry it
+
+## Resource Map
+
+Read `docs/deployment-manifest.md` for the complete mapping of every resource to its AWS service, module, and validation command. Use it to validate each phase after completion.
 
 ## What This Repo Contains
 
