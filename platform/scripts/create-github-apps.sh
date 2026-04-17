@@ -13,7 +13,7 @@ set -euo pipefail
 
 GITHUB_ORG="${1:-}"
 shift 2>/dev/null || true
-EXTRA_REPOS=("${@}")
+EXTRA_REPOS=("${@+"$@"}")
 AWS_REGION="${AWS_REGION:-us-east-1}"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -62,9 +62,8 @@ open_url() {
 
 # Find the most recent .pem file in Downloads
 find_latest_pem() {
-  local since="$1"
-  # Look for .pem files modified after $since timestamp
-  find "$DOWNLOADS" -maxdepth 1 -name "*.pem" -newer "$since" -type f 2>/dev/null | head -1
+  # Find the newest .pem file by modification time, regardless of marker
+  ls -t "$DOWNLOADS"/*.pem 2>/dev/null | head -1
 }
 
 # Store a secret in Secrets Manager (create or update)
@@ -85,7 +84,7 @@ echo "Org: $GITHUB_ORG"
 echo ""
 
 APPS=("dev" "pm" "ops")
-APP_NAMES=("adp-agent-dev" "adp-agent-pm" "adp-agent-ops")
+APP_NAMES=("${GITHUB_ORG}-adp-agent-dev" "${GITHUB_ORG}-adp-agent-pm" "${GITHUB_ORG}-adp-agent-ops")
 APP_DESCRIPTIONS=("Developer + Architect agents" "Project Manager agent" "Reviewer + Operations agents")
 
 for i in 0 1 2; do
@@ -119,6 +118,7 @@ for i in 0 1 2; do
   URL="${URL}&workflows=write"
   URL="${URL}&metadata=read"
   URL="${URL}&members=read"
+  URL="${URL}&organization_projects=write"
   URL="${URL}&events[]=issues"
   URL="${URL}&events[]=pull_request"
 
@@ -149,7 +149,7 @@ for i in 0 1 2; do
 
   PEM_FILE=""
   # Try to find it automatically
-  PEM_FILE=$(find_latest_pem "$MARKER")
+  PEM_FILE=$(find_latest_pem)
 
   if [ -z "$PEM_FILE" ]; then
     # Ask user
@@ -173,22 +173,38 @@ for i in 0 1 2; do
   store_secret "adp/gh-app-${ROLE}-key" "$(cat "$PEM_FILE")"
   ok "Stored adp/gh-app-${ROLE}-id and adp/gh-app-${ROLE}-key"
 
-  # Install the app on repos
-  echo "  Installing app on repos..."
+  # Install the app on the org
+  echo ""
+  echo "  Now install the app on your org."
+  echo "  Opening browser — select '$GITHUB_ORG' org, choose 'Only select repositories', pick 'adp'."
+  echo ""
+
+  INSTALL_URL="https://github.com/apps/${APP_NAME}/installations/select_target"
+  open_url "$INSTALL_URL"
+
+  echo -n "  Press Enter after you've installed the app in the browser..."
+  read -r
+
+  # Verify installation and add extra repos
+  echo "  Verifying installation..."
+  sleep 2
   INSTALL_ID=$(gh api "/orgs/$GITHUB_ORG/installations" --jq ".installations[] | select(.app_id==$APP_ID) | .id" 2>/dev/null || echo "")
 
   if [ -n "$INSTALL_ID" ]; then
-    ALL_REPOS=("adp" "${EXTRA_REPOS[@]}")
-    for repo in "${ALL_REPOS[@]}"; do
-      REPO_ID=$(gh api "/repos/$GITHUB_ORG/$repo" --jq '.id' 2>/dev/null || echo "")
-      if [ -n "$REPO_ID" ]; then
-        gh api --method PUT "/user/installations/$INSTALL_ID/repositories/$REPO_ID" 2>/dev/null || true
-        ok "Installed on $GITHUB_ORG/$repo"
-      fi
-    done
+    ok "App installed on $GITHUB_ORG (installation ID: $INSTALL_ID)"
+
+    # Add extra repos if specified
+    if [ ${#EXTRA_REPOS[@]+"${#EXTRA_REPOS[@]}"} -gt 0 ] 2>/dev/null; then
+      for repo in "${EXTRA_REPOS[@]+"${EXTRA_REPOS[@]}"}"; do
+        REPO_ID=$(gh api "/repos/$GITHUB_ORG/$repo" --jq '.id' 2>/dev/null || echo "")
+        if [ -n "$REPO_ID" ]; then
+          gh api --method PUT "/user/installations/$INSTALL_ID/repositories/$REPO_ID" 2>/dev/null || true
+          ok "Added $GITHUB_ORG/$repo to installation"
+        fi
+      done
+    fi
   else
-    warn "App not yet installed on org. Install it manually at:"
-    warn "  https://github.com/organizations/$GITHUB_ORG/settings/installations"
+    warn "Could not verify installation. Check https://github.com/organizations/$GITHUB_ORG/settings/installations"
   fi
 
   echo ""
