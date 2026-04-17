@@ -1,0 +1,23 @@
+{
+  "environment": "dev",
+  "account_id": "879318057152",
+  "github_org": "aws-e",
+  "github_repo": "adp",
+  "aws_profile": "embark2",
+  "modules": ["agent-factory"],
+  "phases": {
+    "org_setup":        {"status": "running"},
+    "preflight":        {"status": "pending"},
+    "bootstrap":        {"status": "pending"},
+    "platform_infra":   {"status": "pending"},
+    "gateway_infra":    {"status": "skipped"},
+    "gateway_backend":  {"status": "skipped"},
+    "gateway_frontend": {"status": "skipped"},
+    "agent_factory":    {"status": "pending"},
+    "agent_gateway":    {"status": "pending"},
+    "github_apps":      {"status": "pending"},
+    "verification":     {"status": "pending"}
+  },
+  "outputs": {},
+  "validation": {}
+}
