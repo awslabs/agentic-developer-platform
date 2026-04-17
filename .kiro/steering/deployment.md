@@ -135,6 +135,21 @@ Remember their answers for all subsequent phases.
 
 **Step 3: Create GitHub Apps (if deploying Agent Factory):**
 
+**First, check if apps are already set up:**
+```bash
+# Check Secrets Manager for existing credentials
+for role in dev pm ops; do
+  aws secretsmanager get-secret-value --secret-id "adp/gh-app-${role}-id" --query 'SecretString' --output text --region us-east-1 2>/dev/null && echo "${role}: EXISTS" || echo "${role}: MISSING"
+done
+
+# Check GitHub for installations
+gh api "/orgs/<GITHUB_ORG>/installations" --jq '.installations[] | "\(.app_slug): installed"'
+```
+
+If all 3 secrets exist AND all 3 apps are installed, tell the user: "GitHub Apps are already configured. Skipping creation." and move on.
+
+If any are missing, run the creation script:
+
 **Tell the user:** "I need to create 3 GitHub Apps for the agents. This will open your browser 3 times. For each app:
 1. Click 'Create GitHub App' (permissions are pre-filled)
 2. Note the App ID shown at the top of the page
