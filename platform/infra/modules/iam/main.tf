@@ -27,8 +27,18 @@ resource "aws_iam_role" "eks_cluster" {
 }
 
 # EKS Cluster Service Role Policy Attachments
+# Auto Mode requires Compute/BlockStorage/LoadBalancing/Networking policies
+# on the cluster role so Karpenter (AWS-managed) can create instance profiles,
+# ELBs, and EBS volumes on demand.
 resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  for_each = toset([
+    "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy",
+    "arn:aws:iam::aws:policy/AmazonEKSComputePolicy",
+    "arn:aws:iam::aws:policy/AmazonEKSBlockStoragePolicy",
+    "arn:aws:iam::aws:policy/AmazonEKSLoadBalancingPolicy",
+    "arn:aws:iam::aws:policy/AmazonEKSNetworkingPolicy",
+  ])
+  policy_arn = each.key
   role       = aws_iam_role.eks_cluster.name
 }
 
@@ -56,19 +66,19 @@ resource "aws_iam_role" "eks_node_group" {
   })
 }
 
-# EKS Node Group Service Role Policy Attachments
-resource "aws_iam_role_policy_attachment" "eks_node_group_worker_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-  role       = aws_iam_role.eks_node_group.name
-}
-
-resource "aws_iam_role_policy_attachment" "eks_node_group_cni_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-  role       = aws_iam_role.eks_node_group.name
-}
-
-resource "aws_iam_role_policy_attachment" "eks_node_group_registry_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+# EKS Node Group Service Role Policy Attachments (Auto Mode)
+# Auto Mode uses AmazonEKSWorkerNodeMinimalPolicy + AmazonEC2ContainerRegistryPullOnly.
+# We also keep the legacy Worker/CNI/ECR-ReadOnly policies for compatibility
+# with classic managed node groups in case the cluster ever runs in mixed mode.
+resource "aws_iam_role_policy_attachment" "eks_node_group_policies" {
+  for_each = toset([
+    "arn:aws:iam::aws:policy/AmazonEKSWorkerNodeMinimalPolicy",
+    "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly",
+    "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+    "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+    "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
+  ])
+  policy_arn = each.key
   role       = aws_iam_role.eks_node_group.name
 }
 

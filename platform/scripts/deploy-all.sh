@@ -71,6 +71,27 @@ command -v aws >/dev/null 2>&1 || fail "aws CLI not found"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) || fail "AWS CLI not configured"
 ok "AWS Account: $ACCOUNT_ID | Region: $AWS_REGION | Env: $ENVIRONMENT"
 
+# ---------------------------------------------------------------------------
+# Detect operator's public IP and lock EKS public API to /32 (portable)
+# ---------------------------------------------------------------------------
+# Anyone cloning this repo can run the script without editing tfvars. The
+# detected IP is exported as TF_VAR_eks_public_access_cidrs so Terraform picks
+# it up. If the caller already set the env var, respect it.
+if [ -z "${TF_VAR_eks_public_access_cidrs:-}" ]; then
+  MY_IP=""
+  for url in https://checkip.amazonaws.com https://api.ipify.org https://ifconfig.me; do
+    MY_IP=$(curl -fsS --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]' || true)
+    [ -n "$MY_IP" ] && break
+  done
+  if [ -z "$MY_IP" ]; then
+    fail "Could not detect your public IP. Set TF_VAR_eks_public_access_cidrs='[\"<ip>/32\"]' manually."
+  fi
+  export TF_VAR_eks_public_access_cidrs="[\"${MY_IP}/32\"]"
+  ok "EKS public API will allow: ${MY_IP}/32 (your current public IP)"
+else
+  ok "EKS public API CIDRs: ${TF_VAR_eks_public_access_cidrs} (from env)"
+fi
+
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
 LOCK_TABLE="adp-terraform-locks"

@@ -1,6 +1,7 @@
-# ECR Repository
+# ECR Repositories (one per name in var.repositories)
 resource "aws_ecr_repository" "main" {
-  name                 = "${var.name_prefix}-backend"
+  for_each             = toset(var.repositories)
+  name                 = each.key
   image_tag_mutability = var.image_tag_mutability
 
   image_scanning_configuration {
@@ -12,14 +13,15 @@ resource "aws_ecr_repository" "main" {
   }
 
   tags = merge(var.common_tags, {
-    Name    = "${var.name_prefix}-backend"
+    Name    = each.key
     Service = "container-registry"
   })
 }
 
-# ECR Lifecycle Policy
+# ECR Lifecycle Policy (one per repository)
 resource "aws_ecr_lifecycle_policy" "main" {
-  repository = aws_ecr_repository.main.name
+  for_each   = aws_ecr_repository.main
+  repository = each.value.name
 
   policy = jsonencode({
     rules = [
@@ -32,9 +34,7 @@ resource "aws_ecr_lifecycle_policy" "main" {
           countType     = "imageCountMoreThan"
           countNumber   = var.lifecycle_policy_rules
         }
-        action = {
-          type = "expire"
-        }
+        action = { type = "expire" }
       },
       {
         rulePriority = 2
@@ -45,9 +45,7 @@ resource "aws_ecr_lifecycle_policy" "main" {
           countType     = "imageCountMoreThan"
           countNumber   = 5
         }
-        action = {
-          type = "expire"
-        }
+        action = { type = "expire" }
       },
       {
         rulePriority = 3
@@ -58,9 +56,7 @@ resource "aws_ecr_lifecycle_policy" "main" {
           countType     = "imageCountMoreThan"
           countNumber   = 3
         }
-        action = {
-          type = "expire"
-        }
+        action = { type = "expire" }
       },
       {
         rulePriority = 4
@@ -71,16 +67,13 @@ resource "aws_ecr_lifecycle_policy" "main" {
           countUnit   = "days"
           countNumber = 1
         }
-        action = {
-          type = "expire"
-        }
+        action = { type = "expire" }
       }
     ]
   })
 }
 
 # ECR Repository Policy (for cross-account access if needed)
-# Only create repository policy when cross-account access is needed
 data "aws_iam_policy_document" "ecr_policy" {
   count = length(var.cross_account_arns) > 0 ? 1 : 0
 
@@ -120,23 +113,20 @@ data "aws_iam_policy_document" "ecr_policy" {
       ]
     }
 
-    actions = [
-      "ecr:*"
-    ]
+    actions = ["ecr:*"]
   }
 }
 
 resource "aws_ecr_repository_policy" "main" {
-  count      = length(var.cross_account_arns) > 0 ? 1 : 0
-  repository = aws_ecr_repository.main.name
+  for_each   = length(var.cross_account_arns) > 0 ? aws_ecr_repository.main : {}
+  repository = each.value.name
   policy     = data.aws_iam_policy_document.ecr_policy[0].json
 }
 
 # Data source for current AWS account
 data "aws_caller_identity" "current" {}
 
-# ECR Registry Scanning Configuration (if supported in region)
-# Using BASIC scan_type to avoid requiring inspector2:Enable permission
+# ECR Registry Scanning Configuration (registry-wide, not per-repo)
 resource "aws_ecr_registry_scanning_configuration" "main" {
   scan_type = "BASIC"
 
@@ -166,23 +156,23 @@ resource "aws_ecr_pull_through_cache_rule" "public_ecr" {
   upstream_registry_url = "public.ecr.aws"
 }
 
-# CloudWatch Log Group for ECR
+# CloudWatch Log Group for ECR (one per repo)
 resource "aws_cloudwatch_log_group" "ecr_logs" {
-  name              = "/aws/ecr/${aws_ecr_repository.main.name}"
+  for_each          = aws_ecr_repository.main
+  name              = "/aws/ecr/${each.value.name}"
   retention_in_days = 30
 
   tags = merge(var.common_tags, {
-    Name    = "${var.name_prefix}-ecr-logs"
+    Name    = "${each.value.name}-logs"
     Service = "container-registry"
   })
 }
 
-# EventBridge rule for ECR image pushes (for CI/CD integration)
+# EventBridge rule for ECR image pushes (per repo, if enabled)
 resource "aws_cloudwatch_event_rule" "ecr_push" {
-  count = var.enable_event_notifications ? 1 : 0
-
-  name        = "${var.name_prefix}-ecr-image-push"
-  description = "Capture ECR image push events"
+  for_each    = var.enable_event_notifications ? aws_ecr_repository.main : {}
+  name        = "${each.value.name}-ecr-image-push"
+  description = "Capture ECR image push events for ${each.value.name}"
 
   event_pattern = jsonencode({
     source      = ["aws.ecr"]
@@ -190,21 +180,20 @@ resource "aws_cloudwatch_event_rule" "ecr_push" {
     detail = {
       action-type     = ["PUSH"]
       result          = ["SUCCESS"]
-      repository-name = [aws_ecr_repository.main.name]
+      repository-name = [each.value.name]
     }
   })
 
   tags = merge(var.common_tags, {
-    Name    = "${var.name_prefix}-ecr-push-rule"
+    Name    = "${each.value.name}-ecr-push-rule"
     Service = "container-registry"
   })
 }
 
 # EventBridge target for ECR image push notifications
 resource "aws_cloudwatch_event_target" "ecr_push_sns" {
-  count = var.enable_event_notifications && var.sns_topic_arn != "" ? 1 : 0
-
-  rule      = aws_cloudwatch_event_rule.ecr_push[0].name
+  for_each  = var.enable_event_notifications && var.sns_topic_arn != "" ? aws_ecr_repository.main : {}
+  rule      = aws_cloudwatch_event_rule.ecr_push[each.key].name
   target_id = "SendToSNS"
   arn       = var.sns_topic_arn
 

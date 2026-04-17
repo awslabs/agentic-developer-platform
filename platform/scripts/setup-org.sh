@@ -160,6 +160,46 @@ else
 fi
 
 # =============================================================================
+# Step 5: Create agent trigger labels
+# =============================================================================
+# Each agent workflow is triggered by applying its matching label to an issue.
+# Created idempotently — existing labels are updated with the canonical color/description.
+echo ""
+echo -e "${BLUE}Step 5: Create agent trigger labels${NC}"
+
+# Labels derived from .github/workflows/agent-*.yml `github.event.label.name == 'X'` clauses.
+# name|color|description
+AGENT_LABELS=(
+  "agent-architect|5319e7|Triggers the architect agent to produce a design doc"
+  "agent-developer|1d76db|Triggers the developer agent to implement the issue"
+  "agent-operations|fbca04|Triggers the operations agent for infra/ops work"
+  "agent-pm|0e8a16|Triggers the PM agent to plan/decompose the issue"
+  "agent-product|b60205|Triggers the product agent for scoping and requirements"
+  "agent-pt-superpower|5319e7|Triggers the PT superpower agent"
+  "agent-reviewer|d93f0b|Triggers the reviewer agent on PRs/issues"
+)
+
+LABELS_CREATED=0
+LABELS_UPDATED=0
+for entry in "${AGENT_LABELS[@]}"; do
+  IFS='|' read -r LNAME LCOLOR LDESC <<< "$entry"
+  if gh api "repos/$GITHUB_ORG/$REPO_NAME/labels/$LNAME" &>/dev/null; then
+    gh api --method PATCH "repos/$GITHUB_ORG/$REPO_NAME/labels/$LNAME" \
+      -f new_name="$LNAME" -f color="$LCOLOR" -f description="$LDESC" &>/dev/null || true
+    LABELS_UPDATED=$((LABELS_UPDATED+1))
+  else
+    gh api --method POST "repos/$GITHUB_ORG/$REPO_NAME/labels" \
+      -f name="$LNAME" -f color="$LCOLOR" -f description="$LDESC" &>/dev/null && \
+      LABELS_CREATED=$((LABELS_CREATED+1)) || \
+      warn "Could not create label $LNAME (check repo permissions)"
+  fi
+done
+
+if [ "$LABELS_CREATED" -gt 0 ] || [ "$LABELS_UPDATED" -gt 0 ]; then
+  ok "Agent labels: $LABELS_CREATED created, $LABELS_UPDATED updated on $GITHUB_ORG/$REPO_NAME"
+fi
+
+# =============================================================================
 # Summary
 # =============================================================================
 echo ""

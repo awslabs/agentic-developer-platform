@@ -258,6 +258,13 @@ Expected: bucket listed, table status `ACTIVE`.
 
 **Execute:**
 ```bash
+# Detect operator's public IP and restrict EKS API endpoint to it (portable — works for any cloner).
+# Respect an already-exported value if the caller set one.
+if [ -z "${TF_VAR_eks_public_access_cidrs:-}" ]; then
+  MY_IP=$(curl -fsS --max-time 5 https://checkip.amazonaws.com | tr -d '[:space:]')
+  export TF_VAR_eks_public_access_cidrs="[\"${MY_IP}/32\"]"
+fi
+
 cd platform/infra
 terraform init -backend-config=../../environments/dev/backend.tfvars -input=false
 terraform apply -var-file=../../environments/dev/platform.tfvars -auto-approve

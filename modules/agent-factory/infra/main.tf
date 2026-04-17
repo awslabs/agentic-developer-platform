@@ -126,6 +126,7 @@ module "secrets" {
 
   environment = var.environment
   name_prefix = local.name_prefix
+  github_org  = var.github_org
 }
 
 # =============================================================================
@@ -152,7 +153,15 @@ module "arc_runner" {
   cluster_name     = local.cluster_name
   runner_namespace = var.runner_namespace
   github_org       = var.github_org
+  github_repo      = var.github_repo
   runner_role_arn  = module.runner_iam.runner_role_arn
+
+  # Authenticate the runner scale set with the "dev" persona's GitHub App.
+  # Persona-specific GitHub App tokens for agent operations are minted at
+  # runtime from the other secrets (pm, ops).
+  github_app_id_secret_name          = "adp/${var.github_org}/gh-app-dev-id"
+  github_app_private_key_secret_name = "adp/${var.github_org}/gh-app-dev-key"
+  github_app_installation_id         = var.github_app_dev_installation_id
 
   depends_on = [module.runner_iam]
 }

@@ -24,7 +24,7 @@ resource "aws_kms_alias" "eks_secrets" {
 # EKS Cluster with Auto Mode
 resource "aws_eks_cluster" "main" {
   name     = "${var.name_prefix}-eks-cluster"
-  role_arn = var.gateway_service_role_arn
+  role_arn = var.eks_cluster_role_arn
   version  = var.cluster_version
 
   # Required for EKS Auto Mode
@@ -95,6 +95,28 @@ resource "aws_iam_openid_connect_provider" "cluster" {
   })
 }
 
+# Access entries + cluster-admin policy for operators/CI.
+# Without these, Kubernetes provider calls below fail with Unauthorized on
+# first apply because the cluster creator isn't auto-granted system:masters
+# in API auth mode.
+resource "aws_eks_access_entry" "admins" {
+  for_each      = toset(var.cluster_admin_principal_arns)
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.key
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "admins" {
+  for_each      = aws_eks_access_entry.admins
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.value.principal_arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+}
+
 # Kubernetes Namespace for Gateway Service
 # Note: This namespace is also defined in k8s/namespace.yaml for the deploy workflow.
 # Terraform creates it here to ensure the service account can be created.
@@ -108,7 +130,10 @@ resource "kubernetes_namespace" "bedrockgw" {
     }
   }
 
-  depends_on = [aws_eks_cluster.main]
+  depends_on = [
+    aws_eks_cluster.main,
+    aws_eks_access_policy_association.admins,
+  ]
 }
 
 # IRSA Role for Gateway Service — trusts the EKS OIDC provider

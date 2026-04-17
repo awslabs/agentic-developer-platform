@@ -59,9 +59,9 @@ variable "node_group_min_size" {
   default     = 1
 }
 
-variable "gateway_service_role_arn" {
+variable "eks_cluster_role_arn" {
   type        = string
-  description = "ARN of the gateway service IAM role"
+  description = "ARN of the EKS cluster service role (trust: eks.amazonaws.com)"
 }
 
 variable "node_group_role_arn" {
@@ -80,6 +80,12 @@ variable "ci_runner_role_arn" {
   type        = string
   description = "ARN of the CI runner IAM role for EKS API access"
   default     = ""
+}
+
+variable "cluster_admin_principal_arns" {
+  type        = list(string)
+  description = "IAM principal ARNs to grant AmazonEKSClusterAdminPolicy on this cluster (e.g. the deploying user/role, CI runner). Required so the Kubernetes provider in this module can create namespaces/service accounts on first apply."
+  default     = []
 }
 
 # IRSA Gateway Service Configuration

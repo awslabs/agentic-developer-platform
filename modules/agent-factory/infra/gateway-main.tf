@@ -48,6 +48,7 @@ module "gateway_lambda" {
 # --- Gateway Auth (reuse authorizer from gateway module via remote state) ---
 
 data "terraform_remote_state" "gateway" {
+  count   = var.gateway_deployed ? 1 : 0
   backend = "s3"
   config = {
     bucket = "adp-terraform-state-${var.account_id}"
@@ -58,7 +59,7 @@ data "terraform_remote_state" "gateway" {
 
 locals {
   # Authorizer Lambda from gateway module (empty if gateway not deployed)
-  authorizer_invoke_arn = try(data.terraform_remote_state.gateway.outputs.authorizer_lambda_invoke_arn, "")
+  authorizer_invoke_arn = var.gateway_deployed ? try(data.terraform_remote_state.gateway[0].outputs.authorizer_lambda_invoke_arn, "") : ""
 }
 
 # --- WebSocket API Gateway ---
@@ -96,13 +97,40 @@ resource "helm_release" "keda" {
   wait             = true
   timeout          = 600
 
-  set { name = "serviceAccount.create"; value = "true" }
-  set { name = "serviceAccount.name"; value = "keda-operator" }
-  set { name = "metricsServer.enabled"; value = "true" }
-  set { name = "resources.operator.requests.cpu"; value = "100m" }
-  set { name = "resources.operator.requests.memory"; value = "128Mi" }
-  set { name = "resources.operator.limits.cpu"; value = "500m" }
-  set { name = "resources.operator.limits.memory"; value = "512Mi" }
+  set {
+    name  = "serviceAccount.create"
+    value = "true"
+  }
+
+  set {
+    name  = "serviceAccount.name"
+    value = "keda-operator"
+  }
+
+  set {
+    name  = "metricsServer.enabled"
+    value = "true"
+  }
+
+  set {
+    name  = "resources.operator.requests.cpu"
+    value = "100m"
+  }
+
+  set {
+    name  = "resources.operator.requests.memory"
+    value = "128Mi"
+  }
+
+  set {
+    name  = "resources.operator.limits.cpu"
+    value = "500m"
+  }
+
+  set {
+    name  = "resources.operator.limits.memory"
+    value = "512Mi"
+  }
 }
 
 # --- Extend runner IAM with gateway permissions ---

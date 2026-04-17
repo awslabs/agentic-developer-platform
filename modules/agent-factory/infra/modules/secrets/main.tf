@@ -1,35 +1,28 @@
 # =============================================================================
 # Secrets Manager — GitHub App credentials for agent personas
 # =============================================================================
-# Each agent persona uses a separate GitHub App for rate limit isolation.
-# Secrets are created as empty placeholders; populate via CLI or console.
+# The secrets themselves are created by platform/scripts/create-github-apps.sh
+# during the interactive Phase 0 setup (the script also stores the App IDs and
+# private keys). This Terraform file only *references* them so the module can
+# expose a stable prefix to downstream modules.
+#
+# Secret layout (per persona):
+#   adp/<github-org>/gh-app-<role>-id     -> App ID (plaintext string)
+#   adp/<github-org>/gh-app-<role>-key    -> PEM private key
+# where <role> is one of: dev, pm, ops.
 # =============================================================================
 
 locals {
-  # Each agent persona gets its own GitHub App for 5000 req/hr rate limit
-  app_secrets = {
-    "dev" = "Developer agent GitHub App"
-    "pm"  = "PM agent GitHub App"
-    "ops" = "Operations/Reviewer agent GitHub App"
-  }
+  roles          = ["dev", "pm", "ops"]
+  secrets_prefix = "adp/${var.github_org}/gh-app-"
 }
 
-resource "aws_secretsmanager_secret" "app_id" {
-  for_each    = local.app_secrets
-  name        = "adp/gh-app-${each.key}-id"
-  description = "${each.value} - App ID"
-
-  tags = {
-    Component = "agent-factory"
-  }
+data "aws_secretsmanager_secret" "app_id" {
+  for_each = toset(local.roles)
+  name     = "${local.secrets_prefix}${each.key}-id"
 }
 
-resource "aws_secretsmanager_secret" "app_key" {
-  for_each    = local.app_secrets
-  name        = "adp/gh-app-${each.key}-key"
-  description = "${each.value} - Private Key"
-
-  tags = {
-    Component = "agent-factory"
-  }
+data "aws_secretsmanager_secret" "app_key" {
+  for_each = toset(local.roles)
+  name     = "${local.secrets_prefix}${each.key}-key"
 }

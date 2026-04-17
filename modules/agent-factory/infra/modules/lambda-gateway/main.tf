@@ -14,6 +14,7 @@ resource "aws_lambda_function" "ingest" {
   timeout          = 30
   filename         = data.archive_file.ingest.output_path
   source_code_hash = data.archive_file.ingest.output_base64sha256
+
   environment {
     variables = {
       INPUT_QUEUE_URL     = var.input_queue_url
@@ -21,13 +22,25 @@ resource "aws_lambda_function" "ingest" {
       AWS_REGION_NAME     = var.aws_region
     }
   }
+
   tags = var.tags
 }
 
 resource "aws_iam_role" "ingest" {
-  name               = "${var.name_prefix}-gateway-ingest"
-  assume_role_policy = jsonencode({ Version = "2012-10-17"; Statement = [{ Action = "sts:AssumeRole"; Effect = "Allow"; Principal = { Service = "lambda.amazonaws.com" } }] })
-  tags               = var.tags
+  name = "${var.name_prefix}-gateway-ingest"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "lambda.amazonaws.com"
+      }
+    }]
+  })
+
+  tags = var.tags
 }
 
 resource "aws_iam_role_policy_attachment" "ingest_basic" {
@@ -36,15 +49,31 @@ resource "aws_iam_role_policy_attachment" "ingest_basic" {
 }
 
 resource "aws_iam_role_policy" "ingest_sqs" {
-  name   = "sqs-send"
-  role   = aws_iam_role.ingest.id
-  policy = jsonencode({ Version = "2012-10-17"; Statement = [{ Effect = "Allow"; Action = ["sqs:SendMessage", "sqs:GetQueueAttributes"]; Resource = var.input_queue_arn }] })
+  name = "sqs-send"
+  role = aws_iam_role.ingest.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sqs:SendMessage", "sqs:GetQueueAttributes"]
+      Resource = var.input_queue_arn
+    }]
+  })
 }
 
 resource "aws_iam_role_policy" "ingest_dynamodb" {
-  name   = "dynamodb"
-  role   = aws_iam_role.ingest.id
-  policy = jsonencode({ Version = "2012-10-17"; Statement = [{ Effect = "Allow"; Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]; Resource = [var.sessions_table_arn, "${var.sessions_table_arn}/index/*"] }] })
+  name = "dynamodb"
+  role = aws_iam_role.ingest.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+      Resource = [var.sessions_table_arn, "${var.sessions_table_arn}/index/*"]
+    }]
+  })
 }
 
 resource "aws_cloudwatch_log_group" "ingest" {
@@ -71,6 +100,7 @@ resource "aws_lambda_function" "response" {
   timeout          = 30
   filename         = data.archive_file.response.output_path
   source_code_hash = data.archive_file.response.output_base64sha256
+
   environment {
     variables = {
       INPUT_QUEUE_URL     = var.input_queue_url
@@ -81,6 +111,7 @@ resource "aws_lambda_function" "response" {
       AWS_REGION_NAME     = var.aws_region
     }
   }
+
   tags = var.tags
 }
 
@@ -92,9 +123,20 @@ resource "aws_lambda_event_source_mapping" "response_sqs" {
 }
 
 resource "aws_iam_role" "response" {
-  name               = "${var.name_prefix}-gateway-response"
-  assume_role_policy = jsonencode({ Version = "2012-10-17"; Statement = [{ Action = "sts:AssumeRole"; Effect = "Allow"; Principal = { Service = "lambda.amazonaws.com" } }] })
-  tags               = var.tags
+  name = "${var.name_prefix}-gateway-response"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "lambda.amazonaws.com"
+      }
+    }]
+  })
+
+  tags = var.tags
 }
 
 resource "aws_iam_role_policy_attachment" "response_basic" {
@@ -103,27 +145,69 @@ resource "aws_iam_role_policy_attachment" "response_basic" {
 }
 
 resource "aws_iam_role_policy" "response_sqs" {
-  name   = "sqs-access"
-  role   = aws_iam_role.response.id
-  policy = jsonencode({ Version = "2012-10-17"; Statement = [{ Effect = "Allow"; Action = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]; Resource = var.response_queue_arn }, { Effect = "Allow"; Action = ["sqs:SendMessage"]; Resource = var.input_queue_arn }] })
+  name = "sqs-access"
+  role = aws_iam_role.response.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        Resource = var.response_queue_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = var.input_queue_arn
+      },
+    ]
+  })
 }
 
 resource "aws_iam_role_policy" "response_dynamodb" {
-  name   = "dynamodb"
-  role   = aws_iam_role.response.id
-  policy = jsonencode({ Version = "2012-10-17"; Statement = [{ Effect = "Allow"; Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]; Resource = [var.sessions_table_arn, "${var.sessions_table_arn}/index/*"] }] })
+  name = "dynamodb"
+  role = aws_iam_role.response.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+      Resource = [var.sessions_table_arn, "${var.sessions_table_arn}/index/*"]
+    }]
+  })
 }
 
 resource "aws_iam_role_policy" "response_apigw" {
-  name   = "apigw"
-  role   = aws_iam_role.response.id
-  policy = jsonencode({ Version = "2012-10-17"; Statement = [{ Effect = "Allow"; Action = ["execute-api:ManageConnections"]; Resource = "${var.ws_execution_arn}/*" }] })
+  # Only create when a WS API has been wired through — otherwise the resource ARN
+  # is empty and AWS rejects the policy as malformed.
+  count = var.ws_execution_arn != "" ? 1 : 0
+  name  = "apigw"
+  role  = aws_iam_role.response.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["execute-api:ManageConnections"]
+      Resource = "${var.ws_execution_arn}/*"
+    }]
+  })
 }
 
 resource "aws_iam_role_policy" "response_secrets" {
-  name   = "secrets"
-  role   = aws_iam_role.response.id
-  policy = jsonencode({ Version = "2012-10-17"; Statement = [{ Effect = "Allow"; Action = ["secretsmanager:GetSecretValue"]; Resource = "arn:aws:secretsmanager:${var.aws_region}:*:secret:adp/*" }] })
+  name = "secrets"
+  role = aws_iam_role.response.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = "arn:aws:secretsmanager:${var.aws_region}:*:secret:adp/*"
+    }]
+  })
 }
 
 resource "aws_cloudwatch_log_group" "response" {

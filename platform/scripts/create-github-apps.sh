@@ -134,6 +134,9 @@ for i in 0 1 2; do
   URL="${URL}&metadata=read"
   URL="${URL}&members=read"
   URL="${URL}&organization_projects=write"
+  # administration:write at repo level lets ARC register self-hosted runners
+  # scoped to a single repo (no org-level permissions required).
+  URL="${URL}&administration=write"
   URL="${URL}&events[]=issues"
   URL="${URL}&events[]=pull_request"
 

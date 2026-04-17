@@ -5,7 +5,12 @@ variable "environment" {
 
 variable "name_prefix" {
   type        = string
-  description = "Name prefix for resources"
+  description = "Name prefix used by the registry scanning rule filter"
+}
+
+variable "repositories" {
+  type        = list(string)
+  description = "Names of ECR repositories to create"
 }
 
 variable "common_tags" {

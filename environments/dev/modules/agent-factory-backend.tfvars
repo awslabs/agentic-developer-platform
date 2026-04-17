@@ -1,5 +1,5 @@
 bucket         = "adp-terraform-state-879318057152"
-key            = "dev/platform/terraform.tfstate"
+key            = "dev/modules/agent-factory/terraform.tfstate"
 region         = "us-east-1"
 encrypt        = true
 dynamodb_table = "adp-terraform-locks"
