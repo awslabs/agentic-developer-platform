@@ -135,11 +135,21 @@ Remember their answers for all subsequent phases.
 
 **Step 3: Create GitHub Apps (if deploying Agent Factory):**
 
+**Tell the user:** "I need to create 3 GitHub Apps for the agents. This will open your browser 3 times. For each app:
+1. Click 'Create GitHub App' (permissions are pre-filled)
+2. Note the App ID shown at the top of the page
+3. Scroll down and click 'Generate a private key' (downloads a .pem file)
+4. Come back here and enter the App ID
+5. Then I'll open the browser again to install the app — select your org, choose 'Only select repositories', pick 'adp', and click Install
+6. Press Enter when done
+
+The apps will be named `<your-org>-adp-agent-dev`, `<your-org>-adp-agent-pm`, `<your-org>-adp-agent-ops`. GitHub App names are globally unique, so they're prefixed with your org name."
+
 ```bash
 ./platform/scripts/create-github-apps.sh <GITHUB_ORG> [extra-repo1 extra-repo2 ...]
 ```
 
-This opens the browser 3 times (once per app: adp-agent-dev, adp-agent-pm, adp-agent-ops). The user clicks approve each time. The script stores credentials in Secrets Manager and installs the apps on the ADP repo plus any extra repos.
+The script handles: browser open → App ID prompt → auto-detect .pem in ~/Downloads → store in Secrets Manager → browser open for installation → verify installation → final validation of all 3 apps.
 
 If the user chose "Gateway only", skip this step.
 
