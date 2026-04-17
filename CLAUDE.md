@@ -122,6 +122,21 @@ Do not proceed until both pass.
 **Step 1: Ask the user:**
 - "What is your GitHub organization name?"
 - "What should the repo be called in your org? (default: adp)"
+- "Which AWS profile do you want to use? (I'll list your available profiles)"
+
+Run `aws configure list-profiles` to show available profiles. If the user picks one, set it for all subsequent commands:
+```bash
+export AWS_PROFILE=<chosen-profile>
+```
+If they say "default" or press Enter, don't set it (uses the default profile).
+
+Then verify the profile works:
+```bash
+aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
+```
+Show the account ID and ARN to the user and confirm: "This will deploy to AWS account XXXX. Is that correct?"
+
+Continue asking:
 - "Which modules do you want to deploy? (1) Everything, (2) Gateway only, (3) Agent Factory only"
 - "Do you have other repos where you want the agents to work? List the repo names."
 
