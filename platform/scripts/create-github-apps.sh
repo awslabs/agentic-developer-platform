@@ -102,7 +102,22 @@ for i in 0 1 2; do
 
   if [ -n "$EXISTING_ID" ] && [ -n "$EXISTING_KEY" ] && [ "$EXISTING_KEY" != "" ]; then
     ok "App $APP_NAME already configured (ID: $EXISTING_ID)"
-    echo "  Skipping. Delete the secrets to recreate."
+    APP_ID="$EXISTING_ID"
+
+    # Check if installed — if not, open browser for installation
+    INSTALL_ID=$(gh api "/orgs/$GITHUB_ORG/installations" --jq ".installations[] | select(.app_id==$APP_ID) | .id" 2>/dev/null || echo "")
+    if [ -n "$INSTALL_ID" ]; then
+      ok "Already installed on $GITHUB_ORG (installation ID: $INSTALL_ID)"
+    else
+      echo "  App exists but is NOT installed on $GITHUB_ORG. Opening browser..."
+      INSTALL_URL="https://github.com/apps/${APP_NAME}/installations/select_target"
+      open_url "$INSTALL_URL"
+      echo -n "  Press Enter after you've installed the app in the browser..."
+      read -r
+      sleep 2
+      INSTALL_ID=$(gh api "/orgs/$GITHUB_ORG/installations" --jq ".installations[] | select(.app_id==$APP_ID) | .id" 2>/dev/null || echo "")
+      [ -n "$INSTALL_ID" ] && ok "Installed (ID: $INSTALL_ID)" || warn "Could not verify installation"
+    fi
     continue
   fi
 
@@ -214,14 +229,51 @@ done
 # Summary
 echo ""
 echo "========================================="
-echo -e "${GREEN}All GitHub Apps created${NC}"
+echo -e "${BLUE}Final Validation${NC}"
 echo "========================================="
 echo ""
-echo "Secrets stored:"
+
+ALL_GOOD=true
+
+echo "Secrets:"
 for ROLE in dev pm ops; do
-  ID=$(aws secretsmanager get-secret-value --secret-id "adp/gh-app-${ROLE}-id" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "?")
-  echo "  adp/gh-app-${ROLE}-id  = $ID"
-  echo "  adp/gh-app-${ROLE}-key = (stored)"
+  ID=$(aws secretsmanager get-secret-value --secret-id "adp/gh-app-${ROLE}-id" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  KEY_LEN=$(aws secretsmanager get-secret-value --secret-id "adp/gh-app-${ROLE}-key" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null | wc -c | tr -d ' ')
+  if [ -n "$ID" ] && [ "$KEY_LEN" -gt 100 ] 2>/dev/null; then
+    ok "adp/gh-app-${ROLE}: ID=$ID, key=${KEY_LEN} chars"
+  else
+    fail "adp/gh-app-${ROLE}: MISSING or invalid"
+    ALL_GOOD=false
+  fi
 done
+
 echo ""
-echo "Next: ./platform/scripts/deploy-all.sh"
+echo "Installations:"
+for i in 0 1 2; do
+  ROLE="${APPS[$i]}"
+  APP_NAME="${APP_NAMES[$i]}"
+  APP_ID=$(aws secretsmanager get-secret-value --secret-id "adp/gh-app-${ROLE}-id" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "0")
+  INSTALL_ID=$(gh api "/orgs/$GITHUB_ORG/installations" --jq ".installations[] | select(.app_id==$APP_ID) | .id" 2>/dev/null || echo "")
+  if [ -n "$INSTALL_ID" ]; then
+    REPOS=$(gh api "/user/installations/$INSTALL_ID/repositories" --jq '[.repositories[].name] | join(", ")' 2>/dev/null || echo "?")
+    ok "$APP_NAME installed (ID: $INSTALL_ID) → repos: $REPOS"
+  else
+    fail "$APP_NAME NOT installed on $GITHUB_ORG"
+    ALL_GOOD=false
+  fi
+done
+
+echo ""
+if [ "$ALL_GOOD" = true ]; then
+  echo -e "${GREEN}=========================================${NC}"
+  echo -e "${GREEN}All GitHub Apps created and installed${NC}"
+  echo -e "${GREEN}=========================================${NC}"
+  echo ""
+  echo "Next: ./platform/scripts/deploy-all.sh"
+else
+  echo -e "${RED}=========================================${NC}"
+  echo -e "${RED}Some apps are missing or not installed${NC}"
+  echo -e "${RED}=========================================${NC}"
+  echo ""
+  echo "Re-run this script to fix: $0 $GITHUB_ORG"
+fi
