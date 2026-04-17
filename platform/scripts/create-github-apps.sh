@@ -97,8 +97,8 @@ for i in 0 1 2; do
   echo ""
 
   # Check if already exists in Secrets Manager
-  EXISTING_ID=$(aws secretsmanager get-secret-value --secret-id "adp/gh-app-${ROLE}-id" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-  EXISTING_KEY=$(aws secretsmanager get-secret-value --secret-id "adp/gh-app-${ROLE}-key" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  EXISTING_ID=$(aws secretsmanager get-secret-value --secret-id "adp/${GITHUB_ORG}/gh-app-${ROLE}-id" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  EXISTING_KEY=$(aws secretsmanager get-secret-value --secret-id "adp/${GITHUB_ORG}/gh-app-${ROLE}-key" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
 
   if [ -n "$EXISTING_ID" ] && [ -n "$EXISTING_KEY" ] && [ "$EXISTING_KEY" != "" ]; then
     ok "App $APP_NAME already configured (ID: $EXISTING_ID)"
@@ -184,9 +184,9 @@ for i in 0 1 2; do
 
   # Store in Secrets Manager
   echo "  Storing credentials in Secrets Manager..."
-  store_secret "adp/gh-app-${ROLE}-id" "$APP_ID"
-  store_secret "adp/gh-app-${ROLE}-key" "$(cat "$PEM_FILE")"
-  ok "Stored adp/gh-app-${ROLE}-id and adp/gh-app-${ROLE}-key"
+  store_secret "adp/${GITHUB_ORG}/gh-app-${ROLE}-id" "$APP_ID"
+  store_secret "adp/${GITHUB_ORG}/gh-app-${ROLE}-key" "$(cat "$PEM_FILE")"
+  ok "Stored adp/${GITHUB_ORG}/gh-app-${ROLE}-id and adp/${GITHUB_ORG}/gh-app-${ROLE}-key"
 
   # Install the app on the org
   echo ""
@@ -237,12 +237,12 @@ ALL_GOOD=true
 
 echo "Secrets:"
 for ROLE in dev pm ops; do
-  ID=$(aws secretsmanager get-secret-value --secret-id "adp/gh-app-${ROLE}-id" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-  KEY_LEN=$(aws secretsmanager get-secret-value --secret-id "adp/gh-app-${ROLE}-key" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null | wc -c | tr -d ' ')
+  ID=$(aws secretsmanager get-secret-value --secret-id "adp/${GITHUB_ORG}/gh-app-${ROLE}-id" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  KEY_LEN=$(aws secretsmanager get-secret-value --secret-id "adp/${GITHUB_ORG}/gh-app-${ROLE}-key" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null | wc -c | tr -d ' ')
   if [ -n "$ID" ] && [ "$KEY_LEN" -gt 100 ] 2>/dev/null; then
-    ok "adp/gh-app-${ROLE}: ID=$ID, key=${KEY_LEN} chars"
+    ok "adp/${GITHUB_ORG}/gh-app-${ROLE}: ID=$ID, key=${KEY_LEN} chars"
   else
-    fail "adp/gh-app-${ROLE}: MISSING or invalid"
+    fail "adp/${GITHUB_ORG}/gh-app-${ROLE}: MISSING or invalid"
     ALL_GOOD=false
   fi
 done
@@ -252,7 +252,7 @@ echo "Installations:"
 for i in 0 1 2; do
   ROLE="${APPS[$i]}"
   APP_NAME="${APP_NAMES[$i]}"
-  APP_ID=$(aws secretsmanager get-secret-value --secret-id "adp/gh-app-${ROLE}-id" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "0")
+  APP_ID=$(aws secretsmanager get-secret-value --secret-id "adp/${GITHUB_ORG}/gh-app-${ROLE}-id" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "0")
   INSTALL_ID=$(gh api "/orgs/$GITHUB_ORG/installations" --jq ".installations[] | select(.app_id==$APP_ID) | .id" 2>/dev/null || echo "")
   if [ -n "$INSTALL_ID" ]; then
     REPOS=$(gh api "/user/installations/$INSTALL_ID/repositories" --jq '[.repositories[].name] | join(", ")' 2>/dev/null || echo "?")
