@@ -59,8 +59,8 @@ jobs:
         id: aws-secrets
         run: |
           echo "Fetching GitHub App credentials from AWS Secrets Manager..."
-          GH_APP_ID=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-ops-id --query SecretString --output text --region us-east-1)
-          GH_APP_KEY=$(aws secretsmanager get-secret-value --secret-id adp/gh-app-ops-key --query SecretString --output text --region us-east-1)
+          GH_APP_ID=$(aws secretsmanager get-secret-value --secret-id adp/aws-e/gh-app-ops-id --query SecretString --output text --region us-east-1)
+          GH_APP_KEY=$(aws secretsmanager get-secret-value --secret-id adp/aws-e/gh-app-ops-key --query SecretString --output text --region us-east-1)
           echo "::add-mask::$GH_APP_KEY"
           echo "app_id=$GH_APP_ID" >> $GITHUB_OUTPUT
           echo "app_key<<EOF" >> $GITHUB_OUTPUT
