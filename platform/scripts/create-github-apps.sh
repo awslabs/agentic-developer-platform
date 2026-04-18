@@ -134,10 +134,12 @@ for i in 0 1 2; do
   URL="${URL}&metadata=read"
   URL="${URL}&members=read"
   URL="${URL}&organization_projects=write"
-  # administration:write at repo level lets ARC register self-hosted runners
-  # scoped to a single repo (no org-level permissions required).
+  # administration:write lets ARC register repo-scoped self-hosted runners.
+  # actions:write lets those runners claim and run workflow jobs.
   URL="${URL}&administration=write"
+  URL="${URL}&actions=write"
   URL="${URL}&events[]=issues"
+  URL="${URL}&events[]=issue_comment"
   URL="${URL}&events[]=pull_request"
 
   # Create a timestamp marker to find new .pem files

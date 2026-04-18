@@ -1,8 +1,7 @@
 environment = "dev"
 aws_region  = "us-east-1"
 
-# Account ID — set dynamically by deploy scripts or override here
-# account_id = "123456789012"
+account_id = "879318057152"
 
 # Cost center
 cost_center = "engineering"

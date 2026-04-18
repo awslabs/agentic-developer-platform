@@ -28,7 +28,7 @@ resource "helm_release" "arc_controller" {
   namespace  = kubernetes_namespace.arc_system.metadata[0].name
   repository = "oci://ghcr.io/actions/actions-runner-controller-charts"
   chart      = "gha-runner-scale-set-controller"
-  version    = "0.10.1"
+  version    = "0.13.1"
 
   values = [
     yamlencode({
@@ -69,7 +69,7 @@ resource "helm_release" "arc_runner_set" {
   namespace  = kubernetes_namespace.arc_runners.metadata[0].name
   repository = "oci://ghcr.io/actions/actions-runner-controller-charts"
   chart      = "gha-runner-scale-set"
-  version    = "0.10.1"
+  version    = "0.13.1"
 
   values = [
     yamlencode({
@@ -85,20 +85,12 @@ resource "helm_release" "arc_runner_set" {
         }
         spec = {
           serviceAccountName = kubernetes_service_account.runner.metadata[0].name
-          containers = [{
-            name  = "runner"
-            image = "ghcr.io/actions/actions-runner:latest"
-            resources = {
-              requests = {
-                cpu    = "500m"
-                memory = "1Gi"
-              }
-              limits = {
-                cpu    = "4"
-                memory = "8Gi"
-              }
-            }
-          }]
+          # Intentionally NOT overriding `containers` — the gha-runner-scale-set
+          # chart injects a default container that sets
+          # `command: ["/home/runner/run.sh"]`. Providing our own container
+          # spec drops that command, so the pod starts with the image's
+          # ENTRYPOINT which exits immediately. This matches the working
+          # aws-innovate/adp helm values exactly.
         }
       }
     })
