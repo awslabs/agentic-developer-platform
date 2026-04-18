@@ -601,13 +601,79 @@ if [ "$AGENT_FACTORY_ONLY" = true ]; then
   echo "Skipping gateway deploy (--agent-factory-only)"
   ok "Skipped"
 elif [ "$LOCAL_MODE" = true ]; then
+  # Build Docker image (fall back to CodeBuild if Docker daemon not available)
+  if docker info &>/dev/null 2>&1; then
+    cd "$ROOT_DIR/modules/gateway"
+    docker build -t adp-gateway .
+    aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+    docker tag adp-gateway:latest "$REGISTRY/adp-gateway:latest"
+    docker push "$REGISTRY/adp-gateway:latest"
+  else
+    warn "Docker daemon not available, using CodeBuild for image build"
+    upload_source
+    ensure_codebuild_role
+    # Write buildspec inline for gateway build
+    cat > /tmp/bs-gateway-build-local.yml << 'BSEOF'
+version: 0.2
+phases:
+  pre_build:
+    commands:
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY
+  build:
+    commands:
+      - cd modules/gateway
+      - docker build -t $REGISTRY/adp-gateway:latest .
+  post_build:
+    commands:
+      - docker push $REGISTRY/adp-gateway:latest
+BSEOF
+    aws s3 cp /tmp/bs-gateway-build-local.yml "s3://${STATE_BUCKET}/codebuild/bs-gateway-build-local.yml" --region "$AWS_REGION" > /dev/null
+    rm -f /tmp/bs-gateway-build-local.yml
+    run_codebuild "adp-${ENVIRONMENT}-gateway-build" "codebuild/bs-gateway-build-local.yml"
+  fi
+  # Deploy to EKS
   cd "$ROOT_DIR/modules/gateway"
-  docker build -t adp-gateway .
-  aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-  docker tag adp-gateway:latest "$REGISTRY/adp-gateway:latest"
-  docker push "$REGISTRY/adp-gateway:latest"
   kubectl create namespace adp-gateway --dry-run=client -o yaml | kubectl apply -f -
-  kubectl apply -f k8s/ -n adp-gateway
+  # Read terraform outputs for configmap population
+  cd "$ROOT_DIR/modules/gateway/infra"
+  DB_HOST=$(terraform output -raw rds_endpoint 2>/dev/null | sed 's/:5432//' || echo "localhost")
+  DB_NAME=$(terraform output -raw rds_database_name 2>/dev/null || echo "bedrockgateway")
+  DB_USER="bgadmin"
+  REDIS_HOST=$(terraform output -raw redis_endpoint 2>/dev/null || echo "localhost")
+  REDIS_PORT=$(terraform output -raw redis_port 2>/dev/null || echo "6379")
+  COGNITO_USER_POOL_ID=$(terraform output -raw cognito_user_pool_id 2>/dev/null || echo "")
+  COGNITO_CLIENT_ID=$(terraform output -raw cognito_user_pool_client_id 2>/dev/null || echo "")
+  COGNITO_DOMAIN=$(terraform output -raw cognito_domain 2>/dev/null || echo "")
+  CF_DOMAIN=$(terraform output -raw frontend_cloudfront_domain_name 2>/dev/null || echo "")
+  AGENT_REGISTRY_TABLE=$(terraform output -raw agent_registry_table_name 2>/dev/null || echo "")
+  cd "$ROOT_DIR/modules/gateway"
+  # Apply configmap with populated values
+  sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
+      -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
+      -e "s|__DB_HOST__|${DB_HOST}|g" \
+      -e "s|__DB_USER__|${DB_USER}|g" \
+      -e "s|__DB_NAME__|${DB_NAME}|g" \
+      -e "s|__REDIS_HOST__|${REDIS_HOST:-localhost}|g" \
+      -e "s|__REDIS_PORT__|${REDIS_PORT:-6379}|g" \
+      -e "s|__COGNITO_USER_POOL_ID__|${COGNITO_USER_POOL_ID}|g" \
+      -e "s|__COGNITO_CLIENT_ID__|${COGNITO_CLIENT_ID}|g" \
+      -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \
+      -e "s|__CORS_ALLOWED_ORIGINS__|https://${CF_DOMAIN},http://localhost:5173|g" \
+      -e "s|__CHAT_LOGGING_ENABLED__|false|g" \
+      -e "s|__CHAT_LOGGING_BUCKET__||g" \
+      -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|off|g" \
+      -e "s|__TRUST_APIGW_HEADERS__|true|g" \
+      -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
+      k8s/configmap.yaml | kubectl apply -f -
+  # Apply remaining k8s resources (skip configmap and targetgroupbinding)
+  for f in k8s/*.yaml; do
+    case "$(basename "$f")" in
+      configmap.yaml|targetgroupbinding.yaml) continue ;;
+      *) kubectl apply -f "$f" -n adp-gateway ;;
+    esac
+  done
+  # Update deployment image
+  kubectl set image deployment/bedrockgateway bedrockgateway="${REGISTRY}/adp-gateway:latest" -n adp-gateway 2>/dev/null || true
   kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || warn "Rollout not complete"
 else
   run_codebuild "adp-${ENVIRONMENT}-gateway-build" "codebuild/bs-gateway-build.yml"

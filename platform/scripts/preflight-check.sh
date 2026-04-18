@@ -69,10 +69,10 @@ if command -v docker &>/dev/null; then
   if docker info &>/dev/null; then
     pass "Docker: $(docker --version) (daemon running)"
   elif [ "$LOCAL_MODE" = true ]; then
-    fail "Docker installed but daemon not running. Start Docker Desktop or dockerd."
+    warn "Docker installed but daemon not running. Image builds will use CodeBuild fallback."
   fi
 elif [ "$LOCAL_MODE" = true ]; then
-  fail "Docker not installed (required for --local). Install: https://docs.docker.com/get-docker/"
+  warn "Docker not installed. Image builds will use CodeBuild fallback."
 fi
 
 # Node.js (only for --local)
