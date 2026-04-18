@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: bedrockgateway
-  namespace: bedrockgw
+  namespace: adp-gateway
   labels:
     app.kubernetes.io/name: bedrockgateway
     app.kubernetes.io/part-of: bedrock-gateway
@@ -21,7 +21,7 @@ spec:
       serviceAccountName: gateway-service
       containers:
         - name: bedrockgateway
-          image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/bedrockgw-dev-backend:IMAGE_TAG
+          image: 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:latest
           ports:
             - containerPort: 8080
               protocol: TCP

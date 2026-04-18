@@ -19,7 +19,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: bedrockgateway
-  namespace: bedrockgw
+  namespace: adp-gateway
   labels:
     app.kubernetes.io/name: bedrockgateway
     app.kubernetes.io/part-of: bedrock-gateway

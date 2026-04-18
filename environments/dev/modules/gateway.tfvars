@@ -15,3 +15,6 @@ redis_node_type = "cache.t3.micro"
 
 # Cognito
 cognito_custom_domain = ""
+
+# API Gateway (REST API with 15-min timeout)
+enable_api_gateway = true

@@ -12,94 +12,106 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  MODULE: gateway
+  ENVIRONMENT: dev
   NAMESPACE: adp-gateway
+  EKS_CLUSTER: adp-dev-eks-cluster
+  ACCOUNT_ID: "879318057152"
+  STATE_BUCKET: adp-terraform-state-879318057152
 
 jobs:
   deploy-backend:
-    name: Deploy Backend
-    runs-on: ubuntu-latest
-    environment: production
-    permissions:
-      contents: read
-      id-token: write
+    name: Build and Deploy Backend
+    runs-on: arc-runner-org
+    # Runner already has AWS creds via IRSA (adp-dev-agent-runner-role)
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to ECR
-        id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build and push image
-        working-directory: modules/gateway
-        env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
-          IMAGE: adp-gateway
+      - name: Package source and upload to S3
         run: |
-          docker build -t $REGISTRY/$IMAGE:${{ github.sha }} -t $REGISTRY/$IMAGE:latest .
-          docker push $REGISTRY/$IMAGE:${{ github.sha }}
-          docker push $REGISTRY/$IMAGE:latest
+          bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
+          aws s3 cp /tmp/adp-source.zip "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip"
+          rm -f /tmp/adp-source.zip
 
-      - name: Update kubeconfig
+      - name: Trigger image build in CodeBuild
         run: |
-          aws eks update-kubeconfig --name adp-dev-eks --region ${{ env.AWS_REGION }}
+          REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          BUILD_ID=$(aws codebuild start-build \
+            --project-name adp-${{ env.ENVIRONMENT }}-gateway-build \
+            --environment-variables-override \
+              "name=AWS_REGION,value=${{ env.AWS_REGION }}" \
+              "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}" \
+              "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" \
+              "name=REGISTRY,value=${REGISTRY}" \
+              "name=STATE_BUCKET,value=${{ env.STATE_BUCKET }}" \
+              "name=EKS_CLUSTER,value=${{ env.EKS_CLUSTER }}" \
+              "name=IMAGE_TAG,value=${{ github.sha }}" \
+            --query 'build.id' --output text)
+          echo "Started build: $BUILD_ID"
+          while true; do
+            STATUS=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+              --query 'builds[0].buildStatus' --output text)
+            case $STATUS in
+              SUCCEEDED) echo "Build succeeded"; break ;;
+              FAILED|FAULT|STOPPED|TIMED_OUT)
+                LOG_LINK=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+                  --query 'builds[0].logs.deepLink' --output text)
+                echo "Build failed ($STATUS). Logs: $LOG_LINK"
+                exit 1
+                ;;
+              *) sleep 10 ;;
+            esac
+          done
+          echo "IMAGE_TAG=${{ github.sha }}" >> $GITHUB_ENV
 
-      - name: Deploy to EKS
-        working-directory: modules/gateway/k8s
-        env:
-          IMAGE_TAG: ${{ github.sha }}
+      - name: Roll out new image
         run: |
-          # Update image tag in deployment
-          sed -i "s|image:.*|image: ${{ steps.ecr.outputs.registry }}/adp-gateway:${IMAGE_TAG}|" deployment.yaml
-          kubectl apply -f . -n ${{ env.NAMESPACE }}
-          kubectl rollout status deployment/gateway -n ${{ env.NAMESPACE }} --timeout=300s
+          REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+          kubectl set image deployment/bedrockgateway \
+            bedrockgateway=${REGISTRY}/adp-gateway:${{ github.sha }} \
+            -n ${{ env.NAMESPACE }}
+          kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=300s
 
   deploy-frontend:
-    name: Deploy Frontend
-    runs-on: ubuntu-latest
-    environment: production
+    name: Build and Deploy Frontend
+    runs-on: arc-runner-org
     needs: deploy-backend
-    permissions:
-      contents: read
-      id-token: write
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: modules/gateway/frontend/package-lock.json
-
-      - name: Build frontend
-        working-directory: modules/gateway/frontend
-        env:
-          VITE_API_URL: "/api/gateway"
+      - name: Package source and upload to S3
         run: |
-          npm ci
-          npm run build
+          bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
+          aws s3 cp /tmp/adp-source.zip "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip"
+          rm -f /tmp/adp-source.zip
 
-      - name: Deploy to S3
+      - name: Trigger frontend build in CodeBuild
         run: |
-          BUCKET=$(aws ssm get-parameter --name "/adp/dev/gateway/frontend-bucket" --query "Parameter.Value" --output text)
-          aws s3 sync modules/gateway/frontend/dist/ "s3://${BUCKET}/" --delete
-
-      - name: Invalidate CloudFront
-        run: |
-          DIST_ID=$(aws ssm get-parameter --name "/adp/dev/gateway/cloudfront-id" --query "Parameter.Value" --output text)
-          aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
+          REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          BUILD_ID=$(aws codebuild start-build \
+            --project-name adp-${{ env.ENVIRONMENT }}-frontend-build \
+            --environment-variables-override \
+              "name=AWS_REGION,value=${{ env.AWS_REGION }}" \
+              "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}" \
+              "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" \
+              "name=REGISTRY,value=${REGISTRY}" \
+              "name=STATE_BUCKET,value=${{ env.STATE_BUCKET }}" \
+              "name=EKS_CLUSTER,value=${{ env.EKS_CLUSTER }}" \
+            --query 'build.id' --output text)
+          echo "Started frontend build: $BUILD_ID"
+          while true; do
+            STATUS=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+              --query 'builds[0].buildStatus' --output text)
+            case $STATUS in
+              SUCCEEDED) echo "Frontend build succeeded"; break ;;
+              FAILED|FAULT|STOPPED|TIMED_OUT)
+                LOG_LINK=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+                  --query 'builds[0].logs.deepLink' --output text)
+                echo "Frontend build failed ($STATUS). Logs: $LOG_LINK"
+                exit 1
+                ;;
+              *) sleep 10 ;;
+            esac
+          done

@@ -429,7 +429,7 @@ module "cloudwatch_dashboard" {
   cloudfront_distribution_id = module.cloudfront.distribution_id
   alb_arn_suffix             = var.alb_arn_suffix
   eks_cluster_name           = local.cluster_name
-  eks_namespace              = "bedrockgw"
+  eks_namespace              = "adp-gateway"
   pod_deployment_name        = "bedrockgateway"
 }
 
@@ -578,4 +578,65 @@ module "lambda_authorizer" {
   api_gateway_execution_arn = module.api_gateway[0].api_gateway_execution_arn
 
   depends_on = [module.api_gateway, module.cognito]
+}
+
+# =============================================================================
+# SSM Parameters for deploy-all.sh and CI/CD workflows
+# =============================================================================
+# These parameters allow deploy scripts and GitHub Actions workflows to
+# discover resource names without running terraform output.
+
+resource "aws_ssm_parameter" "frontend_bucket" {
+  name        = "/adp/${var.environment}/gateway/frontend-bucket"
+  description = "S3 bucket name for gateway frontend assets"
+  type        = "String"
+  value       = module.frontend_s3.bucket_name
+
+  tags = local.common_tags
+}
+
+resource "aws_ssm_parameter" "cloudfront_id" {
+  name        = "/adp/${var.environment}/gateway/cloudfront-id"
+  description = "CloudFront distribution ID for cache invalidation"
+  type        = "String"
+  value       = module.cloudfront.distribution_id
+
+  tags = local.common_tags
+}
+
+resource "aws_ssm_parameter" "cloudfront_domain" {
+  name        = "/adp/${var.environment}/gateway/cloudfront-domain"
+  description = "CloudFront distribution domain name"
+  type        = "String"
+  value       = module.cloudfront.distribution_domain_name
+
+  tags = local.common_tags
+}
+
+resource "aws_ssm_parameter" "internal_alb_arn" {
+  name        = "/adp/${var.environment}/gateway/internal-alb-arn"
+  description = "ARN of the internal ALB created by EKS Ingress controller"
+  type        = "String"
+  value       = "pending"
+
+  tags = local.common_tags
+
+  # The value is updated by deploy-all.sh after ALB discovery.
+  # Terraform should not revert it to "pending" on subsequent applies.
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+resource "aws_ssm_parameter" "internal_alb_dns" {
+  name        = "/adp/${var.environment}/gateway/internal-alb-dns"
+  description = "DNS name of the internal ALB created by EKS Ingress controller"
+  type        = "String"
+  value       = "pending"
+
+  tags = local.common_tags
+
+  lifecycle {
+    ignore_changes = [value]
+  }
 }

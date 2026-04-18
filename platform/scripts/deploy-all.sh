@@ -95,7 +95,7 @@ fi
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
 LOCK_TABLE="adp-terraform-locks"
-EKS_CLUSTER="adp-${ENVIRONMENT}-eks"
+EKS_CLUSTER="adp-${ENVIRONMENT}-eks-cluster"
 CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
 
 # =============================================================================
@@ -123,14 +123,8 @@ ensure_codebuild_role() {
 upload_source() {
   local ZIP_PATH="/tmp/adp-deploy-source.zip"
   echo "Packaging repository source..."
-  cd "$ROOT_DIR"
-  # Include everything needed for Terraform + Docker + frontend builds
-  # Exclude heavy/unnecessary dirs
-  zip -r "$ZIP_PATH" \
-    platform/ modules/ environments/ libs/ \
-    -x '*/node_modules/*' '*/.terraform/*' '*/coverage/*' '*/__pycache__/*' \
-    '*.pyc' '*.tfstate*' '*/dist/*' '*/uv.lock' '*/package-lock.json' \
-    > /dev/null 2>&1
+  # Use shared zip script to keep excludes in sync with gateway-deploy.yml
+  bash "$SCRIPT_DIR/zip-source.sh" "$ROOT_DIR" "$ZIP_PATH"
   aws s3 cp "$ZIP_PATH" "s3://${STATE_BUCKET}/codebuild/adp-source.zip" --region "$AWS_REGION" > /dev/null
   rm -f "$ZIP_PATH"
   ok "Source uploaded to s3://${STATE_BUCKET}/codebuild/adp-source.zip"
@@ -368,9 +362,11 @@ phases:
     commands:
       - cd modules/gateway
       - docker build -t $REGISTRY/adp-gateway:latest .
+      - '[ -n "${IMAGE_TAG:-}" ] && docker tag $REGISTRY/adp-gateway:latest $REGISTRY/adp-gateway:$IMAGE_TAG || true'
   post_build:
     commands:
       - docker push $REGISTRY/adp-gateway:latest
+      - '[ -n "${IMAGE_TAG:-}" ] && docker push $REGISTRY/adp-gateway:$IMAGE_TAG || true'
 EOF
 
   # --- Frontend build ---
@@ -399,16 +395,67 @@ EOF
   # --- Gateway k8s deploy ---
   cat > /tmp/bs-gateway-deploy.yml << 'EOF'
 version: 0.2
+env:
+  variables:
+    TF_IN_AUTOMATION: "true"
 phases:
   install:
     commands:
       - curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && chmod +x kubectl && mv kubectl /usr/local/bin/
+      - yum install -y yum-utils
+      - yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+      - yum install -y terraform
       - aws eks update-kubeconfig --name $EKS_CLUSTER --region $AWS_REGION
+  pre_build:
+    commands:
+      # Read gateway Terraform outputs for configmap population
+      - cd modules/gateway/infra
+      - terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false -reconfigure 2>/dev/null || true
+      - export DB_HOST=$(terraform output -raw rds_endpoint 2>/dev/null | sed 's/:5432//' || echo "localhost")
+      - export DB_NAME=$(terraform output -raw rds_database_name 2>/dev/null || echo "bedrockgateway")
+      - export DB_USER="bgadmin"
+      - export REDIS_HOST=$(terraform output -raw redis_endpoint 2>/dev/null || echo "localhost")
+      - export REDIS_PORT=$(terraform output -raw redis_port 2>/dev/null || echo "6379")
+      - export COGNITO_USER_POOL_ID=$(terraform output -raw cognito_user_pool_id 2>/dev/null || echo "")
+      - export COGNITO_CLIENT_ID=$(terraform output -raw cognito_user_pool_client_id 2>/dev/null || echo "")
+      - export COGNITO_DOMAIN=$(terraform output -raw cognito_domain 2>/dev/null || echo "")
+      - export CF_DOMAIN=$(terraform output -raw frontend_cloudfront_domain_name 2>/dev/null || echo "")
+      - export AGENT_REGISTRY_TABLE=$(terraform output -raw agent_registry_table_name 2>/dev/null || echo "")
+      - cd ../../..
   build:
     commands:
       - cd modules/gateway
       - kubectl create namespace adp-gateway --dry-run=client -o yaml | kubectl apply -f -
-      - kubectl apply -f k8s/ -n adp-gateway
+      # Populate configmap placeholders with actual values
+      - |
+        sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
+            -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
+            -e "s|__DB_HOST__|${DB_HOST}|g" \
+            -e "s|__DB_USER__|${DB_USER}|g" \
+            -e "s|__DB_NAME__|${DB_NAME}|g" \
+            -e "s|__REDIS_HOST__|${REDIS_HOST:-localhost}|g" \
+            -e "s|__REDIS_PORT__|${REDIS_PORT:-6379}|g" \
+            -e "s|__COGNITO_USER_POOL_ID__|${COGNITO_USER_POOL_ID}|g" \
+            -e "s|__COGNITO_CLIENT_ID__|${COGNITO_CLIENT_ID}|g" \
+            -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \
+            -e "s|__CORS_ALLOWED_ORIGINS__|https://${CF_DOMAIN},http://localhost:5173|g" \
+            -e "s|__CHAT_LOGGING_ENABLED__|false|g" \
+            -e "s|__CHAT_LOGGING_BUCKET__||g" \
+            -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|off|g" \
+            -e "s|__TRUST_APIGW_HEADERS__|true|g" \
+            -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
+            k8s/configmap.yaml | kubectl apply -f -
+      # Apply remaining k8s resources (skip configmap since we just applied it)
+      - |
+        for f in k8s/*.yaml; do
+          case "$(basename $f)" in
+            configmap.yaml) continue ;;
+            targetgroupbinding.yaml) continue ;;
+            *) kubectl apply -f "$f" -n adp-gateway ;;
+          esac
+        done
+      # Update deployment image to use correct registry
+      - kubectl set image deployment/bedrockgateway bedrockgateway=${REGISTRY}/adp-gateway:latest -n adp-gateway 2>/dev/null || true
       - kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || echo "Rollout still in progress"
 EOF
 
@@ -567,6 +614,106 @@ else
   run_codebuild "adp-${ENVIRONMENT}-gateway-deploy" "codebuild/bs-gateway-deploy.yml"
 fi
 ok "Gateway deployed"
+
+# =============================================================================
+# Step 4b: Discover internal ALB and wire to API Gateway + CloudFront (Bug 3)
+# =============================================================================
+if [ "$AGENT_FACTORY_ONLY" = false ]; then
+  step "Step 4b/6: Wire internal ALB to API Gateway and CloudFront"
+
+  # Check SSM cache first
+  CACHED_ALB_ARN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-arn" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "pending")
+
+  if [ "$CACHED_ALB_ARN" != "pending" ] && [ -n "$CACHED_ALB_ARN" ]; then
+    # Validate cached ALB still exists
+    if aws elbv2 describe-load-balancers --load-balancer-arns "$CACHED_ALB_ARN" --region "$AWS_REGION" > /dev/null 2>&1; then
+      ALB_ARN="$CACHED_ALB_ARN"
+      ALB_DNS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-dns" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+      ok "ALB found in SSM cache: $ALB_DNS"
+    else
+      warn "Cached ALB no longer valid, rediscovering..."
+      CACHED_ALB_ARN="pending"
+    fi
+  fi
+
+  if [ "$CACHED_ALB_ARN" = "pending" ] || [ -z "$CACHED_ALB_ARN" ]; then
+    echo "Waiting for EKS Ingress ALB to be provisioned..."
+    ALB_ARN=""
+    for i in $(seq 1 40); do
+      # Look for ALBs tagged with the ingress group
+      ALB_ARN=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
+        --query 'LoadBalancers[?Scheme==`internal`].LoadBalancerArn' --output text 2>/dev/null | head -1 || true)
+
+      if [ -z "$ALB_ARN" ]; then
+        # Also check by name pattern from ingress group
+        ALB_ARN=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
+          --query 'LoadBalancers[?contains(LoadBalancerName,`bedrockgw`) || contains(LoadBalancerName,`k8s-bedrockgw`)].LoadBalancerArn' --output text 2>/dev/null | head -1 || true)
+      fi
+
+      if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
+        ALB_DNS=$(aws elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --region "$AWS_REGION" \
+          --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "")
+        ALB_STATE=$(aws elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --region "$AWS_REGION" \
+          --query 'LoadBalancers[0].State.Code' --output text 2>/dev/null || echo "")
+        if [ "$ALB_STATE" = "active" ]; then
+          ok "ALB active: $ALB_DNS"
+          break
+        fi
+        echo "  ALB found but state=$ALB_STATE, waiting..."
+      else
+        echo "  Attempt $i/40: ALB not yet created, waiting 15s..."
+      fi
+      sleep 15
+    done
+
+    if [ -z "$ALB_ARN" ] || [ "$ALB_ARN" = "None" ]; then
+      warn "ALB not found after 10 minutes. Skipping ALB wiring — API Gateway will use MOCK integration."
+    else
+      # Cache to SSM
+      aws ssm put-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-arn" --value "$ALB_ARN" --type String --overwrite --region "$AWS_REGION" > /dev/null
+      aws ssm put-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-dns" --value "$ALB_DNS" --type String --overwrite --region "$AWS_REGION" > /dev/null
+      ok "ALB ARN/DNS cached in SSM"
+    fi
+  fi
+
+  # Re-apply gateway Terraform with ALB ARN to wire VPC Link and CloudFront origin
+  if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ] && [ -n "$ALB_DNS" ]; then
+    echo "Re-applying gateway Terraform with internal_alb_arn to wire API Gateway VPC Link..."
+    if [ "$LOCAL_MODE" = true ]; then
+      cd "$ROOT_DIR/modules/gateway/infra"
+      terraform apply \
+        -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+        -var "internal_alb_arn=$ALB_ARN" \
+        -var "enable_vpc_origin=true" \
+        -auto-approve
+    else
+      # Write an ALB-wiring buildspec
+      cat > /tmp/bs-gateway-alb-wire.yml << BSEOF
+version: 0.2
+env:
+  variables:
+    TF_IN_AUTOMATION: "true"
+phases:
+  install:
+    commands:
+      - yum install -y yum-utils
+      - yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+      - yum install -y terraform
+  build:
+    commands:
+      - cd modules/gateway/infra
+      - terraform init -backend-config="../../../environments/\$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false
+      - terraform apply -var-file="../../../environments/\$ENVIRONMENT/modules/gateway.tfvars" -var "internal_alb_arn=${ALB_ARN}" -var "enable_vpc_origin=true" -auto-approve
+BSEOF
+      aws s3 cp /tmp/bs-gateway-alb-wire.yml "s3://${STATE_BUCKET}/codebuild/bs-gateway-alb-wire.yml" --region "$AWS_REGION" > /dev/null
+      rm -f /tmp/bs-gateway-alb-wire.yml
+      # Re-upload source since we may have modified files
+      upload_source
+      run_codebuild "adp-${ENVIRONMENT}-gateway-alb-wire" "codebuild/bs-gateway-alb-wire.yml"
+    fi
+    ok "API Gateway VPC Link and CloudFront VPC Origin wired to ALB"
+  fi
+fi
 
 # =============================================================================
 # Step 5: Frontend

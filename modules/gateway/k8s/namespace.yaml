@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: bedrockgw
+  name: adp-gateway
   labels:
     app.kubernetes.io/name: bedrockgateway
     app.kubernetes.io/part-of: bedrock-gateway
