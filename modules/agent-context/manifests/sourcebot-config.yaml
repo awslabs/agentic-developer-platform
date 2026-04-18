@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sourcebot-config
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: sourcebot
+    app.kubernetes.io/part-of: agent-context-platform
+    app.kubernetes.io/component: configuration
+data:
+  config.json: |
+    {
+      "$schema": "https://raw.githubusercontent.com/sourcebot-dev/sourcebot/main/schemas/v3/index.json",
+      "connections": {
+        "github-org": {
+          "type": "github",
+          "token": {
+            "env": "GITHUB_TOKEN"
+          },
+          "orgs": ["${SOURCEBOT_DEFAULT_ORG}"],
+          "exclude": {
+            "archived": true
+          }
+        },
+        "oss-repos": {
+          "type": "github",
+          "token": {
+            "env": "GITHUB_TOKEN"
+          },
+          "repos": [
+            "Aider-AI/aider",
+            "ComposioHQ/composio",
+            "HKUDS/LightRAG",
+            "NousResearch/hermes-agent",
+            "OpenHands/OpenHands",
+            "PrefectHQ/fastmcp",
+            "SWE-agent/SWE-agent",
+            "The-Pocket/PocketFlow",
+            "agentic-community/mcp-gateway-registry",
+            "anthropics/claude-code",
+            "cline/cline",
+            "coleam00/Archon",
+            "continuedev/continue",
+            "crewAIInc/crewAI",
+            "e2b-dev/E2B",
+            "forrestchang/andrej-karpathy-skills",
+            "getzep/graphiti",
+            "google/adk-python",
+            "guardrails-ai/guardrails",
+            "huggingface/smolagents",
+            "langchain-ai/langchain",
+            "langchain-ai/langgraph",
+            "letta-ai/letta",
+            "mastra-ai/mastra",
+            "mem0ai/mem0",
+            "microsoft/autogen",
+            "microsoft/graphrag",
+            "microsoft/markitdown",
+            "modelcontextprotocol/python-sdk",
+            "modelcontextprotocol/servers",
+            "openai/openai-agents-python",
+            "openclaw/openclaw",
+            "qodo-ai/pr-agent",
+            "run-llama/llama_index",
+            "snarktank/ralph",
+            "strands-agents/sdk-python",
+            "thedotmack/claude-mem",
+            "volcengine/OpenViking"
+          ]
+        }
+      }
+    }

@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+# Deploy the Agent Context Intelligence Platform
+# Usage: ./deploy.sh [--config config.local.env]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source configuration
+source "${SCRIPT_DIR}/config.env"
+[[ -f "${SCRIPT_DIR}/config.local.env" ]] && source "${SCRIPT_DIR}/config.local.env"
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --config)
+      source "$2"
+      shift 2
+      ;;
+    --skip-validate)
+      SKIP_VALIDATE=true
+      shift
+      ;;
+    --help)
+      echo "Usage: ./deploy.sh [--config config.local.env] [--skip-validate]"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+  esac
+done
+
+echo "============================================"
+echo "Agent Context Intelligence Platform Deploy"
+echo "============================================"
+echo "Cluster:    ${CLUSTER_NAME}"
+echo "Region:     ${AWS_REGION}"
+echo "Namespace:  ${NAMESPACE}"
+echo "============================================"
+
+# Configure kubectl
+echo ""
+echo "Configuring kubectl..."
+aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "${AWS_REGION}"
+
+# Ensure namespace exists
+echo "Ensuring namespace '${NAMESPACE}' exists..."
+kubectl create namespace "${NAMESPACE}" 2>/dev/null || true
+
+# Deploy S3 Files storage (S3-backed persistent volumes via EFS CSI driver)
+# Creates S3 bucket, EFS file system, mount targets, and K8s PV/PVC.
+# Idempotent — safe to run repeatedly. Requires Terraform + AWS credentials.
+if [ "${S3_FILES_ENABLED:-true}" = "true" ] && [ -f "${SCRIPT_DIR}/scripts/deploy-s3-files.sh" ]; then
+  echo ""
+  echo "Deploying S3 Files storage infrastructure..."
+  bash "${SCRIPT_DIR}/scripts/deploy-s3-files.sh" || {
+    echo "WARNING: S3 Files deployment failed. Falling back to EBS PVCs."
+    if [ -f "${SCRIPT_DIR}/kubernetes/pvcs.yaml" ]; then
+      kubectl apply -f "${SCRIPT_DIR}/kubernetes/pvcs.yaml"
+    fi
+  }
+else
+  # Fallback: use EBS PVCs (legacy mode or S3 Files disabled)
+  echo "Ensuring PVCs exist (EBS mode)..."
+  if [ -f "${SCRIPT_DIR}/kubernetes/pvcs.yaml" ]; then
+    kubectl apply -f "${SCRIPT_DIR}/kubernetes/pvcs.yaml"
+  elif [ -f "${SCRIPT_DIR}/manifests/pvcs.yaml" ]; then
+    kubectl apply -f "${SCRIPT_DIR}/manifests/pvcs.yaml"
+  fi
+fi
+
+# Ensure service account exists
+if [ -f "${SCRIPT_DIR}/kubernetes/serviceaccount.yaml" ]; then
+  kubectl apply -f "${SCRIPT_DIR}/kubernetes/serviceaccount.yaml"
+fi
+
+# Apply ingestion pipeline RBAC (cross-namespace access for runner SA)
+echo ""
+echo "Applying ingestion pipeline RBAC..."
+source "${SCRIPT_DIR}/scripts/_common.sh"
+export NAMESPACE RUNNER_NAMESPACE RUNNER_SERVICE_ACCOUNT
+template_file "${SCRIPT_DIR}/manifests/ingestion-rbac.yaml" | kubectl apply -f -
+echo "  Role: ingestion-pipeline-role (ns: ${NAMESPACE})"
+echo "  Binding: ${RUNNER_NAMESPACE}:${RUNNER_SERVICE_ACCOUNT} -> ingestion-pipeline-role"
+
+# Set DEEPWIKI_ENABLED repo variable so the workflow can gate DeepWiki steps
+if command -v gh &>/dev/null && [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
+  echo ""
+  echo "Setting DEEPWIKI_ENABLED repo variable..."
+  gh variable set DEEPWIKI_ENABLED --body "true" --repo "${GITHUB_REPO}" 2>/dev/null \
+    && echo "  Set DEEPWIKI_ENABLED=true on ${GITHUB_REPO}" \
+    || echo "  WARNING: Could not set repo variable (gh auth may not be configured)"
+fi
+
+# Set RUNNER_LABEL repo variable so the workflow uses the correct runner
+if command -v gh &>/dev/null; then
+  gh variable set RUNNER_LABEL --body "${RUNNER_LABEL}" --repo "${GITHUB_REPO}" 2>/dev/null \
+    && echo "  Set RUNNER_LABEL=${RUNNER_LABEL} on ${GITHUB_REPO}" \
+    || echo "  WARNING: Could not set RUNNER_LABEL repo variable"
+fi
+
+echo ""
+echo "============================================"
+echo "Deploying components..."
+echo "============================================"
+
+# Deploy LiteLLM Proxy (embeddings + VLM)
+echo ""
+bash "${SCRIPT_DIR}/scripts/deploy-litellm-proxy.sh"
+
+# Deploy/Configure OpenViking (embedding + VLM config, restart)
+echo ""
+bash "${SCRIPT_DIR}/scripts/deploy-openviking.sh"
+
+# NOTE: CodeGraphContext pod removed (Issue #105) — cgc now runs during ingestion.
+# The ingestion pipeline (ingest-repo.py) handles structural analysis.
+
+# Deploy Sourcebot
+echo ""
+bash "${SCRIPT_DIR}/scripts/deploy-sourcebot.sh"
+
+# Deploy DeepWiki (optional)
+if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
+  echo ""
+  bash "${SCRIPT_DIR}/scripts/deploy-deepwiki.sh"
+else
+  echo ""
+  echo "Skipping DeepWiki (DEEPWIKI_ENABLED=false)"
+fi
+
+# Deploy Terraform infrastructure (SQS + DynamoDB + optional GraphRAG)
+echo ""
+echo "Deploying Terraform infrastructure (SQS, DynamoDB, GraphRAG)..."
+if [ -d "${SCRIPT_DIR}/terraform" ]; then
+  cd "${SCRIPT_DIR}/terraform"
+  terraform init -upgrade
+
+  TF_VARS="-var=graphrag_enabled=${GRAPHRAG_ENABLED:-false}"
+  terraform apply -auto-approve ${TF_VARS} || {
+    echo "WARNING: Terraform deployment failed."
+  }
+
+  # Export SQS queue URL and DynamoDB table name
+  SQS_QUEUE_URL=$(terraform output -raw ingestion_queue_url 2>/dev/null || echo "")
+  DYNAMO_TABLE=$(terraform output -raw dynamodb_table_name 2>/dev/null || echo "adp-context-service-state")
+  export SQS_QUEUE_URL DYNAMO_TABLE
+  echo "  SQS Queue URL: ${SQS_QUEUE_URL:-not set}"
+  echo "  DynamoDB Table: ${DYNAMO_TABLE}"
+
+  # Export GraphRAG endpoints if enabled
+  if [ "${GRAPHRAG_ENABLED:-false}" = "true" ]; then
+    NEPTUNE_ENDPOINT=$(terraform output -raw neptune_endpoint 2>/dev/null || echo "")
+    OPENSEARCH_ENDPOINT=$(terraform output -raw opensearch_collection_endpoint 2>/dev/null || echo "")
+    export NEPTUNE_ENDPOINT OPENSEARCH_ENDPOINT
+    echo "  Neptune endpoint: ${NEPTUNE_ENDPOINT:-not set}"
+    echo "  OpenSearch endpoint: ${OPENSEARCH_ENDPOINT:-not set}"
+  fi
+  cd "${SCRIPT_DIR}"
+fi
+
+# Deploy Ingestion Refresh CronJob (unified: repos + URLs + infra discovery)
+if [ "${INGESTION_REFRESH_ENABLED:-true}" = "true" ]; then
+  echo ""
+  echo "Deploying Ingestion Refresh CronJob..."
+
+  # Create ConfigMap from content files (repos.txt, urls.txt, docs.txt, accounts.txt)
+  kubectl create configmap ingestion-content-config \
+    --from-file=repos.txt="${SCRIPT_DIR}/index_content/repos.txt" \
+    --from-file=urls.txt="${SCRIPT_DIR}/index_content/urls.txt" \
+    --from-file=docs.txt="${SCRIPT_DIR}/index_content/docs.txt" \
+    --from-file=accounts.txt="${SCRIPT_DIR}/index_content/accounts.txt" \
+    -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+
+  # Apply CronJob manifest (with variable substitution)
+  source "${SCRIPT_DIR}/scripts/_common.sh"
+  export NAMESPACE SERVICE_ACCOUNT INGESTION_IMAGE INGESTION_REFRESH_SCHEDULE
+  export SQS_QUEUE_URL DYNAMO_TABLE
+  template_file "${SCRIPT_DIR}/manifests/repo-refresh-cronjob.yaml" | kubectl apply -f -
+
+  echo "  CronJob deployed: schedule='${INGESTION_REFRESH_SCHEDULE}'"
+  echo "  Manual trigger: kubectl create job --from=cronjob/ingestion-refresh manual-refresh -n ${NAMESPACE}"
+
+  # Deploy KEDA ScaledJob for parallel ingestion (if SQS is configured)
+  if [ -n "${SQS_QUEUE_URL}" ] && [ -f "${SCRIPT_DIR}/manifests/ingestion-scaledjob.yaml" ]; then
+    echo ""
+    echo "Deploying KEDA ScaledJob for parallel ingestion..."
+    export OV_URL="http://openviking.${NAMESPACE}.svc.cluster.local:1933"
+    export DEEPWIKI_URL="http://deepwiki.${NAMESPACE}.svc.cluster.local:8001"
+    export LLM_BASE_URL="http://litellm-proxy.${NAMESPACE}.svc.cluster.local:4000/v1"
+    export DEEPWIKI_ENABLED GRAPHRAG_ENABLED NEPTUNE_ENDPOINT NEPTUNE_PORT OPENSEARCH_ENDPOINT
+    export WIKI_LLM_MODEL ECR_REGISTRY
+    template_file "${SCRIPT_DIR}/manifests/ingestion-scaledjob.yaml" | kubectl apply -f -
+    echo "  ScaledJob deployed: ingestion-worker (0-10 replicas)"
+    echo "  Queue: ${SQS_QUEUE_URL}"
+  fi
+
+  # Clean up legacy OpenViking-only refresh CronJob if it exists
+  kubectl delete cronjob openviking-repo-refresh -n "${NAMESPACE}" 2>/dev/null && \
+    echo "  Cleaned up legacy openviking-repo-refresh CronJob" || true
+else
+  echo ""
+  echo "Skipping Ingestion Refresh CronJob (INGESTION_REFRESH_ENABLED=false)"
+fi
+
+# Validate
+if [ "${SKIP_VALIDATE:-false}" != "true" ]; then
+  echo ""
+  bash "${SCRIPT_DIR}/scripts/validate.sh"
+fi
+
+echo ""
+echo "============================================"
+echo "Deployment complete!"
+echo "============================================"
+echo ""
+echo "Services:"
+echo "  OpenViking:    http://openviking.${NAMESPACE}.svc.cluster.local:1933"
+echo "  Sourcebot:     http://sourcebot.${NAMESPACE}.svc.cluster.local:3000"
+echo "  LiteLLM Proxy: http://litellm-proxy.${NAMESPACE}.svc.cluster.local:${LITELLM_PORT}"
+if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
+  echo "  DeepWiki:      http://deepwiki.${NAMESPACE}.svc.cluster.local:${DEEPWIKI_PORT}"
+fi
+if [ "${INGESTION_REFRESH_ENABLED:-true}" = "true" ]; then
+  echo "  Ingestion:     CronJob ingestion-refresh (${INGESTION_REFRESH_SCHEDULE})"
+fi
+if [ "${GRAPHRAG_ENABLED:-false}" = "true" ]; then
+  echo "  Neptune:       ${NEPTUNE_ENDPOINT:-not deployed}:${NEPTUNE_PORT:-8182}"
+  echo "  OpenSearch:    ${OPENSEARCH_ENDPOINT:-not deployed}"
+fi
+if [ -n "${SQS_QUEUE_URL}" ]; then
+  echo "  SQS Queue:     ${SQS_QUEUE_URL}"
+  echo "  DynamoDB:      ${DYNAMO_TABLE}"
+  echo "  KEDA Workers:  ScaledJob ingestion-worker (0-10 replicas)"
+fi
+echo ""

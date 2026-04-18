@@ -1,0 +1,29 @@
+# Agent Context Platform — S3 Files Terraform Variables
+# Copy to terraform.tfvars and fill in your values.
+#
+# To find these values for the github-arc-runner-eks cluster:
+#   aws eks describe-cluster --name github-arc-runner-eks --query 'cluster.resourcesVpcConfig' --output json
+#   aws ec2 describe-security-groups --filters "Name=tag:aws:eks:cluster-name,Values=github-arc-runner-eks" --query 'SecurityGroups[0].GroupId'
+
+cluster_name = "github-arc-runner-eks"
+aws_region   = "us-east-1"
+bucket_name  = "agent-context-platform-data"
+namespace    = "agent-context"
+
+# Required: Get these from your EKS cluster
+# vpc_id = "vpc-xxxxxxxxxxxxxxxxx"
+# subnet_ids = ["subnet-aaa", "subnet-bbb", "subnet-ccc"]
+# node_security_group_id = "sg-xxxxxxxxxxxxxxxxx"
+
+tags = {
+  Environment = "production"
+  Team        = "agent-context"
+}
+
+# ─── GraphRAG (Neptune Serverless + OpenSearch Serverless) ───────────────────
+# Set to true to create Neptune + OpenSearch infrastructure
+# graphrag_enabled = true
+# neptune_min_capacity = 1.0
+# neptune_max_capacity = 16.0
+# opensearch_collection_name = "graphrag-entities"
+# opensearch_allow_public_access = false  # Default: VPC-only (recommended)

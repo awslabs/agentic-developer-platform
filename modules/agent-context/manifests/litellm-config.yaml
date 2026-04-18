@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: ${NAMESPACE}
+  labels:
+    app: litellm-proxy
+    app.kubernetes.io/part-of: agent-context-platform
+    app.kubernetes.io/component: configuration
+data:
+  config.yaml: |
+    model_list:
+      - model_name: "bedrock/${BEDROCK_EMBEDDING_MODEL}"
+        litellm_params:
+          model: "bedrock/${BEDROCK_EMBEDDING_MODEL}"
+          aws_region_name: "${BEDROCK_REGION}"
+        model_info:
+          mode: embedding
+      - model_name: "bedrock/${BEDROCK_VLM_MODEL}"
+        litellm_params:
+          model: "bedrock/${BEDROCK_VLM_MODEL}"
+          aws_region_name: "${BEDROCK_REGION}"
+      - model_name: "bedrock/global.anthropic.claude-opus-4-6-v1"
+        litellm_params:
+          model: "bedrock/global.anthropic.claude-opus-4-6-v1"
+          aws_region_name: "${BEDROCK_REGION}"

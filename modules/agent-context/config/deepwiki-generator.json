@@ -1,0 +1,14 @@
+{
+  "default_provider": "openai",
+  "providers": {
+    "openai": {
+      "default_model": "bedrock/global.anthropic.claude-sonnet-4-6",
+      "supportsCustomModel": true,
+      "models": {
+        "bedrock/global.anthropic.claude-sonnet-4-6": {
+          "temperature": 0.7
+        }
+      }
+    }
+  }
+}

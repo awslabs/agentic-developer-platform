@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sourcebot-config
+  namespace: agent-context
+  labels:
+    app.kubernetes.io/name: sourcebot
+    app.kubernetes.io/part-of: agent-context-platform
+    app.kubernetes.io/component: configuration
+data:
+  config.json: |
+    {
+      "$schema": "https://raw.githubusercontent.com/sourcebot-dev/sourcebot/main/schemas/v3/index.json",
+      "connections": {
+        "aws-innovate-github": {
+          "type": "github",
+          "token": {
+            "env": "GITHUB_TOKEN"
+          },
+          "orgs": ["aws-innovate"],
+          "exclude": {
+            "archived": true
+          }
+        }
+      }
+    }

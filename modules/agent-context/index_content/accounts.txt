@@ -1,0 +1,21 @@
+# ═══════════════════════════════════════════
+# AWS Accounts — infrastructure discovery
+# Updated: 2026-04-16
+# ═══════════════════════════════════════════
+#
+# Format: account_id:role_name:regions (comma-separated)
+# The role must exist in the target account and trust the platform's IRSA role.
+#
+# Required role permissions:
+#   resource-explorer-2:Search, resource-explorer-2:GetView,
+#   resource-explorer-2:ListViews, tag:GetResources,
+#   cloudformation:ListStacks, cloudformation:DescribeStacks
+#
+# See README.md for cross-account IAM role setup instructions.
+# ═══════════════════════════════════════════
+
+# Platform account (self-discovery)
+605440105851:AgentContextReadOnly:us-east-1
+
+# Add more accounts below as needed:
+# 123456789012:AgentContextReadOnly:us-east-1,eu-west-1

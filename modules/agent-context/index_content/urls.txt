@@ -1,0 +1,29 @@
+# ═══════════════════════════════════════════
+# Web Documentation — URLs to crawl and index
+# Updated: 2026-04-16
+# ═══════════════════════════════════════════
+#
+# Each URL is crawled via crawl4ai (or requests fallback), converted to
+# markdown, and uploaded to OpenViking at viking://resources/web/{domain}/{path}.md
+#
+# If the site has a /sitemap.xml, all pages under the URL path are discovered
+# and crawled (capped at --max-pages). Otherwise, just the given URL is crawled.
+#
+# Format: one URL per line. Lines starting with # are comments.
+# ═══════════════════════════════════════════
+
+# --- AWS Bedrock Documentation ---
+https://docs.aws.amazon.com/bedrock/latest/userguide/
+https://docs.aws.amazon.com/bedrock/latest/APIReference/
+
+# --- AWS AgentCore ---
+https://docs.aws.amazon.com/agentcore/latest/userguide/
+
+# --- Strands Agents SDK ---
+https://strandsagents.com/latest/
+
+# --- MCP Specification ---
+https://modelcontextprotocol.io/docs/
+
+# --- Single pages (no sitemap crawl) ---
+https://aws.amazon.com/blogs/aws/launching-s3-files-making-s3-buckets-accessible-as-file-systems/

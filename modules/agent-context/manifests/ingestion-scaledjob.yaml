@@ -1,0 +1,108 @@
+# KEDA ScaledJob for parallel ingestion from SQS
+# Scales 0->10 pods based on SQS queue depth (one pod per message)
+#
+# Variables substituted by template_file() from _common.sh:
+#   NAMESPACE, SERVICE_ACCOUNT, INGESTION_IMAGE, SQS_QUEUE_URL,
+#   DYNAMO_TABLE, AWS_REGION, OV_URL, OPENVIKING_ROOT_KEY,
+#   DEEPWIKI_URL, NEPTUNE_ENDPOINT, NEPTUNE_PORT, OPENSEARCH_ENDPOINT,
+#   LLM_BASE_URL, WIKI_LLM_MODEL, GRAPHRAG_ENABLED, ECR_REGISTRY
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: ingestion-worker
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/part-of: agent-context-platform
+    app.kubernetes.io/component: ingestion-worker
+spec:
+  jobTargetRef:
+    parallelism: 1
+    completions: 1
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          app: ingestion-worker
+      spec:
+        serviceAccountName: ${SERVICE_ACCOUNT}
+        restartPolicy: Never
+        containers:
+          - name: worker
+            image: ${INGESTION_IMAGE}
+            command: ["python3", "/app/sqs-worker.py"]
+            env:
+              - name: SQS_QUEUE_URL
+                value: "${SQS_QUEUE_URL}"
+              - name: DYNAMO_TABLE
+                value: "${DYNAMO_TABLE}"
+              - name: AWS_REGION
+                value: "${AWS_REGION}"
+              - name: OV_URL
+                value: "${OV_URL}"
+              - name: OPENVIKING_ROOT_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: agent-context-secrets
+                    key: openviking-root-key
+              - name: DEEPWIKI_URL
+                value: "${DEEPWIKI_URL}"
+              - name: DEEPWIKI_ENABLED
+                value: "${DEEPWIKI_ENABLED}"
+              - name: GRAPHRAG_ENABLED
+                value: "${GRAPHRAG_ENABLED}"
+              - name: NEPTUNE_ENDPOINT
+                value: "${NEPTUNE_ENDPOINT}"
+              - name: NEPTUNE_PORT
+                value: "${NEPTUNE_PORT}"
+              - name: OPENSEARCH_ENDPOINT
+                value: "${OPENSEARCH_ENDPOINT}"
+              - name: LLM_BASE_URL
+                value: "${LLM_BASE_URL}"
+              - name: WIKI_LLM_MODEL
+                value: "${WIKI_LLM_MODEL}"
+              - name: CLONE_BASE
+                value: /tmp/repos
+              - name: CODE_INDEX_DIR
+                value: /tmp/code-indexes
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "1Gi"
+              limits:
+                cpu: "2"
+                memory: "4Gi"
+            volumeMounts:
+              - name: platform-data
+                mountPath: /platform-data
+              - name: tmp
+                mountPath: /tmp
+        volumes:
+          - name: platform-data
+            persistentVolumeClaim:
+              claimName: platform-data
+          - name: tmp
+            emptyDir:
+              sizeLimit: 10Gi
+  pollingInterval: 10
+  maxReplicaCount: 10
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  triggers:
+    - type: aws-sqs-queue
+      metadata:
+        queueURL: "${SQS_QUEUE_URL}"
+        queueLength: "1"
+        awsRegion: "${AWS_REGION}"
+      authenticationRef:
+        name: keda-aws-auth
+---
+# KEDA TriggerAuthentication for AWS (uses IRSA)
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-aws-auth
+  namespace: ${NAMESPACE}
+spec:
+  podIdentity:
+    provider: aws-eks

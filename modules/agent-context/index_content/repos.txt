@@ -1,0 +1,139 @@
+# ═══════════════════════════════════════════
+# Code Intelligence Platform — Top 100 Repos
+# Curated for Bedrock, AgentCore, and Agentic AI
+# Updated: 2026-04-16
+# ═══════════════════════════════════════════
+
+# --- AWS Bedrock Samples (aws-samples) ---
+aws-samples/amazon-bedrock-samples
+aws-samples/aws-genai-llm-chatbot
+aws-samples/generative-ai-use-cases
+aws-samples/bedrock-chat
+aws-samples/bedrock-access-gateway
+aws-samples/bedrock-engineer
+aws-samples/remote-swe-agents
+aws-samples/amazon-bedrock-rag
+aws-samples/sample-bedrock-deep-researcher
+aws-samples/sample-agentic-ai-demos
+aws-samples/rag-with-amazon-bedrock-and-pgvector
+aws-samples/sample-connector-for-bedrock
+aws-samples/sample-voicebot-nova-sonic
+
+# --- AWS AgentCore & Strands (aws-samples) ---
+aws-samples/sample-strands-agent-with-agentcore
+aws-samples/sample-amazon-bedrock-agentcore-fullstack-webapp
+aws-samples/sample-agentic-frameworks-on-aws
+aws-samples/sample-strands-agents-agentskills
+aws-samples/sample-strands-agents-chat
+aws-samples/sample-autonomous-cloud-coding-agents
+aws-samples/sample-getting-started-with-strands-agents-course
+aws-samples/sample-aws-genai-ops-demos
+aws-samples/sample-ai-agent-accelerator
+aws-samples/sample-deep-research-bedrock-agentcore
+aws-samples/sample-ai-agent-architectures-agentcore
+aws-samples/sample-strands-agentcore-starter
+aws-samples/sample-agentic-cost-optimizer
+aws-samples/sample-agentic-chatbot-accelerator
+aws-samples/sample-badgers
+aws-samples/sample-agents-with-nova-act-and-mcp
+aws-samples/sample-agentic-ai-web
+aws-samples/sample-Advanced-Strands-Agents-with-MCP
+aws-samples/sample-getting-started-with-amazon-agentcore
+aws-samples/sample-why-agents-fail
+
+# --- AWS Labs (awslabs) ---
+awslabs/mcp
+awslabs/agent-squad
+awslabs/agentcore-samples
+awslabs/amazon-bedrock-agent-samples
+awslabs/agent-plugins
+awslabs/generative-ai-cdk-constructs
+awslabs/genai-bedrock-agent-chatbot
+awslabs/aiops-modules
+awslabs/Log-Analyzer-with-MCP
+awslabs/threat-modeling-mcp-server
+awslabs/mcp-server-for-oscal
+
+# --- Strands Agents (strands-agents org) ---
+strands-agents/sdk-python
+strands-agents/tools
+strands-agents/agent-sop
+strands-agents/samples
+strands-agents/sdk-typescript
+strands-agents/agent-builder
+
+# --- Agentic Frameworks (OSS) ---
+openclaw/openclaw
+microsoft/autogen
+crewAIInc/crewAI
+langchain-ai/langgraph
+openai/openai-agents-python
+google/adk-python
+huggingface/smolagents
+mastra-ai/mastra
+The-Pocket/PocketFlow
+NousResearch/hermes-agent
+agno-agi/agno
+bytedance/deer-flow
+browser-use/browser-use
+emcie-co/parlant
+ag-ui-protocol/ag-ui
+
+# --- MCP & Tool Use ---
+modelcontextprotocol/servers
+modelcontextprotocol/python-sdk
+modelcontextprotocol/typescript-sdk
+ComposioHQ/composio
+PrefectHQ/fastmcp
+microsoft/playwright-mcp
+github/github-mcp-server
+lastmile-ai/mcp-agent
+tadata-org/fastapi_mcp
+
+# --- Coding Agents ---
+anthropics/claude-code
+Aider-AI/aider
+continuedev/continue
+cline/cline
+OpenHands/OpenHands
+SWE-agent/SWE-agent
+The-PR-Agent/pr-agent
+coleam00/Archon
+plandex-ai/plandex
+
+# --- Context & RAG ---
+langchain-ai/langchain
+run-llama/llama_index
+microsoft/graphrag
+HKUDS/LightRAG
+# infiniflow/ragflow  # REMOVED: too large, crashes OpenViking during ingestion
+volcengine/OpenViking
+topoteretes/cognee
+
+# --- Agent Memory ---
+mem0ai/mem0
+getzep/graphiti
+letta-ai/letta
+
+# --- Agent Security & Sandboxing ---
+guardrails-ai/guardrails
+e2b-dev/E2B
+daytonaio/daytona
+
+# --- Agent Tools & Utilities ---
+microsoft/markitdown
+snarktank/ralph
+# firecrawl/firecrawl  # REMOVED: too large, crashes OpenViking during ingestion
+sigoden/aichat
+
+# --- Trending (added 2026-04-16) ---
+MemPalace/mempalace
+JackChen-me/open-multi-agent
+holaboss-ai/holaOS
+nesquena/hermes-webui
+ghostwright/phantom
+repowise-dev/repowise
+Houseofmvps/codesight
+Prismer-AI/PrismerCloud
+afshinm/zerobox
+lucasastorian/llmwiki

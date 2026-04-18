@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm-proxy
+  namespace: ${NAMESPACE}
+  labels:
+    app: litellm-proxy
+    app.kubernetes.io/part-of: agent-context-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm-proxy
+  template:
+    metadata:
+      labels:
+        app: litellm-proxy
+        app.kubernetes.io/part-of: agent-context-platform
+    spec:
+      serviceAccountName: ${SERVICE_ACCOUNT}
+      containers:
+      - name: litellm
+        image: ${LITELLM_IMAGE}
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            pip install --no-cache-dir 'litellm[proxy]' &&
+            python3 << 'PATCH'
+            # Patch LiteLLM health check: don't send max_tokens for embedding models.
+            # LiteLLM bug: _update_litellm_params_for_health_check() adds max_tokens=1
+            # for ALL models, but Bedrock embedding API rejects extraneous keys.
+            # Fix: after the line that sets max_tokens=1, add a check to remove it
+            # if the model mode is 'embedding'.
+            import litellm.proxy.health_check as hc
+            import inspect, re
+            src_file = inspect.getfile(hc)
+            with open(src_file, 'r') as f:
+                src = f.read()
+            old = '        litellm_params["max_tokens"] = 1'
+            new = old + '\n    # Patch: Bedrock embedding API rejects max_tokens\n    if model_info.get("mode") == "embedding":\n        litellm_params.pop("max_tokens", None)'
+            if old in src and 'Patch: Bedrock' not in src:
+                src = src.replace(old, new, 1)
+                with open(src_file, 'w') as f:
+                    f.write(src)
+                print("Applied LiteLLM health check patch for embedding models")
+            else:
+                print("Patch already applied or target not found, skipping")
+            PATCH
+            litellm --config /config/config.yaml --port ${LITELLM_PORT} --host 0.0.0.0
+        ports:
+        - containerPort: ${LITELLM_PORT}
+          name: http
+        env:
+        - name: AWS_DEFAULT_REGION
+          value: "${BEDROCK_REGION}"
+        - name: AWS_REGION
+          value: "${BEDROCK_REGION}"
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+        volumeMounts:
+        - name: config
+          mountPath: /config
+          readOnly: true
+        readinessProbe:
+          httpGet:
+            path: /health/readiness
+            port: ${LITELLM_PORT}
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /health/liveliness
+            port: ${LITELLM_PORT}
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: config
+        configMap:
+          name: litellm-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-proxy
+  namespace: ${NAMESPACE}
+  labels:
+    app: litellm-proxy
+    app.kubernetes.io/part-of: agent-context-platform
+spec:
+  selector:
+    app: litellm-proxy
+  ports:
+  - port: ${LITELLM_PORT}
+    targetPort: ${LITELLM_PORT}
+    name: http
+  type: ClusterIP

@@ -1,0 +1,79 @@
+# OpenViking Repo Refresh CronJob
+# Re-ingests all repos from repos.txt on a configurable schedule.
+# Default: weekly on Sunday at 3am UTC.
+#
+# Manual trigger:
+#   kubectl create job --from=cronjob/openviking-repo-refresh manual-refresh -n ${NAMESPACE}
+#
+# Variables substituted at deploy time: ${NAMESPACE}, ${SERVICE_ACCOUNT},
+# ${OPENVIKING_REFRESH_SCHEDULE}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openviking-repo-refresh
+  namespace: ${NAMESPACE}
+  labels:
+    app: openviking-repo-refresh
+    app.kubernetes.io/part-of: agent-context-platform
+    app.kubernetes.io/component: refresh
+spec:
+  schedule: "${OPENVIKING_REFRESH_SCHEDULE}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 14400
+      ttlSecondsAfterFinished: 259200
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: openviking-repo-refresh
+        spec:
+          serviceAccountName: ${SERVICE_ACCOUNT}
+          containers:
+          - name: refresh
+            image: bitnami/kubectl:latest
+            command: ["/bin/bash", "-c"]
+            args:
+              - |
+                set -euo pipefail
+                echo "Installing curl..."
+                apt-get update -qq && apt-get install -y -qq curl > /dev/null 2>&1 || \
+                  (apk add --no-cache curl 2>/dev/null) || \
+                  echo "curl may already be available"
+
+                echo "Starting repo refresh..."
+                bash /scripts/refresh-repos.sh --repos-file /config/repos.txt
+            env:
+            - name: NAMESPACE
+              value: "${NAMESPACE}"
+            - name: OPENVIKING_ROOT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-context-secrets
+                  key: openviking-root-key
+                  optional: true
+            volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: config
+              mountPath: /config
+              readOnly: true
+            resources:
+              requests:
+                cpu: "100m"
+                memory: "128Mi"
+              limits:
+                cpu: "250m"
+                memory: "256Mi"
+          restartPolicy: OnFailure
+          volumes:
+          - name: scripts
+            configMap:
+              name: agent-context-refresh-scripts
+          - name: config
+            configMap:
+              name: openviking-repos

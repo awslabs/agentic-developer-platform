@@ -1,0 +1,85 @@
+---
+# RBAC for the CronJob: allow patching secrets and restarting deployments
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sourcebot-token-refresh
+  namespace: ${NAMESPACE}
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "patch", "update"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "patch"]
+- apiGroups: ["apps"]
+  resources: ["deployments/scale"]
+  verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sourcebot-token-refresh
+  namespace: ${NAMESPACE}
+subjects:
+- kind: ServiceAccount
+  name: ${SERVICE_ACCOUNT}
+  namespace: ${NAMESPACE}
+roleRef:
+  kind: Role
+  name: sourcebot-token-refresh
+  apiGroup: rbac.authorization.k8s.io
+---
+# CronJob: refresh GitHub App token every 50 minutes
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sourcebot-token-refresh
+  namespace: ${NAMESPACE}
+  labels:
+    app: sourcebot-token-refresh
+    app.kubernetes.io/part-of: agent-context-platform
+spec:
+  schedule: "*/50 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: ${SERVICE_ACCOUNT}
+          initContainers:
+          - name: token-gen
+            image: python:3.11-slim
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                set -e
+                pip install --no-cache-dir PyJWT requests boto3 cryptography 2>/dev/null
+                echo "[$(date)] Generating new GitHub App installation token..."
+                python3 /scripts/github-app-token.py \
+                  --secret-id "${GITHUB_APP_SECRET_ID}" \
+                  --region "${SECRETS_MANAGER_REGION}" \
+                  --k8s-secret agent-context-secrets \
+                  --k8s-key github-token \
+                  --namespace "${NAMESPACE}"
+                echo "[$(date)] Token refreshed successfully."
+            volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          containers:
+          - name: restart-sourcebot
+            image: bitnami/kubectl:latest
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                echo "[$(date)] Restarting Sourcebot to pick up new token..."
+                kubectl rollout restart deploy/sourcebot -n "${NAMESPACE}"
+                echo "[$(date)] Token refresh complete."
+          restartPolicy: OnFailure
+          volumes:
+          - name: scripts
+            configMap:
+              name: github-app-token-script

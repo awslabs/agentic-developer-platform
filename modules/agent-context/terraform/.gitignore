@@ -1,0 +1,10 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+tfplan
+.terraform.lock.hcl
+
+# Auto-generated variables (may contain real VPC/subnet IDs)
+terraform.tfvars

@@ -1,0 +1,30 @@
+# ═══════════════════════════════════════════
+# Documents — PDFs, presentations, meeting notes
+# Updated: 2026-04-17
+# ═══════════════════════════════════════════
+#
+# Format: source_path | title | tag1:val1, tag2:val2
+#
+# Supported sources:
+#   - HTTPS URLs (PDFs, HTML docs)
+#   - S3 URIs (s3://bucket/key)
+#   - S3 folders (s3://bucket/prefix/ — indexes all files)
+#
+# Supported formats (via markitdown):
+#   PDF, PPTX, DOCX, HTML, Markdown, plain text, images
+#
+# Tags are optional but recommended for filtered search.
+# ═══════════════════════════════════════════
+
+# --- Research Papers ---
+https://arxiv.org/pdf/2404.16130 | GraphRAG: Graph Retrieval-Augmented Generation | domain:research, type:paper, topic:graphrag
+https://arxiv.org/pdf/2312.10997 | Retrieval-Augmented Generation for Large Language Models | domain:research, type:paper, topic:rag
+
+# --- AWS Documentation (PDF exports) ---
+https://docs.aws.amazon.com/pdfs/bedrock/latest/userguide/bedrock-ug.pdf | Bedrock User Guide | domain:aws, type:guide, service:bedrock
+https://docs.aws.amazon.com/pdfs/neptune/latest/userguide/neptune-ug.pdf | Neptune User Guide | domain:aws, type:guide, service:neptune
+
+# --- S3 Documents (add your own below) ---
+# s3://adp-docs/meeting-notes/sprint-42.md | Sprint 42 Review | team:platform, type:meeting
+# s3://adp-docs/presentations/arch-overview.pptx | Architecture Deck | type:presentation, confidentiality:internal
+# s3://adp-docs/team-wiki/ | Team Wiki | team:platform, type:wiki

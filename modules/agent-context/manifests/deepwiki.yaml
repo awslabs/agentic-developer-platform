@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deepwiki
+  namespace: ${NAMESPACE}
+  labels:
+    app: deepwiki
+    app.kubernetes.io/name: deepwiki
+    app.kubernetes.io/part-of: agent-context-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: deepwiki
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: deepwiki
+        app.kubernetes.io/name: deepwiki
+        app.kubernetes.io/part-of: agent-context-platform
+    spec:
+      serviceAccountName: ${SERVICE_ACCOUNT}
+      containers:
+      - name: deepwiki
+        image: ${DEEPWIKI_IMAGE}
+        ports:
+        - containerPort: ${DEEPWIKI_PORT}
+          name: api
+        - containerPort: 3000
+          name: frontend
+        env:
+        - name: PORT
+          value: "${DEEPWIKI_PORT}"
+        - name: NODE_ENV
+          value: "production"
+        - name: LOG_LEVEL
+          value: "INFO"
+        # Route all OpenAI SDK calls through LiteLLM proxy (no API keys needed)
+        - name: OPENAI_API_KEY
+          value: "sk-not-needed"
+        - name: OPENAI_BASE_URL
+          value: "http://litellm-proxy.${NAMESPACE}.svc.cluster.local:${LITELLM_PORT}/v1"
+        # AWS region for any direct Bedrock calls (IRSA handles auth)
+        - name: AWS_DEFAULT_REGION
+          value: "${BEDROCK_REGION}"
+        - name: AWS_REGION
+          value: "${BEDROCK_REGION}"
+        # Dummy Google API key to suppress startup warning (not used — all calls go through LiteLLM)
+        - name: GOOGLE_API_KEY
+          value: "not-needed"
+        # Disable auth (internal cluster service)
+        - name: DEEPWIKI_AUTH_ENABLED
+          value: "false"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "2Gi"
+          limits:
+            cpu: "2"
+            memory: "6Gi"
+        volumeMounts:
+        - name: wiki-cache
+          mountPath: /root/.adalflow
+          subPath: deepwiki
+        - name: deepwiki-config
+          mountPath: /app/api/config/generator.json
+          subPath: generator.json
+        - name: deepwiki-config
+          mountPath: /app/api/config/embedder.json
+          subPath: embedder.json
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: ${DEEPWIKI_PORT}
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: ${DEEPWIKI_PORT}
+          initialDelaySeconds: 60
+          periodSeconds: 60
+          timeoutSeconds: 15
+          failureThreshold: 10
+      volumes:
+      - name: wiki-cache
+        persistentVolumeClaim:
+          claimName: platform-data
+      - name: deepwiki-config
+        configMap:
+          name: deepwiki-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: deepwiki
+  namespace: ${NAMESPACE}
+  labels:
+    app: deepwiki
+    app.kubernetes.io/name: deepwiki
+    app.kubernetes.io/part-of: agent-context-platform
+spec:
+  selector:
+    app: deepwiki
+  ports:
+  - port: ${DEEPWIKI_PORT}
+    targetPort: ${DEEPWIKI_PORT}
+    name: api
+  - port: 3000
+    targetPort: 3000
+    name: frontend
+  type: ClusterIP

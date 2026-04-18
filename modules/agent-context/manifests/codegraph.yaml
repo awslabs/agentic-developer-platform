@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codegraph-context
+  namespace: ${NAMESPACE}
+  labels:
+    app: codegraph
+    app.kubernetes.io/name: codegraph
+    app.kubernetes.io/part-of: agent-context-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: codegraph
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: codegraph
+        app.kubernetes.io/name: codegraph
+        app.kubernetes.io/part-of: agent-context-platform
+    spec:
+      serviceAccountName: ${SERVICE_ACCOUNT}
+      containers:
+      - name: codegraph
+        image: ${CODEGRAPH_IMAGE}
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+            echo "Installing dependencies..."
+            apt-get update && apt-get install -y git curl gcc g++ make && rm -rf /var/lib/apt/lists/*
+            echo "Installing codegraphcontext..."
+            pip install --no-cache-dir codegraphcontext
+            echo "CodeGraphContext ready: $(cgc --version 2>&1 || echo 'installed')"
+            echo "Verification: $(python3 -c 'import codegraphcontext; print("module OK")' 2>&1)"
+            # Keep running for kubectl exec access
+            echo "Pod is ready. Sleeping forever..."
+            while true; do sleep 3600; done
+        env:
+        - name: CGC_HOME
+          value: /data/.codegraphcontext
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: codegraph
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "2Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+        livenessProbe:
+          exec:
+            command: ["python3", "-c", "print('alive')"]
+          initialDelaySeconds: 180
+          periodSeconds: 60
+        readinessProbe:
+          exec:
+            command: ["python3", "-c", "import codegraphcontext; print('ready')"]
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          failureThreshold: 10
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: platform-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: codegraph
+  namespace: ${NAMESPACE}
+  labels:
+    app: codegraph
+    app.kubernetes.io/name: codegraph
+    app.kubernetes.io/part-of: agent-context-platform
+spec:
+  selector:
+    app: codegraph
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: ClusterIP

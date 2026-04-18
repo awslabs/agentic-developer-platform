@@ -1,0 +1,153 @@
+# Unified Ingestion Refresh CronJob
+# Runs daily at 6am UTC:
+#   1. refresh-repos.py    — SHA-based repo refresh + incremental wiki updates + topic tagging
+#   2. discover-infra.py   — AWS Resource Explorer snapshot + IaC parsing
+#   3. correlate.py        — Link code repos <-> AWS resources <-> CI/CD pipelines
+#   4. lint-wiki.py        — Knowledge base health check + report
+#   5. generate-indexes.py — LLM-discovered topic index pages
+#
+# Manual trigger:
+#   kubectl create job --from=cronjob/ingestion-refresh manual-refresh -n ${NAMESPACE}
+#
+# Variables substituted at deploy time: ${NAMESPACE}, ${SERVICE_ACCOUNT},
+# ${INGESTION_IMAGE}, ${INGESTION_REFRESH_SCHEDULE}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ingestion-refresh
+  namespace: ${NAMESPACE}
+  labels:
+    app: ingestion-refresh
+    app.kubernetes.io/part-of: agent-context-platform
+    app.kubernetes.io/component: ingestion
+spec:
+  schedule: "${INGESTION_REFRESH_SCHEDULE}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 21600  # 6 hours max
+      ttlSecondsAfterFinished: 259200  # Clean up after 3 days
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: ingestion-refresh
+        spec:
+          serviceAccountName: ${SERVICE_ACCOUNT}
+          containers:
+          - name: refresh
+            image: ${INGESTION_IMAGE}
+            command: ["/bin/bash", "-c"]
+            args:
+              - |
+                set -euo pipefail
+                echo "=== Ingestion Refresh $(date -u) ==="
+
+                # Step 1: Refresh repos and URLs
+                echo ""
+                echo "--- Step 1: Repo + URL refresh ---"
+                python /app/refresh-repos.py \
+                  --repos-file /config/repos.txt \
+                  --urls-file /config/urls.txt \
+                  || echo "WARNING: refresh-repos.py had errors (non-fatal)"
+
+                # Step 2: Infrastructure discovery
+                echo ""
+                echo "--- Step 2: Infrastructure discovery ---"
+                python /app/discover-infra.py \
+                  --accounts-file /config/accounts.txt \
+                  || echo "WARNING: discover-infra.py had errors (non-fatal)"
+
+                # Step 3: Correlate code <-> infrastructure
+                echo ""
+                echo "--- Step 3: Correlation ---"
+                python /app/correlate.py \
+                  || echo "WARNING: correlate.py had errors (non-fatal)"
+
+                # Step 4: Knowledge base lint
+                echo ""
+                echo "--- Step 4: Knowledge base lint ---"
+                python /app/lint-wiki.py \
+                  --repos-file /config/repos.txt \
+                  || echo "WARNING: lint-wiki.py had errors (non-fatal)"
+
+                # Step 5: Topic index generation
+                echo ""
+                echo "--- Step 5: Topic index generation ---"
+                python /app/generate-indexes.py \
+                  || echo "WARNING: generate-indexes.py had errors (non-fatal)"
+
+                # Step 6: Learning artifact generation (per-repo)
+                echo ""
+                echo "--- Step 6: Learning artifact generation ---"
+                python /app/generate-learning-artifacts.py \
+                  --all --repos-file /config/repos.txt --max-repos 20 \
+                  || echo "WARNING: generate-learning-artifacts.py had errors (non-fatal)"
+
+                # Step 7: Cross-repo curricula generation
+                echo ""
+                echo "--- Step 7: Cross-repo curricula ---"
+                python /app/generate-curricula.py \
+                  --repos-file /config/repos.txt \
+                  || echo "WARNING: generate-curricula.py had errors (non-fatal)"
+
+                echo ""
+                echo "=== Refresh complete $(date -u) ==="
+            env:
+            - name: OV_URL
+              value: "http://openviking.${NAMESPACE}.svc.cluster.local:1933"
+            - name: DEEPWIKI_URL
+              value: "http://deepwiki.${NAMESPACE}.svc.cluster.local:8001"
+            - name: OPENVIKING_ROOT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-context-secrets
+                  key: openviking-root-key
+                  optional: true
+            - name: STATE_DIR
+              value: "/platform-data"
+            - name: WIKI_LLM_MODEL
+              value: "bedrock/global.anthropic.claude-opus-4-6-v1"
+            - name: LLM_BASE_URL
+              value: "http://litellm-proxy.${NAMESPACE}.svc.cluster.local:4000/v1"
+            - name: REPOS_FILE
+              value: "/config/repos.txt"
+            - name: URLS_FILE
+              value: "/config/urls.txt"
+            - name: ACCOUNTS_FILE
+              value: "/config/accounts.txt"
+            - name: GRAPHRAG_ENABLED
+              value: "${GRAPHRAG_ENABLED}"
+            - name: NEPTUNE_ENDPOINT
+              value: "${NEPTUNE_ENDPOINT}"
+            - name: NEPTUNE_PORT
+              value: "${NEPTUNE_PORT}"
+            - name: OPENSEARCH_ENDPOINT
+              value: "${OPENSEARCH_ENDPOINT}"
+            - name: LEARNING_DIR
+              value: "/platform-data/learning"
+            - name: CLONE_BASE
+              value: "/platform-data/repos"
+            volumeMounts:
+            - name: platform-data
+              mountPath: /platform-data
+            - name: config
+              mountPath: /config
+              readOnly: true
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "1Gi"
+              limits:
+                cpu: "2"
+                memory: "4Gi"
+          restartPolicy: OnFailure
+          volumes:
+          - name: platform-data
+            persistentVolumeClaim:
+              claimName: platform-data
+          - name: config
+            configMap:
+              name: ingestion-content-config
