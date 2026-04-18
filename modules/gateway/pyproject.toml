@@ -32,6 +32,12 @@ dev = [
     "moto==5.0.27",
     "ruff==0.9.6",
     "pytest-timeout==2.3.1",
+    "aiosqlite>=0.20.0",
+]
+# Issue #20: Playwright browser tests for frontend smoke testing
+browser = [
+    "playwright>=1.40.0",
+    "pytest-playwright>=0.4.0",
 ]
 # Issue #144: OpenTelemetry/X-Ray tracing dependencies (Phase 2)
 tracing = [
@@ -58,6 +64,15 @@ select = ["E", "F", "I", "N", "W", "UP"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+markers = [
+    "unit: runs against fixtures/mocks (default)",
+    "live: hits a deployed environment, requires env vars",
+    "live_only: only makes sense in live mode; skipped in unit",
+    "browser: requires Playwright",
+    "e2e: mark test as end-to-end test",
+    "integration: mark test as integration test",
+    "slow: mark test as slow running",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

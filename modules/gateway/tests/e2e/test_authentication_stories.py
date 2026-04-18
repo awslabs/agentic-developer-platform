@@ -565,3 +565,85 @@ class TestExpiredCredentialsHandling:
 
         assert exc.value.status_code == 401
         assert exc.value.error == "token_expired"
+
+
+# =============================================================================
+# HTTP-level auth tests (dual-mode: unit + live)
+# =============================================================================
+
+
+@pytest.mark.e2e
+class TestHTTPAuthFlows:
+    """
+    HTTP-level authentication tests.
+
+    These use ``api_client`` and JWT fixtures so they run against the
+    FastAPI ASGI app in unit mode and against the deployed gateway in live mode.
+    """
+
+    # In unit mode the Cognito JWT verifier is not configured, so the
+    # middleware returns 503 "auth_not_configured" instead of 401.
+    # We accept 401, 403, or 503 in unit mode; in live mode we expect 401/403.
+    _REJECT_CODES = (401, 403, 503)
+
+    @pytest.mark.asyncio
+    async def test_unauthenticated_request_returns_401_or_403(self, api_client):
+        """Unauthenticated request to /v1/messages is rejected."""
+        response = await api_client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert response.status_code in self._REJECT_CODES, f"Expected rejection (401/403/503), got {response.status_code}"
+
+    @pytest.mark.asyncio
+    async def test_expired_jwt_returns_401(self, api_client, expired_jwt):
+        """Request with an expired JWT is rejected."""
+        response = await api_client.post(
+            "/v1/messages",
+            headers={"Authorization": f"Bearer {expired_jwt}"},
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert response.status_code in self._REJECT_CODES, f"Expected rejection (401/403/503), got {response.status_code}"
+
+    @pytest.mark.asyncio
+    async def test_wrong_audience_jwt_returns_401(self, api_client, wrong_aud_jwt):
+        """JWT with wrong audience claim is rejected."""
+        response = await api_client.post(
+            "/v1/messages",
+            headers={"Authorization": f"Bearer {wrong_aud_jwt}"},
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert response.status_code in self._REJECT_CODES, f"Expected rejection (401/403/503), got {response.status_code}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.live
+    async def test_valid_user_jwt_gets_200_on_health(self, api_client, jwt_for_user):
+        """Valid user JWT should succeed on /health or /v1/health."""
+        response = await api_client.get(
+            "/health",
+            headers={"Authorization": f"Bearer {jwt_for_user}"},
+        )
+        # /health is typically unauthenticated, but should never 401 with a valid token
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.live
+    async def test_valid_agent_jwt_gets_200_on_health(self, api_client, jwt_for_agent):
+        """Agent JWT from client_credentials flow accesses /health."""
+        response = await api_client.get(
+            "/health",
+            headers={"Authorization": f"Bearer {jwt_for_agent}"},
+        )
+        assert response.status_code == 200

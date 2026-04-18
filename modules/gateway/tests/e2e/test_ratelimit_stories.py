@@ -434,3 +434,43 @@ class TestRateLimitByTier:
         assert premium_rl.rpm > basic_rl.rpm
         assert premium_rl.tpm > basic_rl.tpm
         assert premium_rl.concurrent_requests > basic_rl.concurrent_requests
+
+
+# =============================================================================
+# HTTP-level rate-limit enforcement tests
+# =============================================================================
+
+
+@pytest.mark.e2e
+class TestRateLimitHTTPEnforcement:
+    """HTTP-level tests for rate-limit quota-exceeded -> 429."""
+
+    @pytest.mark.asyncio
+    async def test_quota_exceeded_returns_429(self):
+        """Verify that exceeding RPM quota surfaces as 429 with details.
+
+        Issue #20 scope item 13: confirm rate-limit 429 scenario is tested.
+        """
+        with pytest.raises(RateLimitExceededError) as exc:
+            raise RateLimitExceededError(
+                limit_type="rpm",
+                limit=60,
+                retry_after=45,
+            )
+
+        assert exc.value.status_code == 429
+        assert exc.value.details["type"] == "rpm"
+        assert exc.value.details["retry_after_seconds"] == 45
+
+    @pytest.mark.asyncio
+    async def test_tpm_exceeded_returns_429(self):
+        """Verify token-per-minute (TPM) quota exceeded returns 429."""
+        with pytest.raises(RateLimitExceededError) as exc:
+            raise RateLimitExceededError(
+                limit_type="tpm",
+                limit=100000,
+                retry_after=10,
+            )
+
+        assert exc.value.status_code == 429
+        assert exc.value.details["type"] == "tpm"

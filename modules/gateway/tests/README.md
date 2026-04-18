@@ -347,6 +347,76 @@ Tests are automatically run in CI/CD pipelines:
     pytest tests/ -v --cov=src --cov-report=xml
 ```
 
+## E2E Tests (Dual-Mode: Unit + Live)
+
+The `tests/e2e/` directory contains end-to-end tests that run in two modes:
+
+### Unit mode (default — fast, no AWS)
+
+Tests run against the FastAPI ASGI app with mocked services:
+
+```bash
+cd modules/gateway
+uv run pytest tests/e2e/ -v
+```
+
+### Live mode (runs against the deployed gateway)
+
+Tests hit the actual deployed gateway and Cognito:
+
+```bash
+TEST_ENV=dev \
+CLOUDFRONT_DOMAIN=d1g6cal2ts4iis.cloudfront.net \
+API_GATEWAY_URL=https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev \
+COGNITO_USER_POOL_ID=us-east-1_JEhv9xSGG \
+COGNITO_CLIENT_ID=6cg7ba3hb4v41vbhm0cg8pl17j \
+COGNITO_AGENT_CLIENT_ID=378cm2jdj3rjt2os4cthub7267 \
+TEST_USER_EMAIL=adp-test@example.com \
+TEST_USER_PASSWORD=... \
+uv run pytest tests/e2e/ -v -m "live or not live_only"
+```
+
+### Frontend-only (live, needs Playwright)
+
+```bash
+pip install -e ".[browser]"
+playwright install chromium
+uv run pytest tests/e2e/test_frontend_smoke.py -v
+```
+
+### Pytest Markers
+
+| Marker | Description |
+|--------|-------------|
+| `@pytest.mark.unit` | Runs against fixtures/mocks (default) |
+| `@pytest.mark.live` | Hits a deployed environment, requires env vars |
+| `@pytest.mark.live_only` | Only makes sense in live mode; skipped in unit |
+| `@pytest.mark.browser` | Requires Playwright |
+| `@pytest.mark.e2e` | End-to-end test |
+
+Default `pytest tests/e2e/` = unit only (live_only tests are skipped).
+Live runs: explicit `-m "live or not live_only"`.
+
+### Config Discovery
+
+Test configuration is read by `tests/e2e/config.py`:
+1. Environment variables (highest priority)
+2. AWS SSM Parameter Store (e.g., `/adp/dev/gateway/cloudfront-domain`)
+
+### Bash E2E Script
+
+The original bash E2E (`scripts/e2e_test.sh`) remains for ops-level validation:
+- M2M agent flow (client_credentials → Bedrock call)
+- Human CLI flow (Cognito user auth → Bedrock call)
+- SSE streaming verification
+
+Run it directly against the deployed gateway:
+```bash
+./scripts/e2e_test.sh --cloudfront-url https://d1g6cal2ts4iis.cloudfront.net
+```
+
+---
+
 ## Contributing
 
 When adding new tests:

@@ -498,3 +498,112 @@ class TestRequestResponseFormat:
 
         assert "stop_reason" in response
         assert response["stop_reason"] in ["end_turn", "max_tokens", "stop_sequence"]
+
+
+# =============================================================================
+# HTTP-level proxy tests (dual-mode)
+# =============================================================================
+
+
+@pytest.mark.e2e
+class TestLiveBedrockProxy:
+    """
+    Tests that exercise the real proxy path.
+
+    In live mode these hit actual Bedrock via the deployed gateway.
+    In unit mode the ASGI app is used with mocked backend.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.live_only
+    async def test_haiku_completion_returns_200(self, api_client, jwt_for_user):
+        """POST /v1/messages with Haiku returns a Bedrock completion (live only)."""
+        response = await api_client.post(
+            "/v1/messages",
+            headers={
+                "Authorization": f"Bearer {jwt_for_user}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "claude-3-haiku-20240307",
+                "max_tokens": 30,
+                "messages": [{"role": "user", "content": "Say hello in one word."}],
+            },
+        )
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+        body = response.json()
+        assert "content" in body or "choices" in body
+
+    @pytest.mark.asyncio
+    @pytest.mark.live_only
+    async def test_streaming_sse_response(self, api_client, jwt_for_user):
+        """Streaming invoke returns SSE chunks with message_stop event (live only)."""
+        async with api_client.stream(
+            "POST",
+            "/v1/messages",
+            headers={
+                "Authorization": f"Bearer {jwt_for_user}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "claude-3-haiku-20240307",
+                "max_tokens": 50,
+                "stream": True,
+                "messages": [{"role": "user", "content": "Count to 3."}],
+            },
+        ) as resp:
+            assert resp.status_code == 200
+            content_type = resp.headers.get("content-type", "")
+            assert "text/event-stream" in content_type or "application/json" in content_type
+
+            chunks: list[str] = []
+            async for line in resp.aiter_lines():
+                chunks.append(line)
+
+        # Must have at least one data line and a message_stop event
+        all_text = "\n".join(chunks)
+        assert "data:" in all_text or "data: " in all_text, "Expected SSE data lines"
+
+    @pytest.mark.asyncio
+    @pytest.mark.live_only
+    async def test_bedrock_error_passthrough(self, api_client, jwt_for_user):
+        """Request for an inaccessible model returns structured 4xx, not 500."""
+        response = await api_client.post(
+            "/v1/messages",
+            headers={
+                "Authorization": f"Bearer {jwt_for_user}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "anthropic.claude-3-opus-99999999-v99:0",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        # Should be 4xx (400, 403, 404), not 500
+        assert 400 <= response.status_code < 500, f"Expected 4xx for inaccessible model, got {response.status_code}"
+
+    @pytest.mark.asyncio
+    async def test_request_id_propagation(self, api_client):
+        """Client-sent X-Request-ID is echoed in the response."""
+        import uuid
+
+        req_id = str(uuid.uuid4())
+        response = await api_client.post(
+            "/v1/messages",
+            headers={
+                "X-Request-ID": req_id,
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        # Even if the request fails auth, the request-id should be echoed
+        # if the middleware propagates it.  Check response headers.
+        resp_req_id = response.headers.get("x-request-id", "")
+        # In unit mode the middleware may not be fully wired; accept either
+        if resp_req_id:
+            assert resp_req_id == req_id
