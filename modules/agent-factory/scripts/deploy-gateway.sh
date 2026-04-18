@@ -94,7 +94,18 @@ fi
 if [[ "${SKIP_K8S}" != "true" ]]; then
     echo "[3/3] Deploying K8s manifests..."
     if [[ "${DRY_RUN}" == "false" ]]; then
+        # Namespace and service account are managed by Terraform (gateway-main.tf).
+        # Only create namespace here as a fallback if Terraform hasn't run yet.
         kubectl get namespace "${GATEWAY_NAMESPACE}" > /dev/null 2>&1 || kubectl create namespace "${GATEWAY_NAMESPACE}"
+
+        # Fetch the gateway agent role ARN from Terraform output for the SA annotation.
+        # If Terraform has already created the SA, this is a no-op — the ScaledJob
+        # references the SA by name, not by ARN.
+        AGENT_ROLE_ARN=""
+        if pushd "${MODULE_ROOT}/infra" > /dev/null 2>&1; then
+            AGENT_ROLE_ARN=$(terraform output -raw gateway_agent_role_arn 2>/dev/null || echo "")
+            popd > /dev/null
+        fi
 
         RENDERED="/tmp/gateway-k8s-rendered.yaml"
         sed -e "s|REPLACE_WITH_INPUT_QUEUE_URL|${INPUT_QUEUE_URL:-PENDING}|g" \

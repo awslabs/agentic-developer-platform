@@ -4,7 +4,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: agent-gateway-config
-  namespace: adp-agents
+  namespace: adp-gateway-agents
   labels:
     app.kubernetes.io/name: agent-gateway
     app.kubernetes.io/part-of: agent-gateway
@@ -21,7 +21,7 @@ apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
 metadata:
   name: agent-gateway-worker
-  namespace: adp-agents
+  namespace: adp-gateway-agents
   labels:
     app.kubernetes.io/name: agent-gateway-worker
     app.kubernetes.io/part-of: agent-gateway

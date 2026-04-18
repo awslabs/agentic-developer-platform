@@ -17,3 +17,13 @@ output "secrets_prefix" {
   description = "Secrets Manager prefix for GitHub App credentials"
   value       = module.secrets.secrets_prefix
 }
+
+output "gateway_agent_role_arn" {
+  description = "IAM role ARN for gateway agent worker pods (IRSA)"
+  value       = aws_iam_role.gateway_agent.arn
+}
+
+output "gateway_agent_role_name" {
+  description = "IAM role name for gateway agent worker pods"
+  value       = aws_iam_role.gateway_agent.name
+}

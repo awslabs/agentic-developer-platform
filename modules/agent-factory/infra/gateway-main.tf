@@ -142,6 +142,157 @@ resource "helm_release" "keda" {
 
 # --- Extend runner IAM with gateway permissions ---
 
+# =============================================================================
+# Gateway Agent IAM Role (IRSA) — for SQS consumer pods in adp-gateway-agents
+# =============================================================================
+# This role is assumed by the `adp-agent` service account in the
+# `adp-gateway-agents` namespace. It grants the worker pods permissions to:
+#   - Invoke Bedrock models (foundation-model + inference-profile ARNs)
+#   - Consume from the tasks SQS queue and send to the responses queue
+#   - Read/write DynamoDB session state
+#   - Fetch secrets from Secrets Manager (GitHub App keys, etc.)
+#
+# Originally created via CLI in PR #9; codified here in issue #10.
+# =============================================================================
+
+resource "aws_iam_role" "gateway_agent" {
+  name = "adp-${var.environment}-gateway-agent-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = local.oidc_provider_arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "${replace(local.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:${var.gateway_namespace}:adp-agent"
+          "${replace(local.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+        }
+      }
+    }]
+  })
+
+  tags = {
+    Name      = "adp-${var.environment}-gateway-agent-role"
+    Component = "agent-gateway"
+  }
+}
+
+resource "aws_iam_role_policy" "gateway_agent_bedrock" {
+  name = "bedrock-invoke"
+  role = aws_iam_role.gateway_agent.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ]
+      Resource = [
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*"
+      ]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "gateway_agent_sqs" {
+  name = "sqs-access"
+  role = aws_iam_role.gateway_agent.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ConsumeTasksQueue"
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = module.gateway_sqs.input_queue_arn
+      },
+      {
+        Sid    = "SendToResponsesQueue"
+        Effect = "Allow"
+        Action = ["sqs:SendMessage"]
+        Resource = module.gateway_sqs.response_queue_arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "gateway_agent_dynamodb" {
+  name = "dynamodb-sessions"
+  role = aws_iam_role.gateway_agent.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:Query"
+      ]
+      Resource = [
+        module.gateway_sessions.table_arn,
+        "${module.gateway_sessions.table_arn}/index/*"
+      ]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "gateway_agent_secrets" {
+  name = "secrets-access"
+  role = aws_iam_role.gateway_agent.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/*"
+    }]
+  })
+}
+
+# =============================================================================
+# Kubernetes Service Account — adp-agent in adp-gateway-agents namespace
+# =============================================================================
+# IRSA-annotated service account for the gateway worker pods. Referenced by
+# the KEDA ScaledJob (keda-scaledjob.yaml) as serviceAccountName: adp-agent.
+#
+# This was previously created by deploy-gateway.sh via kubectl apply of
+# k8s/serviceaccount.yaml. Now Terraform-managed so it survives destroy/apply.
+# =============================================================================
+
+resource "kubernetes_service_account" "gateway_agent" {
+  metadata {
+    name      = "adp-agent"
+    namespace = kubernetes_namespace.gateway_agents.metadata[0].name
+
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.gateway_agent.arn
+    }
+
+    labels = {
+      "app.kubernetes.io/name"       = "adp-agent"
+      "app.kubernetes.io/part-of"    = "agent-gateway"
+      "app.kubernetes.io/managed-by" = "terraform"
+    }
+  }
+}
+
+# --- Extend runner IAM with gateway permissions ---
+
 resource "aws_iam_role_policy" "runner_gateway_sqs" {
   name = "gateway-sqs"
   role = module.runner_iam.runner_role_name

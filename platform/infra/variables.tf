@@ -81,6 +81,7 @@ variable "ecr_repositories" {
     "adp-gateway",
     "adp-agent-runtime",
     "adp-skill-registry",
+    "adp-agent-gateway",
   ]
 }
 
