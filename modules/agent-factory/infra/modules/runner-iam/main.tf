@@ -21,8 +21,8 @@ resource "aws_iam_policy" "runner_boundary" {
           "ecs:*", "ecr:*", "elasticloadbalancing:*", "autoscaling:*",
           "cloudformation:*", "cloudwatch:*", "logs:*", "sns:*", "sqs:*",
           "apigateway:*", "route53:*", "cloudfront:*", "acm:*",
-          "amplify:*",
-          "secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret",
+          "amplify:*", "codebuild:*",
+          "secretsmanager:*",
           "ssm:*", "kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*",
           "iam:CreateRole", "iam:CreatePolicy", "iam:AttachRolePolicy",
           "iam:PutRolePolicy", "iam:PassRole", "iam:TagRole", "iam:TagPolicy",
@@ -30,10 +30,12 @@ resource "aws_iam_policy" "runner_boundary" {
           "iam:GetRolePolicy", "iam:ListRolePolicies",
           "iam:ListRoles", "iam:ListPolicies", "iam:ListAttachedRolePolicies",
           "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy",
+          "iam:UpdateAssumeRolePolicy",
           "sts:AssumeRole", "sts:GetCallerIdentity",
           "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream",
-          "events:*", "stepfunctions:*", "cognito-idp:*", "elasticache:*",
-          "eks:DescribeCluster", "eks:ListClusters",
+          "events:*", "stepfunctions:*",
+          "cognito-idp:*", "cognito-identity:*",
+          "elasticache:*", "eks:*",
           "sagemaker:*"
         ]
         Resource = "*"
