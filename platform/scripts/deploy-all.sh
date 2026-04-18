@@ -9,10 +9,11 @@ set -euo pipefail
 # Terraform, Docker, Node.js all run in CodeBuild.
 #
 # Usage:
-#   ./platform/scripts/deploy-all.sh                    # Deploy all modules
-#   ./platform/scripts/deploy-all.sh --gateway-only     # Platform + gateway only
-#   ./platform/scripts/deploy-all.sh --destroy          # Tear down everything
-#   ./platform/scripts/deploy-all.sh --local            # Run everything locally (needs Terraform, Docker, Node, kubectl)
+#   ./platform/scripts/deploy-all.sh                        # Deploy all modules
+#   ./platform/scripts/deploy-all.sh --gateway-only         # Platform + gateway only
+#   ./platform/scripts/deploy-all.sh --agent-context-only   # Platform + agent-context only
+#   ./platform/scripts/deploy-all.sh --destroy              # Tear down everything
+#   ./platform/scripts/deploy-all.sh --local                # Run everything locally (needs Terraform, Docker, Node, kubectl)
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,6 +23,9 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
 GATEWAY_ONLY=false
 AGENT_FACTORY_ONLY=false
+AGENT_CONTEXT_ONLY=false
+SKIP_AGENT_CONTEXT=false
+AGENT_CONTEXT_ENABLED="${AGENT_CONTEXT_ENABLED:-false}"
 DESTROY=false
 SKIP_FRONTEND=false
 LOCAL_MODE=false
@@ -30,15 +34,19 @@ for arg in "$@"; do
   case $arg in
     --gateway-only) GATEWAY_ONLY=true ;;
     --agent-factory-only) AGENT_FACTORY_ONLY=true ;;
+    --agent-context-only) AGENT_CONTEXT_ONLY=true ;;
+    --skip-agent-context) SKIP_AGENT_CONTEXT=true ;;
     --destroy) DESTROY=true ;;
     --skip-frontend) SKIP_FRONTEND=true ;;
     --local) LOCAL_MODE=true ;;
     --help)
-      echo "Usage: $0 [--gateway-only] [--agent-factory-only] [--skip-frontend] [--local] [--destroy]"
+      echo "Usage: $0 [--gateway-only] [--agent-factory-only] [--agent-context-only] [--skip-agent-context] [--skip-frontend] [--local] [--destroy]"
       echo ""
-      echo "  (default)              Deploy all modules (platform + gateway + agent-factory)"
-      echo "  --gateway-only         Deploy platform + gateway only (skip agent-factory)"
-      echo "  --agent-factory-only   Deploy platform + agent-factory only (skip gateway)"
+      echo "  (default)              Deploy all modules (platform + gateway + agent-factory; agent-context if AGENT_CONTEXT_ENABLED=true)"
+      echo "  --gateway-only         Deploy platform + gateway only (skip agent-factory, agent-context)"
+      echo "  --agent-factory-only   Deploy platform + agent-factory only (skip gateway, agent-context)"
+      echo "  --agent-context-only   Deploy platform + agent-context only (skip gateway, agent-factory)"
+      echo "  --skip-agent-context   Skip agent-context even if AGENT_CONTEXT_ENABLED=true"
       echo "  --skip-frontend        Skip frontend build and deploy"
       echo "  --local                Run Terraform/Docker/npm locally"
       echo "  --destroy              Tear down all infrastructure"
@@ -206,6 +214,11 @@ if [ "$DESTROY" = true ]; then
   [ "$confirm" = "yes" ] || { echo "Aborted."; exit 0; }
 
   if [ "$LOCAL_MODE" = true ]; then
+    [ -d "$ROOT_DIR/modules/agent-context/terraform" ] && {
+      cd "$ROOT_DIR/modules/agent-context/terraform"
+      terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/agent-context-backend.tfvars" -input=false 2>/dev/null || true
+      terraform destroy -var-file="../../../environments/$ENVIRONMENT/modules/agent-context.tfvars" -auto-approve || true
+    }
     [ -f "$ROOT_DIR/modules/agent-factory/infra/terraform.tfvars" ] && {
       cd "$ROOT_DIR/modules/agent-factory/infra"
       terraform destroy -var-file=terraform.tfvars -auto-approve || true
@@ -254,7 +267,7 @@ BSEOF
   fi
 
   # Clean up CodeBuild resources
-  for p in "adp-${ENVIRONMENT}-platform-infra" "adp-${ENVIRONMENT}-gateway-infra" "adp-${ENVIRONMENT}-gateway-build" "adp-${ENVIRONMENT}-frontend-build" "adp-${ENVIRONMENT}-agent-factory-infra" "adp-${ENVIRONMENT}-destroy"; do
+  for p in "adp-${ENVIRONMENT}-platform-infra" "adp-${ENVIRONMENT}-gateway-infra" "adp-${ENVIRONMENT}-gateway-build" "adp-${ENVIRONMENT}-frontend-build" "adp-${ENVIRONMENT}-agent-factory-infra" "adp-${ENVIRONMENT}-agent-context-infra" "adp-${ENVIRONMENT}-agent-context-deploy" "adp-${ENVIRONMENT}-destroy"; do
     aws codebuild delete-project --name "$p" --region "$AWS_REGION" 2>/dev/null || true
   done
   aws iam detach-role-policy --role-name "$CB_ROLE_NAME" --policy-arn "arn:aws:iam::aws:policy/AdministratorAccess" 2>/dev/null || true
@@ -548,9 +561,55 @@ phases:
       - echo "Agent gateway deployed"
 EOF
 
+  # --- Agent context infra + deploy ---
+  cat > /tmp/bs-agent-context-infra.yml << 'EOF'
+version: 0.2
+env:
+  variables:
+    TF_IN_AUTOMATION: "true"
+phases:
+  install:
+    commands:
+      - yum install -y yum-utils
+      - yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+      - yum install -y terraform
+  pre_build:
+    commands:
+      - |
+        BACKEND_FILE="environments/$ENVIRONMENT/modules/agent-context-backend.tfvars"
+        if [ ! -f "$BACKEND_FILE" ]; then
+          mkdir -p "$(dirname $BACKEND_FILE)"
+          cat > "$BACKEND_FILE" << INNER
+        bucket         = "$STATE_BUCKET"
+        key            = "$ENVIRONMENT/modules/agent-context/terraform.tfstate"
+        region         = "$AWS_REGION"
+        encrypt        = true
+        dynamodb_table = "adp-terraform-locks"
+        INNER
+        fi
+  build:
+    commands:
+      - cd modules/agent-context/terraform
+      - terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/agent-context-backend.tfvars" -input=false
+      - terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/agent-context.tfvars" -auto-approve
+EOF
+
+  cat > /tmp/bs-agent-context-deploy.yml << 'EOF'
+version: 0.2
+phases:
+  install:
+    commands:
+      - curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && chmod +x kubectl && mv kubectl /usr/local/bin/
+      - aws eks update-kubeconfig --name $EKS_CLUSTER --region $AWS_REGION
+  build:
+    commands:
+      - cd modules/agent-context
+      - bash deploy.sh --skip-validate
+EOF
+
   # Add buildspec files to the source zip so CodeBuild can find them
   mkdir -p /tmp/adp-buildspecs/codebuild
-  for f in bs-platform bs-gateway-infra bs-gateway-build bs-frontend bs-gateway-deploy bs-agent-factory bs-agent-gateway; do
+  for f in bs-platform bs-gateway-infra bs-gateway-build bs-frontend bs-gateway-deploy bs-agent-factory bs-agent-gateway bs-agent-context-infra bs-agent-context-deploy; do
     cp "/tmp/${f}.yml" "/tmp/adp-buildspecs/codebuild/${f}.yml"
     rm -f "/tmp/${f}.yml"
   done
@@ -592,8 +651,8 @@ fi
 # =============================================================================
 step "Step 3/6: Deploy gateway infrastructure"
 
-if [ "$AGENT_FACTORY_ONLY" = true ]; then
-  echo "Skipping gateway infra (--agent-factory-only)"
+if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
+  echo "Skipping gateway infra (--agent-factory-only or --agent-context-only)"
   ok "Skipped"
 elif [ "$LOCAL_MODE" = true ]; then
   cd "$ROOT_DIR/modules/gateway/infra"
@@ -610,8 +669,8 @@ fi
 # =============================================================================
 step "Step 4/6: Build and deploy gateway"
 
-if [ "$AGENT_FACTORY_ONLY" = true ]; then
-  echo "Skipping gateway deploy (--agent-factory-only)"
+if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
+  echo "Skipping gateway deploy (--agent-factory-only or --agent-context-only)"
   ok "Skipped"
 elif [ "$LOCAL_MODE" = true ]; then
   # Build Docker image (fall back to CodeBuild if Docker daemon not available)
@@ -697,8 +756,8 @@ ok "Gateway deployed"
 # =============================================================================
 # Step 4b: Discover internal ALB and wire to API Gateway + CloudFront (Bug 3)
 # =============================================================================
-if [ "$AGENT_FACTORY_ONLY" = false ]; then
-  step "Step 4b/6: Wire internal ALB to API Gateway and CloudFront"
+if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+  step "Step 4b/8: Wire internal ALB to API Gateway and CloudFront"
 
   # Check SSM cache first
   CACHED_ALB_ARN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-arn" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "pending")
@@ -797,7 +856,7 @@ fi
 # =============================================================================
 # Step 5: Frontend
 # =============================================================================
-if [ "$SKIP_FRONTEND" = false ] && [ "$AGENT_FACTORY_ONLY" = false ]; then
+if [ "$SKIP_FRONTEND" = false ] && [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
   step "Step 5/6: Deploy frontend"
 
   if [ "$LOCAL_MODE" = true ]; then
@@ -824,8 +883,8 @@ fi
 # =============================================================================
 # Step 6: Agent Factory
 # =============================================================================
-if [ "$GATEWAY_ONLY" = false ]; then
-  step "Step 6/7: Deploy agent-factory"
+if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+  step "Step 6/8: Deploy agent-factory"
 
   if [ "$LOCAL_MODE" = true ]; then
     cd "$ROOT_DIR/modules/agent-factory/infra"
@@ -852,7 +911,7 @@ EOF
   ok "Agent-factory deployed"
 
   # --- Agent Gateway build + deploy (part of agent-factory) ---
-  step "Step 7/7: Build and deploy agent gateway"
+  step "Step 7/8: Build and deploy agent gateway"
 
   if [ "$LOCAL_MODE" = true ]; then
     cd "$ROOT_DIR/modules/agent-factory"
@@ -887,7 +946,49 @@ EOF
 
   warn "Store GitHub App creds in Secrets Manager (see modules/agent-factory/SETUP-GUIDE.md)"
 else
-  step "Step 6/7: Skipping agent-factory"
+  step "Step 6/8: Skipping agent-factory"
+fi
+
+# =============================================================================
+# Step 8: Agent Context (optional — gated by AGENT_CONTEXT_ENABLED or --agent-context-only)
+# =============================================================================
+DEPLOY_AGENT_CONTEXT=false
+if [ "$AGENT_CONTEXT_ONLY" = true ]; then
+  DEPLOY_AGENT_CONTEXT=true
+elif [ "$GATEWAY_ONLY" = true ] || [ "$AGENT_FACTORY_ONLY" = true ] || [ "$SKIP_AGENT_CONTEXT" = true ]; then
+  DEPLOY_AGENT_CONTEXT=false
+elif [ "$AGENT_CONTEXT_ENABLED" = true ]; then
+  DEPLOY_AGENT_CONTEXT=true
+fi
+
+if [ "$DEPLOY_AGENT_CONTEXT" = true ]; then
+  step "Step 8/8: Deploy agent-context"
+
+  if [ "$LOCAL_MODE" = true ]; then
+    cd "$ROOT_DIR/modules/agent-context/terraform"
+    BACKEND_FILE="$ROOT_DIR/environments/$ENVIRONMENT/modules/agent-context-backend.tfvars"
+    [ ! -f "$BACKEND_FILE" ] && cat > "$BACKEND_FILE" << EOF
+bucket         = "${STATE_BUCKET}"
+key            = "${ENVIRONMENT}/modules/agent-context/terraform.tfstate"
+region         = "${AWS_REGION}"
+encrypt        = true
+dynamodb_table = "${LOCK_TABLE}"
+EOF
+    terraform init -backend-config="$BACKEND_FILE" -input=false
+    terraform apply -var-file="$ROOT_DIR/environments/$ENVIRONMENT/modules/agent-context.tfvars" -auto-approve
+    ok "Agent-context infrastructure deployed"
+
+    # Deploy k8s manifests
+    cd "$ROOT_DIR/modules/agent-context"
+    bash deploy.sh --skip-validate
+  else
+    run_codebuild "adp-${ENVIRONMENT}-agent-context-infra" "codebuild/bs-agent-context-infra.yml"
+    ok "Agent-context infrastructure deployed"
+    run_codebuild "adp-${ENVIRONMENT}-agent-context-deploy" "codebuild/bs-agent-context-deploy.yml"
+  fi
+  ok "Agent-context deployed"
+else
+  step "Step 8/8: Skipping agent-context (set AGENT_CONTEXT_ENABLED=true or use --agent-context-only)"
 fi
 
 # =============================================================================
@@ -901,6 +1002,7 @@ echo "Gateway:   kubectl get pods -n adp-gateway (configure kubectl: aws eks upd
 CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query "Parameter.Value" --output text 2>/dev/null) || true
 [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ] && echo "Frontend:  https://${CF_DOMAIN}" && echo "API:       https://${CF_DOMAIN}/api/health"
 [ "$GATEWAY_ONLY" = false ] && echo "Agents:    kubectl get pods -n arc-runners"
+[ "$DEPLOY_AGENT_CONTEXT" = true ] && echo "Context:   kubectl get pods -n agent-context"
 GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
 [ -n "$GW_WS" ] && [ "$GW_WS" != "" ] && echo "Gateway:   $GW_WS"
 echo ""

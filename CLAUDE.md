@@ -59,6 +59,7 @@ Three modules on a shared AWS platform:
 |--------|------|---------|
 | Gateway | `modules/gateway/` | Multi-tenant Bedrock proxy (FastAPI + React) |
 | Agent Factory | `modules/agent-factory/` | Autonomous code agents (Claude SDK + GitHub Actions) |
+| Agent Context | `modules/agent-context/` | Code Intelligence Platform: semantic search, code search, wikis, memory via single MCP endpoint (5 tools). Fronts OpenViking, Sourcebot, DeepWiki, LiteLLM proxy. Deploy with `--agent-context-only`. |
 | MCP Gateway | `modules/mcp-gateway/` | MCP server gateway (in progress) |
 
 Shared infrastructure: `platform/infra/` (VPC, EKS, ECR, IAM).

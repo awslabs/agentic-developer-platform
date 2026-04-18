@@ -1,3 +1,21 @@
+# =============================================================================
+# Agent Context Platform — Outputs
+# =============================================================================
+
+# --- IAM ---
+
+output "irsa_role_arn" {
+  description = "IAM role ARN for the agent-context service account (IRSA)"
+  value       = module.iam.role_arn
+}
+
+output "irsa_role_name" {
+  description = "IAM role name for the agent-context service account"
+  value       = module.iam.role_name
+}
+
+# --- S3 Files ---
+
 output "file_system_id" {
   description = "EFS file system ID for the S3 Files mount"
   value       = module.s3_files.file_system_id
@@ -23,7 +41,7 @@ output "csi_node_role_arn" {
   value       = module.s3_files.csi_node_role_arn
 }
 
-# ─── GraphRAG Outputs ────────────────────────────────────────────────────────
+# --- GraphRAG ---
 
 output "neptune_endpoint" {
   description = "Neptune Serverless cluster endpoint"
@@ -50,7 +68,7 @@ output "opensearch_access_role_arn" {
   value       = var.graphrag_enabled ? module.opensearch_serverless[0].access_role_arn : ""
 }
 
-# ─── SQS + DynamoDB Outputs ──────────────────────────────────────────────
+# --- SQS + DynamoDB ---
 
 output "ingestion_queue_url" {
   description = "URL of the SQS ingestion queue"

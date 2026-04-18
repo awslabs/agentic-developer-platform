@@ -48,6 +48,15 @@ aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "${AWS_REGION}"
 echo "Ensuring namespace '${NAMESPACE}' exists..."
 kubectl create namespace "${NAMESPACE}" 2>/dev/null || true
 
+# Ensure ebs-gp3 StorageClass exists (EKS Auto Mode only provides gp2 by default)
+echo "Ensuring ebs-gp3 StorageClass exists..."
+if ! kubectl get storageclass ebs-gp3 >/dev/null 2>&1; then
+  kubectl apply -f "${SCRIPT_DIR}/kubernetes/storageclass-ebs-gp3.yaml"
+  echo "  Created ebs-gp3 StorageClass"
+else
+  echo "  ebs-gp3 StorageClass already exists"
+fi
+
 # Deploy S3 Files storage (S3-backed persistent volumes via EFS CSI driver)
 # Creates S3 bucket, EFS file system, mount targets, and K8s PV/PVC.
 # Idempotent — safe to run repeatedly. Requires Terraform + AWS credentials.
@@ -70,9 +79,20 @@ else
   fi
 fi
 
-# Ensure service account exists
+# Ensure service account exists (template IRSA role ARN)
 if [ -f "${SCRIPT_DIR}/kubernetes/serviceaccount.yaml" ]; then
-  kubectl apply -f "${SCRIPT_DIR}/kubernetes/serviceaccount.yaml"
+  # If IRSA_ROLE_ARN is not set but Terraform outputs are available, read it
+  if [ -z "${IRSA_ROLE_ARN:-}" ] && [ -d "${SCRIPT_DIR}/terraform" ]; then
+    IRSA_ROLE_ARN=$(cd "${SCRIPT_DIR}/terraform" && terraform output -raw irsa_role_arn 2>/dev/null || echo "")
+  fi
+  export IRSA_ROLE_ARN
+  source "${SCRIPT_DIR}/scripts/_common.sh"
+  template_file "${SCRIPT_DIR}/kubernetes/serviceaccount.yaml" | kubectl apply -f -
+  if [ -n "${IRSA_ROLE_ARN:-}" ]; then
+    echo "  Service account annotated with IRSA role: ${IRSA_ROLE_ARN}"
+  else
+    echo "  WARNING: IRSA_ROLE_ARN not set. Service account has no IRSA annotation."
+  fi
 fi
 
 # Apply ingestion pipeline RBAC (cross-namespace access for runner SA)

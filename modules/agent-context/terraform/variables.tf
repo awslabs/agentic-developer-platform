@@ -1,8 +1,6 @@
-variable "cluster_name" {
-  description = "Name of the EKS cluster"
-  type        = string
-  default     = "github-arc-runner-eks"
-}
+# =============================================================================
+# Agent Context Platform — Variables
+# =============================================================================
 
 variable "aws_region" {
   description = "AWS region"
@@ -10,10 +8,15 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
-variable "bucket_name" {
-  description = "S3 bucket name for platform data"
+variable "environment" {
+  description = "Environment (dev, staging, prod)"
   type        = string
-  default     = "agent-context-platform-data"
+  default     = "dev"
+}
+
+variable "account_id" {
+  description = "AWS account ID (used for remote state bucket name and resource naming)"
+  type        = string
 }
 
 variable "namespace" {
@@ -22,19 +25,10 @@ variable "namespace" {
   default     = "agent-context"
 }
 
-variable "vpc_id" {
-  description = "VPC ID of the EKS cluster"
+variable "service_account" {
+  description = "Kubernetes service account name for IRSA binding"
   type        = string
-}
-
-variable "subnet_ids" {
-  description = "Subnet IDs for mount targets (same as EKS node subnets)"
-  type        = list(string)
-}
-
-variable "node_security_group_id" {
-  description = "Security group ID of EKS nodes"
-  type        = string
+  default     = "agent-context-sa"
 }
 
 variable "tags" {
@@ -43,10 +37,10 @@ variable "tags" {
   default     = {}
 }
 
-# ─── GraphRAG (Neptune + OpenSearch Serverless) ──────────────────────────────
+# --- GraphRAG (Neptune + OpenSearch Serverless) ------------------------------
 
 variable "graphrag_enabled" {
-  description = "Enable GraphRAG infrastructure (Neptune Serverless + OpenSearch Serverless)"
+  description = "Enable GraphRAG infrastructure (Neptune Serverless + OpenSearch Serverless). WARNING: expensive."
   type        = bool
   default     = false
 }
@@ -70,18 +64,12 @@ variable "opensearch_collection_name" {
 }
 
 variable "opensearch_allow_public_access" {
-  description = "Allow public access to OpenSearch Serverless (set false for VPC-only, recommended for production)"
+  description = "Allow public access to OpenSearch Serverless (set false for VPC-only)"
   type        = bool
   default     = false
 }
 
-# ─── SQS + DynamoDB (Parallel Ingestion Pipeline) ────────────────────────
-
-variable "irsa_role_name" {
-  description = "IRSA role name to attach SQS/DynamoDB policies to"
-  type        = string
-  default     = "agent-context-platform-irsa"
-}
+# --- SQS + DynamoDB (Parallel Ingestion Pipeline) ---------------------------
 
 variable "dynamodb_table_name" {
   description = "Name of the DynamoDB table for ingestion state"

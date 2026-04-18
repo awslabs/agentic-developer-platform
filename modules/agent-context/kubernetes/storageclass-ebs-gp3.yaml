@@ -1,0 +1,15 @@
+# ebs-gp3 StorageClass for agent-context PVCs.
+# EKS Auto Mode provides gp2 by default; this creates the gp3 class
+# referenced by all agent-context PVCs (OpenViking, Sourcebot, etc.).
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: ebs.csi.eks.amazonaws.com
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+parameters:
+  type: gp3
+  encrypted: "true"

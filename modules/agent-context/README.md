@@ -1,5 +1,7 @@
 # Agent Context Intelligence Platform
 
+> **ADP Integration Note:** This module is integrated into the ADP platform. Deploy via `./platform/scripts/deploy-all.sh --agent-context-only`. Terraform state is stored at `dev/modules/agent-context/terraform.tfstate` in the shared backend. IRSA role, S3 bucket, SQS, and DynamoDB are created by this module's Terraform. Upstream source: https://github.com/aws-innovate/projects/tree/main/context_management/agent-context
+
 A unified Code Intelligence Platform that gives AI coding agents deep understanding of codebases, web documentation, and infrastructure. Agents interact with one MCP endpoint and get semantic search, code search, architectural documentation, structural analysis, infrastructure discovery, and persistent memory across all indexed repositories and web docs.
 
 ## Architecture
@@ -44,13 +46,13 @@ A unified Code Intelligence Platform that gives AI coding agents deep understand
 |                      |    (wiki LLM)    |                                |
 |                      +--------+---------+                                |
 |                               |                                          |
-|  +---------------+            |         +-----------------------------+  |
-|  | Gemma4 Router |            |         |  Ingestion CronJob          |  |
-|  | :11434 (CPU)  |            |         |  (daily 6am UTC)            |  |
-|  | Task          |            |         |  - refresh-repos.py         |  |
-|  | complexity    |            |         |  - ingest-url.py            |  |
-|  | classifier    |            |         |  - discover-infra.py        |  |
-|  +---------------+            |         +-----------------------------+  |
+|                               |         +-----------------------------+  |
+|                               |         |  Ingestion CronJob          |  |
+|                               |         |  (daily 6am UTC)            |  |
+|                               |         |  - refresh-repos.py         |  |
+|                               |         |  - ingest-url.py            |  |
+|                               |         |  - discover-infra.py        |  |
+|                               |         +-----------------------------+  |
 |                               |                                          |
 |  +-----------+  +-------------------------------+                        |
 |  | EBS PVC   |  | S3 Files PVC (platform-data)  |                        |
@@ -466,7 +468,6 @@ The S3 Files storage uses a Terraform module (in `terraform/`) that provisions:
 | Sourcebot | 3000 | Fast code search via Zoekt | Exact code matches, regex, cross-repo grep |
 | DeepWiki | 8001 | Rich repo documentation with diagrams | Generates wikis during ingestion (indexed into OpenViking) |
 | LiteLLM Proxy | 4000 | Bedrock gateway (Titan embeddings + Claude Sonnet/Opus) | All LLM calls route through here |
-| Gemma4 Router | 11434 | Task complexity classifier (CPU) | Smart model routing for gateway |
 
 ## CI/CD Workflows
 

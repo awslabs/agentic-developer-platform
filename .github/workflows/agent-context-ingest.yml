@@ -1,0 +1,64 @@
+# =============================================================================
+# Agent Context — Content Ingestion Workflow
+# =============================================================================
+# Triggers when index_content/ files change. Creates an ingestion Job in-cluster.
+# Runner has IRSA via adp-dev-agent-runner-role — but the ingestion Job itself
+# runs under the agent-context-sa service account with its own IRSA role.
+# =============================================================================
+
+name: agent-context-ingest
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/agent-context/index_content/**'
+  workflow_dispatch:
+    inputs:
+      full_reindex:
+        description: 'Force full re-index of all repos and URLs'
+        type: boolean
+        default: false
+
+jobs:
+  trigger-ingestion:
+    runs-on: arc-runner-org
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: modules/agent-context/index_content
+
+      - name: Update ingestion content ConfigMap
+        run: |
+          kubectl create configmap ingestion-content-config \
+            --from-file=repos.txt=modules/agent-context/index_content/repos.txt \
+            --from-file=urls.txt=modules/agent-context/index_content/urls.txt \
+            --from-file=docs.txt=modules/agent-context/index_content/docs.txt \
+            --from-file=accounts.txt=modules/agent-context/index_content/accounts.txt \
+            -n agent-context --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Trigger ingestion Job
+        run: |
+          JOB_NAME="manual-refresh-${GITHUB_SHA::8}"
+          echo "Creating ingestion job: $JOB_NAME"
+          kubectl create job "$JOB_NAME" \
+            --from=cronjob/ingestion-refresh \
+            -n agent-context
+
+      - name: Wait for Job completion
+        run: |
+          JOB_NAME="manual-refresh-${GITHUB_SHA::8}"
+          echo "Waiting for job $JOB_NAME to complete (timeout: 25m)..."
+          kubectl wait --for=condition=complete \
+            "job/$JOB_NAME" \
+            -n agent-context \
+            --timeout=1500s || {
+              echo "Job did not complete in time. Checking status..."
+              kubectl describe "job/$JOB_NAME" -n agent-context
+              kubectl logs "job/$JOB_NAME" -n agent-context --tail=50 || true
+              exit 1
+            }
+          echo "Ingestion job completed successfully."
