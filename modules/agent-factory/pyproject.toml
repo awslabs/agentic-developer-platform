@@ -1,0 +1,39 @@
+[project]
+name = "agent-factory-tests"
+version = "0.1.0"
+description = "E2E test suite for the Agent Factory gateway pipeline (WebSocket + SQS + KEDA)"
+requires-python = ">=3.11"
+dependencies = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "moto[sqs,dynamodb,secretsmanager]>=5.0",
+    "boto3>=1.34",
+]
+
+[project.optional-dependencies]
+live = [
+    "websockets>=12.0",
+]
+lint = [
+    "shellcheck-py>=0.9",
+]
+all = [
+    "websockets>=12.0",
+    "shellcheck-py>=0.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "unit: uses fixtures/mocks (default, no AWS, no cluster)",
+    "live: hits the deployed cluster; needs env vars",
+    "live_only: only meaningful in live mode; skipped in unit",
+    "workflow: triggers a real GitHub Actions workflow via gh; live only",
+    "kubectl: shells out to kubectl; fails fast if not available",
+]
+# Default: run only unit tests (skip live_only, workflow)
+addopts = "-m 'not live_only and not workflow'"
+
+[tool.ruff]
+line-length = 100

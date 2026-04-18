@@ -142,6 +142,19 @@ The agent workflows live in `.github/workflows/` (required by GitHub Actions) bu
 | `pr-review-trigger.yml` | PR opened from `agent/*` branch | Auto-triggers reviewer |
 | `skill-agent.yml` | `skill-agent` label | Skill-driven agent |
 
+## Testing
+
+See [`tests/README.md`](tests/README.md) for the full test suite documentation.
+
+```bash
+# Unit tests (fast, no AWS required)
+cd modules/agent-factory
+uv run pytest tests/ -v
+
+# Live tests (requires deployed environment)
+TEST_ENV=dev uv run pytest tests/ -v -m "live or not live_only"
+```
+
 ## Development
 
 ```bash
