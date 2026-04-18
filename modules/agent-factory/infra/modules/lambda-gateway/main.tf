@@ -18,6 +18,7 @@ resource "aws_lambda_function" "ingest" {
   environment {
     variables = {
       INPUT_QUEUE_URL     = var.input_queue_url
+      RESPONSE_QUEUE_URL  = var.response_queue_url
       SESSIONS_TABLE_NAME = var.sessions_table_name
       AWS_REGION_NAME     = var.aws_region
     }
@@ -54,10 +55,31 @@ resource "aws_iam_role_policy" "ingest_sqs" {
 
   policy = jsonencode({
     Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage", "sqs:GetQueueAttributes"]
+        Resource = var.input_queue_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = var.response_queue_arn
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "ingest_bedrock" {
+  name = "bedrock"
+  role = aws_iam_role.ingest.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
-      Action   = ["sqs:SendMessage", "sqs:GetQueueAttributes"]
-      Resource = var.input_queue_arn
+      Action   = ["bedrock:InvokeModel"]
+      Resource = ["arn:aws:bedrock:*::foundation-model/*", "arn:aws:bedrock:*:*:inference-profile/*"]
     }]
   })
 }

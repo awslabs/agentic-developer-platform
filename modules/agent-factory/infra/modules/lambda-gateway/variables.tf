@@ -26,6 +26,10 @@ variable "input_queue_arn" {
   type = string
 }
 
+variable "response_queue_url" {
+  type = string
+}
+
 variable "response_queue_arn" {
   type = string
 }

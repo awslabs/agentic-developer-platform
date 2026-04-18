@@ -27,7 +27,10 @@ module "gateway_sessions" {
   tags        = { Component = "agent-gateway" }
 }
 
-# --- Lambda Functions (created first with empty WS vars) ---
+# --- Lambda Functions ---
+# Note: ws_api_endpoint / ws_execution_arn reference the API GW module below.
+# Terraform resolves these at plan-time; the Lambda config update depends on
+# the API GW being created first, which is the correct ordering.
 
 module "gateway_lambda" {
   source = "./modules/lambda-gateway"
@@ -39,9 +42,13 @@ module "gateway_lambda" {
   response_source_dir = "${path.module}/../gateway/lambdas/response"
   input_queue_url     = module.gateway_sqs.input_queue_url
   input_queue_arn     = module.gateway_sqs.input_queue_arn
+  response_queue_url  = module.gateway_sqs.response_queue_url
   response_queue_arn  = module.gateway_sqs.response_queue_arn
   sessions_table_name = module.gateway_sessions.table_name
   sessions_table_arn  = module.gateway_sessions.table_arn
+  ws_api_endpoint     = module.gateway_apigw.stage_invoke_url
+  ws_api_id           = module.gateway_apigw.api_id
+  ws_execution_arn    = module.gateway_apigw.execution_arn
   tags                = { Component = "agent-gateway" }
 }
 

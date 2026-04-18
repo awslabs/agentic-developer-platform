@@ -25,6 +25,9 @@ from routers.rest import RestRouter
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# Ensure router loggers propagate at INFO (Lambda root defaults to WARNING)
+logging.getLogger("routers").setLevel(logging.INFO)
+
 INPUT_QUEUE_URL = os.environ.get("INPUT_QUEUE_URL", "")
 SESSIONS_TABLE_NAME = os.environ.get("SESSIONS_TABLE_NAME", "")
 WS_API_ENDPOINT = os.environ.get("WS_API_ENDPOINT", "")

@@ -118,7 +118,7 @@ class WebChatAdapter(ChannelAdapter):
                 return None
 
         action = body.get("action", "message")
-        if action != "message":
+        if action not in ("message", "sendMessage"):
             logger.debug("Ignoring WebChat action: %s", action)
             return None
 
