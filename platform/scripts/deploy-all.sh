@@ -548,10 +548,23 @@ phases:
       - echo "Agent gateway deployed"
 EOF
 
+  # Add buildspec files to the source zip so CodeBuild can find them
+  mkdir -p /tmp/adp-buildspecs/codebuild
   for f in bs-platform bs-gateway-infra bs-gateway-build bs-frontend bs-gateway-deploy bs-agent-factory bs-agent-gateway; do
-    aws s3 cp "/tmp/${f}.yml" "s3://${STATE_BUCKET}/codebuild/${f}.yml" --region "$AWS_REGION" > /dev/null
+    cp "/tmp/${f}.yml" "/tmp/adp-buildspecs/codebuild/${f}.yml"
     rm -f "/tmp/${f}.yml"
   done
+  # Re-upload source with buildspecs included
+  cd /tmp/adp-buildspecs
+  zip -r /tmp/adp-deploy-source-bs.zip codebuild/ > /dev/null 2>&1
+  cd "$ROOT_DIR"
+  # Download existing source, append buildspecs, re-upload
+  aws s3 cp "s3://${STATE_BUCKET}/codebuild/adp-source.zip" /tmp/adp-source-existing.zip --region "$AWS_REGION" > /dev/null
+  cp /tmp/adp-source-existing.zip /tmp/adp-source-final.zip
+  cd /tmp/adp-buildspecs && zip -r /tmp/adp-source-final.zip codebuild/ > /dev/null 2>&1
+  aws s3 cp /tmp/adp-source-final.zip "s3://${STATE_BUCKET}/codebuild/adp-source.zip" --region "$AWS_REGION" > /dev/null
+  rm -rf /tmp/adp-buildspecs /tmp/adp-source-existing.zip /tmp/adp-source-final.zip /tmp/adp-deploy-source-bs.zip
+  cd "$ROOT_DIR"
   ok "Buildspec files uploaded"
 fi
 

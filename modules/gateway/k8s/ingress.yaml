@@ -54,7 +54,7 @@ metadata:
     # Format: comma-separated list of subnet IDs
     # ==========================================================================
     # alb.ingress.kubernetes.io/subnets: subnet-xxxxx,subnet-yyyyy
-    alb.ingress.kubernetes.io/subnets: subnet-062da0530aa00ab3a,subnet-071df2eeb8c4e011e
+    alb.ingress.kubernetes.io/subnets: subnet-0860c744097c41a03,subnet-03ae2ea2ebdf611bb
 
     # ==========================================================================
     # Standard ALB Configuration
