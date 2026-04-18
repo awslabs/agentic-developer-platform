@@ -1,3 +1,10 @@
+# =============================================================================
+# Gateway Module Variables
+# =============================================================================
+# Only gateway-specific configuration. VPC, EKS, ECR, and base IAM are
+# provided by the shared platform via terraform_remote_state.
+# =============================================================================
+
 # Environment Configuration
 variable "environment" {
   type        = string
@@ -14,60 +21,20 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "account_id" {
+  type        = string
+  description = "AWS account ID (used to construct the remote state bucket name)"
+}
+
 variable "cost_center" {
   type        = string
   description = "Cost center for billing allocation"
 }
 
-# Networking Configuration
-variable "vpc_cidr" {
-  type        = string
-  description = "CIDR block for VPC"
-  default     = "10.0.0.0/16"
-}
-
-variable "az_count" {
-  type        = number
-  description = "Number of availability zones to use"
-  default     = 2
-  validation {
-    condition     = var.az_count >= 2 && var.az_count <= 3
-    error_message = "AZ count must be between 2 and 3."
-  }
-}
-
-# EKS Configuration
-variable "eks_cluster_version" {
-  type        = string
-  description = "EKS cluster version"
-  default     = "1.35"
-}
-
-variable "node_group_instance_types" {
-  type        = list(string)
-  description = "EC2 instance types for EKS node group"
-  default     = ["t3.medium"]
-}
-
-variable "node_group_desired_size" {
-  type        = number
-  description = "Desired number of nodes in EKS node group"
-  default     = 2
-}
-
-variable "node_group_max_size" {
-  type        = number
-  description = "Maximum number of nodes in EKS node group"
-  default     = 5
-}
-
-variable "node_group_min_size" {
-  type        = number
-  description = "Minimum number of nodes in EKS node group"
-  default     = 1
-}
-
+# =============================================================================
 # RDS Configuration
+# =============================================================================
+
 variable "rds_instance_class" {
   type        = string
   description = "RDS instance class"
@@ -122,7 +89,16 @@ variable "rds_username" {
   default     = "bgadmin"
 }
 
+variable "enable_rds_iam_auth" {
+  type        = bool
+  description = "Enable RDS IAM authentication policy on the gateway IRSA role"
+  default     = true
+}
+
+# =============================================================================
 # Redis Configuration
+# =============================================================================
+
 variable "enable_redis" {
   type        = bool
   description = "Enable ElastiCache Redis cluster"
@@ -153,47 +129,26 @@ variable "redis_port" {
   default     = 6379
 }
 
-# ALB is managed by EKS Ingress controller — no Terraform ALB variables needed
-# Domain and certificate are used by CloudFront if custom domain is configured
-
-# ECR Configuration
-variable "ecr_image_tag_mutability" {
-  type        = string
-  description = "ECR image tag mutability"
-  default     = "MUTABLE"
-  validation {
-    condition     = contains(["MUTABLE", "IMMUTABLE"], var.ecr_image_tag_mutability)
-    error_message = "ECR image tag mutability must be MUTABLE or IMMUTABLE."
-  }
-}
-
-variable "ecr_scan_on_push" {
+variable "enable_elasticache_iam_auth" {
   type        = bool
-  description = "Enable ECR image scanning on push"
+  description = "Enable ElastiCache IAM authentication policy on the gateway IRSA role"
   default     = true
 }
 
-variable "ecr_lifecycle_policy_rules" {
-  type        = number
-  description = "Number of images to retain in ECR repository"
-  default     = 10
-}
-
+# =============================================================================
 # IAM Configuration
+# =============================================================================
+
 variable "pool_account_arns" {
   type        = list(string)
   description = "List of AWS account ARNs that contain Bedrock pools for cross-account access"
   default     = []
 }
 
-# EKS Security Configuration
-variable "eks_public_access_cidrs" {
-  type        = list(string)
-  description = "CIDR blocks allowed to access EKS public endpoint"
-  default     = [] # Must be set in environment tfvars — do NOT default to 0.0.0.0/0
-}
-
+# =============================================================================
 # Cognito Configuration
+# =============================================================================
+
 variable "cognito_mfa_configuration" {
   type        = string
   description = "MFA configuration for Cognito User Pool: OFF, ON, or OPTIONAL"
@@ -240,7 +195,10 @@ variable "cognito_id_token_validity" {
   default     = 60
 }
 
+# =============================================================================
 # Frontend Configuration
+# =============================================================================
+
 variable "frontend_domain_name" {
   type        = string
   description = "Custom domain name for CloudFront frontend (optional)"
@@ -262,9 +220,6 @@ variable "enable_frontend_waf" {
 # =============================================================================
 # VPC Origin Configuration (for internal ALB)
 # =============================================================================
-# These variables control whether CloudFront uses VPC Origin to connect to an
-# internal ALB. This is the recommended security configuration as it blocks
-# direct public access to the ALB.
 
 variable "enable_vpc_origin" {
   type        = bool
@@ -293,7 +248,6 @@ variable "vpc_origin_keepalive_timeout" {
 # =============================================================================
 # Chat Logging Configuration (Issue #143)
 # =============================================================================
-# These variables control async chat logging with PII scrubbing to S3.
 
 variable "enable_chat_logging" {
   type        = bool
@@ -318,26 +272,22 @@ variable "chat_logging_kms_key_arn" {
 }
 
 # =============================================================================
-# Issue #144: Distributed Tracing Configuration
+# Distributed Tracing Configuration (Issue #144)
 # =============================================================================
 
 variable "enable_xray_tracing" {
   type        = bool
-  description = "Enable X-Ray tracing IAM permissions for the gateway service role. When true, adds xray:PutTraceSegments and related permissions."
+  description = "Enable X-Ray tracing IAM permissions for the gateway service role."
   default     = false
 }
 
-# Container Insights
-variable "enable_container_insights" {
-  type        = bool
-  description = "Enable CloudWatch Container Insights via the amazon-cloudwatch-observability EKS addon. Ships pod logs and metrics to CloudWatch."
-  default     = false
-}
-
+# =============================================================================
 # CloudFront Access Logging
+# =============================================================================
+
 variable "enable_cloudfront_logging" {
   type        = bool
-  description = "Enable CloudFront standard access logging to S3. Provides end-to-end request latency from the CDN edge."
+  description = "Enable CloudFront standard access logging to S3."
   default     = false
 }
 
@@ -360,9 +310,6 @@ variable "alb_arn_suffix" {
 # =============================================================================
 # API Gateway Configuration (Issue #236)
 # =============================================================================
-# These variables control the API Gateway REST API as an alternate route to
-# the internal ALB. API Gateway provides 15-minute timeout support for
-# long-running LLM requests (vs CloudFront's 60s hard limit).
 
 variable "enable_api_gateway" {
   type        = bool

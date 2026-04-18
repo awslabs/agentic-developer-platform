@@ -1,3 +1,13 @@
+# =============================================================================
+# Gateway Infrastructure — layers on top of the shared platform
+# =============================================================================
+# Gateway-specific resources (RDS, Redis, Cognito, CloudFront, S3, Lambdas,
+# API Gateway, CloudWatch Dashboard). Networking, EKS, ECR, IAM base roles,
+# and CloudTrail are owned by the shared platform in platform/infra/.
+#
+# Pattern matches modules/agent-factory/infra/main.tf.
+# =============================================================================
+
 provider "aws" {
   region = var.aws_region
 
@@ -12,7 +22,26 @@ provider "aws" {
   }
 }
 
-# Local values for resource naming
+# =============================================================================
+# Shared Platform Remote State
+# =============================================================================
+# Read outputs from the shared platform infrastructure (VPC, EKS, ECR, IAM)
+# deployed via platform/infra/. This avoids duplicating networking and compute.
+# =============================================================================
+
+data "terraform_remote_state" "platform" {
+  backend = "s3"
+  config = {
+    bucket = "adp-terraform-state-${var.account_id}"
+    key    = "${var.environment}/platform/terraform.tfstate"
+    region = var.aws_region
+  }
+}
+
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
+# Local values for resource naming and platform lookups
 locals {
   name_prefix = "bedrockgw-${var.environment}"
 
@@ -24,51 +53,219 @@ locals {
     Owner       = "platform-team"
     CostCenter  = var.cost_center
   }
+
+  # Shared platform resources
+  vpc_id                    = data.terraform_remote_state.platform.outputs.vpc_id
+  private_subnets           = data.terraform_remote_state.platform.outputs.private_subnet_ids
+  cluster_name              = data.terraform_remote_state.platform.outputs.eks_cluster_name
+  cluster_endpoint          = data.terraform_remote_state.platform.outputs.eks_cluster_endpoint
+  cluster_ca                = data.terraform_remote_state.platform.outputs.eks_cluster_ca_certificate
+  oidc_issuer               = data.terraform_remote_state.platform.outputs.eks_oidc_issuer
+  oidc_provider_arn         = data.terraform_remote_state.platform.outputs.eks_oidc_provider_arn
+  ecr_gateway_url           = data.terraform_remote_state.platform.outputs.ecr_repository_urls["adp-gateway"]
+  cluster_security_group_id = data.terraform_remote_state.platform.outputs.eks_cluster_security_group_id
+  rds_security_group_id     = data.terraform_remote_state.platform.outputs.rds_security_group_id
+  redis_security_group_id   = data.terraform_remote_state.platform.outputs.redis_security_group_id
+
+  # Gateway service IRSA role (created by platform EKS module)
+  gateway_service_irsa_role_arn  = data.terraform_remote_state.platform.outputs.gateway_service_irsa_role_arn
+  gateway_service_irsa_role_name = data.terraform_remote_state.platform.outputs.gateway_service_irsa_role_name
 }
 
-# Networking Module
-module "networking" {
-  source = "./modules/networking"
+# =============================================================================
+# Kubernetes & Helm Providers (using shared EKS cluster)
+# =============================================================================
 
-  environment = var.environment
-  aws_region  = var.aws_region
-  vpc_cidr    = var.vpc_cidr
-  az_count    = var.az_count
-  name_prefix = local.name_prefix
-  common_tags = local.common_tags
+provider "kubernetes" {
+  host                   = local.cluster_endpoint
+  cluster_ca_certificate = base64decode(local.cluster_ca)
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", local.cluster_name]
+  }
 }
 
-# IAM Module (created early as other modules depend on it)
-module "iam" {
-  source = "./modules/iam"
+provider "helm" {
+  kubernetes {
+    host                   = local.cluster_endpoint
+    cluster_ca_certificate = base64decode(local.cluster_ca)
 
-  environment       = var.environment
-  name_prefix       = local.name_prefix
-  common_tags       = local.common_tags
-  cluster_name      = "${local.name_prefix}-eks-cluster"
-  pool_account_arns = var.pool_account_arns
-
-  # RDS IAM Authentication
-  enable_rds_iam_auth = true
-  rds_db_username     = var.rds_username
-
-  # ElastiCache IAM Authentication
-  enable_elasticache_iam_auth = var.enable_redis
-  redis_replication_group_id  = var.enable_redis ? module.redis[0].replication_group_id : ""
-  redis_iam_user_id           = var.enable_redis ? module.redis[0].redis_iam_user_id : ""
-
-  # Chat Logging (Issue #143)
-  enable_chat_logging   = var.enable_chat_logging
-  chat_logs_bucket_arn  = var.enable_chat_logging ? module.s3_chat_logs[0].bucket_arn : ""
-  enable_comprehend_pii = var.enable_chat_logging && var.chat_logging_scrub_level == "standard"
-
-  # Issue #144: X-Ray Tracing
-  enable_xray_tracing = var.enable_xray_tracing
-
-  depends_on = [module.networking, module.rds, module.redis, module.s3_chat_logs]
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", local.cluster_name]
+    }
+  }
 }
 
+# =============================================================================
+# Gateway-specific IAM Policy Extensions (Option B)
+# =============================================================================
+# The platform's EKS module creates the base IRSA role with Bedrock, STS,
+# CloudWatch Logs, and DynamoDB permissions. Here we attach incremental
+# policies that depend on gateway-specific resources (Cognito pool ID,
+# RDS IAM auth, ElastiCache IAM auth, chat logs bucket, etc.).
+# =============================================================================
+
+# RDS IAM Authentication — attach to the platform IRSA role
+resource "aws_iam_role_policy" "gateway_rds_iam_auth" {
+  count = var.enable_rds_iam_auth ? 1 : 0
+  name  = "${local.name_prefix}-policy-gateway-rds-iam-auth"
+  role  = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["rds-db:connect"]
+        Resource = "arn:aws:rds-db:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:dbuser:*/${var.rds_username}"
+      }
+    ]
+  })
+}
+
+# ElastiCache IAM Authentication
+resource "aws_iam_role_policy" "gateway_elasticache_iam_auth" {
+  count = var.enable_redis && var.enable_elasticache_iam_auth ? 1 : 0
+  name  = "${local.name_prefix}-policy-gateway-elasticache-iam-auth"
+  role  = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["elasticache:Connect"]
+        Resource = [
+          "arn:aws:elasticache:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:replicationgroup:${module.redis[0].replication_group_id}",
+          "arn:aws:elasticache:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:user:${module.redis[0].redis_iam_user_id}"
+        ]
+      }
+    ]
+  })
+
+  depends_on = [module.redis]
+}
+
+# Cognito read permissions (scoped to the gateway's Cognito pool)
+resource "aws_iam_role_policy" "gateway_cognito_read" {
+  name = "${local.name_prefix}-policy-gateway-cognito-read"
+  role = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "CognitoReadUsers"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:ListUsers",
+          "cognito-idp:ListGroups",
+          "cognito-idp:ListUsersInGroup",
+          "cognito-idp:AdminGetUser"
+        ]
+        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
+      }
+    ]
+  })
+
+  depends_on = [module.cognito]
+}
+
+# S3 chat logs write permissions
+resource "aws_iam_role_policy" "gateway_chat_logs_s3" {
+  count = var.enable_chat_logging ? 1 : 0
+  name  = "${local.name_prefix}-policy-gateway-chat-logs-s3"
+  role  = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ChatLogsS3Write"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "${module.s3_chat_logs[0].bucket_arn}/*"
+      },
+      {
+        Sid      = "ChatLogsS3BucketAccess"
+        Effect   = "Allow"
+        Action   = ["s3:GetBucketLocation"]
+        Resource = module.s3_chat_logs[0].bucket_arn
+      }
+    ]
+  })
+
+  depends_on = [module.s3_chat_logs]
+}
+
+# Comprehend PII detection permissions
+resource "aws_iam_role_policy" "gateway_comprehend_pii" {
+  count = var.enable_chat_logging && var.chat_logging_scrub_level == "standard" ? 1 : 0
+  name  = "${local.name_prefix}-policy-gateway-comprehend-pii"
+  role  = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ComprehendPiiDetection"
+        Effect   = "Allow"
+        Action   = ["comprehend:DetectPiiEntities"]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# X-Ray Tracing permissions
+resource "aws_iam_role_policy" "gateway_xray_tracing" {
+  count = var.enable_xray_tracing ? 1 : 0
+  name  = "${local.name_prefix}-policy-gateway-xray-tracing"
+  role  = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "xray:PutTraceSegments",
+          "xray:PutTelemetryRecords",
+          "xray:GetSamplingRules",
+          "xray:GetSamplingTargets"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Cross-account Bedrock pool assume role (if pool accounts configured)
+resource "aws_iam_role_policy" "gateway_cross_account" {
+  count = length(var.pool_account_arns) > 0 ? 1 : 0
+  name  = "${local.name_prefix}-policy-gateway-cross-account"
+  role  = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole"]
+        Resource = [for acct in var.pool_account_arns : "arn:aws:iam::${acct}:role/*BedrockGateway-Pool*"]
+      }
+    ]
+  })
+}
+
+# =============================================================================
 # S3 Chat Logs Module (Issue #143)
+# =============================================================================
+
 module "s3_chat_logs" {
   count  = var.enable_chat_logging ? 1 : 0
   source = "./modules/s3-chat-logs"
@@ -80,56 +277,19 @@ module "s3_chat_logs" {
   log_bucket_name = "" # Optional: set to access log bucket if needed
 }
 
-# EKS Module
-module "eks" {
-  source = "./modules/eks"
-
-  environment               = var.environment
-  name_prefix               = local.name_prefix
-  common_tags               = local.common_tags
-  vpc_id                    = module.networking.vpc_id
-  private_subnet_ids        = module.networking.private_subnet_ids
-  eks_security_group_id     = module.networking.eks_security_group_id
-  cluster_version           = var.eks_cluster_version
-  node_group_instance_types = var.node_group_instance_types
-  node_group_desired_size   = var.node_group_desired_size
-  node_group_max_size       = var.node_group_max_size
-  node_group_min_size       = var.node_group_min_size
-  gateway_service_role_arn  = module.iam.eks_cluster_role_arn
-  node_group_role_arn       = module.iam.eks_node_group_role_arn
-  eks_public_access_cidrs   = var.eks_public_access_cidrs
-
-  # IRSA gateway service configuration
-  enable_rds_iam_auth         = true
-  rds_db_username             = var.rds_username
-  enable_elasticache_iam_auth = var.enable_redis
-  redis_replication_group_id  = var.enable_redis ? module.redis[0].replication_group_id : ""
-  redis_iam_user_id           = var.enable_redis ? module.redis[0].redis_iam_user_id : ""
-  pool_account_arns           = var.pool_account_arns
-
-  # Issue #226: Cognito User Pool ID for entity list endpoints
-  cognito_user_pool_id = module.cognito.cognito_user_pool_id
-
-  # Issue #143: Chat Logging — S3 and Comprehend permissions for IRSA role
-  chat_logs_bucket_arn  = var.enable_chat_logging ? module.s3_chat_logs[0].bucket_arn : ""
-  enable_comprehend_pii = var.enable_chat_logging && var.chat_logging_scrub_level == "standard"
-
-  # Container Insights — CloudWatch Observability addon
-  enable_container_insights = var.enable_container_insights
-
-  depends_on = [module.networking, module.iam]
-}
-
+# =============================================================================
 # RDS Module
+# =============================================================================
+
 module "rds" {
   source = "./modules/rds"
 
   environment             = var.environment
   name_prefix             = local.name_prefix
   common_tags             = local.common_tags
-  vpc_id                  = module.networking.vpc_id
-  private_subnet_ids      = module.networking.private_subnet_ids
-  rds_security_group_id   = module.networking.rds_security_group_id
+  vpc_id                  = local.vpc_id
+  private_subnet_ids      = local.private_subnets
+  rds_security_group_id   = local.rds_security_group_id
   instance_class          = var.rds_instance_class
   allocated_storage       = var.rds_allocated_storage
   max_allocated_storage   = var.rds_max_allocated_storage
@@ -139,11 +299,12 @@ module "rds" {
   maintenance_window      = var.rds_maintenance_window
   db_name                 = var.rds_db_name
   username                = var.rds_username
-
-  depends_on = [module.networking]
 }
 
+# =============================================================================
 # ElastiCache Redis Module (optional)
+# =============================================================================
+
 module "redis" {
   count  = var.enable_redis ? 1 : 0
   source = "./modules/redis"
@@ -151,15 +312,13 @@ module "redis" {
   environment             = var.environment
   name_prefix             = local.name_prefix
   common_tags             = local.common_tags
-  vpc_id                  = module.networking.vpc_id
-  private_subnet_ids      = module.networking.private_subnet_ids
-  redis_security_group_id = module.networking.redis_security_group_id
+  vpc_id                  = local.vpc_id
+  private_subnet_ids      = local.private_subnets
+  redis_security_group_id = local.redis_security_group_id
   node_type               = var.redis_node_type
   num_cache_nodes         = var.redis_num_cache_nodes
   parameter_group_name    = var.redis_parameter_group_name
   port                    = var.redis_port
-
-  depends_on = [module.networking]
 }
 
 # Note: ALB is managed by the EKS Ingress controller (AWS Load Balancer Controller).
@@ -167,29 +326,10 @@ module "redis" {
 # CloudFront's ALB origin is updated by the backend-deploy workflow after the
 # Ingress ALB is created, since its DNS name is dynamic.
 
-# ECR Module
-module "ecr" {
-  source = "./modules/ecr"
-
-  environment = var.environment
-  name_prefix = local.name_prefix
-  common_tags = local.common_tags
-
-  image_tag_mutability   = var.ecr_image_tag_mutability
-  scan_on_push           = var.ecr_scan_on_push
-  lifecycle_policy_rules = var.ecr_lifecycle_policy_rules
-}
-
-# CloudTrail Module for audit logging
-module "cloudtrail" {
-  source = "./modules/cloudtrail"
-
-  environment = var.environment
-  name_prefix = local.name_prefix
-  common_tags = local.common_tags
-}
-
+# =============================================================================
 # Cognito Module for authentication
+# =============================================================================
+
 module "cognito" {
   source = "./modules/cognito"
 
@@ -213,7 +353,10 @@ module "cognito" {
   depends_on = [module.cloudfront]
 }
 
+# =============================================================================
 # S3 bucket for CloudFront access logs (optional)
+# =============================================================================
+
 module "s3_cloudfront_logs" {
   count  = var.enable_cloudfront_logging ? 1 : 0
   source = "./modules/s3-cloudfront-logs"
@@ -224,7 +367,10 @@ module "s3_cloudfront_logs" {
   log_retention_days = var.cloudfront_log_retention_days
 }
 
+# =============================================================================
 # CloudFront Module for Frontend CDN
+# =============================================================================
+
 module "cloudfront" {
   source = "./modules/cloudfront"
 
@@ -252,7 +398,10 @@ module "cloudfront" {
   vpc_origin_keepalive_timeout = var.vpc_origin_keepalive_timeout
 }
 
+# =============================================================================
 # Frontend S3 Module for SPA Hosting
+# =============================================================================
+
 module "frontend_s3" {
   source = "./modules/s3-frontend"
 
@@ -266,7 +415,7 @@ module "frontend_s3" {
 # =============================================================================
 # CloudWatch Latency Dashboard (Issue #144)
 # =============================================================================
-# Unified end-to-end latency dashboard: CloudFront → ALB → Pod → Bedrock
+# Unified end-to-end latency dashboard: CloudFront -> ALB -> Pod -> Bedrock
 # ALB ARN suffix is set via variable because the ALB is created dynamically
 # by the EKS Ingress controller, not by Terraform.
 
@@ -279,46 +428,16 @@ module "cloudwatch_dashboard" {
   aws_region                 = var.aws_region
   cloudfront_distribution_id = module.cloudfront.distribution_id
   alb_arn_suffix             = var.alb_arn_suffix
-  eks_cluster_name           = module.eks.cluster_name
+  eks_cluster_name           = local.cluster_name
   eks_namespace              = "bedrockgw"
   pod_deployment_name        = "bedrockgateway"
-}
-
-# Configure Kubernetes provider after EKS cluster is created
-provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_ca_certificate)
-
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
-  }
-}
-
-provider "helm" {
-  kubernetes = {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_ca_certificate)
-
-    exec = {
-      api_version = "client.authentication.k8s.io/v1beta1"
-      command     = "aws"
-      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
-    }
-  }
 }
 
 # =============================================================================
 # Security Group Rules for EKS Auto Mode Cluster SG
 # =============================================================================
 # EKS Auto Mode creates its own cluster security group that is used by managed
-# node pools and pods. The networking module's security groups only have rules
-# for the Terraform-managed EKS SG, not the auto-created cluster SG.
-#
-# These rules must be in main.tf (not in networking module) to avoid circular
-# dependency: networking creates SGs before EKS exists, but the cluster SG
-# is only created by EKS.
+# node pools and pods. These rules allow pods to reach RDS and Redis.
 # =============================================================================
 
 # Allow EKS cluster SG to access RDS on port 5432
@@ -328,10 +447,10 @@ resource "aws_security_group_rule" "eks_cluster_to_rds" {
   from_port                = 5432
   to_port                  = 5432
   protocol                 = "tcp"
-  security_group_id        = module.networking.rds_security_group_id
-  source_security_group_id = module.eks.cluster_security_group_id
+  security_group_id        = local.rds_security_group_id
+  source_security_group_id = local.cluster_security_group_id
 
-  depends_on = [module.networking, module.eks]
+  depends_on = [module.rds]
 }
 
 # Allow EKS cluster SG to access Redis on port 6379
@@ -343,10 +462,10 @@ resource "aws_security_group_rule" "eks_cluster_to_redis" {
   from_port                = 6379
   to_port                  = 6379
   protocol                 = "tcp"
-  security_group_id        = module.networking.redis_security_group_id
-  source_security_group_id = module.eks.cluster_security_group_id
+  security_group_id        = local.redis_security_group_id
+  source_security_group_id = local.cluster_security_group_id
 
-  depends_on = [module.networking, module.eks]
+  depends_on = [module.redis]
 }
 
 # =============================================================================
@@ -371,18 +490,18 @@ module "budget_lambda" {
   chat_logs_bucket_arn  = module.s3_chat_logs[0].bucket_arn
 
   # VPC Configuration
-  vpc_id             = module.networking.vpc_id
-  private_subnet_ids = module.networking.private_subnet_ids
+  vpc_id             = local.vpc_id
+  private_subnet_ids = local.private_subnets
 
   # RDS Configuration
-  rds_security_group_id = module.networking.rds_security_group_id
+  rds_security_group_id = local.rds_security_group_id
   db_host               = module.rds.db_instance_address
   db_port               = module.rds.db_instance_port
   db_name               = var.rds_db_name
   db_username           = var.rds_username
   rds_resource_id       = module.rds.db_instance_resource_id
 
-  depends_on = [module.s3_chat_logs, module.rds, module.networking]
+  depends_on = [module.s3_chat_logs, module.rds]
 }
 
 # =============================================================================
@@ -409,8 +528,8 @@ module "api_gateway" {
   aws_region  = var.aws_region
 
   # VPC Configuration
-  vpc_id             = module.networking.vpc_id
-  private_subnet_ids = module.networking.private_subnet_ids
+  vpc_id             = local.vpc_id
+  private_subnet_ids = local.private_subnets
 
   # ALB Configuration (set dynamically by backend-deploy workflow)
   # The ALB is created by the EKS Ingress controller, so the ARN/DNS
@@ -428,7 +547,7 @@ module "api_gateway" {
   # Logging
   log_retention_days = var.api_gateway_log_retention_days
 
-  depends_on = [module.networking, module.cognito]
+  depends_on = [module.cognito]
 }
 
 # =============================================================================

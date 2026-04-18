@@ -53,3 +53,46 @@ output "ecr_repository_urls" {
   description = "Map of ECR repository name to URL"
   value       = module.ecr.repository_urls
 }
+
+# ---------------------------------------------------------------------------
+# Security Group outputs (used by gateway and other downstream modules)
+# ---------------------------------------------------------------------------
+
+output "eks_cluster_security_group_id" {
+  description = "EKS Auto Mode cluster security group ID (auto-created by AWS)"
+  value       = module.eks.cluster_security_group_id
+}
+
+output "eks_security_group_id" {
+  description = "Terraform-managed EKS security group ID"
+  value       = module.networking.eks_security_group_id
+}
+
+output "rds_security_group_id" {
+  description = "Security group ID for RDS instances"
+  value       = module.networking.rds_security_group_id
+}
+
+output "redis_security_group_id" {
+  description = "Security group ID for ElastiCache Redis"
+  value       = module.networking.redis_security_group_id
+}
+
+output "alb_security_group_id" {
+  description = "Security group ID for ALB"
+  value       = module.networking.alb_security_group_id
+}
+
+# ---------------------------------------------------------------------------
+# Gateway Service IRSA role (created in platform EKS module)
+# ---------------------------------------------------------------------------
+
+output "gateway_service_irsa_role_arn" {
+  description = "ARN of the gateway service IRSA role"
+  value       = module.eks.gateway_service_irsa_role_arn
+}
+
+output "gateway_service_irsa_role_name" {
+  description = "Name of the gateway service IRSA role"
+  value       = module.eks.gateway_service_irsa_role_name
+}

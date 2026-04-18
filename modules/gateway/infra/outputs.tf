@@ -1,39 +1,9 @@
-# VPC and Networking Outputs
-output "vpc_id" {
-  description = "ID of the VPC"
-  value       = module.networking.vpc_id
-}
-
-output "private_subnet_ids" {
-  description = "IDs of the private subnets"
-  value       = module.networking.private_subnet_ids
-}
-
-output "public_subnet_ids" {
-  description = "IDs of the public subnets"
-  value       = module.networking.public_subnet_ids
-}
-
-# EKS Cluster Outputs
-output "cluster_name" {
-  description = "Name of the EKS cluster"
-  value       = module.eks.cluster_name
-}
-
-output "cluster_endpoint" {
-  description = "EKS cluster endpoint"
-  value       = module.eks.cluster_endpoint
-}
-
-output "cluster_security_group_id" {
-  description = "Security group ID attached to the EKS cluster"
-  value       = module.eks.cluster_security_group_id
-}
-
-output "cluster_oidc_issuer_url" {
-  description = "The URL on the EKS cluster OIDC Issuer"
-  value       = module.eks.cluster_oidc_issuer_url
-}
+# =============================================================================
+# Gateway Module Outputs
+# =============================================================================
+# Only gateway-specific outputs. Platform-owned resources (VPC, EKS, ECR,
+# CloudTrail, base IAM) are exposed via platform/infra/outputs.tf.
+# =============================================================================
 
 # RDS Outputs
 output "rds_endpoint" {
@@ -60,46 +30,6 @@ output "redis_endpoint" {
 output "redis_port" {
   description = "ElastiCache Redis port"
   value       = var.enable_redis ? module.redis[0].port : null
-}
-
-# ALB is managed by EKS Ingress controller — no Terraform outputs
-# The Ingress ALB DNS is resolved dynamically in the deploy workflows
-
-# ECR Outputs
-output "ecr_repository_url" {
-  description = "URL of the ECR repository"
-  value       = module.ecr.repository_url
-}
-
-output "ecr_repository_arn" {
-  description = "ARN of the ECR repository"
-  value       = module.ecr.repository_arn
-}
-
-# IAM Outputs
-output "gateway_service_role_arn" {
-  description = "ARN of the gateway service IAM role (placeholder — see gateway_service_irsa_role_arn)"
-  value       = module.iam.gateway_service_role_arn
-}
-
-output "gateway_service_irsa_role_arn" {
-  description = "ARN of the gateway service IRSA role (used by pods for Bedrock access)"
-  value       = module.eks.gateway_service_irsa_role_arn
-}
-
-output "gateway_service_role_name" {
-  description = "Name of the gateway service IAM role"
-  value       = module.iam.gateway_service_role_name
-}
-
-output "eks_cluster_role_arn" {
-  description = "ARN of the EKS cluster IAM role"
-  value       = module.iam.eks_cluster_role_arn
-}
-
-output "eks_node_group_role_arn" {
-  description = "ARN of the EKS node group IAM role"
-  value       = module.iam.eks_node_group_role_arn
 }
 
 # Frontend Outputs
@@ -222,8 +152,6 @@ output "pricing_refresh_lambda_name" {
 # =============================================================================
 # API Gateway Outputs (Issue #236)
 # =============================================================================
-# These outputs expose API Gateway details when enable_api_gateway = true.
-# The invoke URL is the alternate endpoint for long-running LLM requests.
 
 output "api_gateway_invoke_url" {
   description = "Invoke URL for the API Gateway stage (alternate route with 15-min timeout)"
@@ -248,8 +176,11 @@ output "api_gateway_vpc_link_id" {
 # =============================================================================
 # Lambda Authorizer Outputs (Issue #239)
 # =============================================================================
-# These outputs expose the Lambda authorizer and agent registry details
-# when enable_api_gateway = true.
+
+output "authorizer_lambda_invoke_arn" {
+  description = "Invoke ARN of the Lambda authorizer function (used by API Gateway REQUEST authorizers)"
+  value       = var.enable_api_gateway ? module.lambda_authorizer[0].authorizer_lambda_invoke_arn : ""
+}
 
 output "lambda_authorizer_arn" {
   description = "ARN of the Lambda authorizer function"
