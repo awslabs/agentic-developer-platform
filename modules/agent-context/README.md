@@ -403,9 +403,22 @@ git add . && git commit -m "add repos" && git push
 ./teardown.sh --delete-namespace
 ```
 
-### Validation (`validate.sh`)
+### Testing
 
-Runs 10 automated checks:
+A comprehensive E2E test suite lives in `tests/`. See [`tests/README.md`](tests/README.md) for full documentation.
+
+```bash
+# Unit mode (fast, no AWS, no cluster)
+cd modules/agent-context
+uv run pytest tests/ -v
+
+# Live mode (against deployed cluster)
+TEST_ENV=dev uv run pytest tests/ -v -m "live or not live_only"
+```
+
+### Validation (`validate.sh`) *(deprecated — use pytest suite above)*
+
+Runs 10 automated checks (now fully covered by `tests/e2e/test_platform_health.py`):
 
 | Check | What it validates |
 |-------|-------------------|
