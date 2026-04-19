@@ -1,32 +1,28 @@
-name: Platform Infra Apply
+name: Gateway Infra Apply
 
 on:
   # Manual-only trigger. Merging a PR does NOT auto-apply infra; operator
   # reviews the plan comment on the merged PR, then triggers this workflow
-  # explicitly via Actions → Platform Infra Apply → Run workflow. Rationale:
-  #   - Separates "reviewed" from "deployed" (no Friday-night surprise applies).
-  #   - Prevents approval fatigue (plan/apply are distinct deliberate acts).
-  #   - Lets operators batch applies across multiple merged PRs.
-  #   - Matches the project's "carefully consider reversibility" rule.
+  # explicitly via Actions → Gateway Infra Apply → Run workflow. See
+  # platform-infra-apply.yml for the full rationale.
   workflow_dispatch:
 
 concurrency:
-  group: tf-apply-platform
+  group: tf-apply-gateway
   cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-1
   TF_VAR_environment: dev
-  MODULE_NAME: platform
-  TF_WORKING_DIR: platform/infra
-  BACKEND_CONFIG: environments/dev/backend.tfvars
-  VAR_FILE: environments/dev/platform.tfvars
+  MODULE_NAME: gateway
+  TF_WORKING_DIR: modules/gateway/infra
+  BACKEND_CONFIG: environments/dev/modules/gateway-backend.tfvars
+  VAR_FILE: environments/dev/modules/gateway.tfvars
 
 jobs:
   apply:
     name: Terraform Apply
     runs-on: arc-runner-org
-    # ARC runner has IRSA via adp-dev-agent-runner-role — no AWS_ROLE_ARN needed
     environment: production
     permissions:
       contents: read
@@ -37,7 +33,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Bootstrap CLI tools (no-op once custom runner image rolls out everywhere)
       - name: Install required CLI tools
         run: |
           set -e
@@ -61,7 +56,6 @@ jobs:
           aws --version
           terraform version | head -1
 
-      # Fail fast if the 'production' environment hasn't been created in repo settings
       - name: Pre-check production environment
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,18 +72,16 @@ jobs:
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -backend-config="../../${{ env.BACKEND_CONFIG }}" -input=false
+        run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
 
-      # Plan first to check for destroys (destroy-safety gate)
       - name: Terraform Plan (destroy-safety check)
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
           set -e
           EXIT_CODE=0
-          terraform plan -var-file="../../${{ env.VAR_FILE }}" -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
+          terraform plan -var-file="../../../${{ env.VAR_FILE }}" -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
           echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
-          # Exit code 0 = no changes, 1 = error, 2 = changes present
           if [ "$EXIT_CODE" -eq 1 ]; then
             echo "::error::Terraform plan failed."
             exit 1
@@ -101,11 +93,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          # Check if plan includes any destroys
           DESTROYS=$(grep -c 'will be destroyed' /tmp/plan-output.txt || echo "0")
           if [ "$DESTROYS" -gt 0 ]; then
             echo "Plan includes $DESTROYS resource(s) to destroy."
-            # Find the PR that introduced this merge commit
             COMMIT_SHA="${{ github.sha }}"
             PR_NUMBER=$(gh pr list --state merged --search "$COMMIT_SHA" --json number --jq '.[0].number // empty' 2>/dev/null || echo "")
             if [ -z "$PR_NUMBER" ]; then

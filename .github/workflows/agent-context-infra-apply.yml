@@ -1,32 +1,29 @@
-name: Platform Infra Apply
+name: Agent Context Infra Apply
 
 on:
   # Manual-only trigger. Merging a PR does NOT auto-apply infra; operator
   # reviews the plan comment on the merged PR, then triggers this workflow
-  # explicitly via Actions → Platform Infra Apply → Run workflow. Rationale:
-  #   - Separates "reviewed" from "deployed" (no Friday-night surprise applies).
-  #   - Prevents approval fatigue (plan/apply are distinct deliberate acts).
-  #   - Lets operators batch applies across multiple merged PRs.
-  #   - Matches the project's "carefully consider reversibility" rule.
+  # explicitly via Actions → Agent Context Infra Apply → Run workflow. See
+  # platform-infra-apply.yml for the full rationale. Extra caution here:
+  # applying with `graphrag_enabled=true` adds ~$800/mo idle cost.
   workflow_dispatch:
 
 concurrency:
-  group: tf-apply-platform
+  group: tf-apply-agent-context
   cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-1
   TF_VAR_environment: dev
-  MODULE_NAME: platform
-  TF_WORKING_DIR: platform/infra
-  BACKEND_CONFIG: environments/dev/backend.tfvars
-  VAR_FILE: environments/dev/platform.tfvars
+  MODULE_NAME: agent-context
+  TF_WORKING_DIR: modules/agent-context/terraform
+  BACKEND_CONFIG: environments/dev/modules/agent-context-backend.tfvars
+  VAR_FILE: environments/dev/modules/agent-context.tfvars
 
 jobs:
   apply:
     name: Terraform Apply
     runs-on: arc-runner-org
-    # ARC runner has IRSA via adp-dev-agent-runner-role — no AWS_ROLE_ARN needed
     environment: production
     permissions:
       contents: read
@@ -37,7 +34,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Bootstrap CLI tools (no-op once custom runner image rolls out everywhere)
       - name: Install required CLI tools
         run: |
           set -e
@@ -61,7 +57,6 @@ jobs:
           aws --version
           terraform version | head -1
 
-      # Fail fast if the 'production' environment hasn't been created in repo settings
       - name: Pre-check production environment
         env:
           GH_TOKEN: ${{ github.token }}
@@ -76,20 +71,44 @@ jobs:
           fi
           echo "production environment exists."
 
+      - name: GraphRAG cost guard
+        run: |
+          set -e
+          # Check effective graphrag_enabled value (TF_VAR overrides tfvars)
+          GRAPHRAG_ENABLED="${TF_VAR_graphrag_enabled:-}"
+          if [ -z "$GRAPHRAG_ENABLED" ]; then
+            GRAPHRAG_ENABLED=$(grep 'graphrag_enabled' "${{ env.VAR_FILE }}" | sed 's/.*=\s*//' | tr -d ' "' || echo "false")
+          fi
+          echo "graphrag_enabled=$GRAPHRAG_ENABLED"
+          if [ "$GRAPHRAG_ENABLED" = "true" ]; then
+            echo "## :warning: GraphRAG Cost Warning" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**graphrag_enabled=true** — this adds ~\$800/month idle cost." >> "$GITHUB_STEP_SUMMARY"
+            echo "- Neptune Serverless: ~\$105/month" >> "$GITHUB_STEP_SUMMARY"
+            echo "- OpenSearch Serverless: ~\$700/month" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            # Check for CONFIRM_GRAPHRAG_COST repo variable
+            CONFIRM="${{ vars.CONFIRM_GRAPHRAG_COST }}"
+            if [ "$CONFIRM" != "yes" ]; then
+              echo "::error::graphrag_enabled=true but the repo variable CONFIRM_GRAPHRAG_COST is not set to 'yes'."
+              echo "Either set the repo variable via Settings -> Secrets and variables -> Actions -> Variables -> CONFIRM_GRAPHRAG_COST=yes, OR set graphrag_enabled=false in ${{ env.VAR_FILE }}."
+              exit 1
+            fi
+            echo "CONFIRM_GRAPHRAG_COST=yes confirmed. Proceeding with GraphRAG resources." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -backend-config="../../${{ env.BACKEND_CONFIG }}" -input=false
+        run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
 
-      # Plan first to check for destroys (destroy-safety gate)
       - name: Terraform Plan (destroy-safety check)
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
           set -e
           EXIT_CODE=0
-          terraform plan -var-file="../../${{ env.VAR_FILE }}" -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
+          terraform plan -var-file="../../../${{ env.VAR_FILE }}" -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
           echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
-          # Exit code 0 = no changes, 1 = error, 2 = changes present
           if [ "$EXIT_CODE" -eq 1 ]; then
             echo "::error::Terraform plan failed."
             exit 1
@@ -101,11 +120,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          # Check if plan includes any destroys
           DESTROYS=$(grep -c 'will be destroyed' /tmp/plan-output.txt || echo "0")
           if [ "$DESTROYS" -gt 0 ]; then
             echo "Plan includes $DESTROYS resource(s) to destroy."
-            # Find the PR that introduced this merge commit
             COMMIT_SHA="${{ github.sha }}"
             PR_NUMBER=$(gh pr list --state merged --search "$COMMIT_SHA" --json number --jq '.[0].number // empty' 2>/dev/null || echo "")
             if [ -z "$PR_NUMBER" ]; then

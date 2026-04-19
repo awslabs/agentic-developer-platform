@@ -1,27 +1,26 @@
-name: Platform Infra Plan
+name: Gateway Infra Plan
 
 on:
   pull_request:
     paths:
-      - 'platform/infra/**'
-      - 'environments/dev/platform.tfvars'
-      - 'environments/dev/backend.tfvars'
+      - 'modules/gateway/infra/**'
+      - 'environments/dev/modules/gateway.tfvars'
+      - 'environments/dev/modules/gateway-backend.tfvars'
     branches:
       - main
 
 env:
   AWS_REGION: us-east-1
   TF_VAR_environment: dev
-  MODULE_NAME: platform
-  TF_WORKING_DIR: platform/infra
-  BACKEND_CONFIG: environments/dev/backend.tfvars
-  VAR_FILE: environments/dev/platform.tfvars
+  MODULE_NAME: gateway
+  TF_WORKING_DIR: modules/gateway/infra
+  BACKEND_CONFIG: environments/dev/modules/gateway-backend.tfvars
+  VAR_FILE: environments/dev/modules/gateway.tfvars
 
 jobs:
   plan:
     name: Terraform Plan
     runs-on: arc-runner-org
-    # ARC runner has IRSA via adp-dev-agent-runner-role — no AWS_ROLE_ARN needed
     permissions:
       contents: read
       pull-requests: write
@@ -29,7 +28,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Bootstrap CLI tools (no-op once custom runner image rolls out everywhere)
       - name: Install required CLI tools
         run: |
           set -e
@@ -55,14 +53,14 @@ jobs:
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -backend-config="../../${{ env.BACKEND_CONFIG }}" -input=false
+        run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
 
       - name: Terraform Plan
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
           set -e
-          terraform plan -var-file="../../${{ env.VAR_FILE }}" -out=tfplan -no-color 2>&1 | tee /tmp/plan-output.txt
+          terraform plan -var-file="../../../${{ env.VAR_FILE }}" -out=tfplan -no-color 2>&1 | tee /tmp/plan-output.txt
 
       - name: Post or update PR comment
         uses: actions/github-script@v7
@@ -79,7 +77,6 @@ jobs:
             } catch (e) {
               planText = 'Plan output not available.';
             }
-            // Truncate if too long (GitHub comment limit is 65536 chars)
             if (planText.length > 60000) {
               planText = planText.substring(0, 60000) + '\n\n... (truncated)';
             }

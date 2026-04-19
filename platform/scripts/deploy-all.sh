@@ -14,6 +14,7 @@ set -euo pipefail
 #   ./platform/scripts/deploy-all.sh --agent-context-only   # Platform + agent-context only
 #   ./platform/scripts/deploy-all.sh --destroy              # Tear down everything
 #   ./platform/scripts/deploy-all.sh --local                # Run everything locally (needs Terraform, Docker, Node, kubectl)
+#   ./platform/scripts/deploy-all.sh --ci                   # CI mode: validate outputs exist without re-applying
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +30,7 @@ AGENT_CONTEXT_ENABLED="${AGENT_CONTEXT_ENABLED:-false}"
 DESTROY=false
 SKIP_FRONTEND=false
 LOCAL_MODE=false
+CI_MODE=false
 
 for arg in "$@"; do
   case $arg in
@@ -39,6 +41,7 @@ for arg in "$@"; do
     --destroy) DESTROY=true ;;
     --skip-frontend) SKIP_FRONTEND=true ;;
     --local) LOCAL_MODE=true ;;
+    --ci) CI_MODE=true ;;
     --help)
       echo "Usage: $0 [--gateway-only] [--agent-factory-only] [--agent-context-only] [--skip-agent-context] [--skip-frontend] [--local] [--destroy]"
       echo ""
@@ -49,6 +52,7 @@ for arg in "$@"; do
       echo "  --skip-agent-context   Skip agent-context even if AGENT_CONTEXT_ENABLED=true"
       echo "  --skip-frontend        Skip frontend build and deploy"
       echo "  --local                Run Terraform/Docker/npm locally"
+      echo "  --ci                   CI mode: validate outputs exist without re-applying (use after GH Actions deploys)"
       echo "  --destroy              Tear down all infrastructure"
       exit 0
       ;;
@@ -274,6 +278,68 @@ BSEOF
   aws iam delete-role --role-name "$CB_ROLE_NAME" 2>/dev/null || true
 
   ok "Done. Delete state backend manually: S3 $STATE_BUCKET, DynamoDB $LOCK_TABLE"
+  exit 0
+fi
+
+# =============================================================================
+# CI mode: validate module outputs exist without re-applying
+# =============================================================================
+if [ "$CI_MODE" = true ]; then
+  step "CI Validation Mode"
+  echo "Checking that Terraform outputs exist for each module."
+  echo "If any are missing, run the matching GitHub Actions workflow."
+  echo ""
+  CI_FAILURES=0
+  GH_REPO_URL="https://github.com/$(git remote get-url origin 2>/dev/null | sed 's|.*github.com[:/]||;s|\.git$||' || echo 'UNKNOWN')"
+
+  # Platform
+  ci_check_module() {
+    local MODULE_NAME="$1"
+    local STATE_KEY="$2"
+    local WORKFLOW_FILE="$3"
+    echo -n "  $MODULE_NAME: "
+    if aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" /tmp/ci-check-state.json --region "$AWS_REGION" >/dev/null 2>&1; then
+      OUTPUTS=$(python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('outputs',{})))" < /tmp/ci-check-state.json 2>/dev/null || echo "0")
+      rm -f /tmp/ci-check-state.json
+      if [ "$OUTPUTS" -gt 0 ]; then
+        ok "$OUTPUTS output(s) found"
+      else
+        warn "State exists but 0 outputs. Run: $GH_REPO_URL/actions/workflows/$WORKFLOW_FILE"
+        CI_FAILURES=$((CI_FAILURES + 1))
+      fi
+    else
+      warn "No state found. Run: $GH_REPO_URL/actions/workflows/$WORKFLOW_FILE"
+      CI_FAILURES=$((CI_FAILURES + 1))
+    fi
+  }
+
+  ci_check_module "platform"      "${ENVIRONMENT}/platform/terraform.tfstate"             "platform-infra-apply.yml"
+  if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+    ci_check_module "gateway"       "${ENVIRONMENT}/modules/gateway/terraform.tfstate"      "gateway-infra-apply.yml"
+  fi
+  if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+    ci_check_module "agent-factory" "${ENVIRONMENT}/modules/agent-factory/terraform.tfstate" "agent-factory-infra-apply.yml"
+  fi
+  if [ "$AGENT_CONTEXT_ENABLED" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
+    ci_check_module "agent-context" "${ENVIRONMENT}/modules/agent-context/terraform.tfstate" "agent-context-infra-apply.yml"
+  fi
+
+  # Also check EKS cluster directly
+  echo ""
+  echo -n "  EKS cluster: "
+  EKS_STATUS=$(aws eks describe-cluster --name "$EKS_CLUSTER" --query 'cluster.status' --output text --region "$AWS_REGION" 2>/dev/null || echo "NOT_FOUND")
+  if [ "$EKS_STATUS" = "ACTIVE" ]; then
+    ok "ACTIVE"
+  else
+    warn "$EKS_STATUS — Run: $GH_REPO_URL/actions/workflows/platform-infra-apply.yml"
+    CI_FAILURES=$((CI_FAILURES + 1))
+  fi
+
+  echo ""
+  if [ "$CI_FAILURES" -gt 0 ]; then
+    fail "$CI_FAILURES module(s) missing outputs. Run the listed GitHub Actions workflows first."
+  fi
+  ok "All modules have outputs. Infrastructure is managed via GitHub Actions CI."
   exit 0
 fi
 

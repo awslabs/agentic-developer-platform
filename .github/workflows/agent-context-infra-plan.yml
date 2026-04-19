@@ -1,27 +1,26 @@
-name: Platform Infra Plan
+name: Agent Context Infra Plan
 
 on:
   pull_request:
     paths:
-      - 'platform/infra/**'
-      - 'environments/dev/platform.tfvars'
-      - 'environments/dev/backend.tfvars'
+      - 'modules/agent-context/terraform/**'
+      - 'environments/dev/modules/agent-context.tfvars'
+      - 'environments/dev/modules/agent-context-backend.tfvars'
     branches:
       - main
 
 env:
   AWS_REGION: us-east-1
   TF_VAR_environment: dev
-  MODULE_NAME: platform
-  TF_WORKING_DIR: platform/infra
-  BACKEND_CONFIG: environments/dev/backend.tfvars
-  VAR_FILE: environments/dev/platform.tfvars
+  MODULE_NAME: agent-context
+  TF_WORKING_DIR: modules/agent-context/terraform
+  BACKEND_CONFIG: environments/dev/modules/agent-context-backend.tfvars
+  VAR_FILE: environments/dev/modules/agent-context.tfvars
 
 jobs:
   plan:
     name: Terraform Plan
     runs-on: arc-runner-org
-    # ARC runner has IRSA via adp-dev-agent-runner-role — no AWS_ROLE_ARN needed
     permissions:
       contents: read
       pull-requests: write
@@ -29,7 +28,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Bootstrap CLI tools (no-op once custom runner image rolls out everywhere)
       - name: Install required CLI tools
         run: |
           set -e
@@ -53,16 +51,34 @@ jobs:
           aws --version
           terraform version | head -1
 
+      - name: Check GraphRAG cost warning
+        run: |
+          set -e
+          # Check effective graphrag_enabled value (TF_VAR overrides tfvars)
+          GRAPHRAG_ENABLED="${TF_VAR_graphrag_enabled:-}"
+          if [ -z "$GRAPHRAG_ENABLED" ]; then
+            GRAPHRAG_ENABLED=$(grep 'graphrag_enabled' "${{ env.VAR_FILE }}" | sed 's/.*=\s*//' | tr -d ' "' || echo "false")
+          fi
+          if [ "$GRAPHRAG_ENABLED" = "true" ]; then
+            echo "::warning::GraphRAG is ENABLED (graphrag_enabled=true). This adds ~\$800/month idle cost (Neptune Serverless + OpenSearch Serverless)."
+            echo "## :warning: GraphRAG Cost Warning" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**graphrag_enabled=true** in the effective configuration." >> "$GITHUB_STEP_SUMMARY"
+            echo "This adds approximately **\$800/month** idle cost:" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Neptune Serverless: ~\$105/month" >> "$GITHUB_STEP_SUMMARY"
+            echo "- OpenSearch Serverless: ~\$700/month" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -backend-config="../../${{ env.BACKEND_CONFIG }}" -input=false
+        run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
 
       - name: Terraform Plan
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
           set -e
-          terraform plan -var-file="../../${{ env.VAR_FILE }}" -out=tfplan -no-color 2>&1 | tee /tmp/plan-output.txt
+          terraform plan -var-file="../../../${{ env.VAR_FILE }}" -out=tfplan -no-color 2>&1 | tee /tmp/plan-output.txt
 
       - name: Post or update PR comment
         uses: actions/github-script@v7
@@ -79,7 +95,6 @@ jobs:
             } catch (e) {
               planText = 'Plan output not available.';
             }
-            // Truncate if too long (GitHub comment limit is 65536 chars)
             if (planText.length > 60000) {
               planText = planText.substring(0, 60000) + '\n\n... (truncated)';
             }

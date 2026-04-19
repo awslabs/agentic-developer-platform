@@ -167,3 +167,57 @@ The deploy-all.sh script and the agent both read/write this file to track progre
 3. If `running` with a `codebuild_id`, poll that build
 4. If `failed`, retry the phase
 5. If `pending`, start the phase
+
+## Production Deploys via GitHub Actions vs. Local Cold-Start via deploy-all.sh
+
+### CI-first flow (recommended for production)
+
+Infrastructure changes are deployed via GitHub Actions workflows that run on ARC self-hosted runners with IRSA credentials. Each Terraform module has a plan + apply workflow pair:
+
+| Module | Plan Workflow | Apply Workflow | Path Filter |
+|--------|--------------|----------------|-------------|
+| Platform | `platform-infra-plan.yml` | `platform-infra-apply.yml` | `platform/infra/**` |
+| Gateway | `gateway-infra-plan.yml` | `gateway-infra-apply.yml` | `modules/gateway/infra/**` |
+| Agent Factory | `agent-factory-infra-plan.yml` | `agent-factory-infra-apply.yml` | `modules/agent-factory/infra/**` |
+| Agent Context | `agent-context-infra-plan.yml` | `agent-context-infra-apply.yml` | `modules/agent-context/terraform/**` |
+
+**How it works:**
+1. Open a PR that touches a module's infra path. The plan workflow runs and posts a comment on the PR with the plan output.
+2. Review the plan. Merge the PR. **Merging does NOT auto-apply.**
+3. When ready to deploy, the operator triggers the apply workflow manually: Actions → `<module> Infra Apply` → Run workflow → main.
+4. Apply is gated by `environment: production` (requires reviewer approval in GitHub) AND by the `destructive-apply-approved` label gate: if resources would be destroyed, the source PR must have the label.
+
+**Why manual apply:** separates "reviewed" from "deployed" — prevents Friday-evening surprise applies on merge, lets operators batch multiple merged PRs into one apply, and matches the project's "carefully consider reversibility and blast radius" rule. For routine non-destructive changes this is one extra click; for anything risky, it's the right default.
+
+**Safety guardrails:**
+- Per-module concurrency control (`concurrency.group: tf-apply-<module>`) prevents state lock races.
+- Destroy-safety gate requires explicit label approval for destructive changes.
+- Agent-context has a GraphRAG cost guard: `graphrag_enabled=true` requires the `CONFIRM_GRAPHRAG_COST=yes` repo variable.
+- Plan comments are updated in-place (one per module per PR).
+
+**Prerequisites:**
+- `production` environment created in repo Settings -> Environments with required reviewers.
+- ARC runner controller deployed and `arc-runner-org` runner label available.
+- `destructive-apply-approved` label created in the repo.
+
+### Local cold-start via deploy-all.sh
+
+For bootstrapping a new AWS account or running everything locally (no CI):
+
+```bash
+# Full deploy (CodeBuild-based)
+./platform/scripts/deploy-all.sh
+
+# Local mode (needs Terraform, Docker, Node, kubectl locally)
+./platform/scripts/deploy-all.sh --local
+```
+
+### CI validation mode
+
+After CI owns the infra path, use `--ci` to verify all modules have been applied:
+
+```bash
+./platform/scripts/deploy-all.sh --ci
+```
+
+This checks Terraform state files in S3 for each module and validates the EKS cluster is active. If any module is missing, it prints the URL of the GitHub Actions workflow to run. It does NOT re-apply anything.
