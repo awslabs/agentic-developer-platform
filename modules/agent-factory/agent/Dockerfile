@@ -10,7 +10,7 @@
 #                -t <registry>/adp-agent-gateway:<tag> \
 #                modules/agent-factory
 #
-FROM node:22-alpine AS builder
+FROM public.ecr.aws/docker/library/node:22-alpine AS builder
 
 # Create non-root user
 RUN addgroup -g 10001 agent && \
@@ -36,7 +36,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 # Production stage
-FROM node:22-alpine AS production
+FROM public.ecr.aws/docker/library/node:22-alpine AS production
 
 # Create non-root user
 RUN addgroup -g 10001 agent && \
