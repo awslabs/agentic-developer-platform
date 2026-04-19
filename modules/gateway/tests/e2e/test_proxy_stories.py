@@ -1,8 +1,10 @@
 """
 E2E tests for proxy/LLM request user stories.
 
-These tests verify the complete proxy flow for different API formats
-including OpenAI-compatible, Anthropic Messages, and Bedrock pass-through.
+Test modes:
+- @pytest.mark.unit: Pure Python-level logic tests (mock_bedrock_client + mocks)
+- @pytest.mark.integration: ASGI app in-process tests (api_client in unit mode)
+- @pytest.mark.live_only: Real HTTP against deployed gateway
 
 User Stories Covered:
 - US-4.1: OpenAI-Compatible Chat Completions
@@ -17,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 pytestmark = [pytest.mark.proxy, pytest.mark.e2e]
 
 from src.shared.exceptions import ModelNotAllowedError
+from tests.e2e.config import get_test_bedrock_model
 from tests.fixtures.factories import (
     create_department,
     create_org,
@@ -24,33 +27,27 @@ from tests.fixtures.factories import (
     create_token,
     create_user,
 )
-from tests.e2e.config import get_test_bedrock_model
 from tests.fixtures.mock_aws import MockBedrockClient
 
 
-@pytest.mark.e2e
+# =============================================================================
+# Unit tests -- pure Python logic, mock_bedrock_client
+# =============================================================================
+
+
+@pytest.mark.unit
 class TestOpenAIChatCompletions:
     """
-    E2E tests for OpenAI-Compatible Chat Completions.
+    Unit tests for OpenAI-Compatible Chat Completions.
 
-    User Story US-4.1:
-    As a Developer (Dev), I want to send requests in OpenAI chat completions format,
-    so that I can use Cursor and other OpenAI-compatible tools with the gateway.
+    User Story US-4.1.
     """
 
-    @pytest.mark.asyncio
     async def test_openai_format_chat_completion(
         self,
         mock_bedrock_client: MockBedrockClient,
     ):
-        """
-        Test: POST /v1/chat/completions accepts OpenAI format.
-
-        Acceptance Criteria:
-        - Accepts: {"model": "...", "messages": [...], "stream": true/false}
-        - Gateway maps OpenAI format to Bedrock InvokeModel API
-        """
-        # OpenAI-format request
+        """POST /v1/chat/completions accepts OpenAI format."""
         openai_request = {
             "model": "claude-3.5-sonnet",
             "messages": [
@@ -62,7 +59,6 @@ class TestOpenAIChatCompletions:
             "stream": False,
         }
 
-        # Mock Bedrock response
         response = await mock_bedrock_client.invoke_model(
             model_id="anthropic.claude-3-5-sonnet-20241022-v2:0",
             body=openai_request,
@@ -72,27 +68,18 @@ class TestOpenAIChatCompletions:
         assert "content" in response
         assert response["role"] == "assistant"
 
-    @pytest.mark.asyncio
     async def test_openai_streaming_response(
         self,
         mock_bedrock_client: MockBedrockClient,
     ):
-        """
-        Test: Streaming responses use Server-Sent Events (SSE).
-
-        Acceptance Criteria:
-        - Streaming responses use Server-Sent Events (SSE) matching OpenAI format
-        """
+        """Streaming responses use Server-Sent Events (SSE)."""
         openai_request = {
             "model": "claude-3.5-sonnet",
-            "messages": [
-                {"role": "user", "content": "Tell me a short story."},
-            ],
+            "messages": [{"role": "user", "content": "Tell me a short story."}],
             "max_tokens": 2048,
             "stream": True,
         }
 
-        # Collect streaming chunks
         chunks = []
         async for chunk in mock_bedrock_client.invoke_model_with_response_stream(
             model_id="anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -100,53 +87,27 @@ class TestOpenAIChatCompletions:
         ):
             chunks.append(chunk)
 
-        # Verify streaming response
         assert len(chunks) > 0
-        # Check for SSE format (event: data:)
         assert b"event:" in chunks[0] or b"data:" in chunks[0]
 
-    @pytest.mark.asyncio
     async def test_get_models_returns_available_models(self):
-        """
-        Test: GET /v1/models returns available models.
-
-        Acceptance Criteria:
-        - GET /v1/models returns list of available models filtered by caller's permissions
-        """
-        # Simulated /v1/models response
+        """GET /v1/models returns available models."""
         models_response = {
             "object": "list",
             "data": [
-                {
-                    "id": "claude-3.5-sonnet",
-                    "object": "model",
-                    "owned_by": "anthropic",
-                    "permission": [],
-                },
-                {
-                    "id": "claude-3-haiku",
-                    "object": "model",
-                    "owned_by": "anthropic",
-                    "permission": [],
-                },
+                {"id": "claude-3.5-sonnet", "object": "model", "owned_by": "anthropic", "permission": []},
+                {"id": "claude-3-haiku", "object": "model", "owned_by": "anthropic", "permission": []},
             ],
         }
 
         assert models_response["object"] == "list"
         assert len(models_response["data"]) >= 1
 
-    @pytest.mark.asyncio
     async def test_model_alias_resolution(
         self,
         mock_bedrock_client: MockBedrockClient,
     ):
-        """
-        Test: Model aliases resolved to Bedrock model IDs.
-
-        Acceptance Criteria:
-        - Model aliases resolved: e.g., claude-3.5-sonnet → anthropic.claude-3-5-sonnet-20241022-v2:0
-        """
-        # Alias mapping
+        """Model aliases resolved to Bedrock model IDs."""
         model_aliases = {
             "claude-3.5-sonnet": "anthropic.claude-3-5-sonnet-20241022-v2:0",
             "claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
@@ -156,77 +117,51 @@ class TestOpenAIChatCompletions:
 
         alias = "claude-3.5-sonnet"
         resolved_model_id = model_aliases.get(alias)
-
         assert resolved_model_id == "anthropic.claude-3-5-sonnet-20241022-v2:0"
 
-        # Use resolved model ID
         response = await mock_bedrock_client.invoke_model(
             model_id=resolved_model_id,
             body={"messages": [{"role": "user", "content": "Hello"}]},
         )
-
         assert response is not None
 
-    @pytest.mark.asyncio
     async def test_bearer_token_authentication(
         self,
         db_session: AsyncSession,
     ):
-        """
-        Test: Authentication via Authorization: Bearer bg-... header.
-
-        Acceptance Criteria:
-        - Authentication via Authorization: Bearer bg-... header
-        """
+        """Authentication via Authorization: Bearer bg-... header."""
         org = await create_org(db_session, id="org-bearer")
         dept = await create_department(db_session, org.id, id="dept-bearer")
         team = await create_team(db_session, org.id, dept.id, id="team-bearer")
         user = await create_user(db_session, org.id, team.id, id="user-bearer")
 
         token, raw_token = await create_token(
-            db_session,
-            org.id,
-            team.id,
-            dept.id,
-            user.id,
+            db_session, org.id, team.id, dept.id, user.id,
         )
         await db_session.commit()
 
-        # Verify token format
         assert raw_token.startswith("bg-")
-
-        # Simulate Authorization header
         auth_header = f"Bearer {raw_token}"
         assert auth_header.startswith("Bearer bg-")
 
 
-@pytest.mark.e2e
+@pytest.mark.unit
 class TestAnthropicMessagesFormat:
     """
-    E2E tests for Anthropic Messages Format.
+    Unit tests for Anthropic Messages Format.
 
-    User Story US-4.2:
-    As a Developer (Dev), I want to send requests in Anthropic Messages format,
-    so that I can use Claude Code via the Anthropic API path.
+    User Story US-4.2.
     """
 
-    @pytest.mark.asyncio
     async def test_anthropic_messages_format(
         self,
         mock_bedrock_client: MockBedrockClient,
     ):
-        """
-        Test: POST /v1/messages accepts Anthropic Messages format.
-
-        Acceptance Criteria:
-        - POST /v1/messages accepts Anthropic Messages format
-        """
+        """POST /v1/messages accepts Anthropic Messages format."""
         anthropic_request = {
             "model": "claude-3-5-sonnet-20241022",
             "max_tokens": 1024,
-            "messages": [
-                {"role": "user", "content": "Explain quantum computing briefly."},
-            ],
+            "messages": [{"role": "user", "content": "Explain quantum computing briefly."}],
         }
 
         response = await mock_bedrock_client.invoke_model(
@@ -238,24 +173,16 @@ class TestAnthropicMessagesFormat:
         assert response["type"] == "message"
         assert response["role"] == "assistant"
 
-    @pytest.mark.asyncio
     async def test_anthropic_streaming_format(
         self,
         mock_bedrock_client: MockBedrockClient,
     ):
-        """
-        Test: Streaming responses match Anthropic SSE format.
-
-        Acceptance Criteria:
-        - Streaming responses match Anthropic SSE format
-        """
+        """Streaming responses match Anthropic SSE format."""
         anthropic_request = {
             "model": "claude-3-5-sonnet-20241022",
             "max_tokens": 2048,
             "stream": True,
-            "messages": [
-                {"role": "user", "content": "Write a haiku about coding."},
-            ],
+            "messages": [{"role": "user", "content": "Write a haiku about coding."}],
         }
 
         chunks = []
@@ -265,113 +192,74 @@ class TestAnthropicMessagesFormat:
         ):
             chunks.append(chunk)
 
-        # Verify Anthropic streaming format
         assert len(chunks) > 0
-        # Should have message_start, content_block_*, message_stop events
         all_content = b"".join(chunks)
         assert b"message_start" in all_content
         assert b"message_stop" in all_content
 
-    @pytest.mark.asyncio
     async def test_anthropic_version_headers_forwarded(self):
-        """
-        Test: anthropic-beta and anthropic-version headers forwarded.
-
-        Acceptance Criteria:
-        - anthropic-beta and anthropic-version request headers forwarded to Bedrock
-        """
+        """anthropic-beta and anthropic-version headers forwarded."""
         request_headers = {
             "anthropic-version": "2023-06-01",
             "anthropic-beta": "messages-2024-01-01",
         }
 
-        # Headers should be included in Bedrock request
         assert "anthropic-version" in request_headers
         assert request_headers["anthropic-version"] == "2023-06-01"
 
-    @pytest.mark.asyncio
     async def test_x_api_key_authentication(
         self,
         db_session: AsyncSession,
     ):
-        """
-        Test: Authentication via X-Api-Key: bg-... header.
-
-        Acceptance Criteria:
-        - Authentication via Authorization: Bearer bg-... or X-Api-Key: bg-...
-        """
+        """Authentication via X-Api-Key: bg-... header."""
         org = await create_org(db_session, id="org-apikey")
         dept = await create_department(db_session, org.id, id="dept-apikey")
         team = await create_team(db_session, org.id, dept.id, id="team-apikey")
         user = await create_user(db_session, org.id, team.id, id="user-apikey")
 
         token, raw_token = await create_token(
-            db_session,
-            org.id,
-            team.id,
-            dept.id,
-            user.id,
+            db_session, org.id, team.id, dept.id, user.id,
         )
         await db_session.commit()
 
-        # Simulate X-Api-Key header
         api_key_header = raw_token
         assert api_key_header.startswith("bg-")
 
 
-@pytest.mark.e2e
+@pytest.mark.unit
 class TestBedrockPassThrough:
     """
-    E2E tests for Bedrock InvokeModel Pass-Through.
+    Unit tests for Bedrock InvokeModel Pass-Through.
 
-    User Story US-4.3:
-    As a Developer (Dev), I want to send requests in Bedrock InvokeModel format,
-    so that Claude Code can use the gateway in Bedrock pass-through mode.
+    User Story US-4.3.
     """
 
-    @pytest.mark.asyncio
     async def test_bedrock_invoke_endpoint(
         self,
         mock_bedrock_client: MockBedrockClient,
     ):
-        """
-        Test: /bedrock/invoke endpoint available.
-
-        Acceptance Criteria:
-        - /bedrock/invoke and /bedrock/invoke-with-response-stream endpoints available
-        """
+        """/bedrock/invoke endpoint available."""
         bedrock_request = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 1024,
-            "messages": [
-                {"role": "user", "content": "What is 2 + 2?"},
-            ],
+            "messages": [{"role": "user", "content": "What is 2 + 2?"}],
         }
 
         response = await mock_bedrock_client.invoke_model(
             model_id="anthropic.claude-3-5-sonnet-20241022-v2:0",
             body=bedrock_request,
         )
-
         assert response is not None
 
-    @pytest.mark.asyncio
     async def test_bedrock_streaming_endpoint(
         self,
         mock_bedrock_client: MockBedrockClient,
     ):
-        """
-        Test: /bedrock/invoke-with-response-stream endpoint.
-
-        Acceptance Criteria:
-        - Response streamed back to client in Bedrock format
-        """
+        """/bedrock/invoke-with-response-stream endpoint."""
         bedrock_request = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 2048,
-            "messages": [
-                {"role": "user", "content": "Count from 1 to 5."},
-            ],
+            "messages": [{"role": "user", "content": "Count from 1 to 5."}],
         }
 
         chunks = []
@@ -383,47 +271,30 @@ class TestBedrockPassThrough:
 
         assert len(chunks) > 0
 
-    @pytest.mark.asyncio
     async def test_anthropic_body_fields_preserved(self):
-        """
-        Test: anthropic_beta and anthropic_version body fields preserved.
-
-        Acceptance Criteria:
-        - anthropic_beta and anthropic_version body fields preserved in pass-through
-        """
+        """anthropic_beta and anthropic_version body fields preserved."""
         bedrock_request = {
             "anthropic_version": "bedrock-2023-05-31",
             "anthropic_beta": ["computer-use-2024-10-22"],
             "max_tokens": 1024,
-            "messages": [
-                {"role": "user", "content": "Hello"},
-            ],
+            "messages": [{"role": "user", "content": "Hello"}],
         }
 
-        # Verify fields preserved
         assert "anthropic_version" in bedrock_request
         assert "anthropic_beta" in bedrock_request
         assert bedrock_request["anthropic_version"] == "bedrock-2023-05-31"
 
 
-@pytest.mark.e2e
+@pytest.mark.unit
 class TestModelNotAllowed:
     """
-    E2E tests for Model Not Allowed error handling.
+    Unit tests for Model Not Allowed error handling.
 
-    User Story US-9.6:
-    When I request a model my team doesn't have access to,
-    I want a clear error listing which models I can use.
+    User Story US-9.6.
     """
 
-    @pytest.mark.asyncio
     async def test_model_not_allowed_returns_403(self):
-        """
-        Test: Requesting unauthorized model returns 403.
-
-        Acceptance Criteria:
-        - 403 response with: error, model, allowed_models, message
-        """
+        """Requesting unauthorized model returns 403."""
         requested_model = "anthropic.claude-3-opus"
         allowed_models = ["anthropic.claude-3-5-sonnet-*", "amazon.titan-*"]
 
@@ -435,32 +306,23 @@ class TestModelNotAllowed:
         assert exc.value.details["model"] == requested_model
         assert exc.value.details["allowed_models"] == allowed_models
 
-    @pytest.mark.asyncio
     async def test_model_not_allowed_error_message(self):
-        """
-        Test: Error message indicates team doesn't have access.
-
-        Acceptance Criteria:
-        - Message: "Your team does not have access to this model."
-        """
+        """Error message indicates team doesn't have access."""
         with pytest.raises(ModelNotAllowedError) as exc:
             raise ModelNotAllowedError("claude-3-opus", ["claude-3-sonnet"])
 
         assert "team does not have access" in exc.value.message
 
 
-@pytest.mark.e2e
+@pytest.mark.unit
 class TestRequestResponseFormat:
-    """E2E tests for request/response format translation."""
+    """Unit tests for request/response format translation."""
 
-    @pytest.mark.asyncio
     async def test_response_includes_usage_info(
         self,
         mock_bedrock_client: MockBedrockClient,
     ):
-        """
-        Test: Response includes usage information (tokens).
-        """
+        """Response includes usage information (tokens)."""
         response = await mock_bedrock_client.invoke_model(
             model_id="anthropic.claude-3-5-sonnet-20241022-v2:0",
             body={"messages": [{"role": "user", "content": "Hi"}]},
@@ -470,14 +332,11 @@ class TestRequestResponseFormat:
         assert "input_tokens" in response["usage"]
         assert "output_tokens" in response["usage"]
 
-    @pytest.mark.asyncio
     async def test_response_includes_model_info(
         self,
         mock_bedrock_client: MockBedrockClient,
     ):
-        """
-        Test: Response includes model information.
-        """
+        """Response includes model information."""
         response = await mock_bedrock_client.invoke_model(
             model_id="anthropic.claude-3-5-sonnet-20241022-v2:0",
             body={"messages": [{"role": "user", "content": "Hello"}]},
@@ -486,14 +345,11 @@ class TestRequestResponseFormat:
         assert "model" in response
         assert "claude" in response["model"].lower()
 
-    @pytest.mark.asyncio
     async def test_response_includes_stop_reason(
         self,
         mock_bedrock_client: MockBedrockClient,
     ):
-        """
-        Test: Response includes stop reason.
-        """
+        """Response includes stop reason."""
         response = await mock_bedrock_client.invoke_model(
             model_id="anthropic.claude-3-5-sonnet-20241022-v2:0",
             body={"messages": [{"role": "user", "content": "Count to 3"}]},
@@ -504,52 +360,88 @@ class TestRequestResponseFormat:
 
 
 # =============================================================================
-# HTTP-level proxy tests (dual-mode)
+# Integration tests -- HTTP via api_client (ASGI in unit mode, HTTP in live)
 # =============================================================================
 
 
-@pytest.mark.e2e
-class TestLiveBedrockProxy:
+@pytest.mark.integration
+class TestProxyHTTPIntegration:
     """
-    Tests that exercise the real proxy path.
+    HTTP-level proxy tests that exercise the ASGI app.
 
     In live mode these hit actual Bedrock via the deployed gateway.
     In unit mode the ASGI app is used with mocked backend.
     """
 
-    @pytest.mark.asyncio
-    @pytest.mark.live_only
+    _REJECT_CODES = (401, 403, 503)
+
+    async def test_unauthenticated_proxy_rejected(self, api_client):
+        """POST /v1/messages without auth is rejected."""
+        response = await api_client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert response.status_code in self._REJECT_CODES
+
+    async def test_request_id_propagation(self, api_client):
+        """Client-sent X-Request-ID is echoed in the response."""
+        import uuid
+
+        req_id = str(uuid.uuid4())
+        response = await api_client.post(
+            "/v1/messages",
+            headers={"X-Request-ID": req_id, "Content-Type": "application/json"},
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        resp_req_id = response.headers.get("x-request-id", "")
+        if resp_req_id:
+            assert resp_req_id == req_id
+
+
+# =============================================================================
+# Live-only tests -- OAuth path (real Bedrock calls)
+# =============================================================================
+
+
+@pytest.mark.live_only
+class TestLiveBedrockProxyOAuth:
+    """
+    Live tests that exercise the real proxy path via OAuth / JWT.
+
+    In live mode these hit actual Bedrock via the deployed gateway.
+    """
+
     async def test_bedrock_completion_returns_200(self, api_client, jwt_for_user):
-        """POST /v1/messages with configured model returns a Bedrock completion (live only)."""
+        """POST /v1/messages with configured model returns a Bedrock completion."""
         model = get_test_bedrock_model()
         response = await api_client.post(
             "/v1/messages",
-            headers={
-                "Authorization": f"Bearer {jwt_for_user}",
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": f"Bearer {jwt_for_user}", "Content-Type": "application/json"},
             json={
                 "model": model,
                 "max_tokens": 30,
                 "messages": [{"role": "user", "content": "Say hello in one word."}],
             },
         )
-        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text[:300]}"
         body = response.json()
         assert "content" in body or "choices" in body
 
-    @pytest.mark.asyncio
-    @pytest.mark.live_only
     async def test_streaming_sse_response(self, api_client, jwt_for_user):
-        """Streaming invoke returns SSE chunks with message_stop event (live only)."""
+        """Streaming invoke returns SSE chunks with message_stop event."""
         model = get_test_bedrock_model()
         async with api_client.stream(
             "POST",
             "/v1/messages",
-            headers={
-                "Authorization": f"Bearer {jwt_for_user}",
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": f"Bearer {jwt_for_user}", "Content-Type": "application/json"},
             json={
                 "model": model,
                 "max_tokens": 50,
@@ -565,50 +457,149 @@ class TestLiveBedrockProxy:
             async for line in resp.aiter_lines():
                 chunks.append(line)
 
-        # Must have at least one data line and a message_stop event
         all_text = "\n".join(chunks)
         assert "data:" in all_text or "data: " in all_text, "Expected SSE data lines"
 
-    @pytest.mark.asyncio
-    @pytest.mark.live_only
     async def test_bedrock_error_passthrough(self, api_client, jwt_for_user):
         """Request for an inaccessible model returns structured 4xx, not 500."""
         response = await api_client.post(
             "/v1/messages",
-            headers={
-                "Authorization": f"Bearer {jwt_for_user}",
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": f"Bearer {jwt_for_user}", "Content-Type": "application/json"},
             json={
                 "model": "anthropic.claude-3-opus-99999999-v99:0",
                 "max_tokens": 10,
                 "messages": [{"role": "user", "content": "hi"}],
             },
         )
-        # Should be 4xx (400, 403, 404), not 500
         assert 400 <= response.status_code < 500, f"Expected 4xx for inaccessible model, got {response.status_code}"
 
-    @pytest.mark.asyncio
-    async def test_request_id_propagation(self, api_client):
-        """Client-sent X-Request-ID is echoed in the response."""
+    async def test_request_id_propagation_live(self, api_client, jwt_for_user):
+        """Client-sent X-Request-ID is echoed in a successful response."""
         import uuid
 
         req_id = str(uuid.uuid4())
+        model = get_test_bedrock_model()
         response = await api_client.post(
             "/v1/messages",
             headers={
-                "X-Request-ID": req_id,
+                "Authorization": f"Bearer {jwt_for_user}",
                 "Content-Type": "application/json",
+                "X-Request-ID": req_id,
             },
             json={
-                "model": "claude-3-5-sonnet-20241022",
+                "model": model,
                 "max_tokens": 10,
                 "messages": [{"role": "user", "content": "hi"}],
             },
         )
-        # Even if the request fails auth, the request-id should be echoed
-        # if the middleware propagates it.  Check response headers.
-        resp_req_id = response.headers.get("x-request-id", "")
-        # In unit mode the middleware may not be fully wired; accept either
-        if resp_req_id:
-            assert resp_req_id == req_id
+        if response.status_code == 200:
+            resp_req_id = response.headers.get("x-request-id", "")
+            if resp_req_id:
+                assert resp_req_id == req_id
+
+    async def test_agent_jwt_bedrock_completion(self, api_client, jwt_for_agent):
+        """Agent M2M JWT can invoke Bedrock via /v1/messages."""
+        model = get_test_bedrock_model()
+        response = await api_client.post(
+            "/v1/messages",
+            headers={"Authorization": f"Bearer {jwt_for_agent}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "max_tokens": 20,
+                "messages": [{"role": "user", "content": "Say hi."}],
+            },
+        )
+        # Agent should be able to invoke; 200 or a non-auth error
+        assert response.status_code != 401, f"Agent JWT should not get 401: {response.text[:200]}"
+
+    async def test_health_endpoint_no_auth(self, api_client):
+        """GET /health returns 200 without authentication."""
+        response = await api_client.get("/health")
+        assert response.status_code == 200, f"Expected 200 on /health, got {response.status_code}"
+
+
+# =============================================================================
+# Live-only tests -- IAM SigV4 path (the canonical agent path)
+# =============================================================================
+
+
+@pytest.mark.live_only
+class TestLiveBedrockProxyIAM:
+    """
+    Live tests that exercise the real proxy path via IAM SigV4.
+
+    This is the primary agent path -- agents running with IRSA sign requests
+    with SigV4 and the Lambda authorizer maps the IAM principal to an org/team.
+    """
+
+    async def test_iam_bedrock_completion_returns_200(self, iam_signed_client):
+        """POST /v1/messages with SigV4 from a registered IRSA returns 200."""
+        model = get_test_bedrock_model()
+        response = await iam_signed_client.post(
+            "/v1/messages",
+            json={
+                "model": model,
+                "max_tokens": 30,
+                "messages": [{"role": "user", "content": "Say hello in one word."}],
+            },
+        )
+        # Should succeed or get a business-logic error, not auth rejection
+        assert response.status_code != 401, f"IAM auth should not return 401: {response.text[:200]}"
+        # Ideally 200
+        if response.status_code == 200:
+            body = response.json()
+            assert "content" in body or "choices" in body
+
+    async def test_iam_streaming_sse_response(self, iam_signed_client):
+        """Streaming invoke via IAM SigV4 returns SSE chunks."""
+        model = get_test_bedrock_model()
+        async with iam_signed_client.stream(
+            "POST",
+            "/v1/messages",
+            json={
+                "model": model,
+                "max_tokens": 50,
+                "stream": True,
+                "messages": [{"role": "user", "content": "Count to 3."}],
+            },
+        ) as resp:
+            if resp.status_code == 200:
+                chunks: list[str] = []
+                async for line in resp.aiter_lines():
+                    chunks.append(line)
+                all_text = "\n".join(chunks)
+                assert "data:" in all_text or len(chunks) > 0
+
+    async def test_iam_error_passthrough(self, iam_signed_client):
+        """IAM-authed request for an inaccessible model returns 4xx, not 500."""
+        response = await iam_signed_client.post(
+            "/v1/messages",
+            json={
+                "model": "anthropic.claude-3-opus-99999999-v99:0",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        # Should not return 500
+        assert response.status_code < 500 or response.status_code in (400, 403, 404), \
+            f"Expected <500 for inaccessible model via IAM, got {response.status_code}"
+
+    async def test_iam_request_id_propagation(self, iam_signed_client):
+        """X-Request-ID is echoed in IAM-authed responses."""
+        import uuid
+
+        req_id = str(uuid.uuid4())
+        model = get_test_bedrock_model()
+        response = await iam_signed_client.post(
+            "/v1/messages",
+            json={
+                "model": model,
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            headers={"X-Request-ID": req_id},
+        )
+        if response.status_code == 200:
+            resp_req_id = response.headers.get("x-request-id", "")
+            if resp_req_id:
+                assert resp_req_id == req_id

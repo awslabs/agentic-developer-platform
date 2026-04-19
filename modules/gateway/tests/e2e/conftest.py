@@ -99,7 +99,7 @@ def _mint_jwt(
 
 
 # ---------------------------------------------------------------------------
-# Fixtures — JWT minting
+# Fixtures -- JWT minting
 # ---------------------------------------------------------------------------
 
 
@@ -181,14 +181,20 @@ def wrong_aud_jwt() -> str:
     return _mint_jwt(aud="bogus-audience-that-does-not-exist")
 
 
+@pytest.fixture
+def malformed_jwt() -> str:
+    """A string that looks like a JWT but is not valid."""
+    return "eyJhbGciOiJSUzI1NiJ9.INVALID_PAYLOAD.INVALID_SIGNATURE"
+
+
 # ---------------------------------------------------------------------------
-# Fixtures — HTTP clients
+# Fixtures -- HTTP clients
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 async def api_client() -> AsyncGenerator[httpx.AsyncClient, None]:
-    """HTTP client for the gateway **API surface** — not the SPA.
+    """HTTP client for the gateway **API surface** -- not the SPA.
 
     In unit mode: FastAPI ASGI transport.
     In live mode: REST API Gateway invoke URL (``api_gateway_url``). This goes
@@ -205,14 +211,14 @@ async def api_client() -> AsyncGenerator[httpx.AsyncClient, None]:
             raise RuntimeError(
                 "Live-mode API tests require API_GATEWAY_URL (the REST API Gateway "
                 "invoke URL, e.g. https://<id>.execute-api.<region>.amazonaws.com/<stage>). "
-                "Do not use CLOUDFRONT_DOMAIN here — CloudFront serves the SPA at /, "
+                "Do not use CLOUDFRONT_DOMAIN here -- CloudFront serves the SPA at /, "
                 "which masks API responses. Use the cloudfront_client fixture if you "
                 "genuinely need to exercise the CDN layer."
             )
         async with httpx.AsyncClient(base_url=base, timeout=60.0) as client:
             yield client
     else:
-        # Unit mode — import app and use ASGI transport
+        # Unit mode -- import app and use ASGI transport
         from httpx import ASGITransport
 
         from src.app import create_app
@@ -227,12 +233,12 @@ async def api_client() -> AsyncGenerator[httpx.AsyncClient, None]:
 async def cloudfront_client() -> AsyncGenerator[httpx.AsyncClient, None]:
     """HTTP client pointing at the CloudFront distribution root.
 
-    Use this ONLY for CDN-layer tests — e.g. SPA smoke tests, ``/api/*``
+    Use this ONLY for CDN-layer tests -- e.g. SPA smoke tests, ``/api/*``
     routing sanity checks, CloudFront response-header policies. For API
     contract tests (auth, proxy, admin, budget, ratelimit, pool), use the
     ``api_client`` fixture which targets the REST API Gateway directly.
 
-    Skips in unit mode — CloudFront has no unit-mode equivalent.
+    Skips in unit mode -- CloudFront has no unit-mode equivalent.
     """
     if not is_live():
         pytest.skip("cloudfront_client requires live mode (TEST_ENV=dev)")
@@ -243,7 +249,195 @@ async def cloudfront_client() -> AsyncGenerator[httpx.AsyncClient, None]:
 
 
 # ---------------------------------------------------------------------------
-# Fixtures — Playwright (browser tests)
+# Fixtures -- IAM SigV4-signed HTTP client
+# ---------------------------------------------------------------------------
+
+
+class _StubSigV4Client(httpx.AsyncClient):
+    """Unit-mode stub: adds fake IAM SigV4 headers but hits the ASGI app."""
+    pass
+
+
+def _build_sigv4_headers(
+    *,
+    method: str,
+    url: str,
+    headers: dict[str, str] | None = None,
+    body: bytes | None = None,
+    region: str = "us-east-1",
+    service: str = "execute-api",
+) -> dict[str, str]:
+    """Sign a request using SigV4 with current boto3 session credentials.
+
+    Returns a dict of headers to merge into the request.
+    """
+    import boto3
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+
+    session = boto3.Session()
+    credentials = session.get_credentials()
+    if credentials is None:
+        raise RuntimeError("No AWS credentials available for SigV4 signing")
+    credentials = credentials.get_frozen_credentials()
+
+    aws_request = AWSRequest(
+        method=method,
+        url=url,
+        headers=headers or {},
+        data=body or b"",
+    )
+    SigV4Auth(credentials, service, region).add_auth(aws_request)
+    return dict(aws_request.headers)
+
+
+class IAMSignedClient:
+    """Wrapper around httpx.AsyncClient that signs every request with SigV4.
+
+    In live mode, uses real AWS credentials (typically from the environment
+    or IRSA) to sign requests against the API Gateway endpoint.
+
+    The IAM principal used should be registered in the gateway's agent
+    registry (e.g. ``adp-dev-agent-runner-role``) so the Lambda authorizer
+    can map it to an org/team for RBAC.
+    """
+
+    def __init__(self, inner: httpx.AsyncClient, region: str = "us-east-1") -> None:
+        self._inner = inner
+        self._region = region
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json: dict | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Send a SigV4-signed request."""
+        full_url = str(self._inner._base_url) + url  # noqa: SLF001
+        body = _json.dumps(json).encode() if json else None
+        extra_headers = dict(headers or {})
+        if json:
+            extra_headers.setdefault("Content-Type", "application/json")
+
+        signed_headers = _build_sigv4_headers(
+            method=method.upper(),
+            url=full_url,
+            headers=extra_headers,
+            body=body,
+            region=self._region,
+        )
+        merged = {**extra_headers, **signed_headers}
+        return await self._inner.request(method, url, content=body, headers=merged, **kwargs)
+
+    async def get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self.request("GET", url, **kwargs)
+
+    async def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self.request("POST", url, **kwargs)
+
+    async def put(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self.request("PUT", url, **kwargs)
+
+    async def delete(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self.request("DELETE", url, **kwargs)
+
+    def stream(self, method: str, url: str, *, json: dict | None = None, headers: dict[str, str] | None = None, **kwargs: Any):
+        """Return an async context-manager that streams a SigV4-signed request."""
+        full_url = str(self._inner._base_url) + url  # noqa: SLF001
+        body = _json.dumps(json).encode() if json else None
+        extra_headers = dict(headers or {})
+        if json:
+            extra_headers.setdefault("Content-Type", "application/json")
+
+        signed_headers = _build_sigv4_headers(
+            method=method.upper(),
+            url=full_url,
+            headers=extra_headers,
+            body=body,
+            region=self._region,
+        )
+        merged = {**extra_headers, **signed_headers}
+        return self._inner.stream(method, url, content=body, headers=merged, **kwargs)
+
+
+class _UnitIAMSignedClient:
+    """Unit-mode stub: adds fake IAM auth headers to requests against the ASGI app.
+
+    Does not perform real SigV4 signing -- just adds plausible headers so
+    the middleware sees an IAM-auth-like request shape.
+    """
+
+    _FAKE_HEADERS = {
+        "Authorization": "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260419/us-east-1/execute-api/aws4_request, SignedHeaders=host;x-amz-date, Signature=stub",
+        "X-Amz-Date": "20260419T000000Z",
+        "X-Auth-Source": "iam",
+        "X-Agent-Role": "arn:aws:iam::123456789012:role/adp-dev-agent-runner-role",
+    }
+
+    def __init__(self, inner: httpx.AsyncClient) -> None:
+        self._inner = inner
+
+    async def request(self, method: str, url: str, *, json: dict | None = None, headers: dict[str, str] | None = None, **kwargs: Any) -> httpx.Response:
+        merged = {**self._FAKE_HEADERS, **(headers or {})}
+        return await self._inner.request(method, url, json=json, headers=merged, **kwargs)
+
+    async def get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self.request("GET", url, **kwargs)
+
+    async def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self.request("POST", url, **kwargs)
+
+    async def put(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self.request("PUT", url, **kwargs)
+
+    async def delete(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self.request("DELETE", url, **kwargs)
+
+    def stream(self, method: str, url: str, *, json: dict | None = None, headers: dict[str, str] | None = None, **kwargs: Any):
+        merged = {**self._FAKE_HEADERS, **(headers or {})}
+        return self._inner.stream(method, url, json=json, headers=merged, **kwargs)
+
+
+@pytest.fixture
+async def iam_signed_client() -> AsyncGenerator[IAMSignedClient | _UnitIAMSignedClient, None]:
+    """HTTP client that signs every request with IAM SigV4.
+
+    **Live mode**: Uses real AWS credentials (from the environment, instance
+    profile, or IRSA) to SigV4-sign requests against the REST API Gateway.
+    The IAM principal must be registered in the gateway agent registry --
+    typically ``adp-dev-agent-runner-role``.
+
+    **Unit mode**: Wraps the ASGI transport client with fake SigV4-like
+    headers. No real AWS credentials needed.
+
+    Usage::
+
+        @pytest.mark.live_only
+        async def test_iam_health(iam_signed_client):
+            resp = await iam_signed_client.get("/health")
+            assert resp.status_code == 200
+    """
+    if is_live():
+        cfg = load_live_config()
+        base = cfg.api_gateway_url.rstrip("/")
+        async with httpx.AsyncClient(base_url=base, timeout=60.0) as inner:
+            yield IAMSignedClient(inner, region=cfg.aws_region)
+    else:
+        from httpx import ASGITransport
+
+        from src.app import create_app
+
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as inner:
+            yield _UnitIAMSignedClient(inner)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures -- Playwright (browser tests)
 # ---------------------------------------------------------------------------
 
 
