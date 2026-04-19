@@ -146,6 +146,10 @@ locals {
 resource "aws_iam_role" "gateway_service_irsa" {
   name = "${var.name_prefix}-role-gateway-service"
 
+  # Trust policy allows the gateway service account to assume this role via IRSA.
+  # Issue #33: The gateway pods may run in either the "bedrockgw" namespace
+  # (created by Terraform) or "adp-gateway" (created by kubectl/deploy scripts).
+  # Use StringLike with both namespace patterns to support both deployments.
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -158,7 +162,12 @@ resource "aws_iam_role" "gateway_service_irsa" {
         Condition = {
           StringEquals = {
             "${local.oidc_issuer}:aud" = "sts.amazonaws.com"
-            "${local.oidc_issuer}:sub" = "system:serviceaccount:bedrockgw:gateway-service"
+          }
+          StringLike = {
+            "${local.oidc_issuer}:sub" = [
+              "system:serviceaccount:bedrockgw:gateway-service",
+              "system:serviceaccount:adp-gateway:gateway-service"
+            ]
           }
         }
       }

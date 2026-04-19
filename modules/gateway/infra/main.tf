@@ -244,6 +244,31 @@ resource "aws_iam_role_policy" "gateway_xray_tracing" {
   })
 }
 
+# Secrets Manager read access for agent Cognito credentials (Issue #33)
+# The gateway (and E2E tests running in-cluster) need to read the agent
+# client_credentials secret to obtain M2M tokens.
+resource "aws_iam_role_policy" "gateway_secretsmanager_read" {
+  name = "${local.name_prefix}-policy-gateway-secretsmanager-read"
+  role = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "SecretsManagerReadAgentCreds"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource = "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:bedrockgw-*"
+      }
+    ]
+  })
+
+  depends_on = [module.cognito]
+}
+
 # Cross-account Bedrock pool assume role (if pool accounts configured)
 resource "aws_iam_role_policy" "gateway_cross_account" {
   count = length(var.pool_account_arns) > 0 ? 1 : 0
