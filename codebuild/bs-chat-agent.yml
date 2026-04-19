@@ -1,0 +1,44 @@
+version: 0.2
+
+# CodeBuild buildspec for the complex-task-chat agent image.
+#
+# Builds the TypeScript agent at modules/agent-factory/agent/Dockerfile with the
+# build context set to modules/agent-factory/ (so the Dockerfile can COPY
+# rules/personas/ from a sibling directory).
+#
+# Pushes to ECR repo adp-agent-gateway (the same repo used by the Python
+# worker). The image is dispatched at runtime by AGENT_ENTRYPOINT:
+#   - AGENT_ENTRYPOINT=github         (default)  → runs the existing GH agent
+#   - AGENT_ENTRYPOINT=complex-task-chat         → runs the new chat agent
+#
+# Environment variables injected by the start-build caller:
+#   AWS_REGION, ENVIRONMENT, ACCOUNT_ID, REGISTRY, IMAGE_TAG
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 22
+    commands:
+      - echo "Using Node $(node --version), npm $(npm --version)"
+
+  pre_build:
+    commands:
+      - ECR_REPO="adp-agent-gateway"
+      - IMAGE_TAG="${IMAGE_TAG:-latest}"
+      - aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" > /dev/null 2>&1 \
+          || aws ecr create-repository --repository-name "$ECR_REPO" --region "$AWS_REGION" > /dev/null
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+
+  build:
+    commands:
+      # Build context is modules/agent-factory/ so the Dockerfile can COPY
+      # rules/personas/ alongside agent/. See the Dockerfile's top-of-file note.
+      - cd modules/agent-factory
+      - docker build -f agent/Dockerfile -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
+      - docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
+      - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
+      - docker push "$REGISTRY/$ECR_REPO:latest"
+
+  post_build:
+    commands:
+      - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (and :latest)"

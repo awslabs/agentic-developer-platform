@@ -1,4 +1,77 @@
-import { composeSystemPrompt } from './persona-loader';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { composeSystemPrompt, loadPersona } from './persona-loader';
+import { NullMemoryProvider } from './memory/null-memory';
+
+describe('loadPersona defense-in-depth validation', () => {
+  let tmpDir: string;
+  const originalEnv = process.env.PERSONAS_DIR;
+
+  beforeAll(() => {
+    // Set up a temp personas dir with just `developer.md` allowlisted.
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'personas-'));
+    fs.writeFileSync(path.join(tmpDir, 'developer.md'), 'You are a developer persona.');
+    fs.writeFileSync(path.join(tmpDir, 'operations.md'), 'You are an ops persona.');
+    // NOTE: by this point the module already captured its allowlist at require-time;
+    // the assertions below rely on the test module being loaded AFTER this setup.
+    process.env.PERSONAS_DIR = tmpDir;
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (originalEnv === undefined) delete process.env.PERSONAS_DIR;
+    else process.env.PERSONAS_DIR = originalEnv;
+  });
+
+  const memory = new NullMemoryProvider();
+
+  it('rejects path-traversal attempt and falls back to default', async () => {
+    const result = await loadPersona('../../../etc/passwd', {
+      memory,
+      query: 'hi',
+      tokenBudget: 100,
+    });
+    // Falls back to default prompt — never tries to read the traversal path.
+    expect(result.baseSystemPrompt).toMatch(/helpful assistant/i);
+    expect(result.name).toBe('unknown');
+  });
+
+  it('rejects non-string input', async () => {
+    const result = await loadPersona(null as unknown as string, {
+      memory,
+      query: 'hi',
+      tokenBudget: 100,
+    });
+    expect(result.baseSystemPrompt).toMatch(/helpful assistant/i);
+    expect(result.name).toBe('unknown');
+  });
+
+  it('rejects names with disallowed chars', async () => {
+    const result = await loadPersona('dev/admin', {
+      memory,
+      query: 'hi',
+      tokenBudget: 100,
+    });
+    expect(result.baseSystemPrompt).toMatch(/helpful assistant/i);
+    expect(result.name).toBe('unknown');
+  });
+
+  it('rejects names passing regex but not in allowlist', async () => {
+    // Because the module's allowlist is captured at require-time BEFORE this
+    // test suite ran its beforeAll, the allowlist is whatever existed at import
+    // — which is either empty (unit test env) or the baked personas from an
+    // installed image. Either way, a made-up name must fall through to
+    // default.
+    const result = await loadPersona('nonexistent', {
+      memory,
+      query: 'hi',
+      tokenBudget: 100,
+    });
+    expect(result.baseSystemPrompt).toMatch(/helpful assistant/i);
+    expect(result.name).toBe('nonexistent');
+  });
+});
 
 describe('composeSystemPrompt', () => {
   it('renders base persona only', () => {

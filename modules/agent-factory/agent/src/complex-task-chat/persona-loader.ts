@@ -11,6 +11,32 @@ import { MemoryProvider, MemoryRecord } from './memory/types';
 const PERSONAS_DIR = process.env.PERSONAS_DIR ?? '/app/personas';
 const DEFAULT_PERSONA = `You are a helpful assistant. Follow user instructions carefully and provide detailed, accurate responses.`;
 
+/**
+ * Defense-in-depth: persona name must match this pattern. Prevents path
+ * traversal (e.g. `../../../etc/passwd`) if the SQS payload ever carries an
+ * untrusted `agent_type`.
+ */
+const PERSONA_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+
+/**
+ * Allowlist derived once at module load from the files baked into PERSONAS_DIR.
+ * Keeps the surface area tight: only personas we've shipped are loadable.
+ * Missing dir (e.g. during unit tests) falls back to an empty allowlist;
+ * individual loads then use the DEFAULT_PERSONA.
+ */
+const ALLOWED_PERSONAS: ReadonlySet<string> = (() => {
+  try {
+    const entries = fs.readdirSync(PERSONAS_DIR);
+    const names = entries
+      .filter(f => f.endsWith('.md'))
+      .map(f => f.replace(/\.md$/, ''))
+      .filter(name => PERSONA_NAME_PATTERN.test(name));
+    return new Set(names);
+  } catch {
+    return new Set<string>();
+  }
+})();
+
 export interface ComposedPersona {
   name: string;
   baseSystemPrompt: string;
@@ -20,31 +46,56 @@ export interface ComposedPersona {
 
 /**
  * Load a persona by name, composing base prompt from disk + learnings from memory.
+ *
+ * Validation: `name` must match PERSONA_NAME_PATTERN AND appear in the
+ * baked-in allowlist. Anything else falls back to DEFAULT_PERSONA and logs a
+ * warning (never throws — we want the turn to proceed with a safe default).
  */
 export async function loadPersona(
   name: string,
   deps: { memory: MemoryProvider; query: string; tokenBudget: number },
 ): Promise<ComposedPersona> {
-  // Load base persona from disk
-  let baseSystemPrompt: string;
-  const personaPath = path.join(PERSONAS_DIR, `${name}.md`);
+  const safeName = validatePersonaName(name);
 
-  try {
-    baseSystemPrompt = fs.readFileSync(personaPath, 'utf-8');
-  } catch {
-    console.warn(`[persona-loader] Persona file not found: ${personaPath}, using default`);
+  let baseSystemPrompt: string;
+  if (safeName && ALLOWED_PERSONAS.has(safeName)) {
+    const personaPath = path.join(PERSONAS_DIR, `${safeName}.md`);
+    try {
+      baseSystemPrompt = fs.readFileSync(personaPath, 'utf-8');
+    } catch (err) {
+      console.warn(
+        `[persona-loader] Failed to read allowlisted persona ${safeName} at ${personaPath}: ${(err as Error).message}. Falling back to default.`,
+      );
+      baseSystemPrompt = DEFAULT_PERSONA;
+    }
+  } else {
+    console.warn(
+      `[persona-loader] Persona "${name}" not in allowlist (${Array.from(ALLOWED_PERSONAS).join(', ') || 'empty'}), using default`,
+    );
     baseSystemPrompt = DEFAULT_PERSONA;
   }
 
-  // Retrieve persona learnings via memory
+  // Retrieve persona learnings via memory. Scope-key the RETRIEVAL using the
+  // SAFE name so an attacker can't inject scope keys via persona.
+  const scopedName = safeName ?? 'unknown';
   const learnings = await deps.memory.retrieve({
     query: deps.query,
-    scope: { persona: name },
+    scope: { persona: scopedName },
     tokenBudget: deps.tokenBudget,
     kinds: ['learning'],
   });
 
-  return { name, baseSystemPrompt, learnings };
+  return { name: scopedName, baseSystemPrompt, learnings };
+}
+
+/**
+ * Return the input if it's a safe persona name, or null otherwise.
+ * Allowlist membership is checked separately in loadPersona.
+ */
+function validatePersonaName(name: unknown): string | null {
+  if (typeof name !== 'string') return null;
+  if (!PERSONA_NAME_PATTERN.test(name)) return null;
+  return name;
 }
 
 /**
@@ -100,3 +151,6 @@ export function composeSystemPrompt(input: {
 
   return parts.join('\n');
 }
+
+/** Exported for test setup only. */
+export const __TEST_ONLY = { ALLOWED_PERSONAS, PERSONA_NAME_PATTERN };

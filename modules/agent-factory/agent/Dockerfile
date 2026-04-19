@@ -1,4 +1,15 @@
 # Multi-stage build for ADP Agent (GitHub + Chat entrypoints)
+#
+# BUILD CONTEXT: modules/agent-factory/  (one level up from this Dockerfile)
+# REASON: we need to COPY personas from `../rules/personas/` which is outside
+# the `agent/` directory. Docker refuses paths that escape the build context,
+# so the build context must be the parent of both `agent/` and `rules/`.
+#
+# Build with:
+#   docker build -f modules/agent-factory/agent/Dockerfile \
+#                -t <registry>/adp-agent-gateway:<tag> \
+#                modules/agent-factory
+#
 FROM node:22-alpine AS builder
 
 # Create non-root user
@@ -8,14 +19,14 @@ RUN addgroup -g 10001 agent && \
 # Set working directory
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+# Copy package files from the agent subdir
+COPY agent/package*.json ./
 
 # Install dependencies
 RUN npm ci --only=production && npm cache clean --force
 
-# Copy source code
-COPY . .
+# Copy the rest of the agent source
+COPY agent/ ./
 
 # Build the application
 RUN npm run build
@@ -45,11 +56,12 @@ COPY --from=builder --chown=agent:agent /app/dist ./dist
 COPY --from=builder --chown=agent:agent /app/node_modules ./node_modules
 COPY --from=builder --chown=agent:agent /app/package*.json ./
 
-# Copy personas from repo (baked into image for zero-latency cold start)
-COPY --chown=agent:agent ../rules/personas/ ./personas/
+# Copy personas from the sibling rules/ directory (inside build context).
+# Baked into the image so persona loading has zero runtime dependencies.
+COPY --chown=agent:agent rules/personas/ ./personas/
 
 # Copy startup script
-COPY --chown=agent:agent startup.sh ./startup.sh
+COPY --chown=agent:agent agent/startup.sh ./startup.sh
 RUN chmod +x startup.sh
 
 # Expose port

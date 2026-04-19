@@ -1,0 +1,171 @@
+name: Chat Agent Deploy
+
+# Builds and deploys the TypeScript complex-task-chat agent image + updates
+# the chat-agent-worker KEDA ScaledJob in dev.
+#
+# Trigger paths cover:
+#   - the TS source and Dockerfile (agent/**)
+#   - the ScaledJob manifest + deploy helper (agent/k8s/**)
+#   - the buildspec + build helper (codebuild/bs-chat-agent.yml, zip-source.sh)
+#   - personas baked into the image (rules/personas/**)
+#
+# The image is shared between the GH agent and the chat agent; AGENT_ENTRYPOINT
+# in the ScaledJob config dispatches at runtime.
+
+on:
+  push:
+    paths:
+      - 'modules/agent-factory/agent/**'
+      - 'modules/agent-factory/rules/personas/**'
+      - 'codebuild/bs-chat-agent.yml'
+      - 'platform/scripts/zip-source.sh'
+      - '.github/workflows/chat-agent-deploy.yml'
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      skip_deploy:
+        description: 'Only build the image; skip the ScaledJob update.'
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+  NAMESPACE: adp-gateway-agents
+  EKS_CLUSTER: adp-dev-eks-cluster
+  ACCOUNT_ID: "879318057152"
+  STATE_BUCKET: adp-terraform-state-879318057152
+  ECR_REPO: adp-agent-gateway
+  CODEBUILD_PROJECT: adp-dev-chat-agent
+
+jobs:
+  build-and-deploy:
+    name: Build TS Image and Update Chat ScaledJob
+    runs-on: arc-runner-org
+    # Runner already has AWS creds via IRSA (adp-dev-agent-runner-role)
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── 1. Package source + upload to S3 ────────────────────────────────
+      - name: Package source and upload to S3
+        run: |
+          bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
+          aws s3 cp /tmp/adp-source.zip \
+            "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip" \
+            --region "${{ env.AWS_REGION }}"
+          rm -f /tmp/adp-source.zip
+
+      # ── 2. Ensure CodeBuild project exists and is pointed at the right buildspec
+      - name: Ensure CodeBuild project
+        run: |
+          # Role name matches platform/scripts/deploy-all.sh (CB_ROLE_NAME).
+          CB_ROLE_NAME="adp-${{ env.ENVIRONMENT }}-codebuild-role"
+          SERVICE_ROLE_ARN=$(aws iam get-role \
+            --role-name "$CB_ROLE_NAME" \
+            --query 'Role.Arn' --output text 2>/dev/null || echo "")
+          if [ -z "$SERVICE_ROLE_ARN" ]; then
+            echo "${CB_ROLE_NAME} missing — run platform/scripts/deploy-all.sh once to create it." >&2
+            exit 1
+          fi
+
+          SOURCE_LOC="${{ env.STATE_BUCKET }}/codebuild/adp-source.zip"
+          EXISTS=$(aws codebuild batch-get-projects \
+            --names "${{ env.CODEBUILD_PROJECT }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
+
+          CMD="create-project"
+          [ "$EXISTS" -gt 0 ] && CMD="update-project"
+
+          aws codebuild $CMD --region "${{ env.AWS_REGION }}" \
+            --name "${{ env.CODEBUILD_PROJECT }}" \
+            --source "{\"type\":\"S3\",\"location\":\"$SOURCE_LOC\",\"buildspec\":\"codebuild/bs-chat-agent.yml\"}" \
+            --artifacts '{"type":"NO_ARTIFACTS"}' \
+            --environment '{
+              "type":"LINUX_CONTAINER",
+              "image":"aws/codebuild/amazonlinux2-x86_64-standard:5.0",
+              "computeType":"BUILD_GENERAL1_MEDIUM",
+              "privilegedMode":true
+            }' \
+            --service-role "$SERVICE_ROLE_ARN" > /dev/null
+
+      # ── 3. Build the image via CodeBuild, poll for completion ───────────
+      - name: Build image via CodeBuild
+        id: build
+        run: |
+          REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          IMAGE_TAG="${{ github.sha }}"
+
+          BUILD_ID=$(aws codebuild start-build \
+            --region "${{ env.AWS_REGION }}" \
+            --project-name "${{ env.CODEBUILD_PROJECT }}" \
+            --environment-variables-override \
+              "name=AWS_REGION,value=${{ env.AWS_REGION }}" \
+              "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}" \
+              "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" \
+              "name=REGISTRY,value=${REGISTRY}" \
+              "name=IMAGE_TAG,value=${IMAGE_TAG}" \
+            --query 'build.id' --output text)
+          echo "Started CodeBuild: $BUILD_ID"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+
+          PHASE=""
+          while true; do
+            RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
+            STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
+            CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
+            [ "$CUR_PHASE" != "$PHASE" ] && [ -n "$CUR_PHASE" ] && echo "Phase: $CUR_PHASE" && PHASE="$CUR_PHASE"
+            case "$STATUS" in
+              SUCCEEDED) echo "Build succeeded"; break ;;
+              FAILED|FAULT|STOPPED|TIMED_OUT)
+                LOG_LINK=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+                  --region "${{ env.AWS_REGION }}" \
+                  --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
+                echo "Build failed ($STATUS). Logs: $LOG_LINK" >&2
+                exit 1
+                ;;
+              *) sleep 15 ;;
+            esac
+          done
+
+      # ── 4. Update the chat ScaledJob to use the new image tag ───────────
+      - name: Update chat ScaledJob manifest
+        if: ${{ inputs.skip_deploy != true }}
+        env:
+          IMAGE_TAG: ${{ steps.build.outputs.image_tag }}
+          REGISTRY: ${{ steps.build.outputs.registry }}
+        run: |
+          AGENT_IMAGE="${REGISTRY}/${{ env.ECR_REPO }}:${IMAGE_TAG}"
+          export AGENT_IMAGE
+
+          aws eks update-kubeconfig \
+            --name "${{ env.EKS_CLUSTER }}" \
+            --region "${{ env.AWS_REGION }}"
+
+          export ENVIRONMENT="${{ env.ENVIRONMENT }}"
+          export NAMESPACE="${{ env.NAMESPACE }}"
+
+          # deploy-chat-scaledjob.sh reads Terraform outputs from
+          # modules/agent-factory/infra/ and does the sed+kubectl apply.
+          bash modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh
+
+          echo "Chat ScaledJob now uses image: ${AGENT_IMAGE}"
+
+      - name: Summary
+        run: |
+          echo "## Chat Agent Deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image**: ${{ steps.build.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.build.outputs.image_tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **CodeBuild**: ${{ steps.build.outputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ inputs.skip_deploy }}" = "true" ]; then
+            echo "- **Deploy**: skipped (workflow_dispatch input)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **ScaledJob**: chat-agent-worker in ns ${{ env.NAMESPACE }} on ${{ env.EKS_CLUSTER }}" >> "$GITHUB_STEP_SUMMARY"
+          fi

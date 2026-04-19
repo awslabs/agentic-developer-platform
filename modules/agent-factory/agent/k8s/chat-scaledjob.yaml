@@ -1,0 +1,117 @@
+---
+# ConfigMap for chat agent configuration. All values with REPLACE_WITH_* are
+# substituted at apply time by the deploy pipeline (sed/kustomize). Keep
+# env var names in sync with:
+#   - modules/agent-factory/agent/src/complex-task-chat/complex-task-chat-agent.ts
+#   - modules/agent-factory/infra/chat-agent-infra.tf (output names)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chat-agent-config
+  namespace: adp-gateway-agents
+  labels:
+    app.kubernetes.io/name: chat-agent
+    app.kubernetes.io/part-of: agent-gateway
+data:
+  AGENT_ENTRYPOINT: "complex-task-chat"
+  AWS_REGION: "us-east-1"
+
+  # FIFO task queue + existing non-FIFO response queue
+  INPUT_QUEUE_URL: "REPLACE_WITH_CHAT_TASKS_FIFO_URL"
+  RESPONSE_QUEUE_URL: "REPLACE_WITH_RESPONSE_QUEUE_URL"
+
+  # DynamoDB tables (from chat-agent-infra.tf outputs)
+  CONTEXT_TABLE: "REPLACE_WITH_CONTEXT_TABLE"
+  ARTIFACTS_TABLE: "REPLACE_WITH_ARTIFACTS_TABLE"
+  MEMORY_TABLE: "REPLACE_WITH_MEMORY_TABLE"
+
+  # S3 artifact bucket
+  ARTIFACTS_BUCKET: "REPLACE_WITH_ARTIFACTS_BUCKET"
+
+  # Strategy selection (Phase 1 = dynamo-backed LCM)
+  CONTEXT_STRATEGY: "lcm"
+  MEMORY_STRATEGY: "dynamo"
+  ARTIFACT_STRATEGY: "s3"
+
+  # Token + model config
+  CONTEXT_TOKEN_BUDGET: "150000"
+  ANTHROPIC_MODEL: "global.anthropic.claude-sonnet-4-6"
+  LCM_SUMMARY_MODEL: "global.anthropic.claude-sonnet-4-6"
+  LCM_SUMMARY_ENDPOINT: "bedrock"
+  MODEL_ENDPOINT: "bedrock"
+
+  # Personas baked into the image
+  PERSONAS_DIR: "/app/personas"
+---
+# TriggerAuthentication reused from the Python worker (same SA, same SQS role).
+# If not already present from keda-scaledjob.yaml, apply it here too.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: chat-agent-aws-auth
+  namespace: adp-gateway-agents
+  labels:
+    app.kubernetes.io/name: chat-agent
+    app.kubernetes.io/part-of: agent-gateway
+spec:
+  podIdentity:
+    provider: aws-eks
+    identityOwner: keda
+---
+# KEDA ScaledJob — chat agent worker driven by FIFO queue depth. One pod per
+# received message; FIFO groups serialize per session_id.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: chat-agent-worker
+  namespace: adp-gateway-agents
+  labels:
+    app.kubernetes.io/name: chat-agent-worker
+    app.kubernetes.io/part-of: agent-gateway
+spec:
+  jobTargetRef:
+    parallelism: 1
+    completions: 1
+    backoffLimit: 2
+    # 15 min matches FIFO visibility_timeout_seconds in chat-agent-infra.tf
+    activeDeadlineSeconds: 900
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: chat-agent-worker
+      spec:
+        serviceAccountName: adp-agent
+        restartPolicy: Never
+        containers:
+          - name: chat-agent
+            image: REPLACE_WITH_AGENT_IMAGE
+            envFrom:
+              - configMapRef:
+                  name: chat-agent-config
+            env:
+              # Optional: injected at runtime by gateway ingest (cross-team item)
+              - name: CHAT_AGENT_SESSION_OWNER_ENFORCED
+                value: "true"
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "1Gi"
+                ephemeral-storage: "512Mi"
+              limits:
+                cpu: "2"
+                memory: "4Gi"
+                # Cap workspace + artifact-scratch growth per design §7.7.
+                ephemeral-storage: "2Gi"
+  pollingInterval: 10
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  triggers:
+    - type: aws-sqs-queue
+      authenticationRef:
+        name: chat-agent-aws-auth
+      metadata:
+        queueURL: "REPLACE_WITH_CHAT_TASKS_FIFO_URL"
+        queueLength: "1"
+        awsRegion: "us-east-1"
