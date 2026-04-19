@@ -235,9 +235,9 @@ resource "aws_lambda_function" "session_sweeper" {
 
   environment {
     variables = {
-      CONTEXT_TABLE    = aws_dynamodb_table.chat_context.name
-      ARTIFACTS_TABLE  = aws_dynamodb_table.chat_artifacts.name
-      ARTIFACTS_BUCKET = aws_s3_bucket.chat_artifacts.id
+      CONTEXT_TABLE       = aws_dynamodb_table.chat_context.name
+      ARTIFACTS_TABLE     = aws_dynamodb_table.chat_artifacts.name
+      ARTIFACTS_BUCKET    = aws_s3_bucket.chat_artifacts.id
       AWS_REGION_OVERRIDE = var.aws_region
     }
   }

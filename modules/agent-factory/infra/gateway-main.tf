@@ -156,9 +156,9 @@ resource "aws_iam_role_policy" "keda_operator_sqs" {
         # scaler can authenticate. The actual SQS call uses the chained role's
         # credentials, so the gateway-agent role also needs GetQueueAttributes
         # (it already has it via gateway_agent_sqs policy).
-        Sid    = "AssumeWorkloadRole"
-        Effect = "Allow"
-        Action = "sts:AssumeRole"
+        Sid      = "AssumeWorkloadRole"
+        Effect   = "Allow"
+        Action   = "sts:AssumeRole"
         Resource = aws_iam_role.gateway_agent.arn
       }
     ]
@@ -310,9 +310,9 @@ resource "aws_iam_role_policy" "gateway_agent_sqs" {
         Resource = module.gateway_sqs.input_queue_arn
       },
       {
-        Sid    = "SendToResponsesQueue"
-        Effect = "Allow"
-        Action = ["sqs:SendMessage"]
+        Sid      = "SendToResponsesQueue"
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
         Resource = module.gateway_sqs.response_queue_arn
       }
     ]

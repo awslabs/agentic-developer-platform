@@ -42,3 +42,9 @@ variable "github_app_dev_installation_id" {
   description = "GitHub App installation ID for the `dev` persona on the target org. The ARC runner scale set uses this to authenticate runner registration. Find it via: gh api /orgs/<org>/installations --jq '.installations[] | select(.app_slug==\"<org>-adp-agent-dev\") | .id'"
   type        = string
 }
+
+variable "runner_image" {
+  description = "Container image for ARC runner pods. Built by .github/workflows/arc-runner-build.yml; points at the adp-arc-runner ECR repo. Leave empty to use the chart default (bare actions-runner image)."
+  type        = string
+  default     = ""
+}

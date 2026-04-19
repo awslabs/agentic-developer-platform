@@ -77,21 +77,32 @@ resource "helm_release" "arc_runner_set" {
       githubConfigSecret = kubernetes_secret.arc_runner.metadata[0].name
       maxRunners         = 10
       minRunners         = 0
+      # Pod template. When `runner_image` is empty we omit the `containers`
+      # block entirely so the gha-runner-scale-set chart injects its default
+      # container (image ghcr.io/actions/actions-runner:latest + command
+      # ["/home/runner/run.sh"]). When `runner_image` is set, we have to
+      # provide the full container spec ourselves, including `command` —
+      # the chart has no image-only override, so overriding `containers`
+      # without setting `command` would make pods run the image's
+      # ENTRYPOINT and exit immediately.
       template = {
         metadata = {
-          annotations = {
-            "karpenter.sh/do-not-disrupt" = "true"
+          annotations = { "karpenter.sh/do-not-disrupt" = "true" }
+        }
+        spec = merge(
+          {
+            serviceAccountName = kubernetes_service_account.runner.metadata[0].name
+          },
+          var.runner_image == "" ? {} : {
+            containers = [
+              {
+                name    = "runner"
+                image   = var.runner_image
+                command = ["/home/runner/run.sh"]
+              }
+            ]
           }
-        }
-        spec = {
-          serviceAccountName = kubernetes_service_account.runner.metadata[0].name
-          # Intentionally NOT overriding `containers` — the gha-runner-scale-set
-          # chart injects a default container that sets
-          # `command: ["/home/runner/run.sh"]`. Providing our own container
-          # spec drops that command, so the pod starts with the image's
-          # ENTRYPOINT which exits immediately. This matches the working
-          # aws-innovate/adp helm values exactly.
-        }
+        )
       }
     })
   ]

@@ -62,13 +62,13 @@ data "aws_region" "current" {}
 
 locals {
   # Shared platform resources
-  cluster_name    = data.terraform_remote_state.platform.outputs.eks_cluster_name
-  cluster_endpoint = data.terraform_remote_state.platform.outputs.eks_cluster_endpoint
-  cluster_ca      = data.terraform_remote_state.platform.outputs.eks_cluster_ca_certificate
-  oidc_issuer     = data.terraform_remote_state.platform.outputs.eks_oidc_issuer
+  cluster_name      = data.terraform_remote_state.platform.outputs.eks_cluster_name
+  cluster_endpoint  = data.terraform_remote_state.platform.outputs.eks_cluster_endpoint
+  cluster_ca        = data.terraform_remote_state.platform.outputs.eks_cluster_ca_certificate
+  oidc_issuer       = data.terraform_remote_state.platform.outputs.eks_oidc_issuer
   oidc_provider_arn = data.terraform_remote_state.platform.outputs.eks_oidc_provider_arn
-  vpc_id          = data.terraform_remote_state.platform.outputs.vpc_id
-  private_subnets = data.terraform_remote_state.platform.outputs.private_subnet_ids
+  vpc_id            = data.terraform_remote_state.platform.outputs.vpc_id
+  private_subnets   = data.terraform_remote_state.platform.outputs.private_subnet_ids
 
   name_prefix = "adp-${var.environment}-agent"
 }
@@ -162,6 +162,10 @@ module "arc_runner" {
   github_app_id_secret_name          = "adp/${var.github_org}/gh-app-dev-id"
   github_app_private_key_secret_name = "adp/${var.github_org}/gh-app-dev-key"
   github_app_installation_id         = var.github_app_dev_installation_id
+
+  # Custom ADP runner image with CLI tools pre-baked (aws, kubectl, terraform,
+  # helm, gh, docker, kaniko). Empty string = chart default.
+  runner_image = var.runner_image
 
   depends_on = [module.runner_iam]
 }

@@ -45,3 +45,9 @@ variable "github_app_installation_id" {
   description = "GitHub App installation ID for the org where runners register."
   type        = string
 }
+
+variable "runner_image" {
+  description = "Container image for the ARC runner pods. Leave empty to let the chart use its default (ghcr.io/actions/actions-runner:latest). Set to the custom adp-arc-runner image to pre-bake CLI tools (aws, kubectl, terraform, helm, gh, docker, kaniko)."
+  type        = string
+  default     = ""
+}
