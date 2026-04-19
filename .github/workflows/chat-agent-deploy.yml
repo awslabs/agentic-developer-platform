@@ -52,15 +52,15 @@ jobs:
 
       # ── 0. Ensure required CLI tools are on the ARC runner ──────────────
       # The ARC runner image pinned at 2.333.1 ships a bare Ubuntu — no zip,
-      # no aws CLI, no kubectl. Install what we need up front. `sudo` is
-      # passwordless on this runner. IRSA provides AWS creds; the CLI just
-      # needs to be present to use them.
-      - name: Install zip + AWS CLI + kubectl
+      # no aws CLI, no kubectl, no terraform. Install what we need up front.
+      # `sudo` is passwordless on this runner. IRSA provides AWS creds; the
+      # CLIs just need to be present to use them.
+      - name: Install zip + AWS CLI + kubectl + terraform
         run: |
           set -e
           if ! command -v zip >/dev/null 2>&1; then
             sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends zip unzip curl
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
           fi
           if ! command -v aws >/dev/null 2>&1; then
             curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
@@ -74,8 +74,19 @@ jobs:
             sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
             rm /tmp/kubectl
           fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            # Install HashiCorp apt source; pinning a Terraform version major
+            # avoids drift relative to the rest of the project (1.14.x per
+            # session-context). apt-get -y --allow-downgrades lets us pin later.
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
           aws --version
           kubectl version --client
+          terraform version | head -1
 
       # ── 1. Package source + upload to S3 ────────────────────────────────
       - name: Package source and upload to S3

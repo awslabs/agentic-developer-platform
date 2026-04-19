@@ -1,0 +1,131 @@
+# =============================================================================
+# ADP Custom ARC Runner Image
+# =============================================================================
+# Pre-installs the CLI tools ADP workflows need, so deploy steps don't waste
+# 3-5 minutes apt-installing zip/aws/kubectl/terraform on every run.
+#
+# Adapted from aws-innovate/AISuperPlane's infra/arc-runner/Dockerfile.
+#
+# Base: ghcr.io/actions/actions-runner:2.333.1 (pinned per session-context —
+# do NOT use `:latest`, which GitHub can flag "deprecated" and cause the
+# runner to exit-7 loop).
+#
+# Build context: this directory (no parent references).
+# =============================================================================
+
+FROM ghcr.io/actions/actions-runner:2.333.1
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+USER root
+
+# ── Base utilities ──────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        wget \
+        zip \
+        unzip \
+        git \
+        jq \
+        ca-certificates \
+        gnupg \
+        lsb-release \
+        software-properties-common \
+        sudo \
+        apt-transport-https \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Node.js 22.x ────────────────────────────────────────────────────────────
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version && npm --version
+
+# ── Python 3.12 + pip (for CodeBuild log parsing, yaml checks, etc.) ────────
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3.12-venv \
+        python3.12-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12 - --break-system-packages \
+    && python3 --version && pip3 --version
+
+# ── AWS CLI v2 ──────────────────────────────────────────────────────────────
+RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip \
+    && unzip -q /tmp/awscli.zip -d /tmp \
+    && /tmp/aws/install \
+    && rm -rf /tmp/aws /tmp/awscli.zip \
+    && aws --version
+
+# ── Terraform (matches project version per session-context: 1.14.x) ─────────
+ENV TERRAFORM_VERSION=1.14.2
+RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
+        -o /tmp/terraform.zip \
+    && unzip -q /tmp/terraform.zip -d /usr/local/bin \
+    && rm /tmp/terraform.zip \
+    && terraform version
+
+# ── kubectl (matches cluster: 1.35.x) ───────────────────────────────────────
+ENV KUBECTL_VERSION=1.35.0
+RUN curl -fsSL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+        -o /usr/local/bin/kubectl \
+    && chmod +x /usr/local/bin/kubectl \
+    && kubectl version --client
+
+# ── Helm 3.17.x ─────────────────────────────────────────────────────────────
+RUN curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | \
+    DESIRED_VERSION=v3.17.3 bash \
+    && helm version
+
+# ── gh CLI (latest) ─────────────────────────────────────────────────────────
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+    && out=$(mktemp) \
+    && wget -nv -O "$out" https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && cat "$out" | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/* "$out" \
+    && gh --version
+
+# ── Docker CLI (ECR login/push; actual builds via CodeBuild or Kaniko) ──────
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+        https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+        | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/* \
+    && docker --version
+
+# ── Kaniko executor (daemonless container builds; no Docker daemon needed) ──
+COPY --from=gcr.io/kaniko-project/executor:latest /kaniko /kaniko
+RUN chmod -R 777 /kaniko
+ENV PATH="/kaniko:${PATH}"
+
+# ── Cleanup ─────────────────────────────────────────────────────────────────
+RUN apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
+    && rm -rf /root/.cache/pip
+
+# Back to runner user
+USER runner
+
+# Verify every tool is accessible as the runner user
+RUN echo "=== ADP ARC Runner Tool Verification ===" \
+    && node --version \
+    && python3 --version \
+    && aws --version \
+    && terraform version \
+    && kubectl version --client \
+    && helm version \
+    && gh --version \
+    && docker --version \
+    && jq --version \
+    && zip -v | head -1 \
+    && /kaniko/executor version \
+    && echo "=== All tools verified ==="

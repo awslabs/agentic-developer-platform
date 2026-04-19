@@ -1,0 +1,40 @@
+version: 0.2
+
+# CodeBuild buildspec for the custom ADP ARC runner image.
+#
+# The runner image ships every CLI we need (aws, kubectl, terraform, helm, gh,
+# docker, zip, kaniko, node, python). Replaces the bare actions-runner base
+# and eliminates 3-5 minutes of tool installation at the start of every
+# workflow run.
+#
+# Pushes to ECR repo `adp-arc-runner`. Referenced by the ARC helm release
+# via `template.spec.containers[0].image`.
+#
+# Env vars injected by the caller:
+#   AWS_REGION, ACCOUNT_ID, REGISTRY, IMAGE_TAG
+
+phases:
+  pre_build:
+    commands:
+      - ECR_REPO="adp-arc-runner"
+      - IMAGE_TAG="${IMAGE_TAG:-latest}"
+      - |
+        if ! aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
+          aws ecr create-repository \
+            --repository-name "$ECR_REPO" \
+            --region "$AWS_REGION" \
+            --image-scanning-configuration scanOnPush=true \
+            --image-tag-mutability MUTABLE >/dev/null
+        fi
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+
+  build:
+    commands:
+      - cd platform/arc-runner
+      - docker build -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" -t "$REGISTRY/$ECR_REPO:latest" -f Dockerfile .
+      - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
+      - docker push "$REGISTRY/$ECR_REPO:latest"
+
+  post_build:
+    commands:
+      - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (and :latest)"
