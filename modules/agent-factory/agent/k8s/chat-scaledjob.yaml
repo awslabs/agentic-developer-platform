@@ -39,6 +39,10 @@ data:
   LCM_SUMMARY_MODEL: "global.anthropic.claude-sonnet-4-6"
   LCM_SUMMARY_ENDPOINT: "bedrock"
   MODEL_ENDPOINT: "bedrock"
+  # Route Claude Agent SDK calls through AWS Bedrock (IRSA provides AWS creds).
+  # Without this, the SDK falls back to Anthropic's direct API and returns
+  # "Not logged in · Please run /login" because ANTHROPIC_API_KEY is unset.
+  CLAUDE_CODE_USE_BEDROCK: "1"
 
   # Personas baked into the image
   PERSONAS_DIR: "/app/personas"
