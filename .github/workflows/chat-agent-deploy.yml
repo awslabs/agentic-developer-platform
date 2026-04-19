@@ -50,16 +50,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── 0. Ensure `zip` is available on the ARC runner ──────────────────
-      # The ARC runner image pinned at 2.333.1 doesn't ship `zip`. Install it
-      # before invoking the shared zip-source.sh helper. `sudo` is available
-      # passwordless on the runner.
-      - name: Install zip
+      # ── 0. Ensure required CLI tools are on the ARC runner ──────────────
+      # The ARC runner image pinned at 2.333.1 ships a bare Ubuntu — no zip,
+      # no aws CLI, no kubectl. Install what we need up front. `sudo` is
+      # passwordless on this runner. IRSA provides AWS creds; the CLI just
+      # needs to be present to use them.
+      - name: Install zip + AWS CLI + kubectl
         run: |
+          set -e
           if ! command -v zip >/dev/null 2>&1; then
             sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends zip
+            sudo apt-get install -y --no-install-recommends zip unzip curl
           fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v kubectl >/dev/null 2>&1; then
+            KV=$(curl -sL https://dl.k8s.io/release/stable.txt)
+            curl -sL "https://dl.k8s.io/release/${KV}/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+            rm /tmp/kubectl
+          fi
+          aws --version
+          kubectl version --client
 
       # ── 1. Package source + upload to S3 ────────────────────────────────
       - name: Package source and upload to S3
