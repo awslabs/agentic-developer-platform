@@ -25,8 +25,10 @@ phases:
     commands:
       - ECR_REPO="adp-agent-gateway"
       - IMAGE_TAG="${IMAGE_TAG:-latest}"
-      - aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" > /dev/null 2>&1 \
-          || aws ecr create-repository --repository-name "$ECR_REPO" --region "$AWS_REGION" > /dev/null
+      - |
+        if ! aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
+          aws ecr create-repository --repository-name "$ECR_REPO" --region "$AWS_REGION" >/dev/null
+        fi
       - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 
   build:
