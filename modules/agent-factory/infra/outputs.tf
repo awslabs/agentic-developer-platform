@@ -27,3 +27,13 @@ output "gateway_agent_role_name" {
   description = "IAM role name for gateway agent worker pods"
   value       = aws_iam_role.gateway_agent.name
 }
+
+output "keda_operator_role_arn" {
+  description = "IAM role ARN for the KEDA operator (IRSA, SQS read-only)"
+  value       = aws_iam_role.keda_operator.arn
+}
+
+output "keda_operator_role_name" {
+  description = "IAM role name for the KEDA operator"
+  value       = aws_iam_role.keda_operator.name
+}

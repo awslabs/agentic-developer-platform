@@ -16,6 +16,26 @@ data:
   AGENT_DIR: "/app/agent"
   ANTHROPIC_MODEL: "global.anthropic.claude-sonnet-4-6"
 ---
+# KEDA TriggerAuthentication — tells KEDA to use the operator's own IRSA role
+# for SQS queue-depth polling. The operator SA is annotated with
+# adp-dev-keda-operator-role (managed by Terraform helm_release.keda).
+#
+# identityOwner: keda = use the KEDA operator's own SA credentials for scaling.
+# The operator role only has sqs:GetQueueAttributes (least-privilege).
+# Worker pods use their own SA (adp-agent) with full Bedrock/DDB/Secrets perms.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: agent-gateway-aws-auth
+  namespace: adp-gateway-agents
+  labels:
+    app.kubernetes.io/name: agent-gateway
+    app.kubernetes.io/part-of: agent-gateway
+spec:
+  podIdentity:
+    provider: aws-eks
+    identityOwner: keda
+---
 # KEDA ScaledJob — scales agent pods based on SQS queue depth
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
@@ -77,8 +97,9 @@ spec:
   failedJobsHistoryLimit: 5
   triggers:
     - type: aws-sqs-queue
+      authenticationRef:
+        name: agent-gateway-aws-auth
       metadata:
         queueURL: "REPLACE_WITH_INPUT_QUEUE_URL"
         queueLength: "1"
         awsRegion: "us-east-1"
-        identityOwner: operator

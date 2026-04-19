@@ -527,6 +527,7 @@ phases:
     commands:
       - REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
       - ECR_REPO="adp-agent-gateway"
+      - IMAGE_TAG="${IMAGE_TAG:-latest}"
       - aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" 2>/dev/null || aws ecr create-repository --repository-name "$ECR_REPO" --region "$AWS_REGION"
       - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
   build:
@@ -538,7 +539,9 @@ phases:
       - cp -r agent "$BUILD_DIR/agent"
       - cp gateway/Dockerfile "$BUILD_DIR/Dockerfile"
       - cp gateway/entrypoint.sh "$BUILD_DIR/entrypoint.sh"
-      - docker build -t "$REGISTRY/$ECR_REPO:latest" "$BUILD_DIR"
+      - docker build -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$BUILD_DIR"
+      - docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
+      - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
       - docker push "$REGISTRY/$ECR_REPO:latest"
       - rm -rf "$BUILD_DIR"
   post_build:
@@ -549,7 +552,7 @@ phases:
       - RESPONSE_QUEUE_URL=$(terraform output -raw gateway_response_queue_url 2>/dev/null || echo "PENDING")
       - SESSIONS_TABLE=$(terraform output -raw gateway_sessions_table 2>/dev/null || echo "PENDING")
       - REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-      - AGENT_IMAGE="${REGISTRY}/adp-agent-gateway:latest"
+      - AGENT_IMAGE="${REGISTRY}/adp-agent-gateway:${IMAGE_TAG}"
       - cd ../
       - kubectl create namespace adp-gateway-agents --dry-run=client -o yaml | kubectl apply -f -
       - |
@@ -558,7 +561,7 @@ phases:
             -e "s|REPLACE_WITH_SESSIONS_TABLE_NAME|${SESSIONS_TABLE}|g" \
             -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
             gateway/k8s/keda-scaledjob.yaml | kubectl apply -f -
-      - echo "Agent gateway deployed"
+      - echo "Agent gateway deployed with image tag ${IMAGE_TAG}"
 EOF
 
   # --- Agent context infra + deploy ---
@@ -916,6 +919,7 @@ EOF
   if [ "$LOCAL_MODE" = true ]; then
     cd "$ROOT_DIR/modules/agent-factory"
     BUILD_DIR="/tmp/agent-gateway-build"
+    LOCAL_IMAGE_TAG="${IMAGE_TAG:-latest}"
     rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
     cp -r gateway/app "$BUILD_DIR/app"
     cp -r agent "$BUILD_DIR/agent"
@@ -925,7 +929,9 @@ EOF
     aws ecr describe-repositories --repository-names "adp-agent-gateway" --region "$AWS_REGION" 2>/dev/null || \
       aws ecr create-repository --repository-name "adp-agent-gateway" --region "$AWS_REGION" --no-cli-pager
     aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-    docker build -t "$REGISTRY/adp-agent-gateway:latest" "$BUILD_DIR"
+    docker build -t "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG" "$BUILD_DIR"
+    docker tag "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG" "$REGISTRY/adp-agent-gateway:latest"
+    docker push "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG"
     docker push "$REGISTRY/adp-agent-gateway:latest"
     rm -rf "$BUILD_DIR"
 
@@ -933,7 +939,7 @@ EOF
     INPUT_QUEUE_URL=$(cd infra && terraform output -raw gateway_input_queue_url 2>/dev/null || echo "PENDING")
     RESPONSE_QUEUE_URL=$(cd infra && terraform output -raw gateway_response_queue_url 2>/dev/null || echo "PENDING")
     SESSIONS_TABLE=$(cd infra && terraform output -raw gateway_sessions_table 2>/dev/null || echo "PENDING")
-    AGENT_IMAGE="$REGISTRY/adp-agent-gateway:latest"
+    AGENT_IMAGE="$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG"
     sed -e "s|REPLACE_WITH_INPUT_QUEUE_URL|${INPUT_QUEUE_URL}|g" \
         -e "s|REPLACE_WITH_RESPONSE_QUEUE_URL|${RESPONSE_QUEUE_URL}|g" \
         -e "s|REPLACE_WITH_SESSIONS_TABLE_NAME|${SESSIONS_TABLE}|g" \

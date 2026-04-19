@@ -94,6 +94,77 @@ resource "kubernetes_namespace" "gateway_agents" {
   }
 }
 
+# =============================================================================
+# KEDA Operator IAM Role (IRSA) — for SQS queue polling
+# =============================================================================
+# The KEDA operator needs to call sqs:GetQueueAttributes to check queue depth
+# and decide whether to scale worker pods. Without this role, KEDA falls back
+# to EC2 IMDS which doesn't exist on EKS Auto Mode, causing KEDAScalerFailed.
+#
+# This is a separate, least-privilege role — it only gets SQS read access,
+# not the full Bedrock/DDB/Secrets permissions the worker pods need.
+# =============================================================================
+
+resource "aws_iam_role" "keda_operator" {
+  name = "adp-${var.environment}-keda-operator-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = local.oidc_provider_arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "${replace(local.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:keda:keda-operator"
+          "${replace(local.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+        }
+      }
+    }]
+  })
+
+  tags = {
+    Name      = "adp-${var.environment}-keda-operator-role"
+    Component = "keda"
+  }
+}
+
+resource "aws_iam_role_policy" "keda_operator_sqs" {
+  name = "sqs-scaler-read"
+  role = aws_iam_role.keda_operator.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "SQSQueuePolling"
+        Effect = "Allow"
+        Action = [
+          "sqs:GetQueueAttributes",
+          "sqs:ListQueues"
+        ]
+        Resource = [
+          module.gateway_sqs.input_queue_arn,
+          module.gateway_sqs.response_queue_arn,
+        ]
+      },
+      {
+        # KEDA's aws-eks identity provider chain-assumes the workload pod's
+        # IRSA role when checking queue depth. Allow this AssumeRole so the
+        # scaler can authenticate. The actual SQS call uses the chained role's
+        # credentials, so the gateway-agent role also needs GetQueueAttributes
+        # (it already has it via gateway_agent_sqs policy).
+        Sid    = "AssumeWorkloadRole"
+        Effect = "Allow"
+        Action = "sts:AssumeRole"
+        Resource = aws_iam_role.gateway_agent.arn
+      }
+    ]
+  })
+}
+
 resource "helm_release" "keda" {
   name             = "keda"
   repository       = "https://kedacore.github.io/charts"
@@ -112,6 +183,13 @@ resource "helm_release" "keda" {
   set {
     name  = "serviceAccount.name"
     value = "keda-operator"
+  }
+
+  # IRSA annotation so KEDA can authenticate to SQS for queue-depth polling.
+  # Managed via Helm values so the annotation survives Helm reconciliation.
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = aws_iam_role.keda_operator.arn
   }
 
   set {
@@ -160,19 +238,32 @@ resource "aws_iam_role" "gateway_agent" {
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Federated = local.oidc_provider_arn
-      }
-      Action = "sts:AssumeRoleWithWebIdentity"
-      Condition = {
-        StringEquals = {
-          "${replace(local.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:${var.gateway_namespace}:adp-agent"
-          "${replace(local.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+    Statement = [
+      {
+        # IRSA: worker pods in adp-gateway-agents assume this role via their SA
+        Effect = "Allow"
+        Principal = {
+          Federated = local.oidc_provider_arn
         }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${replace(local.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:${var.gateway_namespace}:adp-agent"
+            "${replace(local.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+          }
+        }
+      },
+      {
+        # KEDA operator chain-assumes this role for SQS queue-depth polling.
+        # KEDA's aws-eks identity provider authenticates as the operator SA first,
+        # then assumes the workload role to make the SQS GetQueueAttributes call.
+        Effect = "Allow"
+        Principal = {
+          AWS = aws_iam_role.keda_operator.arn
+        }
+        Action = "sts:AssumeRole"
       }
-    }]
+    ]
   })
 
   tags = {
