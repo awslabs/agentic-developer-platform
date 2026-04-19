@@ -243,7 +243,10 @@ resource "aws_cognito_user_pool_client" "main" {
 
 # User Pool Domain (Cognito-hosted or custom)
 resource "aws_cognito_user_pool_domain" "main" {
-  domain       = var.custom_domain != "" ? var.custom_domain : "${var.name_prefix}-auth"
+  # Cognito domains are globally unique across all AWS accounts. Appending an
+  # account-id suffix to the default form ensures two installations in different
+  # accounts don't collide. Override via var.custom_domain for a vanity domain.
+  domain       = var.custom_domain != "" ? var.custom_domain : "${var.name_prefix}-auth-${substr(data.aws_caller_identity.current.account_id, 4, 8)}"
   user_pool_id = aws_cognito_user_pool.main.id
 }
 
