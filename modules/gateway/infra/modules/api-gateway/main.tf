@@ -22,11 +22,13 @@
 # - /{proxy+}        -> NONE auth (humans with JWT -- FastAPI validates)
 # - /agent/{proxy+}  -> AWS_IAM auth (agents with SigV4 -- API Gateway validates)
 #
-# NOTE on integrationTarget: The OpenAPI `x-amazon-apigateway-integration`
-# extension does NOT support the `integrationTarget` property. The ALB ARN
-# must be set via `aws apigateway put-integration --integration-target <arn>`
-# after the REST API body is deployed. We use a null_resource + local-exec
-# to accomplish this. This is the documented approach per the AWS blog above.
+# NOTE on integrationTarget: Despite initial expectations, the OpenAPI
+# `x-amazon-apigateway-integration` extension DOES accept `integrationTarget`
+# when using a VPC Link v2. API Gateway requires it — put-rest-api rejects
+# v2 VPC Link integrations that lack integrationTarget with the error:
+# "IntegrationTarget is required for VpcLinkV2 <id>". This was discovered
+# during deployment (see PR #46 description). Using inline integrationTarget
+# is cleaner than a null_resource + local-exec post-deploy approach.
 # =============================================================================
 
 # =============================================================================
@@ -61,12 +63,19 @@ resource "aws_security_group" "vpc_link" {
   description = "API Gateway VPC Link v2 to ALB (Issue #42)"
   vpc_id      = var.vpc_id
 
-  egress {
-    description     = "Allow VPC Link to reach ALB on port 80"
-    from_port       = 80
-    to_port         = 80
-    protocol        = "tcp"
-    security_groups = var.alb_security_group_ids
+  # Egress to ALB SG(s) — only created when ALB SG IDs are provided.
+  # On initial deploy (before ALB exists), alb_security_group_ids is []
+  # and no egress rules are created. The deploy workflow adds the SG IDs
+  # once the EKS Ingress ALB is provisioned.
+  dynamic "egress" {
+    for_each = length(var.alb_security_group_ids) > 0 ? [1] : []
+    content {
+      description     = "Allow VPC Link to reach ALB on port 80"
+      from_port       = 80
+      to_port         = 80
+      protocol        = "tcp"
+      security_groups = var.alb_security_group_ids
+    }
   }
 
   tags = merge(var.common_tags, {
