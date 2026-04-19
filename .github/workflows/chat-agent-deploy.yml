@@ -50,6 +50,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── 0. Ensure `zip` is available on the ARC runner ──────────────────
+      # The ARC runner image pinned at 2.333.1 doesn't ship `zip`. Install it
+      # before invoking the shared zip-source.sh helper. `sudo` is available
+      # passwordless on the runner.
+      - name: Install zip
+        run: |
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip
+          fi
+
       # ── 1. Package source + upload to S3 ────────────────────────────────
       - name: Package source and upload to S3
         run: |
