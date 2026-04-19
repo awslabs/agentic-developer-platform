@@ -15,10 +15,12 @@ cd "$ROOT_DIR"
 INCLUDE_DIRS=(platform/ modules/ environments/ libs/)
 [ -d codebuild ] && INCLUDE_DIRS+=(codebuild/)
 
+# Keep package-lock.json files — `npm ci` needs them for reproducible
+# Docker builds (e.g. the TS agent image in modules/agent-factory/agent).
 zip -r "$OUTPUT" \
   "${INCLUDE_DIRS[@]}" \
   -x '*/node_modules/*' '*/.terraform/*' '*/coverage/*' '*/__pycache__/*' \
-  '*.pyc' '*.tfstate*' '*/dist/*' '*/uv.lock' '*/package-lock.json' \
+  '*.pyc' '*.tfstate*' '*/dist/*' '*/uv.lock' \
   > /dev/null 2>&1
 
 echo "$OUTPUT"
