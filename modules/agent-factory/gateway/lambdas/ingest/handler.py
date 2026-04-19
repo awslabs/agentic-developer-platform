@@ -198,14 +198,25 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
     create_thread(session_id, thread_id, task_id, classification)
     set_thread_processing(session_id, thread_id, task_id)
 
-    sqs.send_message(QueueUrl=INPUT_QUEUE_URL, MessageBody=json.dumps({
-        "task_id": task_id, "session_id": session_id, "thread_id": thread_id,
-        "connection_id": connection_id, "channel": message.channel.value,
-        "mode": "chat", "agent_type": classification.persona,
-        "repo_owner": (classification.repo or "").split("/")[0] if classification.repo and "/" in classification.repo else "",
-        "repo_name": (classification.repo or "").split("/")[1] if classification.repo and "/" in classification.repo else "",
-        "message": message.text, "platform_data": message.platform_data, "enqueued_at": now,
-    }))
+    # FIFO queues require MessageGroupId + MessageDeduplicationId. Group by
+    # session_id so per-session turns serialize; different sessions stay
+    # parallel. Dedup by task_id makes re-deliveries idempotent.
+    send_kwargs = dict(
+        QueueUrl=INPUT_QUEUE_URL,
+        MessageBody=json.dumps({
+            "task_id": task_id, "session_id": session_id, "thread_id": thread_id,
+            "connection_id": connection_id, "channel": message.channel.value,
+            "mode": "chat", "agent_type": classification.persona,
+            "user_id": message.user_id,
+            "repo_owner": (classification.repo or "").split("/")[0] if classification.repo and "/" in classification.repo else "",
+            "repo_name": (classification.repo or "").split("/")[1] if classification.repo and "/" in classification.repo else "",
+            "message": message.text, "platform_data": message.platform_data, "enqueued_at": now,
+        }),
+    )
+    if INPUT_QUEUE_URL.endswith(".fifo"):
+        send_kwargs["MessageGroupId"] = session_id
+        send_kwargs["MessageDeduplicationId"] = task_id
+    sqs.send_message(**send_kwargs)
 
     if classification.escalation_note:
         send_notification(session_id, task_id, connection_id, message, classification.escalation_note, now)
