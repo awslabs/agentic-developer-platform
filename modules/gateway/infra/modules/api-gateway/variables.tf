@@ -60,6 +60,12 @@ variable "internal_alb_dns" {
   default     = "localhost"
 }
 
+variable "alb_security_group_ids" {
+  description = "Security group IDs of the internal ALB. The VPC Link v2 SG gets egress to these, and these get an ingress rule from the VPC Link SG. (Issue #42)"
+  type        = list(string)
+  default     = []
+}
+
 # =============================================================================
 # Authentication Configuration (Optional)
 # =============================================================================

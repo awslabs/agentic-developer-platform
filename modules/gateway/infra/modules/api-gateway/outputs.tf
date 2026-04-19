@@ -1,5 +1,5 @@
 # =============================================================================
-# Outputs for API Gateway Module (Issue #236)
+# Outputs for API Gateway Module (Issue #236, Issue #42)
 # =============================================================================
 
 # =============================================================================
@@ -46,22 +46,27 @@ output "api_gateway_execution_arn" {
 }
 
 # =============================================================================
-# VPC Link
+# VPC Link v2 (Issue #42)
 # =============================================================================
 
 output "vpc_link_id" {
-  description = "ID of the VPC Link (empty if ALB ARN not provided)"
-  value       = length(aws_api_gateway_vpc_link.main) > 0 ? aws_api_gateway_vpc_link.main[0].id : ""
+  description = "ID of the VPC Link v2 (apigatewayv2 namespace)"
+  value       = aws_apigatewayv2_vpc_link.main.id
 }
 
 output "vpc_link_arn" {
-  description = "ARN of the VPC Link (empty if ALB ARN not provided)"
-  value       = length(aws_api_gateway_vpc_link.main) > 0 ? aws_api_gateway_vpc_link.main[0].arn : ""
+  description = "ARN of the VPC Link v2"
+  value       = aws_apigatewayv2_vpc_link.main.arn
 }
 
 output "vpc_link_name" {
-  description = "Name of the VPC Link"
-  value       = length(aws_api_gateway_vpc_link.main) > 0 ? aws_api_gateway_vpc_link.main[0].name : ""
+  description = "Name of the VPC Link v2"
+  value       = aws_apigatewayv2_vpc_link.main.name
+}
+
+output "vpc_link_security_group_id" {
+  description = "Security group ID of the VPC Link v2"
+  value       = aws_security_group.vpc_link.id
 }
 
 # =============================================================================
