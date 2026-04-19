@@ -169,7 +169,8 @@ class TestAuthIntegration:
         with pytest.raises(UnregisteredServiceAccountError) as exc_info:
             await auth_service.exchange_credentials(request, db_session)
 
-        assert "arn:aws:iam::123456789012:role/unregistered-role" in str(exc_info.value)
+        # Error message was simplified for end users (no longer exposes role ARN)
+        assert isinstance(exc_info.value, UnregisteredServiceAccountError)
         assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio

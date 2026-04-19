@@ -186,11 +186,17 @@ class TestAgentRegistryServiceCreate:
     @pytest.mark.asyncio
     async def test_create_agent_success(self, agent_registry_service, mock_dynamodb_client, valid_create_request):
         """Test successful agent creation."""
+        from unittest.mock import AsyncMock
+
         # Mock: no existing agent with same role_arn
         mock_dynamodb_client.query.return_value = {"Items": []}
         mock_dynamodb_client.put_item.return_value = {}
 
-        result = await agent_registry_service.create_agent(valid_create_request)
+        # Mock budget_helper_service to avoid Postgres dependency (lazy import in create_agent)
+        mock_budget_helper = MagicMock()
+        mock_budget_helper.validate_budget_config_exists = AsyncMock(return_value=True)
+        with patch.dict("sys.modules", {"src.admin.budget_helper": MagicMock(budget_helper_service=mock_budget_helper)}):
+            result = await agent_registry_service.create_agent(valid_create_request)
 
         # Verify UUID was generated
         assert result.agent_id is not None

@@ -567,7 +567,12 @@ class TestEdgeCases:
         assert context.department_id == ""
 
     def test_whitespace_in_headers(self):
-        """Test: whitespace in header values is preserved."""
+        """Test: whitespace in header values is handled by Starlette Headers.
+
+        Note: Starlette's Headers class strips leading/trailing whitespace
+        from header values per HTTP spec. The code no longer applies
+        additional stripping.
+        """
         request = MagicMock(spec=Request)
         request.headers = Headers(
             {
@@ -580,5 +585,5 @@ class TestEdgeCases:
 
         context = extract_api_gateway_context(request)
 
-        # Whitespace is preserved (upstream should handle trimming if needed)
-        assert context.team_id == " team-with-spaces "
+        # Starlette Headers strips whitespace; code does not add extra stripping
+        assert context.team_id == "team-with-spaces"

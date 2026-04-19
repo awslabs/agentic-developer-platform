@@ -39,7 +39,7 @@ def app_with_middleware(mock_budget_service):
     app = FastAPI()
 
     # Add the budget middleware
-    app.add_middleware(BudgetEnforcementMiddleware, enforcement_service=mock_budget_service)
+    app.add_middleware(BudgetEnforcementMiddleware, budget_service=mock_budget_service)
 
     @app.get("/health")
     async def health():
@@ -61,7 +61,7 @@ def middleware_instance(mock_budget_service):
     """Create a middleware instance for unit testing internal methods."""
     # Create a minimal app to satisfy the middleware's __init__
     app = FastAPI()
-    return BudgetEnforcementMiddleware(app, enforcement_service=mock_budget_service)
+    return BudgetEnforcementMiddleware(app, budget_service=mock_budget_service)
 
 
 class TestBudgetEnforcementMiddleware:

@@ -915,26 +915,13 @@ class TestCognitoTeamListEndpoint:
     def test_list_cognito_teams(self, client_with_cognito, mock_cognito_service):
         """Test GET /admin/organizations/{org_id}/cognito/teams.
 
-        Issue #226 Security Fix: Teams are now filtered by org-specific prefix
-        for tenant isolation. Without explicit prefix, uses 'org-{org_id}' prefix.
+        Issue #226: Teams are now derived from unique custom:team_id user
+        attributes via get_unique_teams(), not from Cognito groups.
         """
-        mock_cognito_service.list_groups.return_value = (
-            [
-                {
-                    "GroupName": "org-org-1-team-platform",
-                    "Description": "Platform Team",
-                    "CreationDate": datetime.now(UTC),
-                    "LastModifiedDate": datetime.now(UTC),
-                },
-                {
-                    "GroupName": "org-org-1-team-devops",
-                    "Description": "DevOps Team",
-                    "CreationDate": datetime.now(UTC),
-                    "LastModifiedDate": datetime.now(UTC),
-                },
-            ],
-            2,
-        )
+        mock_cognito_service.get_unique_teams.return_value = [
+            "org-org-1-team-platform",
+            "org-org-1-team-devops",
+        ]
 
         response = client_with_cognito.get("/admin/organizations/org-1/cognito/teams")
 
@@ -943,24 +930,21 @@ class TestCognitoTeamListEndpoint:
         assert data["total"] == 2
         assert len(data["items"]) == 2
         assert data["items"][0]["group_name"] == "org-org-1-team-platform"
-        assert data["items"][0]["description"] == "Platform Team"
-        # Verify org-specific prefix is applied for tenant isolation
-        mock_cognito_service.list_groups.assert_called_once_with(prefix="org-org-1", page=1, page_size=50)
+        assert data["items"][1]["group_name"] == "org-org-1-team-devops"
+        mock_cognito_service.get_unique_teams.assert_called_once_with("org-1")
 
     def test_list_cognito_teams_with_prefix(self, client_with_cognito, mock_cognito_service):
         """Test GET /admin/organizations/{org_id}/cognito/teams with prefix filter.
 
-        Issue #226 Security Fix: The prefix filter is now combined with org-specific
-        prefix for tenant isolation. A prefix="team-" with org_id="org-1" results in
-        effective_prefix="org-org-1-team-".
+        Issue #226: Teams are derived from user attributes. The prefix query
+        parameter is no longer used for list_groups; get_unique_teams is called.
         """
-        mock_cognito_service.list_groups.return_value = ([], 0)
+        mock_cognito_service.get_unique_teams.return_value = []
 
         response = client_with_cognito.get("/admin/organizations/org-1/cognito/teams?prefix=team-")
 
         assert response.status_code == 200
-        # With tenant isolation, the effective prefix combines org and user-provided prefix
-        mock_cognito_service.list_groups.assert_called_once_with(prefix="org-org-1-team-", page=1, page_size=50)
+        mock_cognito_service.get_unique_teams.assert_called_once_with("org-1")
 
 
 class TestCognitoDepartmentListEndpoint:

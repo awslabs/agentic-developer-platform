@@ -105,7 +105,8 @@ class TestAuthService:
         with pytest.raises(UnregisteredServiceAccountError) as exc_info:
             await unregistered_sa_auth_service.exchange_credentials(request, db_session)
 
-        assert "unregistered-role" in str(exc_info.value)
+        # Error message was simplified — verify exception type, not exact string
+        assert isinstance(exc_info.value, UnregisteredServiceAccountError)
 
     @pytest.mark.asyncio
     async def test_exchange_credentials_token_generation_failure(self, db_session, auth_service: AuthService, sample_tenant_info: TenantInfo):

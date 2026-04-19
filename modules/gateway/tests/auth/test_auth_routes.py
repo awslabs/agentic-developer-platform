@@ -182,9 +182,8 @@ class TestAuthRoutes:
         test_app.dependency_overrides.clear()
         response = client.post("/auth/revoke")
 
-        # FastAPI HTTPBearer returns 403 when no credentials are provided
-        # (missing credentials means forbidden access, not invalid credentials)
-        assert response.status_code == 403
+        # FastAPI HTTPBearer returns 401 for unauthenticated requests
+        assert response.status_code == 401
 
     def test_create_service_account_success(self):
         """Test successful service account creation."""
@@ -542,8 +541,8 @@ class TestAuthRoutes:
         """Test get current user without authentication."""
         test_app.dependency_overrides.clear()
         response = client.get("/auth/me")
-        # FastAPI HTTPBearer returns 403 when no credentials are provided
-        assert response.status_code == 403
+        # FastAPI HTTPBearer returns 401 for unauthenticated requests
+        assert response.status_code == 401
 
     def test_logout_success(self):
         """Test successful logout endpoint."""
@@ -571,8 +570,8 @@ class TestAuthRoutes:
         """Test logout without authentication."""
         test_app.dependency_overrides.clear()
         response = client.post("/auth/logout")
-        # FastAPI HTTPBearer returns 403 when no credentials are provided
-        assert response.status_code == 403
+        # FastAPI HTTPBearer returns 401 for unauthenticated requests
+        assert response.status_code == 401
 
     def test_cleanup_expired_tokens_success(self):
         """Test successful token cleanup admin endpoint."""

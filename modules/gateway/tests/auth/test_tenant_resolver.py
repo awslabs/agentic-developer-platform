@@ -69,7 +69,8 @@ class TestTenantResolver:
         with pytest.raises(UnregisteredServiceAccountError) as exc_info:
             await tenant_resolver.resolve_tenant(caller_identity, db_session)
 
-        assert "unregistered-role" in str(exc_info.value)
+        # Error message was simplified — verify exception type, not exact string
+        assert isinstance(exc_info.value, UnregisteredServiceAccountError)
 
     @pytest.mark.asyncio
     async def test_resolve_tenant_human_user_success(

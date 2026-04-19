@@ -235,7 +235,11 @@ class TestAnthropicToBedrock:
         assert result.system == sample_anthropic_request.system
 
     def test_anthropic_version_override(self, format_translator: FormatTranslator) -> None:
-        """Test anthropic_version header override."""
+        """Test anthropic_version always uses bedrock version regardless of input.
+
+        The translator always sets anthropic_version to 'bedrock-2023-05-31'
+        for compatibility with the Bedrock API, ignoring client-supplied values.
+        """
         request = AnthropicMessagesRequest(
             model="claude-3-5-sonnet-20241022",
             messages=[AnthropicMessage(role=AnthropicRole.USER, content="Hello")],
@@ -244,7 +248,7 @@ class TestAnthropicToBedrock:
 
         result = format_translator.anthropic_to_bedrock(request, anthropic_version="custom-version-2024")
 
-        assert result.anthropic_version == "custom-version-2024"
+        assert result.anthropic_version == "bedrock-2023-05-31"
 
     def test_content_blocks_conversion(
         self,

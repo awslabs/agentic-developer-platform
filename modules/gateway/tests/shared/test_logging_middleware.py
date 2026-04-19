@@ -7,7 +7,12 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from src.shared.logging import clear_request_context
-from src.shared.middleware.logging_middleware import LoggingMiddleware, get_current_request_id
+from src.shared.middleware.logging_middleware import (
+    LoggingMiddleware,
+    _SKIP_PATHS,
+    _get_client_ip,
+    get_current_request_id,
+)
 
 
 @pytest.fixture
@@ -92,23 +97,19 @@ class TestLoggingMiddlewareSkipPaths:
     """Tests for skip paths functionality."""
 
     def test_default_skip_paths(self):
-        """Test default skip paths are set."""
-        app = FastAPI()
-        middleware = LoggingMiddleware(app)
-
-        assert "/health" in middleware._skip_paths
-        assert "/ready" in middleware._skip_paths
-        assert "/metrics" in middleware._skip_paths
-        assert "/docs" in middleware._skip_paths
+        """Test default skip paths are set at module level."""
+        assert "/health" in _SKIP_PATHS
+        assert "/ready" in _SKIP_PATHS
+        assert "/metrics" in _SKIP_PATHS
+        assert "/docs" in _SKIP_PATHS
 
     def test_custom_skip_paths(self):
-        """Test custom skip paths are added."""
-        app = FastAPI()
-        middleware = LoggingMiddleware(app, skip_paths={"/custom-path"})
-
-        assert "/custom-path" in middleware._skip_paths
-        # Should also have default paths
-        assert "/health" in middleware._skip_paths
+        """Test that default skip paths include expected entries."""
+        # Skip paths are now module-level constants, not instance attributes.
+        # Verify the module constant includes the expected paths.
+        assert "/health" in _SKIP_PATHS
+        assert "/redoc" in _SKIP_PATHS
+        assert "/openapi.json" in _SKIP_PATHS
 
 
 class TestRequestIdPropagation:
@@ -143,39 +144,30 @@ class TestClientIPExtraction:
 
     def test_extracts_x_forwarded_for(self):
         """Test extraction of X-Forwarded-For header."""
-        app = FastAPI()
-        middleware = LoggingMiddleware(app)
-
         mock_request = MagicMock()
         mock_request.headers = {"X-Forwarded-For": "203.0.113.195, 70.41.3.18"}
         mock_request.client = None
 
-        ip = middleware._get_client_ip(mock_request)
+        ip = _get_client_ip(mock_request)
         assert ip == "203.0.113.195"
 
     def test_extracts_x_real_ip(self):
         """Test extraction of X-Real-IP header."""
-        app = FastAPI()
-        middleware = LoggingMiddleware(app)
-
         mock_request = MagicMock()
         mock_request.headers = {"X-Real-IP": "192.168.1.100"}
         mock_request.client = None
 
-        ip = middleware._get_client_ip(mock_request)
+        ip = _get_client_ip(mock_request)
         assert ip == "192.168.1.100"
 
     def test_falls_back_to_direct_client(self):
         """Test fallback to direct client IP."""
-        app = FastAPI()
-        middleware = LoggingMiddleware(app)
-
         mock_request = MagicMock()
         mock_request.headers = {}
         mock_request.client = MagicMock()
         mock_request.client.host = "127.0.0.1"
 
-        ip = middleware._get_client_ip(mock_request)
+        ip = _get_client_ip(mock_request)
         assert ip == "127.0.0.1"
 
 

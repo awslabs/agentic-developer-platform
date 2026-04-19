@@ -156,29 +156,29 @@ class MockBedrockClient:
         if self.error:
             raise self.error
 
-        # Create async iterator for stream chunks
-        async def chunk_iterator() -> AsyncIterator[dict[str, Any]]:
-            chunks = self.stream_chunks or [
-                {
-                    "type": "message_start",
-                    "message": {
-                        "id": "msg_mock123",
-                        "role": "assistant",
-                        "content": [],
-                        "model": modelId,
-                        "usage": {"input_tokens": 10},
-                    },
+        # Create a sync iterable for stream chunks.
+        # The production code reads event_stream in a sync executor thread
+        # via `for event in event_stream`, so this must be a sync iterable.
+        chunks = self.stream_chunks or [
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_mock123",
+                    "role": "assistant",
+                    "content": [],
+                    "model": modelId,
+                    "usage": {"input_tokens": 10},
                 },
-                {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
-                {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello!"}},
-                {"type": "content_block_stop", "index": 0},
-                {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 5}},
-                {"type": "message_stop"},
-            ]
-            for chunk in chunks:
-                yield {"chunk": {"bytes": json.dumps(chunk).encode()}}
+            },
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello!"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 5}},
+            {"type": "message_stop"},
+        ]
+        chunk_list = [{"chunk": {"bytes": json.dumps(chunk).encode()}} for chunk in chunks]
 
-        return {"body": chunk_iterator()}
+        return {"body": chunk_list}
 
 
 class MockPoolService(IPoolService):
