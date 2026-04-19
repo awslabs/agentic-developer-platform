@@ -22,14 +22,18 @@ WORKDIR /app
 # Copy package files from the agent subdir
 COPY agent/package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production && npm cache clean --force
+# Builder needs devDependencies (typescript) to compile — install them all here.
+# The production stage copies only the runtime node_modules produced below.
+RUN npm ci
 
 # Copy the rest of the agent source
 COPY agent/ ./
 
-# Build the application
+# Build the TypeScript → dist/
 RUN npm run build
+
+# Prune dev dependencies before the production copy so we don't ship devDeps.
+RUN npm prune --omit=dev
 
 # Production stage
 FROM node:22-alpine AS production
