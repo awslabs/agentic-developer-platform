@@ -41,6 +41,12 @@ resource "aws_iam_policy" "runner_boundary" {
         Resource = "*"
       },
       {
+        Sid      = "ExecuteApi"
+        Effect   = "Allow"
+        Action   = ["execute-api:*"]
+        Resource = "*"
+      },
+      {
         Sid    = "DenyDangerousActions"
         Effect = "Deny"
         Action = [
@@ -145,6 +151,12 @@ resource "aws_iam_role_policy" "runner_permissions" {
         Effect = "Allow"
         Action = ["sts:AssumeRole", "sts:GetCallerIdentity"]
         Resource = "*"
+      },
+      {
+        Sid      = "ExecuteApiInvokeGateway"
+        Effect   = "Allow"
+        Action   = ["execute-api:Invoke"]
+        Resource = "arn:aws:execute-api:${var.aws_region}:${var.account_id}:*/*/*/agent/*"
       }
     ]
   })

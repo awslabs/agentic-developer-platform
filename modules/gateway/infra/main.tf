@@ -560,7 +560,11 @@ module "api_gateway" {
   # The ALB is created by the EKS Ingress controller, so the ARN/DNS
   # are not known at Terraform plan time. The workflow updates these.
   internal_alb_arn = var.internal_alb_arn
-  internal_alb_dns = "" # Set dynamically by workflow
+  internal_alb_dns = var.internal_alb_dns
+
+  # ALB Security Groups (Issue #42) — VPC Link v2 SG needs egress to these
+  # Set dynamically by the deploy workflow alongside ALB ARN/DNS
+  alb_security_group_ids = var.alb_security_group_ids
 
   # Authentication (backend handles JWT validation)
   cognito_user_pool_arn = module.cognito.cognito_user_pool_arn

@@ -1,52 +1,114 @@
 # =============================================================================
-# API Gateway REST API Module (Issue #236, Issue #260)
+# API Gateway REST API Module (Issue #236, Issue #260, Issue #42)
 # =============================================================================
 # Creates an API Gateway REST API with response streaming as an alternate route
 # to the internal ALB. This provides 15-minute timeout support for long-running
 # LLM requests (vs CloudFront's 60s hard limit).
 #
-# Architecture:
-# Client -> API Gateway REST API (regional) -> VPC Link -> Internal ALB -> EKS
+# Architecture (Issue #42 — VPC Link v2 + ALB direct):
+# Client -> API Gateway REST API (regional) -> VPC Link v2 -> ALB -> EKS
+#
+# The VPC Link v2 (apigatewayv2 namespace) connects directly to the ALB via
+# subnets + security groups. No NLB is required. The ALB target is set at
+# integration time via `--integration-target`, not at VPC Link creation time.
+#
+# Per: https://aws.amazon.com/blogs/compute/build-scalable-rest-apis-using-
+# amazon-api-gateway-private-integration-with-application-load-balancer/
 #
 # This route coexists with the existing CloudFront -> VPC Origin -> ALB path.
 # Clients choose which endpoint to use based on their needs.
 #
 # Issue #260: Dual-Path Architecture
-# - /{proxy+}        → NONE auth (humans with JWT — FastAPI validates)
-# - /agent/{proxy+}  → AWS_IAM auth (agents with SigV4 — API Gateway validates)
+# - /{proxy+}        -> NONE auth (humans with JWT -- FastAPI validates)
+# - /agent/{proxy+}  -> AWS_IAM auth (agents with SigV4 -- API Gateway validates)
 #
-# NOTE: The Terraform AWS provider does not yet support the
-# `response_transfer_mode` attribute on aws_api_gateway_integration.
-# We use an OpenAPI body definition with x-amazon-apigateway-integration
-# to set responseTransferMode: STREAM, which enables 15-minute timeouts.
+# NOTE on integrationTarget: Despite initial expectations, the OpenAPI
+# `x-amazon-apigateway-integration` extension DOES accept `integrationTarget`
+# when using a VPC Link v2. API Gateway requires it — put-rest-api rejects
+# v2 VPC Link integrations that lack integrationTarget with the error:
+# "IntegrationTarget is required for VpcLinkV2 <id>". This was discovered
+# during deployment (see PR #46 description). Using inline integrationTarget
+# is cleaner than a null_resource + local-exec post-deploy approach.
 # =============================================================================
 
 # =============================================================================
-# VPC Link for Private ALB Integration
+# VPC Link v2 for Private ALB Integration (Issue #42)
 # =============================================================================
-# VPC Link connects API Gateway directly to the internal ALB.
-# Created conditionally — the ALB ARN is dynamic (created by EKS Ingress).
-# The backend-deploy workflow will create/update this after the ALB exists.
+# Uses aws_apigatewayv2_vpc_link (v2 namespace) which takes subnets + SGs,
+# NOT target_arns. This allows direct ALB integration without an NLB.
+# The v2 VPC Link ID is referenced by the REST API (v1) integrations via
+# connectionId, and the ALB is bound via --integration-target at integration
+# creation time.
 
-resource "aws_api_gateway_vpc_link" "main" {
-  count = var.internal_alb_arn != "" ? 1 : 0
-
-  name        = "${var.name_prefix}-vpc-link"
-  description = "VPC Link to internal ALB for API Gateway (Issue #236)"
-  target_arns = [var.internal_alb_arn]
+resource "aws_apigatewayv2_vpc_link" "main" {
+  name               = "${var.name_prefix}-vpc-link-v2"
+  subnet_ids         = var.private_subnet_ids
+  security_group_ids = [aws_security_group.vpc_link.id]
 
   tags = merge(var.common_tags, {
-    Name    = "${var.name_prefix}-api-gateway-vpc-link"
+    Name    = "${var.name_prefix}-vpc-link-v2"
     Service = "api-gateway"
-    Purpose = "alb-integration"
+    Purpose = "alb-integration-v2"
   })
 }
 
 # =============================================================================
-# API Gateway REST API (Regional) — OpenAPI Definition
+# Security Group for VPC Link v2 (Issue #42)
 # =============================================================================
-# Using OpenAPI body to set responseTransferMode: STREAM on integrations,
-# since the Terraform provider doesn't expose this attribute natively.
+# Egress to the ALB's security group on port 80 (HTTP).
+# The ALB SG must allow inbound from this SG — handled by the ingress rule below.
+
+resource "aws_security_group" "vpc_link" {
+  name_prefix = "${var.name_prefix}-vpc-link-v2-"
+  description = "API Gateway VPC Link v2 to ALB (Issue #42)"
+  vpc_id      = var.vpc_id
+
+  # Egress to ALB SG(s) — only created when ALB SG IDs are provided.
+  # On initial deploy (before ALB exists), alb_security_group_ids is []
+  # and no egress rules are created. The deploy workflow adds the SG IDs
+  # once the EKS Ingress ALB is provisioned.
+  dynamic "egress" {
+    for_each = length(var.alb_security_group_ids) > 0 ? [1] : []
+    content {
+      description     = "Allow VPC Link to reach ALB on port 80"
+      from_port       = 80
+      to_port         = 80
+      protocol        = "tcp"
+      security_groups = var.alb_security_group_ids
+    }
+  }
+
+  tags = merge(var.common_tags, {
+    Name    = "${var.name_prefix}-vpc-link-v2-sg"
+    Service = "api-gateway"
+    Purpose = "vpc-link-v2-security"
+  })
+}
+
+# Allow ALB to accept inbound traffic from the VPC Link SG
+resource "aws_security_group_rule" "alb_from_vpc_link" {
+  count = length(var.alb_security_group_ids)
+
+  description              = "Allow inbound from API Gateway VPC Link v2 (Issue #42)"
+  type                     = "ingress"
+  from_port                = 80
+  to_port                  = 80
+  protocol                 = "tcp"
+  security_group_id        = var.alb_security_group_ids[count.index]
+  source_security_group_id = aws_security_group.vpc_link.id
+}
+
+# =============================================================================
+# API Gateway REST API (Regional) -- OpenAPI Definition
+# =============================================================================
+# Using Swagger 2.0 body to set responseTransferMode: STREAM on integrations
+# and proper AWS_IAM auth via x-amazon-apigateway-auth at method level.
+#
+# Issue #42: integrationTarget (ALB ARN) IS supported in the OpenAPI body
+# when using VPC Link v2. API Gateway requires it -- put-rest-api rejects
+# v2 VPC Link integrations that lack integrationTarget. This was discovered
+# during deployment when the body without integrationTarget was rejected with:
+# "IntegrationTarget is required for VpcLinkV2 <id>"
 
 resource "aws_api_gateway_rest_api" "main" {
   name        = "${var.name_prefix}-api"
@@ -56,28 +118,25 @@ resource "aws_api_gateway_rest_api" "main" {
     types = ["REGIONAL"]
   }
 
-  # NOTE: The OpenAPI body is only applied when internal_alb_dns is provided.
-  # When ALB DNS is not yet known (initial apply), we create a minimal API
-  # without integrations. The backend-deploy workflow will configure the
-  # integrations with responseTransferMode: STREAM via AWS CLI after the
-  # EKS Ingress ALB is created.
-  #
   # Issue #260: Dual-path architecture
-  # - /{proxy+}        → NONE auth (humans with JWT — FastAPI validates)
-  # - /agent/{proxy+}  → AWS_IAM auth (agents with SigV4 — API Gateway validates)
+  # - /{proxy+}        -> NONE auth (humans with JWT -- FastAPI validates)
+  # - /agent/{proxy+}  -> AWS_IAM auth (agents with SigV4 -- API Gateway validates)
+  #
+  # Issue #42: Uses Swagger 2.0 for proper securityDefinitions + x-amazon-apigateway-auth.
+  # VPC Link v2 connectionId + integrationTarget set in each integration block.
   body = var.internal_alb_dns != "localhost" && var.internal_alb_dns != "" ? jsonencode({
-    openapi = "3.0.1"
+    swagger = "2.0"
     info = {
       title       = "${var.name_prefix}-api"
-      version     = "2.0"
-      description = "Issue #260: Dual-path API Gateway with NONE and AWS_IAM auth"
+      version     = "3.0"
+      description = "Issue #42: VPC Link v2 + ALB direct, dual-path auth"
     }
-    # Issue #260: Define AWS_IAM security scheme
+    # Swagger 2.0: securityDefinitions for AWS_IAM (SigV4)
     securityDefinitions = {
       sigv4 = {
-        type                         = "apiKey"
-        name                         = "Authorization"
-        in                           = "header"
+        type                           = "apiKey"
+        name                           = "Authorization"
+        in                             = "header"
         "x-amazon-apigateway-authtype" = "awsSigv4"
       }
     }
@@ -85,122 +144,104 @@ resource "aws_api_gateway_rest_api" "main" {
       # Root path - NONE auth (humans)
       "/" = {
         x-amazon-apigateway-any-method = {
-          security = []
-          x-amazon-apigateway-integration = merge(
-            {
-              type                 = "http_proxy"
-              httpMethod           = "ANY"
-              uri                  = "http://${var.internal_alb_dns}/"
-              timeoutInMillis      = var.integration_timeout_ms
-              responseTransferMode = "STREAM"
-              passthroughBehavior  = "when_no_match"
-            },
-            var.internal_alb_arn != "" ? {
-              connectionType = "VPC_LINK"
-              connectionId   = aws_api_gateway_vpc_link.main[0].id
-            } : {
-              connectionType = "INTERNET"
-            }
-          )
+          "x-amazon-apigateway-auth" = { type = "NONE" }
+          x-amazon-apigateway-integration = {
+            type                 = "http_proxy"
+            httpMethod           = "ANY"
+            uri                  = "http://${var.internal_alb_dns}/"
+            timeoutInMillis      = var.integration_timeout_ms
+            responseTransferMode = "STREAM"
+            passthroughBehavior  = "when_no_match"
+            connectionType       = "VPC_LINK"
+            connectionId         = aws_apigatewayv2_vpc_link.main.id
+            integrationTarget    = var.internal_alb_arn
+          }
         }
       }
       # Proxy path - NONE auth (humans)
       "/{proxy+}" = {
         x-amazon-apigateway-any-method = {
-          security = []
+          "x-amazon-apigateway-auth" = { type = "NONE" }
           parameters = [
             {
               name     = "proxy"
               in       = "path"
               required = true
-              schema   = { type = "string" }
+              type     = "string"
             }
           ]
-          x-amazon-apigateway-integration = merge(
-            {
-              type                 = "http_proxy"
-              httpMethod           = "ANY"
-              uri                  = "http://${var.internal_alb_dns}/{proxy}"
-              timeoutInMillis      = var.integration_timeout_ms
-              responseTransferMode = "STREAM"
-              passthroughBehavior  = "when_no_match"
-              requestParameters = {
-                "integration.request.path.proxy" = "method.request.path.proxy"
-              }
-              cacheKeyParameters = ["method.request.path.proxy"]
-            },
-            var.internal_alb_arn != "" ? {
-              connectionType = "VPC_LINK"
-              connectionId   = aws_api_gateway_vpc_link.main[0].id
-            } : {
-              connectionType = "INTERNET"
+          x-amazon-apigateway-integration = {
+            type                 = "http_proxy"
+            httpMethod           = "ANY"
+            uri                  = "http://${var.internal_alb_dns}/{proxy}"
+            timeoutInMillis      = var.integration_timeout_ms
+            responseTransferMode = "STREAM"
+            passthroughBehavior  = "when_no_match"
+            connectionType       = "VPC_LINK"
+            connectionId         = aws_apigatewayv2_vpc_link.main.id
+            integrationTarget    = var.internal_alb_arn
+            requestParameters = {
+              "integration.request.path.proxy" = "method.request.path.proxy"
             }
-          )
+            cacheKeyParameters = ["method.request.path.proxy"]
+          }
         }
       }
       # Issue #260: Agent root path - AWS_IAM auth (agents)
       "/agent" = {
         x-amazon-apigateway-any-method = {
           security = [{ sigv4 = [] }]
-          x-amazon-apigateway-integration = merge(
-            {
-              type                 = "http_proxy"
-              httpMethod           = "ANY"
-              uri                  = "http://${var.internal_alb_dns}/"
-              timeoutInMillis      = var.integration_timeout_ms
-              responseTransferMode = "STREAM"
-              passthroughBehavior  = "when_no_match"
-              requestParameters = {
-                "integration.request.header.X-Caller-Identity" = "context.identity.userArn"
-              }
-            },
-            var.internal_alb_arn != "" ? {
-              connectionType = "VPC_LINK"
-              connectionId   = aws_api_gateway_vpc_link.main[0].id
-            } : {
-              connectionType = "INTERNET"
+          "x-amazon-apigateway-auth" = { type = "AWS_IAM" }
+          x-amazon-apigateway-integration = {
+            type                 = "http_proxy"
+            httpMethod           = "ANY"
+            uri                  = "http://${var.internal_alb_dns}/"
+            timeoutInMillis      = var.integration_timeout_ms
+            responseTransferMode = "STREAM"
+            passthroughBehavior  = "when_no_match"
+            connectionType       = "VPC_LINK"
+            connectionId         = aws_apigatewayv2_vpc_link.main.id
+            integrationTarget    = var.internal_alb_arn
+            requestParameters = {
+              "integration.request.header.X-Caller-Identity" = "context.identity.userArn"
             }
-          )
+          }
         }
       }
       # Issue #260: Agent proxy path - AWS_IAM auth (agents)
       "/agent/{proxy+}" = {
         x-amazon-apigateway-any-method = {
           security = [{ sigv4 = [] }]
+          "x-amazon-apigateway-auth" = { type = "AWS_IAM" }
           parameters = [
             {
               name     = "proxy"
               in       = "path"
               required = true
-              schema   = { type = "string" }
+              type     = "string"
             }
           ]
-          x-amazon-apigateway-integration = merge(
-            {
-              type                 = "http_proxy"
-              httpMethod           = "ANY"
-              uri                  = "http://${var.internal_alb_dns}/{proxy}"
-              timeoutInMillis      = var.integration_timeout_ms
-              responseTransferMode = "STREAM"
-              passthroughBehavior  = "when_no_match"
-              requestParameters = {
-                "integration.request.path.proxy"               = "method.request.path.proxy"
-                "integration.request.header.X-Caller-Identity" = "context.identity.userArn"
-              }
-              cacheKeyParameters = ["method.request.path.proxy"]
-            },
-            var.internal_alb_arn != "" ? {
-              connectionType = "VPC_LINK"
-              connectionId   = aws_api_gateway_vpc_link.main[0].id
-            } : {
-              connectionType = "INTERNET"
+          x-amazon-apigateway-integration = {
+            type                 = "http_proxy"
+            httpMethod           = "ANY"
+            uri                  = "http://${var.internal_alb_dns}/{proxy}"
+            timeoutInMillis      = var.integration_timeout_ms
+            responseTransferMode = "STREAM"
+            passthroughBehavior  = "when_no_match"
+            connectionType       = "VPC_LINK"
+            connectionId         = aws_apigatewayv2_vpc_link.main.id
+            integrationTarget    = var.internal_alb_arn
+            requestParameters = {
+              "integration.request.path.proxy"               = "method.request.path.proxy"
+              "integration.request.header.X-Caller-Identity" = "context.identity.userArn"
             }
-          )
+            cacheKeyParameters = ["method.request.path.proxy"]
+          }
         }
       }
     }
   }) : jsonencode({
-    openapi = "3.0.1"
+    swagger = "2.0"
     info = {
       title   = "${var.name_prefix}-api"
       version = "1.0"
@@ -232,11 +273,6 @@ resource "aws_api_gateway_rest_api" "main" {
     Service = "api-gateway"
     Purpose = "llm-streaming-alternate-route"
   })
-
-  # The body will be updated by the backend-deploy workflow via AWS CLI
-  # when the ALB DNS becomes available. No lifecycle ignore needed since
-  # Terraform manages the initial creation and the deploy workflow handles
-  # runtime updates via put-rest-api.
 }
 
 # =============================================================================

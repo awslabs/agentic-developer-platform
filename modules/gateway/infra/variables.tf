@@ -229,8 +229,20 @@ variable "enable_vpc_origin" {
 
 variable "internal_alb_arn" {
   type        = string
-  description = "ARN of the internal ALB for CloudFront VPC Origin. Only used when enable_vpc_origin is true. Note: For EKS Ingress-managed ALBs, this is set dynamically in the backend-deploy workflow."
+  description = "ARN of the internal ALB for CloudFront VPC Origin and API Gateway VPC Link v2. For EKS Ingress-managed ALBs, this is set dynamically in the backend-deploy workflow."
   default     = ""
+}
+
+variable "internal_alb_dns" {
+  description = "DNS name of the internal ALB. Set dynamically by the deploy workflow after the EKS Ingress ALB is created. (Issue #42)"
+  type        = string
+  default     = "localhost"
+}
+
+variable "alb_security_group_ids" {
+  description = "Security group IDs of the internal ALB. Used by API Gateway VPC Link v2 SG for egress rules. Set dynamically by the deploy workflow. (Issue #42)"
+  type        = list(string)
+  default     = []
 }
 
 variable "vpc_origin_read_timeout" {
