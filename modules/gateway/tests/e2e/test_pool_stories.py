@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+pytestmark = [pytest.mark.pool, pytest.mark.e2e]
+
 from src.shared.exceptions import NoHealthyAccountsError
 from tests.fixtures.factories import create_pool_account
 from tests.fixtures.mock_aws import MockBedrockClient, MockSTSClient, ThrottlingException

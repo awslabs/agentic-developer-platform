@@ -13,6 +13,8 @@ User Stories Covered:
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+pytestmark = [pytest.mark.ratelimit, pytest.mark.e2e]
+
 from src.shared.exceptions import RateLimitExceededError
 from src.shared.schemas.common import RateLimitCheckResult
 from tests.fixtures.factories import (

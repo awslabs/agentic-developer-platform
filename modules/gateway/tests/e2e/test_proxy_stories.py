@@ -14,6 +14,8 @@ User Stories Covered:
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+pytestmark = [pytest.mark.proxy, pytest.mark.e2e]
+
 from src.shared.exceptions import ModelNotAllowedError
 from tests.fixtures.factories import (
     create_department,
@@ -22,6 +24,7 @@ from tests.fixtures.factories import (
     create_token,
     create_user,
 )
+from tests.e2e.config import get_test_bedrock_model
 from tests.fixtures.mock_aws import MockBedrockClient
 
 
@@ -516,8 +519,9 @@ class TestLiveBedrockProxy:
 
     @pytest.mark.asyncio
     @pytest.mark.live_only
-    async def test_haiku_completion_returns_200(self, api_client, jwt_for_user):
-        """POST /v1/messages with Haiku returns a Bedrock completion (live only)."""
+    async def test_bedrock_completion_returns_200(self, api_client, jwt_for_user):
+        """POST /v1/messages with configured model returns a Bedrock completion (live only)."""
+        model = get_test_bedrock_model()
         response = await api_client.post(
             "/v1/messages",
             headers={
@@ -525,7 +529,7 @@ class TestLiveBedrockProxy:
                 "Content-Type": "application/json",
             },
             json={
-                "model": "claude-3-haiku-20240307",
+                "model": model,
                 "max_tokens": 30,
                 "messages": [{"role": "user", "content": "Say hello in one word."}],
             },
@@ -538,6 +542,7 @@ class TestLiveBedrockProxy:
     @pytest.mark.live_only
     async def test_streaming_sse_response(self, api_client, jwt_for_user):
         """Streaming invoke returns SSE chunks with message_stop event (live only)."""
+        model = get_test_bedrock_model()
         async with api_client.stream(
             "POST",
             "/v1/messages",
@@ -546,7 +551,7 @@ class TestLiveBedrockProxy:
                 "Content-Type": "application/json",
             },
             json={
-                "model": "claude-3-haiku-20240307",
+                "model": model,
                 "max_tokens": 50,
                 "stream": True,
                 "messages": [{"role": "user", "content": "Count to 3."}],

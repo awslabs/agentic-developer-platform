@@ -188,14 +188,27 @@ def wrong_aud_jwt() -> str:
 
 @pytest.fixture
 async def api_client() -> AsyncGenerator[httpx.AsyncClient, None]:
-    """HTTP client pointing at the mock ASGI app (unit) or real gateway (live).
+    """HTTP client for the gateway **API surface** — not the SPA.
 
-    In unit mode uses the FastAPI ASGI transport.
-    In live mode uses the CloudFront / API Gateway URL.
+    In unit mode: FastAPI ASGI transport.
+    In live mode: REST API Gateway invoke URL (``api_gateway_url``). This goes
+    directly to the backend via VPC Link, bypassing CloudFront. CloudFront
+    routes ``/api/*`` to the same backend but also owns the SPA fallback at
+    ``/``, so tests that construct URLs like ``/v1/messages`` against the
+    CloudFront root get HTML back from the S3 origin. Hit API Gateway for
+    API-contract tests; use ``cloudfront_client`` for CDN-layer tests.
     """
     if is_live():
         cfg = load_live_config()
-        base = f"https://{cfg.cloudfront_domain}"
+        base = cfg.api_gateway_url.rstrip("/")
+        if not base:
+            raise RuntimeError(
+                "Live-mode API tests require API_GATEWAY_URL (the REST API Gateway "
+                "invoke URL, e.g. https://<id>.execute-api.<region>.amazonaws.com/<stage>). "
+                "Do not use CLOUDFRONT_DOMAIN here — CloudFront serves the SPA at /, "
+                "which masks API responses. Use the cloudfront_client fixture if you "
+                "genuinely need to exercise the CDN layer."
+            )
         async with httpx.AsyncClient(base_url=base, timeout=60.0) as client:
             yield client
     else:
@@ -208,6 +221,25 @@ async def api_client() -> AsyncGenerator[httpx.AsyncClient, None]:
         transport = ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             yield client
+
+
+@pytest.fixture
+async def cloudfront_client() -> AsyncGenerator[httpx.AsyncClient, None]:
+    """HTTP client pointing at the CloudFront distribution root.
+
+    Use this ONLY for CDN-layer tests — e.g. SPA smoke tests, ``/api/*``
+    routing sanity checks, CloudFront response-header policies. For API
+    contract tests (auth, proxy, admin, budget, ratelimit, pool), use the
+    ``api_client`` fixture which targets the REST API Gateway directly.
+
+    Skips in unit mode — CloudFront has no unit-mode equivalent.
+    """
+    if not is_live():
+        pytest.skip("cloudfront_client requires live mode (TEST_ENV=dev)")
+    cfg = load_live_config()
+    base = f"https://{cfg.cloudfront_domain}"
+    async with httpx.AsyncClient(base_url=base, timeout=60.0) as client:
+        yield client
 
 
 # ---------------------------------------------------------------------------

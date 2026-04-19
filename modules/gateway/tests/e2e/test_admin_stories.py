@@ -19,6 +19,8 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+pytestmark = [pytest.mark.admin, pytest.mark.e2e]
+
 from src.shared.schemas.auth import TokenContext
 from tests.e2e.config import load_live_config
 from tests.fixtures.factories import (

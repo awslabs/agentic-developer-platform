@@ -45,8 +45,24 @@ class LiveTestConfig:
     cognito_domain: str = ""
     test_user_email: str = ""
     test_user_password: str = ""
+    test_bedrock_model: str = ""
     aws_region: str = "us-east-1"
     environment: str = "dev"
+
+# Default Bedrock model for live proxy tests.
+# Cross-region inference profile that resolves dynamically.
+DEFAULT_BEDROCK_MODEL = "global.anthropic.claude-sonnet-4-6"
+
+
+def get_test_bedrock_model() -> str:
+    """Return the Bedrock model ID to use for live proxy tests.
+
+    Priority: TEST_BEDROCK_MODEL env var > live config > default.
+    """
+    env_val = os.environ.get("TEST_BEDROCK_MODEL", "")
+    if env_val:
+        return env_val
+    return DEFAULT_BEDROCK_MODEL
 
 
 def _ssm_get(name: str, region: str = "us-east-1") -> str | None:
@@ -81,7 +97,7 @@ def load_live_config() -> LiveTestConfig:
 
     cfg = LiveTestConfig(
         cloudfront_domain=_resolve("CLOUDFRONT_DOMAIN", f"/adp/{env}/gateway/cloudfront-domain"),
-        api_gateway_url=_resolve("API_GATEWAY_URL"),
+        api_gateway_url=_resolve("API_GATEWAY_URL", f"/adp/{env}/gateway/api-gateway-url"),
         cognito_user_pool_id=_resolve("COGNITO_USER_POOL_ID"),
         cognito_client_id=_resolve("COGNITO_CLIENT_ID"),
         cognito_agent_client_id=_resolve("COGNITO_AGENT_CLIENT_ID"),
@@ -92,9 +108,10 @@ def load_live_config() -> LiveTestConfig:
         environment=env,
     )
 
-    # Validate required fields
+    # Validate required fields. `api_gateway_url` is the main API contract target;
+    # `cloudfront_domain` is only strictly needed by frontend and CDN-layer tests.
     missing: list[str] = []
-    for fld in ("cloudfront_domain", "cognito_user_pool_id", "cognito_client_id"):
+    for fld in ("api_gateway_url", "cloudfront_domain", "cognito_user_pool_id", "cognito_client_id"):
         if not getattr(cfg, fld):
             missing.append(fld)
 

@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+pytestmark = [pytest.mark.auth, pytest.mark.e2e]
+
 from src.shared.exceptions import (
     InvalidCredentialsError,
     TokenExpiredError,

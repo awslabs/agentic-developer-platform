@@ -366,8 +366,8 @@ Tests hit the actual deployed gateway and Cognito:
 
 ```bash
 TEST_ENV=dev \
-CLOUDFRONT_DOMAIN=d1g6cal2ts4iis.cloudfront.net \
 API_GATEWAY_URL=https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev \
+CLOUDFRONT_DOMAIN=d1g6cal2ts4iis.cloudfront.net \
 COGNITO_USER_POOL_ID=us-east-1_JEhv9xSGG \
 COGNITO_CLIENT_ID=6cg7ba3hb4v41vbhm0cg8pl17j \
 COGNITO_AGENT_CLIENT_ID=378cm2jdj3rjt2os4cthub7267 \
@@ -375,6 +375,13 @@ TEST_USER_EMAIL=adp-test@example.com \
 TEST_USER_PASSWORD=... \
 uv run pytest tests/e2e/ -v -m "live or not live_only"
 ```
+
+**Important — which endpoint gets hit:**
+
+- `api_client` fixture → **REST API Gateway** (`API_GATEWAY_URL`). Use for every API contract test (auth, proxy, admin, budget, ratelimit, pool). Bypasses CloudFront so API responses aren't masked by the SPA's `index.html` fallback.
+- `cloudfront_client` fixture → **CloudFront** (`CLOUDFRONT_DOMAIN`). Use only for frontend smoke tests and deliberate CDN-layer checks (response-header policies, `/api/*` routing rule).
+
+Do not hit CloudFront for API contract tests. CloudFront routes `/*` to the S3 origin serving the SPA; any unknown URL under `/` returns `200 index.html`, which masks real backend 4xx/5xx responses.
 
 ### Frontend-only (live, needs Playwright)
 

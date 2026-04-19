@@ -72,6 +72,13 @@ markers = [
     "e2e: mark test as end-to-end test",
     "integration: mark test as integration test",
     "slow: mark test as slow running",
+    "auth: authentication and token management tests",
+    "admin: admin dashboard, RBAC, logging, and metrics tests",
+    "proxy: proxy/LLM request and response format tests",
+    "budget: budget management and enforcement tests",
+    "ratelimit: rate limiting configuration and enforcement tests",
+    "pool: Bedrock account pool management tests",
+    "frontend: frontend smoke tests (Playwright)",
 ]
 
 [tool.setuptools.packages.find]

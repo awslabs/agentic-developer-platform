@@ -16,6 +16,8 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+pytestmark = [pytest.mark.budget, pytest.mark.e2e]
+
 from src.shared.exceptions import BudgetExceededError, ForbiddenError
 from src.shared.schemas.budget import (
     BudgetCreateRequest,

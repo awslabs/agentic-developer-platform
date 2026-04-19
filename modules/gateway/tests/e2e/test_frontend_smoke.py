@@ -15,7 +15,7 @@ import pytest
 
 from tests.e2e.config import is_live, load_live_config
 
-pytestmark = [pytest.mark.browser, pytest.mark.live_only]
+pytestmark = [pytest.mark.frontend, pytest.mark.browser, pytest.mark.live_only]
 
 
 @pytest.fixture
