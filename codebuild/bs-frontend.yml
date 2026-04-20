@@ -7,21 +7,24 @@ version: 0.2
 # Env vars set by the CodeBuild project:
 #   AWS_REGION, ENVIRONMENT
 
+env:
+  variables:
+    FRONTEND_DIR: modules/gateway/frontend
+
 phases:
   install:
     runtime-versions:
       nodejs: 22
     commands:
-      - cd modules/gateway/frontend
-      - npm ci
+      # CodeBuild runs each list item in its OWN shell, so `cd` does not
+      # persist between commands. Chain with `&&` or use absolute paths.
+      - cd $FRONTEND_DIR && npm ci
   build:
     commands:
-      - cd modules/gateway/frontend
-      - VITE_API_URL=/api/gateway npm run build
+      - cd $FRONTEND_DIR && VITE_API_URL=/api/gateway npm run build
   post_build:
     commands:
       - BUCKET=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/frontend-bucket" --query "Parameter.Value" --output text)
-      - cd modules/gateway/frontend
-      - aws s3 sync dist/ "s3://$BUCKET/" --delete
+      - cd $FRONTEND_DIR && aws s3 sync dist/ "s3://$BUCKET/" --delete
       - DIST_ID=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-id" --query "Parameter.Value" --output text) || true
       - '[ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ] && aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*" || true'
