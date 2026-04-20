@@ -511,3 +511,219 @@ resource "aws_secretsmanager_secret_version" "agent_cognito_creds" {
 
   depends_on = [aws_cognito_user_pool_client.agent]
 }
+
+# =============================================================================
+# Admins Group + Test Users (Issue #60)
+# =============================================================================
+# The `admins` group is always created (it's referenced by the app's RBAC
+# middleware). Test users are gated behind var.create_test_users.
+# =============================================================================
+
+# The "admins" Cognito group — always present. The gateway backend checks
+# `"admins" in claims.cognito_groups` to set is_admin=True.
+resource "aws_cognito_user_group" "admins" {
+  name         = "admins"
+  user_pool_id = aws_cognito_user_pool.main.id
+  description  = "Platform administrators with full admin API access"
+}
+
+# --- Test user passwords (random, stored only in Secrets Manager) -----------
+
+resource "random_password" "test_user" {
+  count   = var.create_test_users ? 1 : 0
+  length  = 24
+  special = true
+  # Ensure the password meets Cognito requirements
+  min_upper   = 1
+  min_lower   = 1
+  min_numeric = 1
+  min_special = 1
+}
+
+resource "random_password" "test_admin" {
+  count   = var.create_test_users ? 1 : 0
+  length  = 24
+  special = true
+  min_upper   = 1
+  min_lower   = 1
+  min_numeric = 1
+  min_special = 1
+}
+
+# --- Non-admin test user ----------------------------------------------------
+
+resource "aws_cognito_user" "test_user" {
+  count        = var.create_test_users ? 1 : 0
+  user_pool_id = aws_cognito_user_pool.main.id
+  username     = var.test_user_email
+
+  attributes = {
+    email          = var.test_user_email
+    email_verified = "true"
+    name           = "ADP Test User"
+  }
+
+  temporary_password = random_password.test_user[0].result
+  message_action     = "SUPPRESS"
+
+  # The password is set as a temporary password above; the user must change it
+  # on first login in the UI, but for programmatic access (admin-initiate-auth
+  # with ADMIN_USER_PASSWORD_AUTH) the temp password works directly when
+  # auth_flow allows it.
+
+  lifecycle {
+    ignore_changes = [temporary_password]
+  }
+}
+
+# --- Admin test user ---------------------------------------------------------
+
+resource "aws_cognito_user" "test_admin" {
+  count        = var.create_test_users ? 1 : 0
+  user_pool_id = aws_cognito_user_pool.main.id
+  username     = var.test_admin_email
+
+  attributes = {
+    email          = var.test_admin_email
+    email_verified = "true"
+    name           = "ADP Test Admin"
+  }
+
+  temporary_password = random_password.test_admin[0].result
+  message_action     = "SUPPRESS"
+
+  lifecycle {
+    ignore_changes = [temporary_password]
+  }
+}
+
+# Add admin user to the admins group
+resource "aws_cognito_user_in_group" "test_admin_in_admins" {
+  count        = var.create_test_users ? 1 : 0
+  user_pool_id = aws_cognito_user_pool.main.id
+  group_name   = aws_cognito_user_group.admins.name
+  username     = aws_cognito_user.test_admin[0].username
+
+  depends_on = [aws_cognito_user.test_admin, aws_cognito_user_group.admins]
+}
+
+# --- Promote temporary passwords to permanent -------------------------------
+# aws_cognito_user's temporary_password puts the user in FORCE_CHANGE_PASSWORD,
+# so ADMIN_USER_PASSWORD_AUTH returns a NEW_PASSWORD_REQUIRED challenge
+# instead of tokens. Tests reading these credentials from Secrets Manager
+# need a directly-usable password. Terraform has no first-class resource
+# for admin-set-user-password, so we call the CLI via null_resource. This
+# requires terraform apply to run with AWS creds that can
+# cognito-idp:AdminSetUserPassword on the user pool.
+
+resource "null_resource" "test_user_permanent_password" {
+  count = var.create_test_users ? 1 : 0
+
+  triggers = {
+    user_id      = aws_cognito_user.test_user[0].id
+    password_sha = sha256(random_password.test_user[0].result)
+    pool_id      = aws_cognito_user_pool.main.id
+  }
+
+  provisioner "local-exec" {
+    command     = "aws cognito-idp admin-set-user-password --user-pool-id \"$POOL_ID\" --username \"$USERNAME\" --password \"$PASSWORD\" --permanent --region \"$REGION\""
+    interpreter = ["/bin/sh", "-c"]
+
+    environment = {
+      POOL_ID  = aws_cognito_user_pool.main.id
+      USERNAME = aws_cognito_user.test_user[0].username
+      PASSWORD = random_password.test_user[0].result
+      REGION   = data.aws_region.current.id
+    }
+  }
+
+  depends_on = [aws_cognito_user.test_user]
+}
+
+resource "null_resource" "test_admin_permanent_password" {
+  count = var.create_test_users ? 1 : 0
+
+  triggers = {
+    user_id      = aws_cognito_user.test_admin[0].id
+    password_sha = sha256(random_password.test_admin[0].result)
+    pool_id      = aws_cognito_user_pool.main.id
+  }
+
+  provisioner "local-exec" {
+    command     = "aws cognito-idp admin-set-user-password --user-pool-id \"$POOL_ID\" --username \"$USERNAME\" --password \"$PASSWORD\" --permanent --region \"$REGION\""
+    interpreter = ["/bin/sh", "-c"]
+
+    environment = {
+      POOL_ID  = aws_cognito_user_pool.main.id
+      USERNAME = aws_cognito_user.test_admin[0].username
+      PASSWORD = random_password.test_admin[0].result
+      REGION   = data.aws_region.current.id
+    }
+  }
+
+  depends_on = [aws_cognito_user.test_admin]
+}
+
+# --- Secrets Manager: test user credentials ----------------------------------
+
+resource "aws_secretsmanager_secret" "test_user_credentials" {
+  count       = var.create_test_users ? 1 : 0
+  name        = "adp/${var.environment}/gateway/test-user-credentials"
+  description = "Credentials for non-admin test user (${var.test_user_email})"
+
+  tags = merge(var.common_tags, {
+    Name    = "adp-${var.environment}-test-user-credentials"
+    Purpose = "e2e-testing"
+  })
+}
+
+resource "aws_secretsmanager_secret_version" "test_user_credentials" {
+  count     = var.create_test_users ? 1 : 0
+  secret_id = aws_secretsmanager_secret.test_user_credentials[0].id
+  secret_string = jsonencode({
+    username              = var.test_user_email
+    password              = random_password.test_user[0].result
+    cognito_user_pool_id  = aws_cognito_user_pool.main.id
+    cognito_client_id     = aws_cognito_user_pool_client.main.id
+    aws_region            = data.aws_region.current.id
+    is_admin              = false
+  })
+
+  # Only publish the secret after the password has been promoted to permanent
+  # — otherwise a consumer who reads the secret immediately after apply gets
+  # credentials that still fail with NEW_PASSWORD_REQUIRED.
+  depends_on = [null_resource.test_user_permanent_password]
+}
+
+resource "aws_secretsmanager_secret" "test_admin_credentials" {
+  count       = var.create_test_users ? 1 : 0
+  name        = "adp/${var.environment}/gateway/test-admin-credentials"
+  description = "Credentials for admin test user (${var.test_admin_email})"
+
+  tags = merge(var.common_tags, {
+    Name    = "adp-${var.environment}-test-admin-credentials"
+    Purpose = "e2e-testing"
+  })
+}
+
+resource "aws_secretsmanager_secret_version" "test_admin_credentials" {
+  count     = var.create_test_users ? 1 : 0
+  secret_id = aws_secretsmanager_secret.test_admin_credentials[0].id
+
+  # Publish only after the admin's password is permanent AND the user has been
+  # added to the admins group — consumers otherwise see a user that logs in
+  # successfully but has no admin claims yet.
+  depends_on = [
+    null_resource.test_admin_permanent_password,
+    aws_cognito_user_in_group.test_admin_in_admins,
+  ]
+
+  secret_string = jsonencode({
+    username              = var.test_admin_email
+    password              = random_password.test_admin[0].result
+    cognito_user_pool_id  = aws_cognito_user_pool.main.id
+    cognito_client_id     = aws_cognito_user_pool_client.main.id
+    aws_region            = data.aws_region.current.id
+    is_admin              = true
+  })
+}

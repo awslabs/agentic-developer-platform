@@ -131,8 +131,37 @@ def jwt_for_user() -> str:
 
 @pytest.fixture
 def jwt_for_admin() -> str:
-    """JWT with admin group claim (unit mode only)."""
-    return _mint_jwt(groups=["admin"], extra_claims={"custom:is_admin": "true"})
+    """JWT with admin group claim.
+
+    Unit mode: returns a locally-signed RS256 token with the ``admins`` group
+    claim (matches the backend's ``"admins" in claims.cognito_groups`` check).
+
+    Live mode: reads credentials from the
+    ``adp/<env>/gateway/test-admin-credentials`` Secrets Manager secret
+    (Issue #60) and calls ``admin-initiate-auth``. The admin user is a member
+    of the ``admins`` Cognito group by Terraform.
+    """
+    if is_live():
+        import json as _json
+
+        import boto3
+
+        cfg = load_live_config()
+        sm = boto3.client("secretsmanager", region_name=cfg.aws_region)
+        secret = _json.loads(sm.get_secret_value(SecretId=f"adp/{cfg.environment}/gateway/test-admin-credentials")["SecretString"])
+        cognito = boto3.client("cognito-idp", region_name=cfg.aws_region)
+        resp = cognito.admin_initiate_auth(
+            UserPoolId=secret["cognito_user_pool_id"],
+            ClientId=secret["cognito_client_id"],
+            AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+            AuthParameters={
+                "USERNAME": secret["username"],
+                "PASSWORD": secret["password"],
+            },
+        )
+        return resp["AuthenticationResult"]["AccessToken"]
+
+    return _mint_jwt(groups=["admins"], extra_claims={"custom:is_admin": "true"})
 
 
 @pytest.fixture

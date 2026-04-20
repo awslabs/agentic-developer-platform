@@ -18,3 +18,6 @@ cognito_custom_domain = ""
 
 # API Gateway (REST API with 15-min timeout)
 enable_api_gateway = true
+
+# Issue #60: Provision test users for dev environment
+create_test_users = true

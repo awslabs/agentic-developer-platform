@@ -201,3 +201,72 @@ class TestAccessControl:
 
         # Lower role permissions should be subset of higher roles
         assert dept_perms.issubset(org_perms) or not dept_perms.issubset(org_perms)  # May have different perms
+
+
+class TestRBACNoOrgRejection:
+    """Issue #60 — Gap 3: Non-admin users with no org_id must get 403, not empty 200."""
+
+    @pytest.mark.asyncio
+    async def test_non_admin_no_org_gets_403_on_org_read(self, access_control: AccessControl):
+        """Non-admin with no org_id should be rejected for ORG_READ."""
+        from datetime import UTC, datetime, timedelta
+
+        no_org_context = TokenContext(
+            user_id="orphan-user-001",
+            org_id="",  # No org membership
+            team_id="",
+            department_id="",
+            account_type="human",
+            is_admin=False,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        with pytest.raises(AccessDeniedError) as exc_info:
+            await access_control.check_permission(no_org_context, Permission.ORG_READ)
+
+        assert "No organization membership" in str(exc_info.value.message)
+
+    @pytest.mark.asyncio
+    async def test_non_admin_no_org_gets_403_on_budget_read(self, access_control: AccessControl):
+        """Non-admin with no org_id should be rejected for BUDGET_READ."""
+        from datetime import UTC, datetime, timedelta
+
+        no_org_context = TokenContext(
+            user_id="orphan-user-002",
+            org_id="",
+            team_id="",
+            department_id="",
+            account_type="human",
+            is_admin=False,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        with pytest.raises(AccessDeniedError):
+            await access_control.check_permission(no_org_context, Permission.BUDGET_READ)
+
+    @pytest.mark.asyncio
+    async def test_admin_no_org_allowed(self, access_control: AccessControl, platform_admin_context: TokenContext):
+        """Platform admin should still pass even without an explicit org_id."""
+        result = await access_control.check_permission(platform_admin_context, Permission.ORG_READ)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_non_admin_with_org_allowed(self, access_control: AccessControl, org_admin_context: TokenContext):
+        """Non-admin with a valid org_id should pass ORG_READ."""
+        result = await access_control.check_permission(org_admin_context, Permission.ORG_READ)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_non_admin_no_org_gets_403_on_user_manage(self, access_control: AccessControl):
+        """Non-admin with no org_id should be rejected for USER_MANAGE."""
+        from datetime import UTC, datetime, timedelta
+
+        no_org_context = TokenContext(
+            user_id="orphan-user-003",
+            org_id="",
+            team_id="",
+            department_id="",
+            account_type="human",
+            is_admin=False,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        with pytest.raises(AccessDeniedError):
+            await access_control.check_permission(no_org_context, Permission.USER_MANAGE)

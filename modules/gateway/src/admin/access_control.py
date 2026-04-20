@@ -6,6 +6,26 @@ from src.admin.config import ROLE_PERMISSIONS, AdminRole, Permission
 from src.admin.exceptions import AccessDeniedError, InvalidRoleError, InvalidScopeError
 from src.shared.schemas.auth import TokenContext
 
+# Issue #60: Permissions that require the caller to belong to at least one
+# organization. Non-admin users with no org_id are rejected up front instead
+# of silently returning empty results.
+_ORG_SCOPED_PERMISSIONS: frozenset[Permission] = frozenset({
+    Permission.ORG_READ,
+    Permission.ORG_UPDATE,
+    Permission.ORG_CREATE,
+    Permission.ORG_DELETE,
+    Permission.BUDGET_READ,
+    Permission.BUDGET_UPDATE,
+    Permission.RATELIMIT_READ,
+    Permission.RATELIMIT_UPDATE,
+    Permission.USAGE_READ,
+    Permission.LOGS_READ,
+    Permission.LOGS_EXPORT,
+    Permission.USER_READ,
+    Permission.USER_MANAGE,
+    Permission.METRICS_READ,
+})
+
 
 class AccessControl:
     """
@@ -111,6 +131,16 @@ class AccessControl:
 
         # Check scope if not platform admin
         if role != AdminRole.PLATFORM_ADMIN:
+            # Issue #60: Non-admin users with no org membership must be rejected
+            # for org-scoped permissions. Without this, they get 200 with empty
+            # data instead of 403, which is a silent RBAC bypass.
+            if not allowed_org_id and permission in _ORG_SCOPED_PERMISSIONS:
+                raise AccessDeniedError(
+                    message="No organization membership — cannot access admin resources",
+                    required_permission=permission.value,
+                    user_role=role.value,
+                )
+
             if target_org_id and allowed_org_id and target_org_id != allowed_org_id:
                 raise InvalidScopeError(
                     message="Cannot access resources from another organization",

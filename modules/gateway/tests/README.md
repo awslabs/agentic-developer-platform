@@ -119,17 +119,23 @@ uv run pytest tests/e2e/ -v
 
 ### Live mode (runs against the deployed gateway)
 
+When Terraform is applied with `create_test_users = true` (default in `environments/dev/`), Cognito credentials and pool IDs live in Secrets Manager and SSM. The test runner auto-discovers them; all you need is `TEST_ENV=dev` and AWS credentials:
+
+```bash
+TEST_ENV=dev AWS_PROFILE=<your-profile> uv run pytest tests/e2e/ -v
+```
+
+Config resolution order per field: environment variable → SSM Parameter Store → Secrets Manager (`adp/<env>/gateway/test-user-credentials`). Any field can still be overridden inline — useful for CI or ad-hoc runs:
+
 ```bash
 TEST_ENV=dev \
-API_GATEWAY_URL=https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev \
-CLOUDFRONT_DOMAIN=d1g6cal2ts4iis.cloudfront.net \
-COGNITO_USER_POOL_ID=us-east-1_JEhv9xSGG \
-COGNITO_CLIENT_ID=6cg7ba3hb4v41vbhm0cg8pl17j \
-COGNITO_AGENT_CLIENT_ID=378cm2jdj3rjt2os4cthub7267 \
+API_GATEWAY_URL=https://<id>.execute-api.us-east-1.amazonaws.com/dev \
 TEST_USER_EMAIL=adp-test@example.com \
 TEST_USER_PASSWORD=... \
 uv run pytest tests/e2e/ -v
 ```
+
+The `jwt_for_admin` fixture reads `adp/<env>/gateway/test-admin-credentials` directly, so admin-endpoint tests just need the same `TEST_ENV=dev` + AWS creds.
 
 ### Run by mode
 

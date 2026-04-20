@@ -85,3 +85,27 @@ variable "enable_software_mfa" {
   description = "Enable software token MFA (TOTP)"
   default     = true
 }
+
+# =============================================================================
+# Test Users Configuration (Issue #60)
+# =============================================================================
+# Gate test user provisioning behind a variable so prod deploys don't auto-
+# create test accounts. Dev environments set this to true.
+
+variable "create_test_users" {
+  type        = bool
+  description = "Create test users (admins group, test user, test admin) for dev/test environments. Never enable in production."
+  default     = false
+}
+
+variable "test_user_email" {
+  type        = string
+  description = "Email for the non-admin test user"
+  default     = "adp-test@example.com"
+}
+
+variable "test_admin_email" {
+  type        = string
+  description = "Email for the admin test user"
+  default     = "adp-test-admin@example.com"
+}

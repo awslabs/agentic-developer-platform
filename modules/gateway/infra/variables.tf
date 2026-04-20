@@ -346,3 +346,13 @@ variable "api_gateway_log_retention_days" {
   description = "CloudWatch log retention in days for API Gateway access logs"
   default     = 30
 }
+
+# =============================================================================
+# Test Users Configuration (Issue #60)
+# =============================================================================
+
+variable "create_test_users" {
+  type        = bool
+  description = "Create Cognito test users (admins group, test user, test admin) with Secrets Manager credentials. For dev/test only — never enable in production."
+  default     = false
+}

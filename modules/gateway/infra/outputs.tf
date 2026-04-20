@@ -116,6 +116,28 @@ output "cognito_token_endpoint" {
   value       = module.cognito.token_endpoint
 }
 
+# RDS Bootstrap Outputs (Issue #60)
+output "rds_bootstrap_job_name" {
+  description = "Name of the K8s Job that granted rds_iam to the DB user"
+  value       = module.rds_bootstrap.bootstrap_job_name
+}
+
+# Cognito Test Users Outputs (Issue #60)
+output "cognito_admins_group" {
+  description = "Name of the Cognito admins group"
+  value       = module.cognito.admins_group_name
+}
+
+output "test_user_credentials_secret_arn" {
+  description = "ARN of the Secrets Manager secret for non-admin test user credentials"
+  value       = module.cognito.test_user_credentials_secret_arn
+}
+
+output "test_admin_credentials_secret_arn" {
+  description = "ARN of the Secrets Manager secret for admin test user credentials"
+  value       = module.cognito.test_admin_credentials_secret_arn
+}
+
 # Chat Logging Outputs (Issue #143)
 output "chat_logs_bucket_name" {
   description = "Name of the S3 bucket for chat logs"

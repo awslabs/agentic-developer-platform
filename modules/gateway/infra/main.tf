@@ -375,6 +375,9 @@ module "cognito" {
   refresh_token_validity = var.cognito_refresh_token_validity
   id_token_validity      = var.cognito_id_token_validity
 
+  # Issue #60: Provision test users (admins group, test user, test admin)
+  create_test_users = var.create_test_users
+
   depends_on = [module.cloudfront]
 }
 
@@ -491,6 +494,38 @@ resource "aws_security_group_rule" "eks_cluster_to_redis" {
   source_security_group_id = local.cluster_security_group_id
 
   depends_on = [module.redis]
+}
+
+# =============================================================================
+# RDS Bootstrap Module (Issue #60)
+# =============================================================================
+# One-shot Job that runs `GRANT rds_iam TO bgadmin` on fresh databases.
+# Without this, IAM-authenticated connections fail even though RDS has
+# iam_database_authentication_enabled = true. The Postgres role must
+# explicitly have the rds_iam grant.
+#
+# Must run AFTER RDS is available and SG rules allow EKS → RDS.
+# =============================================================================
+
+module "rds_bootstrap" {
+  source = "./modules/rds-bootstrap"
+
+  name_prefix            = local.name_prefix
+  namespace              = "adp-gateway"
+  aws_region             = var.aws_region
+  db_host                = module.rds.db_instance_address
+  db_name                = var.rds_db_name
+  db_username            = var.rds_username
+  master_user_secret_arn = module.rds.master_user_secret_arn
+  oidc_provider_arn      = local.oidc_provider_arn
+  oidc_issuer            = local.oidc_issuer
+  common_tags            = local.common_tags
+  rds_instance_id        = module.rds.db_instance_id
+
+  depends_on = [
+    module.rds,
+    aws_security_group_rule.eks_cluster_to_rds,
+  ]
 }
 
 # =============================================================================

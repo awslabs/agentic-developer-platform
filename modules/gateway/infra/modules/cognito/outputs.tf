@@ -153,3 +153,22 @@ output "agent_credentials_secret_name" {
   description = "Name of the Secrets Manager secret containing agent credentials"
   value       = aws_secretsmanager_secret.agent_cognito_creds.name
 }
+
+# =============================================================================
+# Test Users Outputs (Issue #60)
+# =============================================================================
+
+output "admins_group_name" {
+  description = "Name of the Cognito admins group"
+  value       = aws_cognito_user_group.admins.name
+}
+
+output "test_user_credentials_secret_arn" {
+  description = "ARN of the Secrets Manager secret for test user credentials"
+  value       = var.create_test_users ? aws_secretsmanager_secret.test_user_credentials[0].arn : ""
+}
+
+output "test_admin_credentials_secret_arn" {
+  description = "ARN of the Secrets Manager secret for test admin credentials"
+  value       = var.create_test_users ? aws_secretsmanager_secret.test_admin_credentials[0].arn : ""
+}
