@@ -34,12 +34,22 @@ class WebSocketRouter:
             logger.warning("No connection_id for WebSocket routing (task=%s)", task_id)
             return False
 
-        payload = json.dumps({
-            "type": "response",
+        # Default frame type is `response` (final reply). Progress frames set
+        # response_type=progress + carry kind/turn so the UI can render them
+        # as ephemeral status lines instead of appending to the transcript.
+        frame_type = metadata.get("response_type", "response")
+        frame: dict[str, Any] = {
+            "type": frame_type,
             "task_id": task_id,
             "content": content,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        }
+        if frame_type == "progress":
+            if metadata.get("progress_kind"):
+                frame["kind"] = metadata["progress_kind"]
+            if metadata.get("progress_turn"):
+                frame["turn"] = metadata["progress_turn"]
+        payload = json.dumps(frame)
 
         try:
             self._get_client().post_to_connection(

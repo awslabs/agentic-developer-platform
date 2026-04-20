@@ -61,22 +61,40 @@ def _process_response(response: dict) -> None:
     task_id = response.get("task_id", "")
     session_id = response.get("session_id", "")
     thread_id = response.get("thread_id", "")
-    content = response.get("result", response.get("content", ""))
+    status = response.get("status", "")
+    # Progress frames (status=progress) use `text` as the user-facing
+    # message. Regular replies carry the reply body in `result` or `content`.
+    content = response.get("text") if status == "progress" else response.get("result", response.get("content", ""))
     channel = response.get("channel", "")
     now = int(time.time())
 
-    logger.info("Response: task=%s session=%s thread=%s channel=%s", task_id, session_id, thread_id, channel)
+    logger.info(
+        "Response: task=%s session=%s thread=%s channel=%s status=%s",
+        task_id, session_id, thread_id, channel, status,
+    )
 
-    # 1. Append to session messages
-    if session_id and sessions_table:
+    is_progress = status == "progress"
+
+    # 1. Persist. Skip for progress frames — they're UI ephemera, not
+    # conversation history. The chat agent records the final assistant turn
+    # via LCM; we don't want progress previews polluting the gateway sessions
+    # table's message list.
+    if session_id and sessions_table and not is_progress:
         _append_response(session_id, content, task_id, now)
 
-    # 2. Route to channel
+    # 2. Route to channel (progress frames go through the same router path —
+    # the UI decides how to render based on `status` / `type`).
     metadata = response.get("channel_metadata", response.get("platform_data", {}))
     if response.get("connection_id"):
         metadata["connection_id"] = response["connection_id"]
     if session_id:
         metadata["session_id"] = session_id
+    if is_progress:
+        # Let the WS router emit a distinct frame type so UIs can style
+        # progress differently from final replies.
+        metadata["response_type"] = "progress"
+        metadata["progress_kind"] = response.get("kind", "")
+        metadata["progress_turn"] = response.get("turn", 0)
 
     if channel in ("webchat", "websocket"):
         ws_router.route(content, metadata, task_id)
@@ -89,7 +107,13 @@ def _process_response(response: dict) -> None:
     elif rest_router:
         rest_router.route(content, metadata, task_id)
 
-    # 3. Thread-aware re-enqueue (only for long_running threads)
+    # 3. Thread bookkeeping — skip for progress frames. The thread isn't done
+    # until the final reply lands; re-enqueue and lock clearing only happen
+    # then.
+    if is_progress:
+        return
+
+    # Thread-aware re-enqueue (only for long_running threads)
     if session_id and thread_id and sessions_table:
         _check_thread_and_reenqueue(session_id, thread_id, response, now)
     elif session_id and sessions_table:

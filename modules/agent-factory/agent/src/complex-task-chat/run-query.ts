@@ -12,6 +12,11 @@
  * - Force-exit safety net: if the stream doesn't close within
  *   POST_COMPLETION_TIMEOUT_MS after the `result` message, log and carry on.
  * - Harvest input/output token counts from the SDK `result` message.
+ * - Emit progress events (tool use, thinking preview) so the orchestrator can
+ *   forward them to the WebSocket and keep the connection warm through long
+ *   (multi-minute) research turns. Server-side progress is the only way to
+ *   defeat API Gateway WebSocket's 10-min idle-timeout — it resets on any data
+ *   frame, so a trickle of progress notifications keeps the socket alive.
  */
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
@@ -23,6 +28,30 @@ import { AgentTool, AgentToolResult, SDKMessage } from './context/types';
 const POST_COMPLETION_TIMEOUT_MS = 10 * 60 * 1000;
 // Heartbeat cadence for log-only "still alive" notifications.
 const HEARTBEAT_INTERVAL_MS = 30_000;
+// Minimum gap between progress events we emit to the client. Prevents flooding
+// when the agent rips through many tool calls in quick succession.
+const PROGRESS_MIN_INTERVAL_MS = 8_000;
+// Hard cap on characters of a thinking preview. The client only needs a teaser.
+const PROGRESS_PREVIEW_MAX_CHARS = 200;
+
+/**
+ * Progress event emitted mid-turn. The orchestrator is expected to forward
+ * these to the user over the delivery channel (WebSocket). Each event type is
+ * a structured signal: `tool_use` says "I'm calling tool X", `thinking` carries
+ * a short preview of the model's current reasoning.
+ */
+export type ProgressEvent =
+  | {
+      type: 'tool_use';
+      tool_name: string;
+      input_summary: string;
+      turn: number;
+    }
+  | {
+      type: 'thinking';
+      preview: string;
+      turn: number;
+    };
 
 export interface RunQueryInput {
   systemPrompt: string;
@@ -36,6 +65,13 @@ export interface RunQueryInput {
   cwd?: string;
   maxTurns?: number;
   log?: (msg: string) => void;
+  /**
+   * Optional progress sink. Called with mid-turn signals (tool invocations +
+   * thinking previews). If the callback throws or returns a rejected Promise,
+   * we swallow the error — progress is best-effort and must never break the
+   * main turn. Throttled to at most one event per PROGRESS_MIN_INTERVAL_MS.
+   */
+  onProgress?: (event: ProgressEvent) => void | Promise<void>;
 }
 
 export interface RunQueryResult {
@@ -54,6 +90,7 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
     cwd = '/tmp/workspace',
     maxTurns = 50,
     log = console.log,
+    onProgress,
   } = input;
 
   // 1) Build an MCP server that hosts port-provided tools.
@@ -96,6 +133,27 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
   let outputTokens = 0;
   let turnCount = 0;
   let queryCompletedAt: number | null = null;
+  let lastProgressAt = 0;
+  let lastProgressKey = ''; // dedupe consecutive identical events
+
+  /**
+   * Fire a progress event if caller supplied onProgress AND we're past the
+   * throttle window AND this isn't a repeat of the previous event. Errors
+   * swallowed: progress is best-effort, a failed WS send must not abort the
+   * main turn.
+   */
+  const emitProgress = (event: ProgressEvent): void => {
+    if (!onProgress) return;
+    const key = event.type === 'tool_use' ? `tool:${event.tool_name}` : 'thinking';
+    const now = Date.now();
+    if (now - lastProgressAt < PROGRESS_MIN_INTERVAL_MS) return;
+    if (key === lastProgressKey) return; // e.g. don't emit 5 back-to-back WebSearch tool_uses
+    lastProgressAt = now;
+    lastProgressKey = key;
+    Promise.resolve(onProgress(event)).catch(err => {
+      log(`[run-query] onProgress failed (non-fatal): ${(err as Error).message}`);
+    });
+  };
 
   const heartbeat = setInterval(() => {
     // Force-exit safety net (mirrors agent-worker.ts:868-880).
@@ -149,13 +207,42 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
         case 'assistant': {
           turnCount++;
           const content = msg.message as Record<string, unknown> | undefined;
-          if (content?.content && Array.isArray(content.content)) {
-            const textParts = (content.content as Array<Record<string, unknown>>)
-              .filter(p => p.type === 'text')
-              .map(p => p.text as string);
-            if (textParts.length > 0) {
-              resultText = textParts.join('\n');
+          const blocks = (content?.content as Array<Record<string, unknown>> | undefined) ?? [];
+
+          // Walk blocks: grab text for resultText; emit progress for tool_use
+          // and for "thinking" text (text blocks that aren't the final answer
+          // — heuristic: any text block seen in an intermediate turn).
+          const textParts: string[] = [];
+          let sawToolUse = false;
+          for (const block of blocks) {
+            if (block.type === 'text' && typeof block.text === 'string') {
+              textParts.push(block.text);
+            } else if (block.type === 'tool_use' && typeof block.name === 'string') {
+              sawToolUse = true;
+              emitProgress({
+                type: 'tool_use',
+                tool_name: block.name,
+                input_summary: summarizeToolInput(block.input as Record<string, unknown>),
+                turn: turnCount,
+              });
             }
+          }
+
+          if (textParts.length > 0) {
+            const joined = textParts.join('\n');
+            // Any assistant turn that ALSO fires a tool_use is reasoning on
+            // the way to a final answer — emit its text as a "thinking"
+            // preview. The last assistant turn (no tool_use, lands before
+            // `result`) is the final answer and stays silent here — the
+            // orchestrator delivers it via the normal response path.
+            if (sawToolUse) {
+              emitProgress({
+                type: 'thinking',
+                preview: joined.slice(0, PROGRESS_PREVIEW_MAX_CHARS),
+                turn: turnCount,
+              });
+            }
+            resultText = joined;
           }
           break;
         }
@@ -188,6 +275,30 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
     tokens: { input: inputTokens, output: outputTokens },
     turnCount,
   };
+}
+
+/**
+ * Render a one-line summary of a tool's input for the progress frame. The
+ * client only needs enough to say "agent is searching for X" or "agent is
+ * reading file Y". We pick the most informative field by name.
+ */
+function summarizeToolInput(input: Record<string, unknown> | undefined): string {
+  if (!input) return '';
+  const prefer = ['query', 'url', 'path', 'file_path', 'pattern', 'command', 'summary_id'];
+  for (const k of prefer) {
+    const v = input[k];
+    if (typeof v === 'string' && v.length > 0) return truncate(v, 120);
+  }
+  // Fallback: first string-valued field.
+  for (const [, v] of Object.entries(input)) {
+    if (typeof v === 'string' && v.length > 0) return truncate(v, 120);
+  }
+  return '';
+}
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 1)}…`;
 }
 
 /**

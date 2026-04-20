@@ -138,6 +138,28 @@ async function processOne(
       tools,
       model: persona.modelOverride ?? process.env.ANTHROPIC_MODEL,
       cwd: '/tmp/workspace',
+      // Forward mid-turn progress to the user over the same channel as the
+      // final reply. Keeps the WebSocket warm (API Gateway's 10-min idle
+      // timeout resets on any data frame) and gives the user something to
+      // look at during long research turns.
+      onProgress: async event => {
+        const text =
+          event.type === 'tool_use'
+            ? renderToolUseProgress(event.tool_name, event.input_summary)
+            : `💭 ${event.preview}`;
+        await deps.sqs.sendProgress({
+          task_id,
+          session_id,
+          status: 'progress',
+          kind: event.type,
+          text,
+          turn: event.turn,
+          thread_id,
+          connection_id,
+          channel,
+          channel_metadata: platform_data,
+        });
+      },
     });
 
     await deps.context.record({
@@ -182,6 +204,38 @@ async function processOne(
 
     // Do not delete — DLQ policy applies
     throw err;
+  }
+}
+
+/**
+ * Render a user-facing progress line for a tool_use event. Keep these short
+ * and specific — they're status updates, not full responses.
+ */
+function renderToolUseProgress(toolName: string, inputSummary: string): string {
+  const preview = inputSummary ? ` — ${inputSummary}` : '';
+  switch (toolName) {
+    case 'WebSearch':
+      return `🔍 Searching${preview ? `: ${inputSummary}` : '...'}`;
+    case 'WebFetch':
+      return `🌐 Fetching${preview ? `: ${inputSummary}` : ' page'}...`;
+    case 'Bash':
+      return `💻 Running${preview}`;
+    case 'Read':
+      return `📖 Reading${preview}`;
+    case 'Write':
+      return `✏️ Writing${preview}`;
+    case 'Edit':
+      return `✏️ Editing${preview}`;
+    case 'Glob':
+      return `📂 Searching files${preview ? `: ${inputSummary}` : ''}`;
+    case 'Grep':
+      return `🔎 Searching text${preview ? `: ${inputSummary}` : ''}`;
+    case 'Skill':
+      return `🎯 Using skill${preview}`;
+    default:
+      // MCP tools carry their mcp__chat-agent-tools__<name> prefix; trim it.
+      const pretty = toolName.replace(/^mcp__chat-agent-tools__/, '');
+      return `🛠️ ${pretty}${preview}`;
   }
 }
 

@@ -56,6 +56,27 @@ export interface TaskResponse {
   channel_metadata?: Record<string, unknown>;
 }
 
+/**
+ * Progress frame emitted by the chat agent mid-turn. Goes to the SAME
+ * response queue the final reply uses, with status="progress" so the
+ * response Lambda treats it as a deliverable but doesn't close the thread.
+ */
+export interface ProgressMessage {
+  task_id: string;
+  session_id: string;
+  status: 'progress';
+  /** One of `tool_use` | `thinking` — see run-query ProgressEvent. */
+  kind: string;
+  /** Human-readable one-liner the UI can render as a status update. */
+  text: string;
+  turn: number;
+  // Same routing echo as TaskResponse so the WebSocket router fires.
+  thread_id?: string;
+  connection_id?: string;
+  channel?: string;
+  channel_metadata?: Record<string, unknown>;
+}
+
 export class SqsClient {
   private readonly client: SQSClient;
   private readonly inputQueueUrl: string;
@@ -106,6 +127,32 @@ export class SqsClient {
           ? {
               MessageGroupId: response.session_id,
               MessageDeduplicationId: `resp_${response.task_id}`,
+            }
+          : {}),
+      }),
+    );
+  }
+
+  /**
+   * Send a mid-turn progress frame to the response queue. The response Lambda
+   * forwards these like normal replies (same channel/connection_id routing),
+   * but the frame's `status: "progress"` lets the Lambda skip end-of-turn
+   * bookkeeping (thread re-enqueue, session lock clear).
+   *
+   * Each frame must have a UNIQUE dedup id on FIFO — same task can emit many.
+   * We use `<task_id>-<turn>-<kind>` so the de-dup key is deterministic and
+   * collision-proof within one turn.
+   */
+  async sendProgress(progress: ProgressMessage): Promise<void> {
+    const isFifo = this.responseQueueUrl.endsWith('.fifo');
+    await this.client.send(
+      new SendMessageCommand({
+        QueueUrl: this.responseQueueUrl,
+        MessageBody: JSON.stringify(progress),
+        ...(isFifo
+          ? {
+              MessageGroupId: progress.session_id,
+              MessageDeduplicationId: `prog_${progress.task_id}_${progress.turn}_${progress.kind}`,
             }
           : {}),
       }),
