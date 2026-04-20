@@ -67,9 +67,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          HTTP_CODE=$(gh api "repos/${{ github.repository }}/environments/production" \
-            --silent -i 2>&1 | head -1 | awk '{print $2}' || echo "000")
-          if [ "$HTTP_CODE" != "200" ]; then
+          # `gh api` exit code is the only reliable signal here — `--silent -i`
+          # used to be used to parse an HTTP status line, but `--silent` also
+          # suppresses the `-i` headers, so HTTP_CODE was always empty and
+          # the check always failed. Exit 0 = exists, non-zero = doesn't.
+          if ! gh api "repos/${{ github.repository }}/environments/production" >/dev/null 2>&1; then
             echo "::error::The 'production' environment does not exist in repo settings."
             echo "Create it via: Settings -> Environments -> New environment -> name 'production' -> Required reviewers: @prsaws"
             exit 1
