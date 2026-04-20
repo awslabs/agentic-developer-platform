@@ -2,12 +2,12 @@
 # The app will use its IAM role to generate short-lived auth tokens instead
 # of storing passwords in Secrets Manager.
 # Auth tokens auto-expire after 15 minutes and are refreshed on each connection.
-
-# Random password for RDS master user (bootstrap only - IAM auth is primary)
-resource "random_password" "master" {
-  length  = 32
-  special = false
-}
+#
+# The master user password is managed by AWS Secrets Manager via
+# `manage_master_user_password = true`. AWS creates the secret, rotates it,
+# and never surfaces a plaintext value to Terraform state. Bootstrap tasks
+# that need to run one-time SQL (e.g. `GRANT rds_iam TO bgadmin`) read the
+# current value just-in-time via `aws secretsmanager get-secret-value`.
 
 # DB Subnet Group
 resource "aws_db_subnet_group" "main" {
@@ -77,9 +77,11 @@ resource "aws_db_instance" "main" {
   # The app generates short-lived auth tokens using generate_db_auth_token()
   iam_database_authentication_enabled = true
 
-  # Use a random password for initial master user setup
-  # IAM auth is the primary auth method - master password is only for admin/bootstrap
-  password = random_password.master.result
+  # AWS-managed master password. A secret is created in Secrets Manager,
+  # rotated automatically, and the plaintext value is never in Terraform
+  # state. Use the `master_user_secret_arn` output to read it just-in-time
+  # for bootstrap tasks. IAM auth remains the primary auth for runtime.
+  manage_master_user_password = true
 
   # Network configuration
   db_subnet_group_name   = aws_db_subnet_group.main.name

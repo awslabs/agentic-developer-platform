@@ -96,6 +96,15 @@ output "db_read_replica_arn" {
   value       = length(aws_db_instance.read_replica) > 0 ? aws_db_instance.read_replica[0].arn : null
 }
 
+# Master user credentials secret (AWS-managed password).
+# The secret contains {username, password} and is rotated by AWS automatically.
+# Bootstrap tasks that need DDL access (e.g. GRANT rds_iam TO <user>) read
+# this secret just-in-time. Application runtime uses IAM auth, not this.
+output "master_user_secret_arn" {
+  description = "ARN of the AWS-managed Secrets Manager secret holding the master user password"
+  value       = try(aws_db_instance.main.master_user_secret[0].secret_arn, null)
+}
+
 # Monitoring Outputs
 output "enhanced_monitoring_role_arn" {
   description = "The ARN of the IAM role for enhanced monitoring"

@@ -21,6 +21,11 @@ output "rds_database_name" {
   value       = module.rds.db_instance_name
 }
 
+output "rds_master_user_secret_arn" {
+  description = "ARN of the AWS-managed Secrets Manager secret holding the RDS master user password. Read just-in-time for one-time bootstrap DDL (e.g. GRANT rds_iam TO <user>); runtime uses IAM auth."
+  value       = module.rds.master_user_secret_arn
+}
+
 # Redis Outputs (conditional)
 output "redis_endpoint" {
   description = "ElastiCache Redis endpoint"
