@@ -19,6 +19,7 @@ AGENT_IMAGE="${AGENT_IMAGE:?AGENT_IMAGE is required (full ECR URI with tag)}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST="${SCRIPT_DIR}/chat-scaledjob.yaml"
+PREPULL_MANIFEST="${SCRIPT_DIR}/image-prepull-daemonset.yaml"
 INFRA_DIR="${SCRIPT_DIR}/../../infra"
 
 echo "[deploy-chat] Reading Terraform outputs from ${INFRA_DIR}"
@@ -54,10 +55,18 @@ sed \
   -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
   "${MANIFEST}" | kubectl apply -f -
 
+# Pre-pull DaemonSet: caches the chat-agent image on every node so KEDA pod
+# spawn skips the ECR pull step (saves ~5-30s per cold pod).
+echo "[deploy-chat] Applying pre-pull DaemonSet..."
+sed \
+  -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
+  "${PREPULL_MANIFEST}" | kubectl apply -f -
+
 echo "[deploy-chat] Applied. Verifying..."
 kubectl get configmap chat-agent-config -n "${NAMESPACE}" -o name
 kubectl get triggerauthentication chat-agent-aws-auth -n "${NAMESPACE}" -o name
 kubectl get scaledjob chat-agent-worker -n "${NAMESPACE}" -o name
+kubectl get daemonset chat-agent-image-prepull -n "${NAMESPACE}" -o name
 
 echo "[deploy-chat] Done. Tail events with:"
 echo "  kubectl get events -n ${NAMESPACE} --sort-by=.lastTimestamp | tail -20"

@@ -221,6 +221,26 @@ resource "helm_release" "keda" {
     name  = "resources.operator.limits.memory"
     value = "512Mi"
   }
+
+  # Prevent EKS Auto Mode's Karpenter from evicting the KEDA operator /
+  # metrics-apiserver / admission-webhook pods during node consolidation.
+  # Without this, the scaler can disappear at arbitrary times, breaking the
+  # 1-second SQS polling and leaving messages stuck until a new operator
+  # schedules.
+  #
+  # `values = [yamlencode(...)]` is used instead of `set {}` because the helm
+  # provider v2.x's `set` coerces the string "true" into a YAML bool, which
+  # fails Kubernetes annotation validation (annotations must be strings). The
+  # yamlencode path preserves the quoted-string typing.
+  values = [
+    yamlencode({
+      podAnnotations = {
+        keda            = { "karpenter.sh/do-not-disrupt" = "true" }
+        metricsAdapter  = { "karpenter.sh/do-not-disrupt" = "true" }
+        webhooks        = { "karpenter.sh/do-not-disrupt" = "true" }
+      }
+    })
+  ]
 }
 
 # --- Extend runner IAM with gateway permissions ---

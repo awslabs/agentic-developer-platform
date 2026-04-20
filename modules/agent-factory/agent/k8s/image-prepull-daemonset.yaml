@@ -1,0 +1,54 @@
+---
+# Pre-pull DaemonSet — seeds every node in adp-gateway-agents with the
+# chat-agent image so KEDA-spawned pods skip the pull step and start in ~2s
+# instead of ~10-30s.
+#
+# How it works: a minimal pause container using the SAME image (just sleeping
+# forever). containerd caches layers per-node; when the real ScaledJob pod
+# lands, its image is already local.
+#
+# Auto Mode will keep nodes around because the DaemonSet pod runs on them,
+# and karpenter.sh/do-not-disrupt prevents consolidation evictions.
+#
+# Image is pinned to :latest rather than a sha because we want the DaemonSet
+# to track whatever the chat-agent-deploy workflow pushed most recently.
+# The workflow updates the ScaledJob image to a sha — so pods use :sha AND
+# :latest points at that same sha, meaning the DaemonSet has it cached.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: chat-agent-image-prepull
+  namespace: adp-gateway-agents
+  labels:
+    app.kubernetes.io/name: chat-agent-image-prepull
+    app.kubernetes.io/part-of: agent-gateway
+    app.kubernetes.io/component: prepull
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chat-agent-image-prepull
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: chat-agent-image-prepull
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      # Run on any node (don't restrict to a particular label). Tolerate common
+      # control-plane / system taints so this lands everywhere.
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: prepull
+          image: REPLACE_WITH_AGENT_IMAGE
+          # Override the agent ENTRYPOINT — we want the container to start,
+          # keep the image cached, and do nothing else.
+          command: ["/bin/sh", "-c", "while true; do sleep 3600; done"]
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "50m"
+              memory: "64Mi"
+      terminationGracePeriodSeconds: 5
