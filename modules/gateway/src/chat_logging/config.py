@@ -4,7 +4,9 @@ Issue #143: Configuration settings for async chat logging with PII scrubbing.
 """
 
 from enum import StrEnum
+from typing import Any
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -27,6 +29,16 @@ class ChatLoggingSettings(BaseSettings):
     chat_logging_bucket: str = ""  # S3 bucket name for chat logs
     chat_logging_scrub_level: ScrubLevel = ScrubLevel.STANDARD  # Scrubbing level: off|basic|standard
     chat_logging_exclude_models: str = ""  # Comma-separated list of models to skip logging
+
+    # "none" is a common operator mis-spelling of "off" that crashed the whole
+    # app on startup (Pydantic enum parse error before a single request lands).
+    # Accept it as a synonym so a stale configmap can't brick the deployment.
+    @field_validator("chat_logging_scrub_level", mode="before")
+    @classmethod
+    def _coerce_scrub_level(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.strip().lower() == "none":
+            return ScrubLevel.OFF
+        return v
 
     model_config = {"env_prefix": "BG_", "env_file": ".env"}
 
