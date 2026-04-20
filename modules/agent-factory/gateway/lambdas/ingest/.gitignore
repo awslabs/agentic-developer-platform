@@ -1,0 +1,11 @@
+# Installed by platform/scripts/build-ingest-lambda.sh before `terraform apply`.
+# These are Lambda runtime deps (pyjwt + cryptography + transitive) zipped
+# into the deployment package. Never commit them — regenerate from
+# requirements.txt.
+*.dist-info/
+*.libs/
+_cffi_backend*.so
+jwt/
+cryptography/
+cffi/
+pycparser/

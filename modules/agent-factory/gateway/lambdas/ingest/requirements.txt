@@ -1,0 +1,8 @@
+# Dependencies bundled into the ingest Lambda zip.
+# The Terraform `data "archive_file"` block zips this directory as-is, so
+# deps must be installed into the source dir before `terraform apply`.
+# Build helper: platform/scripts/build-ingest-lambda.sh (installs with
+# --platform manylinux2014_x86_64 --only-binary=:all: so Linux wheels land
+# regardless of the host OS).
+pyjwt>=2.8.0
+cryptography>=42.0.0

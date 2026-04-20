@@ -61,3 +61,13 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "github_org" {
+  description = "GitHub org used to namespace the GH App secrets in Secrets Manager. Secrets must be stored at adp/<github_org>/gh-app-<persona>-{id,key} by the onboarding script (platform/scripts/create-github-apps.sh)."
+  type        = string
+}
+
+variable "account_id" {
+  description = "AWS account ID (for constructing secret ARNs)."
+  type        = string
+}

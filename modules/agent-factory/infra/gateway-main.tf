@@ -38,13 +38,15 @@ module "gateway_lambda" {
   name_prefix         = local.name_prefix
   environment         = var.environment
   aws_region          = var.aws_region
+  account_id          = var.account_id
+  github_org          = var.github_org
   ingest_source_dir   = "${path.module}/../gateway/lambdas/ingest"
   response_source_dir = "${path.module}/../gateway/lambdas/response"
   # Chat agent uses the FIFO queue (MessageGroupId=session_id serializes
   # per-session turns). The standard queue still exists for the legacy Python
   # worker but the ingest Lambda only sends to FIFO now.
-  input_queue_url = aws_sqs_queue.chat_agent_tasks_fifo.url
-  input_queue_arn = aws_sqs_queue.chat_agent_tasks_fifo.arn
+  input_queue_url     = aws_sqs_queue.chat_agent_tasks_fifo.url
+  input_queue_arn     = aws_sqs_queue.chat_agent_tasks_fifo.arn
   response_queue_url  = module.gateway_sqs.response_queue_url
   response_queue_arn  = module.gateway_sqs.response_queue_arn
   sessions_table_name = module.gateway_sessions.table_name

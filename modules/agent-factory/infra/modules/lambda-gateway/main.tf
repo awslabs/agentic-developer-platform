@@ -21,6 +21,13 @@ resource "aws_lambda_function" "ingest" {
       RESPONSE_QUEUE_URL  = var.response_queue_url
       SESSIONS_TABLE_NAME = var.sessions_table_name
       AWS_REGION_NAME     = var.aws_region
+      # GH App secret prefix for the github_actions dispatch path. The ingest
+      # Lambda uses the "ops" persona specifically — it has write perms for
+      # issues/labels on the target repo. Secrets are written by
+      # platform/scripts/create-github-apps.sh at
+      #   adp/<github_org>/gh-app-ops-{id,key}
+      # The code appends `-id` and `-key` at runtime.
+      GH_APP_SECRET_PREFIX = "adp/${var.github_org}/gh-app-ops"
     }
   }
 
@@ -94,6 +101,25 @@ resource "aws_iam_role_policy" "ingest_dynamodb" {
       Effect   = "Allow"
       Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
       Resource = [var.sessions_table_arn, "${var.sessions_table_arn}/index/*"]
+    }]
+  })
+}
+
+# GH App secrets for the github_actions dispatch path. Wildcard-scoped to the
+# configured org's namespace so the policy stays valid as new personas are
+# added by the onboarding script (create-github-apps.sh) without Terraform
+# changes. The org must match what the onboarding script used to write the
+# secrets.
+resource "aws_iam_role_policy" "ingest_gh_app_secrets" {
+  name = "gh-app-secrets-read"
+  role = aws_iam_role.ingest.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:adp/${var.github_org}/gh-app-*"
     }]
   })
 }

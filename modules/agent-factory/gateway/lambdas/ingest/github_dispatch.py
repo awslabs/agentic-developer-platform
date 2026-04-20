@@ -23,7 +23,18 @@ import boto3
 logger = logging.getLogger(__name__)
 
 AWS_REGION = os.environ.get("AWS_REGION_NAME", "us-east-1")
-GH_APP_SECRET_PREFIX = os.environ.get("GH_APP_SECRET_PREFIX", "adp/gh-app-ops")
+# Secret prefix for the GH App the ingest Lambda uses to create+label issues.
+# Expected shape: `adp/<github_org>/gh-app-ops`. Full secret IDs at runtime
+# are `${prefix}-id` and `${prefix}-key`. Set by Terraform; no default — we
+# prefer a visible cold-start warning over silently reading the wrong path.
+GH_APP_SECRET_PREFIX = os.environ.get("GH_APP_SECRET_PREFIX", "")
+if not GH_APP_SECRET_PREFIX:
+    logger.warning(
+        "GH_APP_SECRET_PREFIX env var is unset. github_actions classification "
+        "path will fail at runtime because secret lookups will return the wrong "
+        "ARN. Fix: set GH_APP_SECRET_PREFIX on the ingest Lambda via Terraform — "
+        "see modules/agent-factory/infra/modules/lambda-gateway/main.tf."
+    )
 
 _secrets_client = None
 _token_cache: dict[str, Any] = {"token": None, "expires_at": 0}
@@ -195,14 +206,29 @@ def _get_installation_token(org: str) -> str | None:
     if _token_cache["token"] and now < _token_cache["expires_at"]:
         return _token_cache["token"]
 
+    if not GH_APP_SECRET_PREFIX:
+        logger.error(
+            "Cannot fetch GH App token: GH_APP_SECRET_PREFIX env var is unset. "
+            "This is a Terraform misconfiguration — github_actions classifier "
+            "path is dead until fixed."
+        )
+        return None
+
+    id_secret_id = f"{GH_APP_SECRET_PREFIX}-id"
+    key_secret_id = f"{GH_APP_SECRET_PREFIX}-key"
     try:
         secrets = _get_secrets()
-        app_id = secrets.get_secret_value(SecretId=f"{GH_APP_SECRET_PREFIX}-id")["SecretString"]
-        private_key = secrets.get_secret_value(SecretId=f"{GH_APP_SECRET_PREFIX}-key")["SecretString"]
+        app_id = secrets.get_secret_value(SecretId=id_secret_id)["SecretString"]
+        private_key = secrets.get_secret_value(SecretId=key_secret_id)["SecretString"]
 
         jwt_token = _create_jwt(app_id, private_key)
         installation_id = _get_installation_id(jwt_token, org)
         if not installation_id:
+            logger.error(
+                "Got GH App creds but no installation found for org %s. Check the "
+                "app is installed on the org.",
+                org,
+            )
             return None
 
         url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
@@ -221,7 +247,14 @@ def _get_installation_token(org: str) -> str | None:
             return token
 
     except Exception as e:
-        logger.error("Failed to get GitHub installation token: %s", e)
+        # Include the exact secret IDs we tried so IAM AccessDenied is
+        # debuggable without replaying the call.
+        logger.error(
+            "Failed to get GitHub installation token (secrets: %s, %s): %s",
+            id_secret_id,
+            key_secret_id,
+            e,
+        )
         return None
 
 
