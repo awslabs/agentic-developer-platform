@@ -876,21 +876,42 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
     if [ -z "$ALB_ARN" ] || [ "$ALB_ARN" = "None" ]; then
       warn "ALB not found after 10 minutes. Skipping ALB wiring — API Gateway will use MOCK integration."
     else
-      # Cache to SSM
+      # Cache ARN + DNS to SSM. Security group IDs are discovered below so the
+      # cached-resume path (where this else-branch is skipped entirely) also
+      # gets a populated ALB_SG_IDS.
       aws ssm put-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-arn" --value "$ALB_ARN" --type String --overwrite --region "$AWS_REGION" > /dev/null
       aws ssm put-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-dns" --value "$ALB_DNS" --type String --overwrite --region "$AWS_REGION" > /dev/null
       ok "ALB ARN/DNS cached in SSM"
     fi
   fi
 
-  # Re-apply gateway Terraform with ALB ARN to wire VPC Link and CloudFront origin
+  # Discover ALB security groups on every run (cache-hit AND cold-path). The
+  # api_gateway module needs these on the re-apply below for VPC Link v2 egress
+  # rules + reciprocal ingress rule on each ALB SG. Rendered as a Terraform
+  # list literal via shell tr+sed to avoid a jq runtime dependency.
+  ALB_SG_IDS="[]"
+  if [ -n "${ALB_ARN:-}" ] && [ "$ALB_ARN" != "None" ]; then
+    ALB_SG_LIST=$(aws elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --region "$AWS_REGION" \
+      --query 'LoadBalancers[0].SecurityGroups' --output text 2>/dev/null || echo "")
+    if [ -n "$ALB_SG_LIST" ]; then
+      ALB_SG_IDS="[$(echo "$ALB_SG_LIST" | tr '[:space:]' ',' | sed 's/,$//' | sed 's/\([^,][^,]*\)/"\1"/g')]"
+    fi
+    aws ssm put-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-security-group-ids" --value "$ALB_SG_IDS" --type String --overwrite --region "$AWS_REGION" > /dev/null
+    ok "ALB security groups: $ALB_SG_IDS"
+  fi
+
+  # Re-apply gateway Terraform with ALB details to wire API Gateway VPC Link v2
+  # (needs ARN for integration target, DNS for integration URI, SG IDs for egress)
+  # and CloudFront VPC Origin (needs ARN only).
   if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ] && [ -n "$ALB_DNS" ]; then
-    echo "Re-applying gateway Terraform with internal_alb_arn to wire API Gateway VPC Link..."
+    echo "Re-applying gateway Terraform with ALB details to wire API Gateway VPC Link v2 and CloudFront..."
     if [ "$LOCAL_MODE" = true ]; then
       cd "$ROOT_DIR/modules/gateway/infra"
       terraform apply \
         -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
         -var "internal_alb_arn=$ALB_ARN" \
+        -var "internal_alb_dns=$ALB_DNS" \
+        -var "alb_security_group_ids=$ALB_SG_IDS" \
         -var "enable_vpc_origin=true" \
         -auto-approve
     else
@@ -910,7 +931,7 @@ phases:
     commands:
       - cd modules/gateway/infra
       - terraform init -backend-config="../../../environments/\$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false
-      - terraform apply -var-file="../../../environments/\$ENVIRONMENT/modules/gateway.tfvars" -var "internal_alb_arn=${ALB_ARN}" -var "enable_vpc_origin=true" -auto-approve
+      - terraform apply -var-file="../../../environments/\$ENVIRONMENT/modules/gateway.tfvars" -var "internal_alb_arn=${ALB_ARN}" -var "internal_alb_dns=${ALB_DNS}" -var "alb_security_group_ids=${ALB_SG_IDS}" -var "enable_vpc_origin=true" -auto-approve
 BSEOF
       aws s3 cp /tmp/bs-gateway-alb-wire.yml "s3://${STATE_BUCKET}/codebuild/bs-gateway-alb-wire.yml" --region "$AWS_REGION" > /dev/null
       rm -f /tmp/bs-gateway-alb-wire.yml
