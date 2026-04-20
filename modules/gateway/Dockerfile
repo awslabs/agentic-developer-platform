@@ -1,5 +1,8 @@
+# Base image pulled from public.ecr.aws (AWS-hosted mirror of Docker Hub) to
+# dodge the unauthenticated Docker Hub pull rate limit that periodically
+# fails CodeBuild runs with HTTP 429.
 # Build stage
-FROM python:3.12-slim AS builder
+FROM public.ecr.aws/docker/library/python:3.12-slim AS builder
 WORKDIR /app
 COPY pyproject.toml .
 # Install core dependencies
@@ -8,7 +11,7 @@ RUN pip install --no-cache-dir .
 RUN pip install --no-cache-dir ".[tracing]" || echo "Tracing dependencies not available, skipping"
 
 # Runtime stage
-FROM python:3.12-slim
+FROM public.ecr.aws/docker/library/python:3.12-slim
 WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
