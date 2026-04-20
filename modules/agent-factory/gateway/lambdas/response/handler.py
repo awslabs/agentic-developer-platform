@@ -152,7 +152,17 @@ def _check_thread_and_reenqueue(session_id: str, thread_id: str, original: dict,
                 "enqueued_at": now,
             }
 
-            sqs.send_message(QueueUrl=INPUT_QUEUE_URL, MessageBody=json.dumps(task))
+            # FIFO queues require MessageGroupId + MessageDeduplicationId.
+            # Group by session_id (per-session serialization) and dedup by
+            # task_id (idempotent re-enqueue if this handler retries).
+            send_kwargs = {
+                "QueueUrl": INPUT_QUEUE_URL,
+                "MessageBody": json.dumps(task),
+            }
+            if INPUT_QUEUE_URL.endswith(".fifo"):
+                send_kwargs["MessageGroupId"] = session_id
+                send_kwargs["MessageDeduplicationId"] = new_task_id
+            sqs.send_message(**send_kwargs)
             _set_thread_processing(session_id, thread_id, new_task_id)
 
             # Clear the thread message buffer (they've been consumed)
