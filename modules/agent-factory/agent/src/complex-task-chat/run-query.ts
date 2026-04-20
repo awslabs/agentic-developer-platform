@@ -26,8 +26,11 @@ import { AgentTool, AgentToolResult, SDKMessage } from './context/types';
 // When the `result` message lands, give the underlying stream this long to close
 // gracefully before we force-exit the loop (mirrors agent-worker.ts:863).
 const POST_COMPLETION_TIMEOUT_MS = 10 * 60 * 1000;
-// Heartbeat cadence for log-only "still alive" notifications.
-const HEARTBEAT_INTERVAL_MS = 30_000;
+// Heartbeat cadence — emits a synthetic progress event to the client so the
+// WebSocket stays warm during pure-reasoning turns (no tool_use, no thinking
+// blocks to trigger real progress events).  20s is well under API Gateway's
+// 10-min idle timeout.
+const HEARTBEAT_INTERVAL_MS = 20_000;
 // Minimum gap between progress events we emit to the client. Prevents flooding
 // when the agent rips through many tool calls in quick succession.
 const PROGRESS_MIN_INTERVAL_MS = 8_000;
@@ -50,6 +53,10 @@ export type ProgressEvent =
   | {
       type: 'thinking';
       preview: string;
+      turn: number;
+    }
+  | {
+      type: 'heartbeat';
       turn: number;
     };
 
@@ -142,12 +149,24 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
    * swallowed: progress is best-effort, a failed WS send must not abort the
    * main turn.
    */
-  const emitProgress = (event: ProgressEvent): void => {
+  /**
+   * Fire a progress event if caller supplied onProgress AND we're past the
+   * throttle window AND this isn't a repeat of the previous event.
+   *
+   * @param force  When true, bypass PROGRESS_MIN_INTERVAL_MS (used by
+   *               the heartbeat timer — it already runs on a longer cadence).
+   */
+  const emitProgress = (event: ProgressEvent, force = false): void => {
     if (!onProgress) return;
-    const key = event.type === 'tool_use' ? `tool:${event.tool_name}` : 'thinking';
+    const key =
+      event.type === 'tool_use'
+        ? `tool:${event.tool_name}`
+        : event.type === 'heartbeat'
+          ? 'heartbeat'
+          : 'thinking';
     const now = Date.now();
-    if (now - lastProgressAt < PROGRESS_MIN_INTERVAL_MS) return;
-    if (key === lastProgressKey) return; // e.g. don't emit 5 back-to-back WebSearch tool_uses
+    if (!force && now - lastProgressAt < PROGRESS_MIN_INTERVAL_MS) return;
+    if (key === lastProgressKey && !force) return; // e.g. don't emit 5 back-to-back WebSearch tool_uses
     lastProgressAt = now;
     lastProgressKey = key;
     Promise.resolve(onProgress(event)).catch(err => {
@@ -163,8 +182,20 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
         log(`[run-query] Force exit — stream did not close ${Math.round(elapsed / 1000)}s after result`);
         clearInterval(heartbeat);
       }
+      return; // query done, don't emit heartbeats
     }
-    log(`[run-query] Still processing... (turn ${turnCount})`);
+
+    // Coalesce: if a real progress event (tool_use, thinking) fired within
+    // this heartbeat window, skip the synthetic heartbeat — the socket is
+    // already warm.
+    const msSinceLastProgress = Date.now() - lastProgressAt;
+    if (msSinceLastProgress < HEARTBEAT_INTERVAL_MS) {
+      log(`[run-query] Heartbeat skipped — real progress ${Math.round(msSinceLastProgress / 1000)}s ago (turn ${turnCount})`);
+      return;
+    }
+
+    log(`[run-query] Emitting heartbeat (turn ${turnCount})`);
+    emitProgress({ type: 'heartbeat', turn: turnCount }, /* force */ true);
   }, HEARTBEAT_INTERVAL_MS);
 
   try {

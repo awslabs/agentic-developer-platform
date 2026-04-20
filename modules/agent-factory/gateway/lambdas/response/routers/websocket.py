@@ -2,7 +2,9 @@
 Response Router — WebSocket
 
 Pushes agent responses to WebSocket connections via API Gateway
-Management API. Handles stale connections (GoneException) with cleanup.
+Management API. Resolves the *active* connection_id from the sessions
+table so reconnected clients receive in-flight replies.  Handles stale
+connections (GoneException) with cleanup.
 """
 
 import json
@@ -28,8 +30,48 @@ class WebSocketRouter:
             self._client = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint)
         return self._client
 
+    def _resolve_connection_id(self, metadata: dict[str, Any]) -> str:
+        """Look up the *active* connection_id from the sessions table.
+
+        The SQS metadata carries a snapshot of the connection_id captured at
+        enqueue time, but the client may have disconnected and reconnected
+        since then.  The ingest Lambda writes the fresh connection_id to the
+        sessions table on every ``get_or_create_session`` call, so the row
+        always holds the current value.
+
+        Falls back to the metadata snapshot when:
+        - No sessions table is configured.
+        - The session row doesn't exist (TTL expired / race).
+        - The session row has no ``connection_id`` field.
+        """
+        fallback = metadata.get("connection_id", "")
+        session_id = metadata.get("session_id", "")
+
+        if not self._sessions_table or not session_id:
+            return fallback
+
+        try:
+            resp = self._sessions_table.get_item(
+                Key={"session_id": session_id},
+                ProjectionExpression="connection_id",
+                ConsistentRead=True,
+            )
+            item = resp.get("Item", {})
+            active = item.get("connection_id", "")
+            if active:
+                if active != fallback:
+                    logger.info(
+                        "Resolved active connection_id=%s (metadata had %s) for session=%s",
+                        active, fallback, session_id,
+                    )
+                return active
+        except Exception as e:
+            logger.warning("Session lookup failed for %s, using metadata connection_id: %s", session_id, e)
+
+        return fallback
+
     def route(self, content: str, metadata: dict[str, Any], task_id: str) -> bool:
-        connection_id = metadata.get("connection_id", "")
+        connection_id = self._resolve_connection_id(metadata)
         if not connection_id:
             logger.warning("No connection_id for WebSocket routing (task=%s)", task_id)
             return False
@@ -62,18 +104,33 @@ class WebSocketRouter:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code == "GoneException":
                 logger.info("WebSocket connection %s is gone — cleaning up", connection_id)
-                self._cleanup_connection(connection_id)
+                self._cleanup_connection(connection_id, metadata.get("session_id", ""))
                 return False
             logger.error("WebSocket send failed: %s", e)
             return False
 
-    def _cleanup_connection(self, connection_id: str):
-        """Remove stale connection_id from the session record."""
-        if not self._sessions_table:
+    def _cleanup_connection(self, connection_id: str, session_id: str = ""):
+        """Remove stale connection_id from the session record.
+
+        Clears the ``connection_id`` field so the next delivery attempt will
+        resolve a fresh value (or fall back gracefully).
+        """
+        if not self._sessions_table or not session_id:
             return
         try:
-            # Scan for sessions with this connection_id and clear it
-            # In practice, the session TTL handles cleanup
-            logger.debug("Would clean up connection %s from sessions", connection_id)
+            # Only clear if the stored value still matches the stale one — a
+            # concurrent reconnect may have already written a fresh id.
+            self._sessions_table.update_item(
+                Key={"session_id": session_id},
+                UpdateExpression="REMOVE connection_id",
+                ConditionExpression="connection_id = :stale",
+                ExpressionAttributeValues={":stale": connection_id},
+            )
+            logger.info("Cleared stale connection_id=%s from session=%s", connection_id, session_id)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                logger.debug("connection_id already updated for session=%s — skip cleanup", session_id)
+            else:
+                logger.warning("Connection cleanup failed for session=%s: %s", session_id, e)
         except Exception as e:
-            logger.warning("Connection cleanup failed: %s", e)
+            logger.warning("Connection cleanup failed for session=%s: %s", session_id, e)

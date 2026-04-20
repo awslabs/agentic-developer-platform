@@ -146,7 +146,9 @@ async function processOne(
         const text =
           event.type === 'tool_use'
             ? renderToolUseProgress(event.tool_name, event.input_summary)
-            : `💭 ${event.preview}`;
+            : event.type === 'heartbeat'
+              ? 'thinking...'
+              : `💭 ${event.preview}`;
         await deps.sqs.sendProgress({
           task_id,
           session_id,

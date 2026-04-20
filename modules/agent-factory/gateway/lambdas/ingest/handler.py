@@ -280,6 +280,34 @@ def get_or_create_session(session_id, connection_id, message, now):
 
 
 def append_message(session_id, role, content, ts):
+    # Guard: reject empty / whitespace-only content
+    if not content or not content.strip():
+        logger.info("append_message: skipping empty content for session=%s role=%s", session_id, role)
+        return
+
+    # Dedupe: don't append if the last message is identical (same role + content
+    # within a 5-second window).  Prevents the double-ack that happens when
+    # both handle_direct_response and send_notification fire for the same
+    # classification.
+    try:
+        resp = sessions_table.get_item(
+            Key={"session_id": session_id},
+            ProjectionExpression="messages",
+        )
+        messages = resp.get("Item", {}).get("messages", [])
+        if messages:
+            last = messages[-1]
+            last_ts = float(last.get("timestamp", 0))
+            if (
+                last.get("role") == role
+                and last.get("content") == content[:10000]
+                and abs(ts - last_ts) < 5
+            ):
+                logger.info("append_message: deduped identical %s message for session=%s", role, session_id)
+                return
+    except Exception as e:
+        logger.debug("append_message dedupe check failed (proceeding): %s", e)
+
     try:
         sessions_table.update_item(Key={"session_id": session_id},
             UpdateExpression="SET messages = list_append(if_not_exists(messages, :e), :m), updated_at = :t",

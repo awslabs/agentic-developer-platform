@@ -65,7 +65,7 @@ export interface ProgressMessage {
   task_id: string;
   session_id: string;
   status: 'progress';
-  /** One of `tool_use` | `thinking` — see run-query ProgressEvent. */
+  /** One of `tool_use` | `thinking` | `heartbeat` — see run-query ProgressEvent. */
   kind: string;
   /** Human-readable one-liner the UI can render as a status update. */
   text: string;
@@ -152,7 +152,9 @@ export class SqsClient {
         ...(isFifo
           ? {
               MessageGroupId: progress.session_id,
-              MessageDeduplicationId: `prog_${progress.task_id}_${progress.turn}_${progress.kind}`,
+              // Heartbeats can fire multiple times on the same turn, so
+              // include a timestamp to avoid FIFO dedup collisions.
+              MessageDeduplicationId: `prog_${progress.task_id}_${progress.turn}_${progress.kind}_${Date.now()}`,
             }
           : {}),
       }),
