@@ -1,0 +1,22 @@
+version: 0.2
+
+# Builds the gateway backend image and pushes to ECR.
+# Referenced by .github/workflows/gateway-deploy.yml via
+# `codebuild/bs-gateway-build.yml` in the uploaded source zip.
+#
+# Env vars set by the CodeBuild project:
+#   AWS_REGION, ACCOUNT_ID, REGISTRY, ENVIRONMENT, IMAGE_TAG (optional)
+
+phases:
+  pre_build:
+    commands:
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY
+  build:
+    commands:
+      - cd modules/gateway
+      - docker build -t $REGISTRY/adp-gateway:latest .
+      - '[ -n "${IMAGE_TAG:-}" ] && docker tag $REGISTRY/adp-gateway:latest $REGISTRY/adp-gateway:$IMAGE_TAG || true'
+  post_build:
+    commands:
+      - docker push $REGISTRY/adp-gateway:latest
+      - '[ -n "${IMAGE_TAG:-}" ] && docker push $REGISTRY/adp-gateway:$IMAGE_TAG || true'
