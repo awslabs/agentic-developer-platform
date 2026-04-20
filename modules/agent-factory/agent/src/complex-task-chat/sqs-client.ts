@@ -22,6 +22,14 @@ export interface TaskPayload {
   source?: string;
   component?: string;
   attachments?: string[];
+  // Delivery-routing fields supplied by the ingest Lambda. We echo these
+  // back in TaskResponse so the response Lambda can post to the right
+  // channel. Missing any of these → response Lambda falls back to REST
+  // polling, which silently drops WS deliveries.
+  thread_id?: string;
+  connection_id?: string;
+  channel?: string;
+  platform_data?: Record<string, unknown>;
 }
 
 export interface TaskResponse {
@@ -39,6 +47,13 @@ export interface TaskResponse {
     contentType: string;
     sizeBytes: number;
   }>;
+  // Delivery routing — echoed from TaskPayload. The response Lambda reads
+  // `channel` (webchat|websocket|slack|cli|rest|poll) to pick a router, and
+  // `connection_id` to post to a specific WebSocket connection.
+  thread_id?: string;
+  connection_id?: string;
+  channel?: string;
+  channel_metadata?: Record<string, unknown>;
 }
 
 export class SqsClient {

@@ -60,9 +60,18 @@ async function processOne(
     user_id,
     tenant_id,
     component,
+    // Delivery routing — echoed into every sendResponse() so the response
+    // Lambda knows which channel/connection to deliver to. Missing any of
+    // these caused WS replies to silently fall back to REST polling.
+    thread_id,
+    connection_id,
+    channel,
+    platform_data,
   } = task;
 
-  console.log(`[chat-agent] Processing task ${task_id} for session ${session_id}`);
+  console.log(
+    `[chat-agent] Processing task ${task_id} for session ${session_id} (channel=${channel ?? 'none'}, conn=${connection_id ? 'set' : 'none'})`,
+  );
 
   try {
     // Defense-in-depth ownership check (creates header on first access; refuses
@@ -146,6 +155,10 @@ async function processOne(
       tokens: result.tokens,
       status: 'completed',
       artifacts: publishedRefs,
+      thread_id,
+      connection_id,
+      channel,
+      channel_metadata: platform_data,
     });
 
     if (msg.ReceiptHandle) {
@@ -161,6 +174,10 @@ async function processOne(
       session_id,
       text: `error: ${(err as Error).message}`,
       status: 'failed',
+      thread_id,
+      connection_id,
+      channel,
+      channel_metadata: platform_data,
     });
 
     // Do not delete — DLQ policy applies
