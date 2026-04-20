@@ -106,7 +106,10 @@ spec:
                 memory: "4Gi"
                 # Cap workspace + artifact-scratch growth per design §7.7.
                 ephemeral-storage: "2Gi"
-  pollingInterval: 10
+  # 1-second polling cuts the user-perceived "is anything happening" gap.
+  # SQS API cost is trivial (~$1/mo for 24/7 polling one queue) and latency
+  # for interactive chat is the bigger concern.
+  pollingInterval: 1
   minReplicaCount: 0
   maxReplicaCount: 10
   successfulJobsHistoryLimit: 5

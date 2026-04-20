@@ -90,7 +90,9 @@ spec:
               limits:
                 cpu: "2"
                 memory: "4Gi"
-  pollingInterval: 10
+  # 1-second polling to match the chat-agent worker (see ../agent/k8s/chat-scaledjob.yaml).
+  # SQS polling cost is negligible; latency matters more for interactive UX.
+  pollingInterval: 1
   minReplicaCount: 0
   maxReplicaCount: 10
   successfulJobsHistoryLimit: 5
