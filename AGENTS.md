@@ -1,16 +1,22 @@
 # Agent Instructions — ADP (Agentic Developer Platform)
 
-You are the deployment agent for this platform. Your job is to deploy it end-to-end, keep the user informed, and only ask them when you genuinely need their input. Read this entire file, then execute the deployment.
+You are the deployment agent for this platform. Your job is to deploy it end-to-end on a freshly cloned repo, keep the user informed, and only ask them when you genuinely need their input. Read this entire file, then execute the deployment.
+
+## Your Role in One Sentence
+
+**Run `./platform/scripts/deploy-all.sh` once Phase 0 (GitHub setup) is complete.** The script does the heavy lifting — you handle Phase 0 (which is interactive), then let the script drive and report on the outcome.
+
+`deploy-all.sh` is the **canonical entry point** for a fresh clone. The per-module GitHub Actions workflows (`gateway-infra-apply.yml`, `gateway-deploy.yml`, the corresponding destroy workflows, etc.) exist for **iterative development** — a developer changing one module and clicking "Run workflow". Don't use those for first deploy.
 
 ## Your Behavior
 
 - Run each step yourself. Do not ask the user to run commands — you run them.
-- After each step, verify it succeeded before moving on using the validation commands in `docs/deployment-manifest.md`.
+- After each step, verify it succeeded before moving on. Each phase below lists the exact validation commands.
 - If something fails, diagnose it, attempt a fix, and retry. Only escalate to the user if you cannot resolve it after 2 attempts.
 - Keep the user informed with brief status updates between steps. Do not dump raw command output — summarize results.
-- When you need user input (AWS credentials, GitHub App setup), explain exactly what you need and why.
+- When you need user input (AWS profile, GitHub org name, the 3 browser clicks for GitHub Apps), explain exactly what you need and why.
 - Maintain a deployment state file at `.adp-deploy-state.json` in the repo root. Update it after each phase. If this file exists when you start, resume from the last incomplete phase.
-- Read `docs/deployment-manifest.md` for the full list of what gets deployed in each module and the exact validation commands.
+- **Never commit `agent_learning/*.md`** — that directory is gitignored; explicit `git add` bypasses the ignore and has caused drift five times already. If you produce learnings, keep them uncommitted.
 
 ## Deployment State
 
@@ -21,18 +27,13 @@ Maintain `.adp-deploy-state.json` in the repo root. Create it at the start, upda
   "environment": "dev",
   "account_id": "",
   "github_org": "",
+  "aws_profile": "",
   "modules": [],
   "phases": {
-    "org_setup":        {"status": "pending"},
+    "github_setup":     {"status": "pending"},
     "preflight":        {"status": "pending"},
     "bootstrap":        {"status": "pending"},
-    "platform_infra":   {"status": "pending"},
-    "gateway_infra":    {"status": "pending"},
-    "gateway_backend":  {"status": "pending"},
-    "gateway_frontend": {"status": "pending"},
-    "agent_factory":    {"status": "pending"},
-    "agent_gateway":    {"status": "pending"},
-    "github_apps":      {"status": "pending"},
+    "deploy_all":       {"status": "pending"},
     "verification":     {"status": "pending"}
   },
   "outputs": {},
@@ -43,9 +44,9 @@ Maintain `.adp-deploy-state.json` in the repo root. Create it at the start, upda
 Status values: `pending`, `running`, `complete`, `failed`, `skipped`.
 
 On startup, if this file exists:
-1. Read it and show the user current progress
-2. Resume from the first non-complete, non-skipped phase
-3. If a phase is `failed`, retry it
+1. Read it and show the user current progress.
+2. Resume from the first non-complete, non-skipped phase.
+3. If a phase is `failed`, retry it.
 
 ## Resource Map
 
@@ -53,15 +54,16 @@ Read `docs/deployment-manifest.md` for the complete mapping of every resource to
 
 ## What This Repo Contains
 
-Three modules on a shared AWS platform:
+Modules on a shared AWS platform:
 
 | Module | Path | Purpose |
 |--------|------|---------|
 | Gateway | `modules/gateway/` | Multi-tenant Bedrock proxy (FastAPI + React) |
 | Agent Factory | `modules/agent-factory/` | Autonomous code agents (Claude SDK + GitHub Actions) |
+| Agent Context | `modules/agent-context/` | Code Intelligence Platform: semantic search, wikis, memory via MCP. Deploy with `--agent-context-only`. |
 | MCP Gateway | `modules/mcp-gateway/` | MCP server gateway (in progress) |
 
-Shared infrastructure: `platform/infra/` (VPC, EKS, ECR, IAM).
+Shared infrastructure: `platform/infra/` — VPC, EKS, ECR, IAM baseline, shared CodeBuild projects (4 docker-builds only, Terraform-managed in `platform/infra/modules/codebuild/`).
 
 ## Deployment Playbook
 
@@ -73,27 +75,30 @@ Before executing any phase, present this briefing to the user:
 
 "Here's how the deployment will work:
 
-I'll handle the entire deployment for you. There are 10 phases, and only the first one needs your input — after that, everything is automated.
+I'll handle the entire deployment for you. Only **Phase 0** needs your attention — after that, everything is automated by `deploy-all.sh`.
 
 **Phase 0 — GitHub Setup (~10 min, needs you)**
-I'll ask for your GitHub org name, repo name, and which modules you want. Then I'll open your browser 3 times to create GitHub Apps — you just click approve each time. This is the only part that needs you.
+I'll ask for your GitHub org name, repo name, AWS profile, and which modules you want. Then I'll open your browser 3 times to create GitHub Apps — you just click approve each time. This is the only part that needs you.
 
-**Phases 1-2 — Preflight + Bootstrap (~2 min, automated)**
-I'll check your tools and AWS permissions, then create the Terraform state backend (S3 bucket + DynamoDB table).
+**Phase 1 — Preflight (~1 min, automated)**
+I'll check your tools (aws, terraform, kubectl, node, gh) and AWS permissions.
 
-**Phase 3 — Shared Platform (~15 min, automated)**
-I'll deploy the VPC, EKS cluster, ECR repos, and IAM roles via CodeBuild. This is the longest step — I'll poll the build and keep you updated.
+**Phase 2 — Bootstrap (~1 min, automated)**
+Creates the Terraform state backend: S3 bucket + DynamoDB lock table.
 
-**Phases 4-5 — Agent Factory + Gateway (~10 min, automated)**
-I'll deploy the ARC runner infrastructure, KEDA, SQS queues, and WebSocket API for the agent delivery pipeline.
+**Phase 3 — Full Deploy (~30 min, automated)**
+I'll run `deploy-all.sh` which orchestrates every module:
+- Platform (VPC, EKS, ECR, IAM, 4 CodeBuild projects) via Terraform
+- Agent Factory (ARC runners, KEDA, SQS, WebSocket API) via Terraform
+- Agent Gateway (routing/classifier Lambdas) via CodeBuild → ECR
+- Gateway infra (RDS, Cognito, CloudFront, API Gateway) via Terraform (two-pass: first creates MOCK API, second wires to the EKS Ingress ALB)
+- Gateway backend image build via CodeBuild → rollout to EKS
+- Gateway frontend build on the runner → S3 → CloudFront invalidate
 
-**Phases 6-8 — Bedrock Gateway (~18 min, automated)**
-I'll deploy the database (RDS), auth (Cognito), CDN (CloudFront), build the Docker image, deploy to EKS, build the React frontend, and push to S3.
+**Phase 4 — Verification (~2 min, automated)**
+I'll probe /health, /agent/health (should 403 unsigned), and the CloudFront root, then report URLs.
 
-**Phase 9 — Verification (~2 min, automated)**
-I'll validate every component using AWS CLI and kubectl, then give you a summary with URLs.
-
-**Total time: ~45 minutes. Estimated AWS cost for a test run: ~$5-10.**
+**Total time: ~45 minutes. Estimated AWS cost for a test run: ~$5-10/day idle (RDS, NAT, CloudFront).**
 
 After Phase 0, you can step away — I'll handle everything and report back when it's done.
 
@@ -111,6 +116,8 @@ Execute these phases in order. Each phase has steps, verification, and troublesh
 
 **This is the only phase that needs the user's attention. Everything after is automated.**
 
+This phase was designed carefully. **Do not short-circuit it.** The GitHub Apps created here (`<org>-adp-agent-dev`, `-pm`, `-ops`) are how the Agent Factory impersonates different personas on your repo; without them, the agent-operations / agent-developer / agent-pm workflows cannot push commits, open PRs, or comment on issues. The credentials land in Secrets Manager at **org-namespaced paths** (`adp/<github_org>/gh-app-<role>-{id,key}`) so multiple installs can coexist on the same AWS account.
+
 **Pre-check:** Before starting, verify GitHub CLI is installed and authenticated:
 ```bash
 command -v gh && gh auth status
@@ -119,80 +126,78 @@ If `gh` is not installed, tell the user: "Install GitHub CLI: https://cli.github
 If not authenticated, tell the user: "Run `gh auth login` and follow the prompts."
 Do not proceed until both pass.
 
-**Step 1: Ask the user:**
-- "What is your GitHub organization name?"
-- "What should the repo be called in your org? (default: adp)"
-- "Which AWS profile do you want to use? (I'll list your available profiles)"
+**Step 1: Gather user input.** Ask in this order:
 
-Run `aws configure list-profiles` to show available profiles. If the user picks one, set it for all subsequent commands:
-```bash
-export AWS_PROFILE=<chosen-profile>
-```
-If they say "default" or press Enter, don't set it (uses the default profile).
+1. "What is your GitHub organization name?" — the user's GH org (e.g. `aws-e`). Save as `GITHUB_ORG`.
+2. "What should the repo be called in your org? (default: adp)" — save as `REPO_NAME`.
+3. "Which AWS profile do you want to use?" — run `aws configure list-profiles` first to show options. If they pick one, `export AWS_PROFILE=<chosen>` for all subsequent commands. "default" / empty = don't set it.
+4. Verify the profile resolves to the account they expect:
+   ```bash
+   aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
+   ```
+   Confirm with the user: "This will deploy to AWS account XXXX. Is that correct?" Do not proceed on mismatch.
+5. "Which modules do you want? (1) Everything, (2) Gateway only, (3) Agent Factory only" — save as `DEPLOY_SCOPE`.
+6. "Any additional repos where the agents should be installed?" — list, will be passed to `create-github-apps.sh`.
 
-Then verify the profile works:
-```bash
-aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
-```
-Show the account ID and ARN to the user and confirm: "This will deploy to AWS account XXXX. Is that correct?"
+Save all answers in `.adp-deploy-state.json`.
 
-Continue asking:
-- "Which modules do you want to deploy? (1) Everything, (2) Gateway only, (3) Agent Factory only"
-- "Do you have other repos where you want the agents to work? List the repo names."
-
-Remember their answers for all subsequent phases.
-
-**Step 2: Configure the repo for their org:**
+**Step 2: Configure the repo for their org.**
 
 ```bash
-./platform/scripts/setup-org.sh <GITHUB_ORG> <REPO_NAME>
+./platform/scripts/setup-org.sh "$GITHUB_ORG" "$REPO_NAME"
 ```
 
-**Step 3: Create GitHub Apps (if deploying Agent Factory):**
+This renames the `aws-e` org references in the repo to the user's org. Run it even if you're deploying to the same org it was last configured for — it's idempotent.
 
-**First, check if apps are already set up:**
+**Step 3: Create GitHub Apps (required unless DEPLOY_SCOPE is "Gateway only").**
+
+First check if they already exist:
+
 ```bash
-# Check Secrets Manager for existing credentials
+# Org-namespaced secret paths (not plain adp/gh-app-*)
 for role in dev pm ops; do
-  aws secretsmanager get-secret-value --secret-id "adp/gh-app-${role}-id" --query 'SecretString' --output text --region us-east-1 2>/dev/null && echo "${role}: EXISTS" || echo "${role}: MISSING"
+  aws secretsmanager get-secret-value \
+    --secret-id "adp/${GITHUB_ORG}/gh-app-${role}-id" \
+    --query 'SecretString' --output text --region us-east-1 2>/dev/null \
+    && echo "${role}: EXISTS" || echo "${role}: MISSING"
 done
 
-# Check GitHub for installations
-gh api "/orgs/<GITHUB_ORG>/installations" --jq '.installations[] | "\(.app_slug): installed"'
+# Check that apps are actually installed on the org
+gh api "/orgs/${GITHUB_ORG}/installations" --jq '.installations[] | "\(.app_slug): installed"'
 ```
 
-If all 3 secrets exist AND all 3 apps are installed, tell the user: "GitHub Apps are already configured. Skipping creation." and move on.
+If all 3 secrets exist AND all 3 apps are installed → **skip to Step 4.** Tell the user: "GitHub Apps already configured."
 
-If any are missing, run the creation script:
-
-**Tell the user:** "I need to create 3 GitHub Apps for the agents. This will open your browser 3 times. For each app:
-1. Click 'Create GitHub App' (permissions are pre-filled)
-2. Note the App ID shown at the top of the page
-3. Scroll down and click 'Generate a private key' (downloads a .pem file)
-4. Come back here and enter the App ID
-5. Then I'll open the browser again to install the app — select your org, choose 'Only select repositories', pick 'adp', and click Install
-6. Press Enter when done
-
-The apps will be named `<your-org>-adp-agent-dev`, `<your-org>-adp-agent-pm`, `<your-org>-adp-agent-ops`. GitHub App names are globally unique, so they're prefixed with your org name."
+If any are missing, run:
 
 ```bash
-./platform/scripts/create-github-apps.sh <GITHUB_ORG> [extra-repo1 extra-repo2 ...]
+./platform/scripts/create-github-apps.sh "$GITHUB_ORG" [extra-repo1 extra-repo2 ...]
 ```
 
-The script handles: browser open → App ID prompt → auto-detect .pem in ~/Downloads → store in Secrets Manager → browser open for installation → verify installation → final validation of all 3 apps.
+**Tell the user before running this:** "I'll create 3 GitHub Apps for the agents. Your browser will open 3 times (once per app). For each app:
+1. Click 'Create GitHub App' (permissions are pre-filled).
+2. Note the App ID shown at the top of the resulting page.
+3. Scroll down and click 'Generate a private key' — a `.pem` file downloads to ~/Downloads.
+4. Come back to this terminal and enter the App ID when prompted.
+5. Then the browser reopens for installation — select your org, choose 'Only select repositories', pick `${REPO_NAME}`, click Install.
+6. Press Enter when done.
 
-If the user chose "Gateway only", skip this step.
+The apps are named `${GITHUB_ORG}-adp-agent-dev`, `-pm`, `-ops`. GitHub App names are globally unique — the org prefix ensures yours won't collide."
 
-**Step 4: Verify:**
+The script: browser-opens each app creation URL → prompts for App ID → auto-detects the `.pem` in `~/Downloads` → stores both in Secrets Manager at `adp/<org>/gh-app-<role>-{id,key}` → re-opens the browser for installation → verifies installation via `gh api /orgs/<org>/installations`.
+
+If DEPLOY_SCOPE is "Gateway only", skip this step.
+
+**Step 4: Verify.**
 ```bash
-# Repo exists
-gh repo view <GITHUB_ORG>/adp --json name
-
-# GitHub Apps (if created)
-aws secretsmanager list-secrets --filter Key=name,Values=adp/gh-app --query 'SecretList[].Name'
+gh repo view "${GITHUB_ORG}/${REPO_NAME}" --json name
+aws secretsmanager list-secrets --filter Key=name,Values="adp/${GITHUB_ORG}/gh-app" --query 'SecretList[].Name'
 ```
+Expect: repo exists; 6 secrets listed (id + key × 3 roles) OR 0 if Gateway-only.
 
 **Tell the user:** "GitHub setup complete. Everything from here is automated. This will take about 30-45 minutes. I'll keep you updated."
+
+Mark `github_setup` phase `complete` in state file.
 
 ---
 
@@ -205,36 +210,27 @@ Run the preflight check to validate the environment:
 ```
 
 **If preflight fails:**
-- Missing CLI tools → Tell the user which tools to install and provide the install links. Wait for them to confirm.
-- AWS credentials invalid → Ask the user to run `aws configure` or set `AWS_REGION`. Wait for confirmation.
-- Missing IAM permissions → Tell the user which permissions are missing. They may need to contact their AWS admin.
+- Missing CLI tools → tell the user which tools to install + install links. Wait for confirmation.
+- AWS credentials invalid → ask the user to `aws configure` or set `AWS_REGION`. Wait for confirmation.
+- Missing IAM permissions → tell the user which permissions are missing. They may need to contact their AWS admin.
 
-**If preflight passes with warnings:**
-- Report the warnings to the user but proceed. Warnings are non-blocking.
+**If preflight passes with warnings** → report the warnings, proceed. Warnings are non-blocking.
 
-**Once preflight passes**, inform the user: "Environment validated. Starting deployment. This will take approximately 30-45 minutes. I'll keep you updated at each step."
+Once passing, mark `preflight` phase `complete`.
 
 ---
 
 ### Phase 2: Bootstrap Terraform State Backend
 
-**What:** Creates an S3 bucket and DynamoDB table for Terraform state storage.
+**What:** Creates `adp-terraform-state-<account_id>` S3 bucket and `adp-terraform-locks` DynamoDB table. The four per-module Terraform states live in this one bucket under keys like `dev/platform/terraform.tfstate`.
 
-**Execute:**
 ```bash
 export AWS_REGION=us-east-1
 export ENVIRONMENT=dev
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
-```
 
-Check if already bootstrapped:
-```bash
-aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null && echo "EXISTS" || echo "MISSING"
-```
-
-If MISSING, run:
-```bash
+# Idempotent — run it always; the script no-ops if bucket + table exist
 ./platform/scripts/bootstrap.sh
 ```
 
@@ -243,266 +239,147 @@ If MISSING, run:
 aws s3 ls | grep adp-terraform-state
 aws dynamodb describe-table --table-name adp-terraform-locks --query 'Table.TableStatus' --output text
 ```
-
 Expected: bucket listed, table status `ACTIVE`.
 
-**Tell the user:** "Terraform state backend ready. S3 bucket: adp-terraform-state-XXXX."
+Mark `bootstrap` phase `complete`.
 
 ---
 
-### Phase 3: Deploy Shared Platform
+### Phase 3: Full Deploy (the main event)
 
-**What:** VPC, EKS cluster, ECR repositories, base IAM roles. Takes ~15 minutes.
+**What:** Hand off to `deploy-all.sh`. It orchestrates platform → agent-factory → agent-gateway → gateway infra (two-pass ALB wiring) → gateway backend image build → k8s rollout → frontend build + upload. One command.
 
-**Tell the user:** "Deploying shared platform infrastructure (VPC, EKS, ECR). This takes about 15 minutes."
-
-**Execute:**
 ```bash
-cd platform/infra
-terraform init -backend-config=../../environments/dev/backend.tfvars -input=false
-terraform apply -var-file=../../environments/dev/platform.tfvars -auto-approve
+./platform/scripts/deploy-all.sh
 ```
 
-**Verify:**
-```bash
-aws eks describe-cluster --name adp-dev-eks --query 'cluster.{status:status,version:version}' --output table
-```
+Flags if not deploying everything:
+- `--gateway-only` — platform + gateway only (skip agent-factory, agent-context)
+- `--agent-factory-only` — platform + agent-factory only (skip gateway, agent-context)
+- `--agent-context-only` — platform + agent-context only
+- `--skip-agent-context` — full deploy minus agent-context (which is opt-in and costs ~$800/mo idle with GraphRAG)
+- `--skip-frontend` — infra + backend only, no SPA
 
-Expected: status `ACTIVE`.
+**What it does, in order:**
 
-Then configure kubectl and wait for nodes:
-```bash
-aws eks update-kubeconfig --name adp-dev-eks --region us-east-1
-kubectl get nodes
-```
+1. **Preflight** (runs `preflight-check.sh` inline)
+2. **Detect operator public IP** and set `TF_VAR_eks_public_access_cidrs="[\"<ip>/32\"]"` so the EKS API is locked to the caller. Respects a pre-set env var if the caller wants to override.
+3. **Platform infra** — `cd platform/infra && terraform apply`. Creates VPC, EKS (Auto Mode, 1.35), ECR repos, IAM baseline, and the 4 shared CodeBuild projects (Terraform-managed in `platform/infra/modules/codebuild/`).
+4. **Agent Factory infra** (unless `--gateway-only` / `--agent-context-only`) — `cd modules/agent-factory/infra && terraform apply`. Creates runner IAM, ARC controller via helm_release, KEDA, secrets, beads state.
+5. **Agent Gateway build + deploy** (same gate) — packages source zip, triggers `adp-dev-agent-gateway` CodeBuild project to build Lambda container → ECR, then applies K8s resources.
+6. **Gateway infra, first apply** (unless `--agent-factory-only` / `--agent-context-only`) — `cd modules/gateway/infra && terraform apply`. This produces a working API Gateway with MOCK integrations because the internal ALB doesn't exist yet.
+7. **ALB two-pass wiring** — `bash platform/scripts/wire-gateway-alb.sh` polls up to 10 min for the EKS Ingress controller to provision the internal ALB, caches ARN/DNS/SG IDs to SSM.
+8. **Gateway infra, second apply** — same module, but now with `-var internal_alb_arn=... -var internal_alb_dns=... -var alb_security_group_ids=...`. This wires API Gateway's VPC Link v2 to the ALB and flips the OpenAPI body from MOCK to HTTP_PROXY.
+9. **Gateway backend image** — packages source, triggers `adp-dev-gateway-build` CodeBuild → ECR, then `kubectl set image` to roll the deployment.
+10. **Gateway frontend** (unless `--skip-frontend`) — `npm ci && npm run build` directly (runner has node22 pre-baked), `aws s3 sync dist/ s3://<frontend-bucket>/`, invalidate CloudFront.
+11. **Agent Context** (only if `--agent-context-only` or `AGENT_CONTEXT_ENABLED=true`) — opt-in because it adds ~$800/month idle cost.
 
-If no nodes yet, wait — EKS Auto Mode takes 3-5 minutes to provision. Check every 30 seconds.
+**Don't re-invent the workflow.** Do NOT start running `terraform apply` on individual modules yourself. If a phase inside `deploy-all.sh` fails, diagnose it using the script's own output and retry the single failing step — usually the script is idempotent on retry. Common failure modes are in the Troubleshooting section below.
 
-**Tell the user:** "Platform deployed. EKS cluster adp-dev-eks is active with N nodes."
+**Expected duration:** 30-45 minutes. Longest steps are platform (EKS Auto Mode provisioning, ~15 min) and backend image build (~5 min for CodeBuild cold start + push).
+
+Report progress to the user at each of the 11 sub-steps above. Summarize results — don't dump raw output.
+
+Mark `deploy_all` phase `complete`.
 
 ---
 
-### Phase 4: Deploy Agent Factory Infrastructure
+### Phase 4: Verification
 
-**Skip this phase if user chose "Gateway only".**
-
-**Tell the user:** "Deploying Agent Factory infrastructure (runner IAM, ARC controller, secrets, beads state). About 5 minutes."
-
-**Execute:**
-```bash
-cd modules/agent-factory/infra
-
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-cat > ../../../environments/dev/modules/agent-factory-backend.tfvars << EOF
-bucket         = "adp-terraform-state-${ACCOUNT_ID}"
-key            = "dev/modules/agent-factory/terraform.tfstate"
-region         = "us-east-1"
-encrypt        = true
-dynamodb_table = "adp-terraform-locks"
-EOF
-
-cat > terraform.tfvars << EOF
-environment      = "dev"
-aws_region       = "us-east-1"
-account_id       = "${ACCOUNT_ID}"
-github_org       = "<GITHUB_ORG>"
-runner_namespace = "arc-runners"
-EOF
-
-terraform init -backend-config=../../../environments/dev/modules/agent-factory-backend.tfvars -input=false
-terraform apply -var-file=terraform.tfvars -auto-approve
-```
-
-Use the `github_org` from Phase 0.
-
-**Verify (from `docs/deployment-manifest.md`):**
-```bash
-aws iam get-role --role-name adp-dev-agent-runner-role --query 'Role.Arn'
-kubectl get pods -n arc-systems
-kubectl describe sa github-runner-sa -n arc-runners | grep eks.amazonaws.com/role-arn
-aws secretsmanager list-secrets --filter Key=name,Values=adp/gh-app --query 'SecretList[].Name'
-```
-
-**Tell the user:** "Agent Factory deployed. ARC controller running, runner IAM configured, GitHub App credentials verified."
-
----
-
-### Phase 5: Deploy Agent Gateway
-
-**Skip this phase if user chose "Gateway only".**
-
-**Tell the user:** "Deploying Agent Gateway (WebSocket API, SQS queues, KEDA). About 5 minutes."
-
-**Execute:**
-```bash
-cd modules/agent-factory/scripts
-./deploy-gateway.sh
-```
-
-**Verify:**
-```bash
-aws apigatewayv2 get-apis --query 'Items[?starts_with(Name,`adp`)].{Name:Name,Endpoint:ApiEndpoint}'
-aws sqs list-queues --queue-name-prefix adp --query 'QueueUrls'
-kubectl get pods -n keda
-kubectl get scaledjobs -n adp-gateway-agents
-```
-
-**Tell the user:** "Agent Gateway deployed. WebSocket API, SQS queues, and KEDA ScaledJob ready."
-
----
-
-### Phase 6: Deploy Gateway Infrastructure
-
-**Skip this phase if user chose "Agent Factory only".**
-
-**What:** RDS PostgreSQL, ElastiCache Redis, Cognito, CloudFront, S3, ALB, ECR, CloudTrail. Takes ~10 minutes.
-
-**Tell the user:** "Deploying gateway infrastructure (database, auth, CDN). About 10 minutes."
-
-**Execute:**
-```bash
-cd modules/gateway/infra
-terraform init -backend-config=../../../environments/dev/modules/gateway-backend.tfvars -input=false
-terraform apply -var-file=../../../environments/dev/modules/gateway.tfvars -auto-approve
-```
-
-**Verify:**
-```bash
-# Check RDS
-aws rds describe-db-instances --query 'DBInstances[?starts_with(DBInstanceIdentifier,`bedrockgw`)].{id:DBInstanceIdentifier,status:DBInstanceStatus}' --output table
-
-# Check Cognito
-aws cognito-idp list-user-pools --max-results 5 --query 'UserPools[?starts_with(Name,`bedrockgw`)].{Name:Name,Id:Id}' --output table
-```
-
-**Tell the user:** "Gateway infrastructure deployed. RDS, Cognito, CloudFront all provisioned."
-
----
-
-### Phase 7: Build and Deploy Gateway Backend
-
-**Skip this phase if user chose "Agent Factory only".**
-
-**What:** Build Docker image, push to ECR, deploy to EKS.
-
-**Tell the user:** "Building and deploying the gateway backend."
-
-**Execute:**
-```bash
-cd modules/gateway
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-REGISTRY="${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
-
-# Build
-docker build -t adp-gateway .
-
-# Push to ECR
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $REGISTRY
-docker tag adp-gateway:latest $REGISTRY/adp-gateway:latest
-docker push $REGISTRY/adp-gateway:latest
-
-# Deploy to EKS
-kubectl create namespace adp-gateway --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -f k8s/ -n adp-gateway
-kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s
-```
-
-**Verify:**
-```bash
-kubectl get pods -n adp-gateway
-kubectl port-forward -n adp-gateway svc/bedrockgateway 8080:8080 &
-sleep 3
-curl -s http://localhost:8080/health
-kill %1 2>/dev/null
-```
-
-Expected: pods Running, health returns 200.
-
-**If pods are CrashLoopBackOff:**
-```bash
-kubectl logs -n adp-gateway -l app=bedrockgateway --tail=30
-kubectl describe pod -n adp-gateway -l app=bedrockgateway
-```
-Common causes: missing configmap, missing secrets, RDS not reachable. Check and fix.
-
-**Tell the user:** "Gateway backend running. N pods healthy."
-
----
-
-### Phase 8: Build and Deploy Frontend
-
-**Skip this phase if user chose "Agent Factory only".**
-
-**What:** Build React app, upload to S3, invalidate CloudFront.
-
-**Tell the user:** "Building and deploying the admin dashboard frontend."
-
-**Execute:**
-```bash
-cd modules/gateway/frontend
-npm ci
-VITE_API_URL="/api/gateway" npm run build
-
-BUCKET=$(aws ssm get-parameter --name "/adp/dev/gateway/frontend-bucket" --query "Parameter.Value" --output text)
-aws s3 sync dist/ "s3://${BUCKET}/" --delete
-
-DIST_ID=$(aws ssm get-parameter --name "/adp/dev/gateway/cloudfront-id" --query "Parameter.Value" --output text)
-aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
-```
-
-**Verify:**
-```bash
-CF_DOMAIN=$(aws ssm get-parameter --name "/adp/dev/gateway/cloudfront-domain" --query "Parameter.Value" --output text 2>/dev/null || echo "")
-if [ -n "$CF_DOMAIN" ]; then
-  curl -s -o /dev/null -w "%{http_code}" "https://${CF_DOMAIN}/"
-fi
-```
-
-Expected: 200.
-
-**If SSM parameters not found:** The Terraform may not have stored them. Check `terraform output` in `modules/gateway/infra/` for the values and use them directly.
-
-**Tell the user:** "Frontend deployed at https://DOMAIN. Admin dashboard is accessible."
-
----
-
-### Phase 9: Final Verification
-
-Run a comprehensive check of all deployed components:
+Probe live endpoints to confirm the stack is healthy end-to-end:
 
 ```bash
-echo "=== Platform ==="
-aws eks describe-cluster --name adp-dev-eks --query 'cluster.status' --output text
-kubectl get nodes --no-headers | wc -l
+# 1. REST API Gateway routes (API_GATEWAY_URL from SSM)
+API_URL=$(aws ssm get-parameter --name /adp/dev/gateway/api-gateway-url \
+  --query Parameter.Value --output text 2>/dev/null || \
+  aws apigateway get-rest-apis --query 'items[?contains(name, `bedrockgw`)].id' --output text | \
+  head -1 | xargs -I{} echo "https://{}.execute-api.us-east-1.amazonaws.com/dev")
 
-echo "=== Gateway Pods ==="
-kubectl get pods -n adp-gateway -o wide
+curl -sS -o /dev/null -w "GET /health: %{http_code}\n" "$API_URL/health"          # expect 200
+curl -sS -o /dev/null -w "GET /agent/health unsigned: %{http_code}\n" "$API_URL/agent/health"   # expect 403 (AWS_IAM guard)
 
-echo "=== Gateway Health ==="
-kubectl exec -n adp-gateway deploy/bedrockgateway -- curl -s http://localhost:8080/health 2>/dev/null || echo "Cannot exec into pod"
+# 2. CloudFront (SPA)
+CF_DOMAIN=$(aws ssm get-parameter --name /adp/dev/gateway/cloudfront-domain \
+  --query Parameter.Value --output text 2>/dev/null)
+[ -n "$CF_DOMAIN" ] && curl -sS -o /dev/null -w "GET https://$CF_DOMAIN : %{http_code}\n" "https://$CF_DOMAIN/"   # expect 200
 
-echo "=== Frontend ==="
-CF_DOMAIN=$(aws ssm get-parameter --name "/adp/dev/gateway/cloudfront-domain" --query "Parameter.Value" --output text 2>/dev/null)
-[ -n "$CF_DOMAIN" ] && curl -s -o /dev/null -w "CloudFront: %{http_code}\n" "https://${CF_DOMAIN}/"
+# 3. Backend pods
+kubectl --context "arn:aws:eks:us-east-1:$(aws sts get-caller-identity --query Account --output text):cluster/adp-dev-eks-cluster" \
+  get pods -n adp-gateway -l app=bedrockgateway
 
-echo "=== Database ==="
-aws rds describe-db-instances --query 'DBInstances[?starts_with(DBInstanceIdentifier,`bedrockgw`)].DBInstanceStatus' --output text
+# 4. RDS + Cognito
+aws rds describe-db-instances --query 'DBInstances[?starts_with(DBInstanceIdentifier,`bedrockgw`)].DBInstanceStatus' --output text   # available
+aws cognito-idp list-user-pools --max-results 5 --query 'UserPools[?starts_with(Name,`bedrockgw`)].Name' --output text
 
-echo "=== ARC Runners (if deployed) ==="
+# 5. Agent Factory (if deployed)
 kubectl get pods -n arc-systems 2>/dev/null || echo "Not deployed"
 kubectl get pods -n arc-runners 2>/dev/null || echo "Not deployed"
 ```
 
+**If the gateway was deployed with `--gateway-only` and GitHub Apps step was skipped**, also mint a Cognito JWT and probe a DB-backed endpoint to confirm `GRANT rds_iam TO bgadmin` completed:
+
+```bash
+ADMIN_SECRET=$(aws secretsmanager get-secret-value \
+  --secret-id adp/dev/gateway/test-admin-credentials \
+  --query SecretString --output text 2>/dev/null) || ADMIN_SECRET=""
+if [ -n "$ADMIN_SECRET" ]; then
+  USER=$(echo "$ADMIN_SECRET" | python3 -c "import json,sys; print(json.load(sys.stdin)['username'])")
+  PW=$(echo "$ADMIN_SECRET" | python3 -c "import json,sys; print(json.load(sys.stdin)['password'])")
+  POOL=$(echo "$ADMIN_SECRET" | python3 -c "import json,sys; print(json.load(sys.stdin)['cognito_user_pool_id'])")
+  CLIENT=$(echo "$ADMIN_SECRET" | python3 -c "import json,sys; print(json.load(sys.stdin)['cognito_client_id'])")
+  TOKEN=$(aws cognito-idp admin-initiate-auth \
+    --user-pool-id "$POOL" --client-id "$CLIENT" \
+    --auth-flow ADMIN_USER_PASSWORD_AUTH \
+    --auth-parameters "USERNAME=$USER,PASSWORD=$PW" \
+    --query 'AuthenticationResult.AccessToken' --output text)
+  curl -sS -o /dev/null -w "GET /admin/organizations (admin JWT): %{http_code}\n" \
+    -H "Authorization: Bearer $TOKEN" "$API_URL/admin/organizations"  # expect 200
+fi
+```
+
+A 500 on the admin endpoint typically means the RDS bootstrap Job didn't successfully grant `rds_iam` to the `bgadmin` Postgres role — check `kubectl logs -n adp-gateway -l app=bedrockgw-dev-rds-bootstrap`.
+
 **Tell the user a summary:**
-"Deployment complete. Here's the status:
-- Platform: EKS cluster active, N nodes
-- Gateway: N pods running, health OK
-- Frontend: https://DOMAIN (status 200)
-- Database: available
+
+"Deployment complete. Status:
+- Platform: EKS cluster `adp-dev-eks-cluster` active, N nodes
+- Gateway: N pods running, `/health` returns 200
+- Frontend: https://$CF_DOMAIN (200 OK)
+- API Gateway: routes via VPC Link v2 → ALB direct
+- Database: available, IAM auth working
+- Test credentials stored in Secrets Manager at `adp/dev/gateway/test-{user,admin}-credentials`
 - Agent Factory: [deployed/not deployed]
 
-You can access the admin dashboard at https://DOMAIN.
-To use Claude Code with the gateway, see `modules/gateway/README.md` Step 7."
+Access the admin dashboard at https://$CF_DOMAIN. To use Claude Code with the gateway, see `modules/gateway/README.md`."
+
+Mark `verification` phase `complete`.
+
+---
+
+## Undeploy / Teardown
+
+For cleanup, use:
+
+```bash
+./platform/scripts/deploy-all.sh --destroy
+```
+
+Runs per-module destroys in reverse deploy order (agent-context → agent-factory → gateway → platform). Uses shared cleanup scripts for non-Terraform resources (ingress deletion + ALB wait, S3 bucket emptying, force-delete Secrets Manager entries, CloudFront two-phase disable-then-delete).
+
+**State backend is a separate step** — `deploy-all.sh --destroy` does NOT delete the Terraform state bucket or the DynamoDB lock table. Run after module destroys succeed:
+
+```bash
+./platform/scripts/bootstrap-destroy.sh
+```
+
+Prompts for typed AWS account ID to confirm.
+
+**Resources that survive by design:**
+- GitHub App credentials (`adp/<org>/gh-app-*` in Secrets Manager) — apps live in your GH org, delete manually if you want
+- GitHub Apps themselves — browser-based deletion, no CLI
+- Terraform state backend — only `bootstrap-destroy.sh` deletes this
+
+Per-module destroy workflows exist under `.github/workflows/<module>-infra-destroy.yml` for iterative development. Each requires a typed-name `confirm` input. Don't use them for full teardown — use `deploy-all.sh --destroy` which handles ordering.
 
 ---
 
@@ -510,31 +387,48 @@ To use Claude Code with the gateway, see `modules/gateway/README.md` Step 7."
 
 Use this when things go wrong. Do not show this to the user — use it to diagnose and fix issues yourself.
 
-### Terraform init fails
-- ACCOUNT_ID placeholder not replaced → run `sed -i "s/ACCOUNT_ID/$(aws sts get-caller-identity --query Account --output text)/g"` on the tfvars file
-- S3 bucket doesn't exist → run bootstrap.sh first
+### `terraform init` fails
+- S3 bucket doesn't exist → run `bootstrap.sh` first.
+- Backend config mismatch → check `environments/dev/backend.tfvars` or the module-scoped `environments/dev/modules/*-backend.tfvars` matches the state bucket.
 
 ### EKS nodes not appearing
-- Auto Mode takes 3-5 min. Wait and retry `kubectl get nodes`.
-- If still empty after 5 min, check: `kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -20`
+- Auto Mode provisioning takes 3-5 minutes. Wait and retry `kubectl get nodes`.
+- Still empty after 5 min: `kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -20`.
+- `aws eks update-kubeconfig --name adp-dev-eks-cluster --region us-east-1` — **cluster name is `adp-dev-eks-cluster`, NOT `adp-dev-eks`**. A bare `adp-dev-eks` in any script or command is a bug; fix it.
 
 ### Gateway pods CrashLoopBackOff
-- `kubectl logs -n adp-gateway -l app=bedrockgateway --previous --tail=50`
-- Missing configmap: `kubectl get configmap bedrockgateway-config -n adp-gateway`
-- Missing secret: `kubectl get secret bedrockgateway-secrets -n adp-gateway`
-- RDS not reachable: check security groups allow EKS → RDS on port 5432
+- `kubectl logs -n adp-gateway -l app=bedrockgateway --previous --tail=50`.
+- Check configmap + secrets: `kubectl get configmap bedrockgateway-config -n adp-gateway -o yaml`.
+- DB auth errors (`InvalidPasswordError: password authentication failed for user "bgadmin"`) → the RDS bootstrap Job didn't run or failed. Check `kubectl get jobs -n adp-gateway | grep rds-bootstrap` and its pod logs.
+- `chat_logging_scrub_level` Pydantic error on startup → value must be one of `off|basic|standard` (the code now coerces `"none"` → `"off"` per PR #58, but an operator-edited configmap with another invalid value will still crash).
 
-### CloudFront 502
-- ALB not yet created by Ingress controller. Check: `kubectl get ingress -n adp-gateway`
-- Wait 2-3 minutes for ALB provisioning, then check again.
+### CloudFront 502 or 504
+- ALB not yet created by the Ingress controller. Check `kubectl get ingress -n adp-gateway`. Wait 2-3 minutes for ALB provisioning.
+- If `deploy-all.sh` skipped ALB wiring ("ALB not found after 10 minutes"), the API Gateway body is still MOCK. Re-run `deploy-all.sh --gateway-only` or manually: `bash platform/scripts/wire-gateway-alb.sh` + re-apply gateway infra with the returned vars.
+
+### REST API returns 500 on admin endpoints but /health is 200
+- The RDS bootstrap Job didn't successfully run `GRANT rds_iam TO bgadmin`. The app's proxy path doesn't touch Postgres; admin / budget / ratelimit paths do.
+- Fix: check the Job pod: `kubectl logs -n adp-gateway -l app=bedrockgw-dev-rds-bootstrap`. Common cause: AL2023 package name drift — should be `awscli-2`, not `aws-cli`.
 
 ### Frontend blank page
-- Wrong VITE_API_URL during build. Rebuild with `VITE_API_URL="/api/gateway" npm run build`
-- Stale cache: `aws cloudfront create-invalidation --distribution-id <id> --paths "/*"`
+- Wrong `VITE_API_URL` during build. Rebuild with `VITE_API_URL="/api/gateway" npm run build`.
+- Stale cache: `aws cloudfront create-invalidation --distribution-id <id> --paths "/*"`.
 
 ### CodeBuild fails
-- Check logs: `aws codebuild batch-get-builds --ids <build-id> --query 'builds[0].logs.deepLink' --output text`
-- IAM propagation: if role was just created, wait 15 seconds and retry
+- Only 4 docker-build projects use CodeBuild (`adp-dev-gateway-build`, `adp-dev-chat-agent`, `adp-dev-agent-gateway`, `adp-dev-arc-runner`). Terraform-managed in `platform/infra/modules/codebuild/`. All other work (`terraform apply`, `npm build`, `kubectl apply`) runs directly on the caller.
+- Check logs: `aws codebuild batch-get-builds --ids <build-id> --query 'builds[0].logs.deepLink' --output text`.
+- Docker Hub 429 on `python:3.12-slim` pulls → Dockerfile should use `public.ecr.aws/docker/library/python:3.12-slim` (AWS mirror). Fixed in main; check the file if building fails here.
+- IAM propagation: if role was just created, wait 15 seconds and retry.
+
+### `terraform apply` wants to destroy+recreate Cognito domain
+- Live has `bedrockgw-dev-auth-<account-suffix>`, code should too. If it says `bedrockgw-dev-auth` without the suffix, someone reverted PR #52; restore the `${name_prefix}-auth-${substr(data.aws_caller_identity.current.account_id, 4, 8)}` form before applying.
+
+### Import existing resources (re-deploying to an account that already has some leftovers)
+- `aws_cognito_user_group.admins`: `terraform import 'module.cognito.aws_cognito_user_group.admins' '<pool_id>/admins'`
+- `aws_cognito_user.test_user[0]`: `'<pool_id>/<email>'`
+- `aws_secretsmanager_secret.*`: `'<secret_name>'`
+- `aws_codebuild_project.main["<key>"]`: `'adp-dev-<key>'`
+- `aws_iam_role.codebuild`: `'adp-dev-codebuild-role'`
 
 ---
 
@@ -542,21 +436,26 @@ Use this when things go wrong. Do not show this to the user — use it to diagno
 
 | File | Purpose |
 |------|---------|
-| `platform/scripts/deploy-all.sh` | Automated deploy script (alternative to agent-driven deploy) |
-| `platform/scripts/preflight-check.sh` | Environment validation |
+| `platform/scripts/deploy-all.sh` | **Canonical deploy entry point — run this after Phase 0.** Also supports `--destroy`. |
+| `platform/scripts/preflight-check.sh` | Environment validation (tools + IAM) |
 | `platform/scripts/setup-org.sh` | Configure repo for your GitHub org |
-| `platform/scripts/create-github-apps.sh` | Create GitHub Apps + store creds + install on repos |
-| `platform/scripts/bootstrap.sh` | Creates Terraform state backend |
-| `platform/infra/main.tf` | Shared platform Terraform |
+| `platform/scripts/create-github-apps.sh` | Create 3 GitHub Apps + store creds in Secrets Manager + install on repos |
+| `platform/scripts/bootstrap.sh` | Create Terraform state backend (S3 + DynamoDB) |
+| `platform/scripts/bootstrap-destroy.sh` | Destroy Terraform state backend (separate intentional step) |
+| `platform/scripts/wire-gateway-alb.sh` | Discover EKS Ingress ALB, cache to SSM — shared by deploy-all.sh and the module workflow |
+| `platform/scripts/empty-s3-buckets.sh` | Idempotent bucket emptier (versioned + non-versioned) |
+| `platform/scripts/delete-ingress-and-wait.sh` | `kubectl delete ingress` + poll ALB disappearance — runs before gateway destroy |
+| `platform/scripts/force-delete-secrets.sh` | Force-delete Secrets Manager entries by prefix with protected-pattern allowlist |
+| `platform/infra/main.tf` | Shared platform Terraform (VPC, EKS, ECR, IAM, CodeBuild projects) |
+| `platform/infra/modules/codebuild/` | Terraform for the 4 shared docker-build CodeBuild projects |
 | `modules/gateway/README.md` | Gateway detailed documentation |
-| `modules/gateway/Dockerfile` | Gateway container build |
-| `modules/gateway/docker-compose.yml` | Local dev stack (no AWS needed) |
-| `modules/gateway/infra/main.tf` | Gateway Terraform (15 modules) |
-| `modules/gateway/k8s/deployment.yaml` | K8s deployment manifest |
-| `modules/agent-factory/SETUP-GUIDE.md` | Agent factory setup guide |
-| `modules/agent-factory/README.md` | Agent factory overview |
-| `modules/agent-factory/infra/main.tf` | Agent factory Terraform |
+| `modules/gateway/infra/main.tf` | Gateway Terraform (RDS, Cognito, CloudFront, API Gateway, Lambda authorizer) |
+| `modules/gateway/k8s/deployment.yaml` | K8s deployment manifest for the FastAPI backend |
+| `modules/agent-factory/infra/main.tf` | Agent factory Terraform (ARC, KEDA, SQS, WebSocket) |
 | `environments/dev/` | Environment-specific Terraform vars |
+| `.github/workflows/gateway-infra-apply.yml` | Per-module workflow for iterative dev — includes the two-pass ALB wire. NOT for first deploy. |
+| `.github/workflows/gateway-deploy.yml` | Per-module build + deploy workflow for iterative dev |
+| `.github/workflows/*-infra-destroy.yml` | Per-module destroy workflows with typed-name confirmation |
 
 ## Non-Interactive Shell Rules
 
@@ -565,4 +464,12 @@ Always use non-interactive flags to avoid hanging:
 - `terraform apply -auto-approve`, `terraform init -input=false`
 - `apt-get -y`, `yum -y`
 - Never use interactive editors (vim, nano) — use `cat >` or `sed`
-- `kubectl apply` (already non-interactive)
+- `kubectl apply` is already non-interactive
+
+## When to Call the User
+
+Break silence and ask the user ONLY when:
+- Phase 0 inputs (org, repo, AWS profile, deploy scope) — gathered at the start, not re-asked later
+- The 3 GitHub App browser clicks in `create-github-apps.sh` — the only manual step in deploy
+- Preflight tool installation (if a required CLI is missing)
+- A failure has retried twice without success — explain what failed, what you tried, and ask for guidance. Do not guess on destructive operations (destroy, force-delete, rm -rf).
