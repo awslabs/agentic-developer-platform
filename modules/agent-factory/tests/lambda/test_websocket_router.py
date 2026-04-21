@@ -280,3 +280,115 @@ class TestProgressFrameRouting:
         assert frame["kind"] == "heartbeat"
         assert frame["turn"] == 3
         assert frame["content"] == "thinking..."
+
+
+class TestFrameChunking:
+    """Issue #85, Problem A: large frames split into numbered chunks."""
+
+    def test_small_content_no_chunk_fields(self):
+        """A 5 KB response should be sent as a single frame with no chunk_* fields."""
+        WebSocketRouter = _import_router()
+        router = WebSocketRouter("https://abc.execute-api.us-east-1.amazonaws.com/v1", sessions_table=None)
+        mock_client = MagicMock()
+        router._client = mock_client
+
+        small_content = "Hello, world! " * 300  # ~4.2 KB
+        metadata = {"connection_id": "conn-small"}
+
+        result = router.route(small_content, metadata, "task-small")
+
+        assert result is True
+        mock_client.post_to_connection.assert_called_once()
+        call_kwargs = mock_client.post_to_connection.call_args[1]
+        frame = json.loads(call_kwargs["Data"].decode("utf-8"))
+
+        # No chunk fields on small frames
+        assert "chunk_index" not in frame
+        assert "chunk_total" not in frame
+        assert frame["type"] == "response"
+        assert frame["content"] == small_content
+
+    def test_large_content_produces_chunks(self):
+        """A 30 KB response should be split into 2+ frames with chunk_index/chunk_total."""
+        WebSocketRouter = _import_router()
+        router = WebSocketRouter("https://abc.execute-api.us-east-1.amazonaws.com/v1", sessions_table=None)
+        mock_client = MagicMock()
+        router._client = mock_client
+
+        # 30 KB of content
+        large_content = "A" * 30_000
+        metadata = {"connection_id": "conn-large"}
+
+        result = router.route(large_content, metadata, "task-large")
+
+        assert result is True
+        assert mock_client.post_to_connection.call_count >= 2
+
+        # Verify chunk fields and reassembly
+        frames = []
+        for call in mock_client.post_to_connection.call_args_list:
+            payload = call[1]["Data"].decode("utf-8")
+            frame = json.loads(payload)
+            frames.append(frame)
+            # Each frame must be under 24 KB
+            assert len(payload.encode("utf-8")) <= 24 * 1024
+
+        chunk_total = frames[0]["chunk_total"]
+        assert chunk_total == len(frames)
+
+        # Verify sequential chunk_index
+        for i, frame in enumerate(frames, start=1):
+            assert frame["chunk_index"] == i
+            assert frame["chunk_total"] == chunk_total
+            assert frame["task_id"] == "task-large"
+            assert frame["type"] == "response"
+
+        # Reassemble and verify content is preserved
+        reassembled = "".join(f["content"] for f in frames)
+        assert reassembled == large_content
+
+    def test_chunk_preserves_progress_extra_fields(self):
+        """Chunked progress frames should carry kind and turn."""
+        WebSocketRouter = _import_router()
+        router = WebSocketRouter("https://abc.execute-api.us-east-1.amazonaws.com/v1", sessions_table=None)
+        mock_client = MagicMock()
+        router._client = mock_client
+
+        large_content = "B" * 30_000
+        metadata = {
+            "connection_id": "conn-prog",
+            "response_type": "progress",
+            "progress_kind": "thinking",
+            "progress_turn": 5,
+        }
+
+        result = router.route(large_content, metadata, "task-prog")
+
+        assert result is True
+        assert mock_client.post_to_connection.call_count >= 2
+
+        for call in mock_client.post_to_connection.call_args_list:
+            frame = json.loads(call[1]["Data"].decode("utf-8"))
+            assert frame["type"] == "progress"
+            assert frame["kind"] == "thinking"
+            assert frame["turn"] == 5
+            assert "chunk_index" in frame
+            assert "chunk_total" in frame
+
+    def test_exact_boundary_no_chunking(self):
+        """Content exactly at 24 KB (with envelope) should not be chunked."""
+        WebSocketRouter = _import_router()
+        router = WebSocketRouter("https://abc.execute-api.us-east-1.amazonaws.com/v1", sessions_table=None)
+        mock_client = MagicMock()
+        router._client = mock_client
+
+        # Build content that when JSON-wrapped stays under 24 KB.
+        # The envelope adds ~100-200 bytes, so 23 KB of content should fit.
+        content = "C" * (23 * 1024)
+        metadata = {"connection_id": "conn-boundary"}
+
+        router.route(content, metadata, "task-boundary")
+
+        mock_client.post_to_connection.assert_called_once()
+        frame = json.loads(mock_client.post_to_connection.call_args[1]["Data"].decode("utf-8"))
+        assert "chunk_index" not in frame

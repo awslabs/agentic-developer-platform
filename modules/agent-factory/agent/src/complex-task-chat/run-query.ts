@@ -71,6 +71,10 @@ export interface RunQueryInput {
   model?: string;
   cwd?: string;
   maxTurns?: number;
+  /** Claude effort level.  Controls verbosity + latency; used by channel
+   *  profiles (e.g. webchat → 'low' for concise, fast replies). The SDK
+   *  Options type supports 'low' | 'medium' | 'high' | 'max'. */
+  effort?: 'low' | 'medium' | 'high' | 'max';
   log?: (msg: string) => void;
   /**
    * Optional progress sink. Called with mid-turn signals (tool invocations +
@@ -96,6 +100,7 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
     model = process.env.ANTHROPIC_MODEL ?? 'global.anthropic.claude-sonnet-4-6',
     cwd = '/tmp/workspace',
     maxTurns = 50,
+    effort,
     log = console.log,
     onProgress,
   } = input;
@@ -215,6 +220,14 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
       persistSession: false,
       maxTurns,
     };
+    if (effort !== undefined) {
+      // The Claude Agent SDK's Options type has no `maxTokens` / `maxOutputTokens`
+      // input field — those are only reported in `ModelUsage`.  The supported
+      // output-length lever is `effort: 'low' | 'medium' | 'high' | 'max'`, which
+      // is a soft nudge the model respects (latency + verbosity).  See
+      // node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts (Options.effort).
+      streamOptions.effort = effort;
+    }
     if (mcpServer) {
       streamOptions.mcpServers = { 'chat-agent-tools': mcpServer };
     }

@@ -10,6 +10,7 @@
 import { buildContextManager } from './context/factory';
 import { buildMemoryProvider } from './memory/factory';
 import { buildArtifactStore } from './artifacts/factory';
+import { getChannelDirective, getChannelEffort } from './channel-profiles';
 import { loadPersona, composeSystemPrompt } from './persona-loader';
 import { runQuery } from './run-query';
 import { SqsClient, TaskPayload } from './sqs-client';
@@ -98,8 +99,11 @@ async function processOne(
       kinds: ['preference', 'fact'],
     });
 
+    const channelDirective = getChannelDirective(channel ?? '');
     const systemPrompt = composeSystemPrompt({
-      base: persona.baseSystemPrompt,
+      base: channelDirective
+        ? channelDirective + '\n\n' + persona.baseSystemPrompt
+        : persona.baseSystemPrompt,
       personaLearnings: persona.learnings,
       memories: memBlock,
     });
@@ -138,6 +142,7 @@ async function processOne(
       tools,
       model: persona.modelOverride ?? process.env.ANTHROPIC_MODEL,
       cwd: '/tmp/workspace',
+      effort: getChannelEffort(channel ?? ''),
       // Forward mid-turn progress to the user over the same channel as the
       // final reply. Keeps the WebSocket warm (API Gateway's 10-min idle
       // timeout resets on any data frame) and gives the user something to
