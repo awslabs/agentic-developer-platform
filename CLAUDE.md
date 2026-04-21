@@ -541,6 +541,7 @@ Use this when things go wrong. Do not show this to the user — use it to diagno
 - Stale cache: `aws cloudfront create-invalidation --distribution-id <id> --paths "/*"`
 
 ### CodeBuild fails
+- Only 4 docker-build projects use CodeBuild (gateway-build, chat-agent, agent-gateway, arc-runner). They are Terraform-managed in `platform/infra/modules/codebuild/`. Everything else (terraform apply, npm build, kubectl apply) runs directly on the ARC runner.
 - Check logs: `aws codebuild batch-get-builds --ids <build-id> --query 'builds[0].logs.deepLink' --output text`
 - IAM propagation: if role was just created, wait 15 seconds and retry
 
@@ -556,6 +557,7 @@ Use this when things go wrong. Do not show this to the user — use it to diagno
 | `platform/scripts/create-github-apps.sh` | Create GitHub Apps + store creds + install on repos |
 | `platform/scripts/bootstrap.sh` | Creates Terraform state backend |
 | `platform/infra/main.tf` | Shared platform Terraform |
+| `platform/infra/modules/codebuild/` | CodeBuild projects (4 docker builds only) |
 | `modules/gateway/README.md` | Gateway detailed documentation |
 | `modules/gateway/Dockerfile` | Gateway container build |
 | `modules/gateway/docker-compose.yml` | Local dev stack (no AWS needed) |

@@ -96,3 +96,17 @@ output "gateway_service_irsa_role_name" {
   description = "Name of the gateway service IRSA role"
   value       = module.eks.gateway_service_irsa_role_name
 }
+
+# ---------------------------------------------------------------------------
+# CodeBuild outputs
+# ---------------------------------------------------------------------------
+
+output "codebuild_role_arn" {
+  description = "ARN of the shared CodeBuild IAM role"
+  value       = module.codebuild.codebuild_role_arn
+}
+
+output "codebuild_project_names" {
+  description = "Map of logical key to CodeBuild project name"
+  value       = module.codebuild.project_names
+}

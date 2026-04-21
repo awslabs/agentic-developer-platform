@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # =============================================================================
-# ADP — Deploy Everything (fully AWS-native)
+# ADP — Deploy Everything
 # =============================================================================
-# Deploys the entire platform using only AWS services.
-# The deployer only needs: AWS CLI (configured with admin access).
-# Terraform, Docker, Node.js all run in CodeBuild.
+# Deploys the entire platform. Requires: AWS CLI, Terraform, Node.js, kubectl.
+# Docker builds use CodeBuild (4 Terraform-managed projects in
+# platform/infra/modules/codebuild/). Everything else runs directly.
 #
 # Usage:
 #   ./platform/scripts/deploy-all.sh                        # Deploy all modules
@@ -51,7 +51,7 @@ for arg in "$@"; do
       echo "  --agent-context-only   Deploy platform + agent-context only (skip gateway, agent-factory)"
       echo "  --skip-agent-context   Skip agent-context even if AGENT_CONTEXT_ENABLED=true"
       echo "  --skip-frontend        Skip frontend build and deploy"
-      echo "  --local                Run Terraform/Docker/npm locally"
+      echo "  --local                Use local Docker daemon for image builds (instead of CodeBuild)"
       echo "  --ci                   CI mode: validate outputs exist without re-applying (use after GH Actions deploys)"
       echo "  --destroy              Tear down all infrastructure"
       exit 0
@@ -111,17 +111,20 @@ EKS_CLUSTER="adp-${ENVIRONMENT}-eks-cluster"
 CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
 
 # =============================================================================
-# Helper: ensure CodeBuild IAM role
+# Helper: ensure CodeBuild IAM role exists
 # =============================================================================
+# The role and the 4 docker-build projects are Terraform-managed in
+# platform/infra/modules/codebuild/. This helper only validates the role
+# exists (it should after platform infra apply). If missing (bootstrap
+# chicken-and-egg), it creates it imperatively as a fallback.
 ensure_codebuild_role() {
   if aws iam get-role --role-name "$CB_ROLE_NAME" 2>/dev/null > /dev/null; then return; fi
-  echo "Creating CodeBuild service role..."
+  echo "Creating CodeBuild service role (bootstrap fallback)..."
   aws iam create-role --role-name "$CB_ROLE_NAME" \
     --assume-role-policy-document '{
       "Version":"2012-10-17",
       "Statement":[{"Effect":"Allow","Principal":{"Service":"codebuild.amazonaws.com"},"Action":"sts:AssumeRole"}]
     }' > /dev/null
-  # Admin-like policy for Terraform to create any resource
   aws iam attach-role-policy --role-name "$CB_ROLE_NAME" \
     --policy-arn "arn:aws:iam::aws:policy/AdministratorAccess"
   echo "Waiting for IAM propagation..."
@@ -143,36 +146,22 @@ upload_source() {
 }
 
 # =============================================================================
-# Helper: run a CodeBuild job with a buildspec
+# Helper: run a CodeBuild job (project must already exist via Terraform)
 # =============================================================================
+# The 4 docker-build projects are Terraform-managed in
+# platform/infra/modules/codebuild/. This function only starts builds
+# against existing projects — it no longer creates or updates them.
 run_codebuild() {
   local PROJECT_NAME="$1"
-  local BUILDSPEC_FILE="$2"
+  local BUILDSPEC_FILE="$2"  # unused — buildspec is baked into the project
 
-  ensure_codebuild_role
-  local CB_ROLE_ARN
-  CB_ROLE_ARN=$(aws iam get-role --role-name "$CB_ROLE_NAME" --query 'Role.Arn' --output text)
-
-  # Create or update project
-  local SOURCE_LOC="${STATE_BUCKET}/codebuild/adp-source.zip"
+  # Verify the project exists
   local PROJECT_EXISTS
   PROJECT_EXISTS=$(aws codebuild batch-get-projects --names "$PROJECT_NAME" --region "$AWS_REGION" \
     --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
-
-  local CMD="create-project"
-  [ "$PROJECT_EXISTS" -gt 0 ] && CMD="update-project"
-
-  aws codebuild $CMD --region "$AWS_REGION" \
-    --name "$PROJECT_NAME" \
-    --source "{\"type\":\"S3\",\"location\":\"$SOURCE_LOC\",\"buildspec\":\"$BUILDSPEC_FILE\"}" \
-    --artifacts '{"type":"NO_ARTIFACTS"}' \
-    --environment '{
-      "type":"LINUX_CONTAINER",
-      "image":"aws/codebuild/amazonlinux2-x86_64-standard:5.0",
-      "computeType":"BUILD_GENERAL1_MEDIUM",
-      "privilegedMode":true
-    }' \
-    --service-role "$CB_ROLE_ARN" > /dev/null 2>&1
+  if [ "$PROJECT_EXISTS" -eq 0 ]; then
+    fail "CodeBuild project '$PROJECT_NAME' not found. Run 'terraform apply' in platform/infra/ first."
+  fi
 
   # Start build
   local BUILD_ID
@@ -217,65 +206,26 @@ if [ "$DESTROY" = true ]; then
   read -r confirm
   [ "$confirm" = "yes" ] || { echo "Aborted."; exit 0; }
 
-  if [ "$LOCAL_MODE" = true ]; then
-    [ -d "$ROOT_DIR/modules/agent-context/terraform" ] && {
-      cd "$ROOT_DIR/modules/agent-context/terraform"
-      terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/agent-context-backend.tfvars" -input=false 2>/dev/null || true
-      terraform destroy -var-file="../../../environments/$ENVIRONMENT/modules/agent-context.tfvars" -auto-approve || true
-    }
-    [ -f "$ROOT_DIR/modules/agent-factory/infra/terraform.tfvars" ] && {
-      cd "$ROOT_DIR/modules/agent-factory/infra"
-      terraform destroy -var-file=terraform.tfvars -auto-approve || true
-    }
-    cd "$ROOT_DIR/modules/gateway/infra"
-    terraform destroy -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" -auto-approve || true
-    cd "$ROOT_DIR/platform/infra"
-    terraform destroy -var-file="../../environments/$ENVIRONMENT/platform.tfvars" -auto-approve || true
-  else
-    upload_source
-    # Write a destroy buildspec inline
-    cat > /tmp/adp-destroy-buildspec.yml << 'BSEOF'
-version: 0.2
-env:
-  variables:
-    TF_IN_AUTOMATION: "true"
-phases:
-  install:
-    commands:
-      - yum install -y yum-utils
-      - yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
-      - yum install -y terraform
-      - curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && chmod +x kubectl && mv kubectl /usr/local/bin/
-  build:
-    commands:
-      - echo "Destroying agent-factory..."
-      - |
-        if [ -f modules/agent-factory/infra/terraform.tfvars ]; then
-          cd modules/agent-factory/infra
-          terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/agent-factory-backend.tfvars" -input=false || true
-          terraform destroy -var-file=terraform.tfvars -auto-approve || true
-          cd ../../..
-        fi
-      - echo "Destroying gateway..."
-      - cd modules/gateway/infra
-      - terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false || true
-      - terraform destroy -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" -auto-approve || true
-      - cd ../../..
-      - echo "Destroying platform..."
-      - cd platform/infra
-      - terraform init -backend-config="../../environments/$ENVIRONMENT/backend.tfvars" -input=false || true
-      - terraform destroy -var-file="../../environments/$ENVIRONMENT/platform.tfvars" -auto-approve || true
-BSEOF
-    aws s3 cp /tmp/adp-destroy-buildspec.yml "s3://${STATE_BUCKET}/codebuild/destroy-buildspec.yml" --region "$AWS_REGION" > /dev/null
-    run_codebuild "adp-${ENVIRONMENT}-destroy" "codebuild/destroy-buildspec.yml"
-  fi
+  # Destroy runs directly — no CodeBuild needed.
+  [ -d "$ROOT_DIR/modules/agent-context/terraform" ] && {
+    cd "$ROOT_DIR/modules/agent-context/terraform"
+    terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/agent-context-backend.tfvars" -input=false 2>/dev/null || true
+    terraform destroy -var-file="../../../environments/$ENVIRONMENT/modules/agent-context.tfvars" -auto-approve || true
+  }
+  [ -f "$ROOT_DIR/modules/agent-factory/infra/terraform.tfvars" ] && {
+    cd "$ROOT_DIR/modules/agent-factory/infra"
+    terraform destroy -var-file=terraform.tfvars -auto-approve || true
+  }
+  cd "$ROOT_DIR/modules/gateway/infra"
+  terraform destroy -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" -auto-approve || true
+  cd "$ROOT_DIR/platform/infra"
+  terraform destroy -var-file="../../environments/$ENVIRONMENT/platform.tfvars" -auto-approve || true
 
-  # Clean up CodeBuild resources
-  for p in "adp-${ENVIRONMENT}-platform-infra" "adp-${ENVIRONMENT}-gateway-infra" "adp-${ENVIRONMENT}-gateway-build" "adp-${ENVIRONMENT}-frontend-build" "adp-${ENVIRONMENT}-agent-factory-infra" "adp-${ENVIRONMENT}-agent-context-infra" "adp-${ENVIRONMENT}-agent-context-deploy" "adp-${ENVIRONMENT}-destroy"; do
+  # Clean up any leftover retired CodeBuild projects (the 4 kept projects
+  # are Terraform-managed and will be destroyed by the platform terraform destroy above)
+  for p in "adp-${ENVIRONMENT}-frontend-build" "adp-${ENVIRONMENT}-platform-infra" "adp-${ENVIRONMENT}-gateway-deploy" "adp-${ENVIRONMENT}-gateway-infra" "adp-${ENVIRONMENT}-gateway-alb-wire" "adp-${ENVIRONMENT}-agent-factory-infra" "adp-${ENVIRONMENT}-agent-context-infra" "adp-${ENVIRONMENT}-agent-context-deploy" "adp-${ENVIRONMENT}-destroy"; do
     aws codebuild delete-project --name "$p" --region "$AWS_REGION" 2>/dev/null || true
   done
-  aws iam detach-role-policy --role-name "$CB_ROLE_NAME" --policy-arn "arn:aws:iam::aws:policy/AdministratorAccess" 2>/dev/null || true
-  aws iam delete-role --role-name "$CB_ROLE_NAME" 2>/dev/null || true
 
   ok "Done. Delete state backend manually: S3 $STATE_BUCKET, DynamoDB $LOCK_TABLE"
   exit 0
@@ -381,333 +331,24 @@ find "$ROOT_DIR/environments/" -name "*.tfvars" 2>/dev/null | while read f; do
 done
 ok "Environment configs updated"
 
-# Upload source for CodeBuild steps
-if [ "$LOCAL_MODE" = false ]; then
-  upload_source
-fi
-
 # =============================================================================
-# Write buildspec files to S3 (used by CodeBuild)
+# Upload source for CodeBuild docker-build steps
 # =============================================================================
-if [ "$LOCAL_MODE" = false ]; then
-  step "Uploading buildspec files"
-
-  # --- Platform infra buildspec ---
-  cat > /tmp/bs-platform.yml << 'EOF'
-version: 0.2
-env:
-  variables:
-    TF_IN_AUTOMATION: "true"
-phases:
-  install:
-    commands:
-      - yum install -y yum-utils
-      - yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
-      - yum install -y terraform
-  build:
-    commands:
-      - cd platform/infra
-      - terraform init -backend-config="../../environments/$ENVIRONMENT/backend.tfvars" -input=false
-      - terraform apply -var-file="../../environments/$ENVIRONMENT/platform.tfvars" -auto-approve
-EOF
-
-  # --- Gateway infra buildspec ---
-  cat > /tmp/bs-gateway-infra.yml << 'EOF'
-version: 0.2
-env:
-  variables:
-    TF_IN_AUTOMATION: "true"
-phases:
-  install:
-    commands:
-      - yum install -y yum-utils
-      - yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
-      - yum install -y terraform
-  build:
-    commands:
-      - cd modules/gateway/infra
-      - terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false
-      - terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" -auto-approve
-EOF
-
-  # --- Gateway Docker build ---
-  cat > /tmp/bs-gateway-build.yml << 'EOF'
-version: 0.2
-phases:
-  pre_build:
-    commands:
-      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY
-  build:
-    commands:
-      - cd modules/gateway
-      - docker build -t $REGISTRY/adp-gateway:latest .
-      - '[ -n "${IMAGE_TAG:-}" ] && docker tag $REGISTRY/adp-gateway:latest $REGISTRY/adp-gateway:$IMAGE_TAG || true'
-  post_build:
-    commands:
-      - docker push $REGISTRY/adp-gateway:latest
-      - '[ -n "${IMAGE_TAG:-}" ] && docker push $REGISTRY/adp-gateway:$IMAGE_TAG || true'
-EOF
-
-  # --- Frontend build ---
-  cat > /tmp/bs-frontend.yml << 'EOF'
-version: 0.2
-phases:
-  install:
-    runtime-versions:
-      nodejs: 22
-    commands:
-      - cd modules/gateway/frontend
-      - npm ci
-  build:
-    commands:
-      - cd modules/gateway/frontend
-      - VITE_API_URL=/api/gateway npm run build
-  post_build:
-    commands:
-      - BUCKET=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/frontend-bucket" --query "Parameter.Value" --output text)
-      - cd modules/gateway/frontend
-      - aws s3 sync dist/ "s3://$BUCKET/" --delete
-      - DIST_ID=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-id" --query "Parameter.Value" --output text) || true
-      - '[ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ] && aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*" || true'
-EOF
-
-  # --- Gateway k8s deploy ---
-  cat > /tmp/bs-gateway-deploy.yml << 'EOF'
-version: 0.2
-env:
-  variables:
-    TF_IN_AUTOMATION: "true"
-phases:
-  install:
-    commands:
-      - curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && chmod +x kubectl && mv kubectl /usr/local/bin/
-      - yum install -y yum-utils
-      - yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
-      - yum install -y terraform
-      - aws eks update-kubeconfig --name $EKS_CLUSTER --region $AWS_REGION
-  pre_build:
-    commands:
-      # Read gateway Terraform outputs for configmap population
-      - cd modules/gateway/infra
-      - terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false -reconfigure 2>/dev/null || true
-      - export DB_HOST=$(terraform output -raw rds_endpoint 2>/dev/null | sed 's/:5432//' || echo "localhost")
-      - export DB_NAME=$(terraform output -raw rds_database_name 2>/dev/null || echo "bedrockgateway")
-      - export DB_USER="bgadmin"
-      - export REDIS_HOST=$(terraform output -raw redis_endpoint 2>/dev/null || echo "localhost")
-      - export REDIS_PORT=$(terraform output -raw redis_port 2>/dev/null || echo "6379")
-      - export COGNITO_USER_POOL_ID=$(terraform output -raw cognito_user_pool_id 2>/dev/null || echo "")
-      - export COGNITO_CLIENT_ID=$(terraform output -raw cognito_user_pool_client_id 2>/dev/null || echo "")
-      - export COGNITO_DOMAIN=$(terraform output -raw cognito_domain 2>/dev/null || echo "")
-      - export CF_DOMAIN=$(terraform output -raw frontend_cloudfront_domain_name 2>/dev/null || echo "")
-      - export AGENT_REGISTRY_TABLE=$(terraform output -raw agent_registry_table_name 2>/dev/null || echo "")
-      - cd ../../..
-  build:
-    commands:
-      - cd modules/gateway
-      - kubectl create namespace adp-gateway --dry-run=client -o yaml | kubectl apply -f -
-      # Populate configmap placeholders with actual values
-      - |
-        sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
-            -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
-            -e "s|__DB_HOST__|${DB_HOST}|g" \
-            -e "s|__DB_USER__|${DB_USER}|g" \
-            -e "s|__DB_NAME__|${DB_NAME}|g" \
-            -e "s|__REDIS_HOST__|${REDIS_HOST:-localhost}|g" \
-            -e "s|__REDIS_PORT__|${REDIS_PORT:-6379}|g" \
-            -e "s|__COGNITO_USER_POOL_ID__|${COGNITO_USER_POOL_ID}|g" \
-            -e "s|__COGNITO_CLIENT_ID__|${COGNITO_CLIENT_ID}|g" \
-            -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \
-            -e "s|__CORS_ALLOWED_ORIGINS__|https://${CF_DOMAIN},http://localhost:5173|g" \
-            -e "s|__CHAT_LOGGING_ENABLED__|false|g" \
-            -e "s|__CHAT_LOGGING_BUCKET__||g" \
-            -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|off|g" \
-            -e "s|__TRUST_APIGW_HEADERS__|true|g" \
-            -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
-            k8s/configmap.yaml | kubectl apply -f -
-      # Apply remaining k8s resources (skip configmap since we just applied it)
-      - |
-        for f in k8s/*.yaml; do
-          case "$(basename $f)" in
-            configmap.yaml) continue ;;
-            targetgroupbinding.yaml) continue ;;
-            *) kubectl apply -f "$f" -n adp-gateway ;;
-          esac
-        done
-      # Update deployment image to use correct registry
-      - kubectl set image deployment/bedrockgateway bedrockgateway=${REGISTRY}/adp-gateway:latest -n adp-gateway 2>/dev/null || true
-      - kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || echo "Rollout still in progress"
-EOF
-
-  # --- Agent factory infra ---
-  cat > /tmp/bs-agent-factory.yml << 'EOF'
-version: 0.2
-env:
-  variables:
-    TF_IN_AUTOMATION: "true"
-phases:
-  install:
-    commands:
-      - yum install -y yum-utils
-      - yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
-      - yum install -y terraform
-  pre_build:
-    commands:
-      - |
-        BACKEND_FILE="environments/$ENVIRONMENT/modules/agent-factory-backend.tfvars"
-        if [ ! -f "$BACKEND_FILE" ]; then
-          mkdir -p "$(dirname $BACKEND_FILE)"
-          cat > "$BACKEND_FILE" << INNER
-        bucket         = "$STATE_BUCKET"
-        key            = "$ENVIRONMENT/modules/agent-factory/terraform.tfstate"
-        region         = "$AWS_REGION"
-        encrypt        = true
-        dynamodb_table = "adp-terraform-locks"
-        INNER
-        fi
-      - |
-        if [ ! -f modules/agent-factory/infra/terraform.tfvars ]; then
-          cat > modules/agent-factory/infra/terraform.tfvars << INNER
-        environment      = "$ENVIRONMENT"
-        aws_region       = "$AWS_REGION"
-        account_id       = "$ACCOUNT_ID"
-        github_org       = "aws-e"
-        runner_namespace = "arc-runners"
-        INNER
-        fi
-  build:
-    commands:
-      - cd modules/agent-factory/infra
-      - terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/agent-factory-backend.tfvars" -input=false
-      - terraform apply -var-file=terraform.tfvars -auto-approve
-EOF
-
-  # --- Agent factory gateway build + deploy ---
-  cat > /tmp/bs-agent-gateway.yml << 'EOF'
-version: 0.2
-phases:
-  install:
-    commands:
-      - curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && chmod +x kubectl && mv kubectl /usr/local/bin/
-      - aws eks update-kubeconfig --name $EKS_CLUSTER --region $AWS_REGION
-  pre_build:
-    commands:
-      - REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-      - ECR_REPO="adp-agent-gateway"
-      - IMAGE_TAG="${IMAGE_TAG:-latest}"
-      - aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" 2>/dev/null || aws ecr create-repository --repository-name "$ECR_REPO" --region "$AWS_REGION"
-      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-  build:
-    commands:
-      - cd modules/agent-factory
-      - BUILD_DIR="/tmp/agent-gateway-build"
-      - rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
-      - cp -r gateway/app "$BUILD_DIR/app"
-      - cp -r agent "$BUILD_DIR/agent"
-      - cp gateway/Dockerfile "$BUILD_DIR/Dockerfile"
-      - cp gateway/entrypoint.sh "$BUILD_DIR/entrypoint.sh"
-      - docker build -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$BUILD_DIR"
-      - docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
-      - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
-      - docker push "$REGISTRY/$ECR_REPO:latest"
-      - rm -rf "$BUILD_DIR"
-  post_build:
-    commands:
-      - cd modules/agent-factory/infra
-      - terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/agent-factory-backend.tfvars" -input=false -reconfigure 2>/dev/null || true
-      - INPUT_QUEUE_URL=$(terraform output -raw gateway_input_queue_url 2>/dev/null || echo "PENDING")
-      - RESPONSE_QUEUE_URL=$(terraform output -raw gateway_response_queue_url 2>/dev/null || echo "PENDING")
-      - SESSIONS_TABLE=$(terraform output -raw gateway_sessions_table 2>/dev/null || echo "PENDING")
-      - REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-      - AGENT_IMAGE="${REGISTRY}/adp-agent-gateway:${IMAGE_TAG}"
-      - cd ../
-      - kubectl create namespace adp-gateway-agents --dry-run=client -o yaml | kubectl apply -f -
-      - |
-        sed -e "s|REPLACE_WITH_INPUT_QUEUE_URL|${INPUT_QUEUE_URL}|g" \
-            -e "s|REPLACE_WITH_RESPONSE_QUEUE_URL|${RESPONSE_QUEUE_URL}|g" \
-            -e "s|REPLACE_WITH_SESSIONS_TABLE_NAME|${SESSIONS_TABLE}|g" \
-            -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
-            gateway/k8s/keda-scaledjob.yaml | kubectl apply -f -
-      - echo "Agent gateway deployed with image tag ${IMAGE_TAG}"
-EOF
-
-  # --- Agent context infra + deploy ---
-  cat > /tmp/bs-agent-context-infra.yml << 'EOF'
-version: 0.2
-env:
-  variables:
-    TF_IN_AUTOMATION: "true"
-phases:
-  install:
-    commands:
-      - yum install -y yum-utils
-      - yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
-      - yum install -y terraform
-  pre_build:
-    commands:
-      - |
-        BACKEND_FILE="environments/$ENVIRONMENT/modules/agent-context-backend.tfvars"
-        if [ ! -f "$BACKEND_FILE" ]; then
-          mkdir -p "$(dirname $BACKEND_FILE)"
-          cat > "$BACKEND_FILE" << INNER
-        bucket         = "$STATE_BUCKET"
-        key            = "$ENVIRONMENT/modules/agent-context/terraform.tfstate"
-        region         = "$AWS_REGION"
-        encrypt        = true
-        dynamodb_table = "adp-terraform-locks"
-        INNER
-        fi
-  build:
-    commands:
-      - cd modules/agent-context/terraform
-      - terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/agent-context-backend.tfvars" -input=false
-      - terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/agent-context.tfvars" -auto-approve
-EOF
-
-  cat > /tmp/bs-agent-context-deploy.yml << 'EOF'
-version: 0.2
-phases:
-  install:
-    commands:
-      - curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && chmod +x kubectl && mv kubectl /usr/local/bin/
-      - aws eks update-kubeconfig --name $EKS_CLUSTER --region $AWS_REGION
-  build:
-    commands:
-      - cd modules/agent-context
-      - bash deploy.sh --skip-validate
-EOF
-
-  # Add buildspec files to the source zip so CodeBuild can find them
-  mkdir -p /tmp/adp-buildspecs/codebuild
-  for f in bs-platform bs-gateway-infra bs-gateway-build bs-frontend bs-gateway-deploy bs-agent-factory bs-agent-gateway bs-agent-context-infra bs-agent-context-deploy; do
-    cp "/tmp/${f}.yml" "/tmp/adp-buildspecs/codebuild/${f}.yml"
-    rm -f "/tmp/${f}.yml"
-  done
-  # Re-upload source with buildspecs included
-  cd /tmp/adp-buildspecs
-  zip -r /tmp/adp-deploy-source-bs.zip codebuild/ > /dev/null 2>&1
-  cd "$ROOT_DIR"
-  # Download existing source, append buildspecs, re-upload
-  aws s3 cp "s3://${STATE_BUCKET}/codebuild/adp-source.zip" /tmp/adp-source-existing.zip --region "$AWS_REGION" > /dev/null
-  cp /tmp/adp-source-existing.zip /tmp/adp-source-final.zip
-  cd /tmp/adp-buildspecs && zip -r /tmp/adp-source-final.zip codebuild/ > /dev/null 2>&1
-  aws s3 cp /tmp/adp-source-final.zip "s3://${STATE_BUCKET}/codebuild/adp-source.zip" --region "$AWS_REGION" > /dev/null
-  rm -rf /tmp/adp-buildspecs /tmp/adp-source-existing.zip /tmp/adp-source-final.zip /tmp/adp-deploy-source-bs.zip
-  cd "$ROOT_DIR"
-  ok "Buildspec files uploaded"
-fi
+# The 4 docker-build CodeBuild projects (gateway-build, chat-agent,
+# agent-gateway, arc-runner) are Terraform-managed. Their buildspecs are
+# checked into codebuild/bs-*.yml. All other work (terraform apply, npm build,
+# kubectl apply) now runs directly — no CodeBuild needed.
+# =============================================================================
 
 # =============================================================================
 # Step 2: Platform infra
 # =============================================================================
 step "Step 2/6: Deploy shared platform (VPC, EKS, ECR, IAM)"
 
-if [ "$LOCAL_MODE" = true ]; then
-  cd "$ROOT_DIR/platform/infra"
-  terraform init -backend-config="../../environments/$ENVIRONMENT/backend.tfvars" -input=false
-  terraform apply -var-file="../../environments/$ENVIRONMENT/platform.tfvars" -auto-approve
-else
-  run_codebuild "adp-${ENVIRONMENT}-platform-infra" "codebuild/bs-platform.yml"
-fi
+# Platform infra runs directly (Terraform + kubectl) — no CodeBuild needed.
+cd "$ROOT_DIR/platform/infra"
+terraform init -backend-config="../../environments/$ENVIRONMENT/backend.tfvars" -input=false
+terraform apply -var-file="../../environments/$ENVIRONMENT/platform.tfvars" -auto-approve
 ok "Platform deployed"
 
 # Configure kubectl (needed for k8s steps — local or CodeBuild deploy step)
@@ -723,13 +364,11 @@ step "Step 3/6: Deploy gateway infrastructure"
 if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
   echo "Skipping gateway infra (--agent-factory-only or --agent-context-only)"
   ok "Skipped"
-elif [ "$LOCAL_MODE" = true ]; then
+else
+  # Gateway infra runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/gateway/infra"
   terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false
   terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" -auto-approve
-  ok "Gateway infrastructure deployed"
-else
-  run_codebuild "adp-${ENVIRONMENT}-gateway-infra" "codebuild/bs-gateway-infra.yml"
   ok "Gateway infrastructure deployed"
 fi
 
@@ -741,41 +380,21 @@ step "Step 4/6: Build and deploy gateway"
 if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
   echo "Skipping gateway deploy (--agent-factory-only or --agent-context-only)"
   ok "Skipped"
-elif [ "$LOCAL_MODE" = true ]; then
-  # Build Docker image (fall back to CodeBuild if Docker daemon not available)
-  if docker info &>/dev/null 2>&1; then
+else
+  # --- Docker build: use CodeBuild (needs privileged mode) or local Docker ---
+  if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
     cd "$ROOT_DIR/modules/gateway"
     docker build -t adp-gateway .
     aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
     docker tag adp-gateway:latest "$REGISTRY/adp-gateway:latest"
     docker push "$REGISTRY/adp-gateway:latest"
   else
-    warn "Docker daemon not available, using CodeBuild for image build"
+    # Docker build via CodeBuild (Terraform-managed project)
     upload_source
-    ensure_codebuild_role
-    # Write buildspec inline for gateway build
-    cat > /tmp/bs-gateway-build-local.yml << 'BSEOF'
-version: 0.2
-phases:
-  pre_build:
-    commands:
-      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY
-  build:
-    commands:
-      - cd modules/gateway
-      - docker build -t $REGISTRY/adp-gateway:latest .
-  post_build:
-    commands:
-      - docker push $REGISTRY/adp-gateway:latest
-BSEOF
-    aws s3 cp /tmp/bs-gateway-build-local.yml "s3://${STATE_BUCKET}/codebuild/bs-gateway-build-local.yml" --region "$AWS_REGION" > /dev/null
-    rm -f /tmp/bs-gateway-build-local.yml
-    run_codebuild "adp-${ENVIRONMENT}-gateway-build" "codebuild/bs-gateway-build-local.yml"
+    run_codebuild "adp-${ENVIRONMENT}-gateway-build" "codebuild/bs-gateway-build.yml"
   fi
-  # Deploy to EKS
-  cd "$ROOT_DIR/modules/gateway"
-  kubectl create namespace adp-gateway --dry-run=client -o yaml | kubectl apply -f -
-  # Read terraform outputs for configmap population
+
+  # --- K8s deploy: runs directly (no CodeBuild needed) ---
   cd "$ROOT_DIR/modules/gateway/infra"
   DB_HOST=$(terraform output -raw rds_endpoint 2>/dev/null | sed 's/:5432//' || echo "localhost")
   DB_NAME=$(terraform output -raw rds_database_name 2>/dev/null || echo "bedrockgateway")
@@ -788,7 +407,7 @@ BSEOF
   CF_DOMAIN=$(terraform output -raw frontend_cloudfront_domain_name 2>/dev/null || echo "")
   AGENT_REGISTRY_TABLE=$(terraform output -raw agent_registry_table_name 2>/dev/null || echo "")
   cd "$ROOT_DIR/modules/gateway"
-  # Apply configmap with populated values
+  kubectl create namespace adp-gateway --dry-run=client -o yaml | kubectl apply -f -
   sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
       -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
       -e "s|__DB_HOST__|${DB_HOST}|g" \
@@ -806,19 +425,14 @@ BSEOF
       -e "s|__TRUST_APIGW_HEADERS__|true|g" \
       -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
       k8s/configmap.yaml | kubectl apply -f -
-  # Apply remaining k8s resources (skip configmap and targetgroupbinding)
   for f in k8s/*.yaml; do
     case "$(basename "$f")" in
       configmap.yaml|targetgroupbinding.yaml) continue ;;
       *) kubectl apply -f "$f" -n adp-gateway ;;
     esac
   done
-  # Update deployment image
   kubectl set image deployment/bedrockgateway bedrockgateway="${REGISTRY}/adp-gateway:latest" -n adp-gateway 2>/dev/null || true
   kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || warn "Rollout not complete"
-else
-  run_codebuild "adp-${ENVIRONMENT}-gateway-build" "codebuild/bs-gateway-build.yml"
-  run_codebuild "adp-${ENVIRONMENT}-gateway-deploy" "codebuild/bs-gateway-deploy.yml"
 fi
 ok "Gateway deployed"
 
@@ -905,40 +519,15 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
   # and CloudFront VPC Origin (needs ARN only).
   if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ] && [ -n "$ALB_DNS" ]; then
     echo "Re-applying gateway Terraform with ALB details to wire API Gateway VPC Link v2 and CloudFront..."
-    if [ "$LOCAL_MODE" = true ]; then
-      cd "$ROOT_DIR/modules/gateway/infra"
-      terraform apply \
-        -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
-        -var "internal_alb_arn=$ALB_ARN" \
-        -var "internal_alb_dns=$ALB_DNS" \
-        -var "alb_security_group_ids=$ALB_SG_IDS" \
-        -var "enable_vpc_origin=true" \
-        -auto-approve
-    else
-      # Write an ALB-wiring buildspec
-      cat > /tmp/bs-gateway-alb-wire.yml << BSEOF
-version: 0.2
-env:
-  variables:
-    TF_IN_AUTOMATION: "true"
-phases:
-  install:
-    commands:
-      - yum install -y yum-utils
-      - yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
-      - yum install -y terraform
-  build:
-    commands:
-      - cd modules/gateway/infra
-      - terraform init -backend-config="../../../environments/\$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false
-      - terraform apply -var-file="../../../environments/\$ENVIRONMENT/modules/gateway.tfvars" -var "internal_alb_arn=${ALB_ARN}" -var "internal_alb_dns=${ALB_DNS}" -var "alb_security_group_ids=${ALB_SG_IDS}" -var "enable_vpc_origin=true" -auto-approve
-BSEOF
-      aws s3 cp /tmp/bs-gateway-alb-wire.yml "s3://${STATE_BUCKET}/codebuild/bs-gateway-alb-wire.yml" --region "$AWS_REGION" > /dev/null
-      rm -f /tmp/bs-gateway-alb-wire.yml
-      # Re-upload source since we may have modified files
-      upload_source
-      run_codebuild "adp-${ENVIRONMENT}-gateway-alb-wire" "codebuild/bs-gateway-alb-wire.yml"
-    fi
+    # ALB wiring runs directly — no CodeBuild needed (just terraform apply).
+    cd "$ROOT_DIR/modules/gateway/infra"
+    terraform apply \
+      -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+      -var "internal_alb_arn=$ALB_ARN" \
+      -var "internal_alb_dns=$ALB_DNS" \
+      -var "alb_security_group_ids=$ALB_SG_IDS" \
+      -var "enable_vpc_origin=true" \
+      -auto-approve
     ok "API Gateway VPC Link and CloudFront VPC Origin wired to ALB"
   fi
 fi
@@ -949,22 +538,18 @@ fi
 if [ "$SKIP_FRONTEND" = false ] && [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
   step "Step 5/6: Deploy frontend"
 
-  if [ "$LOCAL_MODE" = true ]; then
-    cd "$ROOT_DIR/modules/gateway/frontend"
-    npm ci
-    VITE_API_URL="/api/gateway" npm run build
-    BUCKET=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/frontend-bucket" --query "Parameter.Value" --output text 2>/dev/null) || true
-    if [ -n "$BUCKET" ] && [ "$BUCKET" != "None" ]; then
-      aws s3 sync dist/ "s3://${BUCKET}/" --delete
-      DIST_ID=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-id" --query "Parameter.Value" --output text 2>/dev/null) || true
-      [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ] && aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*" > /dev/null
-      ok "Frontend deployed"
-    else
-      warn "Frontend bucket not found in SSM"
-    fi
-  else
-    run_codebuild "adp-${ENVIRONMENT}-frontend-build" "codebuild/bs-frontend.yml"
+  # Frontend build runs directly (npm + aws s3 sync) — no CodeBuild needed.
+  cd "$ROOT_DIR/modules/gateway/frontend"
+  npm ci
+  VITE_API_URL="/api/gateway" npm run build
+  BUCKET=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/frontend-bucket" --query "Parameter.Value" --output text 2>/dev/null) || true
+  if [ -n "$BUCKET" ] && [ "$BUCKET" != "None" ]; then
+    aws s3 sync dist/ "s3://${BUCKET}/" --delete
+    DIST_ID=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-id" --query "Parameter.Value" --output text 2>/dev/null) || true
+    [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ] && aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*" > /dev/null
     ok "Frontend deployed"
+  else
+    warn "Frontend bucket not found in SSM"
   fi
 else
   step "Step 5/6: Skipping frontend"
@@ -976,37 +561,35 @@ fi
 if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
   step "Step 6/8: Deploy agent-factory"
 
-  if [ "$LOCAL_MODE" = true ]; then
-    cd "$ROOT_DIR/modules/agent-factory/infra"
-    BACKEND_FILE="$ROOT_DIR/environments/$ENVIRONMENT/modules/agent-factory-backend.tfvars"
-    [ ! -f "$BACKEND_FILE" ] && cat > "$BACKEND_FILE" << EOF
+  # Agent factory infra runs directly — no CodeBuild needed.
+  cd "$ROOT_DIR/modules/agent-factory/infra"
+  BACKEND_FILE="$ROOT_DIR/environments/$ENVIRONMENT/modules/agent-factory-backend.tfvars"
+  [ ! -f "$BACKEND_FILE" ] && cat > "$BACKEND_FILE" << EOF
 bucket         = "${STATE_BUCKET}"
 key            = "${ENVIRONMENT}/modules/agent-factory/terraform.tfstate"
 region         = "${AWS_REGION}"
 encrypt        = true
 dynamodb_table = "${LOCK_TABLE}"
 EOF
-    [ ! -f terraform.tfvars ] && cat > terraform.tfvars << EOF
+  [ ! -f terraform.tfvars ] && cat > terraform.tfvars << EOF
 environment      = "${ENVIRONMENT}"
 aws_region       = "${AWS_REGION}"
 account_id       = "${ACCOUNT_ID}"
 github_org       = "aws-e"
 runner_namespace = "arc-runners"
 EOF
-    terraform init -backend-config="$BACKEND_FILE" -input=false
-    terraform apply -var-file=terraform.tfvars -auto-approve
-  else
-    run_codebuild "adp-${ENVIRONMENT}-agent-factory-infra" "codebuild/bs-agent-factory.yml"
-  fi
+  terraform init -backend-config="$BACKEND_FILE" -input=false
+  terraform apply -var-file=terraform.tfvars -auto-approve
   ok "Agent-factory deployed"
 
   # --- Agent Gateway build + deploy (part of agent-factory) ---
   step "Step 7/8: Build and deploy agent gateway"
 
-  if [ "$LOCAL_MODE" = true ]; then
+  # --- Docker build: use CodeBuild (needs privileged mode) or local Docker ---
+  LOCAL_IMAGE_TAG="${IMAGE_TAG:-latest}"
+  if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
     cd "$ROOT_DIR/modules/agent-factory"
     BUILD_DIR="/tmp/agent-gateway-build"
-    LOCAL_IMAGE_TAG="${IMAGE_TAG:-latest}"
     rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
     cp -r gateway/app "$BUILD_DIR/app"
     cp -r agent "$BUILD_DIR/agent"
@@ -1021,20 +604,24 @@ EOF
     docker push "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG"
     docker push "$REGISTRY/adp-agent-gateway:latest"
     rm -rf "$BUILD_DIR"
-
-    kubectl create namespace adp-gateway-agents --dry-run=client -o yaml | kubectl apply -f -
-    INPUT_QUEUE_URL=$(cd infra && terraform output -raw gateway_input_queue_url 2>/dev/null || echo "PENDING")
-    RESPONSE_QUEUE_URL=$(cd infra && terraform output -raw gateway_response_queue_url 2>/dev/null || echo "PENDING")
-    SESSIONS_TABLE=$(cd infra && terraform output -raw gateway_sessions_table 2>/dev/null || echo "PENDING")
-    AGENT_IMAGE="$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG"
-    sed -e "s|REPLACE_WITH_INPUT_QUEUE_URL|${INPUT_QUEUE_URL}|g" \
-        -e "s|REPLACE_WITH_RESPONSE_QUEUE_URL|${RESPONSE_QUEUE_URL}|g" \
-        -e "s|REPLACE_WITH_SESSIONS_TABLE_NAME|${SESSIONS_TABLE}|g" \
-        -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
-        gateway/k8s/keda-scaledjob.yaml | kubectl apply -f -
   else
+    # Docker build via CodeBuild (Terraform-managed project)
+    upload_source
     run_codebuild "adp-${ENVIRONMENT}-agent-gateway" "codebuild/bs-agent-gateway.yml"
   fi
+
+  # --- K8s deploy: runs directly (no CodeBuild needed) ---
+  cd "$ROOT_DIR/modules/agent-factory"
+  kubectl create namespace adp-gateway-agents --dry-run=client -o yaml | kubectl apply -f -
+  INPUT_QUEUE_URL=$(cd infra && terraform output -raw gateway_input_queue_url 2>/dev/null || echo "PENDING")
+  RESPONSE_QUEUE_URL=$(cd infra && terraform output -raw gateway_response_queue_url 2>/dev/null || echo "PENDING")
+  SESSIONS_TABLE=$(cd infra && terraform output -raw gateway_sessions_table 2>/dev/null || echo "PENDING")
+  AGENT_IMAGE="$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG"
+  sed -e "s|REPLACE_WITH_INPUT_QUEUE_URL|${INPUT_QUEUE_URL}|g" \
+      -e "s|REPLACE_WITH_RESPONSE_QUEUE_URL|${RESPONSE_QUEUE_URL}|g" \
+      -e "s|REPLACE_WITH_SESSIONS_TABLE_NAME|${SESSIONS_TABLE}|g" \
+      -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
+      gateway/k8s/keda-scaledjob.yaml | kubectl apply -f -
   ok "Agent gateway deployed"
 
   warn "Store GitHub App creds in Secrets Manager (see modules/agent-factory/SETUP-GUIDE.md)"
@@ -1057,28 +644,23 @@ fi
 if [ "$DEPLOY_AGENT_CONTEXT" = true ]; then
   step "Step 8/8: Deploy agent-context"
 
-  if [ "$LOCAL_MODE" = true ]; then
-    cd "$ROOT_DIR/modules/agent-context/terraform"
-    BACKEND_FILE="$ROOT_DIR/environments/$ENVIRONMENT/modules/agent-context-backend.tfvars"
-    [ ! -f "$BACKEND_FILE" ] && cat > "$BACKEND_FILE" << EOF
+  # Agent context runs directly — no CodeBuild needed.
+  cd "$ROOT_DIR/modules/agent-context/terraform"
+  BACKEND_FILE="$ROOT_DIR/environments/$ENVIRONMENT/modules/agent-context-backend.tfvars"
+  [ ! -f "$BACKEND_FILE" ] && cat > "$BACKEND_FILE" << EOF
 bucket         = "${STATE_BUCKET}"
 key            = "${ENVIRONMENT}/modules/agent-context/terraform.tfstate"
 region         = "${AWS_REGION}"
 encrypt        = true
 dynamodb_table = "${LOCK_TABLE}"
 EOF
-    terraform init -backend-config="$BACKEND_FILE" -input=false
-    terraform apply -var-file="$ROOT_DIR/environments/$ENVIRONMENT/modules/agent-context.tfvars" -auto-approve
-    ok "Agent-context infrastructure deployed"
+  terraform init -backend-config="$BACKEND_FILE" -input=false
+  terraform apply -var-file="$ROOT_DIR/environments/$ENVIRONMENT/modules/agent-context.tfvars" -auto-approve
+  ok "Agent-context infrastructure deployed"
 
-    # Deploy k8s manifests
-    cd "$ROOT_DIR/modules/agent-context"
-    bash deploy.sh --skip-validate
-  else
-    run_codebuild "adp-${ENVIRONMENT}-agent-context-infra" "codebuild/bs-agent-context-infra.yml"
-    ok "Agent-context infrastructure deployed"
-    run_codebuild "adp-${ENVIRONMENT}-agent-context-deploy" "codebuild/bs-agent-context-deploy.yml"
-  fi
+  # Deploy k8s manifests
+  cd "$ROOT_DIR/modules/agent-context"
+  bash deploy.sh --skip-validate
   ok "Agent-context deployed"
 else
   step "Step 8/8: Skipping agent-context (set AGENT_CONTEXT_ENABLED=true or use --agent-context-only)"

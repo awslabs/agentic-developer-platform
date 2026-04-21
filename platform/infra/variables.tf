@@ -96,3 +96,10 @@ variable "enable_container_insights" {
   type        = bool
   default     = false
 }
+
+variable "state_bucket" {
+  description = "S3 bucket for Terraform state and CodeBuild source zips. Defaults to adp-terraform-state-<account_id>."
+  type        = string
+  default     = ""
+}
+

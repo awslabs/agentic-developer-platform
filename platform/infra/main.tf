@@ -34,7 +34,8 @@ terraform {
 data "aws_caller_identity" "current" {}
 
 locals {
-  name_prefix = coalesce(var.name_prefix, "adp-${var.environment}")
+  name_prefix  = coalesce(var.name_prefix, "adp-${var.environment}")
+  state_bucket = coalesce(var.state_bucket, "adp-terraform-state-${data.aws_caller_identity.current.account_id}")
   common_tags = {
     Project     = "adp"
     Environment = var.environment
@@ -48,10 +49,10 @@ locals {
   deployer_role_arn = (
     length(regexall("^arn:aws:sts::[0-9]+:assumed-role/", local.caller_arn)) > 0
     ? replace(
-        replace(local.caller_arn, "/^arn:aws:sts::/", "arn:aws:iam::"),
-        "/:assumed-role/([^/]+)/.*$/",
-        ":role/$1"
-      )
+      replace(local.caller_arn, "/^arn:aws:sts::/", "arn:aws:iam::"),
+      "/:assumed-role/([^/]+)/.*$/",
+      ":role/$1"
+    )
     : local.caller_arn
   )
 
@@ -159,4 +160,15 @@ module "ecr" {
   name_prefix  = local.name_prefix
   common_tags  = local.common_tags
   repositories = var.ecr_repositories
+}
+
+# -----------------------------------------------------------------------------
+# CodeBuild Projects (docker-requiring builds only)
+# -----------------------------------------------------------------------------
+module "codebuild" {
+  source = "./modules/codebuild"
+
+  name_prefix  = local.name_prefix
+  state_bucket = local.state_bucket
+  common_tags  = local.common_tags
 }

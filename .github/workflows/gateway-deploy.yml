@@ -81,37 +81,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Package source and upload to S3
-        run: |
-          bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
-          aws s3 cp /tmp/adp-source.zip "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip"
-          rm -f /tmp/adp-source.zip
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
-      - name: Trigger frontend build in CodeBuild
+      - name: Build frontend
         run: |
-          REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
-          BUILD_ID=$(aws codebuild start-build \
-            --project-name adp-${{ env.ENVIRONMENT }}-frontend-build \
-            --environment-variables-override \
-              "name=AWS_REGION,value=${{ env.AWS_REGION }}" \
-              "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}" \
-              "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" \
-              "name=REGISTRY,value=${REGISTRY}" \
-              "name=STATE_BUCKET,value=${{ env.STATE_BUCKET }}" \
-              "name=EKS_CLUSTER,value=${{ env.EKS_CLUSTER }}" \
-            --query 'build.id' --output text)
-          echo "Started frontend build: $BUILD_ID"
-          while true; do
-            STATUS=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
-              --query 'builds[0].buildStatus' --output text)
-            case $STATUS in
-              SUCCEEDED) echo "Frontend build succeeded"; break ;;
-              FAILED|FAULT|STOPPED|TIMED_OUT)
-                LOG_LINK=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
-                  --query 'builds[0].logs.deepLink' --output text)
-                echo "Frontend build failed ($STATUS). Logs: $LOG_LINK"
-                exit 1
-                ;;
-              *) sleep 10 ;;
-            esac
-          done
+          cd modules/gateway/frontend
+          npm ci
+          VITE_API_URL=/api/gateway npm run build
+
+      - name: Deploy to S3 and invalidate CloudFront
+        run: |
+          BUCKET=$(aws ssm get-parameter \
+            --name "/adp/${{ env.ENVIRONMENT }}/gateway/frontend-bucket" \
+            --query "Parameter.Value" --output text)
+          cd modules/gateway/frontend
+          aws s3 sync dist/ "s3://${BUCKET}/" --delete
+
+          DIST_ID=$(aws ssm get-parameter \
+            --name "/adp/${{ env.ENVIRONMENT }}/gateway/cloudfront-id" \
+            --query "Parameter.Value" --output text 2>/dev/null) || true
+          if [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ]; then
+            aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
+          fi
