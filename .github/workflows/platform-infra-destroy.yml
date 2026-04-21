@@ -1,0 +1,134 @@
+name: Platform Infra Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "platform" to confirm destruction'
+        required: true
+        type: string
+
+concurrency:
+  group: tf-apply-platform
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  TF_VAR_environment: dev
+  ENVIRONMENT: dev
+  MODULE_NAME: platform
+  TF_WORKING_DIR: platform/infra
+  BACKEND_CONFIG: environments/dev/backend.tfvars
+  VAR_FILE: environments/dev/platform.tfvars
+
+jobs:
+  destroy:
+    name: Destroy Platform Infrastructure
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+
+    steps:
+      - name: Confirm module name
+        run: |
+          if [ "${{ inputs.confirm }}" != "platform" ]; then
+            echo "::error::Input did not match 'platform'. Aborting to prevent accidental destroy."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
+      - name: Configure kubectl
+        run: |
+          set -e
+          CLUSTER_NAME="adp-${{ env.ENVIRONMENT }}-eks-cluster"
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "${{ env.AWS_REGION }}" 2>/dev/null || {
+            echo "WARNING: Could not configure kubectl. EKS cluster may not exist."
+          }
+
+      - name: Clean up K8s system namespaces
+        run: |
+          set -e
+          # Delete ARC controller namespace (installed by platform Terraform)
+          kubectl delete namespace arc-systems --wait=true --timeout=120s 2>/dev/null || true
+          # Delete KEDA namespace if present
+          kubectl delete namespace keda --wait=true --timeout=120s 2>/dev/null || true
+
+      - name: Clean up orphaned EKS resources
+        run: |
+          set -e
+          # Find the VPC used by the EKS cluster
+          CLUSTER_NAME="adp-${{ env.ENVIRONMENT }}-eks-cluster"
+          VPC_ID=$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "${{ env.AWS_REGION }}" \
+            --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || echo "")
+
+          if [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
+            echo "Cleaning up orphaned ENIs in VPC: $VPC_ID"
+            # Delete available ENIs from ELBs
+            ORPHAN_ENIS=$(aws ec2 describe-network-interfaces --region "${{ env.AWS_REGION }}" \
+              --filters "Name=vpc-id,Values=$VPC_ID" "Name=status,Values=available" \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' --output text 2>/dev/null || echo "")
+            for ENI in $ORPHAN_ENIS; do
+              echo "  Deleting orphaned ENI: $ENI"
+              aws ec2 delete-network-interface --network-interface-id "$ENI" --region "${{ env.AWS_REGION }}" 2>/dev/null || true
+            done
+          fi
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend-config="../../${{ env.BACKEND_CONFIG }}" -input=false
+
+      - name: Terraform Destroy
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform destroy -var-file="../../${{ env.VAR_FILE }}" -auto-approve
+
+      - name: Clean up retired CodeBuild projects
+        if: always()
+        run: |
+          for p in \
+            "adp-${{ env.ENVIRONMENT }}-frontend-build" \
+            "adp-${{ env.ENVIRONMENT }}-platform-infra" \
+            "adp-${{ env.ENVIRONMENT }}-gateway-deploy" \
+            "adp-${{ env.ENVIRONMENT }}-gateway-infra" \
+            "adp-${{ env.ENVIRONMENT }}-gateway-alb-wire" \
+            "adp-${{ env.ENVIRONMENT }}-agent-factory-infra" \
+            "adp-${{ env.ENVIRONMENT }}-agent-context-infra" \
+            "adp-${{ env.ENVIRONMENT }}-agent-context-deploy" \
+            "adp-${{ env.ENVIRONMENT }}-destroy"; do
+            aws codebuild delete-project --name "$p" --region "${{ env.AWS_REGION }}" 2>/dev/null || true
+          done
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Terraform Destroy -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Action**: destroy" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Note**: The Terraform state backend (S3 bucket + DynamoDB table) is NOT deleted." >> "$GITHUB_STEP_SUMMARY"
+          echo "To delete it, run \`platform/scripts/bootstrap-destroy.sh\` manually." >> "$GITHUB_STEP_SUMMARY"

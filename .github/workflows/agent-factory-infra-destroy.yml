@@ -1,0 +1,106 @@
+name: Agent Factory Infra Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "agent-factory" to confirm destruction'
+        required: true
+        type: string
+
+concurrency:
+  group: tf-apply-agent-factory
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  TF_VAR_environment: dev
+  ENVIRONMENT: dev
+  MODULE_NAME: agent-factory
+  TF_WORKING_DIR: modules/agent-factory/infra
+  BACKEND_CONFIG: environments/dev/modules/agent-factory-backend.tfvars
+  VAR_FILE: modules/agent-factory/infra/terraform.tfvars
+
+jobs:
+  destroy:
+    name: Destroy Agent Factory Infrastructure
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+
+    steps:
+      - name: Confirm module name
+        run: |
+          if [ "${{ inputs.confirm }}" != "agent-factory" ]; then
+            echo "::error::Input did not match 'agent-factory'. Aborting to prevent accidental destroy."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
+      - name: Configure kubectl
+        run: |
+          set -e
+          CLUSTER_NAME="adp-${{ env.ENVIRONMENT }}-eks-cluster"
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "${{ env.AWS_REGION }}" 2>/dev/null || {
+            echo "WARNING: Could not configure kubectl. EKS cluster may not exist."
+          }
+
+      - name: Delete K8s agent-factory resources
+        run: |
+          set -e
+          # Delete KEDA ScaledJobs and gateway agent namespace
+          kubectl delete scaledjobs --all -n adp-gateway-agents 2>/dev/null || true
+          kubectl delete namespace adp-gateway-agents --wait=true --timeout=120s 2>/dev/null || true
+          # Delete ARC runner resources (but not the controller — that's in platform)
+          kubectl delete namespace arc-runners --wait=true --timeout=120s 2>/dev/null || true
+
+      - name: Empty S3 buckets
+        run: |
+          set -e
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          # Agent beads state bucket
+          for pattern in "adp-${{ env.ENVIRONMENT }}-agent-beads-state-"; do
+            FOUND=$(aws s3api list-buckets --query "Buckets[?starts_with(Name,'${pattern}')].Name" --output text 2>/dev/null || echo "")
+            [ -n "$FOUND" ] && [ "$FOUND" != "None" ] && bash platform/scripts/empty-s3-buckets.sh $FOUND
+          done
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
+
+      - name: Terraform Destroy
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform destroy -var-file="terraform.tfvars" -auto-approve
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Terraform Destroy -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Action**: destroy" >> "$GITHUB_STEP_SUMMARY"

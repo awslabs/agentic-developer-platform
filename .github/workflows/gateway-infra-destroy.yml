@@ -1,0 +1,187 @@
+name: Gateway Infra Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "gateway" to confirm destruction'
+        required: true
+        type: string
+
+concurrency:
+  group: tf-apply-gateway
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  TF_VAR_environment: dev
+  ENVIRONMENT: dev
+  MODULE_NAME: gateway
+  TF_WORKING_DIR: modules/gateway/infra
+  BACKEND_CONFIG: environments/dev/modules/gateway-backend.tfvars
+  VAR_FILE: environments/dev/modules/gateway.tfvars
+
+jobs:
+  destroy:
+    name: Destroy Gateway Infrastructure
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+
+    steps:
+      - name: Confirm module name
+        run: |
+          if [ "${{ inputs.confirm }}" != "gateway" ]; then
+            echo "::error::Input did not match 'gateway'. Aborting to prevent accidental destroy."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
+      - name: Configure kubectl
+        run: |
+          set -e
+          CLUSTER_NAME="adp-${{ env.ENVIRONMENT }}-eks-cluster"
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "${{ env.AWS_REGION }}" 2>/dev/null || {
+            echo "WARNING: Could not configure kubectl. EKS cluster may not exist."
+          }
+
+      - name: Delete Ingress and wait for ALB cleanup
+        run: |
+          set -e
+          export AWS_REGION="${{ env.AWS_REGION }}"
+          export ENVIRONMENT="${{ env.ENVIRONMENT }}"
+          bash platform/scripts/delete-ingress-and-wait.sh
+
+      - name: Delete K8s gateway resources
+        run: |
+          set -e
+          # Delete gateway namespace resources before terraform destroy
+          kubectl delete namespace adp-gateway --wait=true --timeout=120s 2>/dev/null || true
+
+      - name: Empty S3 buckets
+        run: |
+          set -e
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          # Discover frontend bucket from SSM or naming convention
+          FRONTEND_BUCKET=$(aws ssm get-parameter \
+            --name "/adp/${{ env.ENVIRONMENT }}/gateway/frontend-bucket" \
+            --query "Parameter.Value" --output text --region "${{ env.AWS_REGION }}" 2>/dev/null || echo "")
+          BUCKETS=""
+          [ -n "$FRONTEND_BUCKET" ] && [ "$FRONTEND_BUCKET" != "None" ] && BUCKETS="$FRONTEND_BUCKET"
+          # Also try known naming patterns
+          for pattern in "bedrockgw-${{ env.ENVIRONMENT }}-frontend-" "adp-${{ env.ENVIRONMENT }}-chat-artifacts-"; do
+            FOUND=$(aws s3api list-buckets --query "Buckets[?starts_with(Name,'${pattern}')].Name" --output text 2>/dev/null || echo "")
+            [ -n "$FOUND" ] && [ "$FOUND" != "None" ] && BUCKETS="$BUCKETS $FOUND"
+          done
+          if [ -n "$BUCKETS" ]; then
+            bash platform/scripts/empty-s3-buckets.sh $BUCKETS
+          else
+            echo "No gateway S3 buckets to empty."
+          fi
+
+      - name: Force-delete Secrets Manager secrets
+        run: |
+          set -e
+          bash platform/scripts/force-delete-secrets.sh \
+            "bedrockgw-${{ env.ENVIRONMENT }}-" \
+            "adp/${{ env.ENVIRONMENT }}/gateway/test-"
+
+      - name: Disable CloudFront distribution
+        run: |
+          set -e
+          DIST_ID=$(aws ssm get-parameter \
+            --name "/adp/${{ env.ENVIRONMENT }}/gateway/cloudfront-id" \
+            --query "Parameter.Value" --output text --region "${{ env.AWS_REGION }}" 2>/dev/null || echo "")
+
+          if [ -z "$DIST_ID" ] || [ "$DIST_ID" = "None" ]; then
+            echo "No CloudFront distribution found in SSM. Skipping."
+            exit 0
+          fi
+
+          # Check if distribution exists and is enabled
+          DIST_CONFIG=$(aws cloudfront get-distribution-config --id "$DIST_ID" 2>/dev/null || echo "")
+          if [ -z "$DIST_CONFIG" ]; then
+            echo "CloudFront distribution $DIST_ID not found. Skipping."
+            exit 0
+          fi
+
+          ENABLED=$(echo "$DIST_CONFIG" | python3 -c "import sys,json; d=json.load(sys.stdin); print(str(d['DistributionConfig']['Enabled']).lower())")
+          ETAG=$(echo "$DIST_CONFIG" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['ETag'])")
+
+          if [ "$ENABLED" = "true" ]; then
+            echo "Disabling CloudFront distribution $DIST_ID..."
+            # Python is a single line so YAML's `run: |` indent (10 spaces
+            # here) doesn't confuse the interpreter. Multi-line `python3 -c`
+            # inside a `run: |` block fails with IndentationError because
+            # every line in the heredoc inherits the block's leading indent.
+            echo "$DIST_CONFIG" | python3 -c 'import sys,json; c=json.load(sys.stdin)["DistributionConfig"]; c["Enabled"]=False; print(json.dumps(c))' > /tmp/cf-disable-config.json
+
+            aws cloudfront update-distribution \
+              --id "$DIST_ID" \
+              --if-match "$ETAG" \
+              --distribution-config "file:///tmp/cf-disable-config.json" > /dev/null
+
+            echo "Waiting for CloudFront distribution to deploy disabled state..."
+            aws cloudfront wait distribution-deployed --id "$DIST_ID" || {
+              echo "WARNING: CloudFront wait timed out. terraform destroy may need a retry."
+            }
+            rm -f /tmp/cf-disable-config.json
+            echo "CloudFront distribution $DIST_ID disabled."
+          else
+            echo "CloudFront distribution $DIST_ID already disabled."
+          fi
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
+
+      - name: Terraform Destroy
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform destroy -var-file="../../../${{ env.VAR_FILE }}" -auto-approve
+
+      - name: Clean up SSM parameters
+        if: always()
+        run: |
+          # Clean up any remaining SSM parameters from the gateway
+          for param in \
+            "/adp/${{ env.ENVIRONMENT }}/gateway/frontend-bucket" \
+            "/adp/${{ env.ENVIRONMENT }}/gateway/cloudfront-id" \
+            "/adp/${{ env.ENVIRONMENT }}/gateway/cloudfront-domain" \
+            "/adp/${{ env.ENVIRONMENT }}/gateway/internal-alb-arn" \
+            "/adp/${{ env.ENVIRONMENT }}/gateway/internal-alb-dns" \
+            "/adp/${{ env.ENVIRONMENT }}/gateway/internal-alb-security-group-ids"; do
+            aws ssm delete-parameter --name "$param" --region "${{ env.AWS_REGION }}" 2>/dev/null || true
+          done
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Terraform Destroy -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Action**: destroy" >> "$GITHUB_STEP_SUMMARY"

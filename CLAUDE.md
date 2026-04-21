@@ -547,6 +547,50 @@ Use this when things go wrong. Do not show this to the user — use it to diagno
 
 ---
 
+## Destroy / Teardown
+
+### Per-module destroy workflows
+
+Each module has a destroy workflow mirroring its apply workflow. All require a typed `confirm` input matching the module name:
+
+| Workflow | Destroys | Confirm input |
+|----------|----------|---------------|
+| `.github/workflows/agent-context-infra-destroy.yml` | `modules/agent-context/terraform/` | `agent-context` |
+| `.github/workflows/agent-factory-infra-destroy.yml` | `modules/agent-factory/infra/` | `agent-factory` |
+| `.github/workflows/gateway-infra-destroy.yml` | `modules/gateway/infra/` + pre-cleanup (Ingress/ALB, S3, Secrets, CloudFront) | `gateway` |
+| `.github/workflows/platform-infra-destroy.yml` | `platform/infra/` (run last, after all modules) | `platform` |
+
+### Full teardown
+
+```bash
+./platform/scripts/deploy-all.sh --destroy
+```
+
+Runs the per-module destroys in reverse deploy order: agent-context, agent-factory, gateway, platform. Prompts for `yes` confirmation. Uses the shared cleanup scripts for non-Terraform resources.
+
+### Bootstrap destroy (separate step)
+
+```bash
+./platform/scripts/bootstrap-destroy.sh
+```
+
+Deletes the Terraform state backend (S3 bucket + DynamoDB lock table). Requires typing the AWS account ID to confirm. **Not called by the orchestrator** — only run after all module destroys have succeeded and you've verified everything is gone.
+
+### Resources that survive by design
+
+- **GitHub App secrets** (`adp/gh-app-*` in Secrets Manager) — manual browser step to delete apps
+- **Terraform state backend** — only `bootstrap-destroy.sh` can delete it
+- **AWS-managed RDS secrets** (`rds!*`) — AWS handles their lifecycle
+
+### Shared cleanup scripts
+
+| Script | Purpose |
+|--------|---------|
+| `platform/scripts/empty-s3-buckets.sh` | Empties S3 buckets (versioned + non-versioned). Idempotent. |
+| `platform/scripts/delete-ingress-and-wait.sh` | Deletes K8s Ingress, waits for ALB removal. Run before gateway destroy. |
+| `platform/scripts/force-delete-secrets.sh` | Force-deletes secrets by prefix. Protects gh-app-* and terraform-state-*. |
+| `platform/scripts/bootstrap-destroy.sh` | Destroys Terraform state backend. Prompts for account ID. |
+
 ## Key Files Reference
 
 | File | Purpose |
@@ -556,6 +600,10 @@ Use this when things go wrong. Do not show this to the user — use it to diagno
 | `platform/scripts/setup-org.sh` | Configure repo for your GitHub org |
 | `platform/scripts/create-github-apps.sh` | Create GitHub Apps + store creds + install on repos |
 | `platform/scripts/bootstrap.sh` | Creates Terraform state backend |
+| `platform/scripts/bootstrap-destroy.sh` | Destroys Terraform state backend (separate intentional step) |
+| `platform/scripts/empty-s3-buckets.sh` | Idempotent S3 bucket emptier (versioned + non-versioned) |
+| `platform/scripts/delete-ingress-and-wait.sh` | Pre-destroy: delete Ingress, wait for ALB cleanup |
+| `platform/scripts/force-delete-secrets.sh` | Pre-destroy: force-delete secrets by prefix (protects gh-app-*) |
 | `platform/infra/main.tf` | Shared platform Terraform |
 | `platform/infra/modules/codebuild/` | CodeBuild projects (4 docker builds only) |
 | `modules/gateway/README.md` | Gateway detailed documentation |
