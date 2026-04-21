@@ -288,3 +288,73 @@ class TestClassifierFailure:
         body = json.loads(result["body"])
         # Should fall through to long_running (enqueue), not crash
         assert body["status"] == "processing"
+
+
+class TestNoSubDropsMessage:
+    """Issue #88: WebChat messages with no Cognito sub must be dropped, not fall back to connectionId."""
+
+    def test_no_authorizer_claims_drops_message(self, mocked_aws_services):
+        """Message with no authorizer claims at all is dropped (returns 200 OK, no side effects)."""
+        handler = _import_handler()
+        event = mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": "Hello!", "session_id": "sess-nosub"},
+            connection_id="conn-nosub",
+            authorizer_claims=None,  # No claims — simulates $default route without authorizer
+        )
+        result = handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        assert result["body"] == "OK"
+
+    def test_empty_claims_drops_message(self, mocked_aws_services):
+        """Message with authorizer claims but missing 'sub' is dropped."""
+        handler = _import_handler()
+        event = mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": "Hello!", "session_id": "sess-emptysub"},
+            connection_id="conn-emptysub",
+            authorizer_claims={"email": "user@example.com"},  # Has email but no sub
+        )
+        result = handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        assert result["body"] == "OK"
+
+    def test_valid_sub_reaches_sqs_as_user_id(self, mocked_aws_services):
+        """When sub IS present, it flows through as user_id on the SQS message (not connectionId)."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "long_running",
+            "persona": "developer",
+            "response": None,
+            "thread_action": "new",
+            "reasoning": "Needs deep work",
+        })
+
+        handler = _import_handler(mock_bedrock=mock_bedrock)
+        cognito_sub = "44086498-2091-70e1-bd3a-12c6104c3ebb"
+        event = mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": "Refactor the auth module", "session_id": "sess-sub"},
+            connection_id="cMJocfj3IAMCJSQ=",  # This should NOT end up as user_id
+            authorizer_claims={"sub": cognito_sub, "email": "user@example.com"},
+        )
+        result = handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["status"] == "processing"
+
+        # Verify the SQS message carries the Cognito sub, not the connectionId
+        sqs = mocked_aws_services["sqs"]
+        resp = sqs.receive_message(
+            QueueUrl="https://sqs.us-east-1.amazonaws.com/123/adp-dev-agent-gateway-tasks",
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=0,
+        )
+        messages = resp.get("Messages", [])
+        assert len(messages) >= 1
+        task = json.loads(messages[0]["Body"])
+        assert task["user_id"] == cognito_sub
+        assert task["user_id"] != "cMJocfj3IAMCJSQ="

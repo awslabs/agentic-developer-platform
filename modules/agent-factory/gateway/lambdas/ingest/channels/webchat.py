@@ -126,9 +126,20 @@ class WebChatAdapter(ChannelAdapter):
         if not text and not body.get("attachments"):
             return None
 
-        # Extract user info from Cognito authorizer claims
+        # Extract user info from Cognito authorizer claims.
+        # The Cognito sub is the only stable user identifier — connectionId
+        # changes on every WebSocket reconnect and must NEVER be used as
+        # ownerUserId, otherwise the LCM store permanently locks out
+        # reconnected users from their own sessions.  See issue #88.
         claims = request_context.get("authorizer", {}).get("claims", {})
-        user_id = claims.get("sub", request_context.get("connectionId", ""))
+        user_id = claims.get("sub")
+        if not user_id:
+            logger.error(
+                "WebChat message from connection %s has no resolvable user sub — dropping. "
+                "Check that $connect authorizer ran and persisted claims.",
+                request_context.get("connectionId", "?"),
+            )
+            return None
         user_name = claims.get("email", claims.get("cognito:username", user_id))
         connection_id = request_context.get("connectionId", "")
 
