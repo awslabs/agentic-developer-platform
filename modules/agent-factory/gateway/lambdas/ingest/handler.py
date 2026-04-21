@@ -45,10 +45,25 @@ ADAPTERS: dict[str, ChannelAdapter] = {
 
 def lambda_handler(event, context):
     route_key = event.get("requestContext", {}).get("routeKey", "")
+    connection_id = event.get("requestContext", {}).get("connectionId", "")
+
     if route_key == "$connect":
+        # API Gateway WebSocket runs the Cognito authorizer on $connect only;
+        # subsequent $default invocations arrive without an authorizer context.
+        # Persist the authorized claims keyed by connection_id so we can
+        # reinject them on every message — otherwise the webchat adapter
+        # drops all messages for lack of a resolvable sub (issue #88).
+        _persist_connection_claims(connection_id, event.get("requestContext", {}).get("authorizer", {}))
         return {"statusCode": 200, "body": "Connected"}
     if route_key == "$disconnect":
+        _forget_connection(connection_id)
         return {"statusCode": 200, "body": "Disconnected"}
+
+    # For WebSocket message routes, pull the claims we stashed at $connect and
+    # inject them back into event.requestContext.authorizer.claims so the
+    # adapter's claims.get("sub") path works without re-authenticating.
+    if connection_id:
+        _restore_connection_claims(event, connection_id)
 
     channel_name, adapter = detect_channel(event)
 
@@ -64,6 +79,82 @@ def lambda_handler(event, context):
         return {"statusCode": 200, "body": "OK"}
 
     return handle_unified_message(message)
+
+
+# ─── Connection claims persistence ────────────────────────────
+# API Gateway WebSocket only runs the Cognito JWT authorizer on $connect.
+# Subsequent $default / sendMessage invocations arrive without the authorizer
+# context, so we stash the authorized sub/email/etc on $connect and rehydrate
+# them on each message.  Keyed by connection_id (short-lived) with a TTL so
+# abandoned connections get cleaned up.
+
+CONNECTION_CLAIMS_TTL_SECONDS = 24 * 3600
+
+
+def _persist_connection_claims(connection_id: str, authorizer_ctx: dict) -> None:
+    if not connection_id:
+        return
+    # The gateway's custom authorizer puts claims under X-Agent-* context keys;
+    # also accept Cognito-JWT-native "claims" dict as a fallback.
+    sub = (
+        authorizer_ctx.get("X-Agent-UserId")
+        or authorizer_ctx.get("principalId")
+        or authorizer_ctx.get("claims", {}).get("sub", "")
+    )
+    email = authorizer_ctx.get("X-Agent-Email") or authorizer_ctx.get("claims", {}).get("email", "")
+    tenant_id = authorizer_ctx.get("X-Agent-Tenant") or authorizer_ctx.get("claims", {}).get("custom:tenant_id", "")
+    if not sub:
+        logger.warning(
+            "Connection %s authorized but no sub/X-Agent-UserId in authorizer context; "
+            "downstream messages will be dropped by the adapter.",
+            connection_id,
+        )
+        return
+    try:
+        sessions_table.put_item(
+            Item={
+                "session_id": f"conn#{connection_id}",
+                "kind": "connection_claims",
+                "sub": sub,
+                "email": email,
+                "tenant_id": tenant_id,
+                "expires_at": int(time.time()) + CONNECTION_CLAIMS_TTL_SECONDS,
+            }
+        )
+        logger.info("Persisted connection claims for %s (sub=%s)", connection_id, sub)
+    except Exception as e:
+        logger.error("Failed to persist connection claims for %s: %s", connection_id, e)
+
+
+def _forget_connection(connection_id: str) -> None:
+    if not connection_id:
+        return
+    try:
+        sessions_table.delete_item(Key={"session_id": f"conn#{connection_id}"})
+    except Exception as e:
+        logger.warning("Failed to clean up connection claims for %s: %s", connection_id, e)
+
+
+def _restore_connection_claims(event: dict, connection_id: str) -> None:
+    """Re-inject persisted claims into event.requestContext.authorizer.claims
+    so adapters can use the normal claims.get("sub") path."""
+    try:
+        resp = sessions_table.get_item(Key={"session_id": f"conn#{connection_id}"})
+        item = resp.get("Item") or {}
+        if not item.get("sub"):
+            return
+        request_context = event.setdefault("requestContext", {})
+        authorizer = request_context.setdefault("authorizer", {})
+        claims = authorizer.setdefault("claims", {})
+        # setdefault: don't overwrite if a real authorizer context is somehow
+        # already present on this invocation.
+        claims.setdefault("sub", item["sub"])
+        if item.get("email"):
+            claims.setdefault("email", item["email"])
+        if item.get("tenant_id"):
+            claims.setdefault("custom:tenant_id", item["tenant_id"])
+    except Exception as e:
+        logger.warning("Failed to restore connection claims for %s: %s", connection_id, e)
 
 
 def handle_unified_message(message: UnifiedMessage) -> dict:
