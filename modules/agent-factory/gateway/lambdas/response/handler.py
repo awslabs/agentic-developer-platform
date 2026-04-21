@@ -62,9 +62,11 @@ def _process_response(response: dict) -> None:
     session_id = response.get("session_id", "")
     thread_id = response.get("thread_id", "")
     status = response.get("status", "")
-    # Progress frames (status=progress) use `text` as the user-facing
-    # message. Regular replies carry the reply body in `result` or `content`.
-    content = response.get("text") if status == "progress" else response.get("result", response.get("content", ""))
+    # Accept `text` (TS chat-agent), `result` (legacy Python worker), or
+    # `content` (generic) — in that priority order for ALL statuses.
+    # Previously `text` was only read for progress frames, causing terminal
+    # frames from the TS worker to arrive with empty content (issue #89).
+    content = response.get("text") or response.get("result") or response.get("content") or ""
     channel = response.get("channel", "")
     now = int(time.time())
 

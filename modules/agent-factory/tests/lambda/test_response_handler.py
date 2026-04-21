@@ -121,6 +121,153 @@ class TestResponseRouting:
         assert call_args[0][2] == "task-001"  # task_id
 
 
+class TestContentExtraction:
+    """Issue #89: Verify content extraction works for all worker payload shapes."""
+
+    def test_ts_worker_completed_payload_uses_text_field(self, mocked_aws_services):
+        """TS chat-agent sends {text, status:'completed'} — content must come from `text`."""
+        handler = _import_handler()
+
+        mock_ws = MagicMock()
+        mock_ws.route.return_value = True
+        handler.ws_router = mock_ws
+
+        event = _make_sqs_event([{
+            "task_id": "task-ts-001",
+            "session_id": "sess-ts-001",
+            "thread_id": "thr-001",
+            "connection_id": "conn-001",
+            "channel": "webchat",
+            "text": "Here is the full 4792-char analysis from the TS worker.",
+            "status": "completed",
+        }])
+
+        result = handler.lambda_handler(event, None)
+
+        assert result.get("statusCode") == 200 or "batchItemFailures" not in result
+        mock_ws.route.assert_called_once()
+        call_args = mock_ws.route.call_args
+        assert call_args[0][0] == "Here is the full 4792-char analysis from the TS worker."
+        assert call_args[0][1].get("status") == "completed"
+
+    def test_ts_worker_failed_payload_uses_text_field(self, mocked_aws_services):
+        """TS chat-agent sends {text, status:'failed'} — content must come from `text`."""
+        handler = _import_handler()
+
+        mock_ws = MagicMock()
+        mock_ws.route.return_value = True
+        handler.ws_router = mock_ws
+
+        event = _make_sqs_event([{
+            "task_id": "task-ts-002",
+            "session_id": "sess-ts-002",
+            "thread_id": "thr-001",
+            "connection_id": "conn-002",
+            "channel": "webchat",
+            "text": "Error: something went wrong",
+            "status": "failed",
+        }])
+
+        result = handler.lambda_handler(event, None)
+
+        assert result.get("statusCode") == 200 or "batchItemFailures" not in result
+        mock_ws.route.assert_called_once()
+        assert mock_ws.route.call_args[0][0] == "Error: something went wrong"
+
+    def test_legacy_python_worker_uses_result_field(self, mocked_aws_services):
+        """Legacy Python worker sends {result, status:'completed'} — still works."""
+        handler = _import_handler()
+
+        mock_ws = MagicMock()
+        mock_ws.route.return_value = True
+        handler.ws_router = mock_ws
+
+        event = _make_sqs_event([{
+            "task_id": "task-py-001",
+            "session_id": "sess-py-001",
+            "connection_id": "conn-003",
+            "channel": "webchat",
+            "result": "Legacy Python worker result.",
+            "status": "completed",
+        }])
+
+        handler.lambda_handler(event, None)
+
+        mock_ws.route.assert_called_once()
+        assert mock_ws.route.call_args[0][0] == "Legacy Python worker result."
+
+    def test_progress_frame_still_uses_text_field(self, mocked_aws_services):
+        """Progress frames use `text` — no regression from the fix."""
+        handler = _import_handler()
+
+        mock_ws = MagicMock()
+        mock_ws.route.return_value = True
+        handler.ws_router = mock_ws
+
+        event = _make_sqs_event([{
+            "task_id": "task-prog-001",
+            "session_id": "sess-prog-001",
+            "connection_id": "conn-004",
+            "channel": "webchat",
+            "text": "Searching codebase...",
+            "status": "progress",
+            "kind": "tool_use",
+            "turn": 1,
+        }])
+
+        handler.lambda_handler(event, None)
+
+        mock_ws.route.assert_called_once()
+        assert mock_ws.route.call_args[0][0] == "Searching codebase..."
+        assert mock_ws.route.call_args[0][1].get("response_type") == "progress"
+
+    def test_content_field_fallback(self, mocked_aws_services):
+        """Generic payload with `content` field works as last fallback."""
+        handler = _import_handler()
+
+        mock_ws = MagicMock()
+        mock_ws.route.return_value = True
+        handler.ws_router = mock_ws
+
+        event = _make_sqs_event([{
+            "task_id": "task-gen-001",
+            "session_id": "sess-gen-001",
+            "connection_id": "conn-005",
+            "channel": "webchat",
+            "content": "Generic content field.",
+            "status": "completed",
+        }])
+
+        handler.lambda_handler(event, None)
+
+        mock_ws.route.assert_called_once()
+        assert mock_ws.route.call_args[0][0] == "Generic content field."
+
+    def test_text_takes_priority_over_result_and_content(self, mocked_aws_services):
+        """When multiple fields are present, `text` wins."""
+        handler = _import_handler()
+
+        mock_ws = MagicMock()
+        mock_ws.route.return_value = True
+        handler.ws_router = mock_ws
+
+        event = _make_sqs_event([{
+            "task_id": "task-multi-001",
+            "session_id": "sess-multi-001",
+            "connection_id": "conn-006",
+            "channel": "webchat",
+            "text": "Text field wins",
+            "result": "Result field loses",
+            "content": "Content field loses",
+            "status": "completed",
+        }])
+
+        handler.lambda_handler(event, None)
+
+        mock_ws.route.assert_called_once()
+        assert mock_ws.route.call_args[0][0] == "Text field wins"
+
+
 class TestStaleConnection:
     """Test 13: Stale connection does not 500."""
 
