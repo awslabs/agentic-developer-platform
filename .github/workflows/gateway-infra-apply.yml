@@ -101,10 +101,30 @@ jobs:
             echo "No destroys in plan. Proceeding."
           fi
 
-      - name: Terraform Apply
+      - name: Terraform Apply (first pass)
         id: apply
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform apply tfplan
+
+      # Two-pass ALB wiring (Issue #80): The first apply produces a working API
+      # Gateway shell with MOCK integrations because the internal ALB doesn't
+      # exist yet (internal_alb_dns defaults to "localhost"). After the first
+      # apply, discover the Ingress-managed ALB, cache to SSM, and re-apply
+      # with the real ALB vars so API Gateway routes use VPC Link v2.
+      - name: Wire ALB (discover + cache)
+        id: alb
+        run: bash platform/scripts/wire-gateway-alb.sh
+
+      - name: Terraform Apply (second pass — ALB wired)
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform apply \
+            -var-file="../../../${{ env.VAR_FILE }}" \
+            -var "internal_alb_arn=${{ steps.alb.outputs.ALB_ARN }}" \
+            -var "internal_alb_dns=${{ steps.alb.outputs.ALB_DNS }}" \
+            -var "alb_security_group_ids=${{ steps.alb.outputs.ALB_SG_IDS }}" \
+            -var "enable_vpc_origin=true" \
+            -auto-approve
 
       - name: Summary
         if: always()

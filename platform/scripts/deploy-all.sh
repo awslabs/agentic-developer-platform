@@ -442,76 +442,21 @@ ok "Gateway deployed"
 if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
   step "Step 4b/8: Wire internal ALB to API Gateway and CloudFront"
 
-  # Check SSM cache first
-  CACHED_ALB_ARN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-arn" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "pending")
-
-  if [ "$CACHED_ALB_ARN" != "pending" ] && [ -n "$CACHED_ALB_ARN" ]; then
-    # Validate cached ALB still exists
-    if aws elbv2 describe-load-balancers --load-balancer-arns "$CACHED_ALB_ARN" --region "$AWS_REGION" > /dev/null 2>&1; then
-      ALB_ARN="$CACHED_ALB_ARN"
-      ALB_DNS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-dns" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-      ok "ALB found in SSM cache: $ALB_DNS"
-    else
-      warn "Cached ALB no longer valid, rediscovering..."
-      CACHED_ALB_ARN="pending"
-    fi
-  fi
-
-  if [ "$CACHED_ALB_ARN" = "pending" ] || [ -z "$CACHED_ALB_ARN" ]; then
-    echo "Waiting for EKS Ingress ALB to be provisioned..."
+  # Discover ALB, cache to SSM, export ALB_ARN / ALB_DNS / ALB_SG_IDS.
+  # The shared script exits 1 if the ALB is not found after 10 min; in
+  # deploy-all.sh we downgrade that to a warning so the rest of the deploy
+  # can continue (API Gateway will keep MOCK integrations).
+  if bash "$SCRIPT_DIR/wire-gateway-alb.sh"; then
+    # Source the exported variables into this shell (the script also writes
+    # to SSM, but we need the values locally for the terraform re-apply).
+    ALB_ARN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-arn" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    ALB_DNS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-dns" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    ALB_SG_IDS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-security-group-ids" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "[]")
+  else
+    warn "ALB not found after 10 minutes. Skipping ALB wiring — API Gateway will use MOCK integration."
     ALB_ARN=""
-    for i in $(seq 1 40); do
-      # Look for ALBs tagged with the ingress group
-      ALB_ARN=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
-        --query 'LoadBalancers[?Scheme==`internal`].LoadBalancerArn' --output text 2>/dev/null | head -1 || true)
-
-      if [ -z "$ALB_ARN" ]; then
-        # Also check by name pattern from ingress group
-        ALB_ARN=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
-          --query 'LoadBalancers[?contains(LoadBalancerName,`bedrockgw`) || contains(LoadBalancerName,`k8s-bedrockgw`)].LoadBalancerArn' --output text 2>/dev/null | head -1 || true)
-      fi
-
-      if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
-        ALB_DNS=$(aws elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --region "$AWS_REGION" \
-          --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "")
-        ALB_STATE=$(aws elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --region "$AWS_REGION" \
-          --query 'LoadBalancers[0].State.Code' --output text 2>/dev/null || echo "")
-        if [ "$ALB_STATE" = "active" ]; then
-          ok "ALB active: $ALB_DNS"
-          break
-        fi
-        echo "  ALB found but state=$ALB_STATE, waiting..."
-      else
-        echo "  Attempt $i/40: ALB not yet created, waiting 15s..."
-      fi
-      sleep 15
-    done
-
-    if [ -z "$ALB_ARN" ] || [ "$ALB_ARN" = "None" ]; then
-      warn "ALB not found after 10 minutes. Skipping ALB wiring — API Gateway will use MOCK integration."
-    else
-      # Cache ARN + DNS to SSM. Security group IDs are discovered below so the
-      # cached-resume path (where this else-branch is skipped entirely) also
-      # gets a populated ALB_SG_IDS.
-      aws ssm put-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-arn" --value "$ALB_ARN" --type String --overwrite --region "$AWS_REGION" > /dev/null
-      aws ssm put-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-dns" --value "$ALB_DNS" --type String --overwrite --region "$AWS_REGION" > /dev/null
-      ok "ALB ARN/DNS cached in SSM"
-    fi
-  fi
-
-  # Discover ALB security groups on every run (cache-hit AND cold-path). The
-  # api_gateway module needs these on the re-apply below for VPC Link v2 egress
-  # rules + reciprocal ingress rule on each ALB SG. Rendered as a Terraform
-  # list literal via shell tr+sed to avoid a jq runtime dependency.
-  ALB_SG_IDS="[]"
-  if [ -n "${ALB_ARN:-}" ] && [ "$ALB_ARN" != "None" ]; then
-    ALB_SG_LIST=$(aws elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --region "$AWS_REGION" \
-      --query 'LoadBalancers[0].SecurityGroups' --output text 2>/dev/null || echo "")
-    if [ -n "$ALB_SG_LIST" ]; then
-      ALB_SG_IDS="[$(echo "$ALB_SG_LIST" | tr '[:space:]' ',' | sed 's/,$//' | sed 's/\([^,][^,]*\)/"\1"/g')]"
-    fi
-    aws ssm put-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-security-group-ids" --value "$ALB_SG_IDS" --type String --overwrite --region "$AWS_REGION" > /dev/null
-    ok "ALB security groups: $ALB_SG_IDS"
+    ALB_DNS=""
+    ALB_SG_IDS="[]"
   fi
 
   # Re-apply gateway Terraform with ALB details to wire API Gateway VPC Link v2
@@ -519,7 +464,6 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
   # and CloudFront VPC Origin (needs ARN only).
   if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ] && [ -n "$ALB_DNS" ]; then
     echo "Re-applying gateway Terraform with ALB details to wire API Gateway VPC Link v2 and CloudFront..."
-    # ALB wiring runs directly — no CodeBuild needed (just terraform apply).
     cd "$ROOT_DIR/modules/gateway/infra"
     terraform apply \
       -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
