@@ -197,9 +197,12 @@ async def roundtrip(
                 if verbose:
                     print(f"\n{'='*60}\n{content}\n{'='*60}\n")
 
-            # Terminal condition: either explicit status='completed'/'failed', OR a
-            # type='response' frame with non-empty content (final reply) — the WS
-            # router doesn't always set a status field.
+            # Terminal condition: only an explicit status='completed'/'failed'.
+            # A plain `type=response` frame without a status is an intermediate
+            # ack (e.g. the classifier's direct_response for a long_running
+            # task, or the escalation_note notification).  Earlier versions of
+            # this script terminated on any non-empty response frame and
+            # missed the real reply.
             # For chunked responses, only terminate when the last chunk arrives.
             is_chunked_incomplete = (
                 chunk_total is not None
@@ -209,7 +212,7 @@ async def roundtrip(
 
             is_terminal = (
                 frame.get("status") in ("completed", "failed")
-                or (frame_type == "response" and frame.get("content") and not is_chunked_incomplete)
+                and not is_chunked_incomplete
             )
 
             if is_terminal:

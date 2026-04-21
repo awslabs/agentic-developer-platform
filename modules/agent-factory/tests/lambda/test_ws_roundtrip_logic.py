@@ -51,25 +51,22 @@ class TestTerminalFrameDetection:
     """Problem C: roundtrip() must exit on the right frame."""
 
     @pytest.mark.asyncio
-    async def test_single_response_frame_terminates(self):
-        """A single type=response frame with content should terminate with exit 0."""
-        # Import fresh to avoid stale module state
+    async def test_response_without_status_is_intermediate(self):
+        """A type=response frame with content but no status is an ack, not terminal.
+        The server follows up with the real final reply carrying status='completed'.
+        """
         import importlib
         import ws_roundtrip
 
         importlib.reload(ws_roundtrip)
 
         frames = [
-            {"type": "response", "task_id": "t1", "content": "Hello, world!", "timestamp": "2026-04-21T00:00:00Z"},
+            # Intermediate ack (no status) — should NOT terminate
+            {"type": "response", "task_id": "t1", "content": "On it!", "timestamp": "2026-04-21T00:00:00Z"},
+            # Real final reply with explicit status — should terminate
+            {"type": "response", "task_id": "t1", "content": "Here's the answer", "status": "completed", "timestamp": "2026-04-21T00:00:10Z"},
         ]
 
-        fake_ws = FakeWebSocket(frames)
-        with patch("ws_roundtrip.websockets", create=True) as mock_ws_mod:
-            # We need to test the roundtrip function directly
-            # Since it uses `websockets.connect`, we mock it
-            pass
-
-        # Test the logic directly by calling roundtrip with a mock
         result = await _run_roundtrip_with_frames(ws_roundtrip, frames)
         assert result == 0
 
@@ -114,7 +111,7 @@ class TestTerminalFrameDetection:
         frames = [
             {"type": "progress", "task_id": "t1", "content": "thinking...", "kind": "heartbeat", "timestamp": "2026-04-21T00:00:00Z"},
             {"type": "progress", "task_id": "t1", "content": "Searching...", "kind": "tool_use", "timestamp": "2026-04-21T00:00:01Z"},
-            {"type": "response", "task_id": "t1", "content": "Here's your answer", "timestamp": "2026-04-21T00:00:02Z"},
+            {"type": "response", "task_id": "t1", "content": "Here's your answer", "status": "completed", "timestamp": "2026-04-21T00:00:02Z"},
         ]
 
         result = await _run_roundtrip_with_frames(ws_roundtrip, frames)
@@ -135,6 +132,7 @@ class TestTerminalFrameDetection:
                 "content": "First half of the response. ",
                 "chunk_index": 1,
                 "chunk_total": 2,
+                "status": "completed",
                 "timestamp": "2026-04-21T00:00:00Z",
             },
             {
@@ -143,6 +141,7 @@ class TestTerminalFrameDetection:
                 "content": "Second half of the response.",
                 "chunk_index": 2,
                 "chunk_total": 2,
+                "status": "completed",
                 "timestamp": "2026-04-21T00:00:00Z",
             },
         ]

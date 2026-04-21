@@ -95,6 +95,11 @@ def _process_response(response: dict) -> None:
         metadata["response_type"] = "progress"
         metadata["progress_kind"] = response.get("kind", "")
         metadata["progress_turn"] = response.get("turn", 0)
+    elif status:
+        # Forward terminal status ("completed" / "failed" / "notification") so
+        # clients can reliably distinguish the final reply from the ingest
+        # Lambda's escalation_note ack (both come through as type=response).
+        metadata["status"] = status
 
     if channel in ("webchat", "websocket"):
         ws_router.route(content, metadata, task_id)

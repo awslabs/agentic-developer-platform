@@ -130,6 +130,11 @@ class WebSocketRouter:
                 extra["kind"] = metadata["progress_kind"]
             if metadata.get("progress_turn"):
                 extra["turn"] = metadata["progress_turn"]
+        # Forward the upstream status ("completed" / "failed" / "notification")
+        # so clients can distinguish the final reply from intermediate acks
+        # without relying on content heuristics.
+        if metadata.get("status"):
+            extra["status"] = metadata["status"]
 
         # Build the full frame to measure its size.
         frame: dict[str, Any] = {
