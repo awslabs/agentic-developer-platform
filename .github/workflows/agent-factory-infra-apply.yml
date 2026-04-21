@@ -23,7 +23,6 @@ jobs:
   apply:
     name: Terraform Apply
     runs-on: arc-runner-org
-    environment: production
     permissions:
       contents: read
       pull-requests: read
@@ -55,12 +54,6 @@ jobs:
           fi
           aws --version
           terraform version | head -1
-
-      # Note: the `environment: production` directive on this job (above) is
-      # GitHub's native gate — if the environment doesn't exist the job
-      # errors out before any step runs. A separate pre-check via `gh api`
-      # needs `administration: read` on the runner token, which the ARC
-      # runner doesn't have, so any such pre-check false-fails. Leave it out.
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}

@@ -27,7 +27,6 @@ jobs:
     name: Terraform Apply
     runs-on: arc-runner-org
     # ARC runner has IRSA via adp-dev-agent-runner-role — no AWS_ROLE_ARN needed
-    environment: production
     permissions:
       contents: read
       pull-requests: read
@@ -62,12 +61,6 @@ jobs:
           terraform version | head -1
 
       # Fail fast if the 'production' environment hasn't been created in repo settings
-      # Note: the `environment: production` directive on this job (above) is
-      # GitHub's native gate — if the environment doesn't exist the job
-      # errors out before any step runs. A separate pre-check via `gh api`
-      # needs `administration: read` on the runner token, which the ARC
-      # runner doesn't have, so any such pre-check false-fails. Leave it out.
-
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform init -backend-config="../../${{ env.BACKEND_CONFIG }}" -input=false
