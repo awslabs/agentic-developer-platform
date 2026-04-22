@@ -694,6 +694,53 @@ def sessions_row():
     return _query
 
 
+@pytest.fixture
+def memory_rows():
+    """Query adp-dev-agent-memory for rows matching a scope dimension.
+
+    Usage:
+        rows = memory_rows("user", "<cognito-sub>")
+        rows = memory_rows("persona", "developer")
+
+    Returns list of raw DDB items sorted newest-first.
+    """
+
+    def _query(scope_type: str, scope_value: str, kind: str | None = None) -> list[dict]:
+        table = _ddb_resource().Table("adp-dev-agent-memory")
+        pk = f"scope#{scope_type}#{scope_value}"
+        resp = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :prefix)",
+            ExpressionAttributeValues={":pk": pk, ":prefix": "mem#"},
+            ScanIndexForward=False,
+        )
+        items = resp.get("Items", [])
+        if kind:
+            items = [i for i in items if i.get("kind") == kind]
+        return items
+
+    return _query
+
+
+@pytest.fixture
+def artifact_catalog():
+    """Query adp-dev-chat-artifacts for a session's artifact catalog rows.
+
+    Returns list of catalog items sorted newest-first.
+    """
+
+    def _query(session_id: str) -> list[dict]:
+        table = _ddb_resource().Table("adp-dev-chat-artifacts")
+        pk = f"session#{session_id}"
+        resp = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :prefix)",
+            ExpressionAttributeValues={":pk": pk, ":prefix": "art#"},
+            ScanIndexForward=False,
+        )
+        return resp.get("Items", [])
+
+    return _query
+
+
 # ---------------------------------------------------------------------------
 # Cleanup fixture
 # ---------------------------------------------------------------------------
@@ -701,12 +748,13 @@ def sessions_row():
 
 @pytest.fixture
 def cleanup(request):
-    """Collect session_ids during test, delete their DDB rows after.
+    """Collect session_ids and memory IDs during test, delete their DDB rows after.
 
     Usage:
         cleanup.track("my-session-id")
-    After the test finishes, all tracked sessions are cleaned from both
-    adp-dev-chat-context and adp-dev-agent-gateway-sessions.
+        cleanup.track_memory("scope#user#abc123", "mem#2026-04-22T00:00:00Z#mem_xxx")
+        cleanup.track_artifact("session#sid", "art#2026-04-22T00:00:00Z#art_xxx")
+    After the test finishes, all tracked resources are cleaned.
 
     Skip cleanup if test is marked @pytest.mark.leave_data.
     """
@@ -714,9 +762,21 @@ def cleanup(request):
     class _Cleanup:
         def __init__(self):
             self._session_ids: list[str] = []
+            self._memory_keys: list[tuple[str, str]] = []  # (PK, SK) pairs
+            self._artifact_keys: list[tuple[str, str]] = []  # (PK, SK) pairs
+            self._s3_objects: list[tuple[str, str]] = []  # (bucket, key) pairs
 
         def track(self, session_id: str) -> None:
             self._session_ids.append(session_id)
+
+        def track_memory(self, pk: str, sk: str) -> None:
+            self._memory_keys.append((pk, sk))
+
+        def track_artifact(self, pk: str, sk: str) -> None:
+            self._artifact_keys.append((pk, sk))
+
+        def track_s3(self, bucket: str, key: str) -> None:
+            self._s3_objects.append((bucket, key))
 
         def _do_cleanup(self) -> None:
             ddb = _ddb_resource()
@@ -727,7 +787,6 @@ def cleanup(request):
                     sessions_table.delete_item(Key={"session_id": sid})
                 except Exception:
                     pass
-                # Also clean conn# prefix entries
                 try:
                     sessions_table.delete_item(Key={"session_id": f"conn#{sid}"})
                 except Exception:
@@ -748,6 +807,35 @@ def cleanup(request):
                             batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
                 except Exception:
                     pass
+
+            # Clean memory table rows
+            if self._memory_keys:
+                memory_table = ddb.Table("adp-dev-agent-memory")
+                try:
+                    with memory_table.batch_writer() as batch:
+                        for pk, sk in self._memory_keys:
+                            batch.delete_item(Key={"PK": pk, "SK": sk})
+                except Exception:
+                    pass
+
+            # Clean artifact catalog rows
+            if self._artifact_keys:
+                artifact_table = ddb.Table("adp-dev-chat-artifacts")
+                try:
+                    with artifact_table.batch_writer() as batch:
+                        for pk, sk in self._artifact_keys:
+                            batch.delete_item(Key={"PK": pk, "SK": sk})
+                except Exception:
+                    pass
+
+            # Clean S3 objects
+            if self._s3_objects:
+                s3 = boto3.client("s3", region_name="us-east-1")
+                for bucket, key in self._s3_objects:
+                    try:
+                        s3.delete_object(Bucket=bucket, Key=key)
+                    except Exception:
+                        pass
 
     c = _Cleanup()
     yield c
