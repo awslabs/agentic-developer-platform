@@ -1,9 +1,19 @@
 name: Agent Gateway Deploy
 
+# Deploys the agent-gateway pieces that live in modules/agent-factory/gateway/:
+#   - Ingest Lambda  (WebSocket $connect + message routing)
+#   - Response Lambda (SQS-triggered, routes frames to channels)
+#
+# The active long-running worker is the TypeScript chat-agent, deployed by
+# chat-agent-deploy.yml. The legacy Python worker steps previously here are
+# commented below; if/when we revive a Python worker, uncomment + fix the
+# missing codebuild/bs-agent-gateway.yml buildspec.
+
 on:
   push:
     paths:
-      - 'modules/agent-factory/gateway/**'
+      - 'modules/agent-factory/gateway/lambdas/**'
+      - '.github/workflows/agent-gateway-deploy.yml'
     branches:
       - main
   workflow_dispatch:
@@ -17,75 +27,157 @@ env:
   STATE_BUCKET: adp-terraform-state-879318057152
 
 jobs:
-  build-and-deploy:
-    name: Build Worker Image and Update ScaledJob
+  # Detect which paths changed so we skip the unrelated job when possible.
+  # workflow_dispatch forces everything on.
+  changes:
+    name: Detect changes
     runs-on: arc-runner-org
-    # Runner already has AWS creds via IRSA (adp-dev-agent-runner-role)
+    outputs:
+      lambdas: ${{ steps.filter.outputs.lambdas }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "lambdas=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only HEAD^ HEAD)
+          echo "Changed files:"
+          echo "$CHANGED"
+          if echo "$CHANGED" | grep -qE '^modules/agent-factory/gateway/lambdas/'; then
+            echo "lambdas=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "lambdas=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy-lambdas:
+    name: Deploy Ingest + Response Lambdas (Terraform)
+    runs-on: arc-runner-org
+    needs: changes
+    if: needs.changes.outputs.lambdas == 'true'
+    # Runner has AWS creds via IRSA (adp-dev-agent-runner-role).
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Package source and upload to S3
-        run: |
-          bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
-          aws s3 cp /tmp/adp-source.zip "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip"
-          rm -f /tmp/adp-source.zip
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.0'
+          terraform_wrapper: false
 
-      - name: Build worker image via CodeBuild
+      - name: Terraform init
+        working-directory: modules/agent-factory/infra
         run: |
-          REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
-          BUILD_ID=$(aws codebuild start-build \
-            --project-name adp-${{ env.ENVIRONMENT }}-agent-gateway \
-            --environment-variables-override \
-              "name=AWS_REGION,value=${{ env.AWS_REGION }}" \
-              "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}" \
-              "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" \
-              "name=REGISTRY,value=${REGISTRY}" \
-              "name=STATE_BUCKET,value=${{ env.STATE_BUCKET }}" \
-              "name=EKS_CLUSTER,value=${{ env.EKS_CLUSTER }}" \
-              "name=IMAGE_TAG,value=${{ github.sha }}" \
-            --query 'build.id' --output text)
-          echo "Started build: $BUILD_ID"
+          terraform init \
+            -backend-config=../../../environments/${ENVIRONMENT}/modules/agent-factory-backend.tfvars \
+            -input=false -reconfigure
 
-          while true; do
-            STATUS=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
-              --query 'builds[0].buildStatus' --output text)
-            case $STATUS in
-              SUCCEEDED) echo "Build succeeded"; break ;;
-              FAILED|FAULT|STOPPED|TIMED_OUT)
-                LOG_LINK=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
-                  --query 'builds[0].logs.deepLink' --output text)
-                echo "Build failed ($STATUS). Logs: $LOG_LINK"
-                exit 1
-                ;;
-              *) sleep 10 ;;
-            esac
+      - name: Terraform apply (module.gateway_lambda only)
+        working-directory: modules/agent-factory/infra
+        run: |
+          # Target the lambda-gateway module so we don't drift on unrelated
+          # resources. Both ingest + response Lambdas are in this module;
+          # Terraform rezips each, hashes, and only updates the one(s) whose
+          # source changed.
+          terraform apply \
+            -var-file=terraform.tfvars \
+            -var='gateway_deployed=true' \
+            -target=module.gateway_lambda \
+            -auto-approve
+
+      - name: Report Lambda CodeSha256
+        run: |
+          echo "### Agent Gateway Lambdas" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Function | LastModified | CodeSha256 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|--------------|------------|" >> "$GITHUB_STEP_SUMMARY"
+          for fn in adp-${ENVIRONMENT}-agent-gateway-ingest adp-${ENVIRONMENT}-agent-gateway-response; do
+            META=$(aws lambda get-function --function-name "$fn" \
+              --region "$AWS_REGION" \
+              --query 'Configuration.{LastModified:LastModified,CodeSha:CodeSha256}' \
+              --output json)
+            LM=$(echo "$META" | python3 -c 'import json,sys;print(json.load(sys.stdin)["LastModified"])')
+            SHA=$(echo "$META" | python3 -c 'import json,sys;print(json.load(sys.stdin)["CodeSha"])')
+            echo "| \`$fn\` | $LM | \`$SHA\` |" >> "$GITHUB_STEP_SUMMARY"
           done
 
-          echo "IMAGE_TAG=${{ github.sha }}" >> "$GITHUB_ENV"
-
-      - name: Update ScaledJob manifest with new image tag
-        run: |
-          REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
-          AGENT_IMAGE="${REGISTRY}/adp-agent-gateway:${{ github.sha }}"
-
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
-
-          # Read current Terraform outputs for queue URLs and session table
-          cd modules/agent-factory/infra
-          terraform init \
-            -backend-config="../../../environments/${{ env.ENVIRONMENT }}/modules/agent-factory-backend.tfvars" \
-            -input=false -reconfigure 2>/dev/null || true
-          INPUT_QUEUE_URL=$(terraform output -raw gateway_input_queue_url 2>/dev/null || echo "PENDING")
-          RESPONSE_QUEUE_URL=$(terraform output -raw gateway_response_queue_url 2>/dev/null || echo "PENDING")
-          SESSIONS_TABLE=$(terraform output -raw gateway_sessions_table 2>/dev/null || echo "PENDING")
-          cd ..
-
-          # Apply the ScaledJob manifest with substituted values
-          sed -e "s|REPLACE_WITH_INPUT_QUEUE_URL|${INPUT_QUEUE_URL}|g" \
-              -e "s|REPLACE_WITH_RESPONSE_QUEUE_URL|${RESPONSE_QUEUE_URL}|g" \
-              -e "s|REPLACE_WITH_SESSIONS_TABLE_NAME|${SESSIONS_TABLE}|g" \
-              -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
-              gateway/k8s/keda-scaledjob.yaml | kubectl apply -f -
-
-          echo "ScaledJob updated to use image: ${AGENT_IMAGE}"
+# -----------------------------------------------------------------------------
+# LEGACY PYTHON LONG-RUNNING WORKER  (commented out 2026-04-22)
+# -----------------------------------------------------------------------------
+# The block below was the original "Agent Gateway Deploy": it built a Python
+# worker image via CodeBuild and updated the `agent-gateway-worker` KEDA
+# ScaledJob. That worker was superseded by the TypeScript chat-agent, which is
+# built and deployed by .github/workflows/chat-agent-deploy.yml against the
+# `chat-agent-worker` ScaledJob.
+#
+# The CodeBuild project here (`adp-dev-agent-gateway`) is configured to load
+# `codebuild/bs-agent-gateway.yml`, which never existed in the repo — so every
+# push to modules/agent-factory/gateway/** was failing at DOWNLOAD_SOURCE
+# before this rewrite. Restore only if we bring back a Python long-running
+# worker.
+#
+# OLD TRIGGER PATH: 'modules/agent-factory/gateway/**' (too broad — matched
+# lambdas/** too, so both jobs fired spuriously).
+#
+# build-and-deploy-python-worker:
+#   name: Build Python Worker Image and Update ScaledJob
+#   runs-on: arc-runner-org
+#   steps:
+#     - uses: actions/checkout@v4
+#     - name: Package source and upload to S3
+#       run: |
+#         bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
+#         aws s3 cp /tmp/adp-source.zip "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip"
+#         rm -f /tmp/adp-source.zip
+#     - name: Build worker image via CodeBuild
+#       run: |
+#         REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+#         BUILD_ID=$(aws codebuild start-build \
+#           --project-name adp-${{ env.ENVIRONMENT }}-agent-gateway \
+#           --environment-variables-override \
+#             "name=AWS_REGION,value=${{ env.AWS_REGION }}" \
+#             "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}" \
+#             "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" \
+#             "name=REGISTRY,value=${REGISTRY}" \
+#             "name=STATE_BUCKET,value=${{ env.STATE_BUCKET }}" \
+#             "name=EKS_CLUSTER,value=${{ env.EKS_CLUSTER }}" \
+#             "name=IMAGE_TAG,value=${{ github.sha }}" \
+#           --query 'build.id' --output text)
+#         echo "Started build: $BUILD_ID"
+#         while true; do
+#           STATUS=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+#             --query 'builds[0].buildStatus' --output text)
+#           case $STATUS in
+#             SUCCEEDED) echo "Build succeeded"; break ;;
+#             FAILED|FAULT|STOPPED|TIMED_OUT)
+#               LOG_LINK=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+#                 --query 'builds[0].logs.deepLink' --output text)
+#               echo "Build failed ($STATUS). Logs: $LOG_LINK"
+#               exit 1
+#               ;;
+#             *) sleep 10 ;;
+#           esac
+#         done
+#         echo "IMAGE_TAG=${{ github.sha }}" >> "$GITHUB_ENV"
+#     - name: Update ScaledJob manifest with new image tag
+#       run: |
+#         REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+#         AGENT_IMAGE="${REGISTRY}/adp-agent-gateway:${{ github.sha }}"
+#         aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+#         cd modules/agent-factory/infra
+#         terraform init \
+#           -backend-config="../../../environments/${{ env.ENVIRONMENT }}/modules/agent-factory-backend.tfvars" \
+#           -input=false -reconfigure 2>/dev/null || true
+#         INPUT_QUEUE_URL=$(terraform output -raw gateway_input_queue_url 2>/dev/null || echo "PENDING")
+#         RESPONSE_QUEUE_URL=$(terraform output -raw gateway_response_queue_url 2>/dev/null || echo "PENDING")
+#         SESSIONS_TABLE=$(terraform output -raw gateway_sessions_table 2>/dev/null || echo "PENDING")
+#         cd ..
+#         sed -e "s|REPLACE_WITH_INPUT_QUEUE_URL|${INPUT_QUEUE_URL}|g" \
+#             -e "s|REPLACE_WITH_RESPONSE_QUEUE_URL|${RESPONSE_QUEUE_URL}|g" \
+#             -e "s|REPLACE_WITH_SESSIONS_TABLE_NAME|${SESSIONS_TABLE}|g" \
+#             -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
+#             gateway/k8s/keda-scaledjob.yaml | kubectl apply -f -
