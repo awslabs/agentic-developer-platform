@@ -120,8 +120,27 @@ class WebSocketRouter:
         # Default frame type is `response` (final reply). Progress frames set
         # response_type=progress + carry kind/turn so the UI can render them
         # as ephemeral status lines instead of appending to the transcript.
+        # AG-UI frames set response_type=ag_ui and carry the full AG-UI event
+        # payload for the frontend to consume via the AG-UI protocol.
         frame_type = metadata.get("response_type", "response")
         timestamp = datetime.now(timezone.utc).isoformat()
+
+        # AG-UI event path: wrap the event payload in a `type: "ag_ui"` frame.
+        # The content field is the serialized event, but we also include the
+        # parsed event object for direct consumption by the frontend.
+        if frame_type == "ag_ui" and metadata.get("ag_ui_payload"):
+            ag_ui_frame: dict[str, Any] = {
+                "type": "ag_ui",
+                "task_id": task_id,
+                "event": metadata["ag_ui_payload"],
+                "timestamp": timestamp,
+            }
+            payload = json.dumps(ag_ui_frame)
+
+            if len(payload.encode("utf-8")) <= MAX_FRAME_BYTES:
+                return self._send_frame(payload, connection_id, task_id, metadata)
+            # Oversized AG-UI events fall through to chunk splitting on content
+            # (rare — most AG-UI events are small)
 
         # Build extra fields for progress frames.
         extra: dict[str, Any] = {}

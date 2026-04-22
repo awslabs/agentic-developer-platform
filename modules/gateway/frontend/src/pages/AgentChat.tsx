@@ -1,8 +1,8 @@
 /**
  * AgentChat — full-page chat with the agent via WebSocket.
  *
- * Issue #97 Phase 1 (L1): raw WS frames, markdown rendering, auto-reconnect,
- * localStorage-persisted conversation threads.
+ * Issue #97 Phase 2 (L2): AG-UI event protocol. The hook handles both legacy
+ * frames and AG-UI events during the backward-compat window.
  *
  * Layout: sidebar (conversation list) | main pane (messages + input).
  */
@@ -15,9 +15,11 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
-import { useAgentChat } from '@/hooks/useAgentChat';
+import { useAgUiEvents } from '@/hooks/useAgUiEvents';
 import { ConversationSidebar } from '@/components/chat/ConversationSidebar';
 import { ChatMessageRenderer } from '@/components/chat/ChatMessageRenderer';
+import { ToolCallRow } from '@/components/chat/ToolCallRow';
+import { SessionMetaPanel } from '@/components/chat/SessionMetaPanel';
 import type { ChatMessage, Conversation, ConnectionStatus } from '@/types/chat';
 
 // highlight.js theme for code blocks
@@ -127,7 +129,7 @@ export default function AgentChat() {
   // Agent chat hook
   // ------------------------------------------------------------------
 
-  const { connectionStatus, isAwaitingReply, reconnectAttempt, sendMessage } = useAgentChat({
+  const { connectionStatus, isAwaitingReply, reconnectAttempt, sessionMeta, sendMessage, activeToolCalls } = useAgUiEvents({
     conversation: activeConversation,
     onMessagesChange: handleMessagesChange,
   });
@@ -274,12 +276,35 @@ export default function AgentChat() {
           ) : (
             <>
               {messages.map((msg) => (
-                <ChatMessageRenderer key={msg.id} message={msg} />
+                <div key={msg.id}>
+                  <ChatMessageRenderer message={msg} />
+                  {/* AG-UI tool calls rendered as collapsible rows below assistant messages */}
+                  {msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0 && (
+                    <div className="ml-10 mb-2">
+                      {msg.toolCalls.map((tc) => (
+                        <ToolCallRow key={tc.toolCallId} toolCall={tc} />
+                      ))}
+                    </div>
+                  )}
+                </div>
               ))}
+              {/* Active tool calls for the current turn (not yet attached to a message) */}
+              {activeToolCalls.length > 0 && (
+                <div className="ml-10 mb-2">
+                  {activeToolCalls
+                    .filter((tc) => tc.status === 'running')
+                    .map((tc) => (
+                      <ToolCallRow key={tc.toolCallId} toolCall={tc} />
+                    ))}
+                </div>
+              )}
               <div ref={messagesEndRef} />
             </>
           )}
         </div>
+
+        {/* Session metadata (AG-UI STATE_DELTA) */}
+        <SessionMetaPanel meta={sessionMeta} />
 
         {/* Input area */}
         <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3">

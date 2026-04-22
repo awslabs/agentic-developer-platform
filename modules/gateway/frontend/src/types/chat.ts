@@ -1,20 +1,23 @@
 /**
- * Chat types for the Agent Chat widget (Phase 1 — L1 raw WS frames).
+ * Chat types for the Agent Chat widget.
  *
- * Issue #97: These types map to the ad-hoc frame shapes emitted by the
- * agent-gateway pipeline (ingest → SQS → worker → response Lambda → WS).
- * Phase 2 will replace these with AG-UI event types.
+ * Issue #97:
+ * - Phase 1 (L1): ad-hoc frame shapes (notification/progress/response).
+ * - Phase 2 (L2): AG-UI event protocol. The hook consumes both formats
+ *   during the backward-compat window (type: "ag_ui" and legacy frames).
  */
 
+import type { AgUiWsFrame, SessionMeta, ToolCallInfo } from './ag-ui-events';
+
 // ---------------------------------------------------------------------------
-// WebSocket frame types (server → client)
+// WebSocket frame types (server → client) — legacy + AG-UI
 // ---------------------------------------------------------------------------
 
 /** Base shape shared by every inbound WS frame. */
 export interface WsFrameBase {
-  type: 'notification' | 'progress' | 'response';
+  type: 'notification' | 'progress' | 'response' | 'ag_ui';
   task_id: string;
-  session_id: string;
+  session_id?: string;
   timestamp?: string;
 }
 
@@ -49,7 +52,7 @@ export interface WsResponseFrame extends WsFrameBase {
   chunk_total?: number;
 }
 
-export type WsFrame = WsNotificationFrame | WsProgressFrame | WsResponseFrame;
+export type WsFrame = WsNotificationFrame | WsProgressFrame | WsResponseFrame | AgUiWsFrame;
 
 // ---------------------------------------------------------------------------
 // Client → server action
@@ -83,10 +86,14 @@ export interface ChatMessage {
   timestamp: number;
   /** Populated for assistant messages during long-running tasks. */
   taskId?: string;
+  /** AG-UI messageId for correlating TEXT_MESSAGE events. */
+  agUiMessageId?: string;
   /** Reason string when status === 'error'. */
   errorReason?: string;
-  /** Active tool use shown below the pending bubble. */
+  /** Active tool use shown below the pending bubble (legacy). */
   toolUse?: ToolUseInfo | null;
+  /** AG-UI tool calls associated with this message. */
+  toolCalls?: ToolCallInfo[];
 }
 
 // ---------------------------------------------------------------------------
@@ -111,4 +118,6 @@ export interface AgentChatState {
   connectionStatus: ConnectionStatus;
   isAwaitingReply: boolean;
   reconnectAttempt: number;
+  /** AG-UI session metadata (tokens, turn count, heartbeat). */
+  sessionMeta?: SessionMeta;
 }

@@ -2,6 +2,11 @@
  * SQS client helpers for the chat agent worker.
  *
  * Handles FIFO-specific bits: MessageGroupId, MessageDeduplicationId.
+ *
+ * Phase 2 (AG-UI): added `sendAgUiEvent()` for emitting AG-UI protocol events
+ * alongside the existing `sendProgress()` / `sendResponse()` methods.
+ * The response Lambda recognizes the `ag_ui_event` envelope and forwards the
+ * event payload directly to the WebSocket client.
  */
 import {
   SQSClient,
@@ -10,6 +15,7 @@ import {
   SendMessageCommand,
   Message,
 } from '@aws-sdk/client-sqs';
+import type { AgUiEvent } from './ag-ui-events';
 
 export interface TaskPayload {
   task_id: string;
@@ -71,6 +77,31 @@ export interface ProgressMessage {
   text: string;
   turn: number;
   // Same routing echo as TaskResponse so the WebSocket router fires.
+  thread_id?: string;
+  connection_id?: string;
+  channel?: string;
+  channel_metadata?: Record<string, unknown>;
+}
+
+/**
+ * AG-UI event envelope sent to the response queue. The response Lambda
+ * recognizes `ag_ui_event: true` and forwards the `event` payload as-is
+ * to the WebSocket, wrapped in `{ type: "ag_ui", ... }`. This lets the
+ * frontend consume AG-UI events without changes to the transport layer.
+ *
+ * Status `"ag_ui"` tells the response Lambda to skip thread bookkeeping
+ * (same as `"progress"` — AG-UI lifecycle events handle their own semantics).
+ * Terminal AG-UI events (RUN_FINISHED, RUN_ERROR) are sent alongside the
+ * existing `sendResponse()` call, so thread bookkeeping still happens via
+ * the old path during the backward-compat window.
+ */
+export interface AgUiEventEnvelope {
+  task_id: string;
+  session_id: string;
+  status: 'ag_ui';
+  ag_ui_event: true;
+  event: AgUiEvent;
+  // Delivery routing
   thread_id?: string;
   connection_id?: string;
   channel?: string;
@@ -155,6 +186,31 @@ export class SqsClient {
               // Heartbeats can fire multiple times on the same turn, so
               // include a timestamp to avoid FIFO dedup collisions.
               MessageDeduplicationId: `prog_${progress.task_id}_${progress.turn}_${progress.kind}_${Date.now()}`,
+            }
+          : {}),
+      }),
+    );
+  }
+
+  /**
+   * Send an AG-UI protocol event to the response queue. The response Lambda
+   * detects `ag_ui_event: true` and forwards the event payload as a WS frame
+   * of type `"ag_ui"`.
+   *
+   * These are mid-turn ephemera (like progress) — the Lambda skips thread
+   * bookkeeping. Terminal state is still handled by the old `sendResponse()`.
+   */
+  async sendAgUiEvent(envelope: AgUiEventEnvelope): Promise<void> {
+    const isFifo = this.responseQueueUrl.endsWith('.fifo');
+    await this.client.send(
+      new SendMessageCommand({
+        QueueUrl: this.responseQueueUrl,
+        MessageBody: JSON.stringify(envelope),
+        ...(isFifo
+          ? {
+              MessageGroupId: envelope.session_id,
+              // Each AG-UI event needs a unique dedup id. Use event_type + timestamp.
+              MessageDeduplicationId: `agui_${envelope.task_id}_${envelope.event.event_type}_${Date.now()}`,
             }
           : {}),
       }),

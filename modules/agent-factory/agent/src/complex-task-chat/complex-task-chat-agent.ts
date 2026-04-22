@@ -13,11 +13,25 @@ import { buildArtifactStore } from './artifacts/factory';
 import { getChannelDirective, getChannelEffort } from './channel-profiles';
 import { loadPersona, composeSystemPrompt } from './persona-loader';
 import { runQuery } from './run-query';
-import { SqsClient, TaskPayload } from './sqs-client';
+import { SqsClient, TaskPayload, AgUiEventEnvelope } from './sqs-client';
 import { AgentTool } from './context/types';
 import { ArtifactRef } from './artifacts/port';
+import {
+  AgUiEventType,
+  agUiTimestamp,
+  agUiId,
+  type AgUiEvent,
+} from './ag-ui-events';
 
 const TOKEN_BUDGET = Number(process.env.CONTEXT_TOKEN_BUDGET ?? 150_000);
+
+/**
+ * Feature flag: emit AG-UI events alongside legacy frames. Set
+ * AGUI_EVENTS_ENABLED=1 to enable. During the backward-compat window
+ * both shapes are emitted; after one week of stable operation the legacy
+ * path will be removed.
+ */
+const AGUI_ENABLED = (process.env.AGUI_EVENTS_ENABLED ?? '1') === '1';
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
@@ -71,10 +85,41 @@ async function processOne(
   } = task;
 
   console.log(
-    `[chat-agent] Processing task ${task_id} for session ${session_id} (channel=${channel ?? 'none'}, conn=${connection_id ? 'set' : 'none'})`,
+    `[chat-agent] Processing task ${task_id} for session ${session_id} (channel=${channel ?? 'none'}, conn=${connection_id ? 'set' : 'none'}, agui=${AGUI_ENABLED})`,
   );
 
+  /** Helper to emit an AG-UI event (best-effort, swallows errors). */
+  const emitAgUi = async (event: AgUiEvent): Promise<void> => {
+    if (!AGUI_ENABLED) return;
+    try {
+      const envelope: AgUiEventEnvelope = {
+        task_id,
+        session_id,
+        status: 'ag_ui',
+        ag_ui_event: true,
+        event,
+        thread_id,
+        connection_id,
+        channel,
+        channel_metadata: platform_data,
+      };
+      await deps.sqs.sendAgUiEvent(envelope);
+    } catch (err) {
+      console.warn(`[chat-agent] AG-UI event emit failed (non-fatal): ${(err as Error).message}`);
+    }
+  };
+
+  // AG-UI message ID for the assistant reply — stable across the whole turn
+  const agUiMsgId = agUiId('msg');
+
   try {
+    // AG-UI: RUN_STARTED
+    await emitAgUi({
+      event_type: AgUiEventType.RUN_STARTED,
+      threadId: session_id,
+      runId: task_id,
+      timestamp: agUiTimestamp(),
+    });
     // Defense-in-depth ownership check (creates header on first access; refuses
     // if existing owner differs).
     await deps.context.assertOwnership(session_id, user_id, tenant_id);
@@ -154,6 +199,8 @@ async function processOne(
             : event.type === 'heartbeat'
               ? 'thinking...'
               : `💭 ${event.preview}`;
+
+        // Legacy progress frame (backward compat)
         await deps.sqs.sendProgress({
           task_id,
           session_id,
@@ -166,6 +213,48 @@ async function processOne(
           channel,
           channel_metadata: platform_data,
         });
+
+        // AG-UI events
+        if (event.type === 'tool_use') {
+          const toolCallId = agUiId('tc');
+          await emitAgUi({
+            event_type: AgUiEventType.TOOL_CALL_START,
+            toolCallId,
+            toolCallName: event.tool_name,
+            parentMessageId: agUiMsgId,
+            timestamp: agUiTimestamp(),
+          });
+          if (event.input_summary) {
+            await emitAgUi({
+              event_type: AgUiEventType.TOOL_CALL_ARGS,
+              toolCallId,
+              delta: event.input_summary,
+              timestamp: agUiTimestamp(),
+            });
+          }
+          await emitAgUi({
+            event_type: AgUiEventType.TOOL_CALL_END,
+            toolCallId,
+            timestamp: agUiTimestamp(),
+          });
+        } else if (event.type === 'heartbeat') {
+          // Heartbeat → STATE_DELTA with a "heartbeat" patch
+          await emitAgUi({
+            event_type: AgUiEventType.STATE_DELTA,
+            delta: [
+              { op: 'replace', path: '/heartbeat', value: { turn: event.turn, ts: Date.now() } },
+            ],
+            timestamp: agUiTimestamp(),
+          });
+        } else if (event.type === 'thinking') {
+          // Thinking preview → TEXT_MESSAGE_CONTENT on the assistant bubble
+          await emitAgUi({
+            event_type: AgUiEventType.TEXT_MESSAGE_CONTENT,
+            messageId: agUiMsgId,
+            delta: event.preview,
+            timestamp: agUiTimestamp(),
+          });
+        }
       },
     });
 
@@ -177,6 +266,42 @@ async function processOne(
 
     checkDeliveryConsistency(result.text, publishCount);
 
+    // AG-UI: TEXT_MESSAGE_START → CONTENT → END → RUN_FINISHED
+    await emitAgUi({
+      event_type: AgUiEventType.TEXT_MESSAGE_START,
+      messageId: agUiMsgId,
+      role: 'assistant',
+      timestamp: agUiTimestamp(),
+    });
+    await emitAgUi({
+      event_type: AgUiEventType.TEXT_MESSAGE_CONTENT,
+      messageId: agUiMsgId,
+      delta: result.text,
+      timestamp: agUiTimestamp(),
+    });
+    await emitAgUi({
+      event_type: AgUiEventType.TEXT_MESSAGE_END,
+      messageId: agUiMsgId,
+      timestamp: agUiTimestamp(),
+    });
+    // State delta with tokens/cost metadata
+    await emitAgUi({
+      event_type: AgUiEventType.STATE_DELTA,
+      delta: [
+        { op: 'replace', path: '/tokens', value: result.tokens },
+        { op: 'replace', path: '/turnCount', value: result.turnCount },
+      ],
+      timestamp: agUiTimestamp(),
+    });
+    await emitAgUi({
+      event_type: AgUiEventType.RUN_FINISHED,
+      threadId: session_id,
+      runId: task_id,
+      result: { tokens: result.tokens, turnCount: result.turnCount },
+      timestamp: agUiTimestamp(),
+    });
+
+    // Legacy terminal response (thread bookkeeping happens here)
     await deps.sqs.sendResponse({
       task_id,
       session_id,
@@ -198,6 +323,15 @@ async function processOne(
   } catch (err) {
     console.error(`[chat-agent] Task ${task_id} failed:`, (err as Error).message);
 
+    // AG-UI: RUN_ERROR
+    await emitAgUi({
+      event_type: AgUiEventType.RUN_ERROR,
+      message: (err as Error).message,
+      code: 'AGENT_ERROR',
+      timestamp: agUiTimestamp(),
+    });
+
+    // Legacy terminal response (thread bookkeeping happens here)
     await deps.sqs.sendResponse({
       task_id,
       session_id,

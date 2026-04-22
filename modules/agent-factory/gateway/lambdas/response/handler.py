@@ -62,13 +62,31 @@ def _process_response(response: dict) -> None:
     session_id = response.get("session_id", "")
     thread_id = response.get("thread_id", "")
     status = response.get("status", "")
+    channel = response.get("channel", "")
+    now = int(time.time())
+
+    # -----------------------------------------------------------------------
+    # AG-UI event path (Phase 2, Issue #97)
+    # When the worker sends an AG-UI event envelope (ag_ui_event=true),
+    # we forward the event payload as-is wrapped in type="ag_ui". No
+    # thread bookkeeping — AG-UI events are mid-turn ephemera (lifecycle
+    # events like RUN_FINISHED are paired with a legacy sendResponse that
+    # handles bookkeeping).
+    # -----------------------------------------------------------------------
+    if response.get("ag_ui_event"):
+        ag_ui_payload = response.get("event", {})
+        logger.info(
+            "AG-UI event: task=%s session=%s event_type=%s",
+            task_id, session_id, ag_ui_payload.get("event_type", "?"),
+        )
+        _route_ag_ui_event(response, ag_ui_payload, task_id)
+        return
+
     # Accept `text` (TS chat-agent), `result` (legacy Python worker), or
     # `content` (generic) — in that priority order for ALL statuses.
     # Previously `text` was only read for progress frames, causing terminal
     # frames from the TS worker to arrive with empty content (issue #89).
     content = response.get("text") or response.get("result") or response.get("content") or ""
-    channel = response.get("channel", "")
-    now = int(time.time())
 
     logger.info(
         "Response: task=%s session=%s thread=%s channel=%s status=%s",
@@ -126,6 +144,35 @@ def _process_response(response: dict) -> None:
     elif session_id and sessions_table:
         # Legacy: no thread_id, clear session-level lock
         _clear_session_processing(session_id)
+
+
+def _route_ag_ui_event(response: dict, ag_ui_payload: dict, task_id: str) -> None:
+    """Route an AG-UI event to the appropriate channel.
+
+    The event payload is forwarded as-is inside a `type: "ag_ui"` WS frame.
+    The frontend AG-UI consumer reads `event_type` to dispatch to the right
+    handler. Chunk-splitting in the WS router handles oversized payloads.
+    """
+    channel = response.get("channel", "")
+    metadata = response.get("channel_metadata", response.get("platform_data", {}))
+    if response.get("connection_id"):
+        metadata["connection_id"] = response["connection_id"]
+    if response.get("session_id"):
+        metadata["session_id"] = response["session_id"]
+
+    # Mark as AG-UI so the WS router emits `type: "ag_ui"` instead of `type: "response"`
+    metadata["response_type"] = "ag_ui"
+    metadata["ag_ui_payload"] = ag_ui_payload
+
+    # AG-UI events are mid-turn ephemera — content is the serialized event
+    content = json.dumps(ag_ui_payload)
+
+    if channel in ("webchat", "websocket"):
+        ws_router.route(content, metadata, task_id)
+    elif metadata.get("connection_id"):
+        ws_router.route(content, metadata, task_id)
+    # AG-UI events only go to WebSocket channels for now
+    # (Slack and REST don't need AG-UI granularity)
 
 
 def _append_response(session_id: str, content: str, task_id: str, now: int):
