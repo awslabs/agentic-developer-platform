@@ -6,6 +6,8 @@ on:
       - 'modules/gateway/src/**'
       - 'modules/gateway/Dockerfile'
       - 'modules/gateway/k8s/**'
+      - 'modules/gateway/frontend/**'
+      - '.github/workflows/gateway-deploy.yml'
     branches:
       - main
   workflow_dispatch:
@@ -19,9 +21,46 @@ env:
   STATE_BUCKET: adp-terraform-state-879318057152
 
 jobs:
+  # Detect which parts of the gateway changed so we can skip the unrelated
+  # build/deploy job on frontend-only or backend-only pushes. workflow_dispatch
+  # always runs both (so humans can force a full redeploy).
+  changes:
+    name: Detect changes
+    runs-on: arc-runner-org
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # On push: diff the merge against its parent.
+          CHANGED=$(git diff --name-only HEAD^ HEAD)
+          echo "Changed files:"
+          echo "$CHANGED"
+          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/Dockerfile|modules/gateway/k8s/)'; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$CHANGED" | grep -qE '^modules/gateway/frontend/'; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=false" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy-backend:
     name: Build and Deploy Backend
     runs-on: arc-runner-org
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     # Runner already has AWS creds via IRSA (adp-dev-agent-runner-role)
 
     steps:
@@ -76,7 +115,14 @@ jobs:
   deploy-frontend:
     name: Build and Deploy Frontend
     runs-on: arc-runner-org
-    needs: deploy-backend
+    needs: [changes, deploy-backend]
+    # Backend job is optional — run the frontend even when backend is skipped.
+    # `always()` lets us bypass the default "cancelled if any dependency was
+    # skipped" behavior; we still require the backend success if it did run.
+    if: |
+      always() &&
+      needs.changes.outputs.frontend == 'true' &&
+      (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
 
     steps:
       - uses: actions/checkout@v4
@@ -87,10 +133,17 @@ jobs:
           node-version: '22'
 
       - name: Build frontend
+        # VITE_AGENT_WS_URL is the agent chat WebSocket endpoint; the chat
+        # widget's useAgentChat hook reads import.meta.env.VITE_AGENT_WS_URL
+        # with a hardcoded dev fallback, but we inject it explicitly so the
+        # build is environment-aware.
+        env:
+          VITE_API_URL: /api/gateway
+          VITE_AGENT_WS_URL: wss://8ea7pg40b7.execute-api.us-east-1.amazonaws.com/v1
         run: |
           cd modules/gateway/frontend
           npm ci
-          VITE_API_URL=/api/gateway npm run build
+          npm run build
 
       - name: Deploy to S3 and invalidate CloudFront
         run: |
