@@ -4,11 +4,15 @@ Shared pytest configuration and fixtures for agent-factory E2E tests.
 Provides:
 - test_env: resolved TestEnvConfig (unit vs live)
 - mock_apigw_event: synthesises API Gateway WebSocket events
-- jwt_for_user / jwt_for_agent: Cognito auth helpers
+- jwt_for_user / jwt_for_agent / fresh_jwt: Cognito auth helpers
 - ws_client: WebSocket context manager (mock in unit, real in live)
+- ws_client_async: async context manager with chunk reassembly (live E2E)
+- chat_context_row / sessions_row: DynamoDB helpers for assertions
+- cleanup: per-test DDB/S3 cleanup fixture
 - sqs_client: SQS client (moto in unit, real boto3 in live)
 - kube_client: Kubernetes client (mock in unit, kubectl wrapper in live)
 - mock_dynamodb / mock_sqs / mock_bedrock: moto/botocore stubs
+- latency_recorder: per-test LatencyRecorder from e2e/latency.py
 """
 
 from __future__ import annotations
@@ -45,11 +49,13 @@ def test_env() -> TestEnvConfig:
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-skip live_only and workflow tests when not in live mode."""
+    """Auto-skip live_only, workflow, and costs_money tests when not in live mode."""
     env_mode = os.environ.get("TEST_ENV", "unit").lower()
     is_live = env_mode not in ("unit", "")
+    run_costly = os.environ.get("RUN_COSTLY_TESTS", "").lower() in ("yes", "1", "true")
 
     skip_live = pytest.mark.skip(reason="TEST_ENV is not set to a live environment")
+    skip_costly = pytest.mark.skip(reason="RUN_COSTLY_TESTS is not set to yes")
 
     for item in items:
         if "live_only" in item.keywords and not is_live:
@@ -60,6 +66,8 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_live)
         if "kubectl" in item.keywords and not is_live:
             item.add_marker(skip_live)
+        if "costs_money" in item.keywords and not run_costly:
+            item.add_marker(skip_costly)
 
 
 # ---------------------------------------------------------------------------
@@ -428,3 +436,350 @@ def kube_client(test_env: TestEnvConfig):
         namespace="adp-gateway-agents",
         context=test_env.live.kube_context,
     )
+
+
+# ---------------------------------------------------------------------------
+# Fresh JWT helper (always mints a new Cognito token)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fresh_jwt(test_env: TestEnvConfig):
+    """Return a function that mints a fresh Cognito access token.
+
+    Honors TEST_USER_PASSWORD from env or Secrets Manager.
+    In unit mode: returns a fake JWT.
+    """
+
+    def _mint(email: str = "") -> str:
+        target_email = email or test_env.live.test_user_email or "adp-test@example.com"
+
+        if test_env.is_unit:
+            return _make_fake_jwt({"email": target_email, "token_use": "access"})
+
+        # Live: real Cognito auth (always a fresh token)
+        password = test_env.live.test_user_password
+        if not password:
+            # Try Secrets Manager
+            sm = boto3.client("secretsmanager", region_name="us-east-1")
+            try:
+                resp = sm.get_secret_value(SecretId="adp/dev/gateway/test-user-credentials")
+                creds = json.loads(resp["SecretString"])
+                password = creds.get("password", "")
+            except Exception:
+                pass
+        if not password:
+            raise RuntimeError(
+                "TEST_USER_PASSWORD not set and not found in Secrets Manager "
+                "(adp/dev/gateway/test-user-credentials)"
+            )
+
+        client = boto3.client("cognito-idp", region_name="us-east-1")
+        resp = client.admin_initiate_auth(
+            UserPoolId=test_env.live.cognito_user_pool_id,
+            ClientId=test_env.live.cognito_client_id,
+            AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+            AuthParameters={"USERNAME": target_email, "PASSWORD": password},
+        )
+        return resp["AuthenticationResult"]["AccessToken"]
+
+    return _mint
+
+
+# ---------------------------------------------------------------------------
+# Async WebSocket client with chunk reassembly (for behavior tests)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AssembledFrame:
+    """A fully reassembled WS frame (may be from multiple chunks)."""
+
+    type: str
+    content: str
+    status: str | None
+    task_id: str
+    raw_frames: list[dict]
+    chunk_total: int
+    kind: str | None  # For progress frames
+    extra: dict  # Any other fields
+
+    @classmethod
+    def from_single(cls, frame: dict) -> "AssembledFrame":
+        return cls(
+            type=frame.get("type", ""),
+            content=frame.get("content", "") or frame.get("text", ""),
+            status=frame.get("status"),
+            task_id=frame.get("task_id", ""),
+            raw_frames=[frame],
+            chunk_total=1,
+            kind=frame.get("kind"),
+            extra={k: v for k, v in frame.items()
+                   if k not in ("type", "content", "text", "status", "task_id", "kind",
+                                "chunk_index", "chunk_total")},
+        )
+
+
+class AsyncWSClient:
+    """Async WebSocket client with chunk reassembly.
+
+    Wraps websockets.connect and provides .send() and .recv_frame() with
+    the chunk reassembly contract from scripts/ws_roundtrip.py.
+    """
+
+    def __init__(self, ws):
+        self._ws = ws
+        self._chunk_buffers: dict[str, dict] = {}
+        self.all_frames: list[AssembledFrame] = []
+
+    async def send(self, payload: dict) -> None:
+        await self._ws.send(json.dumps(payload))
+
+    async def recv_frame(self, timeout: float = 30.0) -> AssembledFrame:
+        """Receive and reassemble one logical frame."""
+        import asyncio
+
+        while True:
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=timeout)
+            frame = json.loads(raw)
+
+            chunk_index = frame.get("chunk_index")
+            chunk_total = frame.get("chunk_total")
+            task_id = frame.get("task_id", "")
+
+            # Non-chunked frame
+            if chunk_total is None or chunk_total <= 1:
+                assembled = AssembledFrame.from_single(frame)
+                self.all_frames.append(assembled)
+                return assembled
+
+            # Chunked frame — accumulate
+            buf = self._chunk_buffers.setdefault(
+                task_id, {"chunks": {}, "total": chunk_total, "raw": []}
+            )
+            buf["chunks"][chunk_index] = frame.get("content", "")
+            buf["raw"].append(frame)
+
+            if chunk_index == chunk_total:
+                # Reassemble
+                parts = [buf["chunks"].get(i, "") for i in range(1, chunk_total + 1)]
+                content = "".join(parts)
+                assembled = AssembledFrame(
+                    type=frame.get("type", ""),
+                    content=content,
+                    status=frame.get("status"),
+                    task_id=task_id,
+                    raw_frames=buf["raw"],
+                    chunk_total=chunk_total,
+                    kind=frame.get("kind"),
+                    extra={},
+                )
+                del self._chunk_buffers[task_id]
+                self.all_frames.append(assembled)
+                return assembled
+            # Not last chunk — keep receiving
+
+    async def recv_until_terminal(
+        self, timeout: float = 180.0
+    ) -> tuple[AssembledFrame, list[AssembledFrame]]:
+        """Receive frames until a terminal frame (status=completed|failed).
+
+        Returns (terminal_frame, all_frames_including_terminal).
+        """
+        import asyncio
+
+        deadline = time.monotonic() + timeout
+        frames: list[AssembledFrame] = []
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError(
+                    f"No terminal frame within {timeout}s. Got {len(frames)} frames."
+                )
+            try:
+                frame = await self.recv_frame(timeout=min(remaining, 30.0))
+            except asyncio.TimeoutError:
+                continue  # Keep waiting (no data yet, but deadline not reached)
+            frames.append(frame)
+            if frame.status in ("completed", "failed"):
+                return frame, frames
+        # unreachable, but satisfies type checker
+        raise asyncio.TimeoutError("No terminal frame")
+
+    async def close(self) -> None:
+        await self._ws.close()
+
+    @property
+    def open(self) -> bool:
+        return self._ws.open
+
+
+@pytest.fixture
+def ws_client_async(test_env: TestEnvConfig):
+    """Return an async context manager that yields an AsyncWSClient.
+
+    Usage:
+        async with ws_client_async(token, session_id) as client:
+            await client.send({...})
+            frame = await client.recv_frame()
+    """
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _connect(token: str, session_id: str = ""):
+        import websockets
+
+        ws_url = test_env.live.ws_url
+        url = f"{ws_url}?token={token}" if token else ws_url
+        async with websockets.connect(url) as ws:
+            yield AsyncWSClient(ws)
+
+    return _connect
+
+
+# ---------------------------------------------------------------------------
+# DynamoDB query helpers for live assertions
+# ---------------------------------------------------------------------------
+
+
+def _ddb_resource():
+    return boto3.resource("dynamodb", region_name="us-east-1")
+
+
+@pytest.fixture
+def chat_context_row():
+    """Query adp-dev-chat-context for a session's header, items, messages, summaries."""
+
+    def _query(session_id: str) -> dict:
+        table = _ddb_resource().Table("adp-dev-chat-context")
+        pk = f"session#{session_id}"
+        resp = table.query(KeyConditionExpression="PK = :pk", ExpressionAttributeValues={":pk": pk})
+        items = resp.get("Items", [])
+
+        header = None
+        messages = []
+        context_items = []
+        summaries = []
+        for item in items:
+            sk = item.get("SK", "")
+            if sk == "header":
+                header = item
+            elif sk.startswith("msg#"):
+                messages.append(item)
+            elif sk.startswith("item#"):
+                context_items.append(item)
+            elif sk.startswith("summary#"):
+                summaries.append(item)
+
+        return {
+            "header": header,
+            "messages": sorted(messages, key=lambda m: m.get("ts", "")),
+            "items": sorted(context_items, key=lambda i: i.get("SK", "")),
+            "summaries": summaries,
+            "raw": items,
+        }
+
+    return _query
+
+
+@pytest.fixture
+def sessions_row():
+    """Query adp-dev-agent-gateway-sessions for a session row."""
+
+    def _query(session_id: str) -> dict | None:
+        table = _ddb_resource().Table("adp-dev-agent-gateway-sessions")
+        resp = table.get_item(Key={"session_id": session_id})
+        return resp.get("Item")
+
+    return _query
+
+
+# ---------------------------------------------------------------------------
+# Cleanup fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cleanup(request):
+    """Collect session_ids during test, delete their DDB rows after.
+
+    Usage:
+        cleanup.track("my-session-id")
+    After the test finishes, all tracked sessions are cleaned from both
+    adp-dev-chat-context and adp-dev-agent-gateway-sessions.
+
+    Skip cleanup if test is marked @pytest.mark.leave_data.
+    """
+
+    class _Cleanup:
+        def __init__(self):
+            self._session_ids: list[str] = []
+
+        def track(self, session_id: str) -> None:
+            self._session_ids.append(session_id)
+
+        def _do_cleanup(self) -> None:
+            ddb = _ddb_resource()
+            # Clean sessions table
+            sessions_table = ddb.Table("adp-dev-agent-gateway-sessions")
+            for sid in self._session_ids:
+                try:
+                    sessions_table.delete_item(Key={"session_id": sid})
+                except Exception:
+                    pass
+                # Also clean conn# prefix entries
+                try:
+                    sessions_table.delete_item(Key={"session_id": f"conn#{sid}"})
+                except Exception:
+                    pass
+
+            # Clean chat-context table
+            context_table = ddb.Table("adp-dev-chat-context")
+            for sid in self._session_ids:
+                pk = f"session#{sid}"
+                try:
+                    resp = context_table.query(
+                        KeyConditionExpression="PK = :pk",
+                        ExpressionAttributeValues={":pk": pk},
+                        ProjectionExpression="PK, SK",
+                    )
+                    with context_table.batch_writer() as batch:
+                        for item in resp.get("Items", []):
+                            batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+                except Exception:
+                    pass
+
+    c = _Cleanup()
+    yield c
+
+    # Skip cleanup for @pytest.mark.leave_data
+    if "leave_data" in request.keywords:
+        return
+    env_mode = os.environ.get("TEST_ENV", "unit").lower()
+    if env_mode not in ("unit", ""):
+        c._do_cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Latency recorder fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def latency_recorder(request):
+    """Per-test LatencyRecorder from e2e/latency.py."""
+    from .e2e.latency import get_recorder
+
+    return get_recorder(request.node.nodeid)
+
+
+# ---------------------------------------------------------------------------
+# Register latency plugin hooks
+# ---------------------------------------------------------------------------
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Delegate to latency module for summary printing."""
+    from .e2e.latency import pytest_sessionfinish as _latency_finish
+
+    _latency_finish(session, exitstatus)

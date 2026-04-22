@@ -31,6 +31,9 @@ markers = [
     "live_only: only meaningful in live mode; skipped in unit",
     "workflow: triggers a real GitHub Actions workflow via gh; live only",
     "kubectl: shells out to kubectl; fails fast if not available",
+    "slow: tests that may exceed 2 minutes (LCM, multi-turn, large payloads)",
+    "costs_money: invokes Bedrock; skipped unless RUN_COSTLY_TESTS=yes",
+    "leave_data: skip DDB cleanup after test (for debugging)",
 ]
 # Default: run only unit tests (skip live_only, workflow)
 addopts = "-m 'not live_only and not workflow'"
