@@ -73,6 +73,9 @@ export function Navigation() {
     navItems.push({ to: '/ratelimits', label: 'Rate Limits', icon: '⏱️' });
   }
 
+  // Agent Chat for all authenticated users (Issue #97)
+  navItems.push({ to: '/chat', label: 'Agent Chat', icon: '🤖' });
+
   // My Chats page for all authenticated users (Issue #179)
   navItems.push({ to: '/my-chats', label: 'My Chats', icon: '💬' });
 
