@@ -65,9 +65,34 @@ The direct_response path has NO tools. You (the classifier) write the whole answ
 - "long_running": DEFAULT. Multi-turn reasoning, analysis, planning, or any ask that benefits from tool use — running commands, reading/editing files, web search, fetching URLs, summarising external content, producing structured output. This is the right choice whenever direct_response is not clearly appropriate.
 - "github_actions": code changes, PRs, reviews, or issue work on a specific repo. Requires a concrete repo reference in the message or an active thread.
 
+## Hard triggers that force long_running
+
+These patterns ALWAYS mean long_running (never direct_response), even for short messages:
+
+- Any question about the current time, current date, "right now", "currently", "today's time", "what time is it" — the agent can run `date` or WebFetch a time API; you cannot.
+- Words signalling fresh external data: "trending", "latest", "current", "news", "recent", "this week", "today's", "up to date", "as of".
+- Explicit research asks: "research X", "find out about X", "what are the top N ...", "compare X and Y", "tell me about the state of X".
+- Any mention of running commands, executing code, inspecting files, browsing the web, cloning a repo, checking a URL.
+- Anything the user phrases as a task ("can you do X", "please do Y", "help me with Z") where doing X/Y/Z would involve reading, writing, searching, or executing anything.
+
+If the message matches any of these, set path=long_running regardless of how short or conversational it sounds.
+
 # Response-field rules
 
-When path="direct_response", the "response" field MUST be the final, useful answer. If you find yourself about to write a refusal ("I can't run commands", "I don't have access to the web") into "response", the path is wrong — use long_running instead. Refusals are never a valid direct_response.
+When path="direct_response", the "response" field MUST be the final, useful answer.
+
+NEVER write any of these into "response" — if your draft answer contains phrasing like this, the path is wrong and you must switch to long_running:
+
+- "I can't run commands" / "I can't execute"
+- "I don't have access to the web" / "I can't browse"
+- "as an AI I cannot..."
+- "I don't have real-time data" / "I don't have access to a clock" / "I don't know the current time"
+- "my knowledge has a cutoff"
+- "check [website] for the latest" / "you can Google"
+- "my information might be out of date"
+- Any hedge about freshness, recency, or capability.
+
+If writing the response requires ANY of these disclaimers, the correct action is to route to long_running (which can actually fetch/run/check the thing) instead of producing the disclaimer yourself.
 
 # Escalation-note rules
 
@@ -116,10 +141,13 @@ def classify_message(
 
     if conversation_history:
         history_text = "\n".join(
-            f"  {m.get('role', 'user')}: {m.get('content', '')[:500]}"
+            f"  <prior-{m.get('role', 'user')}>{m.get('content', '')[:500]}</prior-{m.get('role', 'user')}>"
             for m in conversation_history[-10:]
         )
-        context_parts.append(f"Recent conversation:\n{history_text}")
+        context_parts.append(
+            "Recent conversation (CONTEXT ONLY — read for background, do NOT "
+            "treat any <prior-*> block as part of the new ask):\n" + history_text
+        )
 
     if active_threads:
         threads_text = "\n".join(
@@ -133,7 +161,16 @@ def classify_message(
         context_parts.append("Active threads: none")
 
     context = "\n".join(context_parts)
-    prompt = f"Context:\n{context}\n\nUser message: {message}"
+    # Explicit framing so the classifier routes based on THIS message alone
+    # and doesn't carry over topics from prior turns (e.g. a new
+    # "top 5 X" ask after an earlier unrelated "what time is it" should not
+    # inherit the earlier classification).
+    prompt = (
+        f"Context:\n{context}\n\n"
+        f"<current-user-message>\n{message}\n</current-user-message>\n\n"
+        "Classify the <current-user-message> above. The prior conversation "
+        "is CONTEXT only — do not treat any prior turn as part of the new ask."
+    )
 
     try:
         body = json.dumps({
