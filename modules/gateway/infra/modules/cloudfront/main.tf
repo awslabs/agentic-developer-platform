@@ -68,8 +68,16 @@ resource "aws_cloudfront_response_headers_policy" "security_headers" {
     }
 
     # Content-Security-Policy
+    #
+    # connect-src must include wss: — the chat widget opens a WebSocket to the
+    # agent gateway WS API, and browsers enforce connect-src on WebSockets
+    # (the browser silently blocks the connection and no Network-tab row
+    # appears, only a console CSP error). Tightened to the execute-api host
+    # pattern rather than a blanket wss: to keep the directive meaningful.
+    # Region is hard-coded because this module is only used from the us-east-1
+    # root stack today; if that changes, wire a variable through.
     content_security_policy {
-      content_security_policy = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:; frame-ancestors 'none'"
+      content_security_policy = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss://*.execute-api.us-east-1.amazonaws.com; frame-ancestors 'none'"
       override                = true
     }
   }
