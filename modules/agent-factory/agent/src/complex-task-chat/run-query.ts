@@ -382,7 +382,13 @@ function agentToolSchema(t: AgentTool): Record<string, z.ZodTypeAny> {
 /**
  * Yield history as synthetic user-role SDK stream messages, with assistant turns
  * folded into the preceding user message as quoted context. The real user message
- * is the final yield.
+ * is the final yield, wrapped in <current-user-message> so the model can
+ * unambiguously tell it apart from history and only act on the new ask.
+ *
+ * Prior framing (just yielding each history entry as a raw user turn) caused
+ * the model to treat N historical user messages as N stacked live requests and
+ * re-act on all of them — e.g. a simple "what time is it?" following earlier
+ * research questions would trigger fresh searches + the time answer.
  */
 async function* buildPromptStream(
   history: SDKMessage[],
@@ -393,9 +399,6 @@ async function* buildPromptStream(
   parent_tool_use_id: null;
   session_id: string;
 }> {
-  // Fold: walk history and group assistant replies under the preceding user turn.
-  // For turns where history starts with an assistant message (shouldn't happen
-  // normally), we emit a synthetic user wrapper.
   const sessionId = 'chat-agent-stream';
   const pending: string[] = [];
 
@@ -408,14 +411,18 @@ async function* buildPromptStream(
     };
   };
 
+  // Walk history: group each user turn with the assistant turns that followed
+  // it, and wrap the whole pair in <prior-turn> tags. This makes it obvious
+  // to the model that these are past exchanges to read for context, not
+  // unaddressed asks stacked up for the current turn.
   let currentUserText: string | null = null;
   for (const m of history) {
     if (m.role === 'user') {
       if (currentUserText !== null) {
-        const combined = pending.length > 0
-          ? `${currentUserText}\n\n<prior-assistant-response>\n${pending.join('\n\n')}\n</prior-assistant-response>`
-          : currentUserText;
-        yield* flushUser(combined);
+        const body = pending.length > 0
+          ? `<prior-user-message>\n${currentUserText}\n</prior-user-message>\n<prior-assistant-response>\n${pending.join('\n\n')}\n</prior-assistant-response>`
+          : `<prior-user-message>\n${currentUserText}\n</prior-user-message>`;
+        yield* flushUser(`<prior-turn>\n${body}\n</prior-turn>`);
         pending.length = 0;
       }
       currentUserText = m.content;
@@ -425,16 +432,22 @@ async function* buildPromptStream(
   }
 
   if (currentUserText !== null) {
-    const combined = pending.length > 0
-      ? `${currentUserText}\n\n<prior-assistant-response>\n${pending.join('\n\n')}\n</prior-assistant-response>`
-      : currentUserText;
-    yield* flushUser(combined);
+    const body = pending.length > 0
+      ? `<prior-user-message>\n${currentUserText}\n</prior-user-message>\n<prior-assistant-response>\n${pending.join('\n\n')}\n</prior-assistant-response>`
+      : `<prior-user-message>\n${currentUserText}\n</prior-user-message>`;
+    yield* flushUser(`<prior-turn>\n${body}\n</prior-turn>`);
   } else if (pending.length > 0) {
-    // Only assistant messages in history — wrap as context on the new user turn.
-    yield* flushUser(`<prior-assistant-context>\n${pending.join('\n\n')}\n</prior-assistant-context>\n\n${userMessage}`);
-    return;
+    // Only assistant messages in history (no paired user turn) — still wrap
+    // them as context so the current message is the only live ask.
+    yield* flushUser(`<prior-assistant-context>\n${pending.join('\n\n')}\n</prior-assistant-context>`);
   }
 
-  // Final yield: the new user turn.
-  yield* flushUser(userMessage);
+  // Final yield: the NEW user turn, explicitly marked. Prior turns above are
+  // context only — this is the message the agent should act on.
+  yield* flushUser(
+    `<current-user-message>\n${userMessage}\n</current-user-message>\n\n` +
+      `The blocks above tagged <prior-turn> are earlier exchanges in this conversation, ` +
+      `kept for context only. The <current-user-message> above is the new request — ` +
+      `address only that, unless it explicitly refers back to something from a prior turn.`,
+  );
 }
