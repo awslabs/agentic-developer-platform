@@ -62,6 +62,7 @@ Modules on a shared AWS platform:
 | Agent Factory | `modules/agent-factory/` | Autonomous code agents (Claude SDK + GitHub Actions) |
 | Agent Context | `modules/agent-context/` | Code Intelligence Platform: semantic search, wikis, memory via MCP. Deploy with `--agent-context-only`. |
 | MCP Hub | `modules/harness/mcp-hub/` | MCP tools surface of the harness (in progress; see `ARCHITECTURE.md`) |
+| User Services | `modules/user-services/` | Per-user products (vault, knowledge repo, bespoke agents, chief-of-staff); design only |
 
 Shared infrastructure: `platform/infra/` — VPC, EKS, ECR, IAM baseline, shared CodeBuild projects (4 docker-builds only, Terraform-managed in `platform/infra/modules/codebuild/`).
 

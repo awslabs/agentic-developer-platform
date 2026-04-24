@@ -9,6 +9,7 @@ Multi-tenant AI infrastructure for developer tools. Three modules on a shared AW
 | [Gateway](modules/gateway/) | `modules/gateway/` | Multi-tenant Bedrock proxy with Cognito auth, budgets, rate limiting, admin UI | Active |
 | [Agent Factory](modules/agent-factory/) | `modules/agent-factory/` | Autonomous code agents (Claude SDK + Bedrock) with async delivery via Slack, WebSocket, CLI | Active |
 | [MCP Hub](modules/harness/mcp-hub/) | `modules/harness/mcp-hub/` | MCP server hub for agent messaging and tool routing (part of the harness; see `ARCHITECTURE.md`) | In Progress |
+| [User Services](modules/user-services/) | `modules/user-services/` | Per-user products the user owns — vault (credentials), knowledge repo, bespoke agents, chief-of-staff | Design |
 
 Agent Factory includes two sub-components:
 - Runners — ARC-based GitHub Actions runners on EKS, triggered by issue labels

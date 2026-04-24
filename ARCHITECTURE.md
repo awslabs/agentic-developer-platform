@@ -2,9 +2,9 @@
 
 One page. The mental model, how the pieces fit, and where new work goes.
 
-If you only have time for a paragraph: **ADP is a substrate for running agents.** The substrate is split into three layers — platform core (compute, egress, memory), the harness (what agents use while running), and apps (domain packs that plug into the harness). Agents are the consumers; humans and services invoke them through a separate inbound surface. Domain authors add new capabilities by writing declarations — tools, jobs, events, skills, agents — that register with the harness. The harness handles the plumbing common to all of them.
+If you only have time for a paragraph: **ADP is a substrate for running agents.** The substrate is split into four categories — platform core (compute, egress, memory), the harness (what agents use while running), apps (domain packs that plug into the harness), and user services (per-user products the user owns). Agents are the consumers; humans and services invoke them through a separate inbound surface. Domain authors add new capabilities by writing declarations — tools, jobs, events, skills, agents — that register with the harness. The harness handles the plumbing common to all of them.
 
-## The three layers
+## The four categories
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -12,6 +12,10 @@ If you only have time for a paragraph: **ADP is a substrate for running agents.*
 │  Domain packs. Threat research, ML platform, data platform. │
 │  Each pack brings: agents, tools, jobs, events, skills,     │
 │  schemas, domain UX, domain-specific infra.                 │
+├─────────────────────────────────────────────────────────────┤
+│  modules/user-services/                                     │
+│  Per-user products the user owns. Vault, knowledge repo,    │
+│  bespoke agents, chief-of-staff. One-human scope.           │
 ├─────────────────────────────────────────────────────────────┤
 │  modules/harness/                                           │
 │  What agents use while running. Six surfaces + substrate.   │
@@ -24,7 +28,9 @@ If you only have time for a paragraph: **ADP is a substrate for running agents.*
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Apps declare. Harness operates. Platform runs.**
+**Apps declare. Harness operates. Platform runs. User services are owned by the user.**
+
+User services are a distinct category because they are scoped to a single human rather than a tenant or the whole platform. They are consumed by platform and domain agents (which act on the user's behalf), configured by the user directly, and governed by their own ten-invariant contract — see `modules/user-services/README.md` and `docs/user-services-overview.md`.
 
 ## The two directions of traffic
 
@@ -167,18 +173,19 @@ This document describes the target shape. Today, the repo has:
 
 - Platform core (gateway, agent-factory, agent-context) deployed and working.
 - Invocation surface working inside `modules/agent-factory/gateway/` (not yet promoted to a standalone module).
-- `modules/harness/mcp-hub/` exists as design docs (moved from the former `modules/mcp-gateway/`) — the seed of the tools surface.
+- `modules/harness/` scaffolded: `contracts/` (README with 11 planned schemas, none written yet) and `mcp-hub/` (design docs only; no running service).
+- `apps/` exists with a README and pattern description; no domain packs yet.
+- `modules/user-services/` exists with a README and the ten-invariant contract; no services built yet (vault is the first planned).
 - Agents exist as GitHub Actions workflows (architect, developer, pm, ops, product, reviewer), not as uniform declarations.
-- No `modules/harness/contracts/` yet — contracts are not formalized.
-- No `apps/` folder yet — domain packs don't have a home.
 
-The gap is bridged incrementally: formalize contracts first, then grow surfaces and apps around them as real use cases arrive. Most of the scaffolding should not be stubbed out preemptively — add folders when the first real consumer exists.
+The gap is bridged incrementally: formalize contracts first, then grow surfaces / apps / user-services around them as real use cases arrive. Most of the scaffolding should not be stubbed out preemptively — add folders when the first real consumer exists.
 
 ## Glossary
 
 - **Platform core** — the always-on substrate: EKS, VPC, IAM, Bedrock Gateway, Agent Factory, Agent Context, invocation surface.
 - **Harness** — the outbound surface an agent uses while running. Six surfaces + substrate.
 - **App** — a domain pack (threat-research, ml-platform, …). Peer to other apps.
+- **User service** — a per-user product the user owns (vault, knowledge repo, bespoke agents, chief-of-staff). Lives in `modules/user-services/`. Scoped to one human, governed by ten cluster invariants.
 - **Tool** — synchronous verb, request/response, MCP-typed.
 - **Job** — long-running work with durable state, submitted and tracked.
 - **Event** — push-based notification on a bus, subscribable.
