@@ -29,10 +29,13 @@ export function getCognitoConfig(): CognitoConfig {
     console.warn('VITE_COGNITO_DOMAIN not set - using fallback');
   }
 
+  // No fallback values — a silent-wrong-pool is harder to debug than a loud
+  // "not configured". isCognitoConfigured() below returns false if any of the
+  // three required fields are empty, which the UI surfaces to the user.
   return {
-    userPoolId: userPoolId || 'us-east-1_5rYm3yrrY', // Fallback to known dev pool
-    clientId: clientId || '', // Must be set in production
-    domain: domain || 'bedrockgw-dev-auth',
+    userPoolId: userPoolId || '',
+    clientId: clientId || '',
+    domain: domain || '',
     region,
     redirectUri,
   };

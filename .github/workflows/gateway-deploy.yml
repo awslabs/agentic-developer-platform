@@ -133,13 +133,20 @@ jobs:
           node-version: '22'
 
       - name: Build frontend
-        # VITE_AGENT_WS_URL is the agent chat WebSocket endpoint; the chat
-        # widget's useAgentChat hook reads import.meta.env.VITE_AGENT_WS_URL
-        # with a hardcoded dev fallback, but we inject it explicitly so the
-        # build is environment-aware.
+        # Vite inlines these at build time. Without them, the SPA falls back
+        # to stale literals in src/config/cognito.ts and shows "Authentication
+        # not configured". These values map to the bedrockgw-dev-users pool
+        # (see modules/gateway/infra/modules/cognito/) and the admin UI client.
+        # TODO: publish these as SSM parameters from the cognito terraform
+        # module and read them here, so pool rotation doesn't require a
+        # workflow edit.
         env:
           VITE_API_URL: /api/gateway
           VITE_AGENT_WS_URL: wss://8ea7pg40b7.execute-api.us-east-1.amazonaws.com/v1
+          VITE_COGNITO_USER_POOL_ID: us-east-1_JEhv9xSGG
+          VITE_COGNITO_CLIENT_ID: 6cg7ba3hb4v41vbhm0cg8pl17j
+          VITE_COGNITO_DOMAIN: bedrockgw-dev-auth-18057152
+          VITE_COGNITO_REGION: us-east-1
         run: |
           cd modules/gateway/frontend
           npm ci
