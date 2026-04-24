@@ -59,7 +59,7 @@ Three modules on a shared AWS platform:
 |--------|------|---------|
 | Gateway | `modules/gateway/` | Multi-tenant Bedrock proxy (FastAPI + React) |
 | Agent Factory | `modules/agent-factory/` | Autonomous code agents (Claude SDK + GitHub Actions) |
-| MCP Gateway | `modules/mcp-gateway/` | MCP server gateway (in progress) |
+| MCP Hub | `modules/harness/mcp-hub/` | MCP tools surface of the harness (in progress; see `ARCHITECTURE.md`) |
 
 Shared infrastructure: `platform/infra/` (VPC, EKS, ECR, IAM).
 

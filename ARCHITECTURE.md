@@ -167,7 +167,7 @@ This document describes the target shape. Today, the repo has:
 
 - Platform core (gateway, agent-factory, agent-context) deployed and working.
 - Invocation surface working inside `modules/agent-factory/gateway/` (not yet promoted to a standalone module).
-- `modules/mcp-gateway/` exists as design docs — the seed of `modules/harness/mcp-hub/`.
+- `modules/harness/mcp-hub/` exists as design docs (moved from the former `modules/mcp-gateway/`) — the seed of the tools surface.
 - Agents exist as GitHub Actions workflows (architect, developer, pm, ops, product, reviewer), not as uniform declarations.
 - No `modules/harness/contracts/` yet — contracts are not formalized.
 - No `apps/` folder yet — domain packs don't have a home.

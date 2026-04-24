@@ -8,7 +8,7 @@ Multi-tenant AI infrastructure for developer tools. Three modules on a shared AW
 |--------|------|-------------|--------|
 | [Gateway](modules/gateway/) | `modules/gateway/` | Multi-tenant Bedrock proxy with Cognito auth, budgets, rate limiting, admin UI | Active |
 | [Agent Factory](modules/agent-factory/) | `modules/agent-factory/` | Autonomous code agents (Claude SDK + Bedrock) with async delivery via Slack, WebSocket, CLI | Active |
-| [MCP Gateway](modules/mcp-gateway/) | `modules/mcp-gateway/` | MCP server gateway for agent messaging and tool routing | In Progress |
+| [MCP Hub](modules/harness/mcp-hub/) | `modules/harness/mcp-hub/` | MCP server hub for agent messaging and tool routing (part of the harness; see `ARCHITECTURE.md`) | In Progress |
 
 Agent Factory includes two sub-components:
 - Runners — ARC-based GitHub Actions runners on EKS, triggered by issue labels
@@ -180,11 +180,11 @@ gh issue edit <NUMBER> --add-label "agent-developer"
 
 Full details: [modules/agent-factory/SETUP-GUIDE.md](modules/agent-factory/SETUP-GUIDE.md)
 
-#### MCP Gateway
+#### MCP Hub
 
-MCP server gateway for agent messaging and tool routing. In progress.
+MCP server hub for agent messaging and tool routing. In progress. Lives under the harness module (`modules/harness/mcp-hub/`) because it is the tools surface of the harness — see `ARCHITECTURE.md` for the six-surface model.
 
-See: [modules/mcp-gateway/](modules/mcp-gateway/)
+See: [modules/harness/mcp-hub/](modules/harness/mcp-hub/)
 
 ## Local Development (No AWS Required)
 
@@ -260,10 +260,12 @@ adp/
 │   │   ├── docker/              # github-token-refresher
 │   │   └── scripts/             # Build, deploy, deploy-gateway.sh
 │   │
-│   └── mcp-gateway/             # MCP Gateway
-│       ├── docker/              # agent-mail MCP server
-│       ├── scripts/             # Deploy scripts
-│       └── *.md                 # Requirements, design docs
+│   └── harness/                # Harness — outbound surface agents use
+│       ├── contracts/          # Versioned schemas (tool, job, event, ...)
+│       └── mcp-hub/            # MCP tools surface (formerly modules/mcp-gateway/)
+│           ├── docker/         # agent-mail MCP server
+│           ├── scripts/        # Deploy scripts
+│           └── *.md            # Requirements, design docs
 │
 ├── environments/                # Terraform var files (dev/staging/prod)
 ├── libs/                        # Shared libraries (Python, TypeScript)
@@ -282,7 +284,7 @@ adp/
 | Agent Factory Setup | [modules/agent-factory/SETUP-GUIDE.md](modules/agent-factory/SETUP-GUIDE.md) |
 | Agent Factory README | [modules/agent-factory/README.md](modules/agent-factory/README.md) |
 | Agent Gateway Routing | [modules/agent-factory/gateway/docs/intelligent-routing.md](modules/agent-factory/gateway/docs/intelligent-routing.md) |
-| MCP Gateway Requirements | [modules/mcp-gateway/mcp_gateway_requirements.md](modules/mcp-gateway/mcp_gateway_requirements.md) |
+| MCP Hub Requirements | [modules/harness/mcp-hub/mcp_gateway_requirements.md](modules/harness/mcp-hub/mcp_gateway_requirements.md) |
 | Deployment Playbook | [AGENTS.md](AGENTS.md) |
 
 ## License

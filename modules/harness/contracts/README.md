@@ -91,7 +91,7 @@ As of the first commit of this file, the schemas are not yet written. They will 
 
 The ordering most likely to happen:
 
-1. `tool.schema.json` — first because `modules/mcp-gateway/` is the most-built surface.
+1. `tool.schema.json` — first because `modules/harness/mcp-hub/` is the most-built surface.
 2. `agent.manifest.json` and `skill.manifest.json` — needed before formalizing existing agents under the new shape.
 3. `inbox-item.schema.json` / `outbox-item.schema.json` — needed to typify the invocation surface.
 4. The rest — as harness surfaces are built.
