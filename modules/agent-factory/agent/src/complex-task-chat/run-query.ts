@@ -263,10 +263,17 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
               textParts.push(block.text);
             } else if (block.type === 'tool_use' && typeof block.name === 'string') {
               sawToolUse = true;
+              // Log per-tool-call so hung workers are diagnosable from pod
+              // logs alone — heartbeat-only logs tell us "stuck on turn N"
+              // but not which tool call is wedged.
+              const inputSummary = summarizeToolInput(block.input as Record<string, unknown>);
+              log(
+                `[run-query] turn ${turnCount} tool_use: ${block.name}${inputSummary ? ' → ' + inputSummary : ''}`,
+              );
               emitProgress({
                 type: 'tool_use',
                 tool_name: block.name,
-                input_summary: summarizeToolInput(block.input as Record<string, unknown>),
+                input_summary: inputSummary,
                 turn: turnCount,
               });
             }
@@ -287,6 +294,23 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
               });
             }
             resultText = joined;
+          }
+          break;
+        }
+
+        case 'user': {
+          // Log tool_result blocks so we can see "called X at turn N" /
+          // "X returned at turn N" pairs in the pod logs and spot hangs
+          // that occur between call and return.
+          const content = (msg.message as Record<string, unknown> | undefined)?.content;
+          const blocks = Array.isArray(content) ? (content as Array<Record<string, unknown>>) : [];
+          for (const block of blocks) {
+            if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+              const isError = block.is_error === true;
+              log(
+                `[run-query] turn ${turnCount} tool_result: ${block.tool_use_id.slice(0, 16)} ${isError ? 'ERROR' : 'ok'}`,
+              );
+            }
           }
           break;
         }

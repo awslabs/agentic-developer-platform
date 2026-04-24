@@ -47,7 +47,7 @@ Return ONLY valid JSON:
     "response": "direct answer" or null (only when path=direct_response),
     "enriched_message": "structured task description" or null (only when path=github_actions),
     "issue_title": "short title" or null (only when create_issue=true),
-    "escalation_note": "friendly status message for user" or null (when path != direct_response),
+    "escalation_note": "friendly status message shown to the user immediately after they send — REQUIRED when path != direct_response, null when direct_response",
     "thread_action": "new" | "follow_up" | "none",
     "follow_up_thread_id": "thread-id" or null (when thread_action=follow_up),
     "reasoning": "one sentence"
@@ -68,6 +68,10 @@ The direct_response path has NO tools. You (the classifier) write the whole answ
 # Response-field rules
 
 When path="direct_response", the "response" field MUST be the final, useful answer. If you find yourself about to write a refusal ("I can't run commands", "I don't have access to the web") into "response", the path is wrong — use long_running instead. Refusals are never a valid direct_response.
+
+# Escalation-note rules
+
+When path is "long_running" or "github_actions", the user has just sent a message and is staring at the chat waiting. You MUST populate "escalation_note" with a short (1-2 sentence), friendly acknowledgement that tells them the request is being handled. Do not leave it null. Examples: "On it — let me dig into that.", "I'll investigate and report back.", "Creating a task to handle this now." Skip "escalation_note" only when path="direct_response" (the response itself IS the reply).
 
 # Thread rules
 

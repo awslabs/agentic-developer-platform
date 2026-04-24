@@ -78,11 +78,17 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 # Use dumb-init for proper signal handling
 ENTRYPOINT ["dumb-init", "--"]
 
-# Set environment variables
+# Set environment variables.
+# SHELL is required by the Claude Agent SDK's Bash tool — without it the tool
+# returns "shell environment isn't configured here" to the model instead of
+# executing. alpine ships /bin/sh (BusyBox ash), which is POSIX-compliant and
+# what `adduser -s /bin/sh` already set as the login shell above. Use that
+# rather than installing bash to keep the image small.
 ENV NODE_ENV=production \
     PORT=8765 \
     AGENT_ENTRYPOINT=github \
-    PERSONAS_DIR=/app/personas
+    PERSONAS_DIR=/app/personas \
+    SHELL=/bin/sh
 
 # Start the application (dispatched by AGENT_ENTRYPOINT)
 CMD ["./startup.sh"]

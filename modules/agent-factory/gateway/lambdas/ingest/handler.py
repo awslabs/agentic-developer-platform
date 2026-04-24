@@ -309,8 +309,12 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
         send_kwargs["MessageDeduplicationId"] = task_id
     sqs.send_message(**send_kwargs)
 
-    if classification.escalation_note:
-        send_notification(session_id, task_id, connection_id, message, classification.escalation_note, now)
+    # Always send an acknowledgement. The classifier prompt asks for
+    # escalation_note on non-direct paths, but LLMs occasionally omit it —
+    # fall back so the user never stares at a silent "sent" message while the
+    # long_running agent spins up.
+    notify = classification.escalation_note or "On it — working on this now. I'll reply here when it's ready."
+    send_notification(session_id, task_id, connection_id, message, notify, now)
 
     return {"statusCode": 200, "body": json.dumps({"task_id": task_id, "session_id": session_id, "thread_id": thread_id, "status": "processing"})}
 

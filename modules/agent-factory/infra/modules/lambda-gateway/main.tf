@@ -98,8 +98,11 @@ resource "aws_iam_role_policy" "ingest_dynamodb" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+      Effect = "Allow"
+      # DeleteItem is required for $disconnect cleanup — without it the
+      # handler logs "AccessDeniedException on dynamodb:DeleteItem" and
+      # leaves stale connection rows that confuse response routing.
+      Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:DeleteItem"]
       Resource = [var.sessions_table_arn, "${var.sessions_table_arn}/index/*"]
     }]
   })
@@ -220,8 +223,12 @@ resource "aws_iam_role_policy" "response_dynamodb" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+      Effect = "Allow"
+      # DeleteItem is required to evict stale connection rows the router
+      # discovers while trying to deliver a response (GoneException on
+      # post_to_connection). Without it the dead row stays and repeats the
+      # same failure on every subsequent delivery attempt.
+      Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:DeleteItem"]
       Resource = [var.sessions_table_arn, "${var.sessions_table_arn}/index/*"]
     }]
   })
