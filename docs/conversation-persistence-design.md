@@ -1,9 +1,48 @@
 # Server-Side Conversation Persistence
 
-**Status:** Approved for implementation
-**Issue:** #124
+**Status:** ⚠️ **DEPRECATED — DO NOT IMPLEMENT**
+**Deprecated:** 2026-04-24
+**Original issue:** #124 (closed)
+**Original implementation issue:** #126 (closed)
 **Author:** @agent-architect
 **Date:** 2026-04-24
+
+## Why deprecated
+
+Scope reframe. The user-visible symptom that prompted this design was narrower than what the design tackled: **replies land durably in DynamoDB but the browser never sees them when the WebSocket was dead at delivery time.**
+
+Fixing that does not require:
+
+- A new FastAPI module in the gateway service.
+- Cross-module IAM grants (gateway EKS role → agent-factory's sessions table).
+- Three REST endpoints (list / get / soft-delete).
+- A frontend `useConversationSync` hook with reconciliation logic.
+- Pass 1 / Pass 2 multi-PR delivery.
+
+More fundamentally — the design put the endpoints in the **wrong place**. The chat stack is Lambda + SQS + DynamoDB (all in `modules/agent-factory/`); the gateway FastAPI is a separate service for the Bedrock proxy and admin UI. Adding chat-read endpoints to FastAPI crosses a module boundary for data the FastAPI doesn't own, introducing deploy/log/IAM coupling that doesn't need to exist.
+
+## What's replacing it
+
+A single small change over the existing WebSocket:
+
+- New WS route `fetchHistory` handled by the **existing ingest Lambda**.
+- Reads session messages from the sessions table (which the ingest Lambda already has access to).
+- Pushes them back on the same connection via the response Lambda's existing frame shape.
+- Frontend calls `fetchHistory` on conversation switch and on WS reconnect.
+
+Reuses existing identity (`$connect` claims), existing deploy pipeline (`agent-gateway-deploy.yml`), existing log group. No new infra, no new API, no cross-module IAM.
+
+Future user-facing needs (logout/login persistence for users on different browsers, admin listing, delete, etc.) will be filed as their own small issues *when users actually hit them* — not pre-built.
+
+## Keeping this doc on main
+
+This doc is preserved for historical reference on how the design evolved and why the smaller alternative was chosen. Do not use it as an implementation guide.
+
+---
+
+*Original design content below preserved verbatim.*
+
+---
 
 ## Problem Summary
 
