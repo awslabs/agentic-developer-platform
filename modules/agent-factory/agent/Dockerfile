@@ -42,8 +42,11 @@ FROM public.ecr.aws/docker/library/node:22-alpine AS production
 RUN addgroup -g 10001 agent && \
     adduser -u 10001 -G agent -s /bin/sh -D agent
 
-# Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init
+# Install dumb-init for signal handling, and bash for the Claude Agent SDK's
+# Bash tool. The SDK invokes /bin/bash directly — alpine ships only BusyBox
+# ash, which the tool rejects with "shell environment isn't configured here"
+# (the error message mentions SHELL but the real requirement is a bash binary).
+RUN apk add --no-cache dumb-init bash
 
 # Create directories with proper ownership
 RUN mkdir -p /app /data /tmp/workspace && \
@@ -79,16 +82,15 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 ENTRYPOINT ["dumb-init", "--"]
 
 # Set environment variables.
-# SHELL is required by the Claude Agent SDK's Bash tool — without it the tool
-# returns "shell environment isn't configured here" to the model instead of
-# executing. alpine ships /bin/sh (BusyBox ash), which is POSIX-compliant and
-# what `adduser -s /bin/sh` already set as the login shell above. Use that
-# rather than installing bash to keep the image small.
+# SHELL=/bin/bash is required by the Claude Agent SDK's Bash tool — the tool
+# invokes bash directly. bash is installed above via apk; without it the tool
+# errors out with "shell environment isn't configured here" (misleading — the
+# message mentions SHELL but the real requirement is the bash binary).
 ENV NODE_ENV=production \
     PORT=8765 \
     AGENT_ENTRYPOINT=github \
     PERSONAS_DIR=/app/personas \
-    SHELL=/bin/sh
+    SHELL=/bin/bash
 
 # Start the application (dispatched by AGENT_ENTRYPOINT)
 CMD ["./startup.sh"]
