@@ -33,25 +33,26 @@ export function useLocalStorage<T>(
   //   3. If a caller captured `setValue` and invoked it later (common with
   //      async WS handlers), the closure held a stale `storedValue` and
   //      could overwrite newer state.
-  // The functional form avoids both issues. We capture the resolved value
-  // inside the updater and write to localStorage *after* the updater runs,
-  // outside the setState call, so exceptions from setItem (quota exceeded,
-  // privacy mode blocking, etc.) can be caught by the surrounding try/catch
-  // without escaping to React.
+  // The functional form solves both issues. The write to localStorage
+  // happens INSIDE the updater — this is deliberate: the updater receives
+  // React's latest state synchronously, whereas code after setStoredValue(...)
+  // runs before the batched update has resolved (so a "let resolved; ...; if
+  // (resolved)" pattern out here silently skips the write under batching).
+  // A setItem throw would propagate out of the updater and crash the render,
+  // so we wrap it in a local try/catch.
   const setValue = useCallback(
     (value: T | ((prev: T) => T)) => {
-      let resolved: T | undefined;
       setStoredValue((prev) => {
-        resolved = value instanceof Function ? value(prev) : value;
-        return resolved;
-      });
-      if (typeof window !== 'undefined' && resolved !== undefined) {
-        try {
-          window.localStorage.setItem(key, JSON.stringify(resolved));
-        } catch (error) {
-          console.warn(`Error setting localStorage key "${key}":`, error);
+        const next = value instanceof Function ? value(prev) : value;
+        if (typeof window !== 'undefined') {
+          try {
+            window.localStorage.setItem(key, JSON.stringify(next));
+          } catch (error) {
+            console.warn(`Error setting localStorage key "${key}":`, error);
+          }
         }
-      }
+        return next;
+      });
     },
     [key]
   );
@@ -109,21 +110,20 @@ export function useSessionStorage<T>(
   const [storedValue, setStoredValue] = useState<T>(readValue);
 
   // See useLocalStorage above for rationale on the functional setState form
-  // and writing to storage outside the updater.
+  // and writing to storage inside the updater.
   const setValue = useCallback(
     (value: T | ((prev: T) => T)) => {
-      let resolved: T | undefined;
       setStoredValue((prev) => {
-        resolved = value instanceof Function ? value(prev) : value;
-        return resolved;
-      });
-      if (typeof window !== 'undefined' && resolved !== undefined) {
-        try {
-          window.sessionStorage.setItem(key, JSON.stringify(resolved));
-        } catch (error) {
-          console.warn(`Error setting sessionStorage key "${key}":`, error);
+        const next = value instanceof Function ? value(prev) : value;
+        if (typeof window !== 'undefined') {
+          try {
+            window.sessionStorage.setItem(key, JSON.stringify(next));
+          } catch (error) {
+            console.warn(`Error setting sessionStorage key "${key}":`, error);
+          }
         }
-      }
+        return next;
+      });
     },
     [key]
   );
