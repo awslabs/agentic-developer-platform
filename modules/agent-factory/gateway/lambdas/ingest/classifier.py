@@ -53,12 +53,24 @@ Return ONLY valid JSON:
     "reasoning": "one sentence"
 }
 
-Path rules:
-- "direct_response": greetings, general knowledge, status checks, simple questions. Answer directly.
-- "long_running": multi-turn reasoning, analysis, planning — no git/code needed.
-- "github_actions": code changes, PRs, reviews, issue work on a specific repo.
+# About the paths
 
-Thread rules:
+The long_running agent has REAL TOOLS. It can execute Bash in /tmp/workspace, Read/Write/Edit files, Grep, WebSearch, WebFetch, and invoke MCP/Skill tools. It can clone repos, inspect code, run scripts, fetch current web pages, and produce real output from actual execution. Route tool-requiring asks there.
+
+The direct_response path has NO tools. You (the classifier) write the whole answer yourself into the "response" field. If you would have to say "I can't do that", "I don't have access to X", "as an AI I cannot…", or you would have to guess at current/external information, then direct_response is the WRONG path.
+
+# Path rules — pick the narrowest that fits
+
+- "direct_response": ONLY for trivial, self-contained replies that need no tools, no fresh information, and fit in 1-2 sentences. Examples: greetings ("hi", "hello"), thanks, name/role questions ("who are you"), yes/no acknowledgements. When in doubt, do NOT use this.
+- "long_running": DEFAULT. Multi-turn reasoning, analysis, planning, or any ask that benefits from tool use — running commands, reading/editing files, web search, fetching URLs, summarising external content, producing structured output. This is the right choice whenever direct_response is not clearly appropriate.
+- "github_actions": code changes, PRs, reviews, or issue work on a specific repo. Requires a concrete repo reference in the message or an active thread.
+
+# Response-field rules
+
+When path="direct_response", the "response" field MUST be the final, useful answer. If you find yourself about to write a refusal ("I can't run commands", "I don't have access to the web") into "response", the path is wrong — use long_running instead. Refusals are never a valid direct_response.
+
+# Thread rules
+
 - "none": for direct_response (no thread needed)
 - "new": message is about a new topic unrelated to any active thread
 - "follow_up": message is a follow-up to an active thread (set follow_up_thread_id)
