@@ -33,7 +33,17 @@ const POST_COMPLETION_TIMEOUT_MS = 10 * 60 * 1000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 // Minimum gap between progress events we emit to the client. Prevents flooding
 // when the agent rips through many tool calls in quick succession.
-const PROGRESS_MIN_INTERVAL_MS = 8_000;
+// Per-event-type minimum interval. A single blanket 8s window suppressed
+// legitimately-distinct tool calls (four Bash invocations with different
+// commands in 2s would collapse into one chip). Tool calls and intermediate
+// thinking text should flow promptly so the user can follow what the agent
+// is doing; heartbeats are throttled harder because they carry no new
+// information.
+const PROGRESS_MIN_INTERVAL_MS: Record<string, number> = {
+  tool_use: 250,    // tool invocations feel immediate
+  thinking: 1_500,  // intermediate reasoning text between actions
+  heartbeat: 8_000, // no new info
+};
 // Hard cap on characters of a thinking preview. The client only needs a teaser.
 const PROGRESS_PREVIEW_MAX_CHARS = 200;
 
@@ -163,15 +173,20 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
    */
   const emitProgress = (event: ProgressEvent, force = false): void => {
     if (!onProgress) return;
+    // Include the input summary in tool_use dedup key so two back-to-back
+    // Bash calls with different commands are treated as distinct events.
+    // Previously the key was `tool:<name>`, so consecutive calls with
+    // different args collapsed into one UI event.
     const key =
       event.type === 'tool_use'
-        ? `tool:${event.tool_name}`
+        ? `tool:${event.tool_name}:${event.input_summary}`
         : event.type === 'heartbeat'
           ? 'heartbeat'
           : 'thinking';
+    const minInterval = PROGRESS_MIN_INTERVAL_MS[event.type] ?? 1_000;
     const now = Date.now();
-    if (!force && now - lastProgressAt < PROGRESS_MIN_INTERVAL_MS) return;
-    if (key === lastProgressKey && !force) return; // e.g. don't emit 5 back-to-back WebSearch tool_uses
+    if (!force && now - lastProgressAt < minInterval) return;
+    if (key === lastProgressKey && !force) return;
     lastProgressAt = now;
     lastProgressKey = key;
     Promise.resolve(onProgress(event)).catch(err => {
