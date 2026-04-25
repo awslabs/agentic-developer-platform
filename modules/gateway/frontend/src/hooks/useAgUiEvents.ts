@@ -543,6 +543,33 @@ export function useAgUiEvents({
 
       const content = extractContent(frame);
 
+      // Ingest Lambda sends an immediate ACK for long_running / github_actions
+      // paths as a `type:"response"` frame with `status:"notification"` and
+      // the classifier's `escalation_note` as content (e.g. "On it — let me
+      // check..."). The old code only matched status='completed'|'failed',
+      // so these ACKs were silently dropped and the user stared at nothing
+      // until the real reply arrived 15-30s later.
+      //
+      // Render notifications as a plain assistant bubble so the user sees
+      // the acknowledgement. Do NOT clear isAwaitingReply — the typing
+      // indicator should stay on until the final reply lands.
+      if (frame.status === 'notification') {
+        if (content) {
+          updateMessages((msgs) => [
+            ...msgs,
+            {
+              id: generateId(),
+              role: 'assistant' as const,
+              content,
+              status: 'complete' as const,
+              timestamp: Date.now(),
+              taskId: frame.task_id,
+            },
+          ]);
+        }
+        return;
+      }
+
       if (frame.status === 'failed') {
         setIsAwaitingReply(false);
         updateMessages((msgs) => {

@@ -42,7 +42,13 @@ export interface WsProgressFrame extends WsFrameBase {
 /** Response frame — may be chunked for large payloads. */
 export interface WsResponseFrame extends WsFrameBase {
   type: 'response';
-  status: 'progress' | 'completed' | 'failed';
+  /**
+   * `notification` is the ingest Lambda's immediate ACK for long_running /
+   * github_actions paths (carries the classifier's `escalation_note` in
+   * `content`). `progress` is a mid-run keep-alive; `completed` / `failed`
+   * are terminal.
+   */
+  status: 'progress' | 'completed' | 'failed' | 'notification';
   text?: string;
   result?: string;
   content?: string;
