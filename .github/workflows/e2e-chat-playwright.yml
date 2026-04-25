@@ -1,0 +1,91 @@
+name: E2E Chat Playwright Regression Suite
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/gateway/frontend/**'
+      - 'modules/agent-factory/agent/**'
+      - 'modules/agent-factory/lambdas/**'
+      - 'tests/e2e/chat/**'
+      - '.github/workflows/e2e-chat-playwright.yml'
+  schedule:
+    # Nightly at 03:00 UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      cloudfront_url:
+        description: 'CloudFront URL to test against (default: dev)'
+        required: false
+        default: 'https://d1g6cal2ts4iis.cloudfront.net'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+  E2E_CHAT_ENABLED: '1'
+  E2E_CLOUDFRONT_URL: ${{ github.event.inputs.cloudfront_url || 'https://d1g6cal2ts4iis.cloudfront.net' }}
+
+jobs:
+  e2e-chat:
+    name: Playwright Chat E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_E2E_ROLE_ARN || secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install pytest pytest-html playwright boto3
+          playwright install chromium --with-deps
+
+      - name: Run E2E chat suite
+        run: |
+          python -m pytest tests/e2e/chat/ \
+            -v \
+            --tb=short \
+            --html=test-results/e2e-chat-report.html \
+            --self-contained-html \
+            --timeout=300 \
+            -x \
+            2>&1 | tee test-results/e2e-chat-output.txt
+        env:
+          E2E_CHAT_ENABLED: '1'
+          E2E_CLOUDFRONT_URL: ${{ env.E2E_CLOUDFRONT_URL }}
+          AWS_REGION: us-east-1
+          ENVIRONMENT: dev
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-chat-results
+          path: |
+            test-results/
+            /tmp/e2e-chat-*.png
+          retention-days: 14
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-chat-screenshots
+          path: /tmp/e2e-chat-*.png
+          retention-days: 14
