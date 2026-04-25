@@ -20,6 +20,7 @@ import { ConversationSidebar } from '@/components/chat/ConversationSidebar';
 import { ChatMessageRenderer } from '@/components/chat/ChatMessageRenderer';
 import { ToolCallRow } from '@/components/chat/ToolCallRow';
 import { SessionMetaPanel } from '@/components/chat/SessionMetaPanel';
+import { TypingIndicator } from '@/components/chat/TypingIndicator';
 import type { ChatMessage, Conversation, ConnectionStatus } from '@/types/chat';
 
 // highlight.js theme for code blocks
@@ -296,6 +297,22 @@ export default function AgentChat() {
                     .map((tc) => (
                       <ToolCallRow key={tc.toolCallId} toolCall={tc} />
                     ))}
+                </div>
+              )}
+              {/* Typing indicator — on from the moment the user presses send
+                  until the assistant bubble is complete. Covers the pre-ACK
+                  silent gap (Lambda classifying) and the post-ACK thinking
+                  window where no tokens have streamed yet. */}
+              {isAwaitingReply && (
+                <div className="ml-10 mb-2" data-testid="typing-indicator">
+                  <TypingIndicator
+                    toolUse={
+                      (() => {
+                        const running = activeToolCalls.find((tc) => tc.status === 'running');
+                        return running ? { tool_name: running.toolCallName } : null;
+                      })()
+                    }
+                  />
                 </div>
               )}
               <div ref={messagesEndRef} />
