@@ -180,11 +180,6 @@ async function processOne(
       ...artifactTools,
     ];
 
-    // Tracks whether we started the assistant-bubble text stream during the
-    // run. If set, the end-of-turn full-text TEXT_MESSAGE_CONTENT emit is
-    // skipped to avoid duplicating the reply — we already streamed it.
-    let streamedAssistantText = false;
-
     const result = await runQuery({
       systemPrompt,
       history: ctx.messages,
@@ -198,29 +193,6 @@ async function processOne(
       // timeout resets on any data frame) and gives the user something to
       // look at during long research turns.
       onProgress: async event => {
-        // text_delta is the hot path — streams tokens as the model produces
-        // them. Skip the legacy progress channel (too chatty per-token) and
-        // emit only the AG-UI TEXT_MESSAGE_* sequence.
-        if (event.type === 'text_delta') {
-          if (!streamedAssistantText) {
-            // First delta — open the stream.
-            await emitAgUi({
-              event_type: AgUiEventType.TEXT_MESSAGE_START,
-              messageId: agUiMsgId,
-              role: 'assistant',
-              timestamp: agUiTimestamp(),
-            });
-            streamedAssistantText = true;
-          }
-          await emitAgUi({
-            event_type: AgUiEventType.TEXT_MESSAGE_CONTENT,
-            messageId: agUiMsgId,
-            delta: event.delta,
-            timestamp: agUiTimestamp(),
-          });
-          return;
-        }
-
         const text =
           event.type === 'tool_use'
             ? renderToolUseProgress(event.tool_name, event.input_summary)
@@ -275,18 +247,13 @@ async function processOne(
             timestamp: agUiTimestamp(),
           });
         } else if (event.type === 'thinking') {
-          // Thinking preview → TEXT_MESSAGE_CONTENT on the assistant bubble.
-          // If we're streaming deltas live (via text_delta events from
-          // includePartialMessages), skip this — the deltas already carry
-          // the thinking text, and this preview would duplicate it.
-          if (!streamedAssistantText) {
-            await emitAgUi({
-              event_type: AgUiEventType.TEXT_MESSAGE_CONTENT,
-              messageId: agUiMsgId,
-              delta: event.preview,
-              timestamp: agUiTimestamp(),
-            });
-          }
+          // Thinking preview → TEXT_MESSAGE_CONTENT on the assistant bubble
+          await emitAgUi({
+            event_type: AgUiEventType.TEXT_MESSAGE_CONTENT,
+            messageId: agUiMsgId,
+            delta: event.preview,
+            timestamp: agUiTimestamp(),
+          });
         }
       },
     });
@@ -300,25 +267,18 @@ async function processOne(
     checkDeliveryConsistency(result.text, publishCount);
 
     // AG-UI: TEXT_MESSAGE_START → CONTENT → END → RUN_FINISHED
-    //
-    // When includePartialMessages streamed the reply live (streamedAssistantText
-    // is true), the START + all CONTENT frames already went out during the
-    // run. Skip both here to avoid duplicating the reply; only emit END to
-    // close the stream.
-    if (!streamedAssistantText) {
-      await emitAgUi({
-        event_type: AgUiEventType.TEXT_MESSAGE_START,
-        messageId: agUiMsgId,
-        role: 'assistant',
-        timestamp: agUiTimestamp(),
-      });
-      await emitAgUi({
-        event_type: AgUiEventType.TEXT_MESSAGE_CONTENT,
-        messageId: agUiMsgId,
-        delta: result.text,
-        timestamp: agUiTimestamp(),
-      });
-    }
+    await emitAgUi({
+      event_type: AgUiEventType.TEXT_MESSAGE_START,
+      messageId: agUiMsgId,
+      role: 'assistant',
+      timestamp: agUiTimestamp(),
+    });
+    await emitAgUi({
+      event_type: AgUiEventType.TEXT_MESSAGE_CONTENT,
+      messageId: agUiMsgId,
+      delta: result.text,
+      timestamp: agUiTimestamp(),
+    });
     await emitAgUi({
       event_type: AgUiEventType.TEXT_MESSAGE_END,
       messageId: agUiMsgId,
