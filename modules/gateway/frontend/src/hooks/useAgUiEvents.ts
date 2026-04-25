@@ -107,6 +107,15 @@ export function useAgUiEvents({
   const intentionalCloseRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
   const toolCallsRef = useRef<Map<string, ToolCallInfo>>(new Map());
+  // Task IDs whose assistant message already arrived via AG-UI RUN_FINISHED.
+  // During the Phase-1↔Phase-2 backward-compat window, the worker emits BOTH
+  // the AG-UI event sequence AND a legacy `type:"response"` terminal frame
+  // for the same task (see modules/agent-factory/agent/src/complex-task-chat/
+  // complex-task-chat-agent.ts — the legacy sendResponse is labelled
+  // "Legacy terminal response"). Without dedup the UI renders two identical
+  // assistant bubbles. Bounded-size set so it doesn't grow unbounded during
+  // a long session.
+  const aguiCompletedTaskIdsRef = useRef<Set<string>>(new Set());
 
   // Keep refs in sync with conversation prop.
   useEffect(() => {
@@ -147,6 +156,20 @@ export function useAgUiEvents({
       setIsAwaitingReply(false);
       toolCallsRef.current.clear();
       setActiveToolCalls([]);
+
+      // Mark this task_id as AG-UI-completed so the legacy `type:"response"`
+      // frame that the worker emits ~40ms later for the same task is ignored
+      // in handleLegacyResponse (prevents duplicate assistant bubbles).
+      // runId on RUN_FINISHED is the task_id.
+      if (event.runId) {
+        aguiCompletedTaskIdsRef.current.add(event.runId);
+        // Soft cap — a single active chat produces one id per turn; 256 is
+        // more than any realistic session will touch in a browser session.
+        if (aguiCompletedTaskIdsRef.current.size > 256) {
+          const first = aguiCompletedTaskIdsRef.current.values().next().value;
+          if (first) aguiCompletedTaskIdsRef.current.delete(first);
+        }
+      }
 
       // Update session meta with final result
       if (event.result) {
@@ -505,6 +528,19 @@ export function useAgUiEvents({
 
   const handleLegacyResponse = useCallback(
     (frame: WsResponseFrame) => {
+      // Dedup guard: if this task_id already finished via AG-UI RUN_FINISHED,
+      // the worker is sending a legacy terminal frame for backward-compat —
+      // ignoring it here prevents the duplicate assistant bubble. We still
+      // process failure frames (those carry distinct error context the AG-UI
+      // path may not have surfaced) — only drop successful completions.
+      if (
+        frame.task_id &&
+        aguiCompletedTaskIdsRef.current.has(frame.task_id) &&
+        frame.status !== 'failed'
+      ) {
+        return;
+      }
+
       const content = extractContent(frame);
 
       if (frame.status === 'failed') {
