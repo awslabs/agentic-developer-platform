@@ -107,6 +107,14 @@ export function useAgUiEvents({
   const intentionalCloseRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
   const toolCallsRef = useRef<Map<string, ToolCallInfo>>(new Map());
+  // Buffer for TOOL_CALL_END events that arrive BEFORE their TOOL_CALL_START.
+  // Observed in production: response Lambda + API Gateway can deliver AG-UI
+  // frames out of order because they travel as separate SQS messages +
+  // separate Lambda invocations. If END arrives first it was being silently
+  // discarded (no matching entry in toolCallsRef), leaving the tool-call
+  // chip stuck in "running" forever. On START we now check this buffer and
+  // immediately mark complete if the END already arrived.
+  const endedBeforeStartRef = useRef<Set<string>>(new Set());
   // Task IDs whose assistant message already arrived via AG-UI RUN_FINISHED.
   // During the Phase-1↔Phase-2 backward-compat window, the worker emits BOTH
   // the AG-UI event sequence AND a legacy `type:"response"` terminal frame
@@ -148,6 +156,7 @@ export function useAgUiEvents({
     setIsAwaitingReply(true);
     // Reset tool calls for new run
     toolCallsRef.current.clear();
+    endedBeforeStartRef.current.clear();
     setActiveToolCalls([]);
   }, []);
 
@@ -155,6 +164,7 @@ export function useAgUiEvents({
     (event: AgUiEvent & { event_type: typeof AgUiEventType.RUN_FINISHED }) => {
       setIsAwaitingReply(false);
       toolCallsRef.current.clear();
+      endedBeforeStartRef.current.clear();
       setActiveToolCalls([]);
 
       // Mark this task_id as AG-UI-completed so the legacy `type:"response"`
@@ -196,6 +206,7 @@ export function useAgUiEvents({
     (event: AgUiEvent & { event_type: typeof AgUiEventType.RUN_ERROR }) => {
       setIsAwaitingReply(false);
       toolCallsRef.current.clear();
+      endedBeforeStartRef.current.clear();
       setActiveToolCalls([]);
 
       updateMessages((msgs) => {
@@ -308,11 +319,14 @@ export function useAgUiEvents({
 
   const handleToolCallStart = useCallback(
     (event: AgUiEvent & { event_type: typeof AgUiEventType.TOOL_CALL_START }) => {
+      // If END already arrived for this id (out-of-order delivery), start
+      // in 'complete' state so the UI never shows a stuck "running" chip.
+      const alreadyEnded = endedBeforeStartRef.current.delete(event.toolCallId);
       const toolCall: ToolCallInfo = {
         toolCallId: event.toolCallId,
         toolCallName: event.toolCallName,
         args: '',
-        status: 'running',
+        status: alreadyEnded ? 'complete' : 'running',
         parentMessageId: event.parentMessageId,
       };
       toolCallsRef.current.set(event.toolCallId, toolCall);
@@ -354,6 +368,10 @@ export function useAgUiEvents({
       if (tc) {
         tc.status = 'complete';
         setActiveToolCalls([...toolCallsRef.current.values()]);
+      } else {
+        // END arrived before START (out-of-order WS delivery). Remember the
+        // id so the matching START creates the entry already-complete.
+        endedBeforeStartRef.current.add(event.toolCallId);
       }
 
       // Update the message's tool call status
