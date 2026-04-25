@@ -32,8 +32,16 @@ const POST_COMPLETION_TIMEOUT_MS = 10 * 60 * 1000;
 // 10-min idle timeout.
 const HEARTBEAT_INTERVAL_MS = 20_000;
 // Minimum gap between progress events we emit to the client. Prevents flooding
-// when the agent rips through many tool calls in quick succession.
-const PROGRESS_MIN_INTERVAL_MS = 8_000;
+// when the agent rips through many tool calls in quick succession. Split by
+// event type — tool_use and thinking events should flow promptly so the user
+// can follow what the agent is doing, while heartbeats are throttled harder
+// because they carry no new information.
+const PROGRESS_MIN_INTERVAL_MS = {
+  tool_use: 750,  // tool invocations should feel immediate
+  thinking: 2_000, // intermediate reasoning text
+  heartbeat: 8_000, // no new info, don't spam
+  text_delta: 0,   // token streaming — never throttle, never dedup
+};
 // Hard cap on characters of a thinking preview. The client only needs a teaser.
 const PROGRESS_PREVIEW_MAX_CHARS = 200;
 
@@ -57,6 +65,20 @@ export type ProgressEvent =
     }
   | {
       type: 'heartbeat';
+      turn: number;
+    }
+  | {
+      /**
+       * A text delta from the streaming model. The orchestrator should emit
+       * this as an incremental AG-UI TEXT_MESSAGE_CONTENT with the delta
+       * appended to the current assistant bubble, so users see the reply
+       * being typed rather than dumped as one blob at turn end.
+       *
+       * `delta` is plain text — may be a single token or a batched group,
+       * depending on what the SDK flushes.
+       */
+      type: 'text_delta';
+      delta: string;
       turn: number;
     };
 
@@ -163,15 +185,30 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
    */
   const emitProgress = (event: ProgressEvent, force = false): void => {
     if (!onProgress) return;
+    // text_delta fires on every token — bypass the throttle + dedup entirely
+    // so the reply actually streams into the UI.
+    if (event.type === 'text_delta') {
+      Promise.resolve(onProgress(event)).catch(err => {
+        log(`[run-query] onProgress (text_delta) failed (non-fatal): ${(err as Error).message}`);
+      });
+      return;
+    }
+
+    // Dedup key includes the input summary for tool_use so two back-to-back
+    // WebSearches with different queries are treated as distinct events.
+    // Previously the key was just `tool:WebSearch`, so consecutive searches
+    // with different queries were silently dropped and the user's UI went
+    // dark between "Searching..." messages.
     const key =
       event.type === 'tool_use'
-        ? `tool:${event.tool_name}`
+        ? `tool:${event.tool_name}:${event.input_summary}`
         : event.type === 'heartbeat'
           ? 'heartbeat'
           : 'thinking';
+    const minInterval = PROGRESS_MIN_INTERVAL_MS[event.type];
     const now = Date.now();
-    if (!force && now - lastProgressAt < PROGRESS_MIN_INTERVAL_MS) return;
-    if (key === lastProgressKey && !force) return; // e.g. don't emit 5 back-to-back WebSearch tool_uses
+    if (!force && now - lastProgressAt < minInterval) return;
+    if (key === lastProgressKey && !force) return;
     lastProgressAt = now;
     lastProgressKey = key;
     Promise.resolve(onProgress(event)).catch(err => {
@@ -219,6 +256,12 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
       permissionMode: 'bypassPermissions' as const,
       persistSession: false,
       maxTurns,
+      // Emit SDKPartialAssistantMessage (`type: 'stream_event'`) with
+      // content_block_delta events so we can stream the final reply to the
+      // user token-by-token instead of dumping the whole paragraph as one
+      // frame at turn end. Token streaming is the single biggest perceived-
+      // quality improvement for chat UX.
+      includePartialMessages: true,
     };
     if (effort !== undefined) {
       // The Claude Agent SDK's Options type has no `maxTokens` / `maxOutputTokens`
@@ -248,6 +291,29 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
       const msg = message as Record<string, unknown>;
 
       switch (msg.type) {
+        case 'stream_event': {
+          // Incremental model output from the SDK — surfaces content_block_delta
+          // events so we can forward text deltas to the user live. We match
+          // defensively on shape (the SDK re-exports Anthropic Beta types that
+          // we don't want to import directly here).
+          const ev = (msg as { event?: Record<string, unknown> }).event;
+          if (
+            ev &&
+            ev.type === 'content_block_delta' &&
+            typeof (ev as { delta?: unknown }).delta === 'object'
+          ) {
+            const delta = ev.delta as Record<string, unknown>;
+            if (delta.type === 'text_delta' && typeof delta.text === 'string' && delta.text.length > 0) {
+              emitProgress({
+                type: 'text_delta',
+                delta: delta.text,
+                turn: turnCount,
+              });
+            }
+          }
+          break;
+        }
+
         case 'assistant': {
           turnCount++;
           const content = msg.message as Record<string, unknown> | undefined;
