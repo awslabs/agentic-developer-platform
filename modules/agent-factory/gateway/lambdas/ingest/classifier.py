@@ -116,11 +116,26 @@ When path is "long_running" or "github_actions", the user has just sent a messag
 # Thread rules
 
 - "none": for direct_response (no thread needed)
-- "new": message is about a new topic unrelated to any active thread
-- "follow_up": message is a follow-up to an active thread (set follow_up_thread_id)
+- "follow_up": message is a follow-up on the SAME topic as one of the existing threads listed in "Active threads" (set follow_up_thread_id to that thread_id). Thread status may be "processing" (worker still running) or "idle" (prior turn finished — this is NORMAL; idle threads are still valid follow-up candidates).
+- "new": message opens a topic not covered by ANY of the listed threads.
+
+**Prefer follow_up** when the message:
+- Refers back to earlier content ("that first answer", "the 2nd option", "can you expand", "what about…", "why did you recommend X").
+- Asks for refinement, alternatives, pros/cons, or deeper analysis of something already discussed.
+- Uses pronouns whose referents are in a prior thread ("tell me more about it", "compare them", "show me").
+- Explicitly continues a prior ask ("and what about Y", "also check Z").
+
+**Prefer new** when the message:
+- Introduces a genuinely different domain (e.g. was discussing video tools, now asks about the weather).
+- Contains no reference, pronoun, or continuation signal tying it to prior threads.
+- Would be equally sensible as a cold opening with no history.
+
+Elapsed time between threads does NOT matter — a user may come back after hours or days. Match on TOPIC, not recency.
+
+If multiple threads could match, pick the most-recently-created one that genuinely fits.
 
 For follow-ups to github_actions threads: the message will be posted as a comment on the linked GitHub issue.
-For follow-ups to long_running threads: the message will be buffered until the current task completes.
+For follow-ups to long_running threads (including idle ones): the new message spawns a fresh task under the same thread_id; the worker loads the thread's prior context.
 
 For github_actions, ALWAYS set create_issue=true unless user references an existing issue number.
 
@@ -165,15 +180,20 @@ def classify_message(
         )
 
     if active_threads:
+        # Threads are sorted most-recent-first by the caller. Idle threads are
+        # valid follow-up candidates — do not filter by status.
         threads_text = "\n".join(
             f"  - thread_id={t.get('thread_id')}, topic={t.get('topic', '?')}, "
             f"path={t.get('path', '?')}, status={t.get('status', '?')}, "
             f"github_issue={t.get('github_issue_url', 'none')}"
             for t in active_threads
         )
-        context_parts.append(f"Active threads:\n{threads_text}")
+        context_parts.append(
+            "Threads in this session (most recent first — idle is normal, "
+            "still a valid follow-up candidate):\n" + threads_text
+        )
     else:
-        context_parts.append("Active threads: none")
+        context_parts.append("Threads in this session: none")
 
     context = "\n".join(context_parts)
     # Explicit framing so the classifier routes based on THIS message alone

@@ -209,6 +209,121 @@ class TestLongRunningPath:
         assert task["message"] == "Analyze the codebase architecture"
 
 
+class TestFollowUpThreadReuse:
+    """Regression: follow_up on an idle thread used to call create_thread,
+    which clobbered messages/topic. Also: the handler only passed threads
+    with a live processing_task_id to the classifier, so idle follow-ups
+    were never routed as follow_ups. Tests here pin the fixed behaviour:
+    follow-up on idle threads reuses the thread without clobbering, and
+    both idle + processing threads are visible to the classifier."""
+
+    def _setup_session_with_idle_thread(self, mocked_aws_services):
+        """Seed the sessions table with an idle long_running thread."""
+        table = mocked_aws_services["table"]
+        table.put_item(Item={
+            "session_id": "sess-follow",
+            "user_workspace": "user-3#webchat",
+            "connection_id": "conn-3",
+            "channel": "webchat",
+            "created_at": 1000,
+            "updated_at": 1000,
+            "messages": [
+                {"role": "user", "content": "original topic", "timestamp": 1000},
+                {"role": "assistant", "content": "original reply", "timestamp": 1001},
+            ],
+            "threads": {
+                "thread-1": {
+                    "topic": "original topic discussion",
+                    "path": "long_running",
+                    "persona": "developer",
+                    "processing_task_id": "",  # idle — prior turn finished
+                    "messages": [],
+                    "created_at": 1000,
+                },
+            },
+            "expires_at": 9999999999,
+        })
+
+    def test_follow_up_on_idle_thread_reuses_thread_id(self, mocked_aws_services):
+        self._setup_session_with_idle_thread(mocked_aws_services)
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "long_running",
+            "persona": "developer",
+            "thread_action": "follow_up",
+            "follow_up_thread_id": "thread-1",
+            "reasoning": "refines the prior topic",
+        })
+
+        handler = _import_handler(mock_bedrock=mock_bedrock)
+        event = mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": "tell me more about that", "session_id": "sess-follow"},
+            connection_id="conn-3",
+            authorizer_claims={"sub": "user-3"},
+        )
+        result = handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        # Reuses the existing thread_id, not a fresh one.
+        assert body["thread_id"] == "thread-1"
+        assert body["status"] == "processing"
+
+        # And the original thread's topic/messages were NOT clobbered.
+        table = mocked_aws_services["table"]
+        stored = table.get_item(Key={"session_id": "sess-follow"})["Item"]
+        thread = stored["threads"]["thread-1"]
+        assert thread["topic"] == "original topic discussion"
+        # processing_task_id is now set to the new task.
+        assert thread["processing_task_id"]
+
+    def test_classifier_sees_idle_threads_as_candidates(self, mocked_aws_services):
+        """The handler should pass all recent threads — idle or not — into
+        classify_message.active_threads so it can pick follow_up properly."""
+        self._setup_session_with_idle_thread(mocked_aws_services)
+
+        captured = {"active_threads": None}
+
+        def wrap(mock_bedrock):
+            orig = mock_bedrock.invoke_model
+
+            def invoke(**kwargs):
+                body = json.loads(kwargs["body"])
+                # Find the user content → "Active threads:" / "idle is normal" section.
+                for msg in body.get("messages", []):
+                    if msg.get("role") == "user":
+                        captured["active_threads"] = msg["content"]
+                return orig(**kwargs)
+
+            mock_bedrock.invoke_model = invoke
+            return mock_bedrock
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "long_running",
+            "persona": "developer",
+            "thread_action": "new",  # value irrelevant; we're checking input
+            "reasoning": "",
+        })
+        mock_bedrock = wrap(mock_bedrock)
+
+        handler = _import_handler(mock_bedrock=mock_bedrock)
+        event = mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": "another question", "session_id": "sess-follow"},
+            connection_id="conn-3",
+            authorizer_claims={"sub": "user-3"},
+        )
+        handler.lambda_handler(event, None)
+
+        # The prompt must include the idle thread so the classifier can pick it.
+        assert captured["active_threads"] is not None
+        assert "thread-1" in captured["active_threads"]
+        assert "status=idle" in captured["active_threads"]
+
+
 class TestWebChatActionVariants:
     """Test 8: Both action:"message" and action:"sendMessage" accepted (PR #9 regression)."""
 

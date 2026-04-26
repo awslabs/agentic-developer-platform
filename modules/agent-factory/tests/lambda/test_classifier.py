@@ -117,6 +117,22 @@ class TestClassifierPromptShape:
         for tool in ["Bash", "WebSearch", "WebFetch"]:
             assert tool in p, f"Classifier prompt must name the {tool} tool"
 
+    def test_prompt_treats_idle_threads_as_valid_followup_candidates(self, classifier_module):
+        """Regression: the handler used to filter active_threads to only
+        processing ones, so once a turn finished the thread vanished and
+        every follow-up routed as new. Fix passes all session threads. The
+        prompt must explicitly teach the model that idle is normal and
+        idle threads are still valid follow-up candidates."""
+        p = classifier_module.CLASSIFIER_SYSTEM_PROMPT
+        # Explicit statement that idle is a valid status.
+        assert "idle" in p.lower()
+        # Explicit prefer-follow_up signals the model should look for.
+        assert "Prefer follow_up" in p
+        for phrase in ["refer", "refine", "continue"]:
+            assert phrase.lower() in p.lower(), f"prompt must name follow-up signal {phrase!r}"
+        # Elapsed time is not a gate — users may come back hours/days later.
+        assert "Elapsed time" in p or "elapsed time" in p
+
     def test_prompt_scopes_product_persona_narrowly(self, classifier_module):
         """Regression: a 'fetch a 2024 paper and ask questions' ask routed to
         persona=product mid-quiz and the worker kept running the physics quiz
@@ -204,6 +220,57 @@ class TestClassifierHistoryFraming:
         assert "<prior-user>" in user_content
         assert "<prior-assistant>" in user_content
         assert "prior ask" in user_content
+
+
+class TestClassifierThreadContext:
+    """Regression: active_threads must include idle threads (not just
+    processing ones) so the classifier can pick follow_up after a prior
+    turn finishes. Prior behaviour hid idle threads → every turn got
+    thread_action=new → follow-ups were misrouted."""
+
+    def _fake(self, captured):
+        class Fake:
+            def invoke_model(self, **kwargs):
+                captured["body"] = json.loads(kwargs["body"])
+                return {
+                    "body": _fake_body_stream({"content": [{"text": json.dumps({
+                        "path": "long_running",
+                        "persona": "developer",
+                        "thread_action": "new",
+                        "reasoning": "t",
+                    })}]}),
+                }
+        return Fake()
+
+    def test_idle_threads_reach_the_prompt(self, classifier_module, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(classifier_module, "_get_bedrock", lambda: self._fake(captured))
+        classifier_module.classify_message(
+            "tell me more about that",
+            active_threads=[
+                {"thread_id": "t1", "topic": "video editing tools", "path": "long_running",
+                 "status": "idle", "created_at": 0, "github_issue_url": ""},
+            ],
+        )
+        user_content = captured["body"]["messages"][0]["content"]
+        assert "t1" in user_content
+        assert "video editing tools" in user_content
+        assert "status=idle" in user_content
+
+    def test_prompt_labels_threads_so_idle_is_not_filtered_out(self, classifier_module, monkeypatch):
+        """The render must frame threads as 'follow-up candidates (idle is
+        normal)', not 'Active threads' which implied only-live ones count."""
+        captured = {}
+        monkeypatch.setattr(classifier_module, "_get_bedrock", lambda: self._fake(captured))
+        classifier_module.classify_message(
+            "anything",
+            active_threads=[
+                {"thread_id": "t1", "topic": "prior topic", "path": "long_running",
+                 "status": "idle", "created_at": 0, "github_issue_url": ""},
+            ],
+        )
+        user_content = captured["body"]["messages"][0]["content"]
+        assert "idle is normal" in user_content or "follow-up candidate" in user_content
 
 
 # ---------------------------------------------------------------------------

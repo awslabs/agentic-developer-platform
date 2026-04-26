@@ -167,18 +167,35 @@ def handle_unified_message(message: UnifiedMessage) -> dict:
     session = get_or_create_session(session_id, connection_id, message, now)
     threads = session.get("threads", {})
 
-    # Load recent history and active thread summaries for classifier
+    # Load recent history and session-thread summaries for classifier.
+    #
+    # Every thread in this session — idle or processing — is a follow-up
+    # candidate. Filtering to only-currently-processing threads broke
+    # follow-ups entirely: as soon as turn-1 finished, processing_task_id was
+    # cleared, the thread disappeared from the classifier's view, and every
+    # subsequent message got thread_action=new. The user may resume a topic
+    # seconds or hours later; we don't gate on elapsed time.
+    #
+    # Cap by most-recent N threads to keep the classifier prompt bounded.
+    # 10 is plenty — a session with >10 distinct topics is rare and the
+    # classifier is unlikely to confuse a 4-hour-old thread #11 with a new
+    # message that genuinely refers to thread #1.
     history = load_recent_history(session_id, limit=10)
+    sorted_threads = sorted(
+        threads.items(),
+        key=lambda kv: int(kv[1].get("created_at", 0) or 0),
+        reverse=True,
+    )[:10]
     active_threads = [
         {
             "thread_id": tid,
             "topic": t.get("topic", ""),
             "path": t.get("path", ""),
             "status": "processing" if t.get("processing_task_id") else "idle",
+            "created_at": int(t.get("created_at", 0) or 0),
             "github_issue_url": t.get("github_issue_url", ""),
         }
-        for tid, t in threads.items()
-        if t.get("processing_task_id")  # Only show active threads
+        for tid, t in sorted_threads
     ]
 
     # Classify with thread awareness
@@ -271,7 +288,13 @@ def handle_github_dispatch(session_id, task_id, connection_id, message, classifi
 def handle_long_running(session_id, task_id, connection_id, message, classification, threads, now):
     """Per-thread serialization for long_running tasks."""
 
-    if classification.thread_action == "follow_up" and classification.follow_up_thread_id:
+    is_follow_up = (
+        classification.thread_action == "follow_up"
+        and classification.follow_up_thread_id
+        and classification.follow_up_thread_id in threads
+    )
+
+    if is_follow_up:
         thread_id = classification.follow_up_thread_id
         thread = threads.get(thread_id, {})
 
@@ -281,13 +304,15 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
             notify = classification.escalation_note or "Your message has been queued. I'll address it once the current task completes."
             send_notification(session_id, task_id, connection_id, message, notify, now)
             return {"statusCode": 200, "body": json.dumps({"task_id": None, "session_id": session_id, "thread_id": thread_id, "status": "queued"})}
+
+        # Idle follow-up: reuse the existing thread. Don't call create_thread
+        # (it clobbers messages/topic). Just mark it as processing the new task.
+        set_thread_processing(session_id, thread_id, task_id)
     else:
         # New thread
         thread_id = str(uuid.uuid4())[:8]
-
-    # Enqueue to SQS
-    create_thread(session_id, thread_id, task_id, classification)
-    set_thread_processing(session_id, thread_id, task_id)
+        create_thread(session_id, thread_id, task_id, classification)
+        set_thread_processing(session_id, thread_id, task_id)
 
     # FIFO queues require MessageGroupId + MessageDeduplicationId. Group by
     # session_id so per-session turns serialize; different sessions stay
