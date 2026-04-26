@@ -212,11 +212,11 @@ def handle_unified_message(message: UnifiedMessage) -> dict:
 def handle_direct_response(session_id, task_id, connection_id, message, classification, now):
     append_message(session_id, "assistant", classification.response, now)
     if RESPONSE_QUEUE_URL:
-        sqs.send_message(QueueUrl=RESPONSE_QUEUE_URL, MessageBody=json.dumps({
+        _send_response(session_id, {
             "task_id": task_id, "session_id": session_id, "connection_id": connection_id,
             "channel": message.channel.value, "channel_metadata": message.platform_data,
             "result": classification.response, "status": "completed", "completed_at": now,
-        }))
+        }, dedup_id=f"resp_{task_id}")
     return {"statusCode": 200, "body": json.dumps({"task_id": task_id, "session_id": session_id, "status": "completed"})}
 
 
@@ -324,11 +324,26 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
 def send_notification(session_id, task_id, connection_id, message, text, now):
     append_message(session_id, "assistant", text, now)
     if RESPONSE_QUEUE_URL:
-        sqs.send_message(QueueUrl=RESPONSE_QUEUE_URL, MessageBody=json.dumps({
+        _send_response(session_id, {
             "task_id": task_id, "session_id": session_id, "connection_id": connection_id,
             "channel": message.channel.value, "channel_metadata": message.platform_data,
             "result": text, "status": "notification", "completed_at": now,
-        }))
+        }, dedup_id=f"notif_{task_id}")
+
+
+def _send_response(session_id: str, body: dict, *, dedup_id: str) -> None:
+    """Send a response payload to the response queue.
+
+    Auto-wires FIFO params (MessageGroupId = session_id, MessageDeduplicationId
+    = caller-supplied) when the queue URL ends with `.fifo`. FIFO preserves
+    per-session ordering so AG-UI events reach the response Lambda in the
+    order the worker emitted them.
+    """
+    kwargs = {"QueueUrl": RESPONSE_QUEUE_URL, "MessageBody": json.dumps(body)}
+    if RESPONSE_QUEUE_URL.endswith(".fifo"):
+        kwargs["MessageGroupId"] = session_id
+        kwargs["MessageDeduplicationId"] = dedup_id
+    sqs.send_message(**kwargs)
 
 
 def detect_channel(event):

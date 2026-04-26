@@ -79,7 +79,7 @@ def _make_sqs_event(records: list[dict]) -> dict:
                 "messageAttributes": {},
                 "md5OfBody": "",
                 "eventSource": "aws:sqs",
-                "eventSourceARN": "arn:aws:sqs:us-east-1:123:adp-dev-agent-gateway-responses",
+                "eventSourceARN": "arn:aws:sqs:us-east-1:123:adp-dev-agent-gateway-responses.fifo",
                 "awsRegion": "us-east-1",
             }
             for i, r in enumerate(records)
@@ -313,7 +313,7 @@ class TestMalformedMessage:
                     "messageAttributes": {},
                     "md5OfBody": "",
                     "eventSource": "aws:sqs",
-                    "eventSourceARN": "arn:aws:sqs:us-east-1:123:adp-dev-agent-gateway-responses",
+                    "eventSourceARN": "arn:aws:sqs:us-east-1:123:adp-dev-agent-gateway-responses.fifo",
                     "awsRegion": "us-east-1",
                 }
             ]

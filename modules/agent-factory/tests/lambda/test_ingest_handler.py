@@ -48,7 +48,7 @@ def _patch_sys_path():
 def mock_env(monkeypatch):
     """Set required environment variables for the ingest handler."""
     monkeypatch.setenv("INPUT_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/adp-dev-agent-gateway-tasks")
-    monkeypatch.setenv("RESPONSE_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/adp-dev-agent-gateway-responses")
+    monkeypatch.setenv("RESPONSE_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/adp-dev-agent-gateway-responses.fifo")
     monkeypatch.setenv("SESSIONS_TABLE_NAME", "adp-dev-agent-gateway-sessions")
     monkeypatch.setenv("AWS_REGION_NAME", "us-east-1")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "")
@@ -80,7 +80,10 @@ def mocked_aws_services(mock_env):
         # Create SQS queues
         sqs_client = boto3.client("sqs", region_name="us-east-1")
         sqs_client.create_queue(QueueName="adp-dev-agent-gateway-tasks")
-        sqs_client.create_queue(QueueName="adp-dev-agent-gateway-responses")
+        sqs_client.create_queue(
+            QueueName="adp-dev-agent-gateway-responses.fifo",
+            Attributes={"FifoQueue": "true"},
+        )
 
         yield {"ddb": ddb, "table": table, "sqs": sqs_client}
 

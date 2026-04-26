@@ -16,7 +16,10 @@ data:
   AGENT_ENTRYPOINT: "complex-task-chat"
   AWS_REGION: "us-east-1"
 
-  # FIFO task queue + existing non-FIFO response queue
+  # FIFO task queue + FIFO response queue. Response queue became FIFO so
+  # AG-UI events (RUN_STARTED → TEXT_MESSAGE_* → RUN_FINISHED) arrive in order
+  # at the response Lambda. Producers detect `.fifo` suffix and auto-wire
+  # MessageGroupId = session_id + per-event MessageDeduplicationId.
   INPUT_QUEUE_URL: "REPLACE_WITH_CHAT_TASKS_FIFO_URL"
   RESPONSE_QUEUE_URL: "REPLACE_WITH_RESPONSE_QUEUE_URL"
 

@@ -285,7 +285,10 @@ def sqs_client(test_env: TestEnvConfig):
             client = boto3.client("sqs", region_name="us-east-1")
             # Create the queues that the code expects
             input_q = client.create_queue(QueueName="adp-dev-agent-gateway-tasks")
-            response_q = client.create_queue(QueueName="adp-dev-agent-gateway-responses")
+            response_q = client.create_queue(
+                QueueName="adp-dev-agent-gateway-responses.fifo",
+                Attributes={"FifoQueue": "true"},
+            )
             yield {
                 "client": client,
                 "input_queue_url": input_q["QueueUrl"],
