@@ -25,9 +25,18 @@ resource "aws_sqs_queue" "response" {
   # and the frontend's dedup-on-RUN_FINISHED would drop the later content.
   # The `.fifo` name suffix is required by AWS; producers already detect this
   # via `url.endsWith('.fifo')` and auto-wire MessageGroupId + dedup id.
+  #
+  # Issue #164: `perMessageGroupId` throughput enables parallel Lambda
+  # dispatch across sessions. Without it, all groups share a single 300
+  # msg/sec limit and the Lambda event source processes them in queue-order,
+  # creating cross-session head-of-line blocking. With it, each session_id
+  # group gets independent throughput and Lambda can invoke concurrently
+  # for different sessions while preserving in-session ordering.
   name                        = "${var.name_prefix}-gateway-responses.fifo"
   fifo_queue                  = true
   content_based_deduplication = false # producers supply explicit dedup ids
+  deduplication_scope         = "messageGroup"
+  fifo_throughput_limit       = "perMessageGroupId"
   visibility_timeout_seconds  = 30
   message_retention_seconds   = 86400
   sqs_managed_sse_enabled     = true

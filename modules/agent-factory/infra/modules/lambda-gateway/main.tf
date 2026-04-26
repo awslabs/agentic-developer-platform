@@ -169,8 +169,23 @@ resource "aws_lambda_function" "response" {
 resource "aws_lambda_event_source_mapping" "response_sqs" {
   event_source_arn = var.response_queue_arn
   function_name    = aws_lambda_function.response.arn
-  batch_size       = 1
-  enabled          = true
+  # Issue #164: batch_size=10 reduces per-message polling overhead. The handler
+  # already iterates `event["Records"]` so multi-record batches work as-is.
+  # For FIFO, all records in a batch share the same MessageGroupId, so
+  # in-session ordering is preserved within the batch.
+  batch_size = 10
+  enabled    = true
+
+  # Issue #164: Allow up to 50 concurrent Lambda invocations for the response
+  # queue. For FIFO queues, Lambda defaults to 5 concurrent pollers and scales
+  # +5/min — far too slow when many sessions are active (E2E tests, multi-user).
+  # With scaling_config, Lambda can invoke up to this many functions concurrently
+  # across different MessageGroupIds (sessions), eliminating cross-session
+  # head-of-line blocking. Within a single MessageGroupId, ordering is still
+  # preserved (only one invocation per group at a time).
+  scaling_config {
+    maximum_concurrency = 50
+  }
 }
 
 resource "aws_iam_role" "response" {

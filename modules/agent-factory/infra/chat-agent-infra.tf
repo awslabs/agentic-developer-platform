@@ -422,7 +422,7 @@ resource "aws_iam_role_policy" "gateway_agent_chat_sqs_fifo" {
         Sid    = "SendFIFOResponses"
         Effect = "Allow"
         Action = ["sqs:SendMessage"]
-        # Chat responses go to the existing response queue (non-FIFO)
+        # Chat responses go to the response FIFO queue
         Resource = module.gateway_sqs.response_queue_arn
       }
     ]
