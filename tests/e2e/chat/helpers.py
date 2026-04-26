@@ -399,20 +399,96 @@ def send_chat_message(page, text: str, timeout: int = 5000) -> None:
         input_el.press("Enter")
 
 
-def wait_for_assistant_reply(page, timeout: int = 120_000) -> str:
-    """Wait for an assistant reply to appear and return its text content.
+def wait_for_assistant_reply(
+    page,
+    timeout: int = 120_000,
+    index: int | None = None,
+    stability_ms: int = 2000,
+) -> str:
+    """Wait for an assistant reply bubble to finish streaming and return its text.
 
-    Waits for a message bubble with role=assistant or a data-role attribute.
+    Hardened version: instead of a fixed 2s sleep, this helper detects when
+    streaming is actually complete via two mechanisms (tried in order):
+
+    1. **Status attribute** — if the bubble exposes ``data-streaming-status``
+       (set by the AG-UI ``useAgUiEvents`` hook), wait for the value to become
+       ``"complete"`` (or ``"idle"``).
+    2. **Text stability** — if no status attribute is present, poll the bubble's
+       ``innerText`` every 500ms and wait until it has been stable (unchanged)
+       for ``stability_ms`` milliseconds. This catches the half-rendered-bubble
+       bug where ``TEXT_MESSAGE_END`` arrived before ``RUN_FINISHED``.
+
+    Both paths are guarded by the outer *timeout* so a hung reply doesn't hang
+    the entire test.
+
+    Args:
+        page: Playwright page instance.
+        timeout: overall timeout in ms for the bubble to appear *and* finish.
+        index: which assistant message to target.  ``None`` (default) → last
+            message.  ``-1`` → also last (explicit).  Positive int → nth bubble.
+        stability_ms: how long the text must remain unchanged before we declare
+            it "complete" (used only when no ``data-streaming-status`` attr).
     """
-    # Wait for at least one assistant message to appear
-    assistant_msg = page.locator(
+    BUBBLE_SELECTOR = (
         "[data-role='assistant'], .assistant-message, "
         "[class*='assistant'], [class*='Agent']"
-    ).last
-    assistant_msg.wait_for(state="visible", timeout=timeout)
-    # Wait a bit for streaming to complete
-    page.wait_for_timeout(2000)
-    return assistant_msg.inner_text()
+    )
+
+    # --- locate the target bubble ---
+    bubbles = page.locator(BUBBLE_SELECTOR)
+    if index is not None and index >= 0:
+        target = bubbles.nth(index)
+    else:
+        target = bubbles.last
+
+    # Wait for it to become visible within the outer timeout.
+    target.wait_for(state="visible", timeout=timeout)
+
+    # --- wait for streaming to finish ---
+    deadline_mono = time.monotonic() + (timeout / 1000)
+
+    # Strategy 1: data-streaming-status attribute
+    status_attr = _get_streaming_status(target)
+    if status_attr is not None:
+        # The UI exposes a status attribute — poll until it says "complete" or
+        # "idle" (both mean streaming is done).
+        while status_attr not in ("complete", "idle"):
+            if time.monotonic() > deadline_mono:
+                break
+            page.wait_for_timeout(300)
+            status_attr = _get_streaming_status(target)
+        return target.inner_text()
+
+    # Strategy 2: text-stability polling
+    prev_text = target.inner_text()
+    stable_since = time.monotonic()
+
+    while True:
+        remaining_ms = (deadline_mono - time.monotonic()) * 1000
+        if remaining_ms <= 0:
+            # Outer timeout exhausted — return whatever we have.
+            break
+
+        page.wait_for_timeout(min(500, int(remaining_ms)))
+        current_text = target.inner_text()
+
+        if current_text != prev_text:
+            prev_text = current_text
+            stable_since = time.monotonic()
+        elif (time.monotonic() - stable_since) * 1000 >= stability_ms:
+            # Text has been stable long enough — streaming is done.
+            break
+
+    return prev_text
+
+
+def _get_streaming_status(locator) -> str | None:
+    """Read the ``data-streaming-status`` attribute from a locator, or None."""
+    try:
+        val = locator.get_attribute("data-streaming-status", timeout=200)
+        return val
+    except Exception:
+        return None
 
 
 def wait_for_any_assistant_message(page, timeout: int = 3000) -> str | None:

@@ -98,6 +98,122 @@ class TestNoTopicBleed:
         )
 
 
+class TestFollowUpRecognised:
+    """Regression guard for #163 — follow-ups must be recognised as such, not
+    classified as new topics.  Every refinement on the same topic should
+    produce a contextual reply that builds on the prior turn, not a reply
+    that says 'your message may not have come through' or ignores history."""
+
+    def test_refinement_on_same_topic_builds_on_prior_answer(self, authenticated_page):
+        """Two-turn exchange on a single topic:
+
+        Turn 1: ask for open-source video editing tools.
+        Turn 2: ask which of *those* has the highest GitHub stars and why.
+
+        Assertions:
+        a) Reply 2 does NOT contain dead-end / disconnected phrases
+           (would indicate classifier forced thread_action=new).
+        b) Reply 2 references at least one concrete item from reply 1
+           OR is a substantive response (>100 chars) mentioning "star" / "github".
+        """
+        page = authenticated_page
+
+        # Turn 1: ask for open-source video editing tools.
+        send_chat_message(page, "what are some open source video editing tools?")
+        try:
+            reply1 = wait_for_assistant_reply(page, timeout=180_000)
+        except Exception:
+            screenshot = take_failure_screenshot(page, "followup-turn1")
+            pytest.fail(
+                f"No reply to video-editing-tools question within 180s. "
+                f"Screenshot: {screenshot}"
+            )
+
+        # Brief pause between turns
+        page.wait_for_timeout(2000)
+
+        # Turn 2: explicit refinement referring to the prior list.
+        send_chat_message(
+            page,
+            "can you tell me which of those has the highest github stars "
+            "and why you'd recommend it?"
+        )
+        try:
+            # Get the LAST assistant message (the follow-up reply)
+            messages = page.locator(
+                "[data-role='assistant'], .assistant-message, "
+                "[class*='assistant'], [class*='Agent']"
+            )
+            # Wait for a new (second) assistant bubble
+            page.wait_for_timeout(5000)
+            count = messages.count()
+            if count >= 2:
+                reply2 = wait_for_assistant_reply(page, timeout=180_000, index=-1)
+            else:
+                reply2 = wait_for_assistant_reply(page, timeout=180_000)
+        except Exception:
+            screenshot = take_failure_screenshot(page, "followup-turn2")
+            pytest.fail(
+                f"No reply to follow-up within 180s. Screenshot: {screenshot}"
+            )
+
+        # --- Assertion (a): reply 2 must NOT be a dead-end / disconnected response ---
+        bad_phrases = [
+            "i don't see a new question",
+            "your message may not have come through",
+            "it looks like your message",
+            "whenever you're ready",
+            "i'm not sure what you're referring to",
+            "could you please clarify",
+            "i don't have context",
+        ]
+        reply2_lower = reply2.lower()
+        for phrase in bad_phrases:
+            assert phrase not in reply2_lower, (
+                f"Refinement was not recognised as follow-up — reply contains "
+                f"{phrase!r}. Classifier likely routed thread_action=new instead "
+                f"of follow_up. Regression of #163.\n"
+                f"Reply 2 excerpt: {reply2[:300]}"
+            )
+
+        # --- Assertion (b): reply 2 references prior content or is substantive ---
+        # Extract proper-noun-shaped tokens from reply 1 (capitalised words >=4 chars
+        # that aren't common English).  If any appear in reply 2, the agent used
+        # history.
+        common_words = {
+            "this", "that", "with", "from", "here", "there", "some", "they",
+            "have", "been", "will", "your", "more", "also", "very", "much",
+            "well", "just", "most", "only", "than", "them", "each", "such",
+            "like", "when", "what", "make", "over", "into", "open", "free",
+            "source", "tool", "tools", "video", "editing",
+        }
+        # Look for capitalised proper nouns (tool names like Kdenlive, Shotcut, etc.)
+        candidates = set(re.findall(r"\b[A-Z][a-z]{3,}\b", reply1)) - common_words
+        # Also look for all-caps acronyms (e.g. GIMP, OBS)
+        candidates |= set(re.findall(r"\b[A-Z]{2,6}\b", reply1)) - {"THE", "AND", "FOR"}
+
+        found_overlap = any(
+            c.lower() in reply2_lower for c in candidates
+        )
+
+        if not found_overlap:
+            # Fallback: accept a substantive response about stars/github
+            assert len(reply2.strip()) > 100, (
+                f"Follow-up reply is too short ({len(reply2.strip())} chars) "
+                f"and does not reference any item from turn 1. The agent likely "
+                f"cold-started instead of using history. Regression of #163.\n"
+                f"Reply 1 candidates: {candidates}\n"
+                f"Reply 2 excerpt: {reply2[:300]}"
+            )
+            has_star_ref = "star" in reply2_lower or "github" in reply2_lower
+            assert has_star_ref, (
+                f"Follow-up reply doesn't mention 'star' or 'github' even "
+                f"though the question was about GitHub stars. The agent likely "
+                f"ignored the follow-up context. Regression of #163.\n"
+                f"Reply 2 excerpt: {reply2[:300]}"
+            )
+
+
 class TestAgentNoRerunPriorWork:
     """Scenario 12: agent doesn't re-run prior work in multi-turn conversation."""
 
