@@ -23,6 +23,31 @@ describe('getChannelDirective', () => {
     expect(d).toMatch(/can't watch/i); // forbids "I can't watch video"
   });
 
+  it('webchat directive instructs the agent to emit a plan on the first turn', () => {
+    // Before: the agent went silent during multi-tool research turns,
+    // then dumped one big reply. Users saw tool chips but no indication
+    // of what the agent was working on. Fix: tell the model to emit a
+    // plan as the first turn's output before any tool calls.
+    const d = getChannelDirective('webchat');
+    expect(d).toMatch(/Planning protocol/i);
+    // The first turn must be plan-only, no tool calls.
+    expect(d).toMatch(/FIRST turn must contain ONLY a short plan/);
+    // Concrete output shape — ends with "Starting now."
+    expect(d).toContain('Starting now.');
+    // Skip clause — trivial asks must NOT get a plan.
+    expect(d).toMatch(/Skip planning when the task is trivial/i);
+  });
+
+  it('webchat directive keeps mid-execution narration guidance', () => {
+    // The plan isn't enough on its own — during execution the agent
+    // should still emit a sentence before pivots or slow steps. Keeps
+    // the user informed during the gap between "Starting now" and the
+    // final answer.
+    const d = getChannelDirective('webchat');
+    expect(d).toMatch(/Narrate mid-execution/i);
+    expect(d).toMatch(/one sentence per decision point/i);
+  });
+
   it('returns non-empty string for slack', () => {
     const directive = getChannelDirective('slack');
     expect(directive).toBeTruthy();
