@@ -1,28 +1,20 @@
 /**
- * Prompt stream — frames conversation history as synthetic user-role SDK stream
- * messages and appends the new user ask with an anti-bleed directive.
+ * Render history + new user ask as one plain transcript, yielded as a single
+ * user message. Simplest possible shape the SDK will accept.
  *
- * Each past user/assistant pair is wrapped in <past-exchange>. The new ask is
- * the final yield, preceded by a directive that:
- *   (a) tells the model past exchanges are reference-only, available for
- *       explicit backreferences but not to continue/repeat/extend;
- *   (b) tells the model to pivot completely when the new message opens a new
- *       topic (don't carry over format/structure like an active quiz).
+ * The SDK's query() prompt is `string | AsyncIterable<SDKUserMessage>` — no
+ * real multi-role messages array. So we build a transcript with `[user] / `
+ * `[assistant]` headers and pass it as one user-role chunk. The model reads
+ * that as a normal chat transcript (a shape it's seen in training a million
+ * times) and answers the last `[user]` turn.
  *
- * Prior framings didn't hold:
- *   - Raw yields made the model treat N historical user messages as N stacked
- *     live asks (e.g. "what time?" after earlier research triggered both).
- *   - <prior-turn> tags + "address only the current message" (PR #121, #151)
- *     still let the model carry over structure — a quiz history continued as
- *     a quiz, a video-editing ask got answered with stale time content.
- *
- * The new framing puts the directive IMMEDIATELY BEFORE the user message
- * (tail of prompt — recency bias favours tail instructions) and spells out
- * the rule as positive+negative+exception, not a single "address only" hint.
+ * No XML tags, no anti-bleed directives, no "pivot on new topic" rules. If
+ * the transcript ends with a new user question, the model answers it. If it
+ * refers back to an earlier turn, the model uses the earlier turns as
+ * context. That is the natural behaviour we want.
  */
 import { SDKMessage } from './context/types';
 
-/** Sentinel session id used for the synthetic stream; the SDK ignores it. */
 const STREAM_SESSION_ID = 'chat-agent-stream';
 
 export interface PromptChunk {
@@ -36,59 +28,27 @@ export async function* buildPromptStream(
   history: SDKMessage[],
   userMessage: string,
 ): AsyncIterable<PromptChunk> {
-  const pending: string[] = [];
-
-  const flushUser = function* (text: string) {
-    yield {
-      type: 'user' as const,
-      message: { role: 'user' as const, content: text },
-      parent_tool_use_id: null,
-      session_id: STREAM_SESSION_ID,
-    };
-  };
-
-  // Walk history: pair each user turn with the assistant turns that followed
-  // and wrap them in <past-exchange>. Reference material — not active asks.
-  let currentUserText: string | null = null;
+  const lines: string[] = [];
   for (const m of history) {
-    if (m.role === 'user') {
-      if (currentUserText !== null) {
-        const body =
-          pending.length > 0
-            ? `<past-user>\n${currentUserText}\n</past-user>\n<past-assistant>\n${pending.join('\n\n')}\n</past-assistant>`
-            : `<past-user>\n${currentUserText}\n</past-user>`;
-        yield* flushUser(`<past-exchange>\n${body}\n</past-exchange>`);
-        pending.length = 0;
-      }
-      currentUserText = m.content;
-    } else {
-      pending.push(m.content);
-    }
+    const role = m.role === 'assistant' ? '[assistant]' : '[user]';
+    lines.push(`${role}\n${sanitize(m.content)}`);
   }
+  lines.push(`[user]\n${sanitize(userMessage)}`);
 
-  if (currentUserText !== null) {
-    const body =
-      pending.length > 0
-        ? `<past-user>\n${currentUserText}\n</past-user>\n<past-assistant>\n${pending.join('\n\n')}\n</past-assistant>`
-        : `<past-user>\n${currentUserText}\n</past-user>`;
-    yield* flushUser(`<past-exchange>\n${body}\n</past-exchange>`);
-  } else if (pending.length > 0) {
-    yield* flushUser(`<past-assistant-only>\n${pending.join('\n\n')}\n</past-assistant-only>`);
-  }
+  yield {
+    type: 'user',
+    message: { role: 'user', content: lines.join('\n\n') },
+    parent_tool_use_id: null,
+    session_id: STREAM_SESSION_ID,
+  };
+}
 
-  // Final user turn with the anti-bleed directive. The directive sits
-  // IMMEDIATELY BEFORE the ask so the model's recency bias favours the rule,
-  // and the ask itself is the final visible text so the reply anchors on it.
-  yield* flushUser(
-    `The <past-exchange> blocks above are previous turns in this conversation. ` +
-      `They are REFERENCE ONLY — read them to resolve explicit backreferences (e.g. ` +
-      `"that first answer", "the 2nd option you listed"), but do NOT continue, repeat, ` +
-      `or extend them on your own. Each new user message starts a fresh response ` +
-      `unless it explicitly refers to a past turn.\n\n` +
-      `The user's new message is below. Respond to THIS message. If it opens a new ` +
-      `topic, pivot completely — do not carry over the prior topic's framing, format, ` +
-      `or structure (e.g. if the prior turns were a quiz, do not keep asking quiz ` +
-      `questions unless the new message asks for that).\n\n` +
-      `<new-user-message>\n${userMessage}\n</new-user-message>`,
-  );
+/**
+ * Strip role markers from inside user/assistant content so a user cannot
+ * inject a fake turn by writing `[assistant]\n...` into their own message.
+ * Replaces the leading marker with a visible escape; preserves the character
+ * count so nothing else shifts.
+ */
+function sanitize(text: string): string {
+  return text.replace(/^\s*\[(user|assistant)\]/gim, '(\\$1)');
 }
