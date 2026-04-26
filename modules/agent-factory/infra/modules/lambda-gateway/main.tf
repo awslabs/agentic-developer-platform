@@ -21,6 +21,7 @@ resource "aws_lambda_function" "ingest" {
       RESPONSE_QUEUE_URL  = var.response_queue_url
       SESSIONS_TABLE_NAME = var.sessions_table_name
       AWS_REGION_NAME     = var.aws_region
+      CLASSIFIER_MODEL    = var.classifier_model
       # GH App secret prefix for the github_actions dispatch path. The ingest
       # Lambda uses the "ops" persona specifically — it has write perms for
       # issues/labels on the target repo. Secrets are written by

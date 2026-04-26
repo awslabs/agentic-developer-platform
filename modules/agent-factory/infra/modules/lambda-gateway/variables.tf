@@ -71,3 +71,9 @@ variable "account_id" {
   description = "AWS account ID (for constructing secret ARNs)."
   type        = string
 }
+
+variable "classifier_model" {
+  description = "Bedrock model ID used by the ingest classifier. Haiku 4.5 is ~5x faster than Sonnet 4.6 for the short routing call — the classifier sees <2KB of context and returns ~200 bytes of JSON, so Haiku's accuracy gap is negligible but the latency win is the difference between 400ms and 2s per user turn."
+  type        = string
+  default     = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+}
