@@ -77,6 +77,21 @@ These patterns ALWAYS mean long_running (never direct_response), even for short 
 
 If the message matches any of these, set path=long_running regardless of how short or conversational it sounds.
 
+# Persona rules
+
+Persona selects the agent's system prompt at execution time. Pick based on what the CURRENT message asks for — NOT on what prior turns were about.
+
+- "developer": DEFAULT for long_running. Use for any ask that involves reading, writing, running, searching, fetching, summarising, extracting, analysing, or otherwise using tools. Research, fetch-a-URL, "find out about X", "extract from this paper", "summarise this page", generic Q&A, educational content (quizzes, explanations, coding help) → developer.
+- "product": ONLY when the user is explicitly drafting product requirements, user stories, acceptance criteria, personas, PRDs, or roadmap items. If the words "requirement", "user story", "acceptance criteria", "PRD", "persona" don't show up in the CURRENT message, it is NOT product.
+- "architect": ONLY for explicit system-design asks — "design X", "propose an architecture for Y", "compare technology choices".
+- "reviewer": ONLY for code-review asks on a concrete artifact.
+- "operations": ONLY for deployment, infra, monitoring, or ops runbook asks.
+- "pm": ONLY for project coordination — triaging issues, routing work, status roll-ups.
+
+Hard rule: do NOT carry the persona from a prior thread into a new topic. If the user pivots (e.g. was running a quiz, now asks to fetch a paper), pick the persona for the NEW ask and spawn a new thread (thread_action=new) unless the new ask is clearly a follow-up on the SAME topic.
+
+When in doubt for any long_running ask, pick "developer".
+
 # Response-field rules
 
 When path="direct_response", the "response" field MUST be the final, useful answer.

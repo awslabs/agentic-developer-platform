@@ -117,6 +117,23 @@ class TestClassifierPromptShape:
         for tool in ["Bash", "WebSearch", "WebFetch"]:
             assert tool in p, f"Classifier prompt must name the {tool} tool"
 
+    def test_prompt_scopes_product_persona_narrowly(self, classifier_module):
+        """Regression: a 'fetch a 2024 paper and ask questions' ask routed to
+        persona=product mid-quiz and the worker kept running the physics quiz
+        instead of fetching the paper. The product persona must be gated on
+        explicit PRD/requirements vocabulary in the CURRENT message."""
+        p = classifier_module.CLASSIFIER_SYSTEM_PROMPT
+        # Explicit persona-selection section exists.
+        assert "# Persona rules" in p
+        # Developer is the documented default for long_running.
+        assert '"developer": DEFAULT' in p
+        # Product is scoped to explicit requirements vocabulary.
+        assert "user story" in p or "user stories" in p
+        assert "acceptance criteria" in p
+        assert "PRD" in p
+        # Hard rule against inheriting persona across a topic pivot.
+        assert "do NOT carry the persona from a prior thread" in p
+
 
 # ---------------------------------------------------------------------------
 # History framing — prior turns must be scoped as context, not new asks

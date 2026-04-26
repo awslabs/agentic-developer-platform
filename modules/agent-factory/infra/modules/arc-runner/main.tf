@@ -77,32 +77,35 @@ resource "helm_release" "arc_runner_set" {
       githubConfigSecret = kubernetes_secret.arc_runner.metadata[0].name
       maxRunners         = 10
       minRunners         = 0
-      # Pod template. When `runner_image` is empty we omit the `containers`
-      # block entirely so the gha-runner-scale-set chart injects its default
-      # container (image ghcr.io/actions/actions-runner:latest + command
-      # ["/home/runner/run.sh"]). When `runner_image` is set, we have to
-      # provide the full container spec ourselves, including `command` —
-      # the chart has no image-only override, so overriding `containers`
-      # without setting `command` would make pods run the image's
-      # ENTRYPOINT and exit immediately.
+      # Pod template. Always supply the full container spec (image, command,
+      # resources) — the chart has no image-only override and overriding
+      # `containers` without setting `command` would make pods run the
+      # image's ENTRYPOINT and exit immediately. Default image is the
+      # upstream actions-runner when `runner_image` is empty.
       template = {
         metadata = {
           annotations = { "karpenter.sh/do-not-disrupt" = "true" }
         }
-        spec = merge(
-          {
-            serviceAccountName = kubernetes_service_account.runner.metadata[0].name
-          },
-          var.runner_image == "" ? {} : {
-            containers = [
-              {
-                name    = "runner"
-                image   = var.runner_image
-                command = ["/home/runner/run.sh"]
+        # Pod-level resource requests/limits. Without requests, Karpenter
+        # packs multiple runners onto a single c6a.large; their concurrent
+        # npm ci / setup-node bursts saturate the node's gp3 EBS IOPS
+        # baseline (3000), stalling processes in D-state and causing 5+ min
+        # "hangs". Mirrors AISuperPlane's sizing — requests push Karpenter
+        # to right-size the node, limits prevent one runner starving others.
+        spec = {
+          serviceAccountName = kubernetes_service_account.runner.metadata[0].name
+          containers = [
+            {
+              name    = "runner"
+              image   = var.runner_image == "" ? "ghcr.io/actions/actions-runner:latest" : var.runner_image
+              command = ["/home/runner/run.sh"]
+              resources = {
+                requests = { cpu = "1", memory = "4Gi" }
+                limits   = { cpu = "4", memory = "8Gi" }
               }
-            ]
-          }
-        )
+            }
+          ]
+        }
       }
     })
   ]
