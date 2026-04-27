@@ -124,6 +124,13 @@ jobs:
           fi
 
       - name: Setup Beads
+        # Skip when a downstream repo has opted out of beads via repo variable
+        # (e.g. lightweight installs that don't provision the beads DynamoDB
+        # + S3 state store). Agent code already guards itself via
+        # BEADS_ENABLED=false at runtime; without this `if:`, the setup-beads
+        # action would still try to install the `bd` CLI and sync from AWS,
+        # failing the job before the agent even starts.
+        if: vars.BEADS_ENABLED != 'false'
         id: beads
         uses: ./adp-agent-src/modules/agent-factory/actions/setup-beads
         with:
