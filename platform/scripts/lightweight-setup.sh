@@ -202,7 +202,7 @@ else
       },
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
-        "StringLike": {
+        "StringEquals": {
           "${OIDC_PROVIDER}:sub": "system:serviceaccount:${ARC_RUNNER_NS}:${ARC_RUNNER_SA}",
           "${OIDC_PROVIDER}:aud": "sts.amazonaws.com"
         }
@@ -330,10 +330,33 @@ else
   fi
 fi
 
-# Restart runner pods to pick up IRSA annotation
-info "Restarting ARC runner pods to pick up new IRSA annotation..."
-kubectl delete pods -n "$ARC_RUNNER_NS" --all --wait=false 2>/dev/null || true
-ok "Runner pods restarting"
+# Restart ONLY pods that use the annotated runner SA to pick up the new IRSA
+# annotation. Scope this tightly — `kubectl delete pods --all` would kill
+# every pod in the namespace including the ARC controller and listener pods,
+# and would terminate any in-flight workflow jobs mid-run.
+#
+# Determine the SA we actually annotated: either ARC_RUNNER_SA (the user's
+# default answer that existed), or ACTUAL_SA (the replacement they entered
+# when the default didn't exist). If the user typed "skip", we didn't
+# annotate anything — tell them how to restart manually and move on.
+if [ "${ACTUAL_SA:-}" = "skip" ]; then
+  info "SA annotation was skipped; no pods to restart. After you annotate the SA manually, restart matching pods with:"
+  info "  kubectl delete pods -n ${ARC_RUNNER_NS} --field-selector spec.serviceAccountName=<sa-name>"
+else
+  RESTART_SA="${ACTUAL_SA:-$ARC_RUNNER_SA}"
+  info "Restarting pods in ${ARC_RUNNER_NS} that use SA '${RESTART_SA}' (scoped — other pods in the namespace are untouched)..."
+  MATCHING_PODS=$(kubectl get pods -n "$ARC_RUNNER_NS" \
+    --field-selector "spec.serviceAccountName=${RESTART_SA}" \
+    -o name 2>/dev/null || echo "")
+  if [ -n "$MATCHING_PODS" ]; then
+    echo "$MATCHING_PODS" | while read -r pod; do
+      kubectl delete "$pod" -n "$ARC_RUNNER_NS" --wait=false 2>/dev/null || true
+    done
+    ok "Restarted runner pods using SA '${RESTART_SA}'"
+  else
+    info "No existing pods found using SA '${RESTART_SA}'. New pods created by ARC will pick up the annotation automatically."
+  fi
+fi
 
 # =============================================================================
 # Phase 6: Set GitHub repo variables
