@@ -120,6 +120,37 @@ async function processOne(
       runId: task_id,
       timestamp: agUiTimestamp(),
     });
+
+    // Placeholder "Thinking..." bubble — fires immediately when the worker
+    // picks up the task, BEFORE the 1-3s of DDB/LCM/persona loading and the
+    // 5-30s Bedrock turn. The ingest Lambda already emits an initial "On it"
+    // bubble, but there's a 10-18s pod cold-start gap between that and the
+    // real reply. This placeholder fills that gap with a visible bubble so
+    // the user sees the agent is actively working instead of silent limbo.
+    //
+    // The placeholder uses its own messageId and closes cleanly
+    // (START → CONTENT → END) so the frontend treats it as a completed
+    // message and opens a fresh bubble for the real reply. Not persisted
+    // to DDB — only the real reply is recorded via deps.context.record().
+    const thinkingMsgId = agUiId('msg-thinking');
+    await emitAgUi({
+      event_type: AgUiEventType.TEXT_MESSAGE_START,
+      messageId: thinkingMsgId,
+      role: 'assistant',
+      timestamp: agUiTimestamp(),
+    });
+    await emitAgUi({
+      event_type: AgUiEventType.TEXT_MESSAGE_CONTENT,
+      messageId: thinkingMsgId,
+      delta: 'Thinking...',
+      timestamp: agUiTimestamp(),
+    });
+    await emitAgUi({
+      event_type: AgUiEventType.TEXT_MESSAGE_END,
+      messageId: thinkingMsgId,
+      timestamp: agUiTimestamp(),
+    });
+
     // Defense-in-depth ownership check (creates header on first access; refuses
     // if existing owner differs).
     await deps.context.assertOwnership(session_id, user_id, tenant_id);
