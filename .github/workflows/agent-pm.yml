@@ -29,7 +29,7 @@ concurrency:
 jobs:
   orchestrate:
     if: github.event_name == 'workflow_call' || github.event.label.name == 'agent-pm'
-    runs-on: arc-runner-org
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
     permissions:
       contents: write
       issues: write
@@ -54,9 +54,11 @@ jobs:
       - name: Get App Credentials from AWS Secrets Manager
         id: aws-secrets
         run: |
+          SECRET_PREFIX="${{ vars.SECRET_PREFIX || 'adp/aws-e' }}"
+          AWS_REGION="${{ vars.AWS_REGION || 'us-east-1' }}"
           echo "Fetching GitHub App credentials from AWS Secrets Manager..."
-          GH_APP_ID=$(aws secretsmanager get-secret-value --secret-id adp/aws-e/gh-app-pm-id --query SecretString --output text --region us-east-1)
-          GH_APP_KEY=$(aws secretsmanager get-secret-value --secret-id adp/aws-e/gh-app-pm-key --query SecretString --output text --region us-east-1)
+          GH_APP_ID=$(aws secretsmanager get-secret-value --secret-id "${SECRET_PREFIX}/gh-app-pm-id" --query SecretString --output text --region "$AWS_REGION")
+          GH_APP_KEY=$(aws secretsmanager get-secret-value --secret-id "${SECRET_PREFIX}/gh-app-pm-key" --query SecretString --output text --region "$AWS_REGION")
           echo "::add-mask::$GH_APP_KEY"
           echo "app_id=$GH_APP_ID" >> $GITHUB_OUTPUT
           echo "app_key<<EOF" >> $GITHUB_OUTPUT

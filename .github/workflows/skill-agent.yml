@@ -29,7 +29,7 @@ concurrency:
 jobs:
   run:
     if: github.event_name == 'workflow_call' || github.event.label.name == 'skill-agent'
-    runs-on: arc-runner-org
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
     permissions:
       contents: write
       issues: write
@@ -52,9 +52,11 @@ jobs:
       - name: Get App Credentials from AWS Secrets Manager
         id: aws-secrets
         run: |
+          SECRET_PREFIX="${{ vars.SECRET_PREFIX || 'adp/aws-e' }}"
+          AWS_REGION="${{ vars.AWS_REGION || 'us-east-1' }}"
           echo "Fetching GitHub App credentials from AWS Secrets Manager..."
-          GH_APP_ID=$(aws secretsmanager get-secret-value --secret-id adp/aws-e/gh-app-ops-id --query SecretString --output text --region us-east-1)
-          GH_APP_KEY=$(aws secretsmanager get-secret-value --secret-id adp/aws-e/gh-app-ops-key --query SecretString --output text --region us-east-1)
+          GH_APP_ID=$(aws secretsmanager get-secret-value --secret-id "${SECRET_PREFIX}/gh-app-ops-id" --query SecretString --output text --region "$AWS_REGION")
+          GH_APP_KEY=$(aws secretsmanager get-secret-value --secret-id "${SECRET_PREFIX}/gh-app-ops-key" --query SecretString --output text --region "$AWS_REGION")
           echo "::add-mask::$GH_APP_KEY"
           echo "app_id=$GH_APP_ID" >> $GITHUB_OUTPUT
           echo "app_key<<EOF" >> $GITHUB_OUTPUT
@@ -129,9 +131,10 @@ jobs:
 
       - name: Configure kubectl
         env:
-          AWS_REGION: us-east-1
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          EKS_CLUSTER: ${{ vars.EKS_CLUSTER || 'bedrockgw-dev-eks-cluster' }}
         run: |
-          aws eks update-kubeconfig --name bedrockgw-dev-eks-cluster --region $AWS_REGION || true
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" || true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

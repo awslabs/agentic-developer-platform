@@ -53,6 +53,16 @@ Agent Factory includes two sub-components:
      └────────────┘  └──────────┘  └──────────┘  └──────────┘
 ```
 
+## Lightweight Install (Agents Only)
+
+Want to run the ADP code agents on your own AWS account without deploying the full platform? If you already have an EKS cluster with ARC runners, you can be up and running in 15 minutes:
+
+```bash
+./platform/scripts/lightweight-setup.sh
+```
+
+See **[docs/lightweight-install.md](docs/lightweight-install.md)** for the full guide, prerequisites, and troubleshooting.
+
 ## Prerequisites
 
 - AWS CLI v2 with admin access
