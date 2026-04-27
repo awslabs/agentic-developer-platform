@@ -1,0 +1,17 @@
+{
+  "phase": "inception",
+  "stage": "requirements",
+  "complexity": "complex",
+  "projectBoardUrl": null,
+  "projectNumber": null,
+  "currentPlanFile": "aidlc-docs/inception/plans/requirements-plan.md",
+  "waitingForUser": true,
+  "issueNumber": 181,
+  "conversationContext": "Deep codebase analysis complete. Gateway module has full identity model (TokenContext, CognitoJWTValidator, TenantMixin, BudgetService). Agent-factory module has gaps: $connect authorizer only persists sub/email/tenant_id (not org_id/team_id/department_id), TaskPayload has tenant_id but not org_id/team_id, SessionHeader has tenantId but not org_id/team_id, assertOwnership checks user-only not team, artifact S3 keys are flat, artifact catalog has no identity fields, memory scope uses vague 'tenant' string, no budget enforcement. 4 stages map to 4 sub-issues with clear dependencies: A (foundation) -> B (catalog) -> C (uploads), A -> D (budget). Stages B/C and D can run in parallel after A.",
+  "stages": {
+    "A": {"title": "JWT claims propagation", "status": "planned", "files": 8, "risk": "low"},
+    "B": {"title": "Catalog schema extension", "status": "planned", "files": 3, "risk": "low"},
+    "C": {"title": "S3 key layout + user uploads", "status": "planned", "files": 6, "risk": "medium"},
+    "D": {"title": "Quota / billing hooks", "status": "planned", "files": 5, "risk": "medium"}
+  }
+}
