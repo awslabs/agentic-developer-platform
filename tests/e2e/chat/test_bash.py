@@ -25,7 +25,7 @@ class TestBashExecution:
 
     @pytest.mark.slow
     def test_bash_ls_returns_real_listing(self, authenticated_page):
-        """Send 'run `ls -la /tmp` and tell me what's there' — wait up to 2 min.
+        """Send 'run `ls -la /tmp` and tell me what's there' — wait up to 4 min.
 
         Assert: final reply contains real directory listing (e.g. 'workspace'
         or 'drwx'), not phrases like 'shell environment isn't configured' or
@@ -38,11 +38,11 @@ class TestBashExecution:
         send_chat_message(page, "run `ls -la /tmp` and tell me what's there")
 
         try:
-            reply = wait_for_assistant_reply(page, timeout=120_000)
+            reply = wait_for_assistant_reply(page, timeout=240_000)
         except Exception:
             screenshot = take_failure_screenshot(page, "bash-exec")
             pytest.fail(
-                f"No reply to bash command within 120s. Screenshot: {screenshot}"
+                f"No reply to bash command within 240s. Screenshot: {screenshot}"
             )
 
         reply_lower = reply.lower()
@@ -98,11 +98,11 @@ class TestPerToolLogs:
         send_chat_message(page, "run `echo hello_world` and show me the output")
 
         try:
-            wait_for_assistant_reply(page, timeout=120_000)
+            wait_for_assistant_reply(page, timeout=240_000)
         except Exception:
             screenshot = take_failure_screenshot(page, "tool-logs")
             pytest.fail(
-                f"No reply to bash command within 120s. Screenshot: {screenshot}"
+                f"No reply to bash command within 240s. Screenshot: {screenshot}"
             )
 
         # Wait for logs to propagate

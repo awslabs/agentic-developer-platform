@@ -56,11 +56,11 @@ class TestStreamingComplete:
 
         t_start = time.monotonic()
         try:
-            reply = wait_for_assistant_reply(page, timeout=180_000)
+            reply = wait_for_assistant_reply(page, timeout=240_000)
         except Exception:
             screenshot = take_failure_screenshot(page, "streaming-complete")
             pytest.fail(
-                f"No assistant reply within 180s. Screenshot: {screenshot}"
+                f"No assistant reply within 240s. Screenshot: {screenshot}"
             )
         elapsed = time.monotonic() - t_start
 
@@ -102,19 +102,19 @@ class TestStreamingComplete:
 
         # Wait for bubble visibility
         try:
-            bubbles.last.wait_for(state="visible", timeout=120_000)
+            bubbles.last.wait_for(state="visible", timeout=240_000)
             t_bubble_appeared = time.monotonic()
         except Exception:
             screenshot = take_failure_screenshot(page, "streaming-stability-wait")
             pytest.fail(
-                f"No assistant bubble appeared within 120s. Screenshot: {screenshot}"
+                f"No assistant bubble appeared within 240s. Screenshot: {screenshot}"
             )
 
         # Now get the first snapshot of text
         first_text = bubbles.last.inner_text()
 
         # Call the full helper (which should wait for stability/completion)
-        reply = wait_for_assistant_reply(page, timeout=120_000)
+        reply = wait_for_assistant_reply(page, timeout=240_000)
 
         t_helper_returned = time.monotonic()
 

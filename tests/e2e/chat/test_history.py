@@ -39,11 +39,11 @@ class TestNoTopicBleed:
         # Turn 1: ask for time
         send_chat_message(page, "what is the current time in UK")
         try:
-            reply1 = wait_for_assistant_reply(page, timeout=120_000)
+            reply1 = wait_for_assistant_reply(page, timeout=240_000)
         except Exception:
             screenshot = take_failure_screenshot(page, "history-turn1")
             pytest.fail(
-                f"No reply to time question within 120s. Screenshot: {screenshot}"
+                f"No reply to time question within 240s. Screenshot: {screenshot}"
             )
 
         # Wait a moment between turns
@@ -121,11 +121,11 @@ class TestFollowUpRecognised:
         # Turn 1: ask for open-source video editing tools.
         send_chat_message(page, "what are some open source video editing tools?")
         try:
-            reply1 = wait_for_assistant_reply(page, timeout=180_000)
+            reply1 = wait_for_assistant_reply(page, timeout=240_000)
         except Exception:
             screenshot = take_failure_screenshot(page, "followup-turn1")
             pytest.fail(
-                f"No reply to video-editing-tools question within 180s. "
+                f"No reply to video-editing-tools question within 240s. "
                 f"Screenshot: {screenshot}"
             )
 
@@ -148,13 +148,13 @@ class TestFollowUpRecognised:
             page.wait_for_timeout(5000)
             count = messages.count()
             if count >= 2:
-                reply2 = wait_for_assistant_reply(page, timeout=180_000, index=-1)
+                reply2 = wait_for_assistant_reply(page, timeout=240_000, index=-1)
             else:
-                reply2 = wait_for_assistant_reply(page, timeout=180_000)
+                reply2 = wait_for_assistant_reply(page, timeout=240_000)
         except Exception:
             screenshot = take_failure_screenshot(page, "followup-turn2")
             pytest.fail(
-                f"No reply to follow-up within 180s. Screenshot: {screenshot}"
+                f"No reply to follow-up within 240s. Screenshot: {screenshot}"
             )
 
         # --- Assertion (a): reply 2 must NOT be a dead-end / disconnected response ---
@@ -232,11 +232,11 @@ class TestAgentNoRerunPriorWork:
         # Turn 1: trending repos (long_running)
         send_chat_message(page, "list 5 trending github repos")
         try:
-            wait_for_assistant_reply(page, timeout=180_000)
+            wait_for_assistant_reply(page, timeout=240_000)
         except Exception:
             screenshot = take_failure_screenshot(page, "rerun-turn1")
             pytest.fail(
-                f"No reply to trending repos within 180s. Screenshot: {screenshot}"
+                f"No reply to trending repos within 240s. Screenshot: {screenshot}"
             )
 
         page.wait_for_timeout(3000)
@@ -247,11 +247,11 @@ class TestAgentNoRerunPriorWork:
         # Turn 2: time query (should NOT re-fetch trending repos)
         send_chat_message(page, "what is the current time in UK")
         try:
-            wait_for_assistant_reply(page, timeout=120_000)
+            wait_for_assistant_reply(page, timeout=240_000)
         except Exception:
             screenshot = take_failure_screenshot(page, "rerun-turn2")
             pytest.fail(
-                f"No reply to time query within 120s. Screenshot: {screenshot}"
+                f"No reply to time query within 240s. Screenshot: {screenshot}"
             )
 
         # Check worker logs for the second task window

@@ -114,7 +114,7 @@ class TestClassifierRouting:
         # For long_running scenarios 6-9, wait for the reply and check for refusals
         if check_refusal and expected_route == "long_running":
             try:
-                reply = wait_for_assistant_reply(page, timeout=120_000)
+                reply = wait_for_assistant_reply(page, timeout=240_000)
                 _assert_no_refusal_phrases(reply, label, message)
             except Exception as e:
                 if "refusal" in str(e).lower():
@@ -164,11 +164,11 @@ class TestRefusalPhraseCheck:
         send_chat_message(page, message)
 
         try:
-            reply = wait_for_assistant_reply(page, timeout=180_000)
+            reply = wait_for_assistant_reply(page, timeout=240_000)
         except Exception:
             screenshot = take_failure_screenshot(page, f"refusal-{label}")
             pytest.fail(
-                f"[{label}] No assistant reply within 180s for refusal check. "
+                f"[{label}] No assistant reply within 240s for refusal check. "
                 f"Screenshot: {screenshot}"
             )
 

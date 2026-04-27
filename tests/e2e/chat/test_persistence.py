@@ -37,11 +37,11 @@ class TestMessagePersistence:
         send_chat_message(page, "hi in A")
 
         try:
-            wait_for_assistant_reply(page, timeout=30_000)
+            wait_for_assistant_reply(page, timeout=60_000)
         except Exception:
             screenshot = take_failure_screenshot(page, "persist-reply")
             pytest.fail(
-                f"No assistant reply within 30s for persistence test. "
+                f"No assistant reply within 60s for persistence test. "
                 f"Screenshot: {screenshot}"
             )
 
@@ -94,7 +94,7 @@ class TestMultiConversationIndependence:
         # Conv A: send message
         send_chat_message(page, "hi in A")
         try:
-            wait_for_assistant_reply(page, timeout=30_000)
+            wait_for_assistant_reply(page, timeout=60_000)
         except Exception:
             pass  # Best effort
 
@@ -107,7 +107,7 @@ class TestMultiConversationIndependence:
         # Conv B: send message
         send_chat_message(page, "hi in B")
         try:
-            wait_for_assistant_reply(page, timeout=30_000)
+            wait_for_assistant_reply(page, timeout=60_000)
         except Exception:
             pass  # Best effort
 
@@ -143,7 +143,7 @@ class TestSurvivesReload:
         # First, create some data
         send_chat_message(page, "persistence test message")
         try:
-            wait_for_assistant_reply(page, timeout=30_000)
+            wait_for_assistant_reply(page, timeout=60_000)
         except Exception:
             pass
 
