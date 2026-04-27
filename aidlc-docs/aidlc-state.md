@@ -1,46 +1,47 @@
 # AIDLC State — Issue #181: User Identity + Per-Tenant Isolation
 
-## Current Phase: INCEPTION (Requirements)
+## Current Phase: INCEPTION (Design)
 **Complexity: COMPLEX**
 **Date: 2026-04-27**
+**Project Board**: [#2](https://github.com/orgs/aws-e/projects/2)
 
-## Research Summary
+## Progress
 
-### What Exists (Gateway Module — Source of Truth for Identity)
-- `TokenContext` schema: `user_id`, `org_id`, `team_id`, `department_id`, `account_type`, `is_admin`, `expires_at`, `auth_source`
-- `CognitoJWTValidator` validates JWTs, extracts `custom:org_id`, `custom:team_id`, `custom:department_id`, `custom:role`, `custom:account_type`
-- `TenantMixin` adds indexed `org_id` to every tenant-scoped table
-- `BudgetService` with hierarchical enforcement: user -> team -> department -> org, daily/weekly/monthly periods
-- `BudgetConfig` + `BudgetUsage` SQLAlchemy models (RDS/Postgres)
-- Entity types: `org`, `department`, `team`, `user`, `service_account`, `agent`
+### Completed
+- [x] Codebase research — deep analysis of gateway identity model vs agent-factory gaps
+- [x] Requirements plan — 2 architecture decisions resolved
+- [x] Requirements document — `aidlc-docs/inception/requirements.md`
+- [x] Sub-issues created — 4 stages mapped to GitHub issues
+- [x] Project board — all issues added to project #2
 
-### What's Missing (Agent-Factory Module — The Gap)
-1. **$connect authorizer** (`handler.py:94-126`): persists only `sub`, `email`, `tenant_id` — NOT `org_id`, `team_id`, `department_id`, `account_type`, `role`
-2. **TaskPayload** (`sqs-client.ts:20-38`): has `user_id` + optional `tenant_id` — no `org_id`, `team_id`
-3. **SessionHeader** (`store/port.ts:37-45`): has `ownerUserId` + optional `tenantId` — no `org_id`, `team_id`
-4. **assertOwnership** (`lcm-context.ts:121`): checks user match only, not team-level isolation
-5. **S3 artifact keys**: flat `<sessionId>/<taskId>/<filename>` — no hierarchy
-6. **Artifact catalog DDB rows** (`s3-artifact-store.ts:96-107`): no identity fields at all
-7. **Memory scope** (`memory/types.ts:21-26`): has `tenant` (vague string) instead of `org_id`/`team_id`
-8. **No budget enforcement** in the agent pipeline — gateway has it but agent-factory doesn't
+### In Progress
+- [ ] Design phase — technical design docs with interface contracts, DDB schemas, test plans
 
-### Stage Breakdown
-| Stage | Scope | Files Changed | Risk |
-|-------|-------|--------------|------|
-| A — JWT propagation | Extend claims persistence, TaskPayload, SessionHeader, assertOwnership | ~8 files (Python + TypeScript) | Low — read-and-propagate only |
-| B — Catalog schema | Add identity to DDB artifact rows, filter by team | ~3 files | Low — additive, backward compat via lazy migration |
-| C — S3 keys + uploads | Hierarchical keys, presigned upload, frontend drag-drop | ~6 files + new Lambda endpoint | Medium — dual-read path, new frontend component |
-| D — Budget/quota | Port BudgetService to DDB, add session entity, pre-turn check | ~5 new files + integration | Medium — new DDB table, cost calculation logic |
+### Pending
+- [ ] Sub-issue assignment and sprint planning
+- [ ] Implementation (Stages A -> B -> C, A -> D in parallel)
 
-## Recommendations
-- **Stage A first**: Foundation — zero behavior change, pure data propagation
-- **Stages B and C can partially overlap**: B is catalog-only, C extends B to S3
-- **Stage D is independent** of C and can run in parallel after A completes
-- Each stage = 1 GitHub sub-issue = 1 developer task
+## Architecture Decisions
+1. **ADR-1**: Logging-only enforcement in Stage A, full enforcement in Stage B
+2. **ADR-2**: DynamoDB for budget storage (not RDS)
 
-## Status
-- [x] Codebase research complete
-- [x] Gap analysis complete
-- [ ] Requirements plan created (awaiting user input on 2 questions)
-- [ ] Sub-issues created
-- [ ] Project board created
+## Sub-Issues
+
+| Stage | Issue | Title | Status | Depends On | Estimate |
+|-------|-------|-------|--------|-----------|----------|
+| A | [#184](https://github.com/aws-e/adp/issues/184) | JWT claims propagation | Open | None | 2-3d |
+| B | [#185](https://github.com/aws-e/adp/issues/185) | Catalog schema extension | Open | #184 | 1-2d |
+| C | [#186](https://github.com/aws-e/adp/issues/186) | S3 key layout + user uploads | Open | #185 | 3-4d |
+| D | [#187](https://github.com/aws-e/adp/issues/187) | Quota/billing hooks | Open | #184 | 3-4d |
+
+## Dependency Graph
+```
+A (#184) ──┬──> B (#185) ──> C (#186)
+           └──> D (#187)
+```
+Critical path: A -> B -> C (6-9 days). Total with parallelism: 6-8 days.
+
+## Key Files
+- Requirements: `aidlc-docs/inception/requirements.md`
+- Requirements plan: `aidlc-docs/inception/plans/requirements-plan.md`
+- Design plan (next): `aidlc-docs/inception/plans/design-plan.md`

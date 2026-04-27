@@ -1,17 +1,23 @@
 {
   "phase": "inception",
-  "stage": "requirements",
+  "stage": "design",
   "complexity": "complex",
-  "projectBoardUrl": null,
-  "projectNumber": null,
-  "currentPlanFile": "aidlc-docs/inception/plans/requirements-plan.md",
-  "waitingForUser": true,
+  "projectBoardUrl": "https://github.com/orgs/aws-e/projects/2",
+  "projectNumber": 2,
+  "currentPlanFile": "aidlc-docs/inception/plans/design-plan.md",
+  "waitingForUser": false,
   "issueNumber": 181,
-  "conversationContext": "Deep codebase analysis complete. Gateway module has full identity model (TokenContext, CognitoJWTValidator, TenantMixin, BudgetService). Agent-factory module has gaps: $connect authorizer only persists sub/email/tenant_id (not org_id/team_id/department_id), TaskPayload has tenant_id but not org_id/team_id, SessionHeader has tenantId but not org_id/team_id, assertOwnership checks user-only not team, artifact S3 keys are flat, artifact catalog has no identity fields, memory scope uses vague 'tenant' string, no budget enforcement. 4 stages map to 4 sub-issues with clear dependencies: A (foundation) -> B (catalog) -> C (uploads), A -> D (budget). Stages B/C and D can run in parallel after A.",
+  "conversationContext": "Requirements complete. 4 sub-issues created: #184 (Stage A - JWT propagation), #185 (Stage B - catalog schema), #186 (Stage C - S3 keys + uploads), #187 (Stage D - budget/quota). ADR-1: logging-only in Stage A, enforcement in Stage B. ADR-2: DynamoDB for budget storage. Requirements doc at aidlc-docs/inception/requirements.md. Project board #2 has all issues. Next: design phase - detailed technical design docs with interface contracts, DDB schemas, test plans.",
   "stages": {
-    "A": {"title": "JWT claims propagation", "status": "planned", "files": 8, "risk": "low"},
-    "B": {"title": "Catalog schema extension", "status": "planned", "files": 3, "risk": "low"},
-    "C": {"title": "S3 key layout + user uploads", "status": "planned", "files": 6, "risk": "medium"},
-    "D": {"title": "Quota / billing hooks", "status": "planned", "files": 5, "risk": "medium"}
+    "A": {"title": "JWT claims propagation", "status": "planned", "issueNumber": 184, "files": 8, "risk": "low"},
+    "B": {"title": "Catalog schema extension", "status": "planned", "issueNumber": 185, "files": 3, "risk": "low"},
+    "C": {"title": "S3 key layout + user uploads", "status": "planned", "issueNumber": 186, "files": 6, "risk": "medium"},
+    "D": {"title": "Quota / billing hooks", "status": "planned", "issueNumber": 187, "files": 5, "risk": "medium"}
+  },
+  "subIssues": {
+    "184": {"stage": "A", "title": "JWT claims propagation", "status": "open"},
+    "185": {"stage": "B", "title": "Catalog schema extension", "status": "open", "dependsOn": [184]},
+    "186": {"stage": "C", "title": "S3 key layout + user uploads", "status": "open", "dependsOn": [185]},
+    "187": {"stage": "D", "title": "Quota/billing hooks", "status": "open", "dependsOn": [184]}
   }
 }
