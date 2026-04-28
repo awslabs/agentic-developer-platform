@@ -60,7 +60,24 @@ jobs:
           aws --version
           terraform version | head -1
 
-      # Fail fast if the 'production' environment hasn't been created in repo settings
+      # Auto-detect operator's public IP for EKS API endpoint restriction.
+      # Matches the pattern used by deploy-all.sh (3-URL fallback + empty guard).
+      - name: Set EKS public access CIDRs
+        run: |
+          if [ -z "${TF_VAR_eks_public_access_cidrs:-}" ]; then
+            MY_IP=""
+            for url in https://checkip.amazonaws.com https://api.ipify.org https://ifconfig.me; do
+              MY_IP=$(curl -fsS --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]' || true)
+              [ -n "$MY_IP" ] && break
+            done
+            if [ -z "$MY_IP" ]; then
+              echo "::error::Could not detect runner public IP. Set TF_VAR_eks_public_access_cidrs manually."
+              exit 1
+            fi
+            echo "TF_VAR_eks_public_access_cidrs=[\"${MY_IP}/32\"]" >> "$GITHUB_ENV"
+            echo "Auto-detected runner IP: ${MY_IP}/32"
+          fi
+
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform init -backend-config="../../${{ env.BACKEND_CONFIG }}" -input=false
