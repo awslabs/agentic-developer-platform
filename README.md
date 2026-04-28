@@ -296,6 +296,7 @@ adp/
 | Agent Factory README | [modules/agent-factory/README.md](modules/agent-factory/README.md) |
 | Agent Gateway Routing | [modules/agent-factory/gateway/docs/intelligent-routing.md](modules/agent-factory/gateway/docs/intelligent-routing.md) |
 | MCP Hub Requirements | [modules/harness/mcp-hub/mcp_gateway_requirements.md](modules/harness/mcp-hub/mcp_gateway_requirements.md) |
+| Agent Coding Guidelines | [docs/agent-coding-guidelines.md](docs/agent-coding-guidelines.md) — universal behavioral rules every agent writing code must follow |
 | Deployment Playbook | [AGENTS.md](AGENTS.md) |
 
 ## License
