@@ -181,14 +181,19 @@ class WebChatAdapter(ChannelAdapter):
             },
         )
 
-    def _parse_attachments(self, attachments: list[dict[str, Any]]) -> list[MediaAttachment]:
+    def _parse_attachments(self, attachments: list[dict[str, Any] | str]) -> list[MediaAttachment]:
         """Parse WebChat attachments.
 
         Client sends attachments as pre-uploaded S3 URLs:
         [{"url": "s3://...", "type": "image", "filename": "screenshot.png"}]
+
+        String elements (artifact IDs like "art_xxx") are skipped here;
+        they are handled separately via platform_data.attachment_ids.
         """
         result = []
         for att in attachments:
+            if isinstance(att, str):
+                continue  # artifact ID — handled separately in platform_data.attachment_ids
             type_str = att.get("type", "document")
             try:
                 media_type = MediaType(type_str)

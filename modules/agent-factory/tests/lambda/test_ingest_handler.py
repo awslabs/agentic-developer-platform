@@ -587,6 +587,136 @@ class TestExtendedClaimsPersistence:
         assert result["statusCode"] == 200
 
 
+class TestParseAttachmentsWithStringArtifactIds:
+    """Issue #220: _parse_attachments must handle string artifact IDs without crashing."""
+
+    def test_string_only_attachments_returns_empty(self, mocked_aws_services):
+        """Attachments list of pure string artifact IDs produces no MediaAttachments."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "direct_response",
+            "persona": "developer",
+            "response": "Got it!",
+            "thread_action": "none",
+            "reasoning": "Ack",
+        })
+
+        handler = _import_handler(mock_bedrock=mock_bedrock)
+        event = mock_apigw_event(
+            route_key="$default",
+            body={
+                "action": "sendMessage",
+                "text": "Please read helloworld.md",
+                "session_id": "sess-attach-str",
+                "attachments": ["art_9b09c2da5d42"],
+            },
+            connection_id="conn-attach-str",
+            authorizer_claims={"sub": "user-attach-str", "email": "att@example.com"},
+        )
+        # Should not crash — previously raised AttributeError
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+    def test_mixed_string_and_dict_attachments(self, mocked_aws_services):
+        """Mixed list of string IDs and dict attachments: dicts are parsed, strings are skipped."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "direct_response",
+            "persona": "developer",
+            "response": "Got it!",
+            "thread_action": "none",
+            "reasoning": "Ack",
+        })
+
+        handler = _import_handler(mock_bedrock=mock_bedrock)
+        event = mock_apigw_event(
+            route_key="$default",
+            body={
+                "action": "sendMessage",
+                "text": "Check these files",
+                "session_id": "sess-attach-mixed",
+                "attachments": [
+                    "art_abc123",
+                    {"url": "s3://bucket/file.png", "type": "image", "filename": "file.png"},
+                    "art_def456",
+                ],
+            },
+            connection_id="conn-attach-mixed",
+            authorizer_claims={"sub": "user-attach-mixed", "email": "mix@example.com"},
+        )
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+    def test_dict_only_attachments_still_work(self, mocked_aws_services):
+        """Pure dict attachments (old format) continue to work after the fix."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "direct_response",
+            "persona": "developer",
+            "response": "Got it!",
+            "thread_action": "none",
+            "reasoning": "Ack",
+        })
+
+        handler = _import_handler(mock_bedrock=mock_bedrock)
+        event = mock_apigw_event(
+            route_key="$default",
+            body={
+                "action": "sendMessage",
+                "text": "See attached",
+                "session_id": "sess-attach-dict",
+                "attachments": [
+                    {"url": "s3://bucket/doc.pdf", "type": "document", "filename": "doc.pdf"},
+                ],
+            },
+            connection_id="conn-attach-dict",
+            authorizer_claims={"sub": "user-attach-dict", "email": "dict@example.com"},
+        )
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+    def test_string_artifact_ids_flow_to_platform_data(self, mocked_aws_services):
+        """String artifact IDs are captured in platform_data.attachment_ids on the SQS message."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "long_running",
+            "persona": "developer",
+            "response": None,
+            "thread_action": "new",
+            "reasoning": "Needs work",
+        })
+
+        handler = _import_handler(mock_bedrock=mock_bedrock)
+        event = mock_apigw_event(
+            route_key="$default",
+            body={
+                "action": "sendMessage",
+                "text": "Read helloworld.md",
+                "session_id": "sess-attach-sqs",
+                "attachments": ["art_aaa111", "art_bbb222"],
+            },
+            connection_id="conn-attach-sqs",
+            authorizer_claims={"sub": "user-attach-sqs", "email": "sqs-att@example.com"},
+        )
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+        # Verify SQS message carries attachment_ids
+        sqs = mocked_aws_services["sqs"]
+        resp = sqs.receive_message(
+            QueueUrl="https://sqs.us-east-1.amazonaws.com/123/adp-dev-agent-gateway-tasks",
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=0,
+        )
+        messages = resp.get("Messages", [])
+        assert len(messages) >= 1
+        task = json.loads(messages[0]["Body"])
+        # handler.py maps platform_data.attachment_ids → sqs_body["attachments"]
+        att = task.get("attachments", [])
+        assert "art_aaa111" in att
+        assert "art_bbb222" in att
+
+
 class TestNoSubDropsMessage:
     """Issue #88: WebChat messages with no Cognito sub must be dropped, not fall back to connectionId."""
 
