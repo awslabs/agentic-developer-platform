@@ -1,8 +1,13 @@
 /**
  * S3ArtifactStore — S3 + DynamoDB catalog for session artifacts.
  *
- * Keying: s3://<bucket>/<sessionId>/<taskId>/<filename>
- * Catalog: DynamoDB table with GSI on artifact id and org_id.
+ * Stage C (#186): Hierarchical S3 key layout.
+ *   New key: o/<org_id>/t/<team_id>/u/<user_id>/s/<session_id>/<task_id>/{in|out}/<filename>
+ *   Legacy key: <sessionId>/<taskId>/<filename>
+ *
+ * publish() writes new-format keys when identity is available.
+ * fetch() tries the catalog's stored s3Key (which may be either format).
+ * Dual-path for one release cycle, then drop legacy reads.
  *
  * Stage B (#185): identity fields (org_id, team_id, user_id) are written to
  * every catalog row. listBySession filters by team_id; fetch verifies team
@@ -61,7 +66,14 @@ export class S3ArtifactStore implements ArtifactStore {
   }): Promise<ArtifactRef> {
     const filename = input.filename ?? path.basename(input.localPath);
     const taskId = input.taskId ?? 'default';
-    const s3Key = `${input.sessionId}/${taskId}/${filename}`;
+    const direction = (input.source === 'user') ? 'in' : 'out';
+    const s3Key = S3ArtifactStore.buildS3Key({
+      identity: input.identity,
+      sessionId: input.sessionId,
+      taskId,
+      direction,
+      filename,
+    });
     const id = `art_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
     const now = new Date();
 
@@ -291,6 +303,149 @@ export class S3ArtifactStore implements ArtifactStore {
         },
       },
     ];
+  }
+
+  /**
+   * Build the S3 key for an artifact. Uses hierarchical format when identity
+   * is available, falls back to legacy flat format otherwise.
+   *
+   * Hierarchical: o/<org>/t/<team>/u/<user>/s/<session>/<task>/{in|out}/<filename>
+   * Legacy:       <session>/<task>/<filename>
+   */
+  static buildS3Key(opts: {
+    identity?: CallerIdentity;
+    sessionId: string;
+    taskId: string;
+    direction: 'in' | 'out';
+    filename: string;
+  }): string {
+    const { identity, sessionId, taskId, direction, filename } = opts;
+    if (identity?.orgId && identity?.teamId && identity?.userId) {
+      return `o/${identity.orgId}/t/${identity.teamId}/u/${identity.userId}/s/${sessionId}/${taskId}/${direction}/${filename}`;
+    }
+    // Legacy flat key (backward compat)
+    return `${sessionId}/${taskId}/${filename}`;
+  }
+
+  /**
+   * Generate a presigned PUT URL for user uploads. Scoped to the caller's
+   * exact hierarchical key — no wildcard.
+   * Stage C (#186).
+   */
+  async presignUpload(opts: {
+    identity: CallerIdentity;
+    sessionId: string;
+    taskId: string;
+    filename: string;
+    contentType: string;
+  }): Promise<{ uploadUrl: string; s3Key: string; expiresIn: number }> {
+    const s3Key = S3ArtifactStore.buildS3Key({
+      identity: opts.identity,
+      sessionId: opts.sessionId,
+      taskId: opts.taskId,
+      direction: 'in',
+      filename: opts.filename,
+    });
+
+    const expiresIn = 3600; // 1 hour
+    const uploadUrl = await getSignedUrl(
+      this.s3,
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: s3Key,
+        ContentType: opts.contentType,
+      }),
+      { expiresIn },
+    );
+
+    return { uploadUrl, s3Key, expiresIn };
+  }
+
+  /**
+   * Record a user-uploaded artifact in the DDB catalog. Idempotent via
+   * sha256 — if a row with the same checksum already exists for this session,
+   * return the existing ref instead of creating a duplicate.
+   * Stage C (#186).
+   */
+  async recordUpload(opts: {
+    sessionId: string;
+    taskId: string;
+    s3Key: string;
+    filename: string;
+    contentType: string;
+    sizeBytes: number;
+    checksum: string;
+    identity: CallerIdentity;
+  }): Promise<ArtifactRef> {
+    // Idempotency: check for existing artifact with same checksum in this session
+    const existingResult = await this.ddb.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
+        FilterExpression: 'checksum = :cs',
+        ExpressionAttributeValues: {
+          ':pk': `session#${opts.sessionId}`,
+          ':prefix': 'art#',
+          ':cs': opts.checksum,
+        },
+        Limit: 1,
+      }),
+    );
+
+    if (existingResult.Items && existingResult.Items.length > 0) {
+      const existing = existingResult.Items[0];
+      return {
+        id: existing.id as string,
+        url: existing.url as string,
+        urlExpiresAt: existing.urlExpiresAt as string,
+        filename: existing.filename as string,
+        contentType: existing.contentType as string,
+        sizeBytes: existing.sizeBytes as number,
+        checksum: existing.checksum as string,
+        createdAt: existing.createdAt as string,
+        source: existing.source as 'agent' | 'user',
+      };
+    }
+
+    const id = `art_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+    const now = new Date();
+    const ttlEpoch = Math.floor(now.getTime() / 1000) + DEFAULT_TTL_DAYS * 86400;
+
+    const url = await getSignedUrl(
+      this.s3,
+      new GetObjectCommand({ Bucket: this.bucket, Key: opts.s3Key }),
+      { expiresIn: PRESIGNED_URL_EXPIRY },
+    );
+
+    const ref: ArtifactRef = {
+      id,
+      url,
+      urlExpiresAt: new Date(now.getTime() + PRESIGNED_URL_EXPIRY * 1000).toISOString(),
+      filename: opts.filename,
+      contentType: opts.contentType,
+      sizeBytes: opts.sizeBytes,
+      checksum: opts.checksum,
+      createdAt: now.toISOString(),
+      source: 'user',
+    };
+
+    await this.ddb.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: {
+          PK: `session#${opts.sessionId}`,
+          SK: `art#${now.toISOString()}#${id}`,
+          ...ref,
+          s3Key: opts.s3Key,
+          ttl: ttlEpoch,
+          org_id: opts.identity.orgId,
+          team_id: opts.identity.teamId,
+          user_id: opts.identity.userId,
+        },
+      }),
+    );
+
+    return ref;
   }
 
   /** Lazy-migrate a legacy row by backfilling identity fields. */

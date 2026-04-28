@@ -170,6 +170,14 @@ class WebChatAdapter(ChannelAdapter):
                 "department_id": claims.get("custom:department_id", ""),
                 "account_type": claims.get("custom:account_type", ""),
                 "role": claims.get("custom:role", ""),
+                # Stage C (#186): artifact ID attachments from the upload flow.
+                # The frontend sends string IDs ["art_xxx", ...] in the sendMessage
+                # payload. These are forwarded to the worker via SQS so it can
+                # inject them into the system prompt.
+                "attachment_ids": [
+                    a for a in body.get("attachments", [])
+                    if isinstance(a, str) and a.startswith("art_")
+                ],
             },
         )
 

@@ -79,9 +79,11 @@ export interface UseAgUiEventsOptions {
 }
 
 export interface UseAgUiEventsReturn extends AgentChatState {
-  sendMessage: (text: string) => void;
+  sendMessage: (text: string, attachments?: string[]) => void;
   /** Active tool calls for the current turn. */
   activeToolCalls: ToolCallInfo[];
+  /** WebSocket ref exposed for upload-token/upload-complete actions. Stage C (#186). */
+  wsRef: React.RefObject<WebSocket | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -859,7 +861,7 @@ export function useAgUiEvents({
   // ------------------------------------------------------------------
 
   const sendMessage = useCallback(
-    (text: string) => {
+    (text: string, attachments?: string[]) => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
       if (!sessionIdRef.current) return;
 
@@ -876,13 +878,16 @@ export function useAgUiEvents({
 
       // The ingest Lambda's webchat adapter reads `text`, not `message`
       // (gateway/lambdas/ingest/channels/webchat.py:125). Wrong field → silent drop.
-      wsRef.current.send(
-        JSON.stringify({
-          action: 'sendMessage',
-          text,
-          session_id: sessionIdRef.current,
-        }),
-      );
+      // Stage C (#186): include attachment IDs so they're forwarded to the worker.
+      const payload: Record<string, unknown> = {
+        action: 'sendMessage',
+        text,
+        session_id: sessionIdRef.current,
+      };
+      if (attachments && attachments.length > 0) {
+        payload.attachments = attachments;
+      }
+      wsRef.current.send(JSON.stringify(payload));
     },
     [updateMessages],
   );
@@ -894,5 +899,6 @@ export function useAgUiEvents({
     sessionMeta,
     sendMessage,
     activeToolCalls,
+    wsRef,
   };
 }

@@ -1,8 +1,10 @@
 /**
- * Tests for S3ArtifactStore identity & access control (Stage B, #185).
+ * Tests for S3ArtifactStore identity & access control (Stage B, #185)
+ * and hierarchical S3 keys + user uploads (Stage C, #186).
  *
  * All AWS SDK calls are mocked — these tests exercise the DDB filtering,
- * team-level access check, and lazy migration logic without network calls.
+ * team-level access check, lazy migration, hierarchical key layout,
+ * presigned URL scoping, and upload-complete idempotency without network calls.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -304,6 +306,215 @@ describe('S3ArtifactStore — identity & access control (#185)', () => {
       expect(updateCall![0].ExpressionAttributeValues[':org']).toBe('org-1');
       expect(updateCall![0].ExpressionAttributeValues[':team']).toBeUndefined();
       expect(updateCall![0].ExpressionAttributeValues[':user']).toBeUndefined();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage C (#186): Hierarchical S3 keys, presigned uploads, upload-complete
+// ---------------------------------------------------------------------------
+describe('S3ArtifactStore — hierarchical keys & user uploads (#186)', () => {
+  describe('buildS3Key()', () => {
+    it('builds hierarchical key when full identity is provided', () => {
+      const key = S3ArtifactStore.buildS3Key({
+        identity: teamA,
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        direction: 'out',
+        filename: 'report.pdf',
+      });
+      expect(key).toBe('o/org-1/t/team-A/u/user-1/s/sess-1/task-1/out/report.pdf');
+    });
+
+    it('builds hierarchical key with "in" direction for user uploads', () => {
+      const key = S3ArtifactStore.buildS3Key({
+        identity: teamA,
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        direction: 'in',
+        filename: 'screenshot.png',
+      });
+      expect(key).toBe('o/org-1/t/team-A/u/user-1/s/sess-1/task-1/in/screenshot.png');
+    });
+
+    it('falls back to legacy flat key when identity is incomplete', () => {
+      const key = S3ArtifactStore.buildS3Key({
+        identity: { orgId: 'org-1' }, // missing teamId/userId
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        direction: 'out',
+        filename: 'report.pdf',
+      });
+      // Legacy flat key does not include direction
+      expect(key).toBe('sess-1/task-1/report.pdf');
+    });
+
+    it('falls back to legacy flat key when no identity', () => {
+      const key = S3ArtifactStore.buildS3Key({
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        direction: 'out',
+        filename: 'report.pdf',
+      });
+      // Legacy flat key does not include direction
+      expect(key).toBe('sess-1/task-1/report.pdf');
+    });
+  });
+
+  describe('publish() with hierarchical keys', () => {
+    it('writes to hierarchical S3 key when identity is provided', async () => {
+      mockS3Send.mockResolvedValue({});
+      mockDdbSend.mockResolvedValue({});
+
+      const store = makeStore();
+      await store.publish({
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        localPath: '/tmp/report.pdf',
+        identity: teamA,
+      });
+
+      // S3 PutObject should use hierarchical key
+      const s3Call = mockS3Send.mock.calls[0][0];
+      expect(s3Call.Key).toBe('o/org-1/t/team-A/u/user-1/s/sess-1/task-1/out/report.pdf');
+
+      // DDB row should store the hierarchical key
+      const ddbCall = mockDdbSend.mock.calls[0][0];
+      expect(ddbCall.Item.s3Key).toBe('o/org-1/t/team-A/u/user-1/s/sess-1/task-1/out/report.pdf');
+    });
+
+    it('uses "in" direction for user source', async () => {
+      mockS3Send.mockResolvedValue({});
+      mockDdbSend.mockResolvedValue({});
+
+      const store = makeStore();
+      await store.publish({
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        localPath: '/tmp/upload.png',
+        source: 'user',
+        identity: teamA,
+      });
+
+      const s3Call = mockS3Send.mock.calls[0][0];
+      expect(s3Call.Key).toContain('/in/');
+    });
+
+    it('uses legacy key when no identity (backward compat)', async () => {
+      mockS3Send.mockResolvedValue({});
+      mockDdbSend.mockResolvedValue({});
+
+      const store = makeStore();
+      await store.publish({
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        localPath: '/tmp/report.pdf',
+      });
+
+      const s3Call = mockS3Send.mock.calls[0][0];
+      expect(s3Call.Key).toBe('sess-1/task-1/report.pdf');
+    });
+  });
+
+  describe('presignUpload()', () => {
+    it('generates presigned URL scoped to correct hierarchical key', async () => {
+      const { getSignedUrl: mockGetSignedUrl } = require('@aws-sdk/s3-request-presigner');
+      mockGetSignedUrl.mockResolvedValue('https://presigned.example.com/upload');
+
+      const store = makeStore();
+      const result = await store.presignUpload({
+        identity: teamA,
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        filename: 'doc.pdf',
+        contentType: 'application/pdf',
+      });
+
+      expect(result.uploadUrl).toBe('https://presigned.example.com/upload');
+      expect(result.s3Key).toBe('o/org-1/t/team-A/u/user-1/s/sess-1/task-1/in/doc.pdf');
+      expect(result.expiresIn).toBe(3600);
+
+      // Verify PutObjectCommand was called with exact key
+      const { PutObjectCommand: MockPutObj } = require('@aws-sdk/client-s3');
+      const lastPutCall = MockPutObj.mock.calls[MockPutObj.mock.calls.length - 1][0];
+      expect(lastPutCall.Key).toBe('o/org-1/t/team-A/u/user-1/s/sess-1/task-1/in/doc.pdf');
+      expect(lastPutCall.Bucket).toBe(BUCKET);
+      expect(lastPutCall.ContentType).toBe('application/pdf');
+    });
+
+    it('uses legacy key when identity is incomplete', async () => {
+      const { getSignedUrl: mockGetSignedUrl } = require('@aws-sdk/s3-request-presigner');
+      mockGetSignedUrl.mockResolvedValue('https://presigned.example.com/upload');
+
+      const store = makeStore();
+      const result = await store.presignUpload({
+        identity: { orgId: 'org-1' },
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        filename: 'doc.pdf',
+        contentType: 'application/pdf',
+      });
+
+      // Legacy key doesn't include the direction segment
+      expect(result.s3Key).toBe('sess-1/task-1/doc.pdf');
+    });
+  });
+
+  describe('recordUpload()', () => {
+    it('creates DDB catalog row for new upload', async () => {
+      mockDdbSend
+        .mockResolvedValueOnce({ Items: [] }) // dedup query returns empty
+        .mockResolvedValueOnce({}); // PutCommand
+
+      const store = makeStore();
+      const ref = await store.recordUpload({
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        s3Key: 'o/org-1/t/team-A/u/user-1/s/sess-1/task-1/in/doc.pdf',
+        filename: 'doc.pdf',
+        contentType: 'application/pdf',
+        sizeBytes: 2048,
+        checksum: 'abc123',
+        identity: teamA,
+      });
+
+      expect(ref.id).toMatch(/^art_/);
+      expect(ref.filename).toBe('doc.pdf');
+      expect(ref.source).toBe('user');
+      expect(ref.checksum).toBe('abc123');
+
+      // DDB put should have the identity fields
+      const putCall = mockDdbSend.mock.calls[1][0];
+      expect(putCall.Item.org_id).toBe('org-1');
+      expect(putCall.Item.team_id).toBe('team-A');
+      expect(putCall.Item.user_id).toBe('user-1');
+      expect(putCall.Item.source).toBe('user');
+    });
+
+    it('returns existing ref when checksum matches (idempotent)', async () => {
+      const existingItem = makeDdbItem({
+        id: 'art_existing',
+        checksum: 'abc123',
+        source: 'user',
+      });
+      mockDdbSend.mockResolvedValueOnce({ Items: [existingItem] });
+
+      const store = makeStore();
+      const ref = await store.recordUpload({
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        s3Key: 'o/org-1/t/team-A/u/user-1/s/sess-1/task-1/in/doc.pdf',
+        filename: 'doc.pdf',
+        contentType: 'application/pdf',
+        sizeBytes: 2048,
+        checksum: 'abc123',
+        identity: teamA,
+      });
+
+      // Should return existing ref, not create a new one
+      expect(ref.id).toBe('art_existing');
+      // Only 1 DDB call (query), no PutCommand
+      expect(mockDdbSend).toHaveBeenCalledTimes(1);
     });
   });
 });

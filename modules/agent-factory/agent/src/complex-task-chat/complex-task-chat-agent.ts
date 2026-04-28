@@ -192,10 +192,24 @@ async function processOne(
     });
 
     const channelDirective = getChannelDirective(channel ?? '');
+
+    // Stage C (#186): build <user-attachments> block when the message carries
+    // attachment IDs. The agent can use `fetch_artifact` to read these files.
+    const attachments = task.attachments ?? [];
+    let attachmentBlock = '';
+    if (attachments.length > 0) {
+      const lines = attachments.map(id => `  <attachment id="${id}" />`);
+      attachmentBlock =
+        '\n\n<user-attachments>\n' +
+        'The user attached files to this message. Use the fetch_artifact tool with the artifact ID to read each file.\n' +
+        lines.join('\n') + '\n' +
+        '</user-attachments>';
+    }
+
     const systemPrompt = composeSystemPrompt({
       base: channelDirective
-        ? channelDirective + '\n\n' + persona.baseSystemPrompt
-        : persona.baseSystemPrompt,
+        ? channelDirective + '\n\n' + persona.baseSystemPrompt + attachmentBlock
+        : persona.baseSystemPrompt + attachmentBlock,
       personaLearnings: persona.learnings,
       memories: memBlock,
     });

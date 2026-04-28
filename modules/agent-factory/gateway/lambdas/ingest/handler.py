@@ -5,9 +5,12 @@ Universal front door with thread-aware concurrency:
   direct_response → answer immediately, no thread
   long_running    → per-thread serialization via SQS/KEDA
   github_actions  → create/label GitHub issue, always parallel
+
+Stage C (#186): upload-token and upload-complete routes for user file uploads.
 """
 
 import json
+import hashlib
 import logging
 import os
 import time
@@ -32,8 +35,12 @@ SESSIONS_TABLE = os.environ["SESSIONS_TABLE_NAME"]
 REGION = os.environ.get("AWS_REGION_NAME", "us-east-1")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 SLACK_BOT_USER_ID = os.environ.get("SLACK_BOT_USER_ID", "")
+# Stage C (#186): artifact bucket and catalog table for user uploads
+ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET", "")
+ARTIFACTS_TABLE = os.environ.get("ARTIFACTS_TABLE", "")
 
 sqs = boto3.client("sqs", region_name=REGION)
+s3_client = boto3.client("s3", region_name=REGION)
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
 sessions_table = dynamodb.Table(SESSIONS_TABLE)
 
@@ -64,6 +71,16 @@ def lambda_handler(event, context):
     # adapter's claims.get("sub") path works without re-authenticating.
     if connection_id:
         _restore_connection_claims(event, connection_id)
+
+    # Stage C (#186): handle upload-token and upload-complete routes.
+    # These arrive as WebSocket messages with action: "upload-token" or "upload-complete".
+    if connection_id:
+        body = parse_body(event)
+        action = body.get("action", "")
+        if action == "upload-token":
+            return handle_upload_token(event, connection_id, body)
+        if action == "upload-complete":
+            return handle_upload_complete(event, connection_id, body)
 
     channel_name, adapter = detect_channel(event)
 
@@ -191,6 +208,171 @@ def _restore_connection_claims(event: dict, connection_id: str) -> None:
             claims.setdefault("custom:role", item["role"])
     except Exception as e:
         logger.warning("Failed to restore connection claims for %s: %s", connection_id, e)
+
+
+# ─── Stage C (#186): Upload handlers ──────────────────────────
+
+# Max upload size: 50 MB
+UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+UPLOAD_TOKEN_EXPIRY = 3600  # 1 hour
+
+
+def _get_upload_claims(event: dict, connection_id: str) -> dict[str, str] | None:
+    """Extract identity claims for upload scoping. Returns None if required claims missing."""
+    claims = event.get("requestContext", {}).get("authorizer", {}).get("claims", {})
+    user_id = claims.get("sub", "")
+    org_id = claims.get("custom:org_id", "")
+    team_id = claims.get("custom:team_id", "")
+    if not user_id:
+        return None
+    return {"user_id": user_id, "org_id": org_id, "team_id": team_id}
+
+
+def _build_upload_s3_key(org_id: str, team_id: str, user_id: str,
+                         session_id: str, task_id: str, filename: str) -> str:
+    """Build hierarchical S3 key for user upload."""
+    if org_id and team_id:
+        return f"o/{org_id}/t/{team_id}/u/{user_id}/s/{session_id}/{task_id}/in/{filename}"
+    return f"{session_id}/{task_id}/in/{filename}"
+
+
+def handle_upload_token(event: dict, connection_id: str, body: dict) -> dict:
+    """Return a presigned PUT URL scoped to the caller's identity path.
+    Stage C (#186): POST /upload-token."""
+    if not ARTIFACTS_BUCKET:
+        return {"statusCode": 500, "body": json.dumps({"error": "Uploads not configured"})}
+
+    ident = _get_upload_claims(event, connection_id)
+    if not ident:
+        return {"statusCode": 401, "body": json.dumps({"error": "Missing identity claims"})}
+
+    session_id = body.get("session_id", "")
+    task_id = body.get("task_id", str(uuid.uuid4())[:8])
+    filename = body.get("filename", "")
+    content_type = body.get("content_type", "application/octet-stream")
+    size_bytes = body.get("size_bytes", 0)
+
+    if not session_id or not filename:
+        return {"statusCode": 400, "body": json.dumps({"error": "session_id and filename required"})}
+
+    if size_bytes and size_bytes > UPLOAD_MAX_BYTES:
+        return {"statusCode": 400, "body": json.dumps({"error": f"File too large (max {UPLOAD_MAX_BYTES} bytes)"})}
+
+    # Sanitize filename — allow only alphanums, dots, hyphens, underscores
+    safe_filename = "".join(c for c in filename if c.isalnum() or c in ".-_")
+    if not safe_filename:
+        return {"statusCode": 400, "body": json.dumps({"error": "Invalid filename"})}
+
+    s3_key = _build_upload_s3_key(
+        ident["org_id"], ident["team_id"], ident["user_id"],
+        session_id, task_id, safe_filename,
+    )
+
+    try:
+        upload_url = s3_client.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": ARTIFACTS_BUCKET,
+                "Key": s3_key,
+                "ContentType": content_type,
+            },
+            ExpiresIn=UPLOAD_TOKEN_EXPIRY,
+        )
+    except Exception as e:
+        logger.error("Failed to generate presigned URL: %s", e)
+        return {"statusCode": 500, "body": json.dumps({"error": "Failed to generate upload URL"})}
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps({
+            "upload_url": upload_url,
+            "s3_key": s3_key,
+            "task_id": task_id,
+            "expires_in": UPLOAD_TOKEN_EXPIRY,
+        }),
+    }
+
+
+def handle_upload_complete(event: dict, connection_id: str, body: dict) -> dict:
+    """Record a completed upload in the DDB catalog. Idempotent via sha256.
+    Stage C (#186): POST /upload-complete."""
+    if not ARTIFACTS_BUCKET or not ARTIFACTS_TABLE:
+        return {"statusCode": 500, "body": json.dumps({"error": "Uploads not configured"})}
+
+    ident = _get_upload_claims(event, connection_id)
+    if not ident:
+        return {"statusCode": 401, "body": json.dumps({"error": "Missing identity claims"})}
+
+    session_id = body.get("session_id", "")
+    task_id = body.get("task_id", "")
+    s3_key = body.get("s3_key", "")
+    filename = body.get("filename", "")
+    content_type = body.get("content_type", "application/octet-stream")
+    size_bytes = body.get("size_bytes", 0)
+    checksum = body.get("checksum", "")
+
+    if not session_id or not s3_key or not filename or not checksum:
+        return {"statusCode": 400, "body": json.dumps({"error": "session_id, s3_key, filename, and checksum required"})}
+
+    artifacts_table = dynamodb.Table(ARTIFACTS_TABLE)
+
+    # Idempotency: check for existing row with same checksum in this session
+    try:
+        existing = artifacts_table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :prefix)",
+            FilterExpression="checksum = :cs",
+            ExpressionAttributeValues={
+                ":pk": f"session#{session_id}",
+                ":prefix": "art#",
+                ":cs": checksum,
+            },
+            Limit=1,
+        )
+        if existing.get("Items"):
+            item = existing["Items"][0]
+            return {
+                "statusCode": 200,
+                "body": json.dumps({
+                    "artifact_id": item["id"],
+                    "deduplicated": True,
+                }),
+            }
+    except Exception as e:
+        logger.warning("Dedup check failed (proceeding): %s", e)
+
+    artifact_id = f"art_{uuid.uuid4().hex[:12]}"
+    now = time.time()
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now))
+    ttl_epoch = int(now) + 30 * 86400
+
+    try:
+        artifacts_table.put_item(Item={
+            "PK": f"session#{session_id}",
+            "SK": f"art#{now_iso}#{artifact_id}",
+            "id": artifact_id,
+            "filename": filename,
+            "contentType": content_type,
+            "sizeBytes": size_bytes,
+            "checksum": checksum,
+            "s3Key": s3_key,
+            "source": "user",
+            "createdAt": now_iso,
+            "ttl": ttl_epoch,
+            "org_id": ident["org_id"],
+            "team_id": ident["team_id"],
+            "user_id": ident["user_id"],
+        })
+    except Exception as e:
+        logger.error("Failed to write artifact catalog row: %s", e)
+        return {"statusCode": 500, "body": json.dumps({"error": "Failed to record upload"})}
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps({
+            "artifact_id": artifact_id,
+            "deduplicated": False,
+        }),
+    }
 
 
 def handle_unified_message(message: UnifiedMessage) -> dict:
@@ -363,18 +545,28 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
         if val:
             identity_fields[key] = val
 
+    # Stage C (#186): forward artifact ID attachments to the worker so it can
+    # inject them into the system prompt. The frontend sends string IDs
+    # (e.g. ["art_abc123"]) in platform_data; MediaAttachment objects from
+    # the adapter are ignored here (they use a different upload path).
+    attachment_ids = message.platform_data.get("attachment_ids", [])
+
+    sqs_body: dict[str, Any] = {
+        "task_id": task_id, "session_id": session_id, "thread_id": thread_id,
+        "connection_id": connection_id, "channel": message.channel.value,
+        "mode": "chat", "agent_type": classification.persona,
+        "user_id": message.user_id,
+        "repo_owner": (classification.repo or "").split("/")[0] if classification.repo and "/" in classification.repo else "",
+        "repo_name": (classification.repo or "").split("/")[1] if classification.repo and "/" in classification.repo else "",
+        "message": message.text, "platform_data": message.platform_data, "enqueued_at": now,
+        **identity_fields,
+    }
+    if attachment_ids:
+        sqs_body["attachments"] = attachment_ids
+
     send_kwargs = dict(
         QueueUrl=INPUT_QUEUE_URL,
-        MessageBody=json.dumps({
-            "task_id": task_id, "session_id": session_id, "thread_id": thread_id,
-            "connection_id": connection_id, "channel": message.channel.value,
-            "mode": "chat", "agent_type": classification.persona,
-            "user_id": message.user_id,
-            "repo_owner": (classification.repo or "").split("/")[0] if classification.repo and "/" in classification.repo else "",
-            "repo_name": (classification.repo or "").split("/")[1] if classification.repo and "/" in classification.repo else "",
-            "message": message.text, "platform_data": message.platform_data, "enqueued_at": now,
-            **identity_fields,
-        }),
+        MessageBody=json.dumps(sqs_body),
     )
     if INPUT_QUEUE_URL.endswith(".fifo"):
         send_kwargs["MessageGroupId"] = session_id

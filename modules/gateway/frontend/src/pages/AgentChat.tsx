@@ -21,6 +21,7 @@ import { ChatMessageRenderer } from '@/components/chat/ChatMessageRenderer';
 import { ToolCallRow } from '@/components/chat/ToolCallRow';
 import { SessionMetaPanel } from '@/components/chat/SessionMetaPanel';
 import { TypingIndicator } from '@/components/chat/TypingIndicator';
+import { FileDropZone, type PendingUpload } from '@/components/chat/FileDropZone';
 import type { ChatMessage, Conversation, ConnectionStatus } from '@/types/chat';
 
 // highlight.js theme for code blocks
@@ -130,10 +131,21 @@ export default function AgentChat() {
   // Agent chat hook
   // ------------------------------------------------------------------
 
-  const { connectionStatus, isAwaitingReply, reconnectAttempt, sessionMeta, sendMessage, activeToolCalls } = useAgUiEvents({
+  const { connectionStatus, isAwaitingReply, reconnectAttempt, sessionMeta, sendMessage, activeToolCalls, wsRef } = useAgUiEvents({
     conversation: activeConversation,
     onMessagesChange: handleMessagesChange,
   });
+
+  // Stage C (#186): pending file attachments for the next message
+  const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
+
+  const handleUploadComplete = useCallback((upload: PendingUpload) => {
+    setPendingUploads((prev) => [...prev, upload]);
+  }, []);
+
+  const handleRemoveUpload = useCallback((artifactId: string) => {
+    setPendingUploads((prev) => prev.filter((u) => u.artifactId !== artifactId));
+  }, []);
 
   // ------------------------------------------------------------------
   // Auto-scroll
@@ -161,14 +173,17 @@ export default function AgentChat() {
       return;
     }
 
-    sendMessage(text);
+    // Stage C (#186): include attachment IDs in the message
+    const attachmentIds = pendingUploads.map((u) => u.artifactId);
+    sendMessage(text, attachmentIds.length > 0 ? attachmentIds : undefined);
     setInputValue('');
+    setPendingUploads([]);
 
     // Reset textarea height
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [inputValue, isAwaitingReply, activeConvId, sendMessage, setConversations]);
+  }, [inputValue, isAwaitingReply, activeConvId, sendMessage, setConversations, pendingUploads]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -323,8 +338,30 @@ export default function AgentChat() {
         {/* Session metadata (AG-UI STATE_DELTA) */}
         <SessionMetaPanel meta={sessionMeta} />
 
-        {/* Input area */}
+        {/* Input area with drag-drop */}
+        <FileDropZone wsRef={wsRef} sessionId={activeConvId} onUploadComplete={handleUploadComplete}>
         <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3">
+          {/* Pending uploads chips */}
+          {pendingUploads.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {pendingUploads.map((u) => (
+                <span
+                  key={u.artifactId}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
+                >
+                  <PaperclipIcon />
+                  {u.filename}
+                  <button
+                    onClick={() => handleRemoveUpload(u.artifactId)}
+                    className="ml-0.5 hover:text-red-500"
+                    aria-label={`Remove ${u.filename}`}
+                  >
+                    &times;
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="flex items-end gap-2">
             <div className="flex-1 relative">
               <textarea
@@ -373,6 +410,7 @@ export default function AgentChat() {
             </button>
           </div>
         </div>
+        </FileDropZone>
       </div>
     </div>
   );
@@ -451,6 +489,14 @@ function MenuIcon() {
       <line x1="3" y1="6" x2="21" y2="6" />
       <line x1="3" y1="12" x2="21" y2="12" />
       <line x1="3" y1="18" x2="21" y2="18" />
+    </svg>
+  );
+}
+
+function PaperclipIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
     </svg>
   );
 }
