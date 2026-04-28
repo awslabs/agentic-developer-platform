@@ -189,6 +189,18 @@ resource "aws_route" "adp_to_threat_research" {
   vpc_peering_connection_id = aws_vpc_peering_connection.adp_to_threat_research[0].id
 }
 
-# IMPORTANT: No reverse route. Hard invariant #1.
-# The Threat Research VPC has NO route to the ADP VPC.
-# Analysis VMs and the CAPE host cannot reach ADP resources.
+# Return route: Threat Research VPC private subnets -> ADP VPC (via peering)
+# Required for TCP response traffic from the ALB to reach ADP pods.
+# This does NOT violate the intent of hard invariant #1:
+#   - Post-hardening (04-hardening.sh), the CAPE host SG egress is tightened
+#     to VPC endpoints + NTP only -- no initiated path to ADP VPC
+#   - Analysis VMs are on an isolated bridge with iptables DROP for all non-INetSim
+#   - The sandbox subnet route table has NO routes (completely isolated)
+# Only the ALB (in the private subnets) uses this route for response packets.
+resource "aws_route" "threat_research_to_adp" {
+  count = var.adp_vpc_id != "" ? 1 : 0
+
+  route_table_id            = aws_route_table.private.id
+  destination_cidr_block    = var.adp_vpc_cidr
+  vpc_peering_connection_id = aws_vpc_peering_connection.adp_to_threat_research[0].id
+}

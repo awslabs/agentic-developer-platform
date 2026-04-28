@@ -31,6 +31,9 @@ resource "aws_iam_policy" "runner_boundary" {
           "iam:ListRoles", "iam:ListPolicies", "iam:ListAttachedRolePolicies",
           "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy",
           "iam:UpdateAssumeRolePolicy",
+          "iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile",
+          "iam:DeleteInstanceProfile", "iam:RemoveRoleFromInstanceProfile",
+          "iam:TagInstanceProfile",
           "sts:AssumeRole", "sts:GetCallerIdentity",
           "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream",
           "events:*", "stepfunctions:*",
@@ -128,9 +131,9 @@ resource "aws_iam_role_policy" "runner_permissions" {
         Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:adp/*"
       },
       {
-        Sid    = "KMSAccess"
-        Effect = "Allow"
-        Action = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        Sid      = "KMSAccess"
+        Effect   = "Allow"
+        Action   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
         Resource = "*"
       },
       {
@@ -142,14 +145,17 @@ resource "aws_iam_role_policy" "runner_permissions" {
           "iam:CreateServiceLinkedRole", "iam:GetRole", "iam:GetPolicy",
           "iam:GetRolePolicy", "iam:ListRoles", "iam:ListPolicies",
           "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
-          "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy"
+          "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy",
+          "iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile",
+          "iam:DeleteInstanceProfile", "iam:RemoveRoleFromInstanceProfile",
+          "iam:TagInstanceProfile"
         ]
         Resource = "*"
       },
       {
-        Sid    = "STSAccess"
-        Effect = "Allow"
-        Action = ["sts:AssumeRole", "sts:GetCallerIdentity"]
+        Sid      = "STSAccess"
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole", "sts:GetCallerIdentity"]
         Resource = "*"
       },
       {

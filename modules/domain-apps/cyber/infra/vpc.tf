@@ -147,6 +147,12 @@ resource "aws_route_table" "private" {
     Name = "${local.name_prefix}-rt-private"
     Type = "private"
   }
+
+  # The peering return route is managed by aws_route.threat_research_to_adp.
+  # Without this, the inline route block clobbers separately managed routes.
+  lifecycle {
+    ignore_changes = [route]
+  }
 }
 
 resource "aws_route_table_association" "private" {
