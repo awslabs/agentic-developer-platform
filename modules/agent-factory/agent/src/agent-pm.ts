@@ -1395,23 +1395,49 @@ bd dolt push
 
 When creating NEW project structure, use Beads to create the epic and tasks with proper dependencies.
 
-### GitHub Sub-Issues (REQUIRED for issue hierarchy)
+### ⛔ MANDATORY: Creating Child Issues (Sub-Issue Linkage)
 
-**ALWAYS use GitHub's native sub-issues** to create parent-child relationships between issues.
-This creates a proper hierarchy visible in GitHub UI.
+**A child issue does NOT exist until \`addSubIssue\` has been called for it.**
+This is a correctness constraint, not a best practice. Without the GraphQL mutation, issues are orphaned — the epic's sub-issues panel shows nothing, \`subIssues.totalCount\` is 0, and no parent-child relationship exists.
 
-#### Creating Issues as Sub-Issues
+**Do NOT rely on "Parent: #N" text in the issue body.** That text is cosmetic only. The ONLY way to create a real parent-child link is the \`addSubIssue\` GraphQL mutation below.
 
-When creating child issues (epics, stories, units), ALWAYS add them as sub-issues:
+#### For EACH child issue, execute ALL THREE steps:
 
 \`\`\`bash
-# 1. Create the issue first
-gh issue create --repo ${REPO_OWNER}/${REPO_NAME} --title "US-1: Task Title" --body "Description here" --label "type: story"
+# STEP 1 — Create the child issue
+CHILD_URL=$(gh issue create --repo ${REPO_OWNER}/${REPO_NAME} --title "US-1: Task Title" --body "Description here" --label "type: story")
+CHILD_NUM=$(echo "$CHILD_URL" | grep -oE '[0-9]+$')
 
-# 2. Get the new issue number from the output URL, then add as sub-issue
+# STEP 2 — Link it as a native sub-issue of the parent (REQUIRED — without this the child is orphaned)
 PARENT_ID=$(gh api graphql -f query='query { repository(owner: "${REPO_OWNER}", name: "${REPO_NAME}") { issue(number: ${ISSUE_NUMBER}) { id } } }' --jq '.data.repository.issue.id')
-CHILD_ID=$(gh api graphql -f query='query { repository(owner: "${REPO_OWNER}", name: "${REPO_NAME}") { issue(number: <NEW_ISSUE_NUMBER>) { id } } }' --jq '.data.repository.issue.id')
-gh api graphql -f query="mutation { addSubIssue(input: { issueId: \\"$PARENT_ID\\", subIssueId: \\"$CHILD_ID\\" }) { subIssue { number } } }"
+CHILD_ID=$(gh api graphql -f query='query { repository(owner: "${REPO_OWNER}", name: "${REPO_NAME}") { issue(number: '"$CHILD_NUM"') { id } } }' --jq '.data.repository.issue.id')
+gh api graphql -f query='mutation { addSubIssue(input: { issueId: "'"$PARENT_ID"'", subIssueId: "'"$CHILD_ID"'" }) { subIssue { number } } }'
+\`\`\`
+
+Repeat STEP 1 + STEP 2 for every child issue before proceeding.
+
+#### STEP 3 — Verify ALL sub-issues are linked (REQUIRED after creating all children)
+
+After creating all N children, you MUST run this verification:
+
+\`\`\`bash
+EXPECTED=<number of children you created>
+ACTUAL=$(gh api graphql -f query='query { repository(owner: "${REPO_OWNER}", name: "${REPO_NAME}") { issue(number: ${ISSUE_NUMBER}) { subIssues { totalCount nodes { number title } } } } }' --jq '.data.repository.issue.subIssues.totalCount')
+if [ "$ACTUAL" -ne "$EXPECTED" ]; then
+  echo "MISMATCH: expected $EXPECTED sub-issues, got $ACTUAL — re-run addSubIssue for missing children"
+  # List what IS linked to find the gaps:
+  gh api graphql -f query='query { repository(owner: "${REPO_OWNER}", name: "${REPO_NAME}") { issue(number: ${ISSUE_NUMBER}) { subIssues(first: 100) { nodes { number } } } } }' --jq '.data.repository.issue.subIssues.nodes[].number'
+fi
+\`\`\`
+
+**NEVER report "sub-issues created" until STEP 3 confirms the count matches.**
+
+If the count is less than expected, re-run STEP 2 (\`addSubIssue\`) for the missing children and verify again.
+
+#### When posting the decomposition summary comment, ALWAYS include:
+\`\`\`
+**Sub-issue verification**: N/N child issues linked (verified via \`subIssues.totalCount\`)
 \`\`\`
 
 #### Hierarchy Structure
@@ -1434,8 +1460,6 @@ gh api graphql -f query='query { repository(owner: "${REPO_OWNER}", name: "${REP
 # Get parent of an issue
 gh api graphql -f query='query { repository(owner: "${REPO_OWNER}", name: "${REPO_NAME}") { issue(number: <ISSUE_NUM>) { parent { number title } } } }' --jq '.data.repository.issue.parent'
 \`\`\`
-
-**IMPORTANT**: Do NOT rely only on "Parent: #N" text in issue body. Always use the GraphQL API to establish proper sub-issue relationships.
 
 Execute the workflow now.`;
 }
@@ -1486,6 +1510,7 @@ ${issue.body}
    - Update aidlc-state.json and aidlc-state.md
    - Commit and push changes
    - Post comment with progress and next steps
+   - **If you created child issues**: You MUST verify sub-issue linkage via \`subIssues.totalCount\` GraphQL query BEFORE posting the summary. Include "Sub-issue verification: N/N child issues linked" in your comment. See the "MANDATORY: Creating Child Issues" section for the exact commands.
 
 6. **Only ask questions when truly necessary**:
    - Questions should be about business decisions, not technical details you can research
@@ -2538,7 +2563,9 @@ Do NOT create AIDLC docs. Just do the work.
 
 OR if you determine this needs a specialist agent:
 - Create a child issue assigned to the right agent
+- **REQUIRED**: Link it as a sub-issue using the \`addSubIssue\` GraphQL mutation (see "MANDATORY: Creating Child Issues" section). A child issue is NOT created until \`addSubIssue\` has been called.
 - Add the appropriate label (agent-developer, agent-operations, etc.)
+- Verify with \`subIssues.totalCount\` before reporting
 - Post a brief comment explaining what you've set up
 `}
 
