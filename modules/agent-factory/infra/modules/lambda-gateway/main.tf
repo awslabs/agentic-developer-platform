@@ -31,6 +31,11 @@ resource "aws_lambda_function" "ingest" {
       GH_APP_SECRET_PREFIX = "adp/${var.github_org}/gh-app-ops"
       ARTIFACTS_BUCKET     = var.artifacts_bucket_name
       ARTIFACTS_TABLE      = var.artifacts_table_name
+      # Stage C (#186): WebSocket post-back endpoint for upload-token /
+      # upload-complete responses. API Gateway WebSocket discards synchronous
+      # Lambda returns; the ingest Lambda must push responses back via
+      # apigatewaymanagementapi.post_to_connection, which needs this URL.
+      WS_API_ENDPOINT      = var.ws_api_endpoint
     }
   }
 
@@ -128,6 +133,25 @@ resource "aws_iam_role_policy" "ingest_s3_uploads" {
       Effect   = "Allow"
       Action   = ["s3:PutObject", "s3:GetObject"]
       Resource = "${var.artifacts_bucket_arn}/*"
+    }]
+  })
+}
+
+# Stage C (#186): allow the ingest Lambda to post responses back to WebSocket
+# clients for upload-token / upload-complete requests. API Gateway WebSocket
+# discards synchronous Lambda returns; async post-back is the only delivery
+# path. Scoped to the WS API execution ARN only — not account-wide.
+resource "aws_iam_role_policy" "ingest_apigw_manage_connections" {
+  count = var.ws_execution_arn != "" ? 1 : 0
+  name  = "apigw-manage-connections"
+  role  = aws_iam_role.ingest.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["execute-api:ManageConnections"]
+      Resource = "${var.ws_execution_arn}/*"
     }]
   })
 }

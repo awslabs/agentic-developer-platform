@@ -38,11 +38,47 @@ SLACK_BOT_USER_ID = os.environ.get("SLACK_BOT_USER_ID", "")
 # Stage C (#186): artifact bucket and catalog table for user uploads
 ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET", "")
 ARTIFACTS_TABLE = os.environ.get("ARTIFACTS_TABLE", "")
+# WebSocket post-back endpoint (for async responses to upload-token /
+# upload-complete requests that arrive over WS). API Gateway WebSocket
+# doesn't deliver synchronous Lambda responses to the client — we must
+# push them back via post_to_connection.
+WS_API_ENDPOINT = os.environ.get("WS_API_ENDPOINT", "")
 
 sqs = boto3.client("sqs", region_name=REGION)
 s3_client = boto3.client("s3", region_name=REGION)
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
 sessions_table = dynamodb.Table(SESSIONS_TABLE)
+
+_apigw_client = None
+
+
+def _get_apigw_client():
+    """Lazily create the apigatewaymanagementapi client. The endpoint must
+    use https://, not wss://."""
+    global _apigw_client
+    if _apigw_client is None and WS_API_ENDPOINT:
+        endpoint = WS_API_ENDPOINT.replace("wss://", "https://")
+        _apigw_client = boto3.client("apigatewaymanagementapi", endpoint_url=endpoint, region_name=REGION)
+    return _apigw_client
+
+
+def _send_ws_response(connection_id: str, request_id: str, payload: dict) -> None:
+    """Post a response back to the WebSocket client, keyed by request_id so
+    the frontend's sendWsRequest helper can correlate it.
+
+    Best-effort: if the post fails (client disconnected, permission gap,
+    endpoint misconfigured), log and continue — the Lambda's return value is
+    still shaped as a REST response so existing tests/callers see no change.
+    """
+    client = _get_apigw_client()
+    if not client or not connection_id:
+        logger.warning("Cannot post WS response: client=%s connection_id=%s", bool(client), bool(connection_id))
+        return
+    body = {"request_id": request_id, **payload} if request_id else payload
+    try:
+        client.post_to_connection(ConnectionId=connection_id, Data=json.dumps(body).encode("utf-8"))
+    except Exception as e:
+        logger.warning("post_to_connection failed for %s: %s", connection_id, e)
 
 ADAPTERS: dict[str, ChannelAdapter] = {
     "webchat": WebChatAdapter(),
@@ -238,13 +274,24 @@ def _build_upload_s3_key(org_id: str, team_id: str, user_id: str,
 
 def handle_upload_token(event: dict, connection_id: str, body: dict) -> dict:
     """Return a presigned PUT URL scoped to the caller's identity path.
-    Stage C (#186): POST /upload-token."""
+    Stage C (#186): POST /upload-token.
+
+    Because this is invoked from a WebSocket route, API Gateway discards the
+    Lambda's return value. The actual response is posted back to the client
+    via post_to_connection and correlated via request_id.
+    """
+    request_id = body.get("request_id", "")
+
+    def _respond(status: int, payload: dict) -> dict:
+        _send_ws_response(connection_id, request_id, payload)
+        return {"statusCode": status, "body": json.dumps(payload)}
+
     if not ARTIFACTS_BUCKET:
-        return {"statusCode": 500, "body": json.dumps({"error": "Uploads not configured"})}
+        return _respond(500, {"error": "Uploads not configured"})
 
     ident = _get_upload_claims(event, connection_id)
     if not ident:
-        return {"statusCode": 401, "body": json.dumps({"error": "Missing identity claims"})}
+        return _respond(401, {"error": "Missing identity claims"})
 
     session_id = body.get("session_id", "")
     task_id = body.get("task_id", str(uuid.uuid4())[:8])
@@ -253,15 +300,15 @@ def handle_upload_token(event: dict, connection_id: str, body: dict) -> dict:
     size_bytes = body.get("size_bytes", 0)
 
     if not session_id or not filename:
-        return {"statusCode": 400, "body": json.dumps({"error": "session_id and filename required"})}
+        return _respond(400, {"error": "session_id and filename required"})
 
     if size_bytes and size_bytes > UPLOAD_MAX_BYTES:
-        return {"statusCode": 400, "body": json.dumps({"error": f"File too large (max {UPLOAD_MAX_BYTES} bytes)"})}
+        return _respond(400, {"error": f"File too large (max {UPLOAD_MAX_BYTES} bytes)"})
 
     # Sanitize filename — allow only alphanums, dots, hyphens, underscores
     safe_filename = "".join(c for c in filename if c.isalnum() or c in ".-_")
     if not safe_filename:
-        return {"statusCode": 400, "body": json.dumps({"error": "Invalid filename"})}
+        return _respond(400, {"error": "Invalid filename"})
 
     s3_key = _build_upload_s3_key(
         ident["org_id"], ident["team_id"], ident["user_id"],
@@ -280,28 +327,34 @@ def handle_upload_token(event: dict, connection_id: str, body: dict) -> dict:
         )
     except Exception as e:
         logger.error("Failed to generate presigned URL: %s", e)
-        return {"statusCode": 500, "body": json.dumps({"error": "Failed to generate upload URL"})}
+        return _respond(500, {"error": "Failed to generate upload URL"})
 
-    return {
-        "statusCode": 200,
-        "body": json.dumps({
-            "upload_url": upload_url,
-            "s3_key": s3_key,
-            "task_id": task_id,
-            "expires_in": UPLOAD_TOKEN_EXPIRY,
-        }),
-    }
+    return _respond(200, {
+        "upload_url": upload_url,
+        "s3_key": s3_key,
+        "task_id": task_id,
+        "expires_in": UPLOAD_TOKEN_EXPIRY,
+    })
 
 
 def handle_upload_complete(event: dict, connection_id: str, body: dict) -> dict:
     """Record a completed upload in the DDB catalog. Idempotent via sha256.
-    Stage C (#186): POST /upload-complete."""
+    Stage C (#186): POST /upload-complete.
+
+    Response is posted back over WS (see handle_upload_token note).
+    """
+    request_id = body.get("request_id", "")
+
+    def _respond(status: int, payload: dict) -> dict:
+        _send_ws_response(connection_id, request_id, payload)
+        return {"statusCode": status, "body": json.dumps(payload)}
+
     if not ARTIFACTS_BUCKET or not ARTIFACTS_TABLE:
-        return {"statusCode": 500, "body": json.dumps({"error": "Uploads not configured"})}
+        return _respond(500, {"error": "Uploads not configured"})
 
     ident = _get_upload_claims(event, connection_id)
     if not ident:
-        return {"statusCode": 401, "body": json.dumps({"error": "Missing identity claims"})}
+        return _respond(401, {"error": "Missing identity claims"})
 
     session_id = body.get("session_id", "")
     task_id = body.get("task_id", "")
@@ -312,7 +365,7 @@ def handle_upload_complete(event: dict, connection_id: str, body: dict) -> dict:
     checksum = body.get("checksum", "")
 
     if not session_id or not s3_key or not filename or not checksum:
-        return {"statusCode": 400, "body": json.dumps({"error": "session_id, s3_key, filename, and checksum required"})}
+        return _respond(400, {"error": "session_id, s3_key, filename, and checksum required"})
 
     artifacts_table = dynamodb.Table(ARTIFACTS_TABLE)
 
@@ -330,13 +383,7 @@ def handle_upload_complete(event: dict, connection_id: str, body: dict) -> dict:
         )
         if existing.get("Items"):
             item = existing["Items"][0]
-            return {
-                "statusCode": 200,
-                "body": json.dumps({
-                    "artifact_id": item["id"],
-                    "deduplicated": True,
-                }),
-            }
+            return _respond(200, {"artifact_id": item["id"], "deduplicated": True})
     except Exception as e:
         logger.warning("Dedup check failed (proceeding): %s", e)
 
@@ -364,15 +411,9 @@ def handle_upload_complete(event: dict, connection_id: str, body: dict) -> dict:
         })
     except Exception as e:
         logger.error("Failed to write artifact catalog row: %s", e)
-        return {"statusCode": 500, "body": json.dumps({"error": "Failed to record upload"})}
+        return _respond(500, {"error": "Failed to record upload"})
 
-    return {
-        "statusCode": 200,
-        "body": json.dumps({
-            "artifact_id": artifact_id,
-            "deduplicated": False,
-        }),
-    }
+    return _respond(200, {"artifact_id": artifact_id, "deduplicated": False})
 
 
 def handle_unified_message(message: UnifiedMessage) -> dict:
