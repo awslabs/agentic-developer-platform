@@ -362,6 +362,11 @@ export class DynamoContextStore implements ContextStore {
       sessionId,
       ownerUserId: result.Item.ownerUserId as string,
       tenantId: result.Item.tenantId as string | undefined,
+      // Stage A (#184): extended identity claims
+      orgId: result.Item.orgId as string | undefined,
+      teamId: result.Item.teamId as string | undefined,
+      departmentId: result.Item.departmentId as string | undefined,
+      accountType: result.Item.accountType as string | undefined,
       createdAt: result.Item.createdAt as string,
       lastActivityAt: result.Item.lastActivityAt as string,
       status: result.Item.status as 'active' | 'closed',
@@ -382,6 +387,11 @@ export class DynamoContextStore implements ContextStore {
             SK: 'header',
             ownerUserId: header.ownerUserId,
             tenantId: header.tenantId,
+            // Stage A (#184): extended identity claims
+            orgId: header.orgId,
+            teamId: header.teamId,
+            departmentId: header.departmentId,
+            accountType: header.accountType,
             createdAt: header.createdAt ?? now,
             lastActivityAt: header.lastActivityAt,
             status: header.status,

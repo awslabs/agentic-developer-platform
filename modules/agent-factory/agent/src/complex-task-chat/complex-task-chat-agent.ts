@@ -75,6 +75,12 @@ async function processOne(
     user_id,
     tenant_id,
     component,
+    // Stage A (#184): extended identity claims from JWT
+    org_id,
+    team_id,
+    department_id,
+    account_type,
+    role: user_role,
     // Delivery routing — echoed into every sendResponse() so the response
     // Lambda knows which channel/connection to deliver to. Missing any of
     // these caused WS replies to silently fall back to REST polling.
@@ -84,8 +90,12 @@ async function processOne(
     platform_data,
   } = task;
 
+  // Stage A (#184): log full identity context at INFO for audit trail.
   console.log(
-    `[chat-agent] Processing task ${task_id} for session ${session_id} (channel=${channel ?? 'none'}, conn=${connection_id ? 'set' : 'none'}, agui=${AGUI_ENABLED})`,
+    `[chat-agent] Processing task ${task_id} for session ${session_id} ` +
+    `(channel=${channel ?? 'none'}, conn=${connection_id ? 'set' : 'none'}, agui=${AGUI_ENABLED}) ` +
+    `TokenContext: user_id=${user_id}, org_id=${org_id ?? 'none'}, team_id=${team_id ?? 'none'}, ` +
+    `account_type=${account_type ?? 'none'}, role=${user_role ?? 'none'}, department_id=${department_id ?? 'none'}`,
   );
 
   /** Helper to emit an AG-UI event (best-effort, swallows errors). */
@@ -152,8 +162,14 @@ async function processOne(
     });
 
     // Defense-in-depth ownership check (creates header on first access; refuses
-    // if existing owner differs).
-    await deps.context.assertOwnership(session_id, user_id, tenant_id);
+    // if existing owner differs). Stage A (#184): passes extended identity for
+    // team-aware validation.
+    await deps.context.assertOwnership(session_id, user_id, tenant_id, {
+      orgId: org_id,
+      teamId: team_id,
+      departmentId: department_id,
+      accountType: account_type,
+    });
 
     const scope = {
       user: user_id,

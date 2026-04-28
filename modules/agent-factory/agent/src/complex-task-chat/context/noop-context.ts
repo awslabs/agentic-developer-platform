@@ -30,7 +30,12 @@ export class NoopContextManager implements ContextManager {
     // no-op
   }
 
-  async assertOwnership(_sessionId: string, _userId: string, _tenantId?: string): Promise<void> {
+  async assertOwnership(_sessionId: string, _userId: string, _tenantId?: string, _identity?: {
+    orgId?: string;
+    teamId?: string;
+    departmentId?: string;
+    accountType?: string;
+  }): Promise<void> {
     // no-op — always passes
   }
 

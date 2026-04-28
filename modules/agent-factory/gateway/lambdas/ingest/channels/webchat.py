@@ -162,6 +162,14 @@ class WebChatAdapter(ChannelAdapter):
                 "connection_id": connection_id,
                 "connected_at": request_context.get("connectedAt"),
                 "source_ip": request_context.get("identity", {}).get("sourceIp", ""),
+                # Stage A (#184): propagate extended identity claims for downstream
+                # ownership validation and audit logging.
+                "tenant_id": claims.get("custom:tenant_id", ""),
+                "org_id": claims.get("custom:org_id", ""),
+                "team_id": claims.get("custom:team_id", ""),
+                "department_id": claims.get("custom:department_id", ""),
+                "account_type": claims.get("custom:account_type", ""),
+                "role": claims.get("custom:role", ""),
             },
         )
 

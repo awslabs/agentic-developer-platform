@@ -134,6 +134,10 @@ class InMemoryStore implements ContextStore {
       sessionId: header.sessionId,
       ownerUserId: header.ownerUserId,
       tenantId: header.tenantId,
+      orgId: header.orgId,
+      teamId: header.teamId,
+      departmentId: header.departmentId,
+      accountType: header.accountType,
       createdAt: header.createdAt ?? new Date().toISOString(),
       lastActivityAt: header.lastActivityAt,
       status: header.status,
@@ -295,5 +299,85 @@ describe('LcmContext integration (in-memory store)', () => {
     await ctx.assertOwnership('s1', 'user-1');
 
     await expect(ctx.assertOwnership('s1', 'user-2')).rejects.toThrow(/ownership mismatch/);
+  });
+
+  // Stage A (#184): team-aware ownership tests
+
+  it('assertOwnership rejects cross-team access when both sides have teamId', async () => {
+    const { ctx } = makeCtx();
+    // Create session with team-alpha
+    await ctx.assertOwnership('s-team', 'user-1', 'acme', {
+      orgId: 'org-1',
+      teamId: 'team-alpha',
+    });
+
+    // Same user, different team → reject
+    await expect(
+      ctx.assertOwnership('s-team', 'user-1', 'acme', {
+        orgId: 'org-1',
+        teamId: 'team-beta',
+      }),
+    ).rejects.toThrow(/team mismatch/);
+  });
+
+  it('assertOwnership allows when caller has no teamId (legacy compat)', async () => {
+    const { ctx } = makeCtx();
+    // Create session with team
+    await ctx.assertOwnership('s-legacy1', 'user-1', 'acme', {
+      orgId: 'org-1',
+      teamId: 'team-alpha',
+    });
+
+    // Same user, no team → allow (legacy single-tenant mode)
+    await expect(
+      ctx.assertOwnership('s-legacy1', 'user-1', 'acme'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('assertOwnership allows when existing session has no teamId (legacy compat)', async () => {
+    const { ctx } = makeCtx();
+    // Create session without team (legacy)
+    await ctx.assertOwnership('s-legacy2', 'user-1', 'acme');
+
+    // Same user with team → allow (existing session is pre-multi-tenant)
+    await expect(
+      ctx.assertOwnership('s-legacy2', 'user-1', 'acme', {
+        orgId: 'org-1',
+        teamId: 'team-alpha',
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('assertOwnership allows same team access', async () => {
+    const { ctx } = makeCtx();
+    await ctx.assertOwnership('s-same-team', 'user-1', 'acme', {
+      orgId: 'org-1',
+      teamId: 'team-alpha',
+    });
+
+    // Same user, same team → allow
+    await expect(
+      ctx.assertOwnership('s-same-team', 'user-1', 'acme', {
+        orgId: 'org-1',
+        teamId: 'team-alpha',
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('assertOwnership stores identity claims in header on first access', async () => {
+    const { ctx, store } = makeCtx();
+    await ctx.assertOwnership('s-claims', 'user-1', 'acme', {
+      orgId: 'org-1',
+      teamId: 'team-alpha',
+      departmentId: 'eng',
+      accountType: 'human',
+    });
+
+    const header = await store.getSessionHeader('s-claims');
+    expect(header).not.toBeNull();
+    expect(header!.orgId).toBe('org-1');
+    expect(header!.teamId).toBe('team-alpha');
+    expect(header!.departmentId).toBe('eng');
+    expect(header!.accountType).toBe('human');
   });
 });

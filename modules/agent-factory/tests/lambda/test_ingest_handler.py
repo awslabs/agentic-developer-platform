@@ -408,6 +408,185 @@ class TestClassifierFailure:
         assert body["status"] == "processing"
 
 
+class TestExtendedClaimsPersistence:
+    """Stage A (#184): Extended identity claims persistence and propagation."""
+
+    def test_connect_persists_extended_claims(self, mocked_aws_services):
+        """$connect with extended claims stores org_id, team_id, etc in DDB."""
+        handler = _import_handler()
+        event = mock_apigw_event(
+            route_key="$connect",
+            connection_id="conn-claims",
+            token="fake-jwt",
+        )
+        # Inject extended authorizer context (as custom Cognito claims)
+        event["requestContext"]["authorizer"] = {
+            "claims": {
+                "sub": "user-ext-1",
+                "email": "ext@example.com",
+                "custom:tenant_id": "acme",
+                "custom:org_id": "org-42",
+                "custom:team_id": "team-alpha",
+                "custom:department_id": "engineering",
+                "custom:account_type": "human",
+                "custom:role": "admin",
+            }
+        }
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+        # Verify all claims were persisted
+        table = mocked_aws_services["table"]
+        item = table.get_item(Key={"session_id": "conn#conn-claims"}).get("Item", {})
+        assert item["sub"] == "user-ext-1"
+        assert item["email"] == "ext@example.com"
+        assert item["tenant_id"] == "acme"
+        assert item["org_id"] == "org-42"
+        assert item["team_id"] == "team-alpha"
+        assert item["department_id"] == "engineering"
+        assert item["account_type"] == "human"
+        assert item["role"] == "admin"
+
+    def test_connect_without_extended_claims_still_works(self, mocked_aws_services):
+        """$connect without extended claims only stores sub/email/tenant (backward compat)."""
+        handler = _import_handler()
+        event = mock_apigw_event(
+            route_key="$connect",
+            connection_id="conn-legacy",
+            token="fake-jwt",
+        )
+        event["requestContext"]["authorizer"] = {
+            "claims": {
+                "sub": "user-legacy-1",
+                "email": "legacy@example.com",
+            }
+        }
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+        table = mocked_aws_services["table"]
+        item = table.get_item(Key={"session_id": "conn#conn-legacy"}).get("Item", {})
+        assert item["sub"] == "user-legacy-1"
+        # Extended fields should be absent (not stored as empty strings)
+        assert "org_id" not in item
+        assert "team_id" not in item
+
+    def test_restore_injects_extended_claims(self, mocked_aws_services):
+        """_restore_connection_claims re-injects extended claims into event."""
+        handler = _import_handler()
+
+        # First, persist extended claims via $connect
+        connect_event = mock_apigw_event(
+            route_key="$connect",
+            connection_id="conn-restore",
+            token="fake-jwt",
+        )
+        connect_event["requestContext"]["authorizer"] = {
+            "claims": {
+                "sub": "user-restore-1",
+                "email": "restore@example.com",
+                "custom:org_id": "org-99",
+                "custom:team_id": "team-beta",
+                "custom:department_id": "sales",
+                "custom:account_type": "service",
+                "custom:role": "viewer",
+            }
+        }
+        handler.lambda_handler(connect_event, None)
+
+        # Now simulate a $default event (no authorizer) and verify restore
+        msg_event = mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": "test", "session_id": "sess-restore"},
+            connection_id="conn-restore",
+        )
+        # Manually call _restore_connection_claims
+        handler._restore_connection_claims(msg_event, "conn-restore")
+        claims = msg_event["requestContext"]["authorizer"]["claims"]
+        assert claims["sub"] == "user-restore-1"
+        assert claims["custom:org_id"] == "org-99"
+        assert claims["custom:team_id"] == "team-beta"
+        assert claims["custom:department_id"] == "sales"
+        assert claims["custom:account_type"] == "service"
+        assert claims["custom:role"] == "viewer"
+
+    def test_extended_claims_flow_to_sqs_message(self, mocked_aws_services):
+        """Extended identity claims are included in the SQS message body."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "long_running",
+            "persona": "developer",
+            "response": None,
+            "thread_action": "new",
+            "reasoning": "Needs deep work",
+        })
+
+        handler = _import_handler(mock_bedrock=mock_bedrock)
+
+        # Persist extended claims via $connect first
+        connect_event = mock_apigw_event(
+            route_key="$connect",
+            connection_id="conn-sqs-flow",
+            token="fake-jwt",
+        )
+        connect_event["requestContext"]["authorizer"] = {
+            "claims": {
+                "sub": "user-sqs-1",
+                "email": "sqs@example.com",
+                "custom:org_id": "org-sqs",
+                "custom:team_id": "team-sqs",
+                "custom:account_type": "human",
+            }
+        }
+        handler.lambda_handler(connect_event, None)
+
+        # Now send a message
+        msg_event = mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": "Deploy the feature", "session_id": "sess-sqs-flow"},
+            connection_id="conn-sqs-flow",
+        )
+        result = handler.lambda_handler(msg_event, None)
+        assert result["statusCode"] == 200
+
+        # Verify SQS message contains identity fields
+        sqs = mocked_aws_services["sqs"]
+        resp = sqs.receive_message(
+            QueueUrl="https://sqs.us-east-1.amazonaws.com/123/adp-dev-agent-gateway-tasks",
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=0,
+        )
+        messages = resp.get("Messages", [])
+        assert len(messages) >= 1
+        task = json.loads(messages[0]["Body"])
+        assert task["user_id"] == "user-sqs-1"
+        assert task["org_id"] == "org-sqs"
+        assert task["team_id"] == "team-sqs"
+        assert task["account_type"] == "human"
+
+    def test_missing_org_id_not_rejected_logging_only(self, mocked_aws_services):
+        """Missing custom:org_id is NOT rejected — logging only (Stage A)."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "direct_response",
+            "persona": "developer",
+            "response": "Hello!",
+            "thread_action": "none",
+            "reasoning": "Simple",
+        })
+
+        handler = _import_handler(mock_bedrock=mock_bedrock)
+        event = mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": "Hello!", "session_id": "sess-no-org"},
+            connection_id="conn-no-org",
+            authorizer_claims={"sub": "user-no-org"},
+        )
+        result = handler.lambda_handler(event, None)
+        # Should NOT reject — logging-only enforcement in Stage A
+        assert result["statusCode"] == 200
+
+
 class TestNoSubDropsMessage:
     """Issue #88: WebChat messages with no Cognito sub must be dropped, not fall back to connectionId."""
 

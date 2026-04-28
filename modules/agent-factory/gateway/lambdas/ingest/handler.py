@@ -96,13 +96,24 @@ def _persist_connection_claims(connection_id: str, authorizer_ctx: dict) -> None
         return
     # The gateway's custom authorizer puts claims under X-Agent-* context keys;
     # also accept Cognito-JWT-native "claims" dict as a fallback.
+    claims = authorizer_ctx.get("claims", {})
     sub = (
         authorizer_ctx.get("X-Agent-UserId")
         or authorizer_ctx.get("principalId")
-        or authorizer_ctx.get("claims", {}).get("sub", "")
+        or claims.get("sub", "")
     )
-    email = authorizer_ctx.get("X-Agent-Email") or authorizer_ctx.get("claims", {}).get("email", "")
-    tenant_id = authorizer_ctx.get("X-Agent-Tenant") or authorizer_ctx.get("claims", {}).get("custom:tenant_id", "")
+    email = authorizer_ctx.get("X-Agent-Email") or claims.get("email", "")
+    tenant_id = authorizer_ctx.get("X-Agent-Tenant") or claims.get("custom:tenant_id", "")
+
+    # Stage A (#184): persist extended identity claims from Cognito JWT.
+    # Mirror gateway's CognitoJWTValidator._parse_claims() — these are injected
+    # by the Pre Token Generation Lambda as custom:* attributes.
+    org_id = authorizer_ctx.get("X-Agent-OrgId") or claims.get("custom:org_id", "")
+    team_id = authorizer_ctx.get("X-Agent-TeamId") or claims.get("custom:team_id", "")
+    department_id = authorizer_ctx.get("X-Agent-DepartmentId") or claims.get("custom:department_id", "")
+    account_type = authorizer_ctx.get("X-Agent-AccountType") or claims.get("custom:account_type", "")
+    role = authorizer_ctx.get("X-Agent-Role") or claims.get("custom:role", "")
+
     if not sub:
         logger.warning(
             "Connection %s authorized but no sub/X-Agent-UserId in authorizer context; "
@@ -111,17 +122,31 @@ def _persist_connection_claims(connection_id: str, authorizer_ctx: dict) -> None
         )
         return
     try:
-        sessions_table.put_item(
-            Item={
-                "session_id": f"conn#{connection_id}",
-                "kind": "connection_claims",
-                "sub": sub,
-                "email": email,
-                "tenant_id": tenant_id,
-                "expires_at": int(time.time()) + CONNECTION_CLAIMS_TTL_SECONDS,
-            }
+        item: dict[str, Any] = {
+            "session_id": f"conn#{connection_id}",
+            "kind": "connection_claims",
+            "sub": sub,
+            "email": email,
+            "tenant_id": tenant_id,
+            "expires_at": int(time.time()) + CONNECTION_CLAIMS_TTL_SECONDS,
+        }
+        # Stage A (#184): persist extended identity claims (only non-empty).
+        if org_id:
+            item["org_id"] = org_id
+        if team_id:
+            item["team_id"] = team_id
+        if department_id:
+            item["department_id"] = department_id
+        if account_type:
+            item["account_type"] = account_type
+        if role:
+            item["role"] = role
+
+        sessions_table.put_item(Item=item)
+        logger.info(
+            "Persisted connection claims for %s (sub=%s, org=%s, team=%s, acct_type=%s)",
+            connection_id, sub, org_id or "none", team_id or "none", account_type or "none",
         )
-        logger.info("Persisted connection claims for %s (sub=%s)", connection_id, sub)
     except Exception as e:
         logger.error("Failed to persist connection claims for %s: %s", connection_id, e)
 
@@ -153,6 +178,17 @@ def _restore_connection_claims(event: dict, connection_id: str) -> None:
             claims.setdefault("email", item["email"])
         if item.get("tenant_id"):
             claims.setdefault("custom:tenant_id", item["tenant_id"])
+        # Stage A (#184): restore extended identity claims.
+        if item.get("org_id"):
+            claims.setdefault("custom:org_id", item["org_id"])
+        if item.get("team_id"):
+            claims.setdefault("custom:team_id", item["team_id"])
+        if item.get("department_id"):
+            claims.setdefault("custom:department_id", item["department_id"])
+        if item.get("account_type"):
+            claims.setdefault("custom:account_type", item["account_type"])
+        if item.get("role"):
+            claims.setdefault("custom:role", item["role"])
     except Exception as e:
         logger.warning("Failed to restore connection claims for %s: %s", connection_id, e)
 
@@ -317,6 +353,16 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
     # FIFO queues require MessageGroupId + MessageDeduplicationId. Group by
     # session_id so per-session turns serialize; different sessions stay
     # parallel. Dedup by task_id makes re-deliveries idempotent.
+    # Stage A (#184): include extended identity claims in SQS payload so the
+    # worker can log the full TokenContext and enforce team-aware ownership.
+    # All new fields are optional — existing workers ignore unknown keys.
+    pd = message.platform_data
+    identity_fields: dict[str, Any] = {}
+    for key in ("tenant_id", "org_id", "team_id", "department_id", "account_type", "role"):
+        val = pd.get(key, "")
+        if val:
+            identity_fields[key] = val
+
     send_kwargs = dict(
         QueueUrl=INPUT_QUEUE_URL,
         MessageBody=json.dumps({
@@ -327,6 +373,7 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
             "repo_owner": (classification.repo or "").split("/")[0] if classification.repo and "/" in classification.repo else "",
             "repo_name": (classification.repo or "").split("/")[1] if classification.repo and "/" in classification.repo else "",
             "message": message.text, "platform_data": message.platform_data, "enqueued_at": now,
+            **identity_fields,
         }),
     )
     if INPUT_QUEUE_URL.endswith(".fifo"):

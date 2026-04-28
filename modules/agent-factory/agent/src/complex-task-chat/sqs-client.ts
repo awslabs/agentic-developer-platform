@@ -28,6 +28,13 @@ export interface TaskPayload {
   source?: string;
   component?: string;
   attachments?: string[];
+  // Stage A (#184): extended identity claims from Cognito JWT.
+  // All optional for backward compatibility with existing sessions.
+  org_id?: string;
+  team_id?: string;
+  department_id?: string;
+  account_type?: string;
+  role?: string;
   // Delivery-routing fields supplied by the ingest Lambda. We echo these
   // back in TaskResponse so the response Lambda can post to the right
   // channel. Missing any of these → response Lambda falls back to REST

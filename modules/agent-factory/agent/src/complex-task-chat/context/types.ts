@@ -88,8 +88,17 @@ export interface ContextManager {
    * If the session does not exist, creates the header with ownerUserId + tenantId
    * via a conditional put (attribute_not_exists) to avoid races.
    * On concurrent create, the loser re-reads and verifies ownership.
+   *
+   * Stage A (#184): accepts extended identity claims. Team-aware check:
+   * if BOTH existing header AND caller have teamId and they differ, throws.
+   * If either is missing, allows (legacy single-tenant compat).
    */
-  assertOwnership(sessionId: string, userId: string, tenantId?: string): Promise<void>;
+  assertOwnership(sessionId: string, userId: string, tenantId?: string, identity?: {
+    orgId?: string;
+    teamId?: string;
+    departmentId?: string;
+    accountType?: string;
+  }): Promise<void>;
 
   /** Tools exposed to the agent (e.g. expand_summary) */
   tools(): AgentTool[];

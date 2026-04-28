@@ -113,17 +113,32 @@ export class LcmContext implements ContextManager {
   /**
    * Idempotent ownership assertion with a race-safe create path.
    *
-   * - If header exists and ownerUserId matches → no-op.
+   * - If header exists and ownerUserId matches → no-op (+ team check).
    * - If header exists and ownerUserId differs → throw.
    * - If header does not exist → conditional put (attribute_not_exists). If two
    *   concurrent callers race, one wins; the loser re-reads and re-verifies.
+   *
+   * Stage A (#184): team-aware check. If BOTH existing header AND caller have
+   * teamId and they differ, reject. If either is missing, allow (legacy compat).
    */
-  async assertOwnership(sessionId: string, userId: string, tenantId?: string): Promise<void> {
+  async assertOwnership(sessionId: string, userId: string, tenantId?: string, identity?: {
+    orgId?: string;
+    teamId?: string;
+    departmentId?: string;
+    accountType?: string;
+  }): Promise<void> {
     const existing = await this.store.getSessionHeader(sessionId);
     if (existing) {
       if (existing.ownerUserId !== userId) {
         throw new Error(
           `Session ownership mismatch: session ${sessionId} is owned by ${existing.ownerUserId}, not ${userId}`,
+        );
+      }
+      // Stage A (#184): team-aware check — reject cross-team access when both
+      // sides have a teamId. If either is missing, allow (legacy compat).
+      if (existing.teamId && identity?.teamId && existing.teamId !== identity.teamId) {
+        throw new Error(
+          `Session team mismatch: session ${sessionId} belongs to team ${existing.teamId}, caller is team ${identity.teamId}`,
         );
       }
       return;
@@ -135,6 +150,10 @@ export class LcmContext implements ContextManager {
         sessionId,
         ownerUserId: userId,
         tenantId,
+        orgId: identity?.orgId,
+        teamId: identity?.teamId,
+        departmentId: identity?.departmentId,
+        accountType: identity?.accountType,
         createdAt: now.toISOString(),
         lastActivityAt: now.toISOString(),
         status: 'active',
@@ -151,6 +170,12 @@ export class LcmContext implements ContextManager {
         if (header.ownerUserId !== userId) {
           throw new Error(
             `Session ownership mismatch: session ${sessionId} is owned by ${header.ownerUserId}, not ${userId}`,
+          );
+        }
+        // Stage A (#184): team check on race-loser path too
+        if (header.teamId && identity?.teamId && header.teamId !== identity.teamId) {
+          throw new Error(
+            `Session team mismatch: session ${sessionId} belongs to team ${header.teamId}, caller is team ${identity.teamId}`,
           );
         }
         return;

@@ -38,6 +38,12 @@ export interface SessionHeader {
   sessionId: string;
   ownerUserId: string;
   tenantId?: string;
+  // Stage A (#184): extended identity claims for team-aware ownership.
+  // All optional for backward compatibility with existing sessions.
+  orgId?: string;
+  teamId?: string;
+  departmentId?: string;
+  accountType?: string;
   createdAt: string;
   lastActivityAt: string;
   status: 'active' | 'closed';
