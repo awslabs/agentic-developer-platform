@@ -84,6 +84,7 @@ set_var() {
 
 set_var "SECRET_PREFIX"    "$SECRET_PREFIX"
 set_var "ARC_RUNNER_LABEL" "$ARC_LABEL"
+set_var "AGENT_SOURCE_REPO" "$FULL_REPO"
 set_var "BEADS_ENABLED"    "false"
 if [ "$AWS_REGION" != "us-east-1" ]; then
   set_var "AWS_REGION" "$AWS_REGION"

@@ -61,7 +61,7 @@ read -r CONFIRM
 
 # --- Repo variables ---
 info "Deleting repo variables..."
-for var in SECRET_PREFIX ARC_RUNNER_LABEL BEADS_ENABLED AWS_REGION; do
+for var in SECRET_PREFIX ARC_RUNNER_LABEL AGENT_SOURCE_REPO BEADS_ENABLED AWS_REGION; do
   if gh variable delete "$var" --repo "$FULL_REPO" 2>/dev/null; then
     ok "Deleted ${var}"
   else

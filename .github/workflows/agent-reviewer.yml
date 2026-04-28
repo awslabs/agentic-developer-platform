@@ -95,7 +95,7 @@ jobs:
       - name: Checkout ADP repository (for agent code)
         uses: actions/checkout@v4
         with:
-          repository: aws-e/adp
+          repository: ${{ vars.AGENT_SOURCE_REPO || 'aws-e/adp' }}
           token: ${{ steps.app-token.outputs.token }}
           path: adp-agent-src
 

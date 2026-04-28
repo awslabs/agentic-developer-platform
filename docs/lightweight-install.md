@@ -34,7 +34,7 @@ gh auth login            # make sure 'repo' scope is granted
 gh auth status           # verify 'repo' is in the listed scopes
 ```
 
-The fork can have any name — the workflows check out the agent source from the upstream by default (this will become configurable — see issue #191). Name matters only for your `<ORG>/<REPO>` references below.
+The fork can have any name — the workflows check out the agent source from `vars.AGENT_SOURCE_REPO` (defaults to `aws-e/adp`). The setup script sets this automatically to your fork.
 
 ### 3. A GitHub App in your org
 
@@ -103,6 +103,7 @@ done
 1. Sets GitHub repo variables so the agent workflows read from your identifiers instead of the upstream `aws-e` defaults:
    - `SECRET_PREFIX` → Secrets Manager prefix where your GitHub App credentials live
    - `ARC_RUNNER_LABEL` → your ARC runner label
+   - `AGENT_SOURCE_REPO` → your fork (e.g. `acmecorp/my-agent-tools`) so workflows check out your own copy of the agent code rather than the upstream
    - `BEADS_ENABLED=false` → skip the beads task-state system (not needed for lightweight installs)
    - `AWS_REGION` → only if non-default
 2. Creates the agent issue labels on the repo (`agent-developer`, `agent-pm`, etc.).
@@ -249,7 +250,7 @@ If you don't care about project boards, this is harmless — all other agent beh
 ```
 
 Removes:
-- Repo variables (`SECRET_PREFIX`, `ARC_RUNNER_LABEL`, `BEADS_ENABLED`, `AWS_REGION`)
+- Repo variables (`SECRET_PREFIX`, `ARC_RUNNER_LABEL`, `AGENT_SOURCE_REPO`, `BEADS_ENABLED`, `AWS_REGION`)
 - Optionally, the agent issue labels (prompts)
 
 Does **not** remove** (and the script never created them, so it can't):
@@ -279,6 +280,7 @@ All variables use `${{ vars.X || 'default' }}` — defaults match today's hardco
 
 | Variable | Default | Set to | Used by |
 |---|---|---|---|
+| `AGENT_SOURCE_REPO` | `aws-e/adp` | Your fork (e.g. `acmecorp/my-agent-tools`) | All agent workflows |
 | `ARC_RUNNER_LABEL` | `arc-runner-org` | Your ARC runner label | All agent workflows |
 | `SECRET_PREFIX` | `adp/aws-e` | `adp/<your-org>` | All agent workflows |
 | `AWS_REGION` | `us-east-1` | Your region | All agent workflows |
@@ -303,16 +305,16 @@ If you want a single-App install, store the same App ID and key under all three 
 
 ### Which workflow reads which variables
 
-| Workflow | ARC_RUNNER_LABEL | SECRET_PREFIX | AWS_REGION | EKS_CLUSTER | BEADS_ENABLED |
-|---|---|---|---|---|---|
-| `agent-developer.yml` | ✓ | dev | ✓ | – | ✓ |
-| `agent-pm.yml` | ✓ | pm | ✓ | – | ✓ |
-| `agent-operations.yml` | ✓ | ops | ✓ | ✓ | ✓ |
-| `agent-architect.yml` | ✓ | dev | ✓ | – | ✓ |
-| `agent-product.yml` | ✓ | dev | ✓ | – | ✓ |
-| `agent-reviewer.yml` | ✓ | ops | ✓ | – | ✓ |
-| `agent-pt-superpower.yml` | ✓ | ops | ✓ | – | ✓ |
-| `skill-agent.yml` | ✓ | ops | ✓ | ✓ | – |
+| Workflow | AGENT_SOURCE_REPO | ARC_RUNNER_LABEL | SECRET_PREFIX | AWS_REGION | EKS_CLUSTER | BEADS_ENABLED |
+|---|---|---|---|---|---|---|
+| `agent-developer.yml` | ✓ | ✓ | dev | ✓ | – | ✓ |
+| `agent-pm.yml` | ✓ | ✓ | pm | ✓ | – | ✓ |
+| `agent-operations.yml` | ✓ | ✓ | ops | ✓ | ✓ | ✓ |
+| `agent-architect.yml` | ✓ | ✓ | dev | ✓ | – | ✓ |
+| `agent-product.yml` | ✓ | ✓ | dev | ✓ | – | ✓ |
+| `agent-reviewer.yml` | ✓ | ✓ | ops | ✓ | – | ✓ |
+| `agent-pt-superpower.yml` | ✓ | ✓ | ops | ✓ | – | ✓ |
+| `skill-agent.yml` | ✓ | ✓ | ops | ✓ | ✓ | – |
 
 ---
 
