@@ -18,6 +18,13 @@ export interface ArtifactRef {
   source: 'agent' | 'user';
 }
 
+/** Caller identity for team-level access control (Stage B, #185). */
+export interface CallerIdentity {
+  orgId?: string;
+  teamId?: string;
+  userId?: string;
+}
+
 /**
  * Scope handed to `toolsForTurn`. The orchestrator constructs a fresh tool set
  * per turn so `publish_artifact` / `list_artifacts` always receive the current
@@ -28,6 +35,8 @@ export interface TurnScope {
   sessionId: string;
   taskId?: string;
   onPublish?: (ref: ArtifactRef) => void;
+  /** Stage B (#185): identity of the caller, written to DDB catalog rows. */
+  identity?: CallerIdentity;
 }
 
 export interface ArtifactStore {
@@ -40,9 +49,16 @@ export interface ArtifactStore {
     ttl?: number;
     supersedes?: string;
     source?: 'agent' | 'user';
+    /** Stage B (#185): identity fields written to the DDB catalog row. */
+    identity?: CallerIdentity;
   }): Promise<ArtifactRef>;
 
-  fetch(artifactId: string, destPath: string): Promise<void>;
+  fetch(
+    artifactId: string,
+    destPath: string,
+    /** Stage B (#185): caller identity for team-level access check. */
+    identity?: CallerIdentity,
+  ): Promise<void>;
 
   listBySession(
     sessionId: string,
@@ -51,6 +67,8 @@ export interface ArtifactStore {
       filename?: string;
       limit?: number;
     },
+    /** Stage B (#185): caller identity for team-level filtering. */
+    identity?: CallerIdentity,
   ): Promise<ArtifactRef[]>;
 
   /**

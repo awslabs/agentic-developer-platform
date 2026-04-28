@@ -68,6 +68,12 @@ resource "aws_dynamodb_table" "chat_artifacts" {
     type = "S"
   }
 
+  # Stage B (#185): org_id attribute for org-wide admin queries
+  attribute {
+    name = "org_id"
+    type = "S"
+  }
+
   ttl {
     attribute_name = "ttl"
     enabled        = true
@@ -76,6 +82,14 @@ resource "aws_dynamodb_table" "chat_artifacts" {
   global_secondary_index {
     name            = "by-id"
     hash_key        = "id"
+    projection_type = "ALL"
+  }
+
+  # Stage B (#185): GSI for org-wide artifact queries
+  global_secondary_index {
+    name            = "by-org"
+    hash_key        = "org_id"
+    range_key       = "SK"
     projection_type = "ALL"
   }
 

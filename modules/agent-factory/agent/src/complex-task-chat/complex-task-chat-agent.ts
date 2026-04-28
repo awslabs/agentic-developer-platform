@@ -219,6 +219,8 @@ async function processOne(
         publishCount++;
         publishedRefs.push(ref);
       },
+      // Stage B (#185): pass identity so artifacts get team-scoped access control
+      identity: org_id ? { orgId: org_id, teamId: team_id, userId: user_id } : undefined,
     });
 
     const tools: AgentTool[] = [

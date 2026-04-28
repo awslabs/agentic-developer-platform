@@ -3,7 +3,7 @@
  *
  * Used when artifact storage is disabled or during testing.
  */
-import { ArtifactStore, ArtifactRef, TurnScope } from './port';
+import { ArtifactStore, ArtifactRef, TurnScope, CallerIdentity } from './port';
 import { AgentTool } from '../context/types';
 
 export class NoopArtifactStore implements ArtifactStore {
@@ -16,6 +16,7 @@ export class NoopArtifactStore implements ArtifactStore {
     ttl?: number;
     supersedes?: string;
     source?: 'agent' | 'user';
+    identity?: CallerIdentity;
   }): Promise<ArtifactRef> {
     const now = new Date().toISOString();
     return {
@@ -32,13 +33,18 @@ export class NoopArtifactStore implements ArtifactStore {
     };
   }
 
-  async fetch(_artifactId: string, _destPath: string): Promise<void> {
+  async fetch(
+    _artifactId: string,
+    _destPath: string,
+    _identity?: CallerIdentity,
+  ): Promise<void> {
     // no-op
   }
 
   async listBySession(
     _sessionId: string,
     _filter?: { contentType?: string; filename?: string; limit?: number },
+    _identity?: CallerIdentity,
   ): Promise<ArtifactRef[]> {
     return [];
   }
