@@ -2,7 +2,39 @@
 
 **Status:** Approved for implementation
 **Author:** Pranav + Claude
-**Last updated:** 2026-04-24
+**Last updated:** 2026-04-27
+
+### Architect Refresh — Delta Notes (2026-04-26, Issue #133)
+
+This section captures findings from the Phase 0 architect pass validating the design against the current repo state. Six areas were reviewed; three required corrections, three were confirmed as-is.
+
+**Corrections applied:**
+
+1. **Migration numbering (was wrong).** The doc stated latest migration was `002_cognito_fields.py` and vault would be `003`. The latest is now `003_model_pricing_columns.py` (revision `003_model_pricing`, added for Issue #234). **Vault migration must be `004_user_identities_and_credentials.py`.**
+
+2. **No FK constraints exist in the schema today.** The design specifies `FK -> organizations` and `FK -> users.id ON DELETE CASCADE`. However, the existing schema uses **no ForeignKey constraints at all** — `001_initial_schema.py` creates all tables without FK references, and the SQLAlchemy models have no `ForeignKey()` declarations. The vault tables would be the **first real FK constraints** in this database. This is fine and desirable (FK integrity for cascade deletes is critical for vault security), but implementers must be aware that Alembic autogenerate will not detect FK relationships from the existing models. The vault migration must explicitly create the FK constraints with `ON DELETE CASCADE`, and should also add FK constraints on the vault's `org_id` columns pointing to `organizations.id`.
+
+3. **PK type mismatch.** The design says `id: UUID PK`. The existing tables use `String(255)` with a `new_uuid()` default (see `base.py:new_uuid`). Vault tables should follow the established pattern: `String(255)` PK with `default=new_uuid`, not a native UUID column. This preserves ORM consistency.
+
+**Confirmed as-is:**
+
+4. **Module placement — same-pod-new-router is correct for v1.** The vault's user-facing endpoints (`/auth/credentials`, `/auth/identities`) and internal endpoints (`/internal/v1/*`) should run on the gateway FastAPI process. Rationale: (a) vault shares the gateway's Postgres for FK integrity to `users`/`organizations`; (b) no network hop for `/internal/v1/*` calls; (c) the gateway service account (`gateway-service` in `adp-gateway` namespace) already has IRSA — only needs a policy addition for Secrets Manager. The `user-services-overview.md` says each service has "its own Dockerfile" — this applies to v2+ services that justify separation. For v1 the vault is a router addition to the gateway, not a standalone deployment. The `modules/user-services/vault/` directory holds the *source code* (models, routes, tests), but it is imported and mounted by the gateway's `app.py`.
+
+5. **TenantMixin usage is compatible.** `TenantMixin` adds `org_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)` — matches the design's intent. The vault models should inherit `Base, TenantMixin` exactly like `Department`, `Team`, `User`, and `ServiceAccount` do.
+
+6. **Delivery paths are sound with one IAM fix required.** The three delivery paths (HTTP proxy, file materialization, raw-value escape hatch) are architecturally correct. However, the agent runner IAM role (`adp-dev-runner-role` in `modules/agent-factory/infra/modules/runner-iam/main.tf`) currently grants `secretsmanager:GetSecretValue` on `arn:aws:secretsmanager:*:*:secret:adp/*` — which **includes** `adp/users/*`. The design's security invariant ("agent pods do NOT have direct Secrets Manager access") is not enforced by current IAM. **The runner IAM policy must be tightened to exclude `adp/users/*`** before vault secrets are stored there. Recommended fix: change the runner's Secrets Manager resource from `adp/*` to `adp/gh-app-*` (the only secrets runners currently need), or add an explicit Deny on `adp/users/*`.
+
+**New gaps surfaced:**
+
+7. **AG-UI event protocol (Issue #97).** The agent now emits AG-UI events (`TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END`) for every tool invocation. Vault MCP tools (`http_request_with_credential`, `materialize_user_credential`, `get_user_credential_raw`) will generate these events. **The `TOOL_CALL_ARGS` delta must never contain credential values.** The tool implementations must sanitize their input summaries before they reach the AG-UI event emission in `complex-task-chat-agent.ts`. The `inputSummary` for vault tools should show `{service, label, url}` but never `{value}`.
+
+8. **Context store path has changed.** The design references `modules/agent-factory/agent/src/complex-task-chat/context-store.ts` for the LCM scrubber integration. This file no longer exists — context management was refactored into `context/factory.ts` and the `context/` subdirectory. The LCM scrubber registration point should be updated to target the context factory's record path.
+
+9. **Internal endpoint routing infrastructure does not exist yet.** The gateway currently has no `/internal/*` route namespace and no service-to-service IAM auth middleware. The vault implementation must create: (a) an `internal` router with IAM signature verification middleware, (b) registration in `app.py`'s `UNIT_MODULES` list. This is net-new infrastructure, not a slot-in.
+
+10. **`/auth/exchange` endpoint collision.** The existing `/auth/exchange` route (Issue #133 security fix, now disabled by default) uses the same `#133` issue number as this vault review. This is a numbering coincidence, not a conflict — but implementers should note that the `/auth` router already has deprecated endpoints. New vault routes under `/auth/credentials` and `/auth/identities` will coexist cleanly; no namespace collision.
+
+---
 
 ## Position in the platform
 
@@ -61,8 +93,18 @@ The gateway module (`modules/gateway/`) already owns user and tenant management 
 - **Postgres tables** (`modules/gateway/src/shared/models/organization.py`): `organizations`, `departments`, `teams`, `users`, `service_accounts`, `tokens`. `users.cognito_sub` is indexed and is our canonical user key.
 - **TenantMixin** (`modules/gateway/src/shared/models/base.py:12`): every tenant-scoped table carries `org_id` NOT NULL. New tables will follow this.
 - **Pre-token-generation Lambda** (`modules/gateway/infra/modules/cognito/lambda/pre_token_generation.py`): injects `custom:org_id`, `custom:team_id`, `custom:department_id` into JWTs on login — this is how the backend knows which tenant a caller belongs to.
-- **Alembic migrations** (`modules/gateway/alembic/versions/`): additive-only pattern, latest is `002_cognito_fields.py`. New migration for this feature will be `003_user_identities_and_credentials.py`.
+- **Alembic migrations** (`modules/gateway/alembic/versions/`): additive-only pattern, latest is `003_model_pricing_columns.py` (revision `003_model_pricing`). New migration for this feature will be `004_user_identities_and_credentials.py`.
 - **FastAPI auth routes** (`modules/gateway/src/auth/routes.py`): `/auth/me`, service-account CRUD. New identity/credential endpoints slot in here.
+
+## Relationship to the agent-side identity epic (#181)
+
+Epic #181 ("User identity + per-tenant isolation across the agent platform") propagates `TokenContext` (`{user_id, org_id, team_id, department_id, account_type}`) end-to-end through the agent module — WebSocket `$connect` → ingest Lambda → SQS task payload → worker pod. Today the agent module has `tenant_id` in its types but never validates against a real identity source.
+
+The vault depends on this. The MCP tools (`http_request_with_credential` etc.) look up credentials by `user_id` — that value is only trustworthy if the worker received it from a validated JWT, not from an attacker-controlled session ID. Concretely:
+
+- **Vault Phase 1** (schema + secrets substrate) can land independently — the DB tables and Secrets Manager namespace don't need the agent-side plumbing.
+- **Vault Phase 4** (MCP tools in the agent) **depends on epic #181 Stage A** (JWT claim propagation to the worker's `TokenContext`). Without Stage A, the MCP tools would read `user_id` from an unvalidated SQS payload — a trust boundary violation.
+- **Vault Phase 5** (ingest identity resolution) overlaps with #181 Stage A and should be coordinated as a single PR if possible — both extend the ingest Lambda's token-extraction path.
 
 ## Design
 
@@ -286,7 +328,7 @@ These were open questions in the draft; now resolved. Rationale is in the prior 
 
 ## Rollout plan
 
-1. **Schema + migration (gateway backend).** Alembic `003_user_identities_and_credentials.py` adds `user_identities`, `user_credentials`, and `channel_tenant_map` tables.
+1. **Schema + migration (gateway backend).** Alembic `004_user_identities_and_credentials.py` adds `user_identities`, `user_credentials`, and `channel_tenant_map` tables. (Updated from 003 — see delta notes at top.)
 2. **Secrets Manager write path + IAM.** Gateway service role gets `secretsmanager:CreateSecret / GetSecretValue / UpdateSecret / DeleteSecret` on `adp/users/*/*`. Agent pods are **not** granted Secrets Manager access — the gateway is the boundary.
 3. **User-facing endpoints.** `/auth/credentials` CRUD and `/auth/identities` CRUD under `modules/gateway/src/auth/routes.py`. Values are written straight to Secrets Manager; the DB row holds only the ARN.
 4. **Internal service-to-service endpoints.** `/internal/v1/resolve-user`, `/internal/v1/user-credentials` (metadata only), `/internal/v1/proxy-request` (gateway-side HTTP proxy), `/internal/v1/credential-raw-read` (escape hatch, per-org feature-flag gated), `/internal/v1/credential-materialize` (file materialization for `ssh_key` / `certificate` / `config_file` types). IAM-signed and restricted to ingest Lambda + agent service account ARNs.
@@ -309,3 +351,14 @@ Steps 1–6 deliver the identity layer (resolver + linking + credentials API + s
 - Cross-region secret replication.
 - Promotion of the `/internal/v1/*` endpoints and the two MCP tools into `modules/harness/` as versioned harness contracts consumable by any app.
 - HITL-gated raw-reads in high-trust tenants (first raw-read in a task opens an approval ticket before returning the value).
+
+## v1.5 follow-ups for multi-team SaaS self-serve
+
+v1 targets hand-onboarded tenants (small number of teams, admin pre-maps channels). These items become material as we onboard more self-serve teams:
+
+1. **App-scoped / team-scoped credentials.** The `user_id NOT NULL` constraint on `user_credentials` is a v1 simplification — expect teams to want shared credentials within days of onboarding (team deploy bot PAT, team-owned GitHub App install token, shared internal API keys). Relax to `(user_id XOR team_id XOR org_id) NOT NULL` with a CHECK constraint, extend the resolver to walk user → team → org, and add an admin UI for team/org-scoped credential management.
+2. **Self-serve `channel_tenant_map` creation.** Today the doc assumes admins pre-populate this at tenant onboarding. For self-serve SaaS, a new team admin needs to link their own Slack workspace / GitHub org during onboarding — without an ops team round-trip. Approach: OAuth flow where the team admin installs the ADP Slack app in their workspace; the install callback populates `channel_tenant_map` with the `team_id` → `org_id` binding, gated by the admin's Cognito session org.
+3. **Cross-org user identity.** v1's `(provider, provider_user_id)` uniqueness rejects the consultant / contractor case (same GitHub account used across two client orgs). Relax uniqueness and add a separate `user_identity_memberships` table mapping one identity to N `(user_id, org_id)` pairs, with the inbound resolver asking the user to disambiguate ("You're linked to two orgs — which one is this message for?") when the channel context is ambiguous.
+4. **Domain-based auto-team-assignment.** Optional convenience: a new Cognito signup with `@company.com` email can auto-join the `company.com` team if the admin has enabled domain-whitelist signup. Removes the per-user invite step for larger teams. Requires a `team_domain_claims` table and a `post-confirmation` Cognito Lambda.
+
+None of these block v1. Each becomes a separate issue when the concrete customer pain arrives — don't build them preemptively.
