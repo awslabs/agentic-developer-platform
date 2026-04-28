@@ -21,7 +21,6 @@ from src.shared.exceptions import NoHealthyAccountsError
 from tests.fixtures.factories import create_pool_account
 from tests.fixtures.mock_aws import MockBedrockClient, MockSTSClient, ThrottlingException
 
-
 # =============================================================================
 # Unit tests -- pure Python logic, db_session + mocks
 # =============================================================================
@@ -41,8 +40,11 @@ class TestConfigureBedrockPool:
 
         for config in pool_config:
             account = await create_pool_account(
-                db_session, account_id=config["account_id"],
-                role_arn=config["role_arn"], region=config["region"], is_healthy=True,
+                db_session,
+                account_id=config["account_id"],
+                role_arn=config["role_arn"],
+                region=config["region"],
+                is_healthy=True,
             )
             assert account.account_id == config["account_id"]
             assert account.role_arn == config["role_arn"]
@@ -56,7 +58,8 @@ class TestConfigureBedrockPool:
 
         result = await mock_sts.assume_role(
             role_arn="arn:aws:iam::111111111111:role/BedrockPoolRole",
-            role_session_name="bedrock-gateway", duration_seconds=3600,
+            role_session_name="bedrock-gateway",
+            duration_seconds=3600,
         )
 
         assert "Credentials" in result
@@ -86,7 +89,8 @@ class TestConfigureBedrockPool:
                 {"account_id": "111111111111", "is_healthy": True, "last_health_check": datetime.now(UTC).isoformat()},
                 {"account_id": "222222222222", "is_healthy": False, "last_health_check": None, "error": "Failed to assume role"},
             ],
-            "healthy_count": 1, "unhealthy_count": 1,
+            "healthy_count": 1,
+            "unhealthy_count": 1,
         }
 
         assert health_response["healthy_count"] == 1
@@ -114,7 +118,10 @@ class TestRoundRobinDistribution:
         accounts = []
         for i in range(3):
             account = await create_pool_account(
-                db_session, id=f"pool-rr-{i}", account_id=f"1111111111{i}", is_healthy=True,
+                db_session,
+                id=f"pool-rr-{i}",
+                account_id=f"1111111111{i}",
+                is_healthy=True,
             )
             accounts.append(account)
         await db_session.commit()
@@ -177,10 +184,7 @@ class TestRoundRobinDistribution:
 
     async def test_all_accounts_throttled_returns_503(self):
         """If all accounts are unhealthy, gateway returns 503."""
-        clients = [
-            MockBedrockClient(account_id=f"1111111111{i}", should_throttle=True)
-            for i in range(3)
-        ]
+        clients = [MockBedrockClient(account_id=f"1111111111{i}", should_throttle=True) for i in range(3)]
 
         for client in clients:
             with pytest.raises(ThrottlingException):
@@ -197,12 +201,21 @@ class TestRoundRobinDistribution:
         """GET /admin/pool/status shows per-account metrics."""
         for i in range(3):
             await create_pool_account(
-                db_session, id=f"pool-status-{i}", account_id=f"1111111111{i}", is_healthy=True,
+                db_session,
+                id=f"pool-status-{i}",
+                account_id=f"1111111111{i}",
+                is_healthy=True,
             )
         await db_session.commit()
 
         pool_status = [
-            {"account_id": f"1111111111{i}", "is_healthy": True, "request_count": 1500 + i, "error_count": 5 - i, "last_used": datetime.now(UTC).isoformat()}
+            {
+                "account_id": f"1111111111{i}",
+                "is_healthy": True,
+                "request_count": 1500 + i,
+                "error_count": 5 - i,
+                "last_used": datetime.now(UTC).isoformat(),
+            }
             for i in range(3)
         ]
 

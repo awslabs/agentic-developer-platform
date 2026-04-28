@@ -728,6 +728,33 @@ Before editing or creating any code file, read and internalize \`docs/agent-codi
 
 Full guidelines at \`docs/agent-coding-guidelines.md\`.
 
+## Pre-submit checks (MANDATORY before creating a PR)
+
+Before you push your branch and open the PR, run the linters and tests for the module(s) you touched. A PR that lands with red CI wastes the reviewer's time, trains everyone to ignore the signal, and ships bugs the linter would have caught.
+
+### Module → check commands
+
+| Module you touched | Commands to run (in that order) |
+|---|---|
+| \`modules/gateway/\` (Python) | \`cd modules/gateway && ruff check src/ tests/ && ruff format --check src/ tests/ && python3 -m pytest tests/ -q\` |
+| \`modules/agent-factory/agent/\` (TypeScript) | \`cd modules/agent-factory/agent && npx tsc --noEmit && npx jest\` |
+| \`modules/agent-factory/gateway/lambdas/\` (Python) | \`cd modules/agent-factory && python3 -m pytest tests/lambda/ -q\` |
+| \`modules/agent-context/\` (Python) | \`cd modules/agent-context && ruff check . && python3 -m pytest\` |
+| Terraform (\`*/infra/\`, \`platform/infra/\`) | \`cd <module>/infra && terraform fmt -check && terraform validate\` |
+
+### Rules
+
+- **Run ALL commands for EVERY module you touched.** If your diff spans two modules, run two sets of checks.
+- **If any command fails**, fix the underlying issue before pushing. Do NOT suppress warnings with \`# noqa\` or \`eslint-disable\` unless the rule genuinely doesn't apply — and note why in a comment.
+- **If a check fails on code you didn't touch** (pre-existing debt), note it in the PR description as "pre-existing on main: <file>:<line> <rule>" and move on. Don't clean up unrelated debt in the same PR (surgical changes principle from \`docs/agent-coding-guidelines.md\`).
+- **Auto-fix tools are fine**: \`ruff check --fix\`, \`ruff format\`, \`eslint --fix\`. Treat their output as code you wrote — review the diff before committing.
+
+### Post-commit sanity
+
+After committing, before pushing, run \`git diff HEAD~1 --stat\` and confirm the files you expected to change are the only ones that changed. If the linter reformatted a file you didn't mean to touch, that's a surgical-changes violation — revert it.
+
+Failing to run these checks is a process bug. PRs that land with lint/test failures traceable to the PR's own changes will be reverted.
+
 ${AGENT_TYPE === 'reviewer' ? `### Step 3.4: Spec-vs-diff Review (MANDATORY for @agent-reviewer)
 
 You are reviewing a PR. Treat this as an INDEPENDENT review — don't trust the PR description, verify against the code.

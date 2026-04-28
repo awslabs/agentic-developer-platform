@@ -30,7 +30,6 @@ from tests.fixtures.factories import (
     create_user,
 )
 
-
 # =============================================================================
 # Unit tests -- pure Python logic, db_session + mocks
 # =============================================================================
@@ -278,10 +277,7 @@ class TestLiveRateLimitOAuth:
         headers = {"Authorization": f"Bearer {jwt_for_user}", "Content-Type": "application/json"}
 
         # Fire 5 concurrent requests
-        tasks = [
-            api_client.post("/v1/messages", headers=headers, json=payload)
-            for _ in range(5)
-        ]
+        tasks = [api_client.post("/v1/messages", headers=headers, json=payload) for _ in range(5)]
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
         status_codes = []

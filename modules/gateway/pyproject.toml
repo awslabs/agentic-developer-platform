@@ -87,6 +87,9 @@ include = ["src*"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/cli/conftest.py" = ["N802", "E501"]
+# E402: pytestmark must appear before project imports for pytest collection;
+# this is a deliberate pattern across all e2e test files.
+"tests/e2e/test_*.py" = ["E402"]
 "tests/shared/test_logging_middleware.py" = ["F841"]
 # UP042: str+Enum to StrEnum migration deferred - pre-existing pattern across codebase
 "src/admin/config.py" = ["UP042"]

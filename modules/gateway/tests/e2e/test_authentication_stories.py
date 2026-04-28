@@ -42,7 +42,6 @@ from tests.fixtures.factories import (
 )
 from tests.fixtures.mock_aws import MockSTSClient
 
-
 # =============================================================================
 # Unit tests -- pure Python logic, db_session + mocks
 # =============================================================================
@@ -385,12 +384,22 @@ class TestTokenManagement:
         user = await create_user(db_session, org.id, team.id, id="user-refresh")
 
         token1, raw_token1 = await create_token(
-            db_session, org.id, team.id, dept.id, user.id, expires_in_hours=1.0,
+            db_session,
+            org.id,
+            team.id,
+            dept.id,
+            user.id,
+            expires_in_hours=1.0,
         )
         await db_session.commit()
 
         token2, raw_token2 = await create_token(
-            db_session, org.id, team.id, dept.id, user.id, expires_in_hours=1.0,
+            db_session,
+            org.id,
+            team.id,
+            dept.id,
+            user.id,
+            expires_in_hours=1.0,
         )
         await db_session.commit()
 
@@ -409,7 +418,12 @@ class TestTokenManagement:
         user = await create_user(db_session, org.id, team.id, id="user-revoke")
 
         token, raw_token = await create_token(
-            db_session, org.id, team.id, dept.id, user.id, revoked=True,
+            db_session,
+            org.id,
+            team.id,
+            dept.id,
+            user.id,
+            revoked=True,
         )
         await db_session.commit()
 
@@ -456,7 +470,12 @@ class TestExpiredCredentialsHandling:
         user = await create_user(db_session, org.id, team.id, id="user-token-expired")
 
         token, raw_token = await create_token(
-            db_session, org.id, team.id, dept.id, user.id, expires_in_hours=-1.0,
+            db_session,
+            org.id,
+            team.id,
+            dept.id,
+            user.id,
+            expires_in_hours=-1.0,
         )
         await db_session.commit()
 

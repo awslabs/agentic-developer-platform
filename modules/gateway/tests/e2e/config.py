@@ -49,6 +49,7 @@ class LiveTestConfig:
     aws_region: str = "us-east-1"
     environment: str = "dev"
 
+
 # Default Bedrock model for live proxy tests.
 # Cross-region inference profile that resolves dynamically.
 DEFAULT_BEDROCK_MODEL = "global.anthropic.claude-sonnet-4-6"

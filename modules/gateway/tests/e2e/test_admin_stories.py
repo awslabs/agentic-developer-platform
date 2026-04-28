@@ -33,7 +33,6 @@ from tests.fixtures.factories import (
     create_user,
 )
 
-
 # =============================================================================
 # Unit tests -- pure Python logic, db_session + mocks
 # =============================================================================
@@ -65,7 +64,12 @@ class TestAdminUIAuthentication:
         admin_user = await create_user(db_session, org.id, team.id, id="user-admin-login")
 
         token, raw_token = await create_token(
-            db_session, org.id, team.id, dept.id, admin_user.id, is_admin=True,
+            db_session,
+            org.id,
+            team.id,
+            dept.id,
+            admin_user.id,
+            is_admin=True,
         )
         await db_session.commit()
 
@@ -82,7 +86,12 @@ class TestAdminUIAuthentication:
         user = await create_user(db_session, org.id, team.id, id="user-readonly")
 
         token, raw_token = await create_token(
-            db_session, org.id, team.id, dept.id, user.id, is_admin=False,
+            db_session,
+            org.id,
+            team.id,
+            dept.id,
+            user.id,
+            is_admin=False,
         )
         await db_session.commit()
 
@@ -254,19 +263,30 @@ class TestLogViewer:
         user = await create_user(db_session, org.id, team.id, id="user-logs")
 
         await create_usage_log(
-            db_session, org.id, dept.id, team.id, user.id,
+            db_session,
+            org.id,
+            dept.id,
+            team.id,
+            user.id,
             model="anthropic.claude-3-5-sonnet-20241022-v2:0",
-            input_tokens=100, output_tokens=200,
-            cost_usd=Decimal("0.00330"), latency_ms=500, status_code=200,
+            input_tokens=100,
+            output_tokens=200,
+            cost_usd=Decimal("0.00330"),
+            latency_ms=500,
+            status_code=200,
         )
         await db_session.commit()
 
         log_entry = {
             "timestamp": datetime.now(UTC).isoformat(),
-            "user_id": user.id, "account_type": "human",
+            "user_id": user.id,
+            "account_type": "human",
             "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
-            "input_tokens": 100, "output_tokens": 200,
-            "cost_usd": 0.00330, "latency_ms": 500, "status_code": 200,
+            "input_tokens": 100,
+            "output_tokens": 200,
+            "cost_usd": 0.00330,
+            "latency_ms": 500,
+            "status_code": 200,
         }
 
         required_fields = ["timestamp", "user_id", "model", "input_tokens", "output_tokens", "cost_usd", "latency_ms", "status_code"]
@@ -276,9 +296,13 @@ class TestLogViewer:
     async def test_log_filters(self):
         """Log viewer filters work."""
         filters = {
-            "department_id": "dept-123", "team_id": "team-456",
-            "user_id": "user-789", "model": "claude-3-5-sonnet",
-            "status_code": 200, "date_from": "2024-01-01", "date_to": "2024-01-31",
+            "department_id": "dept-123",
+            "team_id": "team-456",
+            "user_id": "user-789",
+            "model": "claude-3-5-sonnet",
+            "status_code": 200,
+            "date_from": "2024-01-01",
+            "date_to": "2024-01-31",
         }
 
         supported_filters = ["department_id", "team_id", "user_id", "model", "status_code", "date_from", "date_to"]
@@ -289,7 +313,8 @@ class TestLogViewer:
         """Search by request ID works."""
         request_id = "req-abc123-def456"
         search_result = {
-            "request_id": request_id, "found": True,
+            "request_id": request_id,
+            "found": True,
             "log": {"timestamp": datetime.now(UTC).isoformat(), "status_code": 200},
         }
 
@@ -299,7 +324,8 @@ class TestLogViewer:
     async def test_export_to_csv(self):
         """Export to CSV works."""
         csv_export = {
-            "format": "csv", "rows": 1000,
+            "format": "csv",
+            "rows": 1000,
             "headers": ["timestamp", "user_id", "model", "tokens", "cost", "status"],
         }
 
@@ -316,8 +342,12 @@ class TestLogViewer:
         await db_session.commit()
 
         org1_admin_context = TokenContext(
-            user_id="admin-1", org_id=org1.id, team_id="team-1",
-            department_id="dept-1", account_type="human", is_admin=True,
+            user_id="admin-1",
+            org_id=org1.id,
+            team_id="team-1",
+            department_id="dept-1",
+            account_type="human",
+            is_admin=True,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
 
@@ -345,12 +375,20 @@ class TestRequestLogging:
         user = await create_user(db_session, org.id, team.id, id="user-full-log")
 
         log = await create_usage_log(
-            db_session, org.id, dept.id, team.id, user.id,
+            db_session,
+            org.id,
+            dept.id,
+            team.id,
+            user.id,
             account_type="human",
             model="anthropic.claude-3-5-sonnet-20241022-v2:0",
-            input_tokens=150, output_tokens=300,
-            cost_usd=Decimal("0.005250"), latency_ms=650, status_code=200,
-            request_id="req-full-123", bedrock_account_id="111111111111",
+            input_tokens=150,
+            output_tokens=300,
+            cost_usd=Decimal("0.005250"),
+            latency_ms=650,
+            status_code=200,
+            request_id="req-full-123",
+            bedrock_account_id="111111111111",
         )
         await db_session.commit()
 
@@ -366,9 +404,12 @@ class TestRequestLogging:
     async def test_logs_queryable_via_admin_api(self):
         """Logs queryable via Admin API."""
         query_params = {
-            "org_id": "org-123", "user_id": "user-456",
-            "from": "2024-01-01T00:00:00Z", "to": "2024-01-31T23:59:59Z",
-            "limit": 100, "offset": 0,
+            "org_id": "org-123",
+            "user_id": "user-456",
+            "from": "2024-01-01T00:00:00Z",
+            "to": "2024-01-31T23:59:59Z",
+            "limit": 100,
+            "offset": 0,
         }
 
         supported_params = ["org_id", "user_id", "from", "to", "limit", "offset"]

@@ -284,6 +284,7 @@ async def cloudfront_client() -> AsyncGenerator[httpx.AsyncClient, None]:
 
 class _StubSigV4Client(httpx.AsyncClient):
     """Unit-mode stub: adds fake IAM SigV4 headers but hits the ASGI app."""
+
     pass
 
 
@@ -400,7 +401,10 @@ class _UnitIAMSignedClient:
     """
 
     _FAKE_HEADERS = {
-        "Authorization": "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260419/us-east-1/execute-api/aws4_request, SignedHeaders=host;x-amz-date, Signature=stub",
+        "Authorization": (
+            "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260419/us-east-1/execute-api/aws4_request,"
+            " SignedHeaders=host;x-amz-date, Signature=stub"
+        ),
         "X-Amz-Date": "20260419T000000Z",
         "X-Auth-Source": "iam",
         "X-Agent-Role": "arn:aws:iam::123456789012:role/adp-dev-agent-runner-role",
@@ -409,7 +413,15 @@ class _UnitIAMSignedClient:
     def __init__(self, inner: httpx.AsyncClient) -> None:
         self._inner = inner
 
-    async def request(self, method: str, url: str, *, json: dict | None = None, headers: dict[str, str] | None = None, **kwargs: Any) -> httpx.Response:
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json: dict | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
         merged = {**self._FAKE_HEADERS, **(headers or {})}
         return await self._inner.request(method, url, json=json, headers=merged, **kwargs)
 

@@ -29,7 +29,6 @@ from tests.fixtures.factories import (
 )
 from tests.fixtures.mock_aws import MockBedrockClient
 
-
 # =============================================================================
 # Unit tests -- pure Python logic, mock_bedrock_client
 # =============================================================================
@@ -136,7 +135,11 @@ class TestOpenAIChatCompletions:
         user = await create_user(db_session, org.id, team.id, id="user-bearer")
 
         token, raw_token = await create_token(
-            db_session, org.id, team.id, dept.id, user.id,
+            db_session,
+            org.id,
+            team.id,
+            dept.id,
+            user.id,
         )
         await db_session.commit()
 
@@ -218,7 +221,11 @@ class TestAnthropicMessagesFormat:
         user = await create_user(db_session, org.id, team.id, id="user-apikey")
 
         token, raw_token = await create_token(
-            db_session, org.id, team.id, dept.id, user.id,
+            db_session,
+            org.id,
+            team.id,
+            dept.id,
+            user.id,
         )
         await db_session.commit()
 
@@ -581,8 +588,9 @@ class TestLiveBedrockProxyIAM:
             },
         )
         # Should not return 500
-        assert response.status_code < 500 or response.status_code in (400, 403, 404), \
+        assert response.status_code < 500 or response.status_code in (400, 403, 404), (
             f"Expected <500 for inaccessible model via IAM, got {response.status_code}"
+        )
 
     async def test_iam_request_id_propagation(self, iam_signed_client):
         """X-Request-ID is echoed in IAM-authed responses."""

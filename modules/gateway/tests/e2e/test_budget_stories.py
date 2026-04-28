@@ -38,7 +38,6 @@ from tests.fixtures.factories import (
     create_user,
 )
 
-
 # =============================================================================
 # Unit tests -- pure Python logic, db_session + mocks
 # =============================================================================
@@ -66,8 +65,10 @@ class TestSetBudgetsAtAllLevels:
         )
 
         budget = await create_budget_config(
-            db_session, org.id,
-            budget_request.entity_type.value, budget_request.entity_id,
+            db_session,
+            org.id,
+            budget_request.entity_type.value,
+            budget_request.entity_id,
             period_type=budget_request.period_type.value,
             budget_amount_usd=budget_request.budget_amount_usd,
             enforcement_mode=budget_request.enforcement_mode.value,
@@ -85,13 +86,25 @@ class TestSetBudgetsAtAllLevels:
         team = await create_team(db_session, org.id, dept.id, id="team-cascade-val")
 
         org_budget = await create_budget_config(
-            db_session, org.id, "org", org.id, budget_amount_usd=Decimal("5000.00"),
+            db_session,
+            org.id,
+            "org",
+            org.id,
+            budget_amount_usd=Decimal("5000.00"),
         )
         dept_budget = await create_budget_config(
-            db_session, org.id, "department", dept.id, budget_amount_usd=Decimal("3000.00"),
+            db_session,
+            org.id,
+            "department",
+            dept.id,
+            budget_amount_usd=Decimal("3000.00"),
         )
         team_budget = await create_budget_config(
-            db_session, org.id, "team", team.id, budget_amount_usd=Decimal("1500.00"),
+            db_session,
+            org.id,
+            "team",
+            team.id,
+            budget_amount_usd=Decimal("1500.00"),
         )
         await db_session.commit()
 
@@ -118,9 +131,18 @@ class TestSetBudgetsAtAllLevels:
 
         budget_summary = {
             "org": {
-                "budget": 10000.00, "spent": 3000.00, "utilization": 30.0,
-                "departments": [{"id": dept.id, "budget": 5000.00, "spent": 1500.00, "utilization": 30.0,
-                                 "teams": [{"id": team.id, "budget": 2000.00, "spent": 800.00, "utilization": 40.0}]}],
+                "budget": 10000.00,
+                "spent": 3000.00,
+                "utilization": 30.0,
+                "departments": [
+                    {
+                        "id": dept.id,
+                        "budget": 5000.00,
+                        "spent": 1500.00,
+                        "utilization": 30.0,
+                        "teams": [{"id": team.id, "budget": 2000.00, "spent": 800.00, "utilization": 40.0}],
+                    }
+                ],
             }
         }
 
@@ -202,19 +224,30 @@ class TestBudgetEnforcementOnRequests:
         user = await create_user(db_session, org.id, team.id, id="user-hard-limit")
 
         await create_budget_config(
-            db_session, org.id, "user", user.id,
-            budget_amount_usd=Decimal("100.00"), enforcement_mode="hard",
+            db_session,
+            org.id,
+            "user",
+            user.id,
+            budget_amount_usd=Decimal("100.00"),
+            enforcement_mode="hard",
         )
         await create_budget_usage(
-            db_session, org.id, "user", user.id, total_cost_usd=Decimal("105.00"),
+            db_session,
+            org.id,
+            "user",
+            user.id,
+            total_cost_usd=Decimal("105.00"),
         )
         await db_session.commit()
 
         with pytest.raises(BudgetExceededError) as exc:
             raise BudgetExceededError(
-                level="user", entity=user.id,
-                budget_usd=100.00, spent_usd=105.00,
-                period="monthly", resets_at="2026-03-01T00:00:00Z",
+                level="user",
+                entity=user.id,
+                budget_usd=100.00,
+                spent_usd=105.00,
+                period="monthly",
+                resets_at="2026-03-01T00:00:00Z",
             )
 
         assert exc.value.status_code == 429
@@ -230,17 +263,28 @@ class TestBudgetEnforcementOnRequests:
         user = await create_user(db_session, org.id, team.id, id="user-soft-limit")
 
         await create_budget_config(
-            db_session, org.id, "user", user.id,
-            budget_amount_usd=Decimal("100.00"), enforcement_mode="soft",
+            db_session,
+            org.id,
+            "user",
+            user.id,
+            budget_amount_usd=Decimal("100.00"),
+            enforcement_mode="soft",
         )
         await create_budget_usage(
-            db_session, org.id, "user", user.id, total_cost_usd=Decimal("120.00"),
+            db_session,
+            org.id,
+            "user",
+            user.id,
+            total_cost_usd=Decimal("120.00"),
         )
         await db_session.commit()
 
         budget_result = BudgetCheckResult(
-            allowed=True, budget_usd=100.00, spent_usd=120.00,
-            enforcement_mode="soft", warnings=["soft_limit_exceeded"],
+            allowed=True,
+            budget_usd=100.00,
+            spent_usd=120.00,
+            enforcement_mode="soft",
+            warnings=["soft_limit_exceeded"],
         )
 
         assert budget_result.allowed is True
@@ -311,9 +355,12 @@ class TestBudgetHTTPEnforcement:
         """When a hard budget is exhausted the gateway returns 402 or 429."""
         with pytest.raises(BudgetExceededError) as exc:
             raise BudgetExceededError(
-                level="team", entity="team-depleted",
-                budget_usd=50.00, spent_usd=55.00,
-                period="monthly", resets_at="2026-05-01T00:00:00Z",
+                level="team",
+                entity="team-depleted",
+                budget_usd=50.00,
+                spent_usd=55.00,
+                period="monthly",
+                resets_at="2026-05-01T00:00:00Z",
             )
 
         assert exc.value.status_code in (402, 429)
