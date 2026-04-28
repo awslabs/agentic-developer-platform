@@ -29,6 +29,8 @@ resource "aws_lambda_function" "ingest" {
       #   adp/<github_org>/gh-app-ops-{id,key}
       # The code appends `-id` and `-key` at runtime.
       GH_APP_SECRET_PREFIX = "adp/${var.github_org}/gh-app-ops"
+      ARTIFACTS_BUCKET     = var.artifacts_bucket_name
+      ARTIFACTS_TABLE      = var.artifacts_table_name
     }
   }
 
@@ -103,8 +105,29 @@ resource "aws_iam_role_policy" "ingest_dynamodb" {
       # DeleteItem is required for $disconnect cleanup — without it the
       # handler logs "AccessDeniedException on dynamodb:DeleteItem" and
       # leaves stale connection rows that confuse response routing.
-      Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:DeleteItem"]
-      Resource = [var.sessions_table_arn, "${var.sessions_table_arn}/index/*"]
+      Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:DeleteItem"]
+      Resource = [
+        var.sessions_table_arn, "${var.sessions_table_arn}/index/*",
+        var.artifacts_table_arn, "${var.artifacts_table_arn}/index/*",
+      ]
+    }]
+  })
+}
+
+# S3 presigned URL support for upload-token / upload-complete actions.
+# generate_presigned_url("put_object") signs with the Lambda's credentials,
+# so the role needs s3:PutObject. s3:GetObject is included for future
+# download-token support.
+resource "aws_iam_role_policy" "ingest_s3_uploads" {
+  name = "s3-uploads"
+  role = aws_iam_role.ingest.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:PutObject", "s3:GetObject"]
+      Resource = "${var.artifacts_bucket_arn}/*"
     }]
   })
 }

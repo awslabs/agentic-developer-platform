@@ -72,6 +72,26 @@ variable "account_id" {
   type        = string
 }
 
+variable "artifacts_bucket_arn" {
+  description = "ARN of the S3 bucket for chat artifacts (presigned URL signing)."
+  type        = string
+}
+
+variable "artifacts_bucket_name" {
+  description = "Name of the S3 bucket for chat artifacts."
+  type        = string
+}
+
+variable "artifacts_table_arn" {
+  description = "ARN of the DynamoDB table for chat artifacts catalog."
+  type        = string
+}
+
+variable "artifacts_table_name" {
+  description = "Name of the DynamoDB table for chat artifacts catalog."
+  type        = string
+}
+
 variable "classifier_model" {
   description = "Bedrock model ID used by the ingest classifier. Haiku 4.5 is ~5x faster than Sonnet 4.6 for the short routing call — the classifier sees <2KB of context and returns ~200 bytes of JSON, so Haiku's accuracy gap is negligible but the latency win is the difference between 400ms and 2s per user turn."
   type        = string
