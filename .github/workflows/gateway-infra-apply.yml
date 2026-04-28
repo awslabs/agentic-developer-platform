@@ -64,6 +64,7 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
           set -e
+          set -o pipefail
           EXIT_CODE=0
           terraform plan -var-file="../../../${{ env.VAR_FILE }}" -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
           echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
