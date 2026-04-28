@@ -694,7 +694,79 @@ Starting implementation..."
 - Follow phase rules relevant to your agent type
 - Document your work in appropriate locations
 
-${AGENT_TYPE === 'reviewer' ? `### Step 3.5: Security Review (MANDATORY for @agent-reviewer)
+${AGENT_TYPE === 'reviewer' ? `### Step 3.4: Spec-vs-diff Review (MANDATORY for @agent-reviewer)
+
+You are reviewing a PR. Treat this as an INDEPENDENT review — don't trust the PR description, verify against the code.
+
+**If you cannot find PR_NUMBER in the environment**, stop and report the setup failure in an issue comment — don't proceed with an unscoped review.
+
+1. **Identify the PR and the driving issue:**
+   \`\`\`bash
+   # PR_NUMBER is provided in your environment
+   echo "Reviewing PR #\$PR_NUMBER against issue #\$ISSUE_NUMBER"
+   gh pr view \$PR_NUMBER --json title,body,files,additions,deletions
+   gh pr diff \$PR_NUMBER > /tmp/pr-diff.patch
+   \`\`\`
+
+2. **Extract the acceptance criteria from the issue:**
+   Re-read the issue body (already shown above). List every acceptance criterion, invariant, and "must NOT" constraint as a checklist. If there's an "Acceptance Criteria" section, extract it verbatim. If not, synthesize from the Goal + Scope sections.
+
+3. **Verify each criterion against the diff:**
+   For each criterion in your checklist, find the concrete line(s) in the diff that satisfy it. If you can't find one, that's a HIGH-confidence merge blocker.
+
+4. **Check for invariant violations:**
+   Specifically watch for things the issue said NOT to do — "do not touch X", "do not change behavior of Y", "zero regression to Z". Grep the diff for those areas. Any violation is a HIGH-confidence merge blocker.
+
+5. **Check for committed files that should not exist:**
+   The repo's AGENTS.md at the root defines a set of "must not commit" rules (e.g. \`agent_learning/*.md\`, \`tfplan\` files, anything under \`.terraform/\`). Grep the diff's file list for violations — these are HIGH-confidence merge blockers and the agent should propose fixes.
+
+6. **Categorize every finding by confidence:**
+   - **HIGH**: certain merge blocker, verified against code
+   - **MEDIUM**: likely issue, worth discussing before merge
+   - **LOW**: nice-to-have, file as a follow-up
+
+7. **Write the review summary to a file:**
+   \`\`\`bash
+   mkdir -p data/code-review
+   cat > data/code-review/review-$(date +%Y%m%d)-pr-\$PR_NUMBER.md <<'SUMMARY'
+   # Review of PR #$PR_NUMBER
+
+   ## Driving issue
+   - #$ISSUE_NUMBER: <issue title>
+
+   ## Acceptance criteria checklist
+   - [x|✗] <criterion 1> — <where in diff it's satisfied OR why it's not>
+   - [x|✗] <criterion 2> — ...
+
+   ## Findings (by confidence)
+
+   ### HIGH — merge blockers
+   - <file:line>: <concrete issue + exact line in diff>
+
+   ### MEDIUM — discuss before merge
+   - ...
+
+   ### LOW — follow-up candidates
+   - ...
+
+   ## Recommendation
+   APPROVE / REQUEST CHANGES / BLOCK
+   SUMMARY
+   \`\`\`
+
+8. **Post the review summary to the PR:**
+   \`\`\`bash
+   gh pr comment \$PR_NUMBER --body-file data/code-review/review-$(date +%Y%m%d)-pr-\$PR_NUMBER.md
+   \`\`\`
+
+9. **Only after Step 8:** proceed to the security review step below.
+
+**DO NOT approve a PR if**:
+- Any HIGH finding is unresolved
+- Any acceptance criterion from the issue is ✗
+- Any file committed to the PR matches a "must not commit" rule in AGENTS.md
+
+### Step 3.5: Security Review (MANDATORY for @agent-reviewer)
 **You MUST run security review before approving ANY PR:**
 
 1. **Run the /security-review command:**

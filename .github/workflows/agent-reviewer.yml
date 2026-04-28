@@ -172,6 +172,10 @@ jobs:
           if [ -z "$PR_NUMBER" ]; then
             PR_NUMBER=$(gh pr list --repo ${{ env.TARGET_REPO }} --state open --search "$ISSUE_NUMBER" --json number --jq '.[0].number' 2>/dev/null || echo "")
           fi
+          # Export PR_NUMBER to GITHUB_ENV so downstream steps can access it
+          if [ -n "$PR_NUMBER" ]; then
+            echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+          fi
           if [ -n "$PR_NUMBER" ]; then
             gh pr comment "$PR_NUMBER" --repo ${{ env.TARGET_REPO }} --body "## 🔍 @agent-reviewer Started
 
@@ -217,6 +221,7 @@ jobs:
           BEADS_S3_BUCKET: ${{ vars.BEADS_S3_BUCKET || 'adp-agent-state' }}
           BEADS_S3_REGION: ${{ vars.AWS_REGION || 'us-west-2' }}
           BEADS_S3_PATH: beads/${{ github.event.repository.name }}
+          PR_NUMBER: ${{ env.PR_NUMBER }}
         run: npx ts-node src/agent-worker.ts
 
       # GitHub App tokens expire after 1 hour - refresh for long-running agents
