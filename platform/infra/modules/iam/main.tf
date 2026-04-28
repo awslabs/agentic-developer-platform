@@ -319,6 +319,36 @@ resource "aws_iam_role_policy" "gateway_service_xray" {
   })
 }
 
+# =============================================================================
+# Issue #134: Vault Phase 1 — Secrets Manager access for user credentials
+# =============================================================================
+# Gateway service role gains CRUD access to secrets under adp/users/*/*.
+# Agent runner pods do NOT receive these permissions.
+resource "aws_iam_role_policy" "gateway_service_vault_secrets" {
+  count = var.enable_vault_secrets ? 1 : 0
+  name  = "${var.name_prefix}-policy-gateway-vault-secrets"
+  role  = aws_iam_role.gateway_service_placeholder.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "VaultSecretsManagerCRUD"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:UpdateSecret",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:ListSecrets"
+        ]
+        Resource = "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/users/*/*"
+      }
+    ]
+  })
+}
+
 # Cross-Account Bedrock Pool Role Templates (for documentation)
 locals {
   bedrock_pool_trust_policy = jsonencode({

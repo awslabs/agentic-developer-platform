@@ -21,6 +21,14 @@ from src.shared.models.usage import (
     RateLimitConfig,
     UsageLog,
 )
+from src.shared.models.vault import (
+    ChannelTenantMap,
+    CredentialType,
+    IdentityProvider,
+    UserCredential,
+    UserIdentity,
+    VerificationMethod,
+)
 
 __all__ = [
     "Base",
@@ -39,4 +47,10 @@ __all__ = [
     "ModelPricing",
     "RateLimitConfig",
     "UsageLog",
+    "ChannelTenantMap",
+    "CredentialType",
+    "IdentityProvider",
+    "UserCredential",
+    "UserIdentity",
+    "VerificationMethod",
 ]

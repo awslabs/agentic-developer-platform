@@ -88,3 +88,10 @@ variable "enable_xray_tracing" {
   description = "Enable X-Ray tracing permissions for the gateway service role"
   default     = false
 }
+
+# Issue #134: Vault Phase 1 — Secrets Manager for user credentials
+variable "enable_vault_secrets" {
+  type        = bool
+  description = "Enable Secrets Manager CRUD permissions for the gateway service role (user vault)"
+  default     = true
+}
