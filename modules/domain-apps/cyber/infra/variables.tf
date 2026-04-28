@@ -108,3 +108,25 @@ variable "analysis_results_table" {
   description = "DynamoDB table for cyber analysis results"
   default     = "adp-dev-cyber-analysis-results"
 }
+
+# ---------------------------------------------------------------------------
+# EKS Cluster (Issue #230)
+# ---------------------------------------------------------------------------
+
+variable "cyber_eks_cluster_version" {
+  type        = string
+  description = "Kubernetes version for the cyber EKS cluster"
+  default     = "1.35"
+}
+
+variable "cyber_eks_public_access_cidrs" {
+  type        = list(string)
+  description = "CIDR blocks allowed to access the cyber EKS public endpoint"
+  default     = ["0.0.0.0/0"]
+}
+
+variable "cyber_cluster_admin_principal_arns" {
+  type        = list(string)
+  description = "IAM principal ARNs to grant cluster-admin on the cyber EKS cluster"
+  default     = []
+}

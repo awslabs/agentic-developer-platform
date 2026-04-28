@@ -1,0 +1,120 @@
+---
+# =============================================================================
+# KEDA TriggerAuthentication — AWS EKS pod identity for SQS polling
+# =============================================================================
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: cyber-static-aws-auth
+  namespace: cyber-workers
+  labels:
+    app.kubernetes.io/name: cyber-static
+    app.kubernetes.io/part-of: adp-cyber
+spec:
+  podIdentity:
+    provider: aws-eks
+    identityOwner: keda
+---
+# =============================================================================
+# KEDA ScaledJob — static-analysis worker (one pod per SQS message)
+# =============================================================================
+# Issue #230: Copied from modules/agent-factory/agent/k8s/chat-scaledjob.yaml
+# Image: adp-cyber-worker:latest (published by #231)
+# Timeout: 900s (static analysis can run minutes on big binaries)
+# =============================================================================
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: cyber-static-scaledjob
+  namespace: cyber-workers
+  labels:
+    app.kubernetes.io/name: cyber-static-worker
+    app.kubernetes.io/part-of: adp-cyber
+spec:
+  jobTargetRef:
+    parallelism: 1
+    completions: 1
+    backoffLimit: 2
+    activeDeadlineSeconds: 900
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: cyber-static-worker
+          role: static
+      spec:
+        serviceAccountName: cyber-worker
+        restartPolicy: Never
+        containers:
+          - name: cyber-static
+            image: REPLACE_WITH_CYBER_WORKER_IMAGE
+            env:
+              - name: WORKER_ROLE
+                value: "static"
+              - name: AWS_REGION
+                value: "us-east-1"
+              - name: INPUT_QUEUE_URL
+                value: "REPLACE_WITH_STATIC_TASKS_QUEUE_URL"
+              - name: RESPONSE_QUEUE_URL
+                value: "REPLACE_WITH_STATIC_RESPONSES_QUEUE_URL"
+              - name: RESULTS_TABLE
+                value: "REPLACE_WITH_RESULTS_TABLE"
+            resources:
+              requests:
+                cpu: "1"
+                memory: "1Gi"
+                ephemeral-storage: "512Mi"
+              limits:
+                cpu: "4"
+                memory: "4Gi"
+                ephemeral-storage: "2Gi"
+  pollingInterval: 5
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  triggers:
+    - type: aws-sqs-queue
+      authenticationRef:
+        name: cyber-static-aws-auth
+      metadata:
+        queueURL: "REPLACE_WITH_STATIC_TASKS_QUEUE_URL"
+        queueLength: "1"
+        awsRegion: "us-east-1"
+---
+# =============================================================================
+# NetworkPolicy — deny all egress except VPC endpoints + CAPE ALB + DNS
+# =============================================================================
+# Hard invariant #2: Worker pods have no egress to the public internet.
+# Static worker additionally needs CAPE ALB (internal, port 443).
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cyber-static-egress
+  namespace: cyber-workers
+  labels:
+    app.kubernetes.io/name: cyber-static-worker
+    app.kubernetes.io/part-of: adp-cyber
+spec:
+  podSelector:
+    matchLabels:
+      role: static
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution (kube-dns)
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # HTTPS to VPC endpoints (SQS, DDB, Secrets Manager, S3) + CAPE ALB
+    # VPC endpoint ENIs + CAPE ALB live in private subnets (10.100.1.0/24, 10.100.2.0/24)
+    - to:
+        - ipBlock:
+            cidr: 10.100.1.0/24
+        - ipBlock:
+            cidr: 10.100.2.0/24
+      ports:
+        - port: 443
+          protocol: TCP

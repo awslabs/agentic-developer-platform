@@ -1,0 +1,118 @@
+---
+# =============================================================================
+# KEDA TriggerAuthentication — AWS EKS pod identity for SQS polling
+# =============================================================================
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: cyber-triage-aws-auth
+  namespace: cyber-workers
+  labels:
+    app.kubernetes.io/name: cyber-triage
+    app.kubernetes.io/part-of: adp-cyber
+spec:
+  podIdentity:
+    provider: aws-eks
+    identityOwner: keda
+---
+# =============================================================================
+# KEDA ScaledJob — triage worker (one pod per SQS message)
+# =============================================================================
+# Issue #230: Copied from modules/agent-factory/agent/k8s/chat-scaledjob.yaml
+# Image: adp-cyber-worker:latest (published by #231)
+# =============================================================================
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: cyber-triage-scaledjob
+  namespace: cyber-workers
+  labels:
+    app.kubernetes.io/name: cyber-triage-worker
+    app.kubernetes.io/part-of: adp-cyber
+spec:
+  jobTargetRef:
+    parallelism: 1
+    completions: 1
+    backoffLimit: 2
+    activeDeadlineSeconds: 300
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: cyber-triage-worker
+          role: triage
+      spec:
+        serviceAccountName: cyber-worker
+        restartPolicy: Never
+        containers:
+          - name: cyber-triage
+            image: REPLACE_WITH_CYBER_WORKER_IMAGE
+            env:
+              - name: WORKER_ROLE
+                value: "triage"
+              - name: AWS_REGION
+                value: "us-east-1"
+              - name: INPUT_QUEUE_URL
+                value: "REPLACE_WITH_TRIAGE_TASKS_QUEUE_URL"
+              - name: RESPONSE_QUEUE_URL
+                value: "REPLACE_WITH_TRIAGE_RESPONSES_QUEUE_URL"
+              - name: RESULTS_TABLE
+                value: "REPLACE_WITH_RESULTS_TABLE"
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "512Mi"
+                ephemeral-storage: "256Mi"
+              limits:
+                cpu: "2"
+                memory: "2Gi"
+                ephemeral-storage: "1Gi"
+  pollingInterval: 5
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  triggers:
+    - type: aws-sqs-queue
+      authenticationRef:
+        name: cyber-triage-aws-auth
+      metadata:
+        queueURL: "REPLACE_WITH_TRIAGE_TASKS_QUEUE_URL"
+        queueLength: "1"
+        awsRegion: "us-east-1"
+---
+# =============================================================================
+# NetworkPolicy — deny all egress except VPC endpoints + DNS
+# =============================================================================
+# Hard invariant #2: Worker pods have no egress to the public internet.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cyber-triage-egress
+  namespace: cyber-workers
+  labels:
+    app.kubernetes.io/name: cyber-triage-worker
+    app.kubernetes.io/part-of: adp-cyber
+spec:
+  podSelector:
+    matchLabels:
+      role: triage
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution (kube-dns)
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # HTTPS to VPC endpoints (SQS, DDB, Secrets Manager, S3)
+    # VPC endpoint ENIs live in the private subnets (10.100.1.0/24, 10.100.2.0/24)
+    - to:
+        - ipBlock:
+            cidr: 10.100.1.0/24
+        - ipBlock:
+            cidr: 10.100.2.0/24
+      ports:
+        - port: 443
+          protocol: TCP
