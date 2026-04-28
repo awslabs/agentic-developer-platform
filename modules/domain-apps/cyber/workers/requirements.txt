@@ -1,0 +1,14 @@
+# Sample inspection
+pefile==2024.8.26
+python-magic==0.4.27
+yara-python==4.5.1
+ssdeep==3.4
+pyelftools==0.31
+macholib==1.16.3
+
+# AWS + HTTP
+boto3==1.35.0
+requests==2.32.0
+
+# Data modeling
+pydantic==2.9.0

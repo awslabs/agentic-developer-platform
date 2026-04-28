@@ -1,0 +1,38 @@
+version: 0.2
+
+# CodeBuild buildspec for the cyber worker image.
+#
+# Builds the Python worker at modules/domain-apps/cyber/workers/Dockerfile.
+# Pushes to ECR repo adp-cyber-worker with git-SHA + latest tags.
+#
+# Environment variables injected by the start-build caller:
+#   AWS_REGION, ENVIRONMENT, ACCOUNT_ID, REGISTRY, IMAGE_TAG
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - echo "Using Python $(python3 --version)"
+
+  pre_build:
+    commands:
+      - ECR_REPO="adp-cyber-worker"
+      - IMAGE_TAG="${IMAGE_TAG:-latest}"
+      - |
+        if ! aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
+          aws ecr create-repository --repository-name "$ECR_REPO" --region "$AWS_REGION" >/dev/null
+        fi
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+
+  build:
+    commands:
+      - cd modules/domain-apps/cyber/workers
+      - docker build -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
+      - docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
+      - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
+      - docker push "$REGISTRY/$ECR_REPO:latest"
+
+  post_build:
+    commands:
+      - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (and :latest)"

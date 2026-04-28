@@ -15,6 +15,7 @@ locals {
     "chat-agent"    = { buildspec = "codebuild/bs-chat-agent.yml" }
     "agent-gateway" = { buildspec = "codebuild/bs-agent-gateway.yml" }
     "arc-runner"    = { buildspec = "codebuild/bs-arc-runner.yml" }
+    "cyber-worker"  = { buildspec = "codebuild/bs-cyber-worker.yml" }
   }
 }
 

@@ -1,0 +1,142 @@
+name: Cyber Worker Build
+
+# Builds and pushes the adp-cyber-worker Docker image to ECR via CodeBuild.
+#
+# Mirrors the chat-agent-deploy.yml pattern: zip source -> S3 -> CodeBuild.
+# Does NOT deploy to EKS — that's handled by #229 (cyber EKS/KEDA/SQS).
+
+on:
+  push:
+    paths:
+      - 'modules/domain-apps/cyber/workers/**'
+      - 'codebuild/bs-cyber-worker.yml'
+      - 'platform/scripts/zip-source.sh'
+      - '.github/workflows/cyber-worker-build.yml'
+    branches:
+      - main
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+  ACCOUNT_ID: "879318057152"
+  STATE_BUCKET: adp-terraform-state-879318057152
+  ECR_REPO: adp-cyber-worker
+  CODEBUILD_PROJECT: adp-dev-cyber-worker
+
+jobs:
+  build:
+    name: Build Cyber Worker Image
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── 0. Install CLI tools on ARC runner ─────────────────────────────
+      - name: Install zip + AWS CLI
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          aws --version
+
+      # ── 1. Package source + upload to S3 ──────────────────────────────
+      - name: Package source and upload to S3
+        run: |
+          bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
+          aws s3 cp /tmp/adp-source.zip \
+            "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip" \
+            --region "${{ env.AWS_REGION }}"
+          rm -f /tmp/adp-source.zip
+
+      # ── 2. Ensure CodeBuild project exists ─────────────────────────────
+      - name: Ensure CodeBuild project
+        run: |
+          CB_ROLE_NAME="adp-${{ env.ENVIRONMENT }}-codebuild-role"
+          SERVICE_ROLE_ARN=$(aws iam get-role \
+            --role-name "$CB_ROLE_NAME" \
+            --query 'Role.Arn' --output text 2>/dev/null || echo "")
+          if [ -z "$SERVICE_ROLE_ARN" ]; then
+            echo "${CB_ROLE_NAME} missing — run platform/scripts/deploy-all.sh once to create it." >&2
+            exit 1
+          fi
+
+          SOURCE_LOC="${{ env.STATE_BUCKET }}/codebuild/adp-source.zip"
+          EXISTS=$(aws codebuild batch-get-projects \
+            --names "${{ env.CODEBUILD_PROJECT }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
+
+          CMD="create-project"
+          [ "$EXISTS" -gt 0 ] && CMD="update-project"
+
+          aws codebuild $CMD --region "${{ env.AWS_REGION }}" \
+            --name "${{ env.CODEBUILD_PROJECT }}" \
+            --source "{\"type\":\"S3\",\"location\":\"$SOURCE_LOC\",\"buildspec\":\"codebuild/bs-cyber-worker.yml\"}" \
+            --artifacts '{"type":"NO_ARTIFACTS"}' \
+            --environment '{
+              "type":"LINUX_CONTAINER",
+              "image":"aws/codebuild/amazonlinux2-x86_64-standard:5.0",
+              "computeType":"BUILD_GENERAL1_MEDIUM",
+              "privilegedMode":true
+            }' \
+            --service-role "$SERVICE_ROLE_ARN" > /dev/null
+
+      # ── 3. Build image via CodeBuild ───────────────────────────────────
+      - name: Build image via CodeBuild
+        id: build
+        run: |
+          REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          IMAGE_TAG="${{ github.sha }}"
+
+          BUILD_ID=$(aws codebuild start-build \
+            --region "${{ env.AWS_REGION }}" \
+            --project-name "${{ env.CODEBUILD_PROJECT }}" \
+            --environment-variables-override \
+              "name=AWS_REGION,value=${{ env.AWS_REGION }}" \
+              "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}" \
+              "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" \
+              "name=REGISTRY,value=${REGISTRY}" \
+              "name=IMAGE_TAG,value=${IMAGE_TAG}" \
+            --query 'build.id' --output text)
+          echo "Started CodeBuild: $BUILD_ID"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+
+          PHASE=""
+          while true; do
+            RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
+            STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
+            CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
+            [ "$CUR_PHASE" != "$PHASE" ] && [ -n "$CUR_PHASE" ] && echo "Phase: $CUR_PHASE" && PHASE="$CUR_PHASE"
+            case "$STATUS" in
+              SUCCEEDED) echo "Build succeeded"; break ;;
+              FAILED|FAULT|STOPPED|TIMED_OUT)
+                LOG_LINK=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+                  --region "${{ env.AWS_REGION }}" \
+                  --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
+                echo "Build failed ($STATUS). Logs: $LOG_LINK" >&2
+                exit 1
+                ;;
+              *) sleep 15 ;;
+            esac
+          done
+
+      - name: Summary
+        run: |
+          echo "## Cyber Worker Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image**: ${{ steps.build.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.build.outputs.image_tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **CodeBuild**: ${{ steps.build.outputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"
