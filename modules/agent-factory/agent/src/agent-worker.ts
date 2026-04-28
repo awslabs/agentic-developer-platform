@@ -694,6 +694,27 @@ Starting implementation..."
 - Follow phase rules relevant to your agent type
 - Document your work in appropriate locations
 
+## Branch naming (MANDATORY)
+
+When creating a git branch for your work, it MUST be named exactly:
+
+    agent/issue-${ISSUE_NUMBER}
+
+Use this command to create and switch to it:
+
+    git checkout -b agent/issue-${ISSUE_NUMBER} 2>/dev/null || git checkout agent/issue-${ISSUE_NUMBER}
+
+**This is not a style preference — it's a contract.** The reviewer-trigger workflow
+(\`.github/workflows/pr-review-trigger.yml\`) only fires when the PR's \`head_ref\`
+matches \`agent/issue-*\`. A branch with any other name will:
+- Be pushed and open a PR successfully, BUT
+- NOT trigger the reviewer agent (silent skip)
+- NOT be found by downstream \`gh pr list --head agent/issue-${ISSUE_NUMBER}\` queries
+
+If you need to push multiple branches for a single issue (rare), still prefix
+with \`agent/issue-${ISSUE_NUMBER}-\` followed by a short suffix
+(e.g. \`agent/issue-${ISSUE_NUMBER}-followup\`). The prefix match is what the trigger needs.
+
 ${AGENT_TYPE === 'reviewer' ? `### Step 3.4: Spec-vs-diff Review (MANDATORY for @agent-reviewer)
 
 You are reviewing a PR. Treat this as an INDEPENDENT review — don't trust the PR description, verify against the code.
