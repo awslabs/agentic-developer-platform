@@ -147,6 +147,13 @@ resource "aws_instance" "builder" {
     }
   }
 
+  # Nested virtualization must be enabled at launch for c8i/m8i/r8i
+  # (disabled by default). Without this, /proc/cpuinfo has no vmx and KVM
+  # can't run, forcing a fallback to .metal instances at ~5x the cost.
+  cpu_options {
+    nested_virtualization_enabled = true
+  }
+
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"

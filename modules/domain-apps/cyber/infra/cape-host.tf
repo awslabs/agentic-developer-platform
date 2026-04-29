@@ -155,13 +155,14 @@ resource "aws_instance" "cape_host" {
     }
   }
 
-  # Nested virtualization: c8i instances support it by default on Nitro.
-  # If the instance doesn't have it enabled after launch, use:
-  #   aws ec2 modify-instance-attribute --instance-id <id> \
-  #     --attribute enclaveOptions --value '{"Enabled":true}'
-  # But for c8i (Intel, bare-metal Nitro), nested virt is available natively
-  # when the host CPU supports VMX. No special Terraform flag is needed — the
-  # bootstrap script verifies with kvm-ok.
+  # Nested virtualization: c8i/m8i/r8i support nested virt, but it is DISABLED
+  # by default. Must be opted in at launch via cpu_options, otherwise
+  # /proc/cpuinfo on the instance shows no vmx flag and KVM cannot run.
+  # Per AWS docs (amazon-ec2-nested-virtualization.html): post-launch toggling
+  # requires a stopped instance, so we bake it into launch config.
+  cpu_options {
+    nested_virtualization_enabled = true
+  }
 
   # Metadata options — IMDSv2 required
   metadata_options {
