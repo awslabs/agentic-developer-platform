@@ -161,7 +161,7 @@ resource "aws_instance" "cape_host" {
   # Per AWS docs (amazon-ec2-nested-virtualization.html): post-launch toggling
   # requires a stopped instance, so we bake it into launch config.
   cpu_options {
-    nested_virtualization_enabled = true
+    nested_virtualization = "enabled"
   }
 
   # Metadata options — IMDSv2 required

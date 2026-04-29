@@ -151,7 +151,7 @@ resource "aws_instance" "builder" {
   # (disabled by default). Without this, /proc/cpuinfo has no vmx and KVM
   # can't run, forcing a fallback to .metal instances at ~5x the cost.
   cpu_options {
-    nested_virtualization_enabled = true
+    nested_virtualization = "enabled"
   }
 
   metadata_options {
