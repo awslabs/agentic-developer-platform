@@ -12,12 +12,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libyara-dev \
       libmagic1 \
       libssl-dev \
+      osslsigncode \
+      upx-ucl \
       build-essential \
       git \
       unzip \
       binwalk \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# YARA rule corpus — Florian Roth's signature-base, pinned to master HEAD.
+# Used by Stage 3 static analysis; shallow clone keeps image small.
+RUN git clone --depth 1 --branch master https://github.com/Neo23x0/signature-base.git /opt/yara-rules \
+    && rm -rf /opt/yara-rules/.git
 
 WORKDIR /app
 

@@ -2,11 +2,20 @@
 pefile==2024.8.26
 python-magic==0.4.27
 yara-python==4.5.1
-# ssdeep deferred — source-only sdist fails on python:3.12-slim (no pkg_resources).
-# Add back when real static-analysis logic needs it, using a wheel-published
-# fork like python-ssdeep, and install setuptools first in the Dockerfile.
 pyelftools==0.31
 macholib==1.16.3
+
+# Sample inspection — expanded tooling for Stage 1 + Stage 3
+lief==0.14.1
+signify==0.7.1
+iocextract==1.16.1
+capstone==5.0.3
+oletools==0.60.2
+# ssdeep: using ppdeep (pure-Python, wheel-published) instead of upstream ssdeep==3.4
+# which fails to build on python:3.12-slim. See #238 for history.
+# python-ssdeep==1.1.post1 does not exist on PyPI; ppdeep provides the same fuzzy-hash API.
+ppdeep==20260221
+magika==0.6.1
 
 # AWS + HTTP
 boto3==1.35.0
