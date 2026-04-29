@@ -1,0 +1,25 @@
+#cloud-config
+# =============================================================================
+# Cloud-init user-data for Ubuntu CAPE guest image build
+# =============================================================================
+# Minimal config: create the 'cape' user with sudo + password auth so Packer
+# can SSH in. No package_update — provisioning scripts handle that explicitly.
+# =============================================================================
+
+users:
+  - name: cape
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    plain_text_passwd: cape
+    lock_passwd: false
+
+# Enable password-based SSH (cloud images disable it by default)
+ssh_pwauth: true
+
+# Don't run package update during cloud-init — provisioning scripts handle it
+package_update: false
+package_upgrade: false
+
+# Keep default DHCP networking — works with both QEMU user-mode (build)
+# and libvirt bridge (CAPE sandbox). Do NOT disable cloud-init network config
+# as it would leave the guest without a netplan config after cloud-init clean.

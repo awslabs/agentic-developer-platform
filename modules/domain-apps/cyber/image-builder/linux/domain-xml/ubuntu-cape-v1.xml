@@ -1,0 +1,54 @@
+<!--
+  Libvirt domain definition for Ubuntu CAPE analysis guest.
+  Matches the CAPE host's sandbox network configuration:
+  - virbr-sandbox bridge (192.168.100.0/24)
+  - DHCP from libvirt gives IP in 192.168.100.100-200 range
+  - INetSim on 192.168.100.1 provides fake internet services
+
+  Usage on CAPE host:
+    virsh define /opt/cape-data/images/ubuntu-cape-v1.xml
+    virsh start ubuntu-cape-v1
+-->
+<domain type="kvm">
+  <name>ubuntu-cape-v1</name>
+  <memory unit="MiB">2048</memory>
+  <vcpu placement="static">2</vcpu>
+
+  <os>
+    <type arch="x86_64" machine="pc">hvm</type>
+    <boot dev="hd"/>
+  </os>
+
+  <features>
+    <acpi/>
+    <apic/>
+  </features>
+
+  <cpu mode="host-passthrough"/>
+
+  <clock offset="utc"/>
+
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+
+    <disk type="file" device="disk">
+      <driver name="qemu" type="qcow2"/>
+      <source file="/opt/cape-data/images/ubuntu-cape-v1.qcow2"/>
+      <target dev="vda" bus="virtio"/>
+    </disk>
+
+    <interface type="network">
+      <source network="sandbox"/>
+      <model type="virtio"/>
+    </interface>
+
+    <serial type="pty">
+      <target port="0"/>
+    </serial>
+    <console type="pty">
+      <target type="serial" port="0"/>
+    </console>
+
+    <graphics type="vnc" port="-1" autoport="yes" listen="127.0.0.1"/>
+  </devices>
+</domain>
