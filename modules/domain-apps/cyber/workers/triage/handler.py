@@ -38,7 +38,7 @@ def run() -> None:
     ddb.put_item(
         Item={
             "artifact_id": artifact_id,
-            "SK": f"triage#{ts}",
+            "stage_timestamp": f"triage#{ts}",
             "status": "stub-ok",
             "stage": "triage",
             "image_tag": os.environ.get("IMAGE_TAG", "unknown"),

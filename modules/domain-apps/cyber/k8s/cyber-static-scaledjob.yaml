@@ -46,18 +46,18 @@ spec:
         restartPolicy: Never
         containers:
           - name: cyber-static
-            image: REPLACE_WITH_CYBER_WORKER_IMAGE
+            image: 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-cyber-worker:latest
             env:
               - name: WORKER_ROLE
                 value: "static"
               - name: AWS_REGION
                 value: "us-east-1"
               - name: INPUT_QUEUE_URL
-                value: "REPLACE_WITH_STATIC_TASKS_QUEUE_URL"
+                value: "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-cyber-static-tasks.fifo"
               - name: RESPONSE_QUEUE_URL
-                value: "REPLACE_WITH_STATIC_RESPONSES_QUEUE_URL"
+                value: "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-cyber-static-responses.fifo"
               - name: RESULTS_TABLE
-                value: "REPLACE_WITH_RESULTS_TABLE"
+                value: "adp-dev-cyber-analysis-results"
             resources:
               requests:
                 cpu: "1"
@@ -77,7 +77,7 @@ spec:
       authenticationRef:
         name: cyber-static-aws-auth
       metadata:
-        queueURL: "REPLACE_WITH_STATIC_TASKS_QUEUE_URL"
+        queueURL: "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-cyber-static-tasks.fifo"
         queueLength: "1"
         awsRegion: "us-east-1"
 ---
