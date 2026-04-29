@@ -2,7 +2,9 @@
 pefile==2024.8.26
 python-magic==0.4.27
 yara-python==4.5.1
-ssdeep==3.4
+# ssdeep deferred — source-only sdist fails on python:3.12-slim (no pkg_resources).
+# Add back when real static-analysis logic needs it, using a wheel-published
+# fork like python-ssdeep, and install setuptools first in the Dockerfile.
 pyelftools==0.31
 macholib==1.16.3
 

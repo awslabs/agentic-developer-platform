@@ -16,8 +16,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       unzip \
       binwalk \
-      ssdeep \
-      libfuzzy-dev \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
