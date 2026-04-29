@@ -86,9 +86,10 @@ resource "aws_iam_role_policy" "builder_s3" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "S3PutAssets"
+        Sid    = "S3ReadWriteAssets"
         Effect = "Allow"
         Action = [
+          "s3:GetObject",
           "s3:PutObject",
           "s3:ListBucket"
         ]
