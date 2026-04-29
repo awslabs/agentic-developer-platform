@@ -1,8 +1,8 @@
 """
-Unit tests for cyber worker stub handlers.
+Unit tests for cyber worker handlers (updated for real handlers).
 
-Uses moto to mock SQS + DynamoDB. Exercises:
-- WORKER_ROLE=triage  -> processes SQS msg -> DDB row -> response sent -> receipt deleted
+Uses moto to mock SQS + DynamoDB + S3. Exercises:
+- WORKER_ROLE=triage  -> processes SQS msg -> downloads from S3 -> DDB row -> response
 - WORKER_ROLE=static  -> same shape, different stage value
 - WORKER_ROLE="" (unset) -> entrypoint exits with code 2
 """
@@ -18,14 +18,17 @@ from moto import mock_aws
 
 WORKERS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+EICAR_BYTES = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+
 
 @pytest.fixture()
 def aws_env():
-    """Set up mocked AWS resources: 2 SQS queues + 1 DynamoDB table."""
+    """Set up mocked AWS resources: 2 SQS queues + 1 DynamoDB table + S3."""
     with mock_aws():
         region = "us-east-1"
         sqs = boto3.client("sqs", region_name=region)
         ddb = boto3.client("dynamodb", region_name=region)
+        s3 = boto3.client("s3", region_name=region)
 
         # Create input queue (standard)
         input_q = sqs.create_queue(QueueName="cyber-triage-input")
@@ -41,19 +44,23 @@ def aws_env():
         )
         resp_url = resp_q["QueueUrl"]
 
-        # Create results table
+        # Create results table with correct schema (stage_timestamp as range key)
         ddb.create_table(
             TableName="cyber-results",
             KeySchema=[
                 {"AttributeName": "artifact_id", "KeyType": "HASH"},
-                {"AttributeName": "SK", "KeyType": "RANGE"},
+                {"AttributeName": "stage_timestamp", "KeyType": "RANGE"},
             ],
             AttributeDefinitions=[
                 {"AttributeName": "artifact_id", "AttributeType": "S"},
-                {"AttributeName": "SK", "AttributeType": "S"},
+                {"AttributeName": "stage_timestamp", "AttributeType": "S"},
             ],
             BillingMode="PAY_PER_REQUEST",
         )
+
+        # Create S3 bucket with test sample
+        s3.create_bucket(Bucket="test-samples")
+        s3.put_object(Bucket="test-samples", Key="samples/test.bin", Body=EICAR_BYTES)
 
         # Set env vars the handlers expect
         os.environ["INPUT_QUEUE_URL"] = input_url
@@ -64,6 +71,7 @@ def aws_env():
 
         yield {
             "sqs": sqs,
+            "s3": s3,
             "ddb": boto3.resource("dynamodb", region_name=region),
             "input_url": input_url,
             "resp_url": resp_url,
@@ -72,10 +80,13 @@ def aws_env():
 
 
 def _send_sample_message(sqs_client, queue_url: str, artifact_id: str) -> None:
-    """Send a sample message to the input queue."""
+    """Send a sample message to the input queue (uses real handler format)."""
     sqs_client.send_message(
         QueueUrl=queue_url,
-        MessageBody=json.dumps({"artifact_id": artifact_id, "s3_key": "samples/test.bin"}),
+        MessageBody=json.dumps({
+            "artifact_id": artifact_id,
+            "sample_s3_uri": "s3://test-samples/samples/test.bin",
+        }),
     )
 
 
@@ -95,8 +106,13 @@ class TestTriageHandler:
         )["Items"]
         assert len(items) == 1
         assert items[0]["stage"] == "triage"
-        assert items[0]["status"] == "stub-ok"
+        assert items[0]["status"] == "ok"
         assert items[0]["image_tag"] == "test-sha"
+
+        # Verify findings contain real hashes
+        findings = json.loads(items[0]["findings"])
+        assert "hashes" in findings
+        assert len(findings["hashes"]["sha256"]) == 64
 
         # Verify response queue received a message
         resp_msgs = aws_env["sqs"].receive_message(
@@ -105,7 +121,8 @@ class TestTriageHandler:
         assert len(resp_msgs.get("Messages", [])) == 1
         resp_body = json.loads(resp_msgs["Messages"][0]["Body"])
         assert resp_body["artifact_id"] == "art-001"
-        assert resp_body["stage"] == "triage"
+        assert resp_body["stage"] == 1
+        assert resp_body["stage_name"] == "triage"
 
         # Verify input queue is now empty (message was deleted)
         remaining = aws_env["sqs"].receive_message(
@@ -140,13 +157,18 @@ class TestStaticHandler:
         )["Items"]
         assert len(items) == 1
         assert items[0]["stage"] == "static"
-        assert items[0]["status"] == "stub-ok"
+        assert items[0]["status"] == "ok"
+
+        # Verify findings contain real analysis
+        findings = json.loads(items[0]["findings"])
+        assert findings["mode"] == "rule-driven"
 
         resp_msgs = aws_env["sqs"].receive_message(
             QueueUrl=aws_env["resp_url"], MaxNumberOfMessages=1
         )
         resp_body = json.loads(resp_msgs["Messages"][0]["Body"])
-        assert resp_body["stage"] == "static"
+        assert resp_body["stage"] == 3
+        assert resp_body["stage_name"] == "static"
 
 
 class TestEntrypoint:
