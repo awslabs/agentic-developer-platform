@@ -1,6 +1,6 @@
 ---
 name: stage-2-osint
-description: Consult OSINT sources (VirusTotal, MalwareBazaar, Shodan, urlscan, web search, MITRE ATT&CK) and synthesize a prior hypothesis that steers downstream analysis. Use this skill whenever you have a sample's hashes and candidate IOCs (from Stage 1 triage) and want to check reputation, find prior reporting, validate C2 infrastructure, or decide whether deeper analysis is worth the compute. Always run this after Stage 1 and before Stage 3 — the hypothesis this produces narrows Stage 3's YARA scan and Stage 4's sandbox profile. Can short-circuit known-benign samples straight to a Stage 6 verdict.
+description: Consult OSINT sources and synthesize a prior hypothesis that steers downstream analysis. M1 scope is MalwareBazaar (no auth, no vault dependency) + web search + MITRE ATT&CK; VirusTotal + Shodan + urlscan are commented out in the skill until vault credentials are provisioned. Use this skill whenever you have a sample's hashes + candidate IOCs (from Stage 1 triage) and want to check reputation, find prior reporting, or decide whether deeper analysis is worth the compute. Always run after Stage 1 and before Stage 3 — the hypothesis this produces narrows Stage 3's YARA scan and Stage 4's sandbox profile. Can short-circuit known-benign samples straight to a Stage 6 verdict.
 ---
 
 # Stage 2 — OSINT recon & prior-hypothesis
@@ -52,68 +52,91 @@ Stage envelope:
 
 ## Steps
 
-### 1. Fetch OSINT credentials from vault (best-effort)
+> **M1 scope note**: for the first end-to-end pipeline tests, only MalwareBazaar is enabled (no auth, no vault dependency). VirusTotal, Shodan, and urlscan are documented below but commented out — re-enable them once the corresponding credentials are provisioned in vault.
+
+### 1. (M1 skip) Fetch OSINT credentials from vault
+
+Commented out until vault creds are configured. Re-enable this block when VT/Shodan keys land in Secrets Manager.
 
 ```bash
-# VT key (per-org namespaced; may 403 gracefully)
-VT_KEY=$(aws secretsmanager get-secret-value --region us-east-1 \
-  --secret-id "${VIRUSTOTAL_SECRET_PREFIX}/public" \
-  --query SecretString --output text 2>/dev/null || echo "")
-
-# Shodan key
-SHODAN_KEY=$(aws secretsmanager get-secret-value --region us-east-1 \
-  --secret-id "${SHODAN_SECRET_PREFIX}/public" \
-  --query SecretString --output text 2>/dev/null || echo "")
+# VT_KEY=$(aws secretsmanager get-secret-value --region us-east-1 \
+#   --secret-id "${VIRUSTOTAL_SECRET_PREFIX}/public" \
+#   --query SecretString --output text 2>/dev/null || echo "")
+#
+# SHODAN_KEY=$(aws secretsmanager get-secret-value --region us-east-1 \
+#   --secret-id "${SHODAN_SECRET_PREFIX}/public" \
+#   --query SecretString --output text 2>/dev/null || echo "")
 ```
 
-**Degradation rule:** if a key is empty, skip that source silently, note it in `notes`. Never fail the stage for missing creds.
+### 2. (M1 skip) VirusTotal hash lookup
 
-### 2. VirusTotal hash lookup (rate-limit: 4 req/min)
+Commented out for M1 — no VT credentials yet. Re-enable alongside step 1. Note in `notes`: `"vt skipped — no credentials provisioned (M1)"`.
 
 ```bash
-if [ -n "$VT_KEY" ]; then
-  SHA256="<from Stage 1>"
-  curl -sS -H "x-apikey: $VT_KEY" \
-    "https://www.virustotal.com/api/v3/files/$SHA256" | tee /tmp/vt.json
-
-  # extract
-  jq '{
-    malicious: .data.attributes.last_analysis_stats.malicious,
-    total: (.data.attributes.last_analysis_stats | to_entries | map(.value) | add),
-    family: .data.attributes.popular_threat_classification.suggested_threat_label,
-    first_seen: .data.attributes.first_submission_date,
-    last_seen: .data.attributes.last_analysis_date
-  }' /tmp/vt.json
-fi
+# if [ -n "$VT_KEY" ]; then
+#   SHA256="<from Stage 1>"
+#   curl -sS -H "x-apikey: $VT_KEY" \
+#     "https://www.virustotal.com/api/v3/files/$SHA256" | tee /tmp/vt.json
+#
+#   jq '{
+#     malicious: .data.attributes.last_analysis_stats.malicious,
+#     total: (.data.attributes.last_analysis_stats | to_entries | map(.value) | add),
+#     family: .data.attributes.popular_threat_classification.suggested_threat_label,
+#     first_seen: .data.attributes.first_submission_date,
+#     last_seen: .data.attributes.last_analysis_date
+#   }' /tmp/vt.json
+# fi
 ```
 
-### 3. MalwareBazaar (no auth, free)
+### 3. MalwareBazaar (ENABLED — no auth, free) — the M1 primary source
 
 ```bash
-SHA256="<from Stage 1>"
+SHA256="<from Stage 1 envelope>"
 curl -sS -X POST --data "query=get_info&hash=$SHA256" \
-  https://mb-api.abuse.ch/api/v1/ | \
-  jq '{tags: .data[0].tags, signature: .data[0].signature, file_type: .data[0].file_type}'
-```
+  https://mb-api.abuse.ch/api/v1/ > /tmp/mb.json
 
-### 4. Shodan — for each candidate IP from Stage 1
+# MalwareBazaar returns query_status = "ok" (hit) or "hash_not_found" (miss).
+STATUS=$(jq -r '.query_status' /tmp/mb.json)
 
-```bash
-if [ -n "$SHODAN_KEY" ]; then
-  for IP in $(jq -r '.candidate_iocs.ips[]' <<< "$STAGE1"); do
-    curl -sS "https://api.shodan.io/shodan/host/$IP?key=$SHODAN_KEY" | \
-      jq --arg ip "$IP" '{ioc:$ip, live:(.ip_str != null), ports:.ports, hostnames:.hostnames, tls:.ssl.cert.issuer}'
-  done
+if [ "$STATUS" = "ok" ]; then
+  jq '{
+    query_status: .query_status,
+    signature: .data[0].signature,
+    tags: .data[0].tags,
+    file_type: .data[0].file_type,
+    first_seen: .data[0].first_seen,
+    reporter: .data[0].reporter,
+    intelligence: .data[0].intelligence,
+    yara_rules: .data[0].yara_rules
+  }' /tmp/mb.json
+else
+  # hash_not_found — unknown sample, no prior reporting
+  echo '{"query_status":"hash_not_found","note":"sample not in MalwareBazaar"}'
 fi
 ```
 
-### 5. urlscan.io — for each candidate domain/URL
+Short-circuit check: if `signature` contains `EICAR` or if the hash matches the known EICAR signature (`275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f`), set `short_circuit: true` + verdict benign.
+
+### 4. (M1 skip) Shodan — for each candidate IP from Stage 1
+
+Commented out for M1 — no Shodan credentials yet.
 
 ```bash
-for TARGET in $(jq -r '.candidate_iocs.domains[], .candidate_iocs.urls[]' <<< "$STAGE1"); do
-  curl -sS "https://urlscan.io/api/v1/search/?q=domain:$TARGET&size=3" | \
-    jq '{results: [.results[] | {url:.page.url, verdict:.verdicts.malicious, scanned_at:.task.time}]}'
-done
+# for IP in $(jq -r '.candidate_iocs.ips[]' <<< "$STAGE1"); do
+#   curl -sS "https://api.shodan.io/shodan/host/$IP?key=$SHODAN_KEY" | \
+#     jq --arg ip "$IP" '{ioc:$ip, live:(.ip_str != null), ports:.ports, hostnames:.hostnames, tls:.ssl.cert.issuer}'
+# done
+```
+
+### 5. (M1 skip) urlscan.io — for each candidate domain/URL
+
+Commented out for M1 — rate limit concerns with unauthenticated requests during testing. Re-enable post-M1.
+
+```bash
+# for TARGET in $(jq -r '.candidate_iocs.domains[], .candidate_iocs.urls[]' <<< "$STAGE1"); do
+#   curl -sS "https://urlscan.io/api/v1/search/?q=domain:$TARGET&size=3" | \
+#     jq '{results: [.results[] | {url:.page.url, verdict:.verdicts.malicious, scanned_at:.task.time}]}'
+# done
 ```
 
 ### 6. Web search — prior reporting
@@ -143,9 +166,10 @@ curl -sS "https://attack.mitre.org/api.php?action=ask&query=[[Category:Software]
 
 Before synthesizing, check for known-benign:
 
-- VT `malicious` count = 0 AND `harmless` > 10 → benign
-- Hash matches EICAR signature (`275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f`) → test file, benign
-- Microsoft-signed with valid Authenticode + clean VT score → benign
+- Hash matches EICAR signature (`275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f`) → test file, benign (works without any OSINT)
+- MalwareBazaar returned `query_status = "hash_not_found"` AND Stage 1 showed a valid Authenticode signature → probably benign (but note: MB miss ≠ benign in general; only combine with signature check)
+- (Post-M1) VT `malicious` count = 0 AND `harmless` > 10 → benign
+- (Post-M1) Microsoft-signed with valid Authenticode + clean VT score → benign
 
 If any triggers, set `short_circuit: true` and synthesize minimal findings. The persona will skip Stages 3-5 and jump to Stage 6.
 
@@ -159,26 +183,29 @@ This is the reasoning step — use the LLM (you) to produce 1-2 sentences + reco
 
 Same pattern as Stage 1: write DDB, post GH comment.
 
-Comment format:
+Comment format (M1 — MalwareBazaar only):
 
 ```markdown
 ## Stage 2 — OSINT recon
 
 **Status**: ✅ | **Short-circuit**: no
+**Scope (M1)**: MalwareBazaar only. VT / Shodan / urlscan deferred until credentials are provisioned.
 
 **Sources consulted:**
-- VirusTotal: 42/73 malicious, family=`Qakbot`, first seen 2026-01-14
-- MalwareBazaar: tags=`[qakbot, banker, loader]`
-- Shodan (1.2.3.4): live on :443, CN=suspicious-cert
-- Prior reporting: [Mandiant 2026-04-15](...) — Qakbot v5 campaign summary
-- MITRE: T1055.002 (Process Injection), T1071.001 (HTTP C2)
+- MalwareBazaar: `query_status=ok` — signature=`<family>`, tags=`[...]`, first_seen=`<date>`, reporter=`<username>`
+  _(or `query_status=hash_not_found` — sample unknown to MalwareBazaar)_
+- ~~VirusTotal~~ — deferred (no credentials)
+- ~~Shodan~~ — deferred
+- ~~urlscan.io~~ — deferred
+- Web search — `<n>` hits matching `<family>` / hash prefix
+- MITRE ATT&CK: `<T1055.002>`, `<T1071.001>` (if family known)
 
 ### Prior hypothesis
-Likely Qakbot v5.x based on...
+Likely `<family>` based on MalwareBazaar signature + web reporting. _(If MB miss + no reporting: "Unknown sample — no prior reporting; Stage 3 should run default YARA corpus.")_
 
 ### Recommended for Stage 3
-- Focus: config_block_extraction, c2_pattern_confirmation
-- YARA rules: qakbot_v5, banking_trojan_generic
+- Focus: `<list>`
+- YARA rules: `<list>` (or `default` if no hypothesis)
 
 <details>...full JSON...</details>
 ```
