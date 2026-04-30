@@ -106,12 +106,41 @@ jobs:
             exit 1
           fi
 
-          # Wait for user-data to finish installing packages (apt-get takes ~3 min).
-          # SSM send-command is unreliable immediately after agent registration
-          # (Undeliverable status), so use a fixed wait rather than probe loop.
-          # build-pipeline.sh has its own /var/run/builder-ready preflight check.
-          echo "Waiting 180s for user-data to complete..."
-          sleep 180
+          # After PingStatus=Online, the SSM command plane may still reject
+          # send-command with InvalidInstanceId for several minutes (observed up
+          # to ~8 min on c8i.4xlarge with heavy user-data). Instead of a fixed
+          # sleep, actively probe with a trivial send-command until it succeeds.
+          # This also covers the user-data install period since user-data runs
+          # concurrently and build-pipeline.sh has its own readiness gate.
+          echo "Probing SSM command-plane readiness (up to 10 min)..."
+          for probe in $(seq 1 40); do
+            if PROBE_OUT=$(aws ssm send-command \
+                --instance-ids "$INSTANCE_ID" \
+                --document-name "AWS-RunShellScript" \
+                --parameters 'commands=["echo ssm-ready"]' \
+                --timeout-seconds 30 \
+                --region "${{ env.AWS_REGION }}" \
+                --query 'Command.CommandId' --output text 2>&1); then
+              echo "SSM command plane ready after $((probe*15))s (CommandId: $PROBE_OUT)"
+              # Give user-data a bit more time if we got through very quickly
+              if (( probe < 8 )); then
+                EXTRA_WAIT=$(( (8 - probe) * 15 ))
+                echo "Waiting ${EXTRA_WAIT}s more for user-data to finish..."
+                sleep "$EXTRA_WAIT"
+              fi
+              break
+            else
+              if (( probe % 4 == 0 )); then
+                echo "  Still waiting... ($((probe*15))s elapsed)"
+              fi
+              sleep 15
+            fi
+          done
+
+          if ! echo "$PROBE_OUT" | grep -qE '^[0-9a-f-]+$'; then
+            echo "ERROR: SSM command plane not ready after 10 minutes. Last: $PROBE_OUT"
+            exit 1
+          fi
           echo "Proceeding to build."
 
       # ── 3. Upload build inputs to S3 ───────────────────────────────────
