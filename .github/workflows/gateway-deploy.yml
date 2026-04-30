@@ -141,7 +141,7 @@ jobs:
         # module and read them here, so pool rotation doesn't require a
         # workflow edit.
         env:
-          VITE_API_URL: /api/gateway
+          VITE_API_URL: /api
           VITE_AGENT_WS_URL: wss://8ea7pg40b7.execute-api.us-east-1.amazonaws.com/v1
           VITE_COGNITO_USER_POOL_ID: us-east-1_JEhv9xSGG
           VITE_COGNITO_CLIENT_ID: 6cg7ba3hb4v41vbhm0cg8pl17j

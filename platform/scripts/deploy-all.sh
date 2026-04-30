@@ -641,7 +641,7 @@ if [ "$SKIP_FRONTEND" = false ] && [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGEN
   # Frontend build runs directly (npm + aws s3 sync) — no CodeBuild needed.
   cd "$ROOT_DIR/modules/gateway/frontend"
   npm ci
-  VITE_API_URL="/api/gateway" npm run build
+  VITE_API_URL="/api" npm run build
   BUCKET=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/frontend-bucket" --query "Parameter.Value" --output text 2>/dev/null) || true
   if [ -n "$BUCKET" ] && [ "$BUCKET" != "None" ]; then
     aws s3 sync dist/ "s3://${BUCKET}/" --delete

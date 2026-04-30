@@ -23,7 +23,7 @@ phases:
       - cd "$CODEBUILD_SRC_DIR/$FRONTEND_SUBDIR" && pwd && ls -la | head -5 && npm ci
   build:
     commands:
-      - cd "$CODEBUILD_SRC_DIR/$FRONTEND_SUBDIR" && pwd && VITE_API_URL=/api/gateway npm run build
+      - cd "$CODEBUILD_SRC_DIR/$FRONTEND_SUBDIR" && pwd && VITE_API_URL=/api npm run build
   post_build:
     commands:
       - BUCKET=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/frontend-bucket" --query "Parameter.Value" --output text)
