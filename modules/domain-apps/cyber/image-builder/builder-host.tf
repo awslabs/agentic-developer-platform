@@ -296,7 +296,7 @@ resource "aws_cloudwatch_metric_alarm" "builder_idle" {
   evaluation_periods  = var.idle_period_seconds / 300
   threshold           = var.idle_cpu_threshold
   comparison_operator = "LessThanThreshold"
-  treat_missing_data  = "breaching"
+  treat_missing_data  = "missing"
 
   dimensions = {
     InstanceId = aws_instance.builder[0].id
