@@ -129,32 +129,61 @@ jobs:
       # ── 4. Run build pipeline via SSM ──────────────────────────────────
       - name: Run Packer build via SSM
         run: |
-          # Send command with retry (SSM may return Undeliverable briefly after agent registration)
-          for attempt in 1 2 3; do
-            COMMAND_ID=$(aws ssm send-command \
-              --instance-ids "$INSTANCE_ID" \
-              --document-name "AWS-RunShellScript" \
-              --parameters "commands=[\"aws s3 cp s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/build-pipeline.sh /tmp/build-pipeline.sh --region ${{ env.AWS_REGION }} && chmod +x /tmp/build-pipeline.sh && sudo bash /tmp/build-pipeline.sh\"]" \
-              --timeout-seconds 7200 \
-              --region "${{ env.AWS_REGION }}" \
-              --query 'Command.CommandId' --output text)
-            echo "SSM Command (attempt $attempt): $COMMAND_ID"
-            sleep 10
-            DETAIL=$(aws ssm get-command-invocation \
-              --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
-              --region "${{ env.AWS_REGION }}" \
-              --query 'StatusDetails' --output text 2>/dev/null || echo "Unknown")
-            if [[ "$DETAIL" == "Undeliverable" ]]; then
-              echo "Command undeliverable, retrying in 60s..."
-              sleep 60
-              continue
+          # Send command with retry. Two failure modes we must handle:
+          #   (a) send-command itself rejects with InvalidInstanceId
+          #       ("Instances not in a valid state for account") — SSM's command
+          #       control plane is not ready even though ping status is Online.
+          #   (b) send-command succeeds but get-command-invocation reports
+          #       Undeliverable — agent accepted registration but can't yet receive.
+          # Both resolve with a short wait. Retry up to 5 times. Do NOT rely on
+          # `set -e`: capture send-command output explicitly so a non-zero exit
+          # (InvalidInstanceId) triggers the retry instead of killing the step.
+          COMMAND_ID=""
+          DETAIL=""
+          SEND_ERR=""
+          for attempt in 1 2 3 4 5; do
+            SEND_ERR=""
+            if SEND_OUT=$(aws ssm send-command \
+                --instance-ids "$INSTANCE_ID" \
+                --document-name "AWS-RunShellScript" \
+                --parameters "commands=[\"aws s3 cp s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/build-pipeline.sh /tmp/build-pipeline.sh --region ${{ env.AWS_REGION }} && chmod +x /tmp/build-pipeline.sh && sudo bash /tmp/build-pipeline.sh\"]" \
+                --timeout-seconds 7200 \
+                --region "${{ env.AWS_REGION }}" \
+                --query 'Command.CommandId' --output text 2>&1); then
+              COMMAND_ID="$SEND_OUT"
+              echo "SSM Command (attempt $attempt): $COMMAND_ID"
+              sleep 10
+              DETAIL=$(aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+                --region "${{ env.AWS_REGION }}" \
+                --query 'StatusDetails' --output text 2>/dev/null || echo "Unknown")
+              if [[ "$DETAIL" == "Undeliverable" ]]; then
+                echo "Command undeliverable, retrying in 60s..."
+                sleep 60
+                continue
+              fi
+              break
+            else
+              SEND_ERR="$SEND_OUT"
+              echo "send-command failed (attempt $attempt): $SEND_ERR"
+              if echo "$SEND_ERR" | grep -qi "InvalidInstanceId\|not in a valid state"; then
+                echo "SSM command plane not ready yet — waiting 60s before retry..."
+                sleep 60
+                continue
+              else
+                echo "ERROR: non-retryable send-command failure"
+                exit 1
+              fi
             fi
-            break
           done
           echo "COMMAND_ID=$COMMAND_ID" >> "$GITHUB_ENV"
 
+          if [[ -z "$COMMAND_ID" ]]; then
+            echo "ERROR: SSM send-command failed after 5 attempts. Last error: $SEND_ERR"
+            exit 1
+          fi
           if [[ "$DETAIL" == "Undeliverable" ]]; then
-            echo "ERROR: SSM command undeliverable after 3 attempts"
+            echo "ERROR: SSM command reported Undeliverable after 5 attempts"
             exit 1
           fi
 
