@@ -18,6 +18,11 @@ on:
     - cron: '0 2 * * 0'   # Sundays 02:00 UTC
   workflow_dispatch: {}
 
+# Only one build at a time — prevents concurrent runs from terminating each other's instances
+concurrency:
+  group: cyber-windows-image-build
+  cancel-in-progress: false
+
 env:
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
