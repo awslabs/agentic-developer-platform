@@ -1,0 +1,60 @@
+name: cyber-k8s-deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/domain-apps/cyber/k8s/**'
+      - '.github/workflows/cyber-k8s-deploy.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: cyber-k8s-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER: adp-dev-cyber-eks
+
+jobs:
+  deploy:
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install AWS CLI + kubectl
+        run: |
+          set -e
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -sL "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          fi
+          aws --version
+          kubectl version --client
+
+      - name: Configure kubectl for cyber EKS
+        run: |
+          aws eks update-kubeconfig --region "${{ env.AWS_REGION }}" --name "${{ env.EKS_CLUSTER }}"
+          kubectl cluster-info
+
+      - name: Apply cyber-workers manifests
+        run: |
+          for f in modules/domain-apps/cyber/k8s/*.yaml; do
+            echo "=== Applying $f ==="
+            kubectl apply -f "$f"
+          done
+
+      - name: Summary
+        run: |
+          echo "## Cyber K8s deploy — applied" >> "$GITHUB_STEP_SUMMARY"
+          for f in modules/domain-apps/cyber/k8s/*.yaml; do
+            echo "- \`$f\`" >> "$GITHUB_STEP_SUMMARY"
+          done
