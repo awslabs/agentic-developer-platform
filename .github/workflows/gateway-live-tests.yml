@@ -1,0 +1,63 @@
+name: Gateway Live Tests
+
+# Runs the `live_only`-marked tests against the deployed gateway.
+# Requires GATEWAY_URL (resolved via SSM from CloudFront domain).
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch: {}
+
+concurrency:
+  group: gateway-live-tests
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        run: |
+          if ! command -v python3 >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq python3 python3-pip python3-venv
+          fi
+          python3 --version
+
+      - name: Install dependencies
+        working-directory: modules/gateway
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          pip install -e ".[dev]"
+
+      - name: Resolve deployed gateway URL
+        id: gw
+        run: |
+          # Install AWS CLI if missing (ARC pattern)
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp && sudo /tmp/aws/install
+          fi
+          CF_DOMAIN=$(aws ssm get-parameter --name /adp/dev/gateway/cloudfront-domain \
+            --query Parameter.Value --output text --region us-east-1)
+          echo "GATEWAY_URL=https://${CF_DOMAIN}" >> "$GITHUB_ENV"
+          echo "Resolved: https://${CF_DOMAIN}"
+
+      - name: Run live tests
+        working-directory: modules/gateway
+        run: |
+          . .venv/bin/activate
+          pytest tests/ -v --tb=short \
+            -m "live_only" \
+            --timeout=120
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Gateway Live Tests — $(date -u +%Y-%m-%d)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Gateway: $GATEWAY_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "- See job log for pytest output" >> "$GITHUB_STEP_SUMMARY"
