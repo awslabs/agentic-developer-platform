@@ -37,3 +37,35 @@ provider "aws" {
     tags = local.common_tags
   }
 }
+
+# ---------------------------------------------------------------------------
+# VPC / Subnet self-discovery via tags (module independence — no remote state)
+# ---------------------------------------------------------------------------
+
+locals {
+  resolved_vpc_name = var.vpc_name != "" ? var.vpc_name : "adp-${var.environment}-vpc"
+}
+
+data "aws_vpc" "target" {
+  filter {
+    name   = "tag:Name"
+    values = [local.resolved_vpc_name]
+  }
+}
+
+data "aws_subnets" "private" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.target.id]
+  }
+
+  filter {
+    name   = "tag:Name"
+    values = ["adp-${var.environment}-private-*"]
+  }
+}
+
+locals {
+  vpc_id    = data.aws_vpc.target.id
+  subnet_id = var.subnet_id_override != "" ? var.subnet_id_override : data.aws_subnets.private.ids[0]
+}

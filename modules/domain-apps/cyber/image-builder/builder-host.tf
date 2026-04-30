@@ -25,7 +25,7 @@ resource "aws_security_group" "builder" {
 
   name        = "${local.name_prefix}-sg-builder"
   description = "Build host SG - no inbound, full outbound for package downloads"
-  vpc_id      = var.vpc_id
+  vpc_id      = local.vpc_id
 
   egress {
     description = "All outbound (download ISO, packages, upload to S3)"
@@ -130,7 +130,7 @@ resource "aws_instance" "builder" {
 
   ami           = data.aws_ssm_parameter.ubuntu_ami[0].value
   instance_type = var.build_instance_type
-  subnet_id     = var.subnet_id
+  subnet_id     = local.subnet_id
 
   iam_instance_profile   = aws_iam_instance_profile.builder[0].name
   vpc_security_group_ids = [aws_security_group.builder[0].id]

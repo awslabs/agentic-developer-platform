@@ -47,14 +47,16 @@ variable "build_root_volume_size" {
   default     = 300
 }
 
-variable "subnet_id" {
+variable "vpc_name" {
   type        = string
-  description = "Private subnet ID in the ADP dev VPC (must have NAT egress)"
+  description = "Name tag of the VPC to deploy the build host into. Defaults to adp-<env>-vpc."
+  default     = ""
 }
 
-variable "vpc_id" {
+variable "subnet_id_override" {
   type        = string
-  description = "VPC ID of the ADP dev VPC"
+  description = "Optional: force a specific private subnet ID. Leave empty to auto-select the first adp-<env>-private-* subnet."
+  default     = ""
 }
 
 # ---------------------------------------------------------------------------
