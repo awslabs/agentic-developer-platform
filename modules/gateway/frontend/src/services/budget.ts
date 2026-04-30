@@ -57,12 +57,13 @@ export async function getBudgets(
     has_more: boolean;
   }>(`/admin/organizations/${orgId}/budgets${query}`);
 
+  const items = Array.isArray(response?.items) ? response.items : [];
   return {
-    items: response.items.map(transformBudget),
-    total: response.total,
-    page: response.page,
-    pageSize: response.page_size,
-    hasMore: response.has_more,
+    items: items.map(transformBudget),
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 50,
+    hasMore: response?.has_more ?? false,
   };
 }
 
@@ -99,8 +100,9 @@ export async function getBudgetsWithUtilization(
     has_more: boolean;
   }>(`/admin/organizations/${orgId}/budgets${query}`);
 
+  const items = Array.isArray(response?.items) ? response.items : [];
   return {
-    items: response.items.map((item) => ({
+    items: items.map((item) => ({
       entityType: item.entity_type as EntityType,
       entityId: item.entity_id,
       entityDisplayName: item.entity_display_name,
@@ -111,10 +113,10 @@ export async function getBudgetsWithUtilization(
       utilizationPct: item.utilization_pct,
       updatedAt: item.updated_at,
     })),
-    total: response.total,
-    page: response.page,
-    pageSize: response.page_size,
-    hasMore: response.has_more,
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 20,
+    hasMore: response?.has_more ?? false,
   };
 }
 
@@ -276,12 +278,13 @@ export async function getUsage(
     has_more: boolean;
   }>(`/admin/organizations/${orgId}/usage${query}`);
 
+  const items = Array.isArray(response?.items) ? response.items : [];
   return {
-    items: response.items.map(transformBudgetUsage),
-    total: response.total,
-    page: response.page,
-    pageSize: response.page_size,
-    hasMore: response.has_more,
+    items: items.map(transformBudgetUsage),
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 50,
+    hasMore: response?.has_more ?? false,
   };
 }
 
@@ -322,7 +325,8 @@ export async function getUsageTimeSeries(
   }>(`/admin/organizations/${orgId}/usage/timeseries${query}`);
 
   // Transform backend response to frontend format
-  return response.data.map((item) => ({
+  const data = Array.isArray(response?.data) ? response.data : [];
+  return data.map((item) => ({
     timestamp: item.date,
     requestCount: item.request_count,
     tokenCount: item.input_tokens + item.output_tokens,

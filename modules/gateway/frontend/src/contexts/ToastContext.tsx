@@ -38,16 +38,22 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const addToast = useCallback(
     (type: ToastType, message: string, duration: number = 5000) => {
-      const id = `toast-${++toastId}`;
-      const toast: Toast = { id, type, message, duration };
+      setToasts((prev) => {
+        // Dedup: if same type+message already visible, don't stack another
+        const duplicate = prev.find((t) => t.type === type && t.message === message);
+        if (duplicate) return prev;
 
-      setToasts((prev) => [...prev, toast]);
+        const id = `toast-${++toastId}`;
+        const toast: Toast = { id, type, message, duration };
 
-      if (duration > 0) {
-        setTimeout(() => {
-          removeToast(id);
-        }, duration);
-      }
+        if (duration > 0) {
+          setTimeout(() => {
+            removeToast(id);
+          }, duration);
+        }
+
+        return [...prev, toast];
+      });
     },
     [removeToast]
   );

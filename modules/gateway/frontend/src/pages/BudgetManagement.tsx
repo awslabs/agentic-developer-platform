@@ -8,7 +8,7 @@
  * - Add/Edit/Delete budgets
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Table, type Column } from '@/components/ui/Table';
@@ -70,6 +70,10 @@ export function BudgetManagement() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [selectedBudget, setSelectedBudget] = useState<BudgetListItem | null>(null);
 
+  // Use ref to break useEffect/useCallback dependency cycle on toast (Defect #2 fix)
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+
   const loadBudgets = useCallback(async () => {
     if (!user?.orgId) return;
 
@@ -85,11 +89,11 @@ export function BudgetManagement() {
       setHasMore(response.hasMore);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Failed to load budgets';
-      toast.error(message);
+      toastRef.current.error(message);
     } finally {
       setIsLoading(false);
     }
-  }, [page, user?.orgId, entityTypeFilter, toast]);
+  }, [page, user?.orgId, entityTypeFilter]);
 
   useEffect(() => {
     loadBudgets();

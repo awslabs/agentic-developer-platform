@@ -65,12 +65,13 @@ export async function getRatelimits(
     has_more: boolean;
   }>(`/admin/organizations/${orgId}/ratelimits${query}`);
 
+  const items = Array.isArray(response?.items) ? response.items : [];
   return {
-    items: response.items.map(transformRateLimitListItem),
-    total: response.total,
-    page: response.page,
-    pageSize: response.page_size,
-    hasMore: response.has_more,
+    items: items.map(transformRateLimitListItem),
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 20,
+    hasMore: response?.has_more ?? false,
   };
 }
 

@@ -8,7 +8,7 @@
  * - Delete agents to revoke access
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Table, type Column } from '@/components/ui/Table';
@@ -277,6 +277,10 @@ export function AgentManagement() {
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [credentials, setCredentials] = useState<AgentCredentials | null>(null);
 
+  // Use ref to break useEffect/useCallback dependency cycle on toast (Defect #2 fix)
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+
   const loadAgents = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -286,11 +290,11 @@ export function AgentManagement() {
       setHasMore(response.has_more);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Failed to load agents';
-      toast.error(message);
+      toastRef.current.error(message);
     } finally {
       setIsLoading(false);
     }
-  }, [page, user?.orgId, toast]);
+  }, [page, user?.orgId]);
 
   useEffect(() => {
     loadAgents();

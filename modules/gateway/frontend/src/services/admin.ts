@@ -34,12 +34,13 @@ export async function getOrganizations(params?: {
     has_more: boolean;
   }>(`/admin/organizations${query}`);
 
+  const items = Array.isArray(response?.items) ? response.items : [];
   return {
-    items: response.items.map(transformOrganization),
-    total: response.total,
-    page: response.page,
-    pageSize: response.page_size,
-    hasMore: response.has_more,
+    items: items.map(transformOrganization),
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 50,
+    hasMore: response?.has_more ?? false,
   };
 }
 
@@ -109,12 +110,13 @@ export async function getDepartments(
     has_more: boolean;
   }>(`/admin/organizations/${orgId}/departments${query}`);
 
+  const items = Array.isArray(response?.items) ? response.items : [];
   return {
-    items: response.items.map(transformDepartment),
-    total: response.total,
-    page: response.page,
-    pageSize: response.page_size,
-    hasMore: response.has_more,
+    items: items.map(transformDepartment),
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 50,
+    hasMore: response?.has_more ?? false,
   };
 }
 
@@ -175,12 +177,13 @@ export async function getTeams(
     has_more: boolean;
   }>(`/admin/organizations/${orgId}/departments/${deptId}/teams${query}`);
 
+  const items = Array.isArray(response?.items) ? response.items : [];
   return {
-    items: response.items.map(transformTeam),
-    total: response.total,
-    page: response.page,
-    pageSize: response.page_size,
-    hasMore: response.has_more,
+    items: items.map(transformTeam),
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 50,
+    hasMore: response?.has_more ?? false,
   };
 }
 
@@ -271,8 +274,9 @@ export async function getUserRoles(
   }>(`/admin/organizations/${orgId}/users${query}`);
 
   // Transform user data to UserRole format
+  const items = Array.isArray(response?.items) ? response.items : [];
   return {
-    items: response.items.map((user) => ({
+    items: items.map((user) => ({
       userId: user.id,
       role: user.role as UserRole['role'],
       orgId: user.org_id,
@@ -280,10 +284,10 @@ export async function getUserRoles(
       permissions: [], // Permissions are derived from role in the backend
       createdAt: user.created_at,
     })),
-    total: response.total,
-    page: response.page,
-    pageSize: response.page_size,
-    hasMore: response.has_more,
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 50,
+    hasMore: response?.has_more ?? false,
   };
 }
 
@@ -417,8 +421,9 @@ export async function getCognitoUsers(
     has_more: boolean;
   }>(`/admin/organizations/${orgId}/cognito/users${query}`);
 
+  const items = Array.isArray(response?.items) ? response.items : [];
   return {
-    items: response.items.map((user) => ({
+    items: items.map((user) => ({
       username: user.username,
       email: user.email,
       name: user.name,
@@ -432,10 +437,10 @@ export async function getCognitoUsers(
       createdAt: user.created_at,
       updatedAt: user.updated_at,
     })),
-    total: response.total,
-    page: response.page,
-    pageSize: response.page_size,
-    hasMore: response.has_more,
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 50,
+    hasMore: response?.has_more ?? false,
   };
 }
 
@@ -481,17 +486,18 @@ export async function getCognitoTeams(
     has_more: boolean;
   }>(`/admin/organizations/${orgId}/cognito/teams${query}`);
 
+  const items = Array.isArray(response?.items) ? response.items : [];
   return {
-    items: response.items.map((team) => ({
+    items: items.map((team) => ({
       groupName: team.group_name,
       description: team.description,
       createdAt: team.created_at,
       updatedAt: team.updated_at,
     })),
-    total: response.total,
-    page: response.page,
-    pageSize: response.page_size,
-    hasMore: response.has_more,
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 50,
+    hasMore: response?.has_more ?? false,
   };
 }
 
@@ -510,10 +516,11 @@ export async function getCognitoDepartments(orgId: string): Promise<{
     total: number;
   }>(`/admin/organizations/${orgId}/cognito/departments`);
 
+  const items = Array.isArray(response?.items) ? response.items : [];
   return {
-    items: response.items.map((dept) => ({
+    items: items.map((dept) => ({
       departmentId: dept.department_id,
     })),
-    total: response.total,
+    total: response?.total ?? 0,
   };
 }
