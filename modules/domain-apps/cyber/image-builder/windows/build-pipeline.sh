@@ -2,7 +2,7 @@
 # =============================================================================
 # build-pipeline.sh — Windows 11 CAPE qcow2 Build Orchestrator
 # =============================================================================
-# Runs on the build host (via SSM send-command).
+# Runs on the build host (self-contained via user-data).
 # Downloads Packer inputs from S3, fetches ISOs, runs Packer, uploads output.
 #
 # Prerequisites:
@@ -70,9 +70,9 @@ fi
 # ---------------------------------------------------------------------------
 echo "========== Stage 1/5: Download build inputs =========="
 
-aws s3 sync "s3://${ASSETS_BUCKET}/windows-build-inputs/packer/"       "$WORKDIR/packer/"
-aws s3 sync "s3://${ASSETS_BUCKET}/windows-build-inputs/answer_files/" "$WORKDIR/answer_files/"
-aws s3 sync "s3://${ASSETS_BUCKET}/windows-build-inputs/scripts/"      "$WORKDIR/scripts/"
+aws s3 sync "s3://${ASSETS_BUCKET}/windows-build-inputs/packer/"       "$WORKDIR/packer/"       --region "$AWS_REGION"
+aws s3 sync "s3://${ASSETS_BUCKET}/windows-build-inputs/answer_files/" "$WORKDIR/answer_files/" --region "$AWS_REGION"
+aws s3 sync "s3://${ASSETS_BUCKET}/windows-build-inputs/scripts/"      "$WORKDIR/scripts/"      --region "$AWS_REGION"
 
 echo ""
 
@@ -83,25 +83,71 @@ echo "========== Stage 2/5: Download VirtIO drivers =========="
 
 VIRTIO_ISO="$WORKDIR/virtio-win.iso"
 if [[ ! -f "$VIRTIO_ISO" ]]; then
-  echo "Downloading VirtIO drivers ISO..."
-  curl -fsSL "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso" \
-    -o "$VIRTIO_ISO"
+  # Try S3 cache first
+  if aws s3 cp "s3://${ASSETS_BUCKET}/isos/virtio-win.iso" "$VIRTIO_ISO" --region "$AWS_REGION" 2>/dev/null; then
+    echo "VirtIO ISO loaded from S3 cache."
+  else
+    echo "Downloading VirtIO drivers ISO from Fedora..."
+    curl -fsSL "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso" \
+      -o "$VIRTIO_ISO"
+    # Cache to S3 for future builds
+    aws s3 cp "$VIRTIO_ISO" "s3://${ASSETS_BUCKET}/isos/virtio-win.iso" --region "$AWS_REGION" || true
+  fi
 fi
 echo "VirtIO ISO: $(ls -lh "$VIRTIO_ISO" | awk '{print $5}')"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Download Windows 11 ISO (if not cached)
+# Download Windows 11 ISO (try S3 cache first, then Microsoft)
 # ---------------------------------------------------------------------------
 echo "========== Stage 3/5: Download Windows 11 ISO =========="
 
 WIN_ISO="$WORKDIR/win11-enterprise.iso"
 if [[ ! -f "$WIN_ISO" ]]; then
-  echo "Downloading Windows 11 Enterprise Evaluation ISO (~5 GB)..."
-  # 23H2 Enterprise Evaluation
-  curl -fsSL \
-    "https://software-download.microsoft.com/download/sg/22631.2861.231204-0540.23h2_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso" \
-    -o "$WIN_ISO"
+  # Try S3 cache first (much faster — same region, ~30s vs ~5 min)
+  if aws s3 cp "s3://${ASSETS_BUCKET}/isos/win11-enterprise.iso" "$WIN_ISO" --region "$AWS_REGION" 2>/dev/null; then
+    echo "Windows ISO loaded from S3 cache."
+  else
+    echo "Downloading Windows 11 Enterprise Evaluation ISO (~5 GB)..."
+    # Try multiple URLs — Microsoft periodically rotates evaluation ISOs.
+    # Order: newest first (24H2), then 23H2, then fwlink redirect.
+    WIN_ISO_URLS=(
+      "https://software-static.download.prss.microsoft.com/dbazure/888969d5-f34g-4e03-ac9d-1f9786c66749/26100.1742.240906-0331.ge_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso"
+      "https://software-static.download.prss.microsoft.com/dbazure/888969d5-f34g-4e03-ac9d-1f9786c66749/22631.2861.231204-0540.23h2_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso"
+      "https://software-download.microsoft.com/download/sg/22631.2861.231204-0540.23h2_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso"
+    )
+
+    DOWNLOADED=false
+    for url in "${WIN_ISO_URLS[@]}"; do
+      echo "Trying: ${url:0:80}..."
+      if curl -fSL --retry 3 --retry-delay 10 "$url" -o "$WIN_ISO" 2>&1; then
+        # Verify it's a real ISO (> 4 GB)
+        ISO_SIZE=$(stat -c %s "$WIN_ISO" 2>/dev/null || echo "0")
+        if (( ISO_SIZE > 4000000000 )); then
+          echo "Download successful. Size: $(numfmt --to=iec "$ISO_SIZE")"
+          DOWNLOADED=true
+          break
+        else
+          echo "Downloaded file too small ($ISO_SIZE bytes), trying next URL..."
+          rm -f "$WIN_ISO"
+        fi
+      else
+        echo "Download failed, trying next URL..."
+        rm -f "$WIN_ISO"
+      fi
+    done
+
+    if [[ "$DOWNLOADED" != "true" ]]; then
+      echo "ERROR: Could not download Windows 11 ISO from any source."
+      echo "Consider manually uploading to s3://${ASSETS_BUCKET}/isos/win11-enterprise.iso"
+      exit 1
+    fi
+
+    # Cache to S3 for future builds (avoid re-downloading next time)
+    echo "Caching ISO to S3 for future builds..."
+    aws s3 cp "$WIN_ISO" "s3://${ASSETS_BUCKET}/isos/win11-enterprise.iso" \
+      --region "$AWS_REGION" --storage-class INTELLIGENT_TIERING || true
+  fi
 fi
 echo "Windows ISO: $(ls -lh "$WIN_ISO" | awk '{print $5}')"
 echo ""
@@ -151,13 +197,15 @@ echo ""
 
 # Upload dated version
 aws s3 cp "$OUT" "s3://${ASSETS_BUCKET}/win11-cape-${BUILD_DATE}.qcow2" \
-  --metadata "sha256=${SHA256},build_date=${BUILD_DATE}"
-aws s3 cp "${OUT}.sha256" "s3://${ASSETS_BUCKET}/win11-cape-${BUILD_DATE}.qcow2.sha256"
+  --region "$AWS_REGION" --metadata "sha256=${SHA256},build_date=${BUILD_DATE}"
+aws s3 cp "${OUT}.sha256" "s3://${ASSETS_BUCKET}/win11-cape-${BUILD_DATE}.qcow2.sha256" \
+  --region "$AWS_REGION"
 
 # Update latest pointer
 aws s3 cp "$OUT" "s3://${ASSETS_BUCKET}/win11-cape-latest.qcow2" \
-  --metadata "sha256=${SHA256},build_date=${BUILD_DATE}"
-aws s3 cp "${OUT}.sha256" "s3://${ASSETS_BUCKET}/win11-cape-latest.qcow2.sha256"
+  --region "$AWS_REGION" --metadata "sha256=${SHA256},build_date=${BUILD_DATE}"
+aws s3 cp "${OUT}.sha256" "s3://${ASSETS_BUCKET}/win11-cape-latest.qcow2.sha256" \
+  --region "$AWS_REGION"
 
 echo ""
 echo "========================================"
