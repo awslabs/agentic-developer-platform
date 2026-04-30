@@ -182,12 +182,16 @@ resource "aws_instance" "builder" {
     BUILD_DATE=$(date -u +%Y-%m-%d)
 
     # ── Phase 1: Install packages ──────────────────────────────────────
+    # On Ubuntu 22.04, qemu-kvm is a meta-package that may be unavailable
+    # on fresh AMIs due to apt cache staleness. Install qemu-system-x86
+    # directly (provides /usr/bin/qemu-system-x86_64 and KVM support).
     for attempt in 1 2 3; do
       apt-get update -y && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --fix-broken \
         qemu-utils \
-        qemu-kvm \
+        qemu-system-x86 \
         libvirt-daemon-system \
+        libvirt-clients \
         virtinst \
         cloud-image-utils \
         genisoimage \
@@ -198,9 +202,15 @@ resource "aws_instance" "builder" {
       sleep 15
     done
 
-    # Verify critical packages
+    # Fallback: try qemu-kvm meta-package if qemu-system-x86_64 not found
+    if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-kvm || true
+    fi
+
+    # Verify critical binaries and packages
     MISSING=""
-    for pkg in qemu-kvm qemu-utils libvirt-daemon-system genisoimage jq awscli; do
+    command -v qemu-system-x86_64 >/dev/null 2>&1 || MISSING="$MISSING qemu-kvm"
+    for pkg in qemu-utils libvirt-daemon-system genisoimage jq awscli; do
       dpkg -s "$pkg" >/dev/null 2>&1 || MISSING="$MISSING $pkg"
     done
     if [ -n "$MISSING" ]; then
