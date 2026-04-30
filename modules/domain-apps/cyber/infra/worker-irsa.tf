@@ -136,6 +136,14 @@ resource "aws_iam_role_policy" "cyber_worker_s3" {
           "arn:aws:s3:::adp-${var.environment}-cape-assets",
           "arn:aws:s3:::adp-${var.environment}-cape-assets/yara-rules/public/*"
         ]
+      },
+      {
+        # Issue #278: Workers need to read samples from cape-assets bucket
+        # (smoke-test samples, future: any sample staged for analysis)
+        Sid      = "ReadCapeAssetsSamples"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::adp-${var.environment}-cape-assets/smoke-test/*"
       }
     ]
   })

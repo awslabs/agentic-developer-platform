@@ -84,7 +84,17 @@ resource "aws_iam_role_policy" "cape_minimal" {
         Effect = "Allow"
         Action = ["s3:GetObject"]
         Resource = [
-          "arn:aws:s3:::${var.sample_bucket_name}-*/o/*/in/*"
+          "arn:aws:s3:::${var.sample_bucket_name}-*/o/*/in/*",
+          "arn:aws:s3:::adp-${var.environment}-cape-assets/smoke-test/*"
+        ]
+      },
+      {
+        # Issue #278: Export CAPE reports to S3 for downstream consumption
+        Sid    = "S3ExportReports"
+        Effect = "Allow"
+        Action = ["s3:PutObject"]
+        Resource = [
+          "arn:aws:s3:::adp-${var.environment}-cape-assets/reports/*"
         ]
       },
       {
