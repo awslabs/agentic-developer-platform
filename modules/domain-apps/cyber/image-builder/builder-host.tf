@@ -163,34 +163,67 @@ resource "aws_instance" "builder" {
 
   user_data_base64 = base64encode(<<-USERDATA
     #!/bin/bash
-    set -euo pipefail
+    # NOTE: Do NOT use "set -e" here. If apt-get fails transiently (mirror
+    # issues, NAT saturation), the script must still reach the builder-ready
+    # marker so the workflow probe can detect that user-data ran at all.
+    # Critical failures are caught by explicit package verification below.
+    set -x
     exec > /var/log/builder-userdata.log 2>&1
 
-    echo "=== Image Builder user-data starting ==="
+    echo "=== Image Builder user-data starting at $(date -u) ==="
 
     # Hold SSM agent snap to prevent auto-refresh during apt-get.
-    # Without this, snap auto-refresh can restart the agent mid-install,
-    # causing 13+ min SSM outage (observed on c8i.4xlarge).
     snap refresh --hold=2h amazon-ssm-agent 2>/dev/null || true
 
-    apt-get update -y
-    DEBIAN_FRONTEND=noninteractive apt-get install -y \
-      qemu-utils \
-      qemu-kvm \
-      libvirt-daemon-system \
-      virtinst \
-      cloud-image-utils \
-      genisoimage \
-      awscli \
-      jq \
-      cpu-checker
+    # Verify SSM is running (it should be from AMI). Do NOT restart it —
+    # restarting causes 5-15 min deregistration from the SSM service,
+    # making the instance unreachable. Observed in runs 25161042857,
+    # 25161866663 where SSM went down at ~45s and never recovered.
+    systemctl is-active snap.amazon-ssm-agent.amazon-ssm-agent.service >/dev/null 2>&1 || \
+      systemctl is-active amazon-ssm-agent >/dev/null 2>&1 || {
+        echo "WARNING: SSM agent not running, attempting start..."
+        systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service 2>/dev/null || \
+          systemctl start amazon-ssm-agent 2>/dev/null || true
+      }
 
-    # Restart SSM agent to ensure it's up after any disruption from
-    # package installs (dpkg triggers can restart services).
-    systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent.service 2>/dev/null || \
-      systemctl restart amazon-ssm-agent 2>/dev/null || true
-    # Wait briefly for agent to re-register
-    sleep 5
+    # Rate-limit apt downloads to preserve NAT bandwidth for SSM heartbeats.
+    # Without this, 500MB+ of package downloads saturates the NAT gateway,
+    # causing SSM heartbeat timeouts and 13+ min outages.
+    cat > /etc/apt/apt.conf.d/99-rate-limit << 'APT_CONF'
+    Acquire::http::Dl-Limit "50000";
+    Acquire::https::Dl-Limit "50000";
+    APT_CONF
+
+    # Install build packages with retry
+    for attempt in 1 2 3; do
+      apt-get update -y && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        qemu-utils \
+        qemu-kvm \
+        libvirt-daemon-system \
+        virtinst \
+        cloud-image-utils \
+        genisoimage \
+        awscli \
+        jq \
+        cpu-checker && break
+      echo "apt-get failed (attempt $attempt/3), retrying in 10s..."
+      sleep 10
+    done
+
+    # Remove rate limit after install (Packer needs full speed for ISO download)
+    rm -f /etc/apt/apt.conf.d/99-rate-limit
+
+    # Verify critical packages — if these are missing, the build WILL fail
+    MISSING=""
+    for pkg in qemu-kvm qemu-utils libvirt-daemon-system genisoimage jq; do
+      dpkg -s "$pkg" >/dev/null 2>&1 || MISSING="$MISSING $pkg"
+    done
+    if [ -n "$MISSING" ]; then
+      echo "ERROR: Missing critical packages:$MISSING"
+      echo "BUILDER_FAILED=missing_packages:$MISSING" > /var/run/builder-ready
+      exit 1
+    fi
 
     # Verify nested virtualization
     kvm-ok || echo "WARNING: KVM not available — nested virt may not work"
@@ -203,10 +236,10 @@ resource "aws_instance" "builder" {
     virsh net-start default 2>/dev/null || true
     virsh net-autostart default 2>/dev/null || true
 
-    # Write bootstrap marker
+    # Write bootstrap marker — signals user-data is complete and build host ready
     echo "BUILDER_READY=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /var/run/builder-ready
 
-    echo "=== Image Builder user-data complete ==="
+    echo "=== Image Builder user-data complete at $(date -u) ==="
   USERDATA
   )
 
