@@ -7,6 +7,11 @@
 # The build host is ephemeral — it spins up in an ADP dev private subnet,
 # builds the qcow2 via KVM, uploads to S3, and is terminated.
 #
+# IMPORTANT: The VPC must have SSM VPC endpoints (ssm, ssmmessages,
+# ec2messages). Without them, SSM heartbeats go through NAT and become
+# unreliable during heavy downloads, causing 13+ min SSM outages.
+# The adp-dev-cyber-vpc has these endpoints; adp-dev-vpc does NOT.
+#
 # Usage:
 #   terraform init -backend-config=<backend.tfvars>
 #   terraform apply -var build_host_enabled=true   # spin up builder
@@ -43,7 +48,9 @@ provider "aws" {
 # ---------------------------------------------------------------------------
 
 locals {
-  resolved_vpc_name = var.vpc_name != "" ? var.vpc_name : "adp-${var.environment}-vpc"
+  # Default to the cyber VPC which has SSM VPC endpoints.
+  # Without endpoints, SSM depends on NAT and becomes unreliable.
+  resolved_vpc_name = var.vpc_name != "" ? var.vpc_name : "adp-${var.environment}-cyber-vpc"
 }
 
 data "aws_vpc" "target" {
@@ -59,9 +66,12 @@ data "aws_subnets" "private" {
     values = [data.aws_vpc.target.id]
   }
 
+  # Match any private subnet in the target VPC. Naming conventions vary:
+  # - adp-dev-private-*  (platform VPC)
+  # - adp-dev-cyber-private-*  (cyber VPC)
   filter {
     name   = "tag:Name"
-    values = ["adp-${var.environment}-private-*"]
+    values = ["*private*"]
   }
 }
 
@@ -69,3 +79,4 @@ locals {
   vpc_id    = data.aws_vpc.target.id
   subnet_id = var.subnet_id_override != "" ? var.subnet_id_override : data.aws_subnets.private.ids[0]
 }
+

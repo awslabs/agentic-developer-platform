@@ -49,13 +49,13 @@ variable "build_root_volume_size" {
 
 variable "vpc_name" {
   type        = string
-  description = "Name tag of the VPC to deploy the build host into. Defaults to adp-<env>-vpc."
+  description = "Name tag of the VPC to deploy the build host into. Must have SSM VPC endpoints. Defaults to adp-<env>-cyber-vpc which has them."
   default     = ""
 }
 
 variable "subnet_id_override" {
   type        = string
-  description = "Optional: force a specific private subnet ID. Leave empty to auto-select the first adp-<env>-private-* subnet."
+  description = "Optional: force a specific private subnet ID. Leave empty to auto-select the first private subnet in the target VPC."
   default     = ""
 }
 
