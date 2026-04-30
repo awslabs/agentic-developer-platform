@@ -1,0 +1,248 @@
+# =============================================================================
+# YARA Public Rule Ingestion — hourly pull from upstream + validate + promote
+# =============================================================================
+# Issue #272: Decouples YARA rules from Docker image into S3-backed versioned store.
+# Upstream: https://github.com/Neo23x0/signature-base (Florian Roth)
+#
+# Flow:
+#   1. Clone upstream (shallow)
+#   2. Compile-test every .yar file
+#   3. Canary validation (false-positive check against known-benign corpus)
+#   4. Build manifest (SHA256, counts, upstream commit)
+#   5. Upload to S3 (immutable timestamped prefix)
+#   6. Atomic promote (update current.json pointer)
+#
+# Safety: if compile-failed > 50 OR canary-quarantined > 20, do NOT promote.
+# =============================================================================
+
+name: yara-ingest-public
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # Hourly at :00
+  workflow_dispatch: {}
+
+concurrency:
+  group: yara-ingest-public
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  BUCKET: adp-dev-cape-assets
+  RULES_PREFIX: yara-rules/public/florian-roth
+  CANARY_PREFIX: yara-rules/canary-benign
+  MAX_COMPILE_FAIL: 50
+  MAX_CANARY_QUARANTINE: 20
+  MAX_FP_RULES_PCT: 5
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/adp-dev-github-actions
+          aws-region: us-east-1
+
+      - name: Install YARA
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq yara jq
+
+      - name: Clone upstream signature-base
+        run: |
+          git clone --depth 1 --branch master https://github.com/Neo23x0/signature-base.git /tmp/sig-base
+          UPSTREAM_SHA=$(cd /tmp/sig-base && git rev-parse HEAD)
+          echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> "$GITHUB_ENV"
+          echo "Upstream commit: $UPSTREAM_SHA"
+
+      - name: Check for changes since last ingestion
+        id: check_changes
+        run: |
+          # Fetch current pointer to see if upstream changed
+          CURRENT_JSON=$(aws s3 cp "s3://$BUCKET/$RULES_PREFIX/current.json" - 2>/dev/null || echo "")
+          if [ -n "$CURRENT_JSON" ]; then
+            LAST_MANIFEST_PATH=$(echo "$CURRENT_JSON" | jq -r '.resolves_to')
+            LAST_UPSTREAM=$(aws s3 cp "s3://$BUCKET/$RULES_PREFIX/$LAST_MANIFEST_PATH/MANIFEST.json" - 2>/dev/null | jq -r '.upstream_commit // ""')
+            if [ "$LAST_UPSTREAM" = "$UPSTREAM_SHA" ]; then
+              echo "No upstream changes since last ingestion (commit: $UPSTREAM_SHA). Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Compile-test all rules
+        if: steps.check_changes.outputs.skip != 'true'
+        run: |
+          RULES_DIR=/tmp/sig-base/yara
+          VALID_DIR=/tmp/valid-rules
+          mkdir -p "$VALID_DIR"
+
+          COMPILE_FAILED=()
+          VALID_COUNT=0
+
+          for rule in $(find "$RULES_DIR" -name "*.yar" -type f 2>/dev/null); do
+            if yara -w "$rule" /dev/null 2>/dev/null; then
+              cp "$rule" "$VALID_DIR/"
+              VALID_COUNT=$((VALID_COUNT + 1))
+            else
+              COMPILE_FAILED+=("$(basename "$rule")")
+            fi
+          done
+
+          echo "Valid: $VALID_COUNT. Failed: ${#COMPILE_FAILED[@]}"
+
+          # Export for later steps
+          echo "VALID_COUNT=$VALID_COUNT" >> "$GITHUB_ENV"
+          echo "COMPILE_FAIL_COUNT=${#COMPILE_FAILED[@]}" >> "$GITHUB_ENV"
+
+          # Write compile failures to file for manifest
+          printf '%s\n' "${COMPILE_FAILED[@]}" > /tmp/compile-failed.txt
+
+          # Safety check: too many compile failures = abort
+          if [ "${#COMPILE_FAILED[@]}" -gt "$MAX_COMPILE_FAIL" ]; then
+            echo "::error::Compile failures (${#COMPILE_FAILED[@]}) exceed threshold ($MAX_COMPILE_FAIL). Aborting."
+            echo "PROMOTE=false" >> "$GITHUB_ENV"
+            exit 1
+          fi
+
+      - name: Canary validation — false-positive check
+        if: steps.check_changes.outputs.skip != 'true'
+        run: |
+          # Download canary-benign corpus from S3
+          mkdir -p /tmp/canary
+          aws s3 sync "s3://$BUCKET/$CANARY_PREFIX/" /tmp/canary/ --quiet
+
+          CANARY_COUNT=$(find /tmp/canary -type f ! -name "MANIFEST.json" | wc -l)
+          echo "Canary corpus size: $CANARY_COUNT files"
+
+          if [ "$CANARY_COUNT" -eq 0 ]; then
+            echo "::warning::Canary corpus is empty. Skipping FP validation."
+            echo "QUARANTINE_COUNT=0" >> "$GITHUB_ENV"
+            printf '' > /tmp/quarantined.txt
+            exit 0
+          fi
+
+          VALID_DIR=/tmp/valid-rules
+          QUARANTINED=()
+
+          for rule in "$VALID_DIR"/*.yar; do
+            [ -f "$rule" ] || continue
+            HITS=0
+            while IFS= read -r sample; do
+              if yara -w "$rule" "$sample" 2>/dev/null | grep -q .; then
+                HITS=$((HITS + 1))
+              fi
+            done < <(find /tmp/canary -type f ! -name "MANIFEST.json")
+
+            FP_PCT=$(( HITS * 100 / CANARY_COUNT ))
+            if [ "$FP_PCT" -gt "$MAX_FP_RULES_PCT" ]; then
+              QUARANTINED+=("$(basename "$rule") (${FP_PCT}% FP)")
+              rm "$rule"
+            fi
+          done
+
+          echo "Quarantined (>$MAX_FP_RULES_PCT% FP): ${#QUARANTINED[@]} rules"
+          echo "QUARANTINE_COUNT=${#QUARANTINED[@]}" >> "$GITHUB_ENV"
+
+          # Write quarantined list for manifest
+          printf '%s\n' "${QUARANTINED[@]}" > /tmp/quarantined.txt
+
+          # Safety check
+          if [ "${#QUARANTINED[@]}" -gt "$MAX_CANARY_QUARANTINE" ]; then
+            echo "::error::Quarantined rules (${#QUARANTINED[@]}) exceed threshold ($MAX_CANARY_QUARANTINE). Aborting."
+            echo "PROMOTE=false" >> "$GITHUB_ENV"
+            exit 1
+          fi
+
+      - name: Build manifest + validation report
+        if: steps.check_changes.outputs.skip != 'true'
+        run: |
+          VALID_DIR=/tmp/valid-rules
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%MZ)
+          echo "TIMESTAMP=$TIMESTAMP" >> "$GITHUB_ENV"
+
+          RULE_COUNT=$(find "$VALID_DIR" -name "*.yar" -type f | wc -l)
+          echo "RULE_COUNT=$RULE_COUNT" >> "$GITHUB_ENV"
+
+          # SHA256 over deterministic concatenation
+          TARBALL_SHA=$(find "$VALID_DIR" -name "*.yar" -type f | sort | xargs cat | sha256sum | cut -d' ' -f1)
+
+          # Build MANIFEST.json
+          COMPILE_FAILED_JSON=$(cat /tmp/compile-failed.txt | jq -R . | jq -s .)
+          QUARANTINED_JSON=$(cat /tmp/quarantined.txt | jq -R 'select(length > 0)' | jq -s .)
+
+          jq -n \
+            --arg t "$TIMESTAMP" \
+            --arg c "$RULE_COUNT" \
+            --arg s "$TARBALL_SHA" \
+            --arg u "$UPSTREAM_SHA" \
+            --argjson failed "$COMPILE_FAILED_JSON" \
+            --argjson quarantined "$QUARANTINED_JSON" \
+            '{timestamp: $t, rule_count: ($c|tonumber), sha256: $s, upstream_commit: $u,
+              compile_failed: $failed, canary_quarantined: $quarantined,
+              upstream_source: "https://github.com/Neo23x0/signature-base"}' \
+            > /tmp/MANIFEST.json
+
+          # Build validation.json
+          jq -n \
+            --arg canary_count "$(find /tmp/canary -type f ! -name MANIFEST.json 2>/dev/null | wc -l)" \
+            --arg fp_threshold "$MAX_FP_RULES_PCT" \
+            --argjson quarantined "$QUARANTINED_JSON" \
+            '{canary_corpus_size: ($canary_count|tonumber), fp_threshold_pct: ($fp_threshold|tonumber),
+              quarantined_rules: $quarantined, validation_passed: true}' \
+            > /tmp/validation.json
+
+      - name: Upload to S3 (immutable prefix)
+        if: steps.check_changes.outputs.skip != 'true'
+        run: |
+          DEST="$RULES_PREFIX/$TIMESTAMP"
+
+          aws s3 sync /tmp/valid-rules/ "s3://$BUCKET/$DEST/rules/" --region "$AWS_REGION" --quiet
+          aws s3 cp /tmp/MANIFEST.json "s3://$BUCKET/$DEST/MANIFEST.json" --region "$AWS_REGION"
+          aws s3 cp /tmp/validation.json "s3://$BUCKET/$DEST/validation.json" --region "$AWS_REGION"
+
+          echo "Uploaded $RULE_COUNT rules to s3://$BUCKET/$DEST/"
+
+      - name: Atomic promote — update current.json
+        if: steps.check_changes.outputs.skip != 'true'
+        run: |
+          jq -n --arg r "$TIMESTAMP" '{resolves_to: $r, promoted_at: (now|todateiso8601)}' \
+            > /tmp/current.json
+
+          aws s3 cp /tmp/current.json "s3://$BUCKET/$RULES_PREFIX/current.json" --region "$AWS_REGION"
+          echo "Promoted: $TIMESTAMP"
+
+      - name: Post summary
+        if: always() && steps.check_changes.outputs.skip != 'true'
+        run: |
+          RULE_SIZE=$(du -sh /tmp/valid-rules 2>/dev/null | cut -f1 || echo "unknown")
+          PROMOTED="yes"
+          if [ "${PROMOTE:-}" = "false" ]; then
+            PROMOTED="NO (safety threshold exceeded)"
+          fi
+
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## YARA Public Ingestion — ${TIMESTAMP:-unknown}
+
+          | Metric | Value |
+          |--------|-------|
+          | Upstream commit | \`${UPSTREAM_SHA:-unknown}\` |
+          | Valid rules | ${RULE_COUNT:-0} |
+          | Compile-failed (skipped) | ${COMPILE_FAIL_COUNT:-0} |
+          | Canary-quarantined (>$MAX_FP_RULES_PCT% FP) | ${QUARANTINE_COUNT:-0} |
+          | Size | $RULE_SIZE |
+          | Promoted | $PROMOTED |
+          EOF
+
+      - name: No changes detected
+        if: steps.check_changes.outputs.skip == 'true'
+        run: |
+          echo "## YARA Public Ingestion — No Changes" >> "$GITHUB_STEP_SUMMARY"
+          echo "Upstream commit \`$UPSTREAM_SHA\` matches last ingestion. Skipped." >> "$GITHUB_STEP_SUMMARY"

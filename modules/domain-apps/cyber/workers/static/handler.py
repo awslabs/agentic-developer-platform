@@ -301,6 +301,15 @@ def run() -> None:
     duration = int(time.time() - start)
     ts = int(time.time())
 
+    # Issue #272: Include rules provenance in envelope for traceability
+    rules_manifest = {}
+    rules_manifest_path = Path(YARA_RULES_DIR) / "rules-manifest.json"
+    if rules_manifest_path.is_file():
+        try:
+            rules_manifest = json.load(open(rules_manifest_path))
+        except (json.JSONDecodeError, OSError):
+            rules_manifest = {"error": "failed to read rules-manifest.json"}
+
     envelope = {
         "artifact_id": artifact_id,
         "stage": 3,
@@ -309,6 +318,7 @@ def run() -> None:
         "status": "ok",
         "duration_seconds": duration,
         "findings": findings,
+        "rules_manifest": rules_manifest,
         "tool_calls": 1,
         "notes": "",
     }

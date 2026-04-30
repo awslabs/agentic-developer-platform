@@ -21,10 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# YARA rule corpus — Florian Roth's signature-base, pinned to master HEAD.
-# Used by Stage 3 static analysis; shallow clone keeps image small.
-RUN git clone --depth 1 --branch master https://github.com/Neo23x0/signature-base.git /opt/yara-rules \
-    && rm -rf /opt/yara-rules/.git
+# YARA rules are fetched at runtime via initContainer from S3.
+# See: modules/domain-apps/cyber/k8s/cyber-static-scaledjob.yaml
+# Issue #272: Removed baked git clone of signature-base (~200 MB savings).
+# The YARA_RULES_DIR env var points to the volume-mounted /rules/ directory.
 
 WORKDIR /app
 

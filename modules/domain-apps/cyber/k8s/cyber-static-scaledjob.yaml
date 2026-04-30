@@ -44,6 +44,39 @@ spec:
       spec:
         serviceAccountName: cyber-worker
         restartPolicy: Never
+        # ---------------------------------------------------------------
+        # initContainer: fetch YARA rules from S3 (Issue #272)
+        # Resolves current.json pointer → syncs that version's rules/
+        # ---------------------------------------------------------------
+        initContainers:
+          - name: fetch-rules
+            image: amazon/aws-cli:latest
+            command:
+              - sh
+              - -c
+              - |
+                set -e
+                BUCKET=adp-dev-cape-assets
+                PREFIX=yara-rules/public/florian-roth
+                # Resolve the current pointer
+                aws s3 cp "s3://$BUCKET/$PREFIX/current.json" /tmp/current.json --region us-east-1
+                VERSION=$(cat /tmp/current.json | python3 -c "import sys,json; print(json.load(sys.stdin)['resolves_to'])")
+                echo "Fetching YARA rules version $VERSION"
+                aws s3 sync "s3://$BUCKET/$PREFIX/$VERSION/rules/" /rules/ --region us-east-1
+                RULE_COUNT=$(ls /rules/*.yar 2>/dev/null | wc -l)
+                echo "Fetched $RULE_COUNT rule files"
+                # Write provenance manifest for Stage 3 envelope
+                python3 -c "import json; json.dump({'public': {'florian-roth': '$VERSION'}}, open('/rules/rules-manifest.json','w'))"
+            volumeMounts:
+              - name: rules
+                mountPath: /rules
+            resources:
+              requests:
+                cpu: "100m"
+                memory: "128Mi"
+              limits:
+                cpu: "500m"
+                memory: "256Mi"
         containers:
           - name: cyber-static
             image: 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-cyber-worker:latest
@@ -52,12 +85,18 @@ spec:
                 value: "static"
               - name: AWS_REGION
                 value: "us-east-1"
+              - name: YARA_RULES_DIR
+                value: "/rules"
               - name: INPUT_QUEUE_URL
                 value: "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-cyber-static-tasks.fifo"
               - name: RESPONSE_QUEUE_URL
                 value: "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-cyber-static-responses.fifo"
               - name: RESULTS_TABLE
                 value: "adp-dev-cyber-analysis-results"
+            volumeMounts:
+              - name: rules
+                mountPath: /rules
+                readOnly: true
             resources:
               requests:
                 cpu: "1"
@@ -67,6 +106,9 @@ spec:
                 cpu: "4"
                 memory: "4Gi"
                 ephemeral-storage: "2Gi"
+        volumes:
+          - name: rules
+            emptyDir: {}
   pollingInterval: 5
   minReplicaCount: 0
   maxReplicaCount: 10

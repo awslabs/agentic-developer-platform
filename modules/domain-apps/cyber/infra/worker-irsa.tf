@@ -120,11 +120,24 @@ resource "aws_iam_role_policy" "cyber_worker_s3" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["s3:GetObject"]
-      Resource = "arn:aws:s3:::adp-${var.environment}-chat-artifacts-*/o/*/in/*"
-    }]
+    Statement = [
+      {
+        Sid      = "ReadSampleArtifacts"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::adp-${var.environment}-chat-artifacts-*/o/*/in/*"
+      },
+      {
+        # Issue #272: Workers fetch YARA rules from S3 via initContainer
+        Sid    = "ReadYaraRulesPublic"
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:ListBucket"]
+        Resource = [
+          "arn:aws:s3:::adp-${var.environment}-cape-assets",
+          "arn:aws:s3:::adp-${var.environment}-cape-assets/yara-rules/public/*"
+        ]
+      }
+    ]
   })
 }
 
