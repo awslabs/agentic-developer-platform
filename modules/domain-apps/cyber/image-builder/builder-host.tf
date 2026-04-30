@@ -161,7 +161,7 @@ resource "aws_instance" "builder" {
     http_put_response_hop_limit = 1
   }
 
-  user_data = base64encode(<<-USERDATA
+  user_data_base64 = base64encode(<<-USERDATA
     #!/bin/bash
     set -euo pipefail
     exec > /var/log/builder-userdata.log 2>&1

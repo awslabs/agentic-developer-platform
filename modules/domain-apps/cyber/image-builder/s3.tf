@@ -5,6 +5,33 @@
 # Versioning enabled so rebuilds produce new versions without overwriting.
 # =============================================================================
 
+# Import blocks allow Terraform to adopt pre-existing bucket resources
+# (the bucket may have been created by earlier manual runs or other modules).
+import {
+  to = aws_s3_bucket.cape_assets
+  id = var.assets_bucket_name
+}
+
+import {
+  to = aws_s3_bucket_versioning.cape_assets
+  id = var.assets_bucket_name
+}
+
+import {
+  to = aws_s3_bucket_server_side_encryption_configuration.cape_assets
+  id = var.assets_bucket_name
+}
+
+import {
+  to = aws_s3_bucket_public_access_block.cape_assets
+  id = var.assets_bucket_name
+}
+
+import {
+  to = aws_s3_bucket_lifecycle_configuration.cape_assets
+  id = var.assets_bucket_name
+}
+
 resource "aws_s3_bucket" "cape_assets" {
   bucket = var.assets_bucket_name
 
