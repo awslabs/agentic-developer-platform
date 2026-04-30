@@ -94,12 +94,16 @@ source "qemu" "windows-11" {
   ]
 
   # Floppy drive — Autounattend.xml + bootstrap scripts (StefanScherer pattern)
+  # cape-configure-winrm.ps1 is a CAPE-specific companion that enforces WinRM
+  # config via Group Policy keys + scheduled task (fixes Win11 23H2 regression
+  # where Windows Security resets Basic auth after first logon). See #306.
   floppy_files = [
     "../answer_files/Autounattend.xml",
     "../scripts/fixnetwork.ps1",
     "../scripts/disable-screensaver.ps1",
     "../scripts/disable-winrm.ps1",
     "../scripts/enable-winrm.ps1",
+    "../scripts/cape-configure-winrm.ps1",
     "../scripts/microsoft-updates.bat",
     "../scripts/win-updates.ps1"
   ]

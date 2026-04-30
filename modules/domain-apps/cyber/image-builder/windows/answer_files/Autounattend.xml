@@ -268,6 +268,16 @@
                     <Order>14</Order>
                     <Description>Enable AutoLogon</Description>
                 </SynchronousCommand>
+                <!-- CAPE-specific: Create scheduled task that enforces WinRM config
+                     on every boot/logon. Runs BEFORE Windows Updates (Order 15 < 98)
+                     so the task survives the update reboot cycle. Fixes Win11 23H2
+                     regression where Windows Security resets Basic auth. See #306. -->
+                <SynchronousCommand wcm:action="add">
+                    <CommandLine>cmd.exe /c C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File a:\cape-configure-winrm.ps1</CommandLine>
+                    <Description>CAPE: Configure WinRM with GP keys + scheduled task</Description>
+                    <Order>15</Order>
+                    <RequiresUserInput>true</RequiresUserInput>
+                </SynchronousCommand>
                 <!-- WITHOUT WINDOWS UPDATES -->
                 <!--
                 <SynchronousCommand wcm:action="add">
