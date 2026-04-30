@@ -112,54 +112,59 @@ jobs:
           # restart the SSM agent during package installs, causing transient
           # acceptance followed by Undeliverable/InvalidInstanceId.
           #
-          # Strategy: probe with a trivial command and wait for it to COMPLETE
-          # (not just be accepted). This proves the agent is fully operational.
-          echo "Probing SSM command-plane readiness (up to 12 min)..."
+          # Strategy: probe by checking for /var/run/builder-ready (written at
+          # the END of user-data). This proves three things at once:
+          #   1. SSM command plane accepts commands
+          #   2. SSM agent executes commands to completion
+          #   3. User-data has finished (packages installed, SSM restarted)
+          echo "Waiting for builder-ready marker via SSM (up to 15 min)..."
           SSM_READY=false
-          for probe in $(seq 1 48); do
-            # Try to send a trivial command
+          for probe in $(seq 1 60); do
             if PROBE_OUT=$(aws ssm send-command \
                 --instance-ids "$INSTANCE_ID" \
                 --document-name "AWS-RunShellScript" \
-                --parameters 'commands=["echo ssm-ready"]' \
+                --parameters 'commands=["test -f /var/run/builder-ready && cat /var/run/builder-ready"]' \
                 --timeout-seconds 30 \
                 --region "${{ env.AWS_REGION }}" \
                 --query 'Command.CommandId' --output text 2>&1); then
-              # send-command accepted — now verify it actually executes
-              sleep 5
+              # send-command accepted — wait for completion
+              sleep 8
               PROBE_STATUS=$(aws ssm get-command-invocation \
                 --command-id "$PROBE_OUT" --instance-id "$INSTANCE_ID" \
                 --region "${{ env.AWS_REGION }}" \
                 --query 'Status' --output text 2>/dev/null || echo "Pending")
               if [[ "$PROBE_STATUS" == "Success" ]]; then
-                echo "SSM fully ready after $((probe*15))s (probe command completed)"
+                echo "Builder ready after $((probe*15))s (user-data complete, SSM operational)"
                 SSM_READY=true
                 break
+              elif [[ "$PROBE_STATUS" == "Failed" ]]; then
+                # Command ran but /var/run/builder-ready doesn't exist yet
+                echo "  SSM working but user-data not done yet ($((probe*15))s elapsed)"
               elif [[ "$PROBE_STATUS" == "InProgress" ]]; then
-                # Command is running — agent is alive, wait for it
-                sleep 10
+                sleep 7
                 PROBE_STATUS=$(aws ssm get-command-invocation \
                   --command-id "$PROBE_OUT" --instance-id "$INSTANCE_ID" \
                   --region "${{ env.AWS_REGION }}" \
                   --query 'Status' --output text 2>/dev/null || echo "Pending")
                 if [[ "$PROBE_STATUS" == "Success" ]]; then
-                  echo "SSM fully ready after $((probe*15+10))s (probe command completed)"
+                  echo "Builder ready after $((probe*15+7))s (user-data complete, SSM operational)"
                   SSM_READY=true
                   break
                 fi
+              else
+                echo "  Probe status=$PROBE_STATUS — agent not stable ($((probe*15))s)"
               fi
-              # Accepted but not completed (Undeliverable/Failed) — agent flapping
-              echo "  Probe accepted but status=$PROBE_STATUS — agent not stable yet ($((probe*15))s)"
             else
               if (( probe % 4 == 0 )); then
-                echo "  Still waiting... ($((probe*15))s elapsed)"
+                echo "  SSM command plane not ready yet ($((probe*15))s elapsed)"
               fi
             fi
             sleep 15
           done
 
           if [[ "$SSM_READY" != "true" ]]; then
-            echo "ERROR: SSM agent not fully operational after 12 minutes."
+            echo "ERROR: Builder not ready after 15 minutes (user-data may have failed)."
+            echo "Check /var/log/builder-userdata.log on the instance."
             exit 1
           fi
           echo "Proceeding to build."
