@@ -68,7 +68,7 @@ jobs:
             -backend-config="dynamodb_table=adp-terraform-locks" \
             -input=false
 
-          terraform apply -auto-approve \
+          terraform apply -auto-approve -lock-timeout=120s \
             -var="build_host_enabled=true" \
             -var="account_id=${{ env.ACCOUNT_ID }}" \
             -var="idle_period_seconds=21600"
@@ -254,7 +254,14 @@ jobs:
         if: always()
         working-directory: ${{ env.TF_DIR }}
         run: |
-          terraform apply -auto-approve \
+          terraform init \
+            -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+            -backend-config="key=${{ env.ENVIRONMENT }}/cyber/image-builder/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="encrypt=true" \
+            -backend-config="dynamodb_table=adp-terraform-locks" \
+            -input=false
+          terraform apply -auto-approve -lock-timeout=120s \
             -var="build_host_enabled=false" \
             -var="account_id=${{ env.ACCOUNT_ID }}" \
             -var="idle_period_seconds=21600"
