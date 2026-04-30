@@ -73,6 +73,12 @@ jobs:
           BUILD_DATE=$(date -u +%Y-%m-%d)
           echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
 
+          # Clean up any stale failure markers from previous runs
+          echo "Cleaning stale failure markers..."
+          aws s3 rm "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/" \
+            --recursive --exclude "*" --include "BUILD_FAILED_*" \
+            --region "${{ env.AWS_REGION }}" || true
+
           aws s3 sync modules/domain-apps/cyber/image-builder/windows/packer/ \
             "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/packer/" --region "${{ env.AWS_REGION }}"
           aws s3 sync modules/domain-apps/cyber/image-builder/windows/answer_files/ \
@@ -102,7 +108,7 @@ jobs:
             -var="idle_period_seconds=21600"
 
       # ── 3. Poll S3 for build output ────────────────────────────────────
-      # The build host runs autonomously (user-data → build-pipeline.sh).
+      # The build host runs autonomously (user-data -> build-pipeline.sh).
       # We just wait for the qcow2 to appear in S3.
       - name: Wait for build output in S3
         run: |
@@ -114,6 +120,7 @@ jobs:
           # Also check for a failure marker
           FAIL_MARKER="s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/BUILD_FAILED_${BUILD_DATE}"
 
+          # Wait up to 96 minutes (384 iterations * 15s)
           for i in $(seq 1 384); do
             # Check for success (qcow2 exists)
             if aws s3 ls "$TARGET" --region "${{ env.AWS_REGION }}" 2>/dev/null | grep -q "qcow2"; then

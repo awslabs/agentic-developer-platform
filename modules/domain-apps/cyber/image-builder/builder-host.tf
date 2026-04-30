@@ -182,37 +182,53 @@ resource "aws_instance" "builder" {
     BUILD_DATE=$(date -u +%Y-%m-%d)
 
     # ── Phase 1: Install packages ──────────────────────────────────────
-    # On Ubuntu 22.04, qemu-kvm is a meta-package that may be unavailable
-    # on fresh AMIs due to apt cache staleness. Install qemu-system-x86
-    # directly (provides /usr/bin/qemu-system-x86_64 and KVM support).
-    for attempt in 1 2 3; do
+    # Wait for cloud-init to release apt lock (common on fresh instances)
+    for lockwait in $(seq 1 30); do
+      if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && \
+         ! fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then
+        break
+      fi
+      echo "Waiting for apt lock to be released ($lockwait/30)..."
+      sleep 10
+    done
+
+    # Ensure universe repo is enabled (qemu-kvm lives there on some builds)
+    add-apt-repository -y universe 2>/dev/null || true
+
+    for attempt in 1 2 3 4 5; do
       apt-get update -y && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --fix-broken \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y \
         qemu-utils \
+        qemu-kvm \
         qemu-system-x86 \
         libvirt-daemon-system \
-        libvirt-clients \
         virtinst \
         cloud-image-utils \
         genisoimage \
         awscli \
         jq \
         cpu-checker && break
-      echo "apt-get failed (attempt $attempt/3), retrying in 15s..."
-      sleep 15
+      echo "apt-get failed (attempt $attempt/5), cleaning and retrying in 30s..."
+      apt-get clean
+      rm -rf /var/lib/apt/lists/*
+      sleep 30
     done
 
-    # Fallback: try qemu-kvm meta-package if qemu-system-x86_64 not found
-    if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
-      DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-kvm || true
+    # Fallback: if qemu-kvm meta-package failed, try qemu-system-x86 directly
+    if ! dpkg -s qemu-kvm >/dev/null 2>&1; then
+      echo "qemu-kvm not installed, trying qemu-system-x86 as fallback..."
+      DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 || true
     fi
 
-    # Verify critical binaries and packages
+    # Verify critical packages
     MISSING=""
-    command -v qemu-system-x86_64 >/dev/null 2>&1 || MISSING="$MISSING qemu-kvm"
-    for pkg in qemu-utils libvirt-daemon-system genisoimage jq awscli; do
+    for pkg in qemu-utils libvirt-daemon-system genisoimage jq; do
       dpkg -s "$pkg" >/dev/null 2>&1 || MISSING="$MISSING $pkg"
     done
+    # Need at least qemu-system-x86 OR qemu-kvm
+    if ! dpkg -s qemu-kvm >/dev/null 2>&1 && ! dpkg -s qemu-system-x86 >/dev/null 2>&1; then
+      MISSING="$MISSING qemu-kvm"
+    fi
     if [ -n "$MISSING" ]; then
       echo "ERROR: Missing critical packages:$MISSING"
       echo "FAILED: missing packages:$MISSING" | \
@@ -296,7 +312,7 @@ resource "aws_cloudwatch_metric_alarm" "builder_idle" {
   evaluation_periods  = var.idle_period_seconds / 300
   threshold           = var.idle_cpu_threshold
   comparison_operator = "LessThanThreshold"
-  treat_missing_data  = "missing"
+  treat_missing_data  = "breaching"
 
   dimensions = {
     InstanceId = aws_instance.builder[0].id
