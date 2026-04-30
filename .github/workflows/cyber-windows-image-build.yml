@@ -3,8 +3,13 @@ name: Cyber Windows Image Build
 # Builds a CAPE-ready Windows 11 qcow2 image via Packer on an ephemeral
 # build host (c8i.4xlarge with nested virtualization).
 #
-# Pipeline: vendor StefanScherer/packer-windows template -> build host via SSM
-# -> Packer (QEMU/KVM) -> qcow2 upload to S3 -> register on CAPE host.
+# Architecture (SSM-independent):
+#   1. Upload build inputs to S3
+#   2. Terraform creates build host
+#   3. User-data installs packages, downloads inputs from S3, runs build
+#   4. Workflow polls S3 for output artifact (no SSM send-command needed)
+#   5. Register on CAPE host via SSM (CAPE host SSM is stable)
+#   6. Terraform destroys build host
 #
 # Based on the proven Linux pipeline from #250.
 
@@ -61,7 +66,25 @@ jobs:
           aws --version
           terraform --version
 
-      # ── 1. Spin up build host ──────────────────────────────────────────
+      # ── 1. Upload build inputs to S3 FIRST ────────────────────────────
+      # Must happen before Terraform so user-data can download them.
+      - name: Stage build inputs
+        run: |
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+          echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
+
+          aws s3 sync modules/domain-apps/cyber/image-builder/windows/packer/ \
+            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/packer/" --region "${{ env.AWS_REGION }}"
+          aws s3 sync modules/domain-apps/cyber/image-builder/windows/answer_files/ \
+            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/answer_files/" --region "${{ env.AWS_REGION }}"
+          aws s3 sync modules/domain-apps/cyber/image-builder/windows/scripts/ \
+            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/scripts/" --region "${{ env.AWS_REGION }}"
+          aws s3 cp modules/domain-apps/cyber/image-builder/windows/build-pipeline.sh \
+            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/build-pipeline.sh" --region "${{ env.AWS_REGION }}"
+          echo "Build inputs staged to S3."
+
+      # ── 2. Spin up build host ──────────────────────────────────────────
+      # User-data will automatically download inputs from S3 and start the build.
       - name: Terraform apply (build host ON)
         working-directory: ${{ env.TF_DIR }}
         run: |
@@ -78,228 +101,78 @@ jobs:
             -var="account_id=${{ env.ACCOUNT_ID }}" \
             -var="idle_period_seconds=21600"
 
-      # ── 2. Wait for SSM agent ──────────────────────────────────────────
-      - name: Wait for build host SSM
+      # ── 3. Poll S3 for build output ────────────────────────────────────
+      # The build host runs autonomously (user-data → build-pipeline.sh).
+      # We just wait for the qcow2 to appear in S3.
+      - name: Wait for build output in S3
         run: |
-          INSTANCE_ID=$(cd ${{ env.TF_DIR }} && terraform output -raw builder_instance_id 2>/dev/null || echo "")
-          if [[ -z "$INSTANCE_ID" ]]; then
-            echo "ERROR: Could not get instance ID from terraform output"
-            exit 1
-          fi
-          echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+          TARGET="s3://${{ env.ASSETS_BUCKET }}/win11-cape-${BUILD_DATE}.qcow2"
+          echo "Waiting for: $TARGET"
+          echo "Expected build time: 60-90 minutes"
 
-          echo "Waiting for SSM agent on $INSTANCE_ID..."
-          for i in $(seq 1 60); do
-            STATUS=$(aws ssm describe-instance-information \
-              --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
-              --query 'InstanceInformationList[0].PingStatus' \
-              --output text --region "${{ env.AWS_REGION }}" 2>/dev/null || echo "None")
-            if [[ "$STATUS" == "Online" ]]; then
-              echo "SSM agent online after $((i*10))s"
-              break
-            fi
-            sleep 10
-          done
+          # Also check for a failure marker
+          FAIL_MARKER="s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/BUILD_FAILED_${BUILD_DATE}"
 
-          if [[ "$STATUS" != "Online" ]]; then
-            echo "ERROR: SSM agent not online after 10 minutes"
-            exit 1
-          fi
-
-          # After PingStatus=Online, the SSM command plane may still reject
-          # send-command with InvalidInstanceId for several minutes (observed up
-          # to ~8 min on c8i.4xlarge with heavy user-data). User-data may also
-          # restart the SSM agent during package installs, causing transient
-          # acceptance followed by Undeliverable/InvalidInstanceId.
-          #
-          # Strategy: probe by checking for /var/run/builder-ready (written at
-          # the END of user-data). This proves three things at once:
-          #   1. SSM command plane accepts commands
-          #   2. SSM agent executes commands to completion
-          #   3. User-data has finished (packages installed, SSM restarted)
-          echo "Waiting for builder-ready marker via SSM (up to 20 min)..."
-          SSM_READY=false
-          for probe in $(seq 1 80); do
-            if PROBE_OUT=$(aws ssm send-command \
-                --instance-ids "$INSTANCE_ID" \
-                --document-name "AWS-RunShellScript" \
-                --parameters 'commands=["test -f /var/run/builder-ready && cat /var/run/builder-ready"]' \
-                --timeout-seconds 30 \
-                --region "${{ env.AWS_REGION }}" \
-                --query 'Command.CommandId' --output text 2>&1); then
-              # send-command accepted — wait for completion
-              sleep 8
-              PROBE_STATUS=$(aws ssm get-command-invocation \
-                --command-id "$PROBE_OUT" --instance-id "$INSTANCE_ID" \
-                --region "${{ env.AWS_REGION }}" \
-                --query 'Status' --output text 2>/dev/null || echo "Pending")
-              if [[ "$PROBE_STATUS" == "Success" ]]; then
-                echo "Builder ready after $((probe*15))s (user-data complete, SSM operational)"
-                SSM_READY=true
+          for i in $(seq 1 384); do
+            # Check for success (qcow2 exists)
+            if aws s3 ls "$TARGET" --region "${{ env.AWS_REGION }}" 2>/dev/null | grep -q "qcow2"; then
+              SIZE=$(aws s3api head-object --bucket "${{ env.ASSETS_BUCKET }}" \
+                --key "win11-cape-${BUILD_DATE}.qcow2" --region "${{ env.AWS_REGION }}" \
+                --query 'ContentLength' --output text 2>/dev/null || echo "0")
+              echo "Build complete! qcow2 size: $SIZE bytes"
+              if (( SIZE > 1000000000 )); then
+                echo "Size looks valid (> 1GB). Build succeeded."
                 break
-              elif [[ "$PROBE_STATUS" == "Failed" ]]; then
-                # Command ran but /var/run/builder-ready doesn't exist yet
-                echo "  SSM working but user-data not done yet ($((probe*15))s elapsed)"
-              elif [[ "$PROBE_STATUS" == "InProgress" ]]; then
-                sleep 7
-                PROBE_STATUS=$(aws ssm get-command-invocation \
-                  --command-id "$PROBE_OUT" --instance-id "$INSTANCE_ID" \
-                  --region "${{ env.AWS_REGION }}" \
-                  --query 'Status' --output text 2>/dev/null || echo "Pending")
-                if [[ "$PROBE_STATUS" == "Success" ]]; then
-                  echo "Builder ready after $((probe*15+7))s (user-data complete, SSM operational)"
-                  SSM_READY=true
-                  break
-                fi
-              else
-                echo "  Probe status=$PROBE_STATUS — agent not stable ($((probe*15))s)"
               fi
-            else
-              if (( probe % 4 == 0 )); then
-                echo "  SSM command plane not ready yet ($((probe*15))s elapsed)"
-              fi
+              echo "Size too small, build may still be uploading..."
+            fi
+
+            # Check for failure marker
+            if aws s3 ls "$FAIL_MARKER" --region "${{ env.AWS_REGION }}" 2>/dev/null | grep -q "BUILD_FAILED"; then
+              echo "ERROR: Build failed on the build host."
+              aws s3 cp "$FAIL_MARKER" - --region "${{ env.AWS_REGION }}" 2>/dev/null || true
+              exit 1
+            fi
+
+            if (( i % 12 == 0 )); then
+              echo "  Still building... ($((i * 15 / 60)) min elapsed)"
             fi
             sleep 15
           done
 
-          if [[ "$SSM_READY" != "true" ]]; then
-            echo "ERROR: Builder not ready after 20 minutes (user-data may have failed)."
-            echo "Check /var/log/builder-userdata.log on the instance."
-            exit 1
-          fi
-          echo "Proceeding to build."
-
-      # ── 3. Upload build inputs to S3 ───────────────────────────────────
-      - name: Stage build inputs
-        run: |
-          aws s3 sync modules/domain-apps/cyber/image-builder/windows/packer/ \
-            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/packer/" --region "${{ env.AWS_REGION }}"
-          aws s3 sync modules/domain-apps/cyber/image-builder/windows/answer_files/ \
-            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/answer_files/" --region "${{ env.AWS_REGION }}"
-          aws s3 sync modules/domain-apps/cyber/image-builder/windows/scripts/ \
-            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/scripts/" --region "${{ env.AWS_REGION }}"
-          aws s3 cp modules/domain-apps/cyber/image-builder/windows/build-pipeline.sh \
-            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/build-pipeline.sh" --region "${{ env.AWS_REGION }}"
-
-      # ── 4. Run build pipeline via SSM ──────────────────────────────────
-      - name: Run Packer build via SSM
-        run: |
-          # Send command with retry (up to 10 min). Two failure modes:
-          #   (a) send-command rejects with InvalidInstanceId — SSM command
-          #       plane not ready (can happen if user-data restarts SSM agent).
-          #   (b) send-command succeeds but get-command-invocation reports
-          #       Undeliverable — agent flapping during package installs.
-          # Both resolve with time. Retry 20 times with 30s between attempts.
-          COMMAND_ID=""
-          DETAIL=""
-          SEND_ERR=""
-          MAX_SEND_ATTEMPTS=20
-          for attempt in $(seq 1 $MAX_SEND_ATTEMPTS); do
-            SEND_ERR=""
-            if SEND_OUT=$(aws ssm send-command \
-                --instance-ids "$INSTANCE_ID" \
-                --document-name "AWS-RunShellScript" \
-                --parameters "commands=[\"aws s3 cp s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/build-pipeline.sh /tmp/build-pipeline.sh --region ${{ env.AWS_REGION }} && chmod +x /tmp/build-pipeline.sh && sudo bash /tmp/build-pipeline.sh\"]" \
-                --timeout-seconds 7200 \
-                --region "${{ env.AWS_REGION }}" \
-                --query 'Command.CommandId' --output text 2>&1); then
-              COMMAND_ID="$SEND_OUT"
-              echo "SSM Command (attempt $attempt): $COMMAND_ID"
-              sleep 10
-              DETAIL=$(aws ssm get-command-invocation \
-                --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
-                --region "${{ env.AWS_REGION }}" \
-                --query 'StatusDetails' --output text 2>/dev/null || echo "Unknown")
-              if [[ "$DETAIL" == "Undeliverable" ]]; then
-                echo "Command undeliverable (attempt $attempt/$MAX_SEND_ATTEMPTS), retrying in 30s..."
-                COMMAND_ID=""
-                sleep 30
-                continue
-              fi
-              break
-            else
-              SEND_ERR="$SEND_OUT"
-              echo "send-command failed (attempt $attempt/$MAX_SEND_ATTEMPTS): $SEND_ERR"
-              if echo "$SEND_ERR" | grep -qi "InvalidInstanceId\|not in a valid state"; then
-                echo "SSM command plane not ready yet — waiting 30s before retry..."
-                sleep 30
-                continue
-              else
-                echo "ERROR: non-retryable send-command failure"
-                exit 1
-              fi
-            fi
-          done
-          echo "COMMAND_ID=$COMMAND_ID" >> "$GITHUB_ENV"
-
-          if [[ -z "$COMMAND_ID" ]]; then
-            echo "ERROR: SSM send-command failed after $MAX_SEND_ATTEMPTS attempts. Last error: $SEND_ERR"
-            exit 1
-          fi
-          if [[ "$DETAIL" == "Undeliverable" ]]; then
-            echo "ERROR: SSM command reported Undeliverable after $MAX_SEND_ATTEMPTS attempts"
+          # Final check
+          if ! aws s3 ls "$TARGET" --region "${{ env.AWS_REGION }}" 2>/dev/null | grep -q "qcow2"; then
+            echo "ERROR: Build timed out after 96 minutes. No qcow2 in S3."
             exit 1
           fi
 
-          # Poll for completion (up to 90 min)
-          for i in $(seq 1 360); do
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$INSTANCE_ID" \
-              --region "${{ env.AWS_REGION }}" \
-              --query 'Status' --output text 2>/dev/null || echo "Pending")
-            case "$STATUS" in
-              Success)
-                echo "Build completed successfully after $((i*15))s"
-                break
-                ;;
-              Failed|TimedOut|Cancelled)
-                echo "Build failed with status: $STATUS"
-                aws ssm get-command-invocation \
-                  --command-id "$COMMAND_ID" \
-                  --instance-id "$INSTANCE_ID" \
-                  --region "${{ env.AWS_REGION }}" \
-                  --query 'StandardErrorContent' --output text || true
-                exit 1
-                ;;
-              *)
-                if (( i % 20 == 0 )); then
-                  echo "  Still building... ($(( i * 15 / 60 )) min elapsed)"
-                fi
-                sleep 15
-                ;;
-            esac
-          done
-
-          if [[ "$STATUS" != "Success" ]]; then
-            echo "ERROR: Build timed out after 90 minutes"
-            exit 1
-          fi
-
-      # ── 5. Verify qcow2 in S3 ─────────────────────────────────────────
+      # ── 4. Verify qcow2 in S3 ─────────────────────────────────────────
       - name: Verify output
         run: |
           BUILD_DATE=$(date -u +%Y-%m-%d)
-          echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
 
-          # Check dated image exists
-          aws s3 ls "s3://${{ env.ASSETS_BUCKET }}/win11-cape-${BUILD_DATE}.qcow2" \
-            --region "${{ env.AWS_REGION }}" || {
-            echo "ERROR: Dated qcow2 not found in S3"
+          # Check dated image exists and size
+          SIZE=$(aws s3api head-object --bucket "${{ env.ASSETS_BUCKET }}" \
+            --key "win11-cape-${BUILD_DATE}.qcow2" --region "${{ env.AWS_REGION }}" \
+            --query 'ContentLength' --output text)
+          echo "Dated qcow2 size: $SIZE bytes"
+
+          if (( SIZE < 6000000000 )); then
+            echo "ERROR: qcow2 too small (< 6GB). Build may have failed."
             exit 1
-          }
+          fi
 
           # Check latest pointer
           aws s3 ls "s3://${{ env.ASSETS_BUCKET }}/win11-cape-latest.qcow2" \
-            --region "${{ env.AWS_REGION }}" || {
-            echo "WARNING: Latest pointer not updated"
-          }
+            --region "${{ env.AWS_REGION }}" || echo "WARNING: Latest pointer not updated"
 
           echo "Build artifact verified in S3."
 
-      # ── 6. Register on CAPE host ───────────────────────────────────────
+      # ── 5. Register on CAPE host ───────────────────────────────────────
       - name: Register VM on CAPE host
         run: |
+          BUILD_DATE=$(date -u +%Y-%m-%d)
           aws s3 cp modules/domain-apps/cyber/image-builder/windows/register-cape-vm.sh \
             "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/register-cape-vm.sh" \
             --region "${{ env.AWS_REGION }}"
@@ -307,7 +180,7 @@ jobs:
           REG_CMD_ID=$(aws ssm send-command \
             --instance-ids "${{ env.CAPE_HOST_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"aws s3 cp s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/register-cape-vm.sh /tmp/register-cape-vm.sh --region ${{ env.AWS_REGION }} && chmod +x /tmp/register-cape-vm.sh && sudo bash /tmp/register-cape-vm.sh ${{ env.BUILD_DATE }}\"]" \
+            --parameters "commands=[\"aws s3 cp s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/register-cape-vm.sh /tmp/register-cape-vm.sh --region ${{ env.AWS_REGION }} && chmod +x /tmp/register-cape-vm.sh && sudo bash /tmp/register-cape-vm.sh ${BUILD_DATE}\"]" \
             --timeout-seconds 600 \
             --region "${{ env.AWS_REGION }}" \
             --query 'Command.CommandId' --output text)
@@ -334,7 +207,7 @@ jobs:
             esac
           done
 
-      # ── 7. Tear down build host ────────────────────────────────────────
+      # ── 6. Tear down build host ────────────────────────────────────────
       - name: Terraform apply (build host OFF)
         if: always()
         working-directory: ${{ env.TF_DIR }}
@@ -351,13 +224,14 @@ jobs:
             -var="account_id=${{ env.ACCOUNT_ID }}" \
             -var="idle_period_seconds=21600"
 
-      # ── 8. Summary ─────────────────────────────────────────────────────
+      # ── 7. Summary ─────────────────────────────────────────────────────
       - name: Summary
         if: success()
         run: |
+          BUILD_DATE=$(date -u +%Y-%m-%d)
           echo "## Windows 11 CAPE Image Build" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Date**: ${{ env.BUILD_DATE }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Image**: s3://${{ env.ASSETS_BUCKET }}/win11-cape-${{ env.BUILD_DATE }}.qcow2" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Date**: ${BUILD_DATE}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image**: s3://${{ env.ASSETS_BUCKET }}/win11-cape-${BUILD_DATE}.qcow2" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Latest**: s3://${{ env.ASSETS_BUCKET }}/win11-cape-latest.qcow2" >> "$GITHUB_STEP_SUMMARY"
           echo "- **CAPE Host**: ${{ env.CAPE_HOST_ID }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **VM Name**: win11-cape-${{ env.BUILD_DATE }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **VM Name**: win11-cape-${BUILD_DATE}" >> "$GITHUB_STEP_SUMMARY"

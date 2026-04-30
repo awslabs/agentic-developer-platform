@@ -2,9 +2,14 @@
 # Phase 2: Ephemeral Build Host
 # =============================================================================
 # c8i.4xlarge Ubuntu 22.04 with nested virt, 300 GB gp3 root.
-# In an ADP dev private subnet with NAT egress.
+# In an ADP dev private subnet with NAT egress + SSM VPC endpoints.
 # Controlled by build_host_enabled — set to false after build completes.
 # Auto-teardown: CloudWatch alarm terminates if CPU < 5% for 4 hours.
+#
+# ARCHITECTURE: User-data is fully self-contained. After installing packages,
+# it downloads build-pipeline.sh from S3 and executes the build. The workflow
+# only needs to poll S3 for the output artifact — no SSM send-command required.
+# This eliminates the chronic SSM agent instability on fresh Ubuntu instances.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -163,38 +168,20 @@ resource "aws_instance" "builder" {
 
   user_data_base64 = base64encode(<<-USERDATA
     #!/bin/bash
-    # NOTE: Do NOT use "set -e" here. If apt-get fails transiently (mirror
-    # issues, NAT saturation), the script must still reach the builder-ready
-    # marker so the workflow probe can detect that user-data ran at all.
-    # Critical failures are caught by explicit package verification below.
+    # Self-contained build: install packages, download inputs from S3, run build.
+    # The workflow polls S3 for the output — no SSM send-command needed.
     set -x
     exec > /var/log/builder-userdata.log 2>&1
 
     echo "=== Image Builder user-data starting at $(date -u) ==="
 
-    # Hold SSM agent snap to prevent auto-refresh during apt-get.
-    snap refresh --hold=2h amazon-ssm-agent 2>/dev/null || true
+    export HOME=/root
+    export AWS_REGION=${var.aws_region}
+    export ENVIRONMENT=${var.environment}
+    export ASSETS_BUCKET=${var.assets_bucket_name}
+    BUILD_DATE=$(date -u +%Y-%m-%d)
 
-    # Verify SSM is running (it should be from AMI). Do NOT restart it —
-    # restarting causes 5-15 min deregistration from the SSM service,
-    # making the instance unreachable. Observed in runs 25161042857,
-    # 25161866663 where SSM went down at ~45s and never recovered.
-    systemctl is-active snap.amazon-ssm-agent.amazon-ssm-agent.service >/dev/null 2>&1 || \
-      systemctl is-active amazon-ssm-agent >/dev/null 2>&1 || {
-        echo "WARNING: SSM agent not running, attempting start..."
-        systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service 2>/dev/null || \
-          systemctl start amazon-ssm-agent 2>/dev/null || true
-      }
-
-    # Rate-limit apt downloads to preserve NAT bandwidth for SSM heartbeats.
-    # Without this, 500MB+ of package downloads saturates the NAT gateway,
-    # causing SSM heartbeat timeouts and 13+ min outages.
-    cat > /etc/apt/apt.conf.d/99-rate-limit << 'APT_CONF'
-    Acquire::http::Dl-Limit "50000";
-    Acquire::https::Dl-Limit "50000";
-    APT_CONF
-
-    # Install build packages with retry
+    # ── Phase 1: Install packages ──────────────────────────────────────
     for attempt in 1 2 3; do
       apt-get update -y && \
       DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -207,21 +194,19 @@ resource "aws_instance" "builder" {
         awscli \
         jq \
         cpu-checker && break
-      echo "apt-get failed (attempt $attempt/3), retrying in 10s..."
-      sleep 10
+      echo "apt-get failed (attempt $attempt/3), retrying in 15s..."
+      sleep 15
     done
 
-    # Remove rate limit after install (Packer needs full speed for ISO download)
-    rm -f /etc/apt/apt.conf.d/99-rate-limit
-
-    # Verify critical packages — if these are missing, the build WILL fail
+    # Verify critical packages
     MISSING=""
-    for pkg in qemu-kvm qemu-utils libvirt-daemon-system genisoimage jq; do
+    for pkg in qemu-kvm qemu-utils libvirt-daemon-system genisoimage jq awscli; do
       dpkg -s "$pkg" >/dev/null 2>&1 || MISSING="$MISSING $pkg"
     done
     if [ -n "$MISSING" ]; then
       echo "ERROR: Missing critical packages:$MISSING"
-      echo "BUILDER_FAILED=missing_packages:$MISSING" > /var/run/builder-ready
+      echo "FAILED: missing packages:$MISSING" | \
+        aws s3 cp - "s3://$ASSETS_BUCKET/windows-build-inputs/BUILD_FAILED_$BUILD_DATE" --region "$AWS_REGION" || true
       exit 1
     fi
 
@@ -231,15 +216,45 @@ resource "aws_instance" "builder" {
     # Enable and start libvirtd
     systemctl enable libvirtd
     systemctl start libvirtd
-
-    # Ensure default network is active
     virsh net-start default 2>/dev/null || true
     virsh net-autostart default 2>/dev/null || true
 
-    # Write bootstrap marker — signals user-data is complete and build host ready
     echo "BUILDER_READY=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /var/run/builder-ready
+    echo "=== Packages installed, starting build ==="
 
-    echo "=== Image Builder user-data complete at $(date -u) ==="
+    # ── Phase 2: Download build inputs and run ─────────────────────────
+    WORKDIR=/opt/windows-build
+    mkdir -p "$WORKDIR"
+
+    # Download build-pipeline.sh (must have been staged to S3 by workflow)
+    for dl_attempt in 1 2 3 4 5; do
+      if aws s3 cp "s3://$ASSETS_BUCKET/windows-build-inputs/build-pipeline.sh" \
+        "$WORKDIR/build-pipeline.sh" --region "$AWS_REGION"; then
+        break
+      fi
+      echo "S3 download failed (attempt $dl_attempt/5), waiting 30s..."
+      sleep 30
+    done
+
+    if [ ! -f "$WORKDIR/build-pipeline.sh" ]; then
+      echo "ERROR: Could not download build-pipeline.sh from S3"
+      echo "FAILED: s3_download" | \
+        aws s3 cp - "s3://$ASSETS_BUCKET/windows-build-inputs/BUILD_FAILED_$BUILD_DATE" --region "$AWS_REGION" || true
+      exit 1
+    fi
+
+    chmod +x "$WORKDIR/build-pipeline.sh"
+    echo "=== Running build-pipeline.sh ==="
+    bash "$WORKDIR/build-pipeline.sh" 2>&1 | tee /var/log/build-pipeline.log
+    BUILD_EXIT=$?
+
+    if [ $BUILD_EXIT -ne 0 ]; then
+      echo "ERROR: build-pipeline.sh exited with code $BUILD_EXIT"
+      tail -50 /var/log/build-pipeline.log | \
+        aws s3 cp - "s3://$ASSETS_BUCKET/windows-build-inputs/BUILD_FAILED_$BUILD_DATE" --region "$AWS_REGION" || true
+    fi
+
+    echo "=== Image Builder user-data complete at $(date -u), exit=$BUILD_EXIT ==="
   USERDATA
   )
 
