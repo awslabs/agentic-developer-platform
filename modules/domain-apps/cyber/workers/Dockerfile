@@ -34,6 +34,15 @@ RUN pip install -r requirements.txt
 COPY entrypoint.py ./entrypoint.py
 COPY triage/ ./triage/
 COPY static/ ./static/
+COPY scripts/ ./scripts/
+
+ARG IMAGE_TAG=dev
+ENV IMAGE_TAG=${IMAGE_TAG}
+
+# Generate the manifest at build time — captures the exact installed environment.
+# Failure to generate is a build failure (not best-effort).
+RUN python3 /app/scripts/generate_manifest.py > /opt/worker-manifest.json \
+    && python3 -c "import json; json.load(open('/opt/worker-manifest.json'))"
 
 # Non-root user (reduces blast radius when static-analysis parsers get fed nasty input)
 RUN useradd -m -s /bin/bash -u 1001 worker && chown -R worker:worker /app

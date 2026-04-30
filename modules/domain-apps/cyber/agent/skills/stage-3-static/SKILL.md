@@ -83,14 +83,37 @@ aws sqs send-message --region us-east-1 \
     '{artifact_id:$a, sample_s3_uri:$s, stage:"static", mode:"rule-driven", focus:$focus, yara_rules:$rules}')"
 ```
 
-### 2b. Mode B — author script + upload + send
+### 2b. MANDATORY — Read the worker manifest first
+
+Before writing a Mode B script, pull the manifest for the currently-deployed worker image:
+
+```bash
+# The deployed image tag comes from the worker's ScaledJob env or from a known SSM parameter
+IMAGE_TAG=$(aws ssm get-parameter --name /adp/dev/cyber/worker-image-tag \
+  --query Parameter.Value --output text --region us-east-1)
+
+aws s3 cp "s3://${CYBER_ARTIFACTS_BUCKET}/worker-manifests/by-tag/${IMAGE_TAG}.json" \
+  /tmp/worker-manifest.json --region us-east-1
+
+cat /tmp/worker-manifest.json | jq .
+```
+
+The manifest tells you:
+- Which Python packages you can `import` (exact names + pinned versions)
+- Which system binaries you can `subprocess.run()` (exact paths)
+- Where YARA rules live, how many are available
+- Runtime limits: timeout, memory, CPU, storage, network policy
+
+**Do NOT use any tool not in the manifest.** If your hypothesis needs a tool that isn't there, either fall back to Mode A or open an issue to add the tool to the worker image — do NOT author a script against tools you hope are available.
+
+### 2c. Mode B — author script + upload + send
 
 Author a short Python script. It MUST:
 - Read sample path from `sys.argv[1]`
 - Write a single JSON line to stdout matching the `findings` schema above
 - Exit 0 on success, nonzero on failure
 - Not call out to the network (the worker pod has no internet to sandbox env — but stay safe anyway)
-- Use only tools available in the worker image (lief, pefile, yara-python, capstone, oletools, magika, iocextract)
+- Use only tools listed in the worker manifest (see step 2b above)
 
 Example skeleton:
 
@@ -113,7 +136,18 @@ findings = {
 print(json.dumps(findings))
 ```
 
-Upload + enqueue:
+### 2d. Validate the script against the manifest
+
+Before uploading, parse your script's imports and subprocess calls. Fail fast if any aren't in the manifest:
+
+```bash
+python3 modules/domain-apps/cyber/agent/skills/stage-3-static/validate_script.py \
+  /tmp/stage-3.py /tmp/worker-manifest.json
+```
+
+Exit 0 means safe to upload. Nonzero means you referenced something the worker doesn't have — fix the script, don't proceed.
+
+### 2e. Upload + enqueue
 
 ```bash
 SCRIPT_URI="s3://$CYBER_ARTIFACTS_BUCKET/scripts/$ARTIFACT_ID/stage-3.py"

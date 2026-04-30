@@ -135,8 +135,50 @@ jobs:
             esac
           done
 
+      # ── 4. Extract and publish manifest to S3 ─────────────────────────
+      - name: Extract and publish manifest
+        run: |
+          IMAGE_URI="${{ steps.build.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.build.outputs.image_tag }}"
+          IMAGE_TAG="${{ steps.build.outputs.image_tag }}"
+          ASSETS_BUCKET="adp-dev-cape-assets"
+
+          # Log in to ECR to pull the image
+          aws ecr get-login-password --region "${{ env.AWS_REGION }}" | \
+            docker login --username AWS --password-stdin "${{ steps.build.outputs.registry }}" 2>/dev/null || true
+
+          # Extract manifest from built image
+          docker run --rm --entrypoint cat "${IMAGE_URI}" /opt/worker-manifest.json > /tmp/worker-manifest.json
+
+          # Validate it's valid JSON
+          python3 -c "import json; json.load(open('/tmp/worker-manifest.json'))"
+
+          # Publish to immutable location (keyed by image tag — never overwritten)
+          aws s3 cp /tmp/worker-manifest.json \
+            "s3://${ASSETS_BUCKET}/worker-manifests/by-tag/${IMAGE_TAG}.json" \
+            --region "${{ env.AWS_REGION }}"
+
+          # Publish to "latest" pointer
+          aws s3 cp /tmp/worker-manifest.json \
+            "s3://${ASSETS_BUCKET}/worker-manifests/latest.json" \
+            --region "${{ env.AWS_REGION }}"
+
+          echo "Manifest published for tag: ${IMAGE_TAG}"
+
+      # ── 5. Update SSM parameter with deployed image tag ──────────────
+      - name: Update SSM image tag parameter
+        run: |
+          IMAGE_TAG="${{ steps.build.outputs.image_tag }}"
+          aws ssm put-parameter \
+            --name "/adp/dev/cyber/worker-image-tag" \
+            --value "${IMAGE_TAG}" \
+            --type String \
+            --overwrite \
+            --region "${{ env.AWS_REGION }}"
+          echo "SSM parameter /adp/dev/cyber/worker-image-tag updated to: ${IMAGE_TAG}"
+
       - name: Summary
         run: |
           echo "## Cyber Worker Build" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Image**: ${{ steps.build.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.build.outputs.image_tag }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **CodeBuild**: ${{ steps.build.outputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Manifest**: s3://adp-dev-cape-assets/worker-manifests/by-tag/${{ steps.build.outputs.image_tag }}.json" >> "$GITHUB_STEP_SUMMARY"
