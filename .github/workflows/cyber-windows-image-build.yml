@@ -119,7 +119,7 @@ jobs:
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"aws s3 cp s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/build-pipeline.sh /tmp/build-pipeline.sh --region ${{ env.AWS_REGION }} && chmod +x /tmp/build-pipeline.sh && sudo bash /tmp/build-pipeline.sh\"]" \
+            --parameters "commands=[\"for i in $(seq 1 60); do [ -f /var/run/builder-ready ] && break; echo Waiting for user-data... \\$i; sleep 10; done; [ -f /var/run/builder-ready ] || { echo ERROR: user-data never completed; exit 1; }; aws s3 cp s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/build-pipeline.sh /tmp/build-pipeline.sh --region ${{ env.AWS_REGION }} && chmod +x /tmp/build-pipeline.sh && sudo bash /tmp/build-pipeline.sh\"]" \
             --timeout-seconds 7200 \
             --region "${{ env.AWS_REGION }}" \
             --query 'Command.CommandId' --output text)
