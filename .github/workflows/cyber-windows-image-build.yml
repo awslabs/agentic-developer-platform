@@ -117,9 +117,9 @@ jobs:
           #   1. SSM command plane accepts commands
           #   2. SSM agent executes commands to completion
           #   3. User-data has finished (packages installed, SSM restarted)
-          echo "Waiting for builder-ready marker via SSM (up to 15 min)..."
+          echo "Waiting for builder-ready marker via SSM (up to 20 min)..."
           SSM_READY=false
-          for probe in $(seq 1 60); do
+          for probe in $(seq 1 80); do
             if PROBE_OUT=$(aws ssm send-command \
                 --instance-ids "$INSTANCE_ID" \
                 --document-name "AWS-RunShellScript" \
@@ -163,7 +163,7 @@ jobs:
           done
 
           if [[ "$SSM_READY" != "true" ]]; then
-            echo "ERROR: Builder not ready after 15 minutes (user-data may have failed)."
+            echo "ERROR: Builder not ready after 20 minutes (user-data may have failed)."
             echo "Check /var/log/builder-userdata.log on the instance."
             exit 1
           fi

@@ -168,8 +168,13 @@ resource "aws_instance" "builder" {
 
     echo "=== Image Builder user-data starting ==="
 
+    # Hold SSM agent snap to prevent auto-refresh during apt-get.
+    # Without this, snap auto-refresh can restart the agent mid-install,
+    # causing 13+ min SSM outage (observed on c8i.4xlarge).
+    snap refresh --hold=2h amazon-ssm-agent 2>/dev/null || true
+
     apt-get update -y
-    apt-get install -y \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
       qemu-utils \
       qemu-kvm \
       libvirt-daemon-system \
@@ -180,9 +185,12 @@ resource "aws_instance" "builder" {
       jq \
       cpu-checker
 
-    # Ensure SSM agent is running
-    systemctl enable amazon-ssm-agent
-    systemctl start amazon-ssm-agent
+    # Restart SSM agent to ensure it's up after any disruption from
+    # package installs (dpkg triggers can restart services).
+    systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent.service 2>/dev/null || \
+      systemctl restart amazon-ssm-agent 2>/dev/null || true
+    # Wait briefly for agent to re-register
+    sleep 5
 
     # Verify nested virtualization
     kvm-ok || echo "WARNING: KVM not available — nested virt may not work"
