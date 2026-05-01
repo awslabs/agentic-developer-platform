@@ -1,7 +1,7 @@
-"""Common library for webhook ingress Lambdas.
+"""Common utilities for webhook ingress Lambdas.
 
-Shared utilities: signature verification, tenant resolution, SQS publishing,
-rate limiting, envelope models, and event logging.
-
-Full implementation tracked in #318.
+Provides:
+- webhook_events: DynamoDB audit logging for all incoming webhooks
+- rate_limit: Sliding-window per-tenant rate limiting via DDB atomic counters
+- metrics: CloudWatch custom metrics emission
 """

@@ -1,26 +1,22 @@
 [project]
-name = "webhook-ingress-tests"
+name = "webhook-ingress"
 version = "0.1.0"
-description = "End-to-end integration tests for the hosted webhook ingress pipeline"
+description = "Webhook ingress Lambda utilities: event logging, rate limiting, metrics"
 requires-python = ">=3.11"
 dependencies = [
-    "pytest>=8.0",
     "boto3>=1.34",
-    "requests>=2.31",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "pytest>=8.0",
+    "moto[dynamodb,cloudwatch]>=5.0",
     "ruff>=0.4",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = [
-    "integration: end-to-end tests requiring deployed webhook-ingress stack",
-]
-# Default: skip integration tests (they need live infra)
-addopts = "-m 'not integration'"
+pythonpath = ["lambda"]
 
 [tool.ruff]
 line-length = 100
