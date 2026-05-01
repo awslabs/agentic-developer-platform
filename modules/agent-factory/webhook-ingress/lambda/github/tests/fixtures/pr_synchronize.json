@@ -1,0 +1,37 @@
+{
+  "action": "synchronize",
+  "number": 15,
+  "pull_request": {
+    "number": 15,
+    "title": "feat: add user authentication",
+    "body": "Implements OAuth2 flow for user authentication.",
+    "head": {
+      "sha": "def789ghi012",
+      "ref": "feat/user-auth"
+    },
+    "base": {
+      "ref": "main"
+    },
+    "user": {
+      "login": "bob-engineer",
+      "id": 1001
+    }
+  },
+  "repository": {
+    "id": 100200300,
+    "full_name": "acme-corp/flagship-app",
+    "private": true
+  },
+  "sender": {
+    "login": "bob-engineer",
+    "id": 1001,
+    "type": "User"
+  },
+  "installation": {
+    "id": 99887766,
+    "account": {
+      "login": "acme-corp",
+      "id": 500
+    }
+  }
+}

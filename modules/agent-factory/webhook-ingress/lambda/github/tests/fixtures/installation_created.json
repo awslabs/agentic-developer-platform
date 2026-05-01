@@ -1,0 +1,36 @@
+{
+  "action": "created",
+  "installation": {
+    "id": 11223344,
+    "account": {
+      "login": "new-customer-org",
+      "id": 3003,
+      "type": "Organization"
+    },
+    "app_id": 444555,
+    "target_type": "Organization",
+    "permissions": {
+      "contents": "write",
+      "issues": "write",
+      "pull_requests": "write",
+      "metadata": "read"
+    },
+    "events": [
+      "issues",
+      "pull_request",
+      "issue_comment"
+    ]
+  },
+  "repositories": [
+    {
+      "id": 900900900,
+      "full_name": "new-customer-org/my-repo",
+      "private": false
+    }
+  ],
+  "sender": {
+    "login": "org-admin",
+    "id": 4004,
+    "type": "User"
+  }
+}

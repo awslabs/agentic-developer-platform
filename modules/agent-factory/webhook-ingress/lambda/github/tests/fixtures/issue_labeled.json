@@ -1,0 +1,38 @@
+{
+  "action": "labeled",
+  "label": {
+    "id": 12345,
+    "name": "developer",
+    "color": "0075ca"
+  },
+  "issue": {
+    "number": 42,
+    "title": "Implement feature X",
+    "body": "Please implement feature X as described in the spec.",
+    "user": {
+      "login": "jane-developer",
+      "id": 999
+    },
+    "labels": [
+      {"name": "developer", "id": 12345},
+      {"name": "enhancement", "id": 67890}
+    ]
+  },
+  "repository": {
+    "id": 100200300,
+    "full_name": "acme-corp/flagship-app",
+    "private": true
+  },
+  "sender": {
+    "login": "jane-developer",
+    "id": 999,
+    "type": "User"
+  },
+  "installation": {
+    "id": 99887766,
+    "account": {
+      "login": "acme-corp",
+      "id": 500
+    }
+  }
+}

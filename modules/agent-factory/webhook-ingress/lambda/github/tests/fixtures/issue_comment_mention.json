@@ -1,0 +1,36 @@
+{
+  "action": "created",
+  "comment": {
+    "id": 5551234,
+    "body": "Hey @agent-developer can you take a look at this and implement a fix?",
+    "user": {
+      "login": "alice-pm",
+      "id": 2002
+    }
+  },
+  "issue": {
+    "number": 55,
+    "title": "Bug: login page crashes on Safari",
+    "user": {
+      "login": "alice-pm",
+      "id": 2002
+    }
+  },
+  "repository": {
+    "id": 100200300,
+    "full_name": "acme-corp/flagship-app",
+    "private": true
+  },
+  "sender": {
+    "login": "alice-pm",
+    "id": 2002,
+    "type": "User"
+  },
+  "installation": {
+    "id": 99887766,
+    "account": {
+      "login": "acme-corp",
+      "id": 500
+    }
+  }
+}
