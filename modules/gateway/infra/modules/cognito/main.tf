@@ -9,6 +9,8 @@ resource "aws_cognito_user_pool" "main" {
   # Pre Token Generation Lambda Trigger (V2) - Issue #119
   # Injects custom claims into access tokens for both users and M2M clients
   lambda_config {
+    pre_sign_up = aws_lambda_function.pre_signup.arn
+
     pre_token_generation_config {
       lambda_arn     = aws_lambda_function.pre_token_generation.arn
       lambda_version = "V2_0" # Use V2 trigger for access token customization

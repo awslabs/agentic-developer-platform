@@ -133,3 +133,29 @@ variable "github_oauth_client_secret" {
   default     = ""
   sensitive   = true
 }
+
+# =============================================================================
+# Pre Sign-Up Configuration (Issue #314)
+# =============================================================================
+
+variable "pre_signup_allowlist_mode" {
+  type        = string
+  description = "Allowlist mode for Pre Sign-Up trigger: 'org' (GitHub org membership), 'explicit' (DDB allowlist), or 'open' (allow all)"
+  default     = "org"
+  validation {
+    condition     = contains(["org", "explicit", "open"], var.pre_signup_allowlist_mode)
+    error_message = "Allowlist mode must be 'org', 'explicit', or 'open'."
+  }
+}
+
+variable "pre_signup_allowed_orgs" {
+  type        = string
+  description = "Comma-separated list of GitHub org names allowed to sign up (used when allowlist_mode is 'org')"
+  default     = ""
+}
+
+variable "github_token_secret_arn" {
+  type        = string
+  description = "ARN of the Secrets Manager secret containing a GitHub API token for org membership checks. Required when allowlist_mode is 'org'."
+  default     = ""
+}
