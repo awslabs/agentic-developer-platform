@@ -39,7 +39,14 @@ resource "aws_iam_policy" "runner_boundary" {
           "events:*", "stepfunctions:*",
           "cognito-idp:*", "cognito-identity:*",
           "elasticache:*", "eks:*",
-          "sagemaker:*"
+          "sagemaker:*",
+          # WAFv2 — needed by webhook-ingress module to protect API Gateway
+          # with rate-limit Web ACLs. Scoped to actions Terraform actually uses.
+          "wafv2:CreateWebACL", "wafv2:DeleteWebACL", "wafv2:UpdateWebACL",
+          "wafv2:GetWebACL", "wafv2:ListWebACLs",
+          "wafv2:AssociateWebACL", "wafv2:DisassociateWebACL",
+          "wafv2:GetWebACLForResource", "wafv2:ListResourcesForWebACL",
+          "wafv2:TagResource", "wafv2:UntagResource", "wafv2:ListTagsForResource"
         ]
         Resource = "*"
       },
