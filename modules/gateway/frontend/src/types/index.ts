@@ -64,6 +64,8 @@ export interface User {
   deptId?: string;
   permissions: Permission[];
   createdAt: string;
+  avatarUrl?: string;
+  githubLogin?: string;
 }
 
 export interface AuthState {
@@ -128,11 +130,13 @@ export interface CognitoIdTokenPayload {
   email: string;
   email_verified: boolean;
   name?: string;
+  picture?: string;
   'cognito:username': string;
   'custom:org_id'?: string;
   'custom:department_id'?: string;
   'custom:team_id'?: string;
   'custom:role'?: string;
+  identities?: string;
   iss: string;
   aud: string;
   exp: number;

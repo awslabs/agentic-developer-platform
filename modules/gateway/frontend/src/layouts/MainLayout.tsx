@@ -32,8 +32,16 @@ export function MainLayout() {
             <div className="flex items-center gap-4">
               {user && (
                 <div className="flex items-center gap-3">
+                  {user.avatarUrl && (
+                    <img
+                      src={user.avatarUrl}
+                      alt={user.githubLogin || user.name || 'User avatar'}
+                      className="w-8 h-8 rounded-full"
+                      data-testid="user-avatar"
+                    />
+                  )}
                   <span className="text-sm text-gray-600 dark:text-gray-400">
-                    {user.email || user.id}
+                    {user.githubLogin || user.name || user.email || user.id}
                   </span>
                   <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary-100 text-primary-800 dark:bg-primary-900 dark:text-primary-100">
                     {user.role.replace('_', ' ')}

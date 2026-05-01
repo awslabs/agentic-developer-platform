@@ -166,6 +166,31 @@ export async function buildLoginUrl(): Promise<string> {
 }
 
 /**
+ * Build the Cognito hosted UI login URL specifically for GitHub identity provider.
+ * Adds identity_provider=GitHub parameter to route directly to GitHub OAuth.
+ */
+export async function buildGitHubLoginUrl(): Promise<string> {
+  const config = getCognitoConfig();
+  const pkce = await generatePKCEChallenge();
+
+  // Store verifier for the callback
+  storePKCEVerifier(pkce.verifier);
+
+  // Build the authorization URL with PKCE + GitHub identity provider
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: config.clientId,
+    redirect_uri: config.redirectUri,
+    scope: 'openid email profile',
+    code_challenge: pkce.challenge,
+    code_challenge_method: 'S256',
+    identity_provider: 'GitHub',
+  });
+
+  return `${getCognitoAuthorizeUrl()}?${params.toString()}`;
+}
+
+/**
  * Build the Cognito logout URL
  */
 export function buildLogoutUrl(): string {
@@ -338,7 +363,8 @@ export function isTokenExpired(bufferMinutes: number = 5): boolean {
 }
 
 /**
- * Parse ID token to extract user information
+ * Parse ID token to extract user information.
+ * Handles both native Cognito users and GitHub-federated users.
  */
 export function parseIdTokenForUser(idToken: string): User | null {
   const payload = parseTokenPayload<CognitoIdTokenPayload>(idToken);
@@ -355,15 +381,46 @@ export function parseIdTokenForUser(idToken: string): User | null {
     role = AdminRole.ORG_ADMIN;
   }
 
+  // Extract GitHub identity info if present
+  let avatarUrl: string | undefined;
+  let githubLogin: string | undefined;
+
+  if (payload.identities) {
+    try {
+      const identities = JSON.parse(payload.identities);
+      const githubIdentity = identities.find(
+        (id: { providerName: string }) => id.providerName === 'GitHub'
+      );
+      if (githubIdentity) {
+        githubLogin = githubIdentity.userId;
+      }
+    } catch {
+      // Ignore parse errors for identities
+    }
+  }
+
+  // Use picture claim (Cognito maps GitHub avatar_url to picture)
+  if (payload.picture) {
+    avatarUrl = payload.picture;
+  } else if (githubLogin) {
+    // Fallback: construct avatar URL from GitHub login
+    avatarUrl = `https://avatars.githubusercontent.com/${githubLogin}`;
+  }
+
+  // Use GitHub login as display name fallback
+  const displayName = payload.name || githubLogin;
+
   return {
     id: payload.sub,
     email: payload.email,
-    name: payload.name,
+    name: displayName,
     role,
     orgId: payload['custom:org_id'],
     deptId: payload['custom:department_id'],
     permissions: ROLE_PERMISSIONS[role],
     createdAt: new Date(payload.auth_time * 1000).toISOString(),
+    avatarUrl,
+    githubLogin,
   };
 }
 
