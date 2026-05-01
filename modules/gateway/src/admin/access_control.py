@@ -9,22 +9,24 @@ from src.shared.schemas.auth import TokenContext
 # Issue #60: Permissions that require the caller to belong to at least one
 # organization. Non-admin users with no org_id are rejected up front instead
 # of silently returning empty results.
-_ORG_SCOPED_PERMISSIONS: frozenset[Permission] = frozenset({
-    Permission.ORG_READ,
-    Permission.ORG_UPDATE,
-    Permission.ORG_CREATE,
-    Permission.ORG_DELETE,
-    Permission.BUDGET_READ,
-    Permission.BUDGET_UPDATE,
-    Permission.RATELIMIT_READ,
-    Permission.RATELIMIT_UPDATE,
-    Permission.USAGE_READ,
-    Permission.LOGS_READ,
-    Permission.LOGS_EXPORT,
-    Permission.USER_READ,
-    Permission.USER_MANAGE,
-    Permission.METRICS_READ,
-})
+_ORG_SCOPED_PERMISSIONS: frozenset[Permission] = frozenset(
+    {
+        Permission.ORG_READ,
+        Permission.ORG_UPDATE,
+        Permission.ORG_CREATE,
+        Permission.ORG_DELETE,
+        Permission.BUDGET_READ,
+        Permission.BUDGET_UPDATE,
+        Permission.RATELIMIT_READ,
+        Permission.RATELIMIT_UPDATE,
+        Permission.USAGE_READ,
+        Permission.LOGS_READ,
+        Permission.LOGS_EXPORT,
+        Permission.USER_READ,
+        Permission.USER_MANAGE,
+        Permission.METRICS_READ,
+    }
+)
 
 
 class AccessControl:

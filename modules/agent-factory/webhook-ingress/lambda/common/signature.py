@@ -11,7 +11,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def verify_github_signature(payload_body: bytes, signature_header: str, secret: str) -> bool:
+def verify_github_signature(
+    payload_body: bytes, signature_header: str, secret: str
+) -> bool:
     """Verify X-Hub-Signature-256 header against the webhook secret.
 
     Args:
@@ -31,7 +33,7 @@ def verify_github_signature(payload_body: bytes, signature_header: str, secret: 
         logger.warning("Signature header missing sha256= prefix")
         return False
 
-    expected_sig = signature_header[len(prefix):]
+    expected_sig = signature_header[len(prefix) :]
     computed_sig = hmac.new(
         secret.encode("utf-8"),
         payload_body,

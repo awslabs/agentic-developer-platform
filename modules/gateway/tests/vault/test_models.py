@@ -19,7 +19,6 @@ from src.shared.models.vault import (
     VerificationMethod,
 )
 
-
 # ---------------------------------------------------------------------------
 # Schema / meta tests
 # ---------------------------------------------------------------------------
@@ -44,9 +43,17 @@ class TestUserIdentityModel:
         mapper = inspect(UserIdentity)
         cols = {c.key for c in mapper.column_attrs}
         expected = {
-            "id", "org_id", "team_id", "user_id", "provider", "provider_user_id",
-            "provider_username", "verification_method", "verified_at",
-            "created_at", "updated_at",
+            "id",
+            "org_id",
+            "team_id",
+            "user_id",
+            "provider",
+            "provider_user_id",
+            "provider_username",
+            "verification_method",
+            "verified_at",
+            "created_at",
+            "updated_at",
         }
         assert expected <= cols
 
@@ -83,9 +90,19 @@ class TestUserCredentialModel:
         mapper = inspect(UserCredential)
         cols = {c.key for c in mapper.column_attrs}
         expected = {
-            "id", "org_id", "team_id", "user_id", "service", "credential_type",
-            "label", "secret_arn", "scopes", "expires_at", "last_used_at",
-            "created_at", "updated_at",
+            "id",
+            "org_id",
+            "team_id",
+            "user_id",
+            "service",
+            "credential_type",
+            "label",
+            "secret_arn",
+            "scopes",
+            "expires_at",
+            "last_used_at",
+            "created_at",
+            "updated_at",
         }
         assert expected <= cols
 
@@ -156,8 +173,12 @@ class TestForeignKeyConstraints:
         await db_session.execute(text("PRAGMA foreign_keys = ON"))
 
         identity = UserIdentity(
-            id="id-1", org_id="org-1", team_id="t-1", user_id="nonexistent-user",
-            provider="slack", provider_user_id="U999",
+            id="id-1",
+            org_id="org-1",
+            team_id="t-1",
+            user_id="nonexistent-user",
+            provider="slack",
+            provider_user_id="U999",
             verification_method="oauth",
         )
         db_session.add(identity)
@@ -169,8 +190,13 @@ class TestForeignKeyConstraints:
         await db_session.execute(text("PRAGMA foreign_keys = ON"))
 
         cred = UserCredential(
-            id="cred-1", org_id="org-1", team_id="t-1", user_id="nonexistent-user",
-            service="github", credential_type="api_key", label="tok",
+            id="cred-1",
+            org_id="org-1",
+            team_id="t-1",
+            user_id="nonexistent-user",
+            service="github",
+            credential_type="api_key",
+            label="tok",
             secret_arn="arn:fake",
         )
         db_session.add(cred)
@@ -182,7 +208,9 @@ class TestForeignKeyConstraints:
         await db_session.execute(text("PRAGMA foreign_keys = ON"))
 
         mapping = ChannelTenantMap(
-            id="map-1", provider="slack", provider_scope_id="W123",
+            id="map-1",
+            provider="slack",
+            provider_scope_id="W123",
             org_id="nonexistent-org",
         )
         db_session.add(mapping)
@@ -202,13 +230,21 @@ class TestUniqueConstraints:
         await db_session.flush()
 
         id1 = UserIdentity(
-            id="id-1", org_id="org-1", team_id="t-1", user_id="u-1",
-            provider="github", provider_user_id="gh-100",
+            id="id-1",
+            org_id="org-1",
+            team_id="t-1",
+            user_id="u-1",
+            provider="github",
+            provider_user_id="gh-100",
             verification_method="oauth",
         )
         id2 = UserIdentity(
-            id="id-2", org_id="org-1", team_id="t-1", user_id="u-1",
-            provider="github", provider_user_id="gh-100",
+            id="id-2",
+            org_id="org-1",
+            team_id="t-1",
+            user_id="u-1",
+            provider="github",
+            provider_user_id="gh-100",
             verification_method="admin_manual",
         )
         db_session.add(id1)
@@ -226,13 +262,23 @@ class TestUniqueConstraints:
         await db_session.flush()
 
         c1 = UserCredential(
-            id="c-1", org_id="org-1", team_id="t-1", user_id="u-2",
-            service="openai", credential_type="api_key", label="default",
+            id="c-1",
+            org_id="org-1",
+            team_id="t-1",
+            user_id="u-2",
+            service="openai",
+            credential_type="api_key",
+            label="default",
             secret_arn="arn:1",
         )
         c2 = UserCredential(
-            id="c-2", org_id="org-1", team_id="t-1", user_id="u-2",
-            service="openai", credential_type="api_key", label="default",
+            id="c-2",
+            org_id="org-1",
+            team_id="t-1",
+            user_id="u-2",
+            service="openai",
+            credential_type="api_key",
+            label="default",
             secret_arn="arn:2",
         )
         db_session.add(c1)
@@ -275,8 +321,12 @@ class TestCascadeDeletes:
         await db_session.flush()
 
         identity = UserIdentity(
-            id="id-casc", org_id="org-1", team_id="t-1", user_id="u-casc-1",
-            provider="discord", provider_user_id="D1",
+            id="id-casc",
+            org_id="org-1",
+            team_id="t-1",
+            user_id="u-casc-1",
+            provider="discord",
+            provider_user_id="D1",
             verification_method="magic_link",
         )
         db_session.add(identity)
@@ -286,9 +336,7 @@ class TestCascadeDeletes:
         await db_session.execute(text("DELETE FROM users WHERE id = 'u-casc-1'"))
         await db_session.flush()
 
-        result = await db_session.execute(
-            text("SELECT count(*) FROM user_identities WHERE user_id = 'u-casc-1'")
-        )
+        result = await db_session.execute(text("SELECT count(*) FROM user_identities WHERE user_id = 'u-casc-1'"))
         assert result.scalar() == 0
 
     @pytest.mark.asyncio
@@ -300,8 +348,13 @@ class TestCascadeDeletes:
         await db_session.flush()
 
         cred = UserCredential(
-            id="c-casc", org_id="org-1", team_id="t-1", user_id="u-casc-2",
-            service="aws", credential_type="bearer", label="main",
+            id="c-casc",
+            org_id="org-1",
+            team_id="t-1",
+            user_id="u-casc-2",
+            service="aws",
+            credential_type="bearer",
+            label="main",
             secret_arn="arn:casc",
         )
         db_session.add(cred)
@@ -310,9 +363,7 @@ class TestCascadeDeletes:
         await db_session.execute(text("DELETE FROM users WHERE id = 'u-casc-2'"))
         await db_session.flush()
 
-        result = await db_session.execute(
-            text("SELECT count(*) FROM user_credentials WHERE user_id = 'u-casc-2'")
-        )
+        result = await db_session.execute(text("SELECT count(*) FROM user_credentials WHERE user_id = 'u-casc-2'"))
         assert result.scalar() == 0
 
     @pytest.mark.asyncio
@@ -324,7 +375,10 @@ class TestCascadeDeletes:
         await db_session.flush()
 
         mapping = ChannelTenantMap(
-            id="m-casc", provider="slack", provider_scope_id="W-CASC", org_id="org-casc",
+            id="m-casc",
+            provider="slack",
+            provider_scope_id="W-CASC",
+            org_id="org-casc",
         )
         db_session.add(mapping)
         await db_session.flush()
@@ -332,7 +386,5 @@ class TestCascadeDeletes:
         await db_session.execute(text("DELETE FROM organizations WHERE id = 'org-casc'"))
         await db_session.flush()
 
-        result = await db_session.execute(
-            text("SELECT count(*) FROM channel_tenant_map WHERE org_id = 'org-casc'")
-        )
+        result = await db_session.execute(text("SELECT count(*) FROM channel_tenant_map WHERE org_id = 'org-casc'"))
         assert result.scalar() == 0

@@ -4,17 +4,16 @@ Issue #134: Vault Phase 1
 """
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from botocore.exceptions import ClientError
 
 from src.shared.services.secrets_manager import (
     MAX_SECRET_SIZE_BYTES,
-    SecretTooLargeError,
     SecretsManagerHelper,
+    SecretTooLargeError,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -96,9 +95,7 @@ class TestGetSecret:
     def test_returns_secret_string(self, helper, mock_sm_client):
         result = helper.get_secret("arn:aws:secretsmanager:us-east-1:123:secret:test")
         assert result == '{"token": "ghp_xxx"}'
-        mock_sm_client.get_secret_value.assert_called_once_with(
-            SecretId="arn:aws:secretsmanager:us-east-1:123:secret:test"
-        )
+        mock_sm_client.get_secret_value.assert_called_once_with(SecretId="arn:aws:secretsmanager:us-east-1:123:secret:test")
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +106,7 @@ class TestGetSecret:
 class TestUpdateSecret:
     def test_update_string(self, helper, mock_sm_client):
         helper.update_secret("arn:fake", "new-value")
-        mock_sm_client.update_secret.assert_called_once_with(
-            SecretId="arn:fake", SecretString="new-value"
-        )
+        mock_sm_client.update_secret.assert_called_once_with(SecretId="arn:fake", SecretString="new-value")
 
     def test_update_dict_serialised(self, helper, mock_sm_client):
         helper.update_secret("arn:fake", {"new": "data"})
@@ -197,5 +192,6 @@ class TestSizeCap:
         data = b"binary-content"
         # SecretsManagerHelper._validate_payload_size handles bytes directly
         from src.shared.services.secrets_manager import SecretsManagerHelper
+
         validated = SecretsManagerHelper._validate_payload_size(data)
         assert validated == data

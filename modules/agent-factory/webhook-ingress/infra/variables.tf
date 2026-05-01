@@ -15,3 +15,57 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+# -----------------------------------------------------------------------------
+# SQS tuning
+# -----------------------------------------------------------------------------
+
+variable "sqs_visibility_timeout" {
+  description = "SQS visibility timeout in seconds (should exceed max agent runtime)"
+  type        = number
+  default     = 7200 # 2 hours — generous for longest-running personas
+}
+
+variable "sqs_message_retention" {
+  description = "SQS message retention in seconds"
+  type        = number
+  default     = 345600 # 4 days
+}
+
+variable "sqs_max_receive_count" {
+  description = "Max SQS receive attempts before message is sent to DLQ"
+  type        = number
+  default     = 3
+}
+
+# -----------------------------------------------------------------------------
+# WAF tuning
+# -----------------------------------------------------------------------------
+
+variable "waf_rate_limit" {
+  description = "WAF rate-limit per source IP (requests per 5 minutes)"
+  type        = number
+  default     = 5000
+}
+
+# -----------------------------------------------------------------------------
+# Lambda tuning
+# -----------------------------------------------------------------------------
+
+variable "lambda_runtime" {
+  description = "Python runtime for webhook Lambdas"
+  type        = string
+  default     = "python3.12"
+}
+
+variable "lambda_memory_size" {
+  description = "Lambda memory in MB. 256 is plenty for HMAC + SQS publish."
+  type        = number
+  default     = 256
+}
+
+variable "lambda_timeout" {
+  description = "Lambda timeout in seconds. Target: <300ms actual; 30s gives headroom for cold-starts."
+  type        = number
+  default     = 30
+}

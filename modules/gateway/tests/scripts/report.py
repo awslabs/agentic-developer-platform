@@ -75,9 +75,17 @@ def parse_junit(xml_path: str | Path) -> dict:
 
     stats: dict[str, dict[str, int]] = defaultdict(
         lambda: {
-            "total": 0, "passed": 0, "failed": 0, "skipped": 0, "error": 0,
-            "live": 0, "integration": 0, "unit": 0,
-            "live_passed": 0, "integration_passed": 0, "unit_passed": 0,
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "error": 0,
+            "live": 0,
+            "integration": 0,
+            "unit": 0,
+            "live_passed": 0,
+            "integration_passed": 0,
+            "unit_passed": 0,
         }
     )
     failures: dict[str, list[dict]] = defaultdict(list)
@@ -99,23 +107,27 @@ def parse_junit(xml_path: str | Path) -> dict:
 
         if failure is not None:
             stats[cat]["failed"] += 1
-            failures[cat].append({
-                "test": name,
-                "classname": classname,
-                "mode": mode,
-                "message": (failure.get("message") or "")[:200],
-                "text": (failure.text or "")[:500],
-            })
+            failures[cat].append(
+                {
+                    "test": name,
+                    "classname": classname,
+                    "mode": mode,
+                    "message": (failure.get("message") or "")[:200],
+                    "text": (failure.text or "")[:500],
+                }
+            )
         elif error is not None:
             stats[cat]["error"] += 1
             stats[cat]["failed"] += 1
-            failures[cat].append({
-                "test": name,
-                "classname": classname,
-                "mode": mode,
-                "message": (error.get("message") or "")[:200],
-                "text": (error.text or "")[:500],
-            })
+            failures[cat].append(
+                {
+                    "test": name,
+                    "classname": classname,
+                    "mode": mode,
+                    "message": (error.get("message") or "")[:200],
+                    "text": (error.text or "")[:500],
+                }
+            )
         elif skipped is not None:
             stats[cat]["skipped"] += 1
         else:
@@ -158,8 +170,7 @@ def render_table(data: dict) -> str:
             zero_live_cats.append(cat)
 
         lines.append(
-            f"| {cat} | {s['total']} | {s['passed']} | {s['failed']} | {s['skipped']} "
-            f"| {live_count} | {integ_count} | {unit_count} | {status} |"
+            f"| {cat} | {s['total']} | {s['passed']} | {s['failed']} | {s['skipped']} | {live_count} | {integ_count} | {unit_count} | {status} |"
         )
         totals["total"] += s["total"]
         totals["passed"] += s["passed"]

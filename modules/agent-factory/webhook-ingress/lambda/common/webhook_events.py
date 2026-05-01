@@ -145,7 +145,9 @@ class WebhookEventLogger:
         try:
             response = self._table.query(
                 IndexName="gsi1",
-                KeyConditionExpression=(Key("GSI1PK").eq(tenant_id) & Key("GSI1SK").gte(since)),
+                KeyConditionExpression=(
+                    Key("GSI1PK").eq(tenant_id) & Key("GSI1SK").gte(since)
+                ),
                 Limit=limit,
                 ScanIndexForward=False,
             )

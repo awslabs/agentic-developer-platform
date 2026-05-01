@@ -94,9 +94,12 @@ class TestPullRequestEvents:
         assert result.trigger == "pr_synchronize"
 
     def test_pr_closed_no_intent(self):
-        payload = {"action": "closed", "pull_request": {"number": 1},
-                   "sender": {"login": "user", "id": 1, "type": "User"},
-                   "installation": {"id": 123}}
+        payload = {
+            "action": "closed",
+            "pull_request": {"number": 1},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
         result = extract_intent("pull_request", payload)
         assert result is None
 

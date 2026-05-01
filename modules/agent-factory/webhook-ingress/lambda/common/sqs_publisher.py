@@ -55,7 +55,12 @@ def publish_envelope(envelope: dict) -> str | None:
     if queue_url.endswith(".fifo"):
         send_kwargs["MessageGroupId"] = tenant_id
         # Dedup by arrived_at + source to prevent double-processing
-        dedup_key = f"{envelope.get('arrived_at', '')}_{envelope.get('source_ref', {}).get('repo', '')}_{envelope.get('source_ref', {}).get('issue', '')}"
+        source_ref = envelope.get("source_ref", {})
+        dedup_key = (
+            f"{envelope.get('arrived_at', '')}"
+            f"_{source_ref.get('repo', '')}"
+            f"_{source_ref.get('issue', '')}"
+        )
         send_kwargs["MessageDeduplicationId"] = dedup_key[:128]
 
     try:

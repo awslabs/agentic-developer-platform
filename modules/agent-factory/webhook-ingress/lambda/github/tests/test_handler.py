@@ -14,7 +14,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Set required env vars before importing handler
 os.environ.setdefault("WEBHOOK_SECRET", "test-secret-123")
-os.environ.setdefault("SUBMIT_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123456789/adp-dev-agent-submit.fifo")
+os.environ.setdefault(
+    "SUBMIT_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123456789/adp-dev-agent-submit.fifo"
+)
 os.environ.setdefault("TENANTS_TABLE", "adp-tenants")
 os.environ.setdefault("RATE_LIMIT_TABLE", "adp-rate-limits")
 os.environ.setdefault("AWS_REGION", "us-east-1")
@@ -137,7 +139,9 @@ class TestIntentParsing:
     @patch("handler._get_rate_limit")
     @patch("handler._get_tenant_resolver")
     @patch("handler._get_signature")
-    def test_no_actionable_intent_returns_200_noop(self, mock_sig, mock_tenant, mock_rate, mock_log):
+    def test_no_actionable_intent_returns_200_noop(
+        self, mock_sig, mock_tenant, mock_rate, mock_log
+    ):
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_tenant.return_value.resolve_tenant.return_value = {"tenant_id": "acme"}
         mock_rate.return_value.check_rate_limit.return_value = (True, 0)
@@ -167,7 +171,9 @@ class TestSuccessfulPublish:
     @patch("handler._get_rate_limit")
     @patch("handler._get_tenant_resolver")
     @patch("handler._get_signature")
-    def test_labeled_issue_publishes_envelope(self, mock_sig, mock_tenant, mock_rate, mock_sqs, mock_log):
+    def test_labeled_issue_publishes_envelope(
+        self, mock_sig, mock_tenant, mock_rate, mock_sqs, mock_log
+    ):
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_tenant.return_value.resolve_tenant.return_value = {"tenant_id": "acme"}
         mock_rate.return_value.check_rate_limit.return_value = (True, 0)
@@ -213,7 +219,9 @@ class TestSuccessfulPublish:
     @patch("handler._get_rate_limit")
     @patch("handler._get_tenant_resolver")
     @patch("handler._get_signature")
-    def test_pr_opened_publishes_reviewer_envelope(self, mock_sig, mock_tenant, mock_rate, mock_sqs, mock_log):
+    def test_pr_opened_publishes_reviewer_envelope(
+        self, mock_sig, mock_tenant, mock_rate, mock_sqs, mock_log
+    ):
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_tenant.return_value.resolve_tenant.return_value = {"tenant_id": "acme"}
         mock_rate.return_value.check_rate_limit.return_value = (True, 0)
@@ -244,7 +252,9 @@ class TestSuccessfulPublish:
     @patch("handler._get_rate_limit")
     @patch("handler._get_tenant_resolver")
     @patch("handler._get_signature")
-    def test_sqs_publish_failure_returns_500(self, mock_sig, mock_tenant, mock_rate, mock_sqs, mock_log):
+    def test_sqs_publish_failure_returns_500(
+        self, mock_sig, mock_tenant, mock_rate, mock_sqs, mock_log
+    ):
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_tenant.return_value.resolve_tenant.return_value = {"tenant_id": "acme"}
         mock_rate.return_value.check_rate_limit.return_value = (True, 0)

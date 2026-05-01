@@ -33,7 +33,8 @@ def log_event(
         tenant_id: Resolved tenant or None
         repo: Repository full name
         intent_persona: Resolved persona or None
-        outcome: One of: published, no_op, rate_limited, unknown_tenant, invalid_signature, error
+        outcome: One of: published, no_op, rate_limited, unknown_tenant,
+            invalid_signature, error
         latency_ms: Processing time in milliseconds
         error: Error message if outcome is error
     """

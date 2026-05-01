@@ -60,6 +60,12 @@ resource "aws_dynamodb_table" "webhook_events" {
     projection_type = "ALL"
   }
 
+  # Auto-cleanup after 30 days (caller sets expires_at = now + 30 days on write)
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
   point_in_time_recovery {
     enabled = true
   }

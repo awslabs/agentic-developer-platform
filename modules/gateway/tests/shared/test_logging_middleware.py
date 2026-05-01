@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 
 from src.shared.logging import clear_request_context
 from src.shared.middleware.logging_middleware import (
-    LoggingMiddleware,
     _SKIP_PATHS,
+    LoggingMiddleware,
     _get_client_ip,
     get_current_request_id,
 )

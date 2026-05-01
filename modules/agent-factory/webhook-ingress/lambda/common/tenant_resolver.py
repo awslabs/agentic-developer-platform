@@ -37,7 +37,9 @@ def resolve_tenant(installation_id: int) -> dict | None:
         resp = table.get_item(Key={"PK": f"github#installation#{installation_id}"})
         item = resp.get("Item")
         if not item:
-            logger.info("Unknown installation_id=%d — no tenant mapping", installation_id)
+            logger.info(
+                "Unknown installation_id=%d — no tenant mapping", installation_id
+            )
             return None
         return {
             "tenant_id": item["tenant_id"],
@@ -45,5 +47,7 @@ def resolve_tenant(installation_id: int) -> dict | None:
             "plan": item.get("plan", "free"),
         }
     except Exception as e:
-        logger.error("Tenant resolution failed for installation_id=%d: %s", installation_id, e)
+        logger.error(
+            "Tenant resolution failed for installation_id=%d: %s", installation_id, e
+        )
         return None

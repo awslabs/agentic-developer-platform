@@ -34,6 +34,7 @@ def _get_signature():
     global _signature_mod
     if _signature_mod is None:
         from common import signature
+
         _signature_mod = signature
     return _signature_mod
 
@@ -42,6 +43,7 @@ def _get_tenant_resolver():
     global _tenant_mod
     if _tenant_mod is None:
         from common import tenant_resolver
+
         _tenant_mod = tenant_resolver
     return _tenant_mod
 
@@ -50,6 +52,7 @@ def _get_rate_limit():
     global _rate_limit_mod
     if _rate_limit_mod is None:
         from common import rate_limit
+
         _rate_limit_mod = rate_limit
     return _rate_limit_mod
 
@@ -58,6 +61,7 @@ def _get_sqs_publisher():
     global _sqs_mod
     if _sqs_mod is None:
         from common import sqs_publisher
+
         _sqs_mod = sqs_publisher
     return _sqs_mod
 
@@ -66,6 +70,7 @@ def _get_events_log():
     global _events_log_mod
     if _events_log_mod is None:
         from common import webhook_events_log
+
         _events_log_mod = webhook_events_log
     return _events_log_mod
 
@@ -96,8 +101,13 @@ def handler(event: dict, context) -> dict:
     signature_header = headers.get("x-hub-signature-256", "")
     if not _get_signature().verify_github_signature(body_bytes, signature_header, WEBHOOK_SECRET):
         _log_outcome(
-            event_type="unknown", action="", installation_id=0,
-            tenant_id=None, repo="", persona=None, outcome="invalid_signature",
+            event_type="unknown",
+            action="",
+            installation_id=0,
+            tenant_id=None,
+            repo="",
+            persona=None,
+            outcome="invalid_signature",
             start_time=start_time,
         )
         return _response(401, {"error": "Invalid signature"})
@@ -127,8 +137,13 @@ def handler(event: dict, context) -> dict:
     # 6. If unknown installation → log + return 200 (don't error)
     if not tenant:
         _log_outcome(
-            event_type=event_type, action=action, installation_id=installation_id,
-            tenant_id=None, repo=repo, persona=None, outcome="unknown_tenant",
+            event_type=event_type,
+            action=action,
+            installation_id=installation_id,
+            tenant_id=None,
+            repo=repo,
+            persona=None,
+            outcome="unknown_tenant",
             start_time=start_time,
         )
         return _response(200, {"status": "ignored", "reason": "unknown_installation"})
@@ -141,11 +156,18 @@ def handler(event: dict, context) -> dict:
     # 8. If rate-limited → return 429 with Retry-After
     if not allowed:
         _log_outcome(
-            event_type=event_type, action=action, installation_id=installation_id,
-            tenant_id=tenant_id, repo=repo, persona=None, outcome="rate_limited",
+            event_type=event_type,
+            action=action,
+            installation_id=installation_id,
+            tenant_id=tenant_id,
+            repo=repo,
+            persona=None,
+            outcome="rate_limited",
             start_time=start_time,
         )
-        return _response(429, {"error": "Rate limited", "retry_after": retry_after}, retry_after=retry_after)
+        return _response(
+            429, {"error": "Rate limited", "retry_after": retry_after}, retry_after=retry_after
+        )
 
     # 9. Parse intent
     from intent_parser import extract_intent
@@ -155,8 +177,13 @@ def handler(event: dict, context) -> dict:
     # 10. If no actionable intent → log + return 200 (no-op)
     if intent is None:
         _log_outcome(
-            event_type=event_type, action=action, installation_id=installation_id,
-            tenant_id=tenant_id, repo=repo, persona=None, outcome="no_op",
+            event_type=event_type,
+            action=action,
+            installation_id=installation_id,
+            tenant_id=tenant_id,
+            repo=repo,
+            persona=None,
+            outcome="no_op",
             start_time=start_time,
         )
         return _response(200, {"status": "no_op"})
@@ -177,8 +204,12 @@ def handler(event: dict, context) -> dict:
             "installation_id": installation_id,
             "repo": repo,
             "issue": payload.get("issue", {}).get("number") if "issue" in payload else None,
-            "pr": payload.get("pull_request", {}).get("number") if "pull_request" in payload else None,
-            "sha": payload.get("pull_request", {}).get("head", {}).get("sha") if "pull_request" in payload else None,
+            "pr": payload.get("pull_request", {}).get("number")
+            if "pull_request" in payload
+            else None,
+            "sha": payload.get("pull_request", {}).get("head", {}).get("sha")
+            if "pull_request" in payload
+            else None,
         },
         "intent": {
             "trigger": intent.trigger,
@@ -192,16 +223,27 @@ def handler(event: dict, context) -> dict:
     message_id = _get_sqs_publisher().publish_envelope(envelope)
     if not message_id:
         _log_outcome(
-            event_type=event_type, action=action, installation_id=installation_id,
-            tenant_id=tenant_id, repo=repo, persona=intent.persona, outcome="error",
-            start_time=start_time, error="SQS publish failed",
+            event_type=event_type,
+            action=action,
+            installation_id=installation_id,
+            tenant_id=tenant_id,
+            repo=repo,
+            persona=intent.persona,
+            outcome="error",
+            start_time=start_time,
+            error="SQS publish failed",
         )
         return _response(500, {"error": "Failed to enqueue"})
 
     # 12. Log event
     _log_outcome(
-        event_type=event_type, action=action, installation_id=installation_id,
-        tenant_id=tenant_id, repo=repo, persona=intent.persona, outcome="published",
+        event_type=event_type,
+        action=action,
+        installation_id=installation_id,
+        tenant_id=tenant_id,
+        repo=repo,
+        persona=intent.persona,
+        outcome="published",
         start_time=start_time,
     )
 
@@ -211,14 +253,14 @@ def handler(event: dict, context) -> dict:
 
 def _response(status_code: int, body: dict, *, retry_after: int = 0) -> dict:
     """Build API Gateway v2 response."""
-    resp = {
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if retry_after:
+        headers["Retry-After"] = str(retry_after)
+    return {
         "statusCode": status_code,
         "body": json.dumps(body),
-        "headers": {"Content-Type": "application/json"},
+        "headers": headers,
     }
-    if retry_after:
-        resp["headers"]["Retry-After"] = str(retry_after)
-    return resp
 
 
 def _log_outcome(

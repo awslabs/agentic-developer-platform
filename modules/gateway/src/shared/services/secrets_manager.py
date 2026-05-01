@@ -60,10 +60,7 @@ class SecretsManagerHelper:
         else:
             data = payload
         if len(data) > MAX_SECRET_SIZE_BYTES:
-            raise SecretTooLargeError(
-                f"Secret payload is {len(data)} bytes, exceeding the "
-                f"{MAX_SECRET_SIZE_BYTES} byte limit."
-            )
+            raise SecretTooLargeError(f"Secret payload is {len(data)} bytes, exceeding the {MAX_SECRET_SIZE_BYTES} byte limit.")
         return data
 
     # ------------------------------------------------------------------
@@ -177,5 +174,8 @@ class SecretsManagerHelper:
                     raise
                 logger.warning(
                     "Retry %d/%d deleting secret %s: %s",
-                    attempt, max_retries, secret_arn, exc,
+                    attempt,
+                    max_retries,
+                    secret_arn,
+                    exc,
                 )

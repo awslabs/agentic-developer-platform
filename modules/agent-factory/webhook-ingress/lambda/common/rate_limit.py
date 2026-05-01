@@ -102,7 +102,9 @@ class RateLimiter:
             now = time.time()
         windows = []
         for i in range(12):  # 12 x 5 min = 1 hour
-            window_start = int(now) - (int(now) % WINDOW_SIZE_SECONDS) - (i * WINDOW_SIZE_SECONDS)
+            window_start = (
+                int(now) - (int(now) % WINDOW_SIZE_SECONDS) - (i * WINDOW_SIZE_SECONDS)
+            )
             windows.append(time.strftime("%Y-%m-%dT%H:%M", time.gmtime(window_start)))
         return windows
 
@@ -195,7 +197,9 @@ class RateLimiter:
             item = response.get("Item", {})
             return int(item.get("count", 0))
         except Exception as e:
-            logger.error("Failed to get window count for %s/%s: %s", tenant_id, window, e)
+            logger.error(
+                "Failed to get window count for %s/%s: %s", tenant_id, window, e
+            )
             # Fail open — don't block requests on DDB errors
             return 0
 
@@ -230,7 +234,9 @@ class RateLimiter:
             )
             return int(response["Attributes"]["count"])
         except Exception as e:
-            logger.error("Failed to increment rate limit for %s/%s: %s", tenant_id, window, e)
+            logger.error(
+                "Failed to increment rate limit for %s/%s: %s", tenant_id, window, e
+            )
             # Fail open — return 1 to indicate we "counted" it but don't block
             return 1
 

@@ -11,7 +11,6 @@ from sqlalchemy.pool import StaticPool
 
 from src.shared.models.base import Base
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -72,18 +71,36 @@ class TestMigrationUpgrade:
     @pytest.mark.asyncio
     async def test_user_identities_columns(self, schema_info):
         expected = {
-            "id", "org_id", "team_id", "user_id", "provider", "provider_user_id",
-            "provider_username", "verification_method", "verified_at",
-            "created_at", "updated_at",
+            "id",
+            "org_id",
+            "team_id",
+            "user_id",
+            "provider",
+            "provider_user_id",
+            "provider_username",
+            "verification_method",
+            "verified_at",
+            "created_at",
+            "updated_at",
         }
         assert expected <= schema_info["user_identities_columns"]
 
     @pytest.mark.asyncio
     async def test_user_credentials_columns(self, schema_info):
         expected = {
-            "id", "org_id", "team_id", "user_id", "service", "credential_type",
-            "label", "secret_arn", "scopes", "expires_at", "last_used_at",
-            "created_at", "updated_at",
+            "id",
+            "org_id",
+            "team_id",
+            "user_id",
+            "service",
+            "credential_type",
+            "label",
+            "secret_arn",
+            "scopes",
+            "expires_at",
+            "last_used_at",
+            "created_at",
+            "updated_at",
         }
         assert expected <= schema_info["user_credentials_columns"]
 
@@ -146,9 +163,7 @@ class TestMigrationDowngrade:
 
         # Verify they're gone
         async with engine.connect() as conn:
-            remaining = await conn.run_sync(
-                lambda c: set(sa_inspect(c).get_table_names())
-            )
+            remaining = await conn.run_sync(lambda c: set(sa_inspect(c).get_table_names()))
             for t in VAULT_TABLES:
                 assert t not in remaining, f"Table {t} still present after downgrade"
 

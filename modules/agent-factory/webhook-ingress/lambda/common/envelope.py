@@ -49,7 +49,9 @@ class WebhookEnvelope:
     source_ref: SourceRef = field(default_factory=SourceRef)
     intent: Intent = field(default_factory=Intent)
     payload: dict[str, Any] = field(default_factory=dict)
-    arrived_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    arrived_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict for JSON/SQS publishing."""

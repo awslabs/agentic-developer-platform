@@ -1,8 +1,8 @@
 """CloudWatch custom metrics for webhook ingress observability.
 
 Emits metrics under the `WebhookIngress` namespace:
-  - EventsReceived: count of webhooks received (dimensions: channel, tenant_id)
-  - EventsDispatched: count of webhooks that resulted in agent dispatch (dimension: persona)
+  - EventsReceived: count of webhooks (dimensions: channel, tenant_id)
+  - EventsDispatched: count of webhooks dispatched to agent (dimension: persona)
   - RateLimited: count of rate-limited requests (dimension: tenant_id)
 
 Metrics are batched and flushed to reduce CloudWatch API calls. Each Lambda
@@ -97,7 +97,9 @@ class WebhookMetrics:
 
             for md in self._metric_data:
                 if isinstance(md.get("Timestamp"), (int, float)):
-                    md["Timestamp"] = datetime.fromtimestamp(md["Timestamp"], tz=timezone.utc)
+                    md["Timestamp"] = datetime.fromtimestamp(
+                        md["Timestamp"], tz=timezone.utc
+                    )
 
             self._cloudwatch.put_metric_data(
                 Namespace=self._namespace,
