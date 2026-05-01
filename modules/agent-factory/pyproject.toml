@@ -35,6 +35,7 @@ markers = [
     "costs_money: invokes Bedrock; skipped unless RUN_COSTLY_TESTS=yes",
     "leave_data: skip DDB cleanup after test (for debugging)",
     "github: github_actions classifier flow tests; skipped unless RUN_GITHUB_TESTS=yes",
+    "integration: webhook ingress e2e tests requiring deployed stack",
 ]
 # Default: run only unit tests (skip live_only, workflow)
 addopts = "-m 'not live_only and not workflow'"

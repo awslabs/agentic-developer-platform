@@ -1,6 +1,6 @@
 # Agent Factory test targets
 
-.PHONY: test test-unit test-e2e test-e2e-regression test-e2e-memory test-e2e-artifacts test-e2e-wholesome cleanup-e2e
+.PHONY: test test-unit test-e2e test-e2e-regression test-e2e-memory test-e2e-artifacts test-e2e-wholesome test-integration-webhook cleanup-e2e
 
 # Default: run unit tests only
 test: test-unit
@@ -56,6 +56,15 @@ test-e2e-wholesome:
 		-v --tb=short \
 		--junitxml=test-results/e2e-wholesome-junit.xml \
 		-o "addopts=" -m "live_only and costs_money"
+
+# --- Webhook Ingress Integration ---
+
+# Run webhook ingress E2E integration tests (requires deployed stack)
+test-integration-webhook:
+	cd webhook-ingress && TEST_ENV=$(or $(TEST_ENV),dev) \
+		python -m pytest tests/test_e2e_webhook.py \
+		-v --tb=short -m "integration" \
+		--junitxml=test-results/e2e-webhook-junit.xml
 
 # Cleanup helper: close any leftover E2E test issues in GitHub
 cleanup-e2e:
