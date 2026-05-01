@@ -3,6 +3,22 @@
  *
  * Manages authentication state including user info, tokens, and session management.
  * Uses Cognito OAuth 2.0 with PKCE for secure authentication.
+ *
+ * OAuth Flow (supports both email/password and GitHub sign-in):
+ * 1. User clicks "Login" → buildLoginUrl() generates PKCE challenge and redirects
+ *    to Cognito Hosted UI (which shows email/password form AND "Sign in with GitHub")
+ * 2. For GitHub: Cognito redirects to GitHub OAuth authorize → user approves →
+ *    GitHub redirects back to Cognito's /oauth2/idpresponse endpoint
+ * 3. Cognito triggers Pre-Sign-Up Lambda (allowlist check for GitHub users) and
+ *    Pre-Token-Generation Lambda (injects custom:org_id, custom:team_id claims)
+ * 4. Cognito redirects to our /auth/callback with an authorization code
+ * 5. AuthCallback page exchanges the code + PKCE verifier for tokens via
+ *    Cognito's /oauth2/token endpoint
+ * 6. This context stores the tokens and parses user info from the ID token
+ *
+ * Both auth methods produce identical Cognito JWTs — the backend cannot
+ * distinguish how the user authenticated. GitHub users have a Cognito username
+ * of the form "GitHub_<numeric-id>".
  */
 
 import {

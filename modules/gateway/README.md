@@ -337,6 +337,18 @@ npm run build     # Production build
 
 ## Authentication
 
+The gateway supports multiple authentication methods for different use cases.
+
+### Authentication Options
+
+| Method | Use Case | Configuration |
+|--------|----------|---------------|
+| Email/password | Default for all users | Cognito User Pool (always enabled) |
+| GitHub sign-in | SSO for GitHub-based teams | Cognito + GitHub OAuth App ([admin guide](../../docs/admin/github-sign-in.md)) |
+| Client credentials (M2M) | Automated agents and services | Cognito App Client with secret |
+
+GitHub sign-in is an optional federated identity provider. When enabled, users see a "Sign in with GitHub" button alongside the standard email/password form. Both methods issue the same Cognito tokens and are interchangeable from the backend's perspective. See the [full admin documentation](../../docs/admin/github-sign-in.md) for setup instructions.
+
 ### Human Users (Claude Code, Admin UI)
 
 Human users authenticate via Cognito PKCE flow:

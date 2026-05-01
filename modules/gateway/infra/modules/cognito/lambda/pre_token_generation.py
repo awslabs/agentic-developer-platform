@@ -6,6 +6,24 @@ This Lambda function injects custom claims into access tokens for both:
 2. Agents/Services (TokenGeneration_ClientCredentials): Look up org/team from DynamoDB
 
 Issue #119: Unified Cognito JWT Auth
+
+GitHub Sign-In Decision Logic (Issue #309):
+-------------------------------------------
+When a user signs in via GitHub (federated identity provider), Cognito fires
+TokenGeneration_Authentication with the same event shape as email/password users.
+The key difference: GitHub-federated users may not have custom:org_id set yet
+(it's assigned by an admin after first sign-up). In that case, the claims dict
+will be empty for org_id/team_id/department_id — the backend treats this as an
+"unassigned" user with limited access until an admin assigns them to an org.
+
+The Pre-Sign-Up Lambda (separate function) runs BEFORE this one and handles:
+- Allowlist enforcement (org membership, explicit username list, or open mode)
+- Auto-confirming the user (external providers skip email verification)
+- Linking external identity attributes (GitHub username → custom:github_username)
+
+This Lambda does NOT need to differentiate between auth methods — it simply
+copies whatever custom attributes exist on the user record into the access token.
+Both email/password and GitHub users flow through handle_user_token_generation().
 """
 
 import json
