@@ -279,46 +279,32 @@ export async function findChildIssues(
   repoName: string,
   execCommand: ExecCommandFn
 ): Promise<ChildIssue[]> {
+  // Use GitHub's native sub-issues GraphQL field. This is the authoritative
+  // parent-child relationship. An empty result means the parent has no
+  // sub-issues — that is the correct answer, not a signal to text-search.
+  //
+  // The previous implementation fell through to a "body mentions #N" text
+  // search on empty results, which returned false-positive "children" (any
+  // issue that referenced the parent as a dependency, in documentation, or
+  // in a comment). That produced misattributed task completion counts — see
+  // the regression test in agent-pm-sub-issues.test.ts.
+  const subIssuesQuery = `query { repository(owner: "${repoOwner}", name: "${repoName}") { issue(number: ${parentIssueNumber}) { subIssues(first: ${config.maxChildIssuesToFetch}) { nodes { number title state labels(first: 10) { nodes { name } } assignees(first: 5) { nodes { login } } } } } } }`;
+
   try {
-    // First, try GitHub's native sub-issues API (preferred)
-    const subIssuesQuery = `query { repository(owner: "${repoOwner}", name: "${repoName}") { issue(number: ${parentIssueNumber}) { subIssues(first: ${config.maxChildIssuesToFetch}) { nodes { number title state labels(first: 10) { nodes { name } } assignees(first: 5) { nodes { login } } } } } } }`;
-
-    try {
-      const subIssuesJson = await execCommand(
-        `gh api graphql -f query='${subIssuesQuery}' --jq '.data.repository.issue.subIssues.nodes'`
-      );
-      const subIssues = JSON.parse(subIssuesJson || '[]');
-
-      if (subIssues.length > 0) {
-        console.log(`[reassessment] Found ${subIssues.length} sub-issues via native API`);
-        return subIssues.map((i: Record<string, unknown>) => ({
-          number: i.number as number,
-          title: i.title as string,
-          state: (i.state as string).toUpperCase() as 'OPEN' | 'CLOSED',
-          labels: ((i.labels as { nodes: Array<{ name: string }> })?.nodes || []).map(l => l.name),
-          assignees: ((i.assignees as { nodes: Array<{ login: string }> })?.nodes || []).map(a => a.login),
-        }));
-      }
-    } catch (subError) {
-      console.log('[reassessment] Sub-issues API not available, falling back to text search');
-    }
-
-    // Fallback: Search for issues that reference the parent issue in body
-    const searchQuery = `repo:${repoOwner}/${repoName} is:issue "#${parentIssueNumber}" in:body`;
-    const json = await execCommand(
-      `gh issue list --search "${searchQuery}" --json number,title,state,labels,assignees --limit ${config.maxChildIssuesToFetch}`
+    const subIssuesJson = await execCommand(
+      `gh api graphql -f query='${subIssuesQuery}' --jq '.data.repository.issue.subIssues.nodes'`
     );
-
-    const issues = JSON.parse(json || '[]');
-    return issues.map((i: Record<string, unknown>) => ({
+    const subIssues = JSON.parse(subIssuesJson || '[]');
+    console.log(`[reassessment] Native sub-issues API returned ${subIssues.length} sub-issues for #${parentIssueNumber}`);
+    return subIssues.map((i: Record<string, unknown>) => ({
       number: i.number as number,
       title: i.title as string,
-      state: i.state as 'OPEN' | 'CLOSED',
-      labels: ((i.labels as Array<{ name: string }>) || []).map(l => l.name),
-      assignees: ((i.assignees as Array<{ login: string }>) || []).map(a => a.login),
+      state: (i.state as string).toUpperCase() as 'OPEN' | 'CLOSED',
+      labels: ((i.labels as { nodes: Array<{ name: string }> })?.nodes || []).map(l => l.name),
+      assignees: ((i.assignees as { nodes: Array<{ login: string }> })?.nodes || []).map(a => a.login),
     }));
   } catch (error) {
-    console.warn('[reassessment] Failed to find child issues:', (error as Error).message);
+    console.warn(`[reassessment] Failed to fetch sub-issues for #${parentIssueNumber}:`, (error as Error).message);
     return [];
   }
 }
@@ -644,7 +630,16 @@ export function buildStateAnalysis(
 ): StateAnalysis {
   const commentAnalysis = analyzeComments(comments);
   const issueAnalysis = analyzeChildIssues(childIssues);
-  const boardAnalysis = analyzeProjectBoard(projectBoardItems);
+
+  // Scope project-board items to this EPIC's actual child issues.
+  // `getProjectBoardItems` returns the full project, which can contain items
+  // from many EPICs. Without this filter, reassessing EPIC #A would count
+  // #B's completed items as #A's "completedTasks" — misattributing work.
+  const childNumbers = new Set(childIssues.map(c => c.number));
+  const scopedBoardItems = childNumbers.size === 0
+    ? [] // no children → no board items belong to this EPIC
+    : projectBoardItems.filter(item => childNumbers.has(item.issueNumber));
+  const boardAnalysis = analyzeProjectBoard(scopedBoardItems);
 
   // Determine current phase
   let phase: StateAnalysis['phase'] = 'not_started';
@@ -655,7 +650,7 @@ export function buildStateAnalysis(
     phase = 'construction';
   } else if (phaseLabels.includes('phase:inception')) {
     phase = 'inception';
-  } else if (childIssues.length > 0 || projectBoardItems.length > 0) {
+  } else if (childIssues.length > 0 || scopedBoardItems.length > 0) {
     phase = 'unknown';
   }
 
@@ -922,11 +917,18 @@ export async function gatherReassessmentContext(
     }
   }
 
-  // Determine if there's existing progress
+  // Determine if there's existing progress.
+  // Scope projectBoardItems to this EPIC's own child issues — otherwise any
+  // item on the shared project board (from any other EPIC) would register
+  // as "existing progress" on this EPIC.
+  const childNumbersForProgress = new Set(childIssues.map(c => c.number));
+  const scopedBoardItemsForProgress = childNumbersForProgress.size === 0
+    ? []
+    : projectBoardItems.filter(i => childNumbersForProgress.has(i.issueNumber));
   const hasExistingProgress =
     comments.length > 2 || // More than just initial comments
     childIssues.length > 0 ||
-    projectBoardItems.length > 0;
+    scopedBoardItemsForProgress.length > 0;
 
   // Build analysis (now includes discrepancy info)
   const analysis = buildStateAnalysisWithDiscrepancies(
@@ -972,8 +974,14 @@ export function buildReassessPrompt(
     `- #${i.number}: ${i.title} [${i.state}] Labels: ${i.labels.join(', ')}`
   ).join('\n');
 
-  // Build board status summary
-  const boardSummary = projectBoardItems.map(i =>
+  // Build board status summary — scoped to this EPIC's child issues only.
+  // Without scoping, the prompt would include every item in the entire
+  // project board, including items belonging to other EPICs.
+  const childNumbers = new Set(childIssues.map(c => c.number));
+  const scopedBoardItems = childNumbers.size === 0
+    ? []
+    : projectBoardItems.filter(item => childNumbers.has(item.issueNumber));
+  const boardSummary = scopedBoardItems.map(i =>
     `- #${i.issueNumber}: ${i.title} | Status: ${i.status || 'N/A'} | Agent: ${i.assignedAgent || 'N/A'} | Blocked: ${i.blockedBy || 'None'}`
   ).join('\n');
 
@@ -1134,6 +1142,13 @@ export function formatReassessmentComment(
 ): string {
   const { analysis, childIssues, projectBoardItems, statusDiscrepancies, aidlcState } = context;
 
+  // Scope board items to this EPIC's child issues for any user-facing count
+  // that implies "this EPIC's progress" (rather than "what we fetched").
+  const childNumbersForPrompt = new Set(childIssues.map(c => c.number));
+  const scopedBoardItemsForPrompt = childNumbersForPrompt.size === 0
+    ? []
+    : projectBoardItems.filter(i => childNumbersForPrompt.has(i.issueNumber));
+
   // Build AIDLC pending input warning if user hasn't completed requirements review
   const editUrl = aidlcState?.currentPlanFile && aidlcState?.branch
     ? `https://github.com/${repoOwner}/${repoName}/edit/${aidlcState.branch}/${aidlcState.currentPlanFile}`
@@ -1268,7 +1283,7 @@ ${discrepancyWarning}
 |--------|-------|
 | **Phase** | ${analysis.phase.toUpperCase()} |
 | **Total Child Issues** | ${childIssues.length} |
-| **Project Board Items** | ${projectBoardItems.length} |
+| **Project Board Items (this EPIC)** | ${scopedBoardItemsForPrompt.length} |
 ${lastAgentActivity ? `| ${lastAgentActivity} |` : ''}
 
 ### Task Status Summary
