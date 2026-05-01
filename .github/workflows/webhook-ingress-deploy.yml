@@ -1,0 +1,206 @@
+name: Webhook Ingress Deploy
+
+on:
+  push:
+    paths:
+      - 'modules/agent-factory/webhook-ingress/**'
+      - '.github/workflows/webhook-ingress-deploy.yml'
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: webhook-ingress-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+  MODULE_NAME: webhook-ingress
+  TF_WORKING_DIR: modules/agent-factory/webhook-ingress/infra
+  BACKEND_CONFIG: environments/dev/modules/webhook-ingress-backend.tfvars
+  ACCOUNT_ID: "879318057152"
+  STATE_BUCKET: adp-terraform-state-879318057152
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: arc-runner-org
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      infra: ${{ steps.filter.outputs.infra }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "infra=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only HEAD^ HEAD)
+          echo "Changed files:"
+          echo "$CHANGED"
+          if echo "$CHANGED" | grep -qE '^modules/agent-factory/webhook-ingress/(lambda|common)/'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$CHANGED" | grep -qE '^modules/agent-factory/webhook-ingress/infra/'; then
+            echo "infra=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "infra=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  package:
+    name: Package Lambda Code
+    runs-on: arc-runner-org
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.infra == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Package Lambdas
+        working-directory: modules/agent-factory/webhook-ingress
+        run: |
+          chmod +x scripts/package-lambdas.sh
+          ./scripts/package-lambdas.sh
+
+      - name: Upload artifacts to S3
+        working-directory: modules/agent-factory/webhook-ingress
+        run: |
+          for zip in dist/*.zip; do
+            BASENAME=$(basename "$zip")
+            aws s3 cp "$zip" "s3://${{ env.STATE_BUCKET }}/lambda-artifacts/webhook-ingress/${BASENAME}" \
+              --metadata "commit=${{ github.sha }}"
+          done
+          echo "Uploaded Lambda artifacts to s3://${{ env.STATE_BUCKET }}/lambda-artifacts/webhook-ingress/"
+
+  deploy-infra:
+    name: Terraform Apply
+    runs-on: arc-runner-org
+    needs: [changes, package]
+    if: always() && needs.changes.outputs.infra == 'true' && needs.package.result == 'success'
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend-config="../../../../${{ env.BACKEND_CONFIG }}" -input=false
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -var-file="terraform.tfvars" -auto-approve
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Terraform Apply -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status**: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+
+  update-code:
+    name: Update Lambda Function Code
+    runs-on: arc-runner-org
+    needs: [changes, package, deploy-infra]
+    if: |
+      always() &&
+      needs.changes.outputs.code == 'true' &&
+      needs.package.result == 'success' &&
+      (needs.deploy-infra.result == 'success' || needs.deploy-infra.result == 'skipped')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update Lambda functions
+        run: |
+          set -e
+          # List Lambda artifacts uploaded by the package job in S3
+          ARTIFACTS=$(aws s3 ls "s3://${{ env.STATE_BUCKET }}/lambda-artifacts/webhook-ingress/" \
+            --region "${{ env.AWS_REGION }}" | awk '{print $4}' | grep '\.zip$' || true)
+          if [ -z "$ARTIFACTS" ]; then
+            echo "No Lambda artifacts found in S3. Skipping update."
+            exit 0
+          fi
+          for zip_name in $ARTIFACTS; do
+            BASENAME=$(basename "$zip_name" .zip)
+            FUNCTION_NAME="adp-${{ env.ENVIRONMENT }}-webhook-${BASENAME}"
+            echo "Updating function: ${FUNCTION_NAME}"
+            aws lambda update-function-code \
+              --function-name "${FUNCTION_NAME}" \
+              --s3-bucket "${{ env.STATE_BUCKET }}" \
+              --s3-key "lambda-artifacts/webhook-ingress/${BASENAME}.zip" \
+              --region "${{ env.AWS_REGION }}" \
+              --publish || echo "WARN: Function ${FUNCTION_NAME} not found, skipping"
+          done
+
+  integration-test:
+    name: Integration Tests
+    runs-on: arc-runner-org
+    needs: [update-code, deploy-infra]
+    if: |
+      always() &&
+      (needs.update-code.result == 'success' || needs.deploy-infra.result == 'success')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        working-directory: modules/agent-factory/webhook-ingress
+        run: |
+          pip install pytest
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+
+      - name: Run integration tests
+        working-directory: modules/agent-factory/webhook-ingress
+        env:
+          TEST_ENV: dev
+          AWS_REGION: ${{ env.AWS_REGION }}
+        run: |
+          pytest tests/ -m integration -v --tb=short --timeout=120
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Webhook Ingress Deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit**: ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Integration tests**: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"

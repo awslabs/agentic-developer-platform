@@ -1,0 +1,189 @@
+name: Webhook Ingress CI
+
+on:
+  pull_request:
+    paths:
+      - 'modules/agent-factory/webhook-ingress/**'
+    branches:
+      - main
+
+concurrency:
+  group: webhook-ingress-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: modules/agent-factory/webhook-ingress/requirements*.txt
+
+      - name: Install dependencies
+        working-directory: modules/agent-factory/webhook-ingress
+        run: |
+          pip install ruff mypy
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+
+      - name: Ruff check
+        working-directory: modules/agent-factory/webhook-ingress
+        run: ruff check lambda/
+
+      - name: Mypy strict
+        working-directory: modules/agent-factory/webhook-ingress
+        run: mypy lambda/ --strict
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: modules/agent-factory/webhook-ingress/requirements*.txt
+
+      - name: Install dependencies
+        working-directory: modules/agent-factory/webhook-ingress
+        run: |
+          pip install pytest pytest-cov
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+
+      - name: Run unit tests
+        working-directory: modules/agent-factory/webhook-ingress
+        run: |
+          pytest lambda/ -m "not integration" -v \
+            --tb=short --timeout=60 \
+            --cov=lambda --cov-report=xml
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: webhook-ingress-coverage
+          path: modules/agent-factory/webhook-ingress/coverage.xml
+
+  package:
+    name: Package Verification
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify Lambda packaging
+        working-directory: modules/agent-factory/webhook-ingress
+        run: |
+          chmod +x scripts/package-lambdas.sh
+          ./scripts/package-lambdas.sh
+          echo "Package artifacts:"
+          ls -lh dist/*.zip
+
+  plan:
+    name: Terraform Plan
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
+      - name: Terraform Init
+        working-directory: modules/agent-factory/webhook-ingress/infra
+        run: terraform init -backend-config="../../../../environments/dev/modules/webhook-ingress-backend.tfvars" -input=false
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: modules/agent-factory/webhook-ingress/infra
+        run: |
+          set -e
+          terraform plan -var-file="terraform.tfvars" -out=tfplan -no-color 2>&1 | tee /tmp/plan-output.txt
+
+      - name: Post or update PR comment
+        uses: actions/github-script@v7
+        if: always() && github.event_name == 'pull_request'
+        env:
+          PLAN_OUTPUT: ${{ steps.plan.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = `<!-- tf-plan:webhook-ingress -->`;
+            let planText = '';
+            try {
+              planText = fs.readFileSync('/tmp/plan-output.txt', 'utf8');
+            } catch (e) {
+              planText = 'Plan output not available.';
+            }
+            if (planText.length > 60000) {
+              planText = planText.substring(0, 60000) + '\n\n... (truncated)';
+            }
+            const status = process.env.PLAN_OUTPUT === 'success' ? ':white_check_mark:' : ':x:';
+            const body = `${marker}\n${status} **Terraform Plan — \`webhook-ingress\`**\n\n<details>\n<summary>Plan output</summary>\n\n\`\`\`\n${planText}\n\`\`\`\n\n</details>\n\n*Updated: ${new Date().toISOString()} | Run: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})*`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(c => c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Terraform Plan -- webhook-ingress" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Module**: webhook-ingress" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status**: ${{ steps.plan.outcome }}" >> "$GITHUB_STEP_SUMMARY"

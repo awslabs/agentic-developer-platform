@@ -1,0 +1,83 @@
+name: Webhook Ingress Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "webhook-ingress" to confirm destruction'
+        required: true
+        type: string
+
+concurrency:
+  group: webhook-ingress-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+  MODULE_NAME: webhook-ingress
+  TF_WORKING_DIR: modules/agent-factory/webhook-ingress/infra
+  BACKEND_CONFIG: environments/dev/modules/webhook-ingress-backend.tfvars
+  STATE_BUCKET: adp-terraform-state-879318057152
+
+jobs:
+  destroy:
+    name: Destroy Webhook Ingress Infrastructure
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+
+    steps:
+      - name: Confirm module name
+        run: |
+          if [ "${{ inputs.confirm }}" != "webhook-ingress" ]; then
+            echo "::error::Input did not match 'webhook-ingress'. Aborting to prevent accidental destroy."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
+      - name: Clean up Lambda artifacts from S3
+        run: |
+          echo "Removing Lambda artifacts from S3..."
+          aws s3 rm "s3://${{ env.STATE_BUCKET }}/lambda-artifacts/webhook-ingress/" --recursive || true
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend-config="../../../../${{ env.BACKEND_CONFIG }}" -input=false
+
+      - name: Terraform Destroy
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform destroy -var-file="terraform.tfvars" -auto-approve
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Terraform Destroy -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Action**: destroy" >> "$GITHUB_STEP_SUMMARY"
