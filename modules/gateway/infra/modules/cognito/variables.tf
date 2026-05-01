@@ -19,7 +19,7 @@ variable "mfa_configuration" {
   description = "MFA configuration: OFF, ON, or OPTIONAL"
   # Issue #133: Changed default from OPTIONAL to ON for security
   # MFA is required for a SaaS platform managing Bedrock access
-  default     = "ON"
+  default = "ON"
   validation {
     condition     = contains(["OFF", "ON", "OPTIONAL"], var.mfa_configuration)
     error_message = "MFA configuration must be OFF, ON, or OPTIONAL."
@@ -108,4 +108,28 @@ variable "test_admin_email" {
   type        = string
   description = "Email for the admin test user"
   default     = "adp-test-admin@example.com"
+}
+
+# =============================================================================
+# GitHub OAuth Identity Provider (Issue #313)
+# =============================================================================
+
+variable "enable_github_oauth" {
+  type        = bool
+  description = "Enable GitHub as a federated identity provider via OAuth/OIDC"
+  default     = false
+}
+
+variable "github_oauth_client_id" {
+  type        = string
+  description = "GitHub OAuth App client ID. Required when enable_github_oauth is true."
+  default     = ""
+  sensitive   = false
+}
+
+variable "github_oauth_client_secret" {
+  type        = string
+  description = "GitHub OAuth App client secret. Required when enable_github_oauth is true."
+  default     = ""
+  sensitive   = true
 }

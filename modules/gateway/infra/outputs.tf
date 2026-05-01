@@ -138,6 +138,17 @@ output "test_admin_credentials_secret_arn" {
   value       = module.cognito.test_admin_credentials_secret_arn
 }
 
+# GitHub OAuth Identity Provider Outputs (Issue #313)
+output "github_oauth_callback_url" {
+  description = "OAuth callback URL to configure in the GitHub OAuth App settings"
+  value       = module.cognito.github_oauth_callback_url
+}
+
+output "github_sign_in_url" {
+  description = "Cognito hosted UI sign-in URL pre-selecting the GitHub identity provider"
+  value       = module.cognito.github_sign_in_url
+}
+
 # Chat Logging Outputs (Issue #143)
 output "chat_logs_bucket_name" {
   description = "Name of the S3 bucket for chat logs"

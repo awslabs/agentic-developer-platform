@@ -210,7 +210,8 @@ resource "aws_cognito_user_pool_client" "main" {
   logout_urls   = var.logout_urls
 
   # Supported identity providers
-  supported_identity_providers = ["COGNITO"]
+  # When GitHub OAuth is enabled, add it alongside COGNITO (Issue #313)
+  supported_identity_providers = var.enable_github_oauth ? ["COGNITO", "GitHub"] : ["COGNITO"]
 
   # OAuth flows configuration
   # Use only authorization code flow for security (PKCE for SPA)
@@ -541,9 +542,9 @@ resource "random_password" "test_user" {
 }
 
 resource "random_password" "test_admin" {
-  count   = var.create_test_users ? 1 : 0
-  length  = 24
-  special = true
+  count       = var.create_test_users ? 1 : 0
+  length      = 24
+  special     = true
   min_upper   = 1
   min_lower   = 1
   min_numeric = 1
@@ -681,12 +682,12 @@ resource "aws_secretsmanager_secret_version" "test_user_credentials" {
   count     = var.create_test_users ? 1 : 0
   secret_id = aws_secretsmanager_secret.test_user_credentials[0].id
   secret_string = jsonencode({
-    username              = var.test_user_email
-    password              = random_password.test_user[0].result
-    cognito_user_pool_id  = aws_cognito_user_pool.main.id
-    cognito_client_id     = aws_cognito_user_pool_client.main.id
-    aws_region            = data.aws_region.current.id
-    is_admin              = false
+    username             = var.test_user_email
+    password             = random_password.test_user[0].result
+    cognito_user_pool_id = aws_cognito_user_pool.main.id
+    cognito_client_id    = aws_cognito_user_pool_client.main.id
+    aws_region           = data.aws_region.current.id
+    is_admin             = false
   })
 
   # Only publish the secret after the password has been promoted to permanent
@@ -719,11 +720,11 @@ resource "aws_secretsmanager_secret_version" "test_admin_credentials" {
   ]
 
   secret_string = jsonencode({
-    username              = var.test_admin_email
-    password              = random_password.test_admin[0].result
-    cognito_user_pool_id  = aws_cognito_user_pool.main.id
-    cognito_client_id     = aws_cognito_user_pool_client.main.id
-    aws_region            = data.aws_region.current.id
-    is_admin              = true
+    username             = var.test_admin_email
+    password             = random_password.test_admin[0].result
+    cognito_user_pool_id = aws_cognito_user_pool.main.id
+    cognito_client_id    = aws_cognito_user_pool_client.main.id
+    aws_region           = data.aws_region.current.id
+    is_admin             = true
   })
 }

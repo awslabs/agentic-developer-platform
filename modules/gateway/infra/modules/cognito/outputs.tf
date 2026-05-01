@@ -172,3 +172,29 @@ output "test_admin_credentials_secret_arn" {
   description = "ARN of the Secrets Manager secret for test admin credentials"
   value       = var.create_test_users ? aws_secretsmanager_secret.test_admin_credentials[0].arn : ""
 }
+
+# =============================================================================
+# GitHub OAuth Identity Provider Outputs (Issue #313)
+# =============================================================================
+
+output "github_oauth_callback_url" {
+  description = "OAuth callback URL to configure in the GitHub OAuth App settings"
+  value       = var.enable_github_oauth ? "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com/oauth2/idpresponse" : ""
+}
+
+output "github_sign_in_url" {
+  description = "Cognito hosted UI sign-in URL pre-selecting the GitHub identity provider"
+  value = var.enable_github_oauth ? join("", [
+    "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com/oauth2/authorize",
+    "?identity_provider=GitHub",
+    "&response_type=code",
+    "&client_id=${aws_cognito_user_pool_client.main.id}",
+    "&redirect_uri=${urlencode(var.callback_urls[0])}",
+    "&scope=openid+email+profile"
+  ]) : ""
+}
+
+output "github_oauth_credentials_secret_arn" {
+  description = "ARN of the Secrets Manager secret storing GitHub OAuth App credentials"
+  value       = var.enable_github_oauth ? aws_secretsmanager_secret.github_oauth[0].arn : ""
+}

@@ -378,6 +378,11 @@ module "cognito" {
   # Issue #60: Provision test users (admins group, test user, test admin)
   create_test_users = var.create_test_users
 
+  # Issue #313: GitHub OAuth identity provider
+  enable_github_oauth        = var.enable_github_oauth
+  github_oauth_client_id     = var.github_oauth_client_id
+  github_oauth_client_secret = var.github_oauth_client_secret
+
   depends_on = [module.cloudfront]
 }
 
@@ -540,10 +545,10 @@ module "budget_lambda" {
   count  = var.enable_chat_logging ? 1 : 0
   source = "./modules/budget-lambda"
 
-  environment           = var.environment
-  name_prefix           = local.name_prefix
-  common_tags           = local.common_tags
-  aws_region            = var.aws_region
+  environment = var.environment
+  name_prefix = local.name_prefix
+  common_tags = local.common_tags
+  aws_region  = var.aws_region
 
   # S3 Chat Logs Bucket
   chat_logs_bucket_name = module.s3_chat_logs[0].bucket_name
