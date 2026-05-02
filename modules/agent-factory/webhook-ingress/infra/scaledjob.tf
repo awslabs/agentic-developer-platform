@@ -149,9 +149,16 @@ EOF
     CMD
   }
 
+  # Destroy provisioner is best-effort. Terraform evaluates `depends_on` at
+  # create/update time; on destroy the ordering may run kubectl before the
+  # RBAC RoleBinding is in place (e.g., fresh apply into a cluster where the
+  # runner SA doesn't yet have KEDA permissions). Swallow non-zero exit so
+  # a missing RBAC doesn't leave the resource stuck in state. The re-apply
+  # `kubectl apply` is idempotent and will replace whatever exists.
   provisioner "local-exec" {
-    when    = destroy
-    command = "kubectl delete triggerauthentication agent-scaledjob-aws-auth -n ${self.triggers.namespace} --ignore-not-found"
+    when       = destroy
+    on_failure = continue
+    command    = "kubectl delete triggerauthentication agent-scaledjob-aws-auth -n ${self.triggers.namespace} --ignore-not-found || true"
   }
 
   # RBAC must exist before kubectl apply runs as the runner SA.
@@ -179,9 +186,11 @@ EOF
     CMD
   }
 
+  # Destroy provisioner is best-effort — see the keda_trigger_auth comment.
   provisioner "local-exec" {
-    when    = destroy
-    command = "kubectl delete scaledjob agent-scaledjob -n ${self.triggers.namespace} --ignore-not-found"
+    when       = destroy
+    on_failure = continue
+    command    = "kubectl delete scaledjob agent-scaledjob -n ${self.triggers.namespace} --ignore-not-found || true"
   }
 
   # RBAC must exist before kubectl apply runs as the runner SA.
