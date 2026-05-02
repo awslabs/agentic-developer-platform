@@ -3,20 +3,32 @@
 # =============================================================================
 # Full handler: HMAC validation via Secrets Manager, tenant resolution,
 # rate limiting, intent parsing, and SQS publish.
-# Packaged by scripts/package-lambdas.sh → dist/github.zip
+#
+# Code source: the Package Lambda Code CI job uploads the zip to
+#   s3://${lambda_artifact_bucket}/lambda-artifacts/webhook-ingress/github.zip
+# Terraform reads the zip's SHA from S3 object metadata, so apply tracks
+# code version without needing the zip on the local filesystem. The
+# Update Lambda Function Code CI job is the authoritative code publisher
+# on each deploy — Terraform only manages config.
 # =============================================================================
+
+data "aws_s3_object" "github_lambda_zip" {
+  bucket = var.lambda_artifact_bucket
+  key    = "lambda-artifacts/webhook-ingress/github.zip"
+}
 
 resource "aws_lambda_function" "github_webhook" {
   function_name = "${local.name_prefix}-github-webhook"
   description   = "GitHub webhook ingress - validates and queues events"
   role          = aws_iam_role.lambda_execution.arn
 
-  filename         = "${path.module}/../dist/github.zip"
-  source_code_hash = filebase64sha256("${path.module}/../dist/github.zip")
-  handler          = "handler.handler"
-  runtime          = var.lambda_runtime
-  timeout          = var.lambda_timeout
-  memory_size      = var.lambda_memory_size
+  s3_bucket         = var.lambda_artifact_bucket
+  s3_key            = "lambda-artifacts/webhook-ingress/github.zip"
+  source_code_hash  = data.aws_s3_object.github_lambda_zip.etag
+  handler           = "handler.handler"
+  runtime           = var.lambda_runtime
+  timeout           = var.lambda_timeout
+  memory_size       = var.lambda_memory_size
 
   environment {
     variables = {
@@ -27,6 +39,16 @@ resource "aws_lambda_function" "github_webhook" {
       RATE_LIMITS_TABLE  = aws_dynamodb_table.rate_limits.name
       WEBHOOK_SECRET_ARN = aws_secretsmanager_secret.webhook_secret.arn
     }
+  }
+
+  # The `publish = false` default + explicit ignore_changes on s3_key+hash
+  # lets the separate Update Lambda Function Code CI job own code publishes
+  # without causing Terraform drift.
+  lifecycle {
+    ignore_changes = [
+      s3_key,
+      source_code_hash,
+    ]
   }
 
   depends_on = [aws_cloudwatch_log_group.lambda]

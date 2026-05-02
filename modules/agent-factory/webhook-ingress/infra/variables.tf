@@ -60,6 +60,12 @@ variable "lambda_timeout" {
   default     = 30
 }
 
+variable "lambda_artifact_bucket" {
+  description = "S3 bucket where the Package Lambda Code CI job uploads zipped Lambda artifacts. Terraform reads the zip from here on apply; the Update Lambda Function Code job is the authoritative code publisher on each deploy."
+  type        = string
+  default     = "adp-terraform-state-879318057152"
+}
+
 # -----------------------------------------------------------------------------
 # EKS / KEDA ScaledJob
 # -----------------------------------------------------------------------------
