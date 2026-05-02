@@ -18,3 +18,9 @@ github_app_dev_installation_id = "124731131"
 # Using `:latest` so ARC pulls the newest build on pod spawn; pin to a SHA
 # when you want deterministic rollouts.
 runner_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner:latest"
+
+# Gateway module is applied in dev — this flips on the terraform_remote_state
+# read so the WebSocket $connect route can reuse the gateway's Cognito-JWT
+# authorizer Lambda. When false, Terraform destroys the authorizer, which then
+# fails with ConflictException because $connect still references it.
+gateway_deployed = true
