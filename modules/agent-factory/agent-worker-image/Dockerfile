@@ -8,7 +8,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Build the TypeScript agent runtime
 # -----------------------------------------------------------------------------
-FROM node:22-bookworm-slim AS builder
+FROM public.ecr.aws/docker/library/node:22-bookworm-slim AS builder
 
 WORKDIR /build
 
@@ -26,7 +26,7 @@ RUN npx tsc --project tsconfig.json
 # -----------------------------------------------------------------------------
 # Stage 2: Stage personas and skills
 # -----------------------------------------------------------------------------
-FROM ubuntu:24.04 AS stager
+FROM public.ecr.aws/docker/library/ubuntu:24.04 AS stager
 
 WORKDIR /stage
 
@@ -44,7 +44,7 @@ RUN /stage/stage-personas.sh /source /stage
 # -----------------------------------------------------------------------------
 # Stage 3: Final runtime image
 # -----------------------------------------------------------------------------
-FROM ubuntu:24.04
+FROM public.ecr.aws/docker/library/ubuntu:24.04
 
 LABEL org.opencontainers.image.title="adp-agent"
 LABEL org.opencontainers.image.description="ADP hosted agent worker image"
