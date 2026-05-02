@@ -28,7 +28,7 @@ concurrency:
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
     steps:
       - uses: actions/checkout@v4
 
@@ -52,7 +52,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
     needs: lint
     steps:
       - uses: actions/checkout@v4
@@ -84,7 +84,7 @@ jobs:
 
   frontend-test:
     name: Frontend Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
     needs: lint
     steps:
       - uses: actions/checkout@v4
@@ -106,7 +106,7 @@ jobs:
 
   build:
     name: Build Container
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-org
     needs: [test, frontend-test]
     steps:
       - uses: actions/checkout@v4
