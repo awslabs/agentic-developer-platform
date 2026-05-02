@@ -41,15 +41,13 @@ resource "aws_lambda_function" "github_webhook" {
     }
   }
 
-  # The `publish = false` default + explicit ignore_changes on s3_key+hash
-  # lets the separate Update Lambda Function Code CI job own code publishes
-  # without causing Terraform drift.
-  lifecycle {
-    ignore_changes = [
-      s3_key,
-      source_code_hash,
-    ]
-  }
+  # Terraform reads source_code_hash from the S3 object etag (see data
+  # source above). When CI uploads a new zip to the same S3 key, the etag
+  # changes and the next Terraform apply will pick it up automatically.
+  # The separate Update Lambda Function Code CI job is still the fast-path
+  # code publisher (no full TF apply needed for a code-only change); its
+  # updates are idempotent with Terraform's view because they write to the
+  # same S3 source.
 
   depends_on = [aws_cloudwatch_log_group.lambda]
 }
