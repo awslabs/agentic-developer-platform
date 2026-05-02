@@ -62,7 +62,3 @@ output "webhook_secret_arn" {
   value       = aws_secretsmanager_secret.webhook_secret.arn
 }
 
-output "waf_web_acl_arn" {
-  description = "WAF WebACL ARN"
-  value       = aws_wafv2_web_acl.webhook.arn
-}

@@ -25,7 +25,6 @@ GitHub ──POST /github──► API Gateway HTTP v2 ──► Lambda (HMAC va
 | DynamoDB | `adp-<env>-tenant-registry` | Installation → tenant mapping |
 | DynamoDB | `adp-<env>-webhook-events` | Audit log of webhook events |
 | DynamoDB | `adp-<env>-rate-limits` | Per-tenant rate limiting |
-| WAF | `adp-<env>-webhook-waf` | IP-based rate limiting |
 | Secret | `adp/<env>/webhook-ingress/github-webhook-secret` | HMAC validation key |
 
 ## Deployment
