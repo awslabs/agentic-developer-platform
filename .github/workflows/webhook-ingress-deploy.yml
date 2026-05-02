@@ -181,16 +181,22 @@ jobs:
             echo "No Lambda artifacts found in S3. Skipping update."
             exit 0
           fi
+          # Function name template matches what Terraform creates in
+          # infra/lambdas.tf: "${local.name_prefix}-github-webhook".
+          # BASENAME comes from the zip (e.g. "github" → adp-dev-github-webhook).
+          # Do NOT silently swallow ResourceNotFoundException — a missing
+          # function means infra/code are out of sync and the deploy should
+          # fail loudly, not pretend success.
           for zip_name in $ARTIFACTS; do
             BASENAME=$(basename "$zip_name" .zip)
-            FUNCTION_NAME="adp-${{ env.ENVIRONMENT }}-webhook-${BASENAME}"
+            FUNCTION_NAME="adp-${{ env.ENVIRONMENT }}-${BASENAME}-webhook"
             echo "Updating function: ${FUNCTION_NAME}"
             aws lambda update-function-code \
               --function-name "${FUNCTION_NAME}" \
               --s3-bucket "${{ env.STATE_BUCKET }}" \
               --s3-key "lambda-artifacts/webhook-ingress/${BASENAME}.zip" \
               --region "${{ env.AWS_REGION }}" \
-              --publish || echo "WARN: Function ${FUNCTION_NAME} not found, skipping"
+              --publish
           done
 
   integration-test:
