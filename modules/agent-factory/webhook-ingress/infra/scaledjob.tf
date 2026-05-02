@@ -157,18 +157,21 @@ resource "kubernetes_manifest" "agent_scaledjob" {
     force_conflicts = true
   }
 
-  # KEDA + the kube-apiserver defaulters populate these container-spec
-  # fields on the server. Mark them as computed so the kubernetes provider
-  # doesn't treat the read-back shape as drift ("Provider produced
-  # inconsistent result after apply").
+  # KEDA + the kube-apiserver populate many server-side defaults on
+  # this CRD (container imagePullPolicy, terminationMessagePath, dnsPolicy,
+  # schedulerName, securityContext, resource rounding, etc.). Listing each
+  # one here turns into whack-a-mole — every defaulted field produces
+  # "Provider produced inconsistent result after apply" until it's named.
+  #
+  # Mark the entire spec tree as server-managed. Terraform still creates
+  # the resource with the spec we define; the provider just doesn't try to
+  # reconcile read-back shape against the sent shape. If the spec itself
+  # drifts in the cluster (someone hand-edits it), we won't catch it — but
+  # KEDA ScaledJobs aren't the kind of resource that gets hand-edited.
   computed_fields = [
     "metadata.labels",
     "metadata.annotations",
-    "spec.jobTargetRef.template.spec.containers",
-    "spec.jobTargetRef.template.spec.dnsPolicy",
-    "spec.jobTargetRef.template.spec.schedulerName",
-    "spec.jobTargetRef.template.spec.securityContext",
-    "spec.jobTargetRef.template.spec.terminationGracePeriodSeconds",
+    "spec",
   ]
 
   depends_on = [kubernetes_manifest.trigger_auth]
