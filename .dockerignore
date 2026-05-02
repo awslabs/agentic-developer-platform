@@ -1,0 +1,15 @@
+# .dockerignore — Minimize build context for adp-agent image builds
+.git
+**/.terraform
+**/terraform.tfstate*
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/coverage
+**/.env
+**/.env.*
+**/dist
+# Keep modules/agent-factory/agent/src (needed for build)
+# Keep modules/agent-factory/agent/package*.json (needed for build)
+# Keep modules/agent-factory/agent-worker-image/ (Dockerfile + scripts)
+# Keep modules/domain-apps/*/agent/ (personas + skills)

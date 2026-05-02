@@ -1,0 +1,13 @@
+# This .dockerignore is for reference; the actual build context is the repo root.
+# Use .dockerignore at repo root to exclude irrelevant paths from the build context.
+**/.git
+**/node_modules
+**/dist
+**/__pycache__
+**/.pytest_cache
+**/.terraform
+**/terraform.tfstate*
+**/*.tfvars
+**/coverage
+**/.env
+**/.env.*
