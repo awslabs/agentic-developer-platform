@@ -60,6 +60,29 @@ resource "aws_iam_role_policy" "pre_token_generation_logs" {
   })
 }
 
+# IAM Policy for Lambda to read from DynamoDB
+resource "aws_iam_role_policy" "pre_token_generation_dynamodb" {
+  name = "${var.name_prefix}-pre-token-generation-dynamodb"
+  role = aws_iam_role.pre_token_generation.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:Query"
+        ]
+        Resource = [
+          aws_dynamodb_table.agent_clients.arn,
+          "${aws_dynamodb_table.agent_clients.arn}/index/*"
+        ]
+      }
+    ]
+  })
+}
+
 # Lambda Function
 resource "aws_lambda_function" "pre_token_generation" {
   function_name = "${var.name_prefix}-pre-token-generation"
@@ -78,7 +101,8 @@ resource "aws_lambda_function" "pre_token_generation" {
 
   environment {
     variables = {
-      LOG_LEVEL = var.environment == "prod" ? "INFO" : "DEBUG"
+      AGENT_CLIENTS_TABLE = aws_dynamodb_table.agent_clients.name
+      LOG_LEVEL           = var.environment == "prod" ? "INFO" : "DEBUG"
     }
   }
 

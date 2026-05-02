@@ -2,10 +2,8 @@
 Agent (Cognito App Client) Management Service.
 
 Issue #119: Unified Cognito JWT Auth
-Issue #377: Migrated from agent-clients DynamoDB table to identity table.
-
 - Manages Cognito App Clients for agent/service authentication
-- Stores agent metadata in the identity DynamoDB table
+- Stores agent metadata in DynamoDB for the Pre Token Generation Lambda
 - Supports creating, listing, updating, and deleting agents
 """
 
@@ -35,7 +33,7 @@ class AgentService:
     Service for managing agents (Cognito App Clients).
 
     Creates Cognito App Clients with client_credentials grant and stores
-    metadata in the identity DynamoDB table.
+    metadata in DynamoDB for the Pre Token Generation Lambda.
     """
 
     def __init__(
@@ -72,8 +70,8 @@ class AgentService:
         # Configuration
         self.user_pool_id = user_pool_id or settings.cognito_user_pool_id
         self.table_name = table_name or os.environ.get(
-            "IDENTITY_TABLE",
-            f"{os.environ.get('BG_NAME_PREFIX', 'bedrockgw')}-identity",
+            "AGENT_CLIENTS_TABLE",
+            f"{os.environ.get('BG_NAME_PREFIX', 'bedrockgw')}-agent-clients",
         )
 
         # Build token endpoint

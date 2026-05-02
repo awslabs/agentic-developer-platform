@@ -71,6 +71,7 @@ resource "aws_iam_policy" "lambda_dynamodb" {
           "dynamodb:UpdateItem"
         ]
         Resource = [
+          aws_dynamodb_table.tenant_registry.arn,
           aws_dynamodb_table.webhook_events.arn,
           "${aws_dynamodb_table.webhook_events.arn}/index/*",
           aws_dynamodb_table.rate_limits.arn,

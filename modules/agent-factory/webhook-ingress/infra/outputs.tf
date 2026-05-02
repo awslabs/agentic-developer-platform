@@ -47,6 +47,11 @@ output "sqs_dlq_url" {
   value       = aws_sqs_queue.agent_submit_dlq.url
 }
 
+output "tenant_registry_table" {
+  description = "DynamoDB tenant-registry table name"
+  value       = aws_dynamodb_table.tenant_registry.name
+}
+
 output "webhook_events_table" {
   description = "DynamoDB webhook-events table name"
   value       = aws_dynamodb_table.webhook_events.name
@@ -102,6 +107,13 @@ resource "aws_ssm_parameter" "webhook_events_table" {
   description = "DynamoDB webhook-events table name"
   type        = "String"
   value       = aws_dynamodb_table.webhook_events.name
+}
+
+resource "aws_ssm_parameter" "tenant_registry_table" {
+  name        = "/adp/${var.environment}/webhook-ingress/tenant-registry-table"
+  description = "DynamoDB tenant-registry table name"
+  type        = "String"
+  value       = aws_dynamodb_table.tenant_registry.name
 }
 
 resource "aws_ssm_parameter" "rate_limits_table" {

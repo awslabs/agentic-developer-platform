@@ -48,12 +48,12 @@ def mock_dynamodb():
 @pytest.fixture
 def agent_service(mock_settings, mock_cognito_client, mock_dynamodb):
     """Create an AgentService instance with mocked dependencies."""
-    with patch.dict("os.environ", {"IDENTITY_TABLE": "test-identity"}):
+    with patch.dict("os.environ", {"AGENT_CLIENTS_TABLE": "test-agent-clients"}):
         service = AgentService(
             cognito_client=mock_cognito_client,
             dynamodb_resource=mock_dynamodb,
             user_pool_id="us-east-1_testpool",
-            table_name="test-identity",
+            table_name="test-agent-clients",
         )
         return service
 
