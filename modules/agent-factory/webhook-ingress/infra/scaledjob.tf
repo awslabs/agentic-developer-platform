@@ -157,5 +157,19 @@ resource "kubernetes_manifest" "agent_scaledjob" {
     force_conflicts = true
   }
 
+  # KEDA + the kube-apiserver defaulters populate these container-spec
+  # fields on the server. Mark them as computed so the kubernetes provider
+  # doesn't treat the read-back shape as drift ("Provider produced
+  # inconsistent result after apply").
+  computed_fields = [
+    "metadata.labels",
+    "metadata.annotations",
+    "spec.jobTargetRef.template.spec.containers",
+    "spec.jobTargetRef.template.spec.dnsPolicy",
+    "spec.jobTargetRef.template.spec.schedulerName",
+    "spec.jobTargetRef.template.spec.securityContext",
+    "spec.jobTargetRef.template.spec.terminationGracePeriodSeconds",
+  ]
+
   depends_on = [kubernetes_manifest.trigger_auth]
 }
