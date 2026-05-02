@@ -123,6 +123,31 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform init -backend-config="../../../../${{ env.BACKEND_CONFIG }}" -input=false
 
+      - name: Migrate stale kubernetes_manifest entries out of state
+        # KEDA resources moved from `kubernetes_manifest` to `null_resource +
+        # kubectl apply` in PR #364 — the hashicorp/kubernetes provider's
+        # read-back reconciliation kept failing on this CRD's server-side
+        # mutations. This step removes the old state entries so the next
+        # apply doesn't try to destroy them. Safe to re-run: a missing
+        # entry is a no-op.
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        continue-on-error: true
+        run: |
+          for addr in kubernetes_manifest.agent_scaledjob kubernetes_manifest.trigger_auth; do
+            if terraform state list | grep -qx "$addr"; then
+              echo "Removing $addr from state (migrated to null_resource)"
+              terraform state rm "$addr"
+            fi
+          done
+
+      - name: Install kubectl
+        run: |
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          fi
+          kubectl version --client
+
       - name: Terraform Apply
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform apply -var-file="terraform.tfvars" -auto-approve

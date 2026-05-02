@@ -6,6 +6,16 @@
 #
 # Design ref: docs/hosted-platform-design.md §SQS queue + KEDA ScaledJob
 # Issue: #346
+#
+# Note on why ScaledJob + TriggerAuthentication are applied via kubectl
+# local-exec rather than `kubernetes_manifest`:
+# The hashicorp/kubernetes provider's kubernetes_manifest reads the server-
+# side object after apply and diffs it against the sent object. KEDA and
+# the kube-apiserver mutate the ScaledJob in ways Terraform's schema can't
+# model (status fields, empty-object defaults on rollout/scalingStrategy,
+# nullable fields on jobTargetRef, etc.), producing either "Provider
+# produced inconsistent result" or "Failed to update proposed state"
+# errors. Using kubectl apply sidesteps the read-back reconciliation.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -46,133 +56,129 @@ resource "kubernetes_service_account" "agent_scaledjob_sa" {
 }
 
 # -----------------------------------------------------------------------------
-# KEDA TriggerAuthentication — IRSA via aws-eks pod identity
+# KEDA TriggerAuthentication + ScaledJob — applied via kubectl local-exec.
 # -----------------------------------------------------------------------------
-# Uses the KEDA operator's own SA credentials for SQS queue-depth polling
-# (identityOwner: keda). Never uses access keys.
 
-resource "kubernetes_manifest" "trigger_auth" {
-  manifest = {
-    apiVersion = "keda.sh/v1alpha1"
-    kind       = "TriggerAuthentication"
-    metadata = {
-      name      = "agent-scaledjob-aws-auth"
-      namespace = kubernetes_namespace.adp_agents.metadata[0].name
-      labels = {
-        "app.kubernetes.io/name"    = "agent-scaledjob"
-        "app.kubernetes.io/part-of" = "adp-agent-factory"
-      }
-    }
-    spec = {
-      podIdentity = {
-        provider      = "aws-eks"
-        identityOwner = "keda"
-      }
-    }
-  }
+locals {
+  keda_trigger_auth_yaml = <<-YAML
+    apiVersion: keda.sh/v1alpha1
+    kind: TriggerAuthentication
+    metadata:
+      name: agent-scaledjob-aws-auth
+      namespace: ${kubernetes_namespace.adp_agents.metadata[0].name}
+      labels:
+        app.kubernetes.io/name: agent-scaledjob
+        app.kubernetes.io/part-of: adp-agent-factory
+    spec:
+      podIdentity:
+        provider: aws-eks
+        identityOwner: keda
+  YAML
 
-  field_manager {
-    force_conflicts = true
-  }
+  keda_scaledjob_yaml = <<-YAML
+    apiVersion: keda.sh/v1alpha1
+    kind: ScaledJob
+    metadata:
+      name: agent-scaledjob
+      namespace: ${kubernetes_namespace.adp_agents.metadata[0].name}
+      labels:
+        app.kubernetes.io/name: agent-scaledjob
+        app.kubernetes.io/part-of: adp-agent-factory
+    spec:
+      pollingInterval: 5
+      minReplicaCount: 0
+      maxReplicaCount: 50
+      successfulJobsHistoryLimit: 5
+      failedJobsHistoryLimit: 5
+      jobTargetRef:
+        parallelism: 1
+        completions: 1
+        backoffLimit: 2
+        activeDeadlineSeconds: ${var.agent_pod_deadline_seconds}
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: agent-scaledjob
+              app.kubernetes.io/part-of: adp-agent-factory
+          spec:
+            serviceAccountName: ${kubernetes_service_account.agent_scaledjob_sa.metadata[0].name}
+            restartPolicy: Never
+            containers:
+              - name: agent-worker
+                image: ${var.agent_image}
+                env:
+                  - name: AWS_REGION
+                    value: ${var.aws_region}
+                  - name: QUEUE_URL
+                    value: ${aws_sqs_queue.agent_submit.url}
+                resources:
+                  requests:
+                    cpu: "1"
+                    memory: 4Gi
+                    ephemeral-storage: 50Gi
+                  limits:
+                    cpu: "4"
+                    memory: 8Gi
+                    ephemeral-storage: 50Gi
+      triggers:
+        - type: aws-sqs-queue
+          authenticationRef:
+            name: agent-scaledjob-aws-auth
+          metadata:
+            queueURL: ${aws_sqs_queue.agent_submit.url}
+            queueLength: "1"
+            awsRegion: ${var.aws_region}
+  YAML
 }
 
-# -----------------------------------------------------------------------------
-# KEDA ScaledJob
-# -----------------------------------------------------------------------------
-
-resource "kubernetes_manifest" "agent_scaledjob" {
-  manifest = {
-    apiVersion = "keda.sh/v1alpha1"
-    kind       = "ScaledJob"
-    metadata = {
-      name      = "agent-scaledjob"
-      namespace = kubernetes_namespace.adp_agents.metadata[0].name
-      labels = {
-        "app.kubernetes.io/name"    = "agent-scaledjob"
-        "app.kubernetes.io/part-of" = "adp-agent-factory"
-      }
-    }
-    spec = {
-      jobTargetRef = {
-        parallelism           = 1
-        completions           = 1
-        backoffLimit          = 2
-        activeDeadlineSeconds = var.agent_pod_deadline_seconds
-        template = {
-          metadata = {
-            labels = {
-              "app.kubernetes.io/name"    = "agent-scaledjob"
-              "app.kubernetes.io/part-of" = "adp-agent-factory"
-            }
-          }
-          spec = {
-            serviceAccountName = kubernetes_service_account.agent_scaledjob_sa.metadata[0].name
-            restartPolicy      = "Never"
-            containers = [{
-              name  = "agent-worker"
-              image = var.agent_image
-              env = [
-                { name = "AWS_REGION", value = var.aws_region },
-                { name = "QUEUE_URL", value = aws_sqs_queue.agent_submit.url },
-              ]
-              resources = {
-                requests = {
-                  cpu                 = "1"
-                  memory              = "4Gi"
-                  "ephemeral-storage" = "50Gi"
-                }
-                limits = {
-                  cpu                 = "4"
-                  memory              = "8Gi"
-                  "ephemeral-storage" = "50Gi"
-                }
-              }
-            }]
-          }
-        }
-      }
-      pollingInterval            = 5
-      minReplicaCount            = 0
-      maxReplicaCount            = 50
-      successfulJobsHistoryLimit = 5
-      failedJobsHistoryLimit     = 5
-      triggers = [{
-        type = "aws-sqs-queue"
-        authenticationRef = {
-          name = "agent-scaledjob-aws-auth"
-        }
-        metadata = {
-          queueURL    = aws_sqs_queue.agent_submit.url
-          queueLength = "1"
-          awsRegion   = var.aws_region
-        }
-      }]
-    }
+resource "null_resource" "keda_trigger_auth" {
+  triggers = {
+    manifest_sha    = sha256(local.keda_trigger_auth_yaml)
+    namespace       = kubernetes_namespace.adp_agents.metadata[0].name
+    cluster_name    = var.eks_cluster_name
+    cluster_region  = var.aws_region
   }
 
-  # KEDA operator reconciles the ScaledJob and defaults fields on the pod
-  # template (imagePullPolicy, terminationMessagePath, etc.). Force ownership
-  # of only the fields we set — let KEDA own what it defaults.
-  field_manager {
-    force_conflicts = true
+  provisioner "local-exec" {
+    command = <<-CMD
+      set -e
+      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} >/dev/null
+      cat <<'EOF' | kubectl apply -f -
+${local.keda_trigger_auth_yaml}
+EOF
+    CMD
   }
 
-  # KEDA + the kube-apiserver populate many server-side defaults on
-  # this CRD (container imagePullPolicy, terminationMessagePath, dnsPolicy,
-  # schedulerName, securityContext, resource rounding, etc.). Listing each
-  # one here turns into whack-a-mole — every defaulted field produces
-  # "Provider produced inconsistent result after apply" until it's named.
-  #
-  # Mark the entire spec tree as server-managed. Terraform still creates
-  # the resource with the spec we define; the provider just doesn't try to
-  # reconcile read-back shape against the sent shape. If the spec itself
-  # drifts in the cluster (someone hand-edits it), we won't catch it — but
-  # KEDA ScaledJobs aren't the kind of resource that gets hand-edited.
-  computed_fields = [
-    "metadata.labels",
-    "metadata.annotations",
-    "spec",
-  ]
+  provisioner "local-exec" {
+    when    = destroy
+    command = "kubectl delete triggerauthentication agent-scaledjob-aws-auth -n ${self.triggers.namespace} --ignore-not-found"
+  }
 
-  depends_on = [kubernetes_manifest.trigger_auth]
+  depends_on = [kubernetes_service_account.agent_scaledjob_sa]
+}
+
+resource "null_resource" "keda_scaledjob" {
+  triggers = {
+    manifest_sha    = sha256(local.keda_scaledjob_yaml)
+    namespace       = kubernetes_namespace.adp_agents.metadata[0].name
+    cluster_name    = var.eks_cluster_name
+    cluster_region  = var.aws_region
+  }
+
+  provisioner "local-exec" {
+    command = <<-CMD
+      set -e
+      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} >/dev/null
+      cat <<'EOF' | kubectl apply -f -
+${local.keda_scaledjob_yaml}
+EOF
+    CMD
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "kubectl delete scaledjob agent-scaledjob -n ${self.triggers.namespace} --ignore-not-found"
+  }
+
+  depends_on = [null_resource.keda_trigger_auth]
 }
