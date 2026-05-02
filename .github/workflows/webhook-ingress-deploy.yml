@@ -192,11 +192,39 @@ jobs:
             if [ -f "$req" ]; then pip install -r "$req"; fi
           done
 
+      - name: Fetch integration test config from SSM
+        id: ssm
+        run: |
+          ENDPOINT=$(aws ssm get-parameter \
+            --name "/adp/${{ env.ENVIRONMENT }}/webhook-ingress/endpoint" \
+            --query "Parameter.Value" --output text --region "${{ env.AWS_REGION }}")
+          QUEUE_URL=$(aws ssm get-parameter \
+            --name "/adp/${{ env.ENVIRONMENT }}/webhook-ingress/sqs-queue-url" \
+            --query "Parameter.Value" --output text --region "${{ env.AWS_REGION }}")
+          SECRET_ARN=$(aws ssm get-parameter \
+            --name "/adp/${{ env.ENVIRONMENT }}/webhook-ingress/webhook-secret-arn" \
+            --query "Parameter.Value" --output text --region "${{ env.AWS_REGION }}")
+          SECRET_VALUE=$(aws secretsmanager get-secret-value \
+            --secret-id "$SECRET_ARN" --query "SecretString" --output text --region "${{ env.AWS_REGION }}")
+          EVENTS_TABLE=$(aws ssm get-parameter \
+            --name "/adp/${{ env.ENVIRONMENT }}/webhook-ingress/webhook-events-table" \
+            --query "Parameter.Value" --output text --region "${{ env.AWS_REGION }}")
+          echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
+          echo "queue_url=$QUEUE_URL" >> "$GITHUB_OUTPUT"
+          echo "events_table=$EVENTS_TABLE" >> "$GITHUB_OUTPUT"
+          # Mask the secret so it doesn't appear in logs
+          echo "::add-mask::$SECRET_VALUE"
+          echo "secret=$SECRET_VALUE" >> "$GITHUB_OUTPUT"
+
       - name: Run integration tests
         working-directory: modules/agent-factory/webhook-ingress
         env:
           TEST_ENV: dev
           AWS_REGION: ${{ env.AWS_REGION }}
+          WEBHOOK_ENDPOINT: ${{ steps.ssm.outputs.endpoint }}
+          WEBHOOK_SECRET: ${{ steps.ssm.outputs.secret }}
+          WEBHOOK_SQS_QUEUE_URL: ${{ steps.ssm.outputs.queue_url }}
+          WEBHOOK_EVENTS_TABLE: ${{ steps.ssm.outputs.events_table }}
         run: |
           pytest tests/ -m integration -v --tb=short --timeout=120
 

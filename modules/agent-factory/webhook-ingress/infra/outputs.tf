@@ -72,3 +72,48 @@ output "github_app_key_secret_arn" {
   value       = aws_secretsmanager_secret.github_app_key.arn
 }
 
+# =============================================================================
+# SSM Parameters — consumed by CI integration tests
+# =============================================================================
+
+resource "aws_ssm_parameter" "webhook_endpoint" {
+  name        = "/adp/${var.environment}/webhook-ingress/endpoint"
+  description = "Webhook ingress API Gateway endpoint URL"
+  type        = "String"
+  value       = "${aws_apigatewayv2_api.webhook.api_endpoint}/github"
+}
+
+resource "aws_ssm_parameter" "sqs_queue_url" {
+  name        = "/adp/${var.environment}/webhook-ingress/sqs-queue-url"
+  description = "SQS queue URL for webhook dispatch"
+  type        = "String"
+  value       = aws_sqs_queue.agent_submit.url
+}
+
+resource "aws_ssm_parameter" "webhook_secret_arn" {
+  name        = "/adp/${var.environment}/webhook-ingress/webhook-secret-arn"
+  description = "Secrets Manager ARN for the webhook HMAC secret"
+  type        = "String"
+  value       = aws_secretsmanager_secret.webhook_secret.arn
+}
+
+resource "aws_ssm_parameter" "webhook_events_table" {
+  name        = "/adp/${var.environment}/webhook-ingress/webhook-events-table"
+  description = "DynamoDB webhook-events table name"
+  type        = "String"
+  value       = aws_dynamodb_table.webhook_events.name
+}
+
+resource "aws_ssm_parameter" "tenant_registry_table" {
+  name        = "/adp/${var.environment}/webhook-ingress/tenant-registry-table"
+  description = "DynamoDB tenant-registry table name"
+  type        = "String"
+  value       = aws_dynamodb_table.tenant_registry.name
+}
+
+resource "aws_ssm_parameter" "rate_limits_table" {
+  name        = "/adp/${var.environment}/webhook-ingress/rate-limits-table"
+  description = "DynamoDB rate-limits table name"
+  type        = "String"
+  value       = aws_dynamodb_table.rate_limits.name
+}

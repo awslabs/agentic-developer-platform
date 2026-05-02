@@ -17,6 +17,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["lambda"]
+markers = [
+    "integration: end-to-end tests against live AWS (require env vars)",
+]
 
 [tool.ruff]
 line-length = 100
