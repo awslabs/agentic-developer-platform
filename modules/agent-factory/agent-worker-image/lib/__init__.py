@@ -1,1 +1,1 @@
-"""ADP agent worker library utilities."""
+# Agent worker image helper libraries.

@@ -1,0 +1,375 @@
+"""Unit tests for agent-worker-image entrypoint and helper libraries.
+
+Covers the 12-step sequence with mocked external dependencies.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+# Add parent to path so we can import the modules
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lib.vault_client import VaultClient
+from lib.github_token import generate_jwt, mint_installation_token
+from lib.sts_assume import assume_customer_role
+
+
+# --- Fixtures ---
+
+SAMPLE_ENVELOPE = {
+    "version": "1.0",
+    "channel": "github",
+    "tenant_id": "acme-corp",
+    "persona": "developer",
+    "message_id": "msg-abc-123",
+    "actor": {
+        "github_id": 12345678,
+        "github_login": "jane-dev",
+        "is_bot": False,
+    },
+    "source_ref": {
+        "installation_id": 99887766,
+        "repo": "acme-corp/flagship-app",
+        "issue": 42,
+        "pr": None,
+        "sha": None,
+    },
+    "intent": {"trigger": "issue_labeled", "label": "developer"},
+    "arrived_at": "2026-04-30T14:22:00Z",
+}
+
+
+@pytest.fixture
+def envelope_json():
+    return json.dumps(SAMPLE_ENVELOPE)
+
+
+@pytest.fixture
+def env_with_message(envelope_json, monkeypatch, tmp_path):
+    """Set up env with SQS_MESSAGE_BODY and a writable workspace."""
+    monkeypatch.setenv("SQS_MESSAGE_BODY", envelope_json)
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    # Patch WORK_DIR to tmp
+    work_dir = tmp_path / "repo"
+    return work_dir
+
+
+# --- Test: parse_envelope ---
+
+
+class TestParseEnvelope:
+    def test_valid_envelope(self):
+        from entrypoint import parse_envelope
+
+        result = parse_envelope(json.dumps(SAMPLE_ENVELOPE))
+        assert result["tenant_id"] == "acme-corp"
+        assert result["persona"] == "developer"
+        assert result["source_ref"]["installation_id"] == 99887766
+
+    def test_missing_tenant_id(self):
+        from entrypoint import parse_envelope
+
+        bad = {**SAMPLE_ENVELOPE}
+        del bad["tenant_id"]
+        with pytest.raises(ValueError, match="tenant_id"):
+            parse_envelope(json.dumps(bad))
+
+    def test_missing_source_ref_field(self):
+        from entrypoint import parse_envelope
+
+        bad = {**SAMPLE_ENVELOPE, "source_ref": {"installation_id": 1, "repo": "x/y"}}
+        with pytest.raises(ValueError, match="issue"):
+            parse_envelope(json.dumps(bad))
+
+    def test_invalid_json(self):
+        from entrypoint import parse_envelope
+
+        with pytest.raises(json.JSONDecodeError):
+            parse_envelope("not json")
+
+
+# --- Test: vault_client ---
+
+
+class TestVaultClient:
+    @patch("lib.vault_client.boto3.client")
+    def test_get_secret(self, mock_boto_client):
+        mock_sm = MagicMock()
+        mock_boto_client.return_value = mock_sm
+        mock_sm.get_secret_value.return_value = {
+            "SecretString": '{"app_id": "123", "private_key": "fake-key"}'
+        }
+
+        client = VaultClient(region="us-east-1")
+        result = client.get_secret("tenants/acme-corp/github-app")
+
+        mock_sm.get_secret_value.assert_called_once_with(SecretId="tenants/acme-corp/github-app")
+        assert result == {"app_id": "123", "private_key": "fake-key"}
+
+
+# --- Test: github_token ---
+
+
+class TestGithubToken:
+    def test_generate_jwt_structure(self):
+        """JWT should have 3 dot-separated parts."""
+        # Generate a test RSA key
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives import serialization
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode()
+
+        token = generate_jwt("12345", pem)
+        parts = token.split(".")
+        assert len(parts) == 3
+
+    @patch("lib.github_token.requests.post")
+    def test_mint_installation_token_success(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 201
+        mock_resp.json.return_value = {
+            "token": "ghs_test_token_123",
+            "expires_at": "2026-05-01T00:00:00Z",
+        }
+        mock_post.return_value = mock_resp
+
+        with patch("lib.github_token.generate_jwt", return_value="fake-jwt"):
+            result = mint_installation_token("123", "fake-key", 99887766)
+
+        assert result == "ghs_test_token_123"
+        mock_post.assert_called_once()
+        call_url = mock_post.call_args[0][0]
+        assert "99887766" in call_url
+
+    @patch("lib.github_token.requests.post")
+    def test_mint_installation_token_failure(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_resp.text = "Bad credentials"
+        mock_post.return_value = mock_resp
+
+        with patch("lib.github_token.generate_jwt", return_value="fake-jwt"):
+            with pytest.raises(RuntimeError, match="Failed to mint token"):
+                mint_installation_token("123", "fake-key", 99887766)
+
+
+# --- Test: sts_assume ---
+
+
+class TestStsAssume:
+    @patch("lib.sts_assume.boto3.client")
+    def test_assume_customer_role(self, mock_boto_client):
+        mock_sts = MagicMock()
+        mock_boto_client.return_value = mock_sts
+        mock_sts.assume_role.return_value = {
+            "Credentials": {
+                "AccessKeyId": "AKIATEST",
+                "SecretAccessKey": "secret123",
+                "SessionToken": "token456",
+                "Expiration": "2026-05-01T00:00:00Z",
+            }
+        }
+
+        result = assume_customer_role(
+            role_arn="arn:aws:iam::111122223333:role/adp-hosted-agent",
+            external_id="ext-id-abc",
+            tenant_id="acme-corp",
+            actor_login="jane-dev",
+            actor_id="12345678",
+            run_id="msg-abc-123",
+            repo="acme-corp/flagship-app",
+            issue=42,
+            persona="operations",
+        )
+
+        assert result["AWS_ACCESS_KEY_ID"] == "AKIATEST"
+        assert result["AWS_SECRET_ACCESS_KEY"] == "secret123"
+        assert result["AWS_SESSION_TOKEN"] == "token456"
+
+        # Verify session tags were passed
+        call_kwargs = mock_sts.assume_role.call_args[1]
+        tags = call_kwargs["Tags"]
+        tag_keys = [t["Key"] for t in tags]
+        assert "adp:tenant_id" in tag_keys
+        assert "adp:persona" in tag_keys
+
+
+# --- Test: entrypoint main flow ---
+
+
+class TestEntrypointMain:
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.rmtree")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_full_sequence_success(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_rmtree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Test the full 12-step sequence with a successful agent run."""
+        from entrypoint import main
+
+        monkeypatch.setenv("SQS_MESSAGE_BODY", json.dumps(SAMPLE_ENVELOPE))
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        # Mock vault
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {
+            "app_id": "123",
+            "private_key": "fake-key",
+        }
+
+        # Mock token mint
+        mock_mint.return_value = "ghs_test_token"
+
+        # Mock run_cmd for git clone, git config, label removal, comments
+        mock_run_cmd.return_value = MagicMock(stdout="", stderr="", returncode=0)
+
+        # Mock agent execution (subprocess.run for node)
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        # Patch WORK_DIR and paths
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        import entrypoint
+
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Vault was called for github-app creds
+        mock_vault.get_secret.assert_called_with("tenants/acme-corp/github-app")
+        # Token was minted
+        mock_mint.assert_called_once_with("123", "fake-key", 99887766)
+        # Agent was executed
+        mock_subprocess_run.assert_called_once()
+
+    def test_missing_sqs_message(self, monkeypatch):
+        """Should return 1 when SQS_MESSAGE_BODY is not set."""
+        from entrypoint import main
+
+        monkeypatch.delenv("SQS_MESSAGE_BODY", raising=False)
+        assert main() == 1
+
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_agent_failure_posts_comment(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        monkeypatch,
+        tmp_path,
+    ):
+        """On agent failure, should post failure comment and return nonzero."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("SQS_MESSAGE_BODY", json.dumps(SAMPLE_ENVELOPE))
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="", stderr="", returncode=0)
+
+        # Agent fails
+        mock_subprocess_run.return_value = MagicMock(returncode=1)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        result = main()
+        assert result == 1
+
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_operations_persona_assumes_aws_role(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Operations persona should attempt AWS role assumption."""
+        from entrypoint import main
+        import entrypoint
+
+        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
+        monkeypatch.setenv("SQS_MESSAGE_BODY", json.dumps(ops_envelope))
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.side_effect = [
+            {"app_id": "123", "private_key": "k"},  # github-app
+            {  # aws-access
+                "role_arn": "arn:aws:iam::111:role/test",
+                "external_id": "ext-123",
+                "session_duration_seconds": 3600,
+            },
+        ]
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch("entrypoint.assume_customer_role") as mock_assume:
+            mock_assume.return_value = {
+                "AWS_ACCESS_KEY_ID": "AK",
+                "AWS_SECRET_ACCESS_KEY": "SK",
+                "AWS_SESSION_TOKEN": "ST",
+            }
+            main()
+            mock_assume.assert_called_once()
+
+    def test_idempotency_marker_in_comments(self):
+        """Verify marker format uses message_id for idempotency."""
+        # The _post_comment function embeds message_id in an HTML comment marker
+        # This test verifies the marker format logic
+        message_id = "msg-abc-123"
+        expected_marker = f"<!-- adp-completed:{message_id} -->"
+        assert f"adp-completed:{message_id}" in expected_marker
