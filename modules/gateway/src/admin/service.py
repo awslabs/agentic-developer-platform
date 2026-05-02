@@ -1,5 +1,6 @@
 """Admin service for organization CRUD, pool management, and configuration."""
 
+import logging
 from datetime import timedelta
 
 from sqlalchemy import func, select
@@ -45,6 +46,8 @@ from src.shared.schemas.admin import (
     UserResponse,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class AdminService:
     """
@@ -61,6 +64,7 @@ class AdminService:
         db: AsyncSession,
         budget_service: IBudgetService | None = None,
         ratelimit_service: IRateLimitService | None = None,
+        identity_index=None,
     ):
         """
         Initialize admin service.
@@ -69,10 +73,12 @@ class AdminService:
             db: Database session
             budget_service: Optional budget service for budget config operations
             ratelimit_service: Optional rate limit service
+            identity_index: Optional IdentityIndexClient for write-through (Issue #375)
         """
         self.db = db
         self.budget_service = budget_service
         self.ratelimit_service = ratelimit_service
+        self.identity_index = identity_index
         self.config = get_admin_config()
 
     # Organization CRUD Operations
@@ -100,11 +106,24 @@ class AdminService:
             aws_accounts=request.aws_accounts,
             role_mappings=request.role_mappings,
             settings=request.settings,
+            github_installation_ids=request.github_installation_ids,
+            cognito_client_ids=request.cognito_client_ids,
         )
 
         self.db.add(org)
         await self.db.commit()
         await self.db.refresh(org)
+
+        # Issue #375: Best-effort write-through to identity-index
+        if self.identity_index:
+            try:
+                await self.identity_index.sync_identities_for_org(
+                    org_id=org.id,
+                    github_installation_ids=org.github_installation_ids or [],
+                    cognito_client_ids=org.cognito_client_ids or [],
+                )
+            except Exception:
+                logger.exception("identity-index write-through failed for org %s (create)", org.id)
 
         return OrganizationResponse(
             id=org.id,
@@ -112,6 +131,8 @@ class AdminService:
             aws_accounts=org.aws_accounts or [],
             role_mappings=org.role_mappings or {},
             settings=org.settings or {},
+            github_installation_ids=org.github_installation_ids or [],
+            cognito_client_ids=org.cognito_client_ids or [],
             created_at=org.created_at,
         )
 
@@ -140,6 +161,8 @@ class AdminService:
             aws_accounts=org.aws_accounts or [],
             role_mappings=org.role_mappings or {},
             settings=org.settings or {},
+            github_installation_ids=org.github_installation_ids or [],
+            cognito_client_ids=org.cognito_client_ids or [],
             created_at=org.created_at,
         )
 
@@ -191,6 +214,8 @@ class AdminService:
                     aws_accounts=org.aws_accounts or [],
                     role_mappings=org.role_mappings or {},
                     settings=org.settings or {},
+                    github_installation_ids=org.github_installation_ids or [],
+                    cognito_client_ids=org.cognito_client_ids or [],
                     created_at=org.created_at,
                 )
                 for org in orgs
@@ -235,8 +260,31 @@ class AdminService:
         if request.settings is not None:
             org.settings = request.settings
 
+        # Issue #375: Track old identity lists for diff-based sync
+        old_github_ids = list(org.github_installation_ids or [])
+        old_cognito_ids = list(org.cognito_client_ids or [])
+
+        if request.github_installation_ids is not None:
+            org.github_installation_ids = request.github_installation_ids
+
+        if request.cognito_client_ids is not None:
+            org.cognito_client_ids = request.cognito_client_ids
+
         await self.db.commit()
         await self.db.refresh(org)
+
+        # Issue #375: Best-effort write-through to identity-index (diff-based)
+        if self.identity_index and (request.github_installation_ids is not None or request.cognito_client_ids is not None):
+            try:
+                await self.identity_index.sync_identities_for_org(
+                    org_id=org.id,
+                    github_installation_ids=org.github_installation_ids or [],
+                    cognito_client_ids=org.cognito_client_ids or [],
+                    old_github_installation_ids=old_github_ids,
+                    old_cognito_client_ids=old_cognito_ids,
+                )
+            except Exception:
+                logger.exception("identity-index write-through failed for org %s (update)", org.id)
 
         return OrganizationResponse(
             id=org.id,
@@ -244,6 +292,8 @@ class AdminService:
             aws_accounts=org.aws_accounts or [],
             role_mappings=org.role_mappings or {},
             settings=org.settings or {},
+            github_installation_ids=org.github_installation_ids or [],
+            cognito_client_ids=org.cognito_client_ids or [],
             created_at=org.created_at,
         )
 
@@ -266,8 +316,20 @@ class AdminService:
         if not org:
             raise ResourceNotFoundError("Organization", org_id)
 
+        # Issue #375: Capture identity lists before deletion for index cleanup
+        github_ids = list(org.github_installation_ids or [])
+        cognito_ids = list(org.cognito_client_ids or [])
+
         await self.db.delete(org)
         await self.db.commit()
+
+        # Best-effort cleanup of identity-index entries
+        if self.identity_index:
+            try:
+                await self.identity_index.delete_all_for_org(github_ids, cognito_ids)
+            except Exception:
+                logger.exception("identity-index cleanup failed for org %s (delete)", org_id)
+
         return True
 
     # Pool Management

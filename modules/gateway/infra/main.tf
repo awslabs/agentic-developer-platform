@@ -709,3 +709,79 @@ resource "aws_ssm_parameter" "internal_alb_dns" {
     ignore_changes = [value]
   }
 }
+
+# =============================================================================
+# Identity Index DynamoDB Table (Issue #375)
+# =============================================================================
+# Unified identity lookup table for tenant-identity Phase A.
+# Maps identity_type + identity_value → org_id for O(1) lookups from
+# webhook-ingress and pre-token-generation Lambdas.
+# Gateway API is the authoritative writer; other services read via SSM name.
+# =============================================================================
+
+resource "aws_dynamodb_table" "identity_index" {
+  name         = "adp-${var.environment}-identity-index"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "identity_type"
+  range_key    = "identity_value"
+
+  attribute {
+    name = "identity_type"
+    type = "S"
+  }
+
+  attribute {
+    name = "identity_value"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  tags = merge(local.common_tags, {
+    Name    = "adp-${var.environment}-identity-index"
+    Service = "dynamodb"
+    Purpose = "tenant-identity-index"
+  })
+}
+
+resource "aws_ssm_parameter" "identity_index_table" {
+  name        = "/adp/${var.environment}/gateway/identity-index-table"
+  description = "DynamoDB table name for identity-index (Issue #375)"
+  type        = "String"
+  value       = aws_dynamodb_table.identity_index.name
+
+  tags = local.common_tags
+}
+
+# IAM policy for Gateway IRSA role to access identity-index table
+resource "aws_iam_role_policy" "gateway_identity_index" {
+  name = "${local.name_prefix}-policy-gateway-identity-index"
+  role = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "IdentityIndexReadWrite"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:BatchWriteItem"
+        ]
+        Resource = [
+          aws_dynamodb_table.identity_index.arn
+        ]
+      }
+    ]
+  })
+}

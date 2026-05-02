@@ -18,6 +18,9 @@ class OrganizationCreateRequest(BaseModel):
     aws_accounts: list[str] = Field(default_factory=list, description="List of AWS account IDs")
     role_mappings: dict[str, str] = Field(default_factory=dict, description="Role name to ID mappings")
     settings: dict[str, Any] = Field(default_factory=dict, description="Additional settings")
+    # Issue #375: Identity fields for tenant-identity Phase A
+    github_installation_ids: list[str] = Field(default_factory=list, description="GitHub App installation IDs")
+    cognito_client_ids: list[str] = Field(default_factory=list, description="Cognito App Client IDs")
 
 
 class OrganizationUpdateRequest(BaseModel):
@@ -27,6 +30,9 @@ class OrganizationUpdateRequest(BaseModel):
     aws_accounts: list[str] | None = Field(None, description="List of AWS account IDs")
     role_mappings: dict[str, str] | None = Field(None, description="Role name to ID mappings")
     settings: dict[str, Any] | None = Field(None, description="Additional settings")
+    # Issue #375: Identity fields for tenant-identity Phase A
+    github_installation_ids: list[str] | None = Field(None, description="GitHub App installation IDs")
+    cognito_client_ids: list[str] | None = Field(None, description="Cognito App Client IDs")
 
 
 class OrganizationResponse(BaseModel):
@@ -37,6 +43,9 @@ class OrganizationResponse(BaseModel):
     aws_accounts: list[str]
     role_mappings: dict[str, str]
     settings: dict[str, Any]
+    # Issue #375: Identity fields for tenant-identity Phase A
+    github_installation_ids: list[str] = Field(default_factory=list)
+    cognito_client_ids: list[str] = Field(default_factory=list)
     created_at: datetime
 
     class Config:

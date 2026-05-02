@@ -15,6 +15,10 @@ class Organization(Base):
     aws_accounts: Mapped[dict] = mapped_column(JSON, nullable=False, default=list)
     role_mappings: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     settings: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # Issue #375: Identity columns for tenant-identity Phase A
+    # Uses JSON type in model (compatible with SQLite for tests); migration uses JSONB with GIN indexes.
+    github_installation_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    cognito_client_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

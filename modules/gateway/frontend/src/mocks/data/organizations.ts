@@ -11,6 +11,8 @@ export const mockOrganizations = [
       maxRequestsPerMinute: 1000,
       enableCostAlerts: true,
     },
+    github_installation_ids: ['12345678', '87654321'],
+    cognito_client_ids: ['abc123client', 'def456client'],
     created_at: '2024-01-01T00:00:00Z',
   },
   {
@@ -23,6 +25,8 @@ export const mockOrganizations = [
     settings: {
       maxRequestsPerMinute: 500,
     },
+    github_installation_ids: ['11112222'],
+    cognito_client_ids: [],
     created_at: '2024-01-15T00:00:00Z',
   },
   {
@@ -31,6 +35,8 @@ export const mockOrganizations = [
     aws_accounts: ['444444444444'],
     role_mappings: {},
     settings: {},
+    github_installation_ids: [],
+    cognito_client_ids: ['ghi789client'],
     created_at: '2024-02-01T00:00:00Z',
   },
 ];

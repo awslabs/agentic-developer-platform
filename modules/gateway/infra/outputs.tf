@@ -244,3 +244,14 @@ output "agent_registry_table_arn" {
   description = "ARN of the DynamoDB agent registry table"
   value       = var.enable_api_gateway ? module.lambda_authorizer[0].agent_registry_table_arn : ""
 }
+
+# Issue #375: Identity Index
+output "identity_index_table_name" {
+  description = "Name of the DynamoDB identity-index table"
+  value       = aws_dynamodb_table.identity_index.name
+}
+
+output "identity_index_table_arn" {
+  description = "ARN of the DynamoDB identity-index table"
+  value       = aws_dynamodb_table.identity_index.arn
+}
