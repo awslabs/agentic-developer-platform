@@ -133,10 +133,10 @@ locals {
 
 resource "null_resource" "keda_trigger_auth" {
   triggers = {
-    manifest_sha    = sha256(local.keda_trigger_auth_yaml)
-    namespace       = kubernetes_namespace.adp_agents.metadata[0].name
-    cluster_name    = var.eks_cluster_name
-    cluster_region  = var.aws_region
+    manifest_sha   = sha256(local.keda_trigger_auth_yaml)
+    namespace      = kubernetes_namespace.adp_agents.metadata[0].name
+    cluster_name   = var.eks_cluster_name
+    cluster_region = var.aws_region
   }
 
   provisioner "local-exec" {
@@ -159,10 +159,10 @@ EOF
 
 resource "null_resource" "keda_scaledjob" {
   triggers = {
-    manifest_sha    = sha256(local.keda_scaledjob_yaml)
-    namespace       = kubernetes_namespace.adp_agents.metadata[0].name
-    cluster_name    = var.eks_cluster_name
-    cluster_region  = var.aws_region
+    manifest_sha   = sha256(local.keda_scaledjob_yaml)
+    namespace      = kubernetes_namespace.adp_agents.metadata[0].name
+    cluster_name   = var.eks_cluster_name
+    cluster_region = var.aws_region
   }
 
   provisioner "local-exec" {

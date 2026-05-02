@@ -1,21 +1,76 @@
 # =============================================================================
-# API Gateway HTTP API v2
+# API Gateway REST API v1
 # =============================================================================
-# HTTP API v2 chosen over REST API v1: ~71% cheaper, lower latency, sufficient
-# for webhook ingress. Separate from the Bedrock Gateway API (different auth
-# model, different blast radius).
+# REST API v1 chosen over HTTP API v2 to restore:
+# - Direct WAFv2 association (rate-based rules, IP allowlist)
+# - Per-method throttling (cap POST /github at 100 rps)
+# - Resource policies (aws:SourceIp allowlist at the API layer)
+#
+# HTTP API v2's cost savings (~71%) are negligible at webhook-ingress volumes
+# (low-frequency, GitHub retries on timeout). WAF + throttle > pennies saved.
 # =============================================================================
 
-resource "aws_apigatewayv2_api" "webhook" {
-  name          = "${local.name_prefix}-webhook-ingress"
-  protocol_type = "HTTP"
-  description   = "Webhook ingress for hosted ADP - receives GitHub webhooks"
+resource "aws_api_gateway_rest_api" "webhook" {
+  name        = "${local.name_prefix}-webhook-ingress"
+  description = "Webhook ingress for hosted ADP - receives GitHub webhooks"
+
+  endpoint_configuration {
+    types = ["REGIONAL"]
+  }
 }
 
-resource "aws_apigatewayv2_stage" "default" {
-  api_id      = aws_apigatewayv2_api.webhook.id
-  name        = "$default"
-  auto_deploy = true
+# -----------------------------------------------------------------------------
+# Resource policy stub — allow all for now; follow-up PR will restrict to
+# GitHub's published meta/hooks IP ranges via aws:SourceIp condition.
+# -----------------------------------------------------------------------------
+
+resource "aws_api_gateway_rest_api_policy" "webhook" {
+  rest_api_id = aws_api_gateway_rest_api.webhook.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = "*"
+        Action    = "execute-api:Invoke"
+        Resource  = "${aws_api_gateway_rest_api.webhook.execution_arn}/*"
+      }
+    ]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Deployment + Stage
+# -----------------------------------------------------------------------------
+
+resource "aws_api_gateway_deployment" "webhook" {
+  rest_api_id = aws_api_gateway_rest_api.webhook.id
+
+  # Force redeployment when routes/integrations change
+  triggers = {
+    redeployment = sha1(jsonencode([
+      aws_api_gateway_resource.github.id,
+      aws_api_gateway_method.post_github.id,
+      aws_api_gateway_integration.github_webhook.id,
+      aws_api_gateway_rest_api_policy.webhook.policy,
+    ]))
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  depends_on = [
+    aws_api_gateway_method.post_github,
+    aws_api_gateway_integration.github_webhook,
+  ]
+}
+
+resource "aws_api_gateway_stage" "dev" {
+  deployment_id = aws_api_gateway_deployment.webhook.id
+  rest_api_id   = aws_api_gateway_rest_api.webhook.id
+  stage_name    = var.environment
 
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_gateway.arn
@@ -24,7 +79,7 @@ resource "aws_apigatewayv2_stage" "default" {
       ip             = "$context.identity.sourceIp"
       requestTime    = "$context.requestTime"
       httpMethod     = "$context.httpMethod"
-      routeKey       = "$context.routeKey"
+      resourcePath   = "$context.resourcePath"
       status         = "$context.status"
       protocol       = "$context.protocol"
       responseLength = "$context.responseLength"
@@ -33,24 +88,25 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 }
 
+# -----------------------------------------------------------------------------
+# Per-method throttling — cap POST /github to prevent one abusive caller from
+# exhausting the account-level 10k rps quota.
+# -----------------------------------------------------------------------------
+
+resource "aws_api_gateway_method_settings" "throttle" {
+  rest_api_id = aws_api_gateway_rest_api.webhook.id
+  stage_name  = aws_api_gateway_stage.dev.stage_name
+  method_path = "github/POST"
+
+  settings {
+    throttling_rate_limit  = 100
+    throttling_burst_limit = 200
+    logging_level          = "INFO"
+    metrics_enabled        = true
+  }
+}
+
 resource "aws_cloudwatch_log_group" "api_gateway" {
   name              = "/aws/apigateway/${local.name_prefix}-webhook-ingress"
   retention_in_days = 14
 }
-
-# Custom domain placeholder — uncomment and configure when domain is ready
-# resource "aws_apigatewayv2_domain_name" "webhook" {
-#   domain_name = "webhooks.${var.domain_name}"
-#
-#   domain_name_configuration {
-#     certificate_arn = var.acm_certificate_arn
-#     endpoint_type   = "REGIONAL"
-#     security_policy = "TLS_1_2"
-#   }
-# }
-#
-# resource "aws_apigatewayv2_api_mapping" "webhook" {
-#   api_id      = aws_apigatewayv2_api.webhook.id
-#   domain_name = aws_apigatewayv2_domain_name.webhook.id
-#   stage       = aws_apigatewayv2_stage.default.id
-# }

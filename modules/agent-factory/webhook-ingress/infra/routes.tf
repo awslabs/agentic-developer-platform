@@ -1,20 +1,28 @@
 # =============================================================================
-# API Gateway Routes
+# API Gateway Routes (REST API v1)
 # =============================================================================
-# POST /github → Lambda integration
+# POST /github → Lambda proxy integration
 # No authorizer — Lambda validates HMAC internally.
 # =============================================================================
 
-resource "aws_apigatewayv2_integration" "github_webhook" {
-  api_id                 = aws_apigatewayv2_api.webhook.id
-  integration_type       = "AWS_PROXY"
-  integration_uri        = aws_lambda_function.github_webhook.invoke_arn
-  integration_method     = "POST"
-  payload_format_version = "2.0"
+resource "aws_api_gateway_resource" "github" {
+  rest_api_id = aws_api_gateway_rest_api.webhook.id
+  parent_id   = aws_api_gateway_rest_api.webhook.root_resource_id
+  path_part   = "github"
 }
 
-resource "aws_apigatewayv2_route" "post_github" {
-  api_id    = aws_apigatewayv2_api.webhook.id
-  route_key = "POST /github"
-  target    = "integrations/${aws_apigatewayv2_integration.github_webhook.id}"
+resource "aws_api_gateway_method" "post_github" {
+  rest_api_id   = aws_api_gateway_rest_api.webhook.id
+  resource_id   = aws_api_gateway_resource.github.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "github_webhook" {
+  rest_api_id             = aws_api_gateway_rest_api.webhook.id
+  resource_id             = aws_api_gateway_resource.github.id
+  http_method             = aws_api_gateway_method.post_github.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.github_webhook.invoke_arn
 }

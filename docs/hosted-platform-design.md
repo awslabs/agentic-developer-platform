@@ -265,13 +265,18 @@ Rationale: webhook ingress is a way agent-factory receives triggers. Placing it 
 
 #### API Gateway configuration
 
-Dedicated HTTP API v2 gateway (separate from the Bedrock Gateway's API Gateway). Reasons:
+Dedicated REST API v1 gateway (separate from the Bedrock Gateway's API Gateway). Reasons:
 - Different auth model (HMAC inside Lambda vs Cognito JWT authorizer at gateway)
 - Cleaner blast-radius isolation (webhook misconfiguration can't affect Bedrock proxy traffic)
 - Tighter, webhook-specific WAF rules
 - Clear URL separation: `events.adp.example.com/github` vs `api.adp.example.com/*`
 
-HTTP API v2 chosen over REST API v1 for lower cost (~71% cheaper) and lower latency. No features from REST API (usage plans, request transformations, direct AWS service integrations) are needed for webhook ingress.
+REST API v1 chosen over HTTP API v2 (reversed from initial design). The original choice cited ~71% lower cost and lower latency, but missed critical security primitives that HTTP API v2 does not support:
+- **Direct WAFv2 association** — rate-based rules and IP allowlist (GitHub's `meta/hooks` ranges) attach directly to the REST API stage. HTTP API v2 requires CloudFront-in-front for WAF, adding CDN complexity for zero benefit on a webhook receiver.
+- **Per-method throttling** — cap `POST /github` independently (e.g. 100 rps) so one abusive caller cannot exhaust the account-level 10k rps quota.
+- **Resource policies** — `aws:SourceIp` allowlist at the API Gateway layer without needing WAF for basic IP scoping.
+
+The cost savings from HTTP API v2 are negligible at webhook-ingress volumes (low-frequency traffic; pennies per month at Phase 1 scale). Cold-start latency matters less when GitHub retries on timeout and the handler runs in <300ms regardless.
 
 #### Webhook Lambda responsibilities
 

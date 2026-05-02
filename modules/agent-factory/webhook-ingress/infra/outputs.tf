@@ -3,18 +3,23 @@
 # =============================================================================
 
 output "api_endpoint" {
-  description = "HTTP API Gateway endpoint URL"
-  value       = aws_apigatewayv2_api.webhook.api_endpoint
+  description = "REST API Gateway invoke URL (includes stage)"
+  value       = aws_api_gateway_stage.dev.invoke_url
 }
 
 output "api_id" {
-  description = "HTTP API Gateway ID"
-  value       = aws_apigatewayv2_api.webhook.id
+  description = "REST API Gateway ID"
+  value       = aws_api_gateway_rest_api.webhook.id
 }
 
 output "webhook_url" {
   description = "Full webhook URL (POST to this from GitHub)"
-  value       = "${aws_apigatewayv2_api.webhook.api_endpoint}/github"
+  value       = "${aws_api_gateway_stage.dev.invoke_url}/github"
+}
+
+output "waf_web_acl_arn" {
+  description = "WAFv2 WebACL ARN associated with the webhook API stage"
+  value       = aws_wafv2_web_acl.webhook.arn
 }
 
 output "lambda_function_name" {
@@ -80,7 +85,7 @@ resource "aws_ssm_parameter" "webhook_endpoint" {
   name        = "/adp/${var.environment}/webhook-ingress/endpoint"
   description = "Webhook ingress API Gateway endpoint URL"
   type        = "String"
-  value       = "${aws_apigatewayv2_api.webhook.api_endpoint}/github"
+  value       = "${aws_api_gateway_stage.dev.invoke_url}/github"
 }
 
 resource "aws_ssm_parameter" "sqs_queue_url" {

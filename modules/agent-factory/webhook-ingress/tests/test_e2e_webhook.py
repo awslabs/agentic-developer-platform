@@ -525,6 +525,63 @@ class TestWebhookE2E:
         assert item.get("tenant_id") == test_tenant["tenant_id"]
         assert "received_at" in item
 
+    def test_mixed_case_headers_accepted(
+        self,
+        webhook_endpoint,
+        webhook_secret,
+        sqs_client,
+        test_tenant,
+        unique_delivery_id,
+        cleanup_ddb_events,
+    ):
+        """Fire webhook with mixed-case headers (REST API style) -> 200 accepted.
+
+        REST API v1 preserves original header case from GitHub (X-Hub-Signature-256,
+        X-GitHub-Event). The Lambda must lowercase headers before accessing them.
+        This test proves the normalization works end-to-end.
+        """
+        payload = _issue_labeled_payload(test_tenant["installation_id"])
+        cleanup_ddb_events.track(unique_delivery_id)
+
+        delivery_id = unique_delivery_id
+        body_str = json.dumps(payload, separators=(",", ":"))
+        signature = sign_payload(body_str, webhook_secret)
+
+        # Send with mixed-case headers (as REST API v1 preserves from GitHub)
+        headers = {
+            "Content-Type": "application/json",
+            "X-GitHub-Event": "issues",
+            "X-GitHub-Delivery": delivery_id,
+            "X-Hub-Signature-256": signature,
+            "User-Agent": "GitHub-Hookshot/test",
+        }
+
+        resp = requests.post(
+            webhook_endpoint,
+            data=body_str,
+            headers=headers,
+            timeout=30,
+        )
+
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        body = resp.json()
+        assert body["status"] == "accepted", (
+            f"Expected 'accepted' status with mixed-case headers, got: {body}"
+        )
+
+        # Cleanup SQS
+        messages = poll_sqs(
+            sqs_client["client"],
+            sqs_client["queue_url"],
+            timeout=5,
+        )
+        if messages:
+            cleanup_sqs(
+                sqs_client["client"],
+                sqs_client["queue_url"],
+                [m["receipt_handle"] for m in messages],
+            )
+
     def test_bot_sender_ignored(
         self,
         webhook_endpoint,

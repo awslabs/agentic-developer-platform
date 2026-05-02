@@ -2,7 +2,7 @@
 # Webhook Ingress Infrastructure
 # =============================================================================
 # Foundational infrastructure for the hosted multi-tenant webhook ingress layer.
-# Receives GitHub webhooks via HTTP API Gateway v2, validates with a stub Lambda,
+# Receives GitHub webhooks via REST API Gateway v1, validates with Lambda,
 # and queues work onto SQS FIFO for downstream agent processing.
 #
 # State key: dev/modules/webhook-ingress/terraform.tfstate

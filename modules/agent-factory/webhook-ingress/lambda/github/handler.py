@@ -110,16 +110,19 @@ def handler(event: dict, context) -> dict:
     """Lambda entry point for GitHub webhook processing.
 
     Args:
-        event: API Gateway v2 HTTP event.
+        event: API Gateway event (REST API v1 or HTTP API v2).
         context: Lambda context object.
 
     Returns:
-        API Gateway v2 response dict.
+        API Gateway response dict.
     """
     start_time = time.time()
 
-    # 1. Extract headers + body from API Gateway v2 event
-    headers = event.get("headers", {})
+    # 1. Extract headers + body
+    # Normalize header keys to lowercase: REST API v1 preserves original case
+    # (e.g. X-Hub-Signature-256) while HTTP API v2 lowercases. This one-line
+    # normalization makes the handler safe for both API types.
+    headers = {k.lower(): v for k, v in event.get("headers", {}).items()}
     raw_body = event.get("body", "")
     is_base64 = event.get("isBase64Encoded", False)
 
