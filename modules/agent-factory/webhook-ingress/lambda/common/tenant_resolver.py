@@ -10,7 +10,11 @@ import boto3
 
 logger = logging.getLogger(__name__)
 
-TENANTS_TABLE = os.environ.get("TENANTS_TABLE", "adp-tenants")
+# Env var name matches what Terraform writes in
+# modules/agent-factory/webhook-ingress/infra/lambdas.tf (TENANT_TABLE).
+# The table's primary key is `installation_id` (single-attribute, type S) —
+# set by infra/dynamodb.tf. Keep code and infra in lockstep.
+TENANT_TABLE = os.environ.get("TENANT_TABLE", "")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 _dynamodb = None
@@ -20,7 +24,7 @@ def _get_table():
     global _dynamodb
     if _dynamodb is None:
         _dynamodb = boto3.resource("dynamodb", region_name=REGION)
-    return _dynamodb.Table(TENANTS_TABLE)
+    return _dynamodb.Table(TENANT_TABLE)
 
 
 def resolve_tenant(installation_id: int) -> dict | None:
@@ -32,9 +36,12 @@ def resolve_tenant(installation_id: int) -> dict | None:
     Returns:
         Dict with at minimum {"tenant_id": str} or None if unknown installation.
     """
+    if not TENANT_TABLE:
+        logger.error("TENANT_TABLE env var is not set")
+        return None
     try:
         table = _get_table()
-        resp = table.get_item(Key={"PK": f"github#installation#{installation_id}"})
+        resp = table.get_item(Key={"installation_id": str(installation_id)})
         item = resp.get("Item")
         if not item:
             logger.info(
