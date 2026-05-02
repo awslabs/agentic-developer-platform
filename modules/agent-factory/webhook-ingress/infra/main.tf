@@ -48,7 +48,28 @@ provider "kubernetes" {
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
+# =============================================================================
+# EKS OIDC + KEDA discovery
+# =============================================================================
+# The ScaledJob IRSA trust needs the cluster's OIDC provider ARN + issuer URL,
+# and the KEDA operator role ARN for chain-assume. Discovered from AWS directly
+# instead of passed in as variables — keeps the module self-contained and
+# avoids terraform_remote_state reads to other modules (see tech-debt #337).
+
 locals {
   name_prefix = "adp-${var.environment}"
   account_id  = data.aws_caller_identity.current.account_id
+
+  # OIDC issuer URL from the EKS cluster — e.g.
+  #   https://oidc.eks.us-east-1.amazonaws.com/id/ABC123...
+  oidc_issuer = data.aws_eks_cluster.main.identity[0].oidc[0].issuer
+
+  # OIDC provider ARN — derived from issuer URL + account ID. The provider
+  # itself is registered once at platform setup; we only need its ARN here,
+  # not ownership.
+  oidc_provider_arn = "arn:aws:iam::${local.account_id}:oidc-provider/${replace(local.oidc_issuer, "https://", "")}"
+}
+
+data "aws_iam_role" "keda_operator" {
+  name = var.keda_operator_role_name
 }

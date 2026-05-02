@@ -65,24 +65,15 @@ variable "lambda_timeout" {
 # -----------------------------------------------------------------------------
 
 variable "eks_cluster_name" {
-  description = "EKS cluster name for deploying the agent ScaledJob"
+  description = "EKS cluster name for deploying the agent ScaledJob. The OIDC provider, issuer, and KEDA operator role are discovered from the cluster — no remote-state reads needed."
   type        = string
-  default     = "adp-dev-eks"
+  default     = "adp-dev-eks-cluster"
 }
 
-variable "oidc_provider_arn" {
-  description = "ARN of the EKS OIDC provider for IRSA trust policies"
+variable "keda_operator_role_name" {
+  description = "Name of the KEDA operator IAM role (discovered as `data.aws_iam_role`). Override if the KEDA Helm release used a non-standard role name."
   type        = string
-}
-
-variable "oidc_issuer" {
-  description = "OIDC issuer URL of the EKS cluster (https://oidc.eks...)"
-  type        = string
-}
-
-variable "keda_operator_role_arn" {
-  description = "ARN of the KEDA operator IAM role (for chain-assume trust)"
-  type        = string
+  default     = "adp-dev-keda-operator-role"
 }
 
 variable "agent_image" {

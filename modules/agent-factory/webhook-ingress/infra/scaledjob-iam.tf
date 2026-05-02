@@ -20,13 +20,13 @@ resource "aws_iam_role" "agent_scaledjob" {
         # IRSA: agent pods in adp-agents namespace assume this role
         Effect = "Allow"
         Principal = {
-          Federated = var.oidc_provider_arn
+          Federated = local.oidc_provider_arn
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
-            "${replace(var.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:adp-agents:agent-scaledjob-sa"
-            "${replace(var.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+            "${replace(local.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:adp-agents:agent-scaledjob-sa"
+            "${replace(local.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
           }
         }
       },
@@ -34,7 +34,7 @@ resource "aws_iam_role" "agent_scaledjob" {
         # KEDA operator chain-assumes this role for SQS queue-depth polling
         Effect = "Allow"
         Principal = {
-          AWS = var.keda_operator_role_arn
+          AWS = data.aws_iam_role.keda_operator.arn
         }
         Action = "sts:AssumeRole"
       }
