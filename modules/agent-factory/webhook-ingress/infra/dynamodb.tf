@@ -1,30 +1,14 @@
 # =============================================================================
 # DynamoDB Tables
 # =============================================================================
-# Three tables for the webhook ingress layer:
-# - tenant-registry: maps GitHub App installations to tenants
+# Two tables for the webhook ingress layer:
 # - webhook-events: audit log of all received webhook events
 # - rate-limits: per-tenant rate limiting with TTL-based expiry
+#
+# NOTE: tenant-registry table was decommissioned in Phase C of tenant-identity
+# migration (Issue #377). Tenant resolution now uses the identity-index on the
+# organizations table via the gateway admin API.
 # =============================================================================
-
-# -----------------------------------------------------------------------------
-# Tenant Registry
-# PK: installation_id (GitHub App installation ID)
-# -----------------------------------------------------------------------------
-resource "aws_dynamodb_table" "tenant_registry" {
-  name         = "${local.name_prefix}-tenant-registry"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "installation_id"
-
-  attribute {
-    name = "installation_id"
-    type = "S"
-  }
-
-  point_in_time_recovery {
-    enabled = true
-  }
-}
 
 # -----------------------------------------------------------------------------
 # Webhook Events

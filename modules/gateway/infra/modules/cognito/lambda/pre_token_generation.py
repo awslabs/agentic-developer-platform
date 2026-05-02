@@ -3,9 +3,15 @@ Pre Token Generation Lambda Trigger (V2) for AWS Cognito.
 
 This Lambda function injects custom claims into access tokens for both:
 1. Human users (TokenGeneration_Authentication): Copy custom attributes to access token
-2. Agents/Services (TokenGeneration_ClientCredentials): Look up org/team from DynamoDB
+2. Agents/Services (TokenGeneration_ClientCredentials): Inject minimal service claims
 
 Issue #119: Unified Cognito JWT Auth
+Issue #377: Decommissioned agent-clients DynamoDB table. Agent metadata is now
+resolved via the organizations identity-index in the gateway admin API. The
+Pre Token Generation Lambda no longer performs DynamoDB lookups for client
+credentials tokens — it injects a minimal "service" account_type claim, and
+the gateway backend resolves full org context from the identity-index at
+request time.
 
 GitHub Sign-In Decision Logic (Issue #309):
 -------------------------------------------
@@ -19,7 +25,7 @@ will be empty for org_id/team_id/department_id — the backend treats this as an
 The Pre-Sign-Up Lambda (separate function) runs BEFORE this one and handles:
 - Allowlist enforcement (org membership, explicit username list, or open mode)
 - Auto-confirming the user (external providers skip email verification)
-- Linking external identity attributes (GitHub username → custom:github_username)
+- Linking external identity attributes (GitHub username -> custom:github_username)
 
 This Lambda does NOT need to differentiate between auth methods — it simply
 copies whatever custom attributes exist on the user record into the access token.
@@ -30,16 +36,9 @@ import json
 import logging
 import os
 
-import boto3
-from botocore.exceptions import ClientError
-
 # Configure logging
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-# Initialize DynamoDB client
-dynamodb = boto3.resource("dynamodb")
-AGENT_CLIENTS_TABLE = os.environ.get("AGENT_CLIENTS_TABLE", "agent_clients")
+logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 
 def handler(event: dict, context) -> dict:
@@ -66,7 +65,7 @@ def handler(event: dict, context) -> dict:
             # Human user authentication - copy custom attributes to access token
             return handle_user_token_generation(event)
         elif trigger_source == "TokenGeneration_ClientCredentials":
-            # M2M client credentials - look up agent metadata
+            # M2M client credentials - inject service account claims
             return handle_client_credentials_token_generation(event)
         elif trigger_source == "TokenGeneration_RefreshTokens":
             # Token refresh - same as authentication
@@ -127,7 +126,9 @@ def handle_client_credentials_token_generation(event: dict) -> dict:
     """
     Handle token generation for client credentials (M2M) flow.
 
-    Looks up the agent/service client in DynamoDB to get org/team context.
+    Issue #377: The agent-clients DynamoDB table has been decommissioned.
+    This function now injects minimal service claims. Full org/team context
+    is resolved by the gateway backend at request time via the identity-index.
 
     Args:
         event: Cognito trigger event
@@ -144,66 +145,20 @@ def handle_client_credentials_token_generation(event: dict) -> dict:
 
     logger.info(f"Client credentials token generation for client_id={client_id}")
 
-    # Look up agent metadata from DynamoDB
-    agent_metadata = get_agent_metadata(client_id)
-
-    if not agent_metadata:
-        logger.warning(f"No agent metadata found for client_id={client_id}")
-        # Return with minimal claims for unregistered clients
-        event["response"] = event.get("response", {})
-        event["response"]["claimsAndScopeOverrideDetails"] = {
-            "accessTokenGeneration": {
-                "claimsToAddOrOverride": {
-                    "custom:account_type": "service",
-                    "custom:client_id": client_id,
-                }
-            }
-        }
-        return event
-
-    # Build claims from agent metadata
+    # Inject minimal service claims — the gateway resolves full org context
+    # from the identity-index at request time using the client_id
     claims_to_add = {
-        "custom:org_id": agent_metadata.get("org_id", ""),
-        "custom:team_id": agent_metadata.get("team_id", ""),
-        "custom:department_id": agent_metadata.get("department_id", ""),
-        "custom:agent_name": agent_metadata.get("agent_name", ""),
         "custom:account_type": "service",
         "custom:client_id": client_id,
     }
 
-    # Remove empty claims
-    claims_to_add = {k: v for k, v in claims_to_add.items() if v}
-
     # Set the claims override in the response
     event["response"] = event.get("response", {})
-    event["response"]["claimsAndScopeOverrideDetails"] = {"accessTokenGeneration": {"claimsToAddOrOverride": claims_to_add}}
+    event["response"]["claimsAndScopeOverrideDetails"] = {
+        "accessTokenGeneration": {
+            "claimsToAddOrOverride": claims_to_add,
+        }
+    }
 
-    logger.info(f"Added agent claims to access token: {list(claims_to_add.keys())}")
+    logger.info(f"Added service claims to access token: {list(claims_to_add.keys())}")
     return event
-
-
-def get_agent_metadata(client_id: str) -> dict | None:
-    """
-    Look up agent metadata from DynamoDB.
-
-    Args:
-        client_id: Cognito App Client ID
-
-    Returns:
-        Agent metadata dict or None if not found
-    """
-    try:
-        table = dynamodb.Table(AGENT_CLIENTS_TABLE)
-        response = table.get_item(Key={"client_id": client_id})
-        return response.get("Item")
-
-    except ClientError as e:
-        error_code = e.response.get("Error", {}).get("Code", "")
-        if error_code == "ResourceNotFoundException":
-            logger.warning(f"Agent clients table not found: {AGENT_CLIENTS_TABLE}")
-        else:
-            logger.error(f"DynamoDB error looking up agent: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Error looking up agent metadata: {e}")
-        return None
