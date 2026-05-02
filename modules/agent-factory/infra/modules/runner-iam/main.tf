@@ -51,6 +51,21 @@ resource "aws_iam_policy" "runner_boundary" {
         Resource = "*"
       },
       {
+        # Self-manage boundary versions — required for Terraform to update the
+        # boundary from a runner pod. Without this, updating the boundary
+        # becomes a chicken-and-egg problem requiring admin intervention.
+        Sid    = "ManageOwnBoundary"
+        Effect = "Allow"
+        Action = [
+          "iam:CreatePolicyVersion",
+          "iam:DeletePolicyVersion",
+          "iam:SetDefaultPolicyVersion",
+          "iam:ListPolicyVersions",
+          "iam:GetPolicyVersion"
+        ]
+        Resource = "arn:aws:iam::${var.account_id}:policy/${var.name_prefix}-runner-boundary"
+      },
+      {
         Sid      = "ExecuteApi"
         Effect   = "Allow"
         Action   = ["execute-api:*"]
