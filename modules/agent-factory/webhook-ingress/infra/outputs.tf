@@ -62,3 +62,13 @@ output "webhook_secret_arn" {
   value       = aws_secretsmanager_secret.webhook_secret.arn
 }
 
+output "github_app_id_secret_arn" {
+  description = "Secrets Manager ARN for the ADP Agent Platform App ID"
+  value       = aws_secretsmanager_secret.github_app_id.arn
+}
+
+output "github_app_key_secret_arn" {
+  description = "Secrets Manager ARN for the ADP Agent Platform private key"
+  value       = aws_secretsmanager_secret.github_app_key.arn
+}
+

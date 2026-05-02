@@ -19,3 +19,38 @@ resource "aws_secretsmanager_secret_version" "webhook_secret" {
     ignore_changes = [secret_string]
   }
 }
+
+# =============================================================================
+# Secrets Manager — ADP Agent Platform GitHub App
+# =============================================================================
+# The public GitHub App that customers install. Credentials are set by the
+# register-github-app.sh script after browser-based app creation.
+# =============================================================================
+
+resource "aws_secretsmanager_secret" "github_app_id" {
+  name        = "adp/${var.environment}/github-app/adp-agent-platform-id"
+  description = "GitHub App ID for the ADP Agent Platform public app"
+}
+
+resource "aws_secretsmanager_secret_version" "github_app_id" {
+  secret_id     = aws_secretsmanager_secret.github_app_id.id
+  secret_string = "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}
+
+resource "aws_secretsmanager_secret" "github_app_key" {
+  name        = "adp/${var.environment}/github-app/adp-agent-platform-key"
+  description = "Private key (PEM) for the ADP Agent Platform public app"
+}
+
+resource "aws_secretsmanager_secret_version" "github_app_key" {
+  secret_id     = aws_secretsmanager_secret.github_app_key.id
+  secret_string = "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}
