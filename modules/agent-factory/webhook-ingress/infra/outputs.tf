@@ -117,3 +117,22 @@ resource "aws_ssm_parameter" "rate_limits_table" {
   type        = "String"
   value       = aws_dynamodb_table.rate_limits.name
 }
+
+# -----------------------------------------------------------------------------
+# ScaledJob outputs
+# -----------------------------------------------------------------------------
+
+output "agent_scaledjob_namespace" {
+  description = "Kubernetes namespace for hosted agent worker pods"
+  value       = kubernetes_namespace.adp_agents.metadata[0].name
+}
+
+output "agent_scaledjob_role_arn" {
+  description = "IAM role ARN for the agent ScaledJob service account (IRSA)"
+  value       = aws_iam_role.agent_scaledjob.arn
+}
+
+output "agent_scaledjob_sa_name" {
+  description = "Service account name for the agent ScaledJob pods"
+  value       = kubernetes_service_account.agent_scaledjob_sa.metadata[0].name
+}

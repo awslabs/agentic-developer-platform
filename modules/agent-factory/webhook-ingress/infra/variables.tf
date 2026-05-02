@@ -59,3 +59,40 @@ variable "lambda_timeout" {
   type        = number
   default     = 30
 }
+
+# -----------------------------------------------------------------------------
+# EKS / KEDA ScaledJob
+# -----------------------------------------------------------------------------
+
+variable "eks_cluster_name" {
+  description = "EKS cluster name for deploying the agent ScaledJob"
+  type        = string
+  default     = "adp-dev-eks"
+}
+
+variable "oidc_provider_arn" {
+  description = "ARN of the EKS OIDC provider for IRSA trust policies"
+  type        = string
+}
+
+variable "oidc_issuer" {
+  description = "OIDC issuer URL of the EKS cluster (https://oidc.eks...)"
+  type        = string
+}
+
+variable "keda_operator_role_arn" {
+  description = "ARN of the KEDA operator IAM role (for chain-assume trust)"
+  type        = string
+}
+
+variable "agent_image" {
+  description = "Container image for the agent worker (ECR URI with tag)"
+  type        = string
+  default     = "adp-agent:latest"
+}
+
+variable "agent_pod_deadline_seconds" {
+  description = "Max runtime for an agent pod before Kubernetes kills it"
+  type        = number
+  default     = 7200 # 2 hours — matches SQS visibility timeout
+}
