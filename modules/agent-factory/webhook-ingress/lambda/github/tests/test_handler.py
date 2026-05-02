@@ -13,7 +13,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Set required env vars before importing handler
+# Use WEBHOOK_SECRET (fallback path) for testing without Secrets Manager
 os.environ.setdefault("WEBHOOK_SECRET", "test-secret-123")
+os.environ.setdefault("WEBHOOK_SECRET_ARN", "")  # Empty = use WEBHOOK_SECRET fallback
 os.environ.setdefault(
     "SUBMIT_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123456789/adp-dev-agent-submit.fifo"
 )
@@ -275,6 +277,68 @@ class TestSuccessfulPublish:
         result = handler(event, None)
 
         assert result["statusCode"] == 500
+
+
+class TestSecretResolution:
+    """Verify handler resolves webhook secret from WEBHOOK_SECRET_ARN."""
+
+    def setup_method(self):
+        """Reset the cached secret between tests."""
+        import handler
+
+        handler._webhook_secret = None
+
+    @patch("handler._get_events_log")
+    @patch("handler._get_secrets")
+    @patch("handler._get_signature")
+    def test_resolves_secret_from_arn(self, mock_sig, mock_secrets, mock_log):
+        """When WEBHOOK_SECRET_ARN is set, handler fetches secret from Secrets Manager."""
+        mock_sig.return_value.verify_github_signature.return_value = False
+        mock_secrets.return_value.get_secret.return_value = "resolved-secret"
+        mock_log.return_value.log_event = MagicMock()
+
+        import handler
+
+        original_arn = handler.WEBHOOK_SECRET_ARN
+        handler.WEBHOOK_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123:secret:test"
+        try:
+            from handler import handler as h
+
+            event = _make_event("issues", {"action": "labeled"}, signed=False)
+            event["headers"]["x-hub-signature-256"] = "sha256=invalid"
+            h(event, None)
+
+            # verify_github_signature was called with the resolved secret
+            mock_sig.return_value.verify_github_signature.assert_called_once()
+            call_args = mock_sig.return_value.verify_github_signature.call_args
+            assert call_args[0][2] == "resolved-secret"
+        finally:
+            handler.WEBHOOK_SECRET_ARN = original_arn
+            handler._webhook_secret = None
+
+    @patch("handler._get_events_log")
+    @patch("handler._get_signature")
+    def test_falls_back_to_env_var_when_arn_empty(self, mock_sig, mock_log):
+        """When WEBHOOK_SECRET_ARN is empty, handler uses WEBHOOK_SECRET env var."""
+        mock_sig.return_value.verify_github_signature.return_value = False
+        mock_log.return_value.log_event = MagicMock()
+
+        import handler
+
+        handler.WEBHOOK_SECRET_ARN = ""
+        handler._webhook_secret = None
+        try:
+            from handler import handler as h
+
+            event = _make_event("issues", {"action": "labeled"}, signed=False)
+            event["headers"]["x-hub-signature-256"] = "sha256=invalid"
+            h(event, None)
+
+            call_args = mock_sig.return_value.verify_github_signature.call_args
+            assert call_args[0][2] == "test-secret-123"
+        finally:
+            handler.WEBHOOK_SECRET_ARN = ""
+            handler._webhook_secret = None
 
 
 class TestBase64Body:

@@ -19,11 +19,15 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Environment variables
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+WEBHOOK_SECRET_ARN = os.environ.get("WEBHOOK_SECRET_ARN", "")
 SUBMIT_QUEUE_URL = os.environ.get("SUBMIT_QUEUE_URL", "")
+
+# Cached webhook secret (resolved from ARN at first invocation)
+_webhook_secret: str | None = None
 
 # Lazy imports to keep cold start fast — these modules import boto3
 _signature_mod = None
+_secrets_mod = None
 _tenant_mod = None
 _rate_limit_mod = None
 _sqs_mod = None
@@ -37,6 +41,33 @@ def _get_signature():
 
         _signature_mod = signature
     return _signature_mod
+
+
+def _get_secrets():
+    global _secrets_mod
+    if _secrets_mod is None:
+        from common import secrets
+
+        _secrets_mod = secrets
+    return _secrets_mod
+
+
+def _resolve_webhook_secret() -> str:
+    """Resolve the webhook secret from Secrets Manager (cached after first call).
+
+    Falls back to WEBHOOK_SECRET env var for local dev/testing.
+    """
+    global _webhook_secret
+    if _webhook_secret is not None:
+        return _webhook_secret
+
+    if WEBHOOK_SECRET_ARN:
+        _webhook_secret = _get_secrets().get_secret(WEBHOOK_SECRET_ARN)
+    else:
+        # Fallback for local dev/testing: allow plaintext env var
+        _webhook_secret = os.environ.get("WEBHOOK_SECRET", "")
+
+    return _webhook_secret
 
 
 def _get_tenant_resolver():
@@ -99,7 +130,8 @@ def handler(event: dict, context) -> dict:
 
     # 2. Verify HMAC signature
     signature_header = headers.get("x-hub-signature-256", "")
-    if not _get_signature().verify_github_signature(body_bytes, signature_header, WEBHOOK_SECRET):
+    webhook_secret = _resolve_webhook_secret()
+    if not _get_signature().verify_github_signature(body_bytes, signature_header, webhook_secret):
         _log_outcome(
             event_type="unknown",
             action="",
