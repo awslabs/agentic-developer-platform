@@ -10,6 +10,7 @@
 import { resilientQuery } from './utils/resilientQuery';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { refreshGitHubToken, saveToS3Fallback } from './utils/ghPost';
+import { LiveStatusComment, createSkillAgentStages } from './github-comments';
 
 const REPO_OWNER = process.env.REPO_OWNER || '';
 const REPO_NAME = process.env.REPO_NAME || '';
@@ -311,10 +312,26 @@ async function main(): Promise<void> {
     : '';
   console.log(`📝 Found ${existingComments.length} existing comments to include in context`);
 
+  // Initialize live status comment
+  const liveComment = new LiveStatusComment(createSkillAgentStages(), {
+    owner: REPO_OWNER,
+    repo: REPO_NAME,
+    issueNumber: parseInt(ISSUE_NUMBER),
+    token: GITHUB_TOKEN,
+    log: (level, msg) => cwLog(level, msg),
+  });
+
+  try {
+    await liveComment.post();
+    cwLog('INFO', `Live status comment posted: ${liveComment.getCommentId()}`);
+  } catch (err) {
+    cwLog('WARN', `Could not post live status comment: ${(err as Error).message}`);
+  }
+
   // ========== PHASE 1: PLANNING (with skills) ==========
   console.log('📋 Phase 1: Planning...');
   cwLog('INFO', 'Phase 1: Planning started', { phase: 'planning' });
-  await postComment('## 🤖 Agent Progress\n\n- [ ] Generate plan\n- [ ] Wait for approval\n- [ ] Execute plan\n- [ ] Create PR\n\n_Starting..._');
+  liveComment.transition(0, 'in_progress', 'Generating plan');
 
   const planPrompt = `You are an AI agent working on a GitHub issue. You have access to skills in .claude/skills/ that you can use.
 
@@ -382,8 +399,22 @@ IMPORTANT: Actually read the skill files and codebase during planning. Use Read,
   console.log('\n📋 Plan posted. Waiting for approval...');
 
   // ========== PHASE 2: APPROVAL ==========
+  liveComment.transition(0, 'complete', 'Plan posted');
+  liveComment.transition(1, 'in_progress', 'Waiting for approval');
   const approval = await waitForApproval();
   if (!approval.approved) {
+    liveComment.transition(1, 'complete');
+    const reason = approval.feedback === 'Timeout waiting for approval' ? 'Timed out' : 'Rejected';
+    await liveComment.finalizeFailure({
+      error: reason === 'Timed out'
+        ? 'No approval received within 30 minutes'
+        : `Plan rejected: ${approval.feedback}`,
+      suggestedNextSteps: reason === 'Timed out'
+        ? ['Re-trigger by adding the label again']
+        : ['Create a new issue with updated requirements'],
+      durationMs: Date.now() - (liveComment.getStages()[0]?.startedAt || Date.now()),
+    }).catch(() => {});
+
     if (approval.feedback === 'Timeout waiting for approval') {
       await postComment('## ⏰ Approval Timeout\n\nNo response received within 30 minutes. Re-trigger by adding the label again.');
     } else {
@@ -396,12 +427,14 @@ IMPORTANT: Actually read the skill files and codebase during planning. Use Read,
   }
 
   // ========== PHASE 3: EXECUTION (with skills) ==========
+  liveComment.transition(1, 'complete', 'Approved');
+  liveComment.transition(2, 'in_progress', 'Executing plan');
+
   // Allow the previous Claude Code subprocess to fully exit before starting a new one
   console.log('⏳ Waiting for previous session to clean up...');
   await new Promise(r => setTimeout(r, 5000));
   console.log('\n🚀 Phase 3: Executing plan...');
   cwLog('INFO', 'Phase 3: Execution started', { phase: 'execution' });
-  await postComment('## 🤖 Agent Progress\n\n- [x] Generate plan\n- [x] Approved\n- [ ] Execute plan\n- [ ] Create PR\n\n_Executing..._');
 
   const execPrompt = `You are an AI agent executing an approved plan. You have access to skills in .claude/skills/.
 
@@ -443,7 +476,12 @@ Execute the plan now. Do all the work, then create the PR at the end.`;
   await runQuery(execPrompt, 500);
 
   // ========== PHASE 4: DONE ==========
-  await postComment('## 🤖 Agent Progress\n\n- [x] Generate plan\n- [x] Approved\n- [x] Execute plan\n- [x] Create PR\n\n_Complete!_');
+  liveComment.transition(2, 'complete');
+  liveComment.transition(3, 'complete', 'Done');
+
+  const runDuration = Date.now() - (liveComment.getStages()[0]?.startedAt || Date.now());
+  await liveComment.finalizeSuccess({ durationMs: runDuration }).catch(() => {});
+
   cwLog('INFO', 'Skill agent completed successfully', { phase: 'complete' });
   await flushCloudWatch();
   clearInterval(cwFlushTimer);
@@ -475,5 +513,8 @@ main()
       : `## ❌ Agent Error\n\n\`\`\`\n${message.substring(0, 1000)}\n\`\`\`\n\nCloudWatch logs: \`${LOG_GROUP}\` → \`${LOG_STREAM}\``;
 
     await postComment(errorComment);
+
+    // Note: liveComment is scoped inside main() so we can't finalize it here.
+    // The error comment above serves as the failure notification.
     process.exit(1);
   });

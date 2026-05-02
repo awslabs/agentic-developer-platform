@@ -32,6 +32,9 @@ import {
   formatContextForPrompt,
 } from './memory';
 
+// Live status comment — edit-in-place progress on GitHub issues
+import { LiveStatusComment, createWorkerStages } from './github-comments';
+
 // Beads module - distributed state management for agents
 import {
   configureBeads,
@@ -1376,6 +1379,26 @@ async function main(): Promise<void> {
       }
     }
 
+    // Initialize live status comment (edit-in-place progress)
+    const token = process.env.GH_APP_TOKEN || process.env.GITHUB_TOKEN || GITHUB_TOKEN;
+    const liveComment = new LiveStatusComment(createWorkerStages(), {
+      owner: REPO_OWNER,
+      repo: REPO_NAME,
+      issueNumber: parseInt(ISSUE_NUMBER),
+      token,
+      log,
+    });
+
+    try {
+      await liveComment.post();
+      log('INFO', `Live status comment posted: ${liveComment.getCommentId()}`);
+    } catch (err) {
+      log('WARN', `Could not post live status comment: ${(err as Error).message}`);
+    }
+
+    // Stage 0: Setup — mark complete (we're past setup at this point)
+    liveComment.transition(0, 'complete', 'Environment ready');
+
     // Post start notification to main issue
     await postToMainIssue(mainIssueNumber, `## @agent-${AGENT_TYPE} Started
 
@@ -1389,9 +1412,19 @@ Working on this task...`);
     // NOTE: Project board status is already set to "In Progress" by the workflow
     // using the update-board-status action before the agent runs.
 
+    // Stage 1: Analyze — starting agent execution
+    liveComment.transition(1, 'in_progress', 'Running agent');
+
     // Run the agent
     const result = await runAgent(issue, mainIssueNumber, beadsPrimeContext, commentsContext, memoryContext);
     agentResult = result || '';
+
+    // Mark analyze through PR stages as complete (agent handles all internally)
+    liveComment.transition(1, 'complete');
+    liveComment.transition(2, 'complete');
+    liveComment.transition(3, 'complete');
+    liveComment.transition(4, 'complete');
+    liveComment.transition(5, 'complete');
 
     // Complete task in Beads (if claimed)
     if (beadsAvailable && beadsTaskId) {
@@ -1406,6 +1439,13 @@ Working on this task...`);
     // NOTE: Don't update project board status to Done here.
     // Status will be set to Done automatically by GitHub project automation
     // when the PR is merged and the issue is closed.
+
+    // Finalize live status comment with success summary
+    const runDuration = Date.now() - (liveComment.getStages()[0]?.startedAt || Date.now());
+    await liveComment.finalizeSuccess({
+      durationMs: runDuration,
+      details: result ? result.substring(0, 500) : undefined,
+    }).catch(err => log('WARN', `Could not finalize live comment: ${(err as Error).message}`));
 
     // Post completion to main issue
     const summary = `## @agent-${AGENT_TYPE} Completed
