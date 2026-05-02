@@ -91,9 +91,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-# Install pnpm and yarn
-RUN corepack enable && corepack prepare pnpm@latest --activate && \
-    npm install -g yarn
+# Install pnpm and yarn via corepack. The Node 22 image ships a yarn stub
+# at /usr/bin/yarn, so `npm install -g yarn` fails with EEXIST. Corepack
+# is the modern way to install both and handles replacement idempotently.
+RUN corepack enable && \
+    corepack prepare pnpm@latest --activate && \
+    corepack prepare yarn@stable --activate
 
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
