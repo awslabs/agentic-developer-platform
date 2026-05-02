@@ -70,6 +70,10 @@ resource "kubernetes_manifest" "trigger_auth" {
       }
     }
   }
+
+  field_manager {
+    force_conflicts = true
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -144,6 +148,13 @@ resource "kubernetes_manifest" "agent_scaledjob" {
         }
       }]
     }
+  }
+
+  # KEDA operator reconciles the ScaledJob and defaults fields on the pod
+  # template (imagePullPolicy, terminationMessagePath, etc.). Force ownership
+  # of only the fields we set — let KEDA own what it defaults.
+  field_manager {
+    force_conflicts = true
   }
 
   depends_on = [kubernetes_manifest.trigger_auth]
