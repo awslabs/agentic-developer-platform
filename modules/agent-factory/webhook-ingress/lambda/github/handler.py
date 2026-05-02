@@ -29,7 +29,6 @@ _webhook_secret: str | None = None
 _signature_mod = None
 _secrets_mod = None
 _tenant_mod = None
-_rate_limit_mod = None
 _sqs_mod = None
 _events_log_mod = None
 
@@ -79,13 +78,23 @@ def _get_tenant_resolver():
     return _tenant_mod
 
 
-def _get_rate_limit():
-    global _rate_limit_mod
-    if _rate_limit_mod is None:
-        from common import rate_limit
+_rate_limiter = None
 
-        _rate_limit_mod = rate_limit
-    return _rate_limit_mod
+
+def _get_rate_limiter():
+    """Return a cached RateLimiter bound to the configured table."""
+    global _rate_limiter
+    if _rate_limiter is None:
+        from common.rate_limit import RateLimiter
+
+        rate_limits_table = os.environ.get("RATE_LIMITS_TABLE", "")
+        if not rate_limits_table:
+            logger.error("RATE_LIMITS_TABLE env var is not set")
+        _rate_limiter = RateLimiter(
+            table_name=rate_limits_table,
+            region=os.environ.get("AWS_REGION", "us-east-1"),
+        )
+    return _rate_limiter
 
 
 def _get_sqs_publisher():
@@ -185,8 +194,10 @@ def handler(event: dict, context) -> dict:
 
     tenant_id = tenant["tenant_id"]
 
-    # 7. Check rate limit
-    allowed, retry_after = _get_rate_limit().check_rate_limit(tenant_id)
+    # 7. Check rate limit (class-based API — returns a RateLimitResult)
+    rate_result = _get_rate_limiter().check_and_increment(tenant_id)
+    allowed = rate_result.allowed
+    retry_after = rate_result.retry_after_seconds
 
     # 8. If rate-limited → return 429 with Retry-After
     if not allowed:
