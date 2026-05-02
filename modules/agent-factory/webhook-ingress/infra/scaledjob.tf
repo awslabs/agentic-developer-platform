@@ -154,7 +154,11 @@ EOF
     command = "kubectl delete triggerauthentication agent-scaledjob-aws-auth -n ${self.triggers.namespace} --ignore-not-found"
   }
 
-  depends_on = [kubernetes_service_account.agent_scaledjob_sa]
+  # RBAC must exist before kubectl apply runs as the runner SA.
+  depends_on = [
+    kubernetes_service_account.agent_scaledjob_sa,
+    kubernetes_role_binding.runner_keda_manage,
+  ]
 }
 
 resource "null_resource" "keda_scaledjob" {
@@ -180,5 +184,9 @@ EOF
     command = "kubectl delete scaledjob agent-scaledjob -n ${self.triggers.namespace} --ignore-not-found"
   }
 
-  depends_on = [null_resource.keda_trigger_auth]
+  # RBAC must exist before kubectl apply runs as the runner SA.
+  depends_on = [
+    null_resource.keda_trigger_auth,
+    kubernetes_role_binding.runner_keda_manage,
+  ]
 }
