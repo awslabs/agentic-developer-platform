@@ -23,12 +23,27 @@ resource "aws_iam_policy" "runner_boundary" {
           "apigateway:*", "route53:*", "cloudfront:*", "acm:*",
           "amplify:*", "codebuild:*",
           "secretsmanager:*",
-          "ssm:*", "kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*",
+          "ssm:*",
+
+          # KMS — encrypt/decrypt for data, plus wildcarded reads for
+          # Terraform refresh. The DenyDangerousActions block below covers
+          # anything risky (billing, root keys are separate). Read wildcards
+          # stop the whack-a-mole of enumerating every Describe/Get/List
+          # variant Terraform refresh calls for each resource type.
+          "kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*",
+          "kms:Describe*", "kms:Get*", "kms:List*",
+
+          # IAM — broad read-only via wildcards. The DenyDangerousActions
+          # statement below explicitly denies user/login-profile/access-key
+          # write actions, and AWS evaluates Deny before Allow — so wildcard
+          # reads are safe and don't broaden the boundary's risk surface.
+          # Writes stay narrowly scoped below.
+          "iam:Get*", "iam:List*", "iam:Simulate*", "iam:Generate*",
+
+          # IAM writes — scoped to what Terraform apply actually uses.
           "iam:CreateRole", "iam:CreatePolicy", "iam:AttachRolePolicy",
           "iam:PutRolePolicy", "iam:PassRole", "iam:TagRole", "iam:TagPolicy",
-          "iam:CreateServiceLinkedRole", "iam:GetRole", "iam:GetPolicy",
-          "iam:GetRolePolicy", "iam:ListRolePolicies",
-          "iam:ListRoles", "iam:ListPolicies", "iam:ListAttachedRolePolicies",
+          "iam:CreateServiceLinkedRole",
           "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy",
           "iam:UpdateAssumeRolePolicy",
           "iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile",
