@@ -83,9 +83,9 @@ variable "keda_operator_role_name" {
 }
 
 variable "agent_image" {
-  description = "Container image for the agent worker (ECR URI with tag)"
+  description = "Container image for the agent worker (ECR URI with tag). Built by .github/workflows/agent-worker-image.yml via CodeBuild → ECR repo adp-agent-runtime."
   type        = string
-  default     = "adp-agent:latest"
+  default     = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest"
 }
 
 variable "agent_pod_deadline_seconds" {

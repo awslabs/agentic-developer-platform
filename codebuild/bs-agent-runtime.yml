@@ -1,0 +1,48 @@
+version: 0.2
+
+# CodeBuild buildspec for the hosted agent worker image (EPIC #308).
+#
+# Builds the Ubuntu 24.04 + Node 22 + Python 3.12 runtime from
+# modules/agent-factory/agent-worker-image/Dockerfile. The image is what
+# the KEDA ScaledJob (`agent-scaledjob` in namespace `adp-agents`) spawns
+# per SQS message on `adp-dev-agent-submit.fifo`.
+#
+# Build context is the repo root — the Dockerfile uses `COPY modules/...`
+# paths for the pre-built TS runtime, personas, skills, and entrypoint.
+#
+# Pushes to ECR repo `adp-agent-runtime`. Referenced by the ScaledJob as
+# `adp-agent:latest` (tag set via var.agent_image in webhook-ingress TF).
+#
+# Env vars injected by the caller:
+#   AWS_REGION, ACCOUNT_ID, REGISTRY, IMAGE_TAG
+
+phases:
+  pre_build:
+    commands:
+      - ECR_REPO="adp-agent-runtime"
+      - IMAGE_TAG="${IMAGE_TAG:-latest}"
+      - |
+        if ! aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
+          aws ecr create-repository \
+            --repository-name "$ECR_REPO" \
+            --region "$AWS_REGION" \
+            --image-scanning-configuration scanOnPush=true \
+            --image-tag-mutability MUTABLE >/dev/null
+        fi
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+
+  build:
+    commands:
+      # Build context is the repo root — the Dockerfile's COPY paths are
+      # `modules/agent-factory/...` and `modules/domain-apps/...`.
+      - docker build
+          -f modules/agent-factory/agent-worker-image/Dockerfile
+          -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
+          -t "$REGISTRY/$ECR_REPO:latest"
+          .
+      - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
+      - docker push "$REGISTRY/$ECR_REPO:latest"
+
+  post_build:
+    commands:
+      - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (and :latest)"
