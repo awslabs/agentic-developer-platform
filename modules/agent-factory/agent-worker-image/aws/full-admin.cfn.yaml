@@ -1,0 +1,103 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  ADP Hosted Platform - Full Admin Access Role.
+  WARNING: This template grants AdministratorAccess to the ADP platform.
+  Only use this if you explicitly trust the platform with full control of your
+  AWS account. Consider readonly or scoped-write templates instead.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Security Configuration
+        Parameters:
+          - ExternalId
+          - ADPPlatformAccountId
+          - SessionDurationSeconds
+          - ConfirmFullAdmin
+    ParameterLabels:
+      ConfirmFullAdmin:
+        default: 'Type CONFIRM to acknowledge full admin access'
+
+Parameters:
+  ExternalId:
+    Type: String
+    Description: >
+      Per-tenant external ID provided by ADP during onboarding.
+      This value prevents confused-deputy attacks.
+    MinLength: 64
+    MaxLength: 64
+    AllowedPattern: '[a-zA-Z0-9]+'
+    ConstraintDescription: Must be exactly 64 alphanumeric characters.
+
+  ADPPlatformAccountId:
+    Type: String
+    Description: The AWS account ID of the ADP hosted platform.
+    AllowedPattern: '[0-9]{12}'
+    ConstraintDescription: Must be a 12-digit AWS account ID.
+
+  SessionDurationSeconds:
+    Type: Number
+    Description: Maximum session duration in seconds (1h default, 12h max).
+    Default: 3600
+    MinValue: 3600
+    MaxValue: 43200
+
+  ConfirmFullAdmin:
+    Type: String
+    Description: >
+      Type CONFIRM to acknowledge that this role grants full administrator
+      access to the ADP platform in your account.
+    AllowedValues:
+      - CONFIRM
+    ConstraintDescription: You must type CONFIRM to proceed.
+
+Rules:
+  ConfirmAdminAccess:
+    Assertions:
+      - Assert: !Equals [!Ref ConfirmFullAdmin, 'CONFIRM']
+        AssertDescription: >
+          You must explicitly confirm full admin access by typing CONFIRM.
+
+Resources:
+  ADPFullAdminRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: adp-hosted-agent-full-admin
+      Description: >
+        Grants ADP platform full administrator access.
+        Use with caution - consider scoped-write for production workloads.
+      MaxSessionDuration: !Ref SessionDurationSeconds
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${ADPPlatformAccountId}:role/adp-hosted-agent'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: adp:managed
+          Value: 'true'
+        - Key: adp:permission-tier
+          Value: full-admin
+
+Outputs:
+  RoleArn:
+    Description: ARN of the IAM role for ADP to assume.
+    Value: !GetAtt ADPFullAdminRole.Arn
+
+  RoleName:
+    Description: Name of the IAM role.
+    Value: !Ref ADPFullAdminRole
+
+  Warning:
+    Description: Security notice.
+    Value: >
+      This role has AdministratorAccess. All actions performed by the ADP agent
+      are logged in CloudTrail with session tags identifying the tenant, agent,
+      run, and issue. Review CloudTrail regularly.

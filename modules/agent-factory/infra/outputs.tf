@@ -37,3 +37,13 @@ output "keda_operator_role_name" {
   description = "IAM role name for the KEDA operator"
   value       = aws_iam_role.keda_operator.name
 }
+
+output "public_cfn_bucket" {
+  description = "S3 bucket name for public CloudFormation templates"
+  value       = aws_s3_bucket.public_cfn.id
+}
+
+output "public_cfn_bucket_url" {
+  description = "Base URL for CloudFormation template downloads"
+  value       = "https://${aws_s3_bucket.public_cfn.bucket}.s3.amazonaws.com"
+}

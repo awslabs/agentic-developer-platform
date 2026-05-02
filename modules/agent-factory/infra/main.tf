@@ -195,3 +195,47 @@ resource "aws_eks_access_policy_association" "runner_admin" {
 
   depends_on = [aws_eks_access_entry.runner]
 }
+
+# =============================================================================
+# Public CFN Templates Bucket
+# =============================================================================
+# Hosts customer-facing CloudFormation templates for IAM role setup.
+# Templates are published here and linked via "Launch Stack" URLs.
+# =============================================================================
+
+resource "aws_s3_bucket" "public_cfn" {
+  bucket = "adp-public-cfn"
+
+  tags = {
+    Name    = "adp-public-cfn"
+    Purpose = "Customer-facing CloudFormation templates"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "public_cfn" {
+  bucket = aws_s3_bucket.public_cfn.id
+
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
+resource "aws_s3_bucket_policy" "public_cfn" {
+  bucket = aws_s3_bucket.public_cfn.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "PublicReadCFNTemplates"
+        Effect    = "Allow"
+        Principal = "*"
+        Action    = "s3:GetObject"
+        Resource  = "${aws_s3_bucket.public_cfn.arn}/*"
+      }
+    ]
+  })
+
+  depends_on = [aws_s3_bucket_public_access_block.public_cfn]
+}

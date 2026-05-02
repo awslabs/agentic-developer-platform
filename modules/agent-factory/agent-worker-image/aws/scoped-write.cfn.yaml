@@ -1,0 +1,108 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  ADP Hosted Platform - Scoped Write Access Role.
+  Creates an IAM role with write access scoped to specific AWS services and
+  resources you define. The agent can only modify resources you explicitly allow.
+
+Parameters:
+  ExternalId:
+    Type: String
+    Description: >
+      Per-tenant external ID provided by ADP during onboarding.
+      This value prevents confused-deputy attacks.
+    MinLength: 64
+    MaxLength: 64
+    AllowedPattern: '[a-zA-Z0-9]+'
+    ConstraintDescription: Must be exactly 64 alphanumeric characters.
+
+  ADPPlatformAccountId:
+    Type: String
+    Description: The AWS account ID of the ADP hosted platform.
+    AllowedPattern: '[0-9]{12}'
+    ConstraintDescription: Must be a 12-digit AWS account ID.
+
+  SessionDurationSeconds:
+    Type: Number
+    Description: Maximum session duration in seconds (1h default, 12h max).
+    Default: 3600
+    MinValue: 3600
+    MaxValue: 43200
+
+  AllowedServices:
+    Type: CommaDelimitedList
+    Description: >
+      Comma-separated list of AWS service prefixes the agent may write to
+      (e.g. s3,lambda,ecs,ecr,cloudformation).
+    Default: 's3'
+
+  AllowedResourceArns:
+    Type: CommaDelimitedList
+    Description: >
+      Comma-separated list of resource ARNs the agent may write to.
+      Use * only if you intend full access to that service.
+      Example: arn:aws:s3:::my-deploy-bucket,arn:aws:s3:::my-deploy-bucket/*
+    Default: '*'
+
+Resources:
+  ADPScopedWriteRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: adp-hosted-agent-scoped-write
+      Description: Grants ADP platform scoped write access for agent operations.
+      MaxSessionDuration: !Ref SessionDurationSeconds
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${ADPPlatformAccountId}:role/adp-hosted-agent'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Tags:
+        - Key: adp:managed
+          Value: 'true'
+        - Key: adp:permission-tier
+          Value: scoped-write
+
+  ADPScopedWritePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: adp-scoped-write-policy
+      Roles:
+        - !Ref ADPScopedWriteRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ScopedWriteAccess
+            Effect: Allow
+            Action:
+              - !Sub
+                - '${Service}:*'
+                - Service: !Select [0, !Ref AllowedServices]
+            Resource: !Ref AllowedResourceArns
+          - Sid: ReadOnlyFallback
+            Effect: Allow
+            Action:
+              - 'sts:GetCallerIdentity'
+              - 'sts:GetSessionToken'
+            Resource: '*'
+
+Outputs:
+  RoleArn:
+    Description: ARN of the IAM role for ADP to assume.
+    Value: !GetAtt ADPScopedWriteRole.Arn
+
+  RoleName:
+    Description: Name of the IAM role.
+    Value: !Ref ADPScopedWriteRole
+
+  Note:
+    Description: Important note about the scoped-write policy.
+    Value: >
+      The scoped-write policy grants write access to the services and resources
+      you specified. Review the role in IAM to confirm the policy matches your
+      intent. You can update the stack to change allowed services/resources.

@@ -1,0 +1,63 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  ADP Hosted Platform - Read-Only Access Role.
+  Creates an IAM role that allows the ADP platform to assume read-only access
+  in your account for agent operations (describe, list, get actions only).
+
+Parameters:
+  ExternalId:
+    Type: String
+    Description: >
+      Per-tenant external ID provided by ADP during onboarding.
+      This value prevents confused-deputy attacks.
+    MinLength: 64
+    MaxLength: 64
+    AllowedPattern: '[a-zA-Z0-9]+'
+    ConstraintDescription: Must be exactly 64 alphanumeric characters.
+
+  ADPPlatformAccountId:
+    Type: String
+    Description: The AWS account ID of the ADP hosted platform.
+    AllowedPattern: '[0-9]{12}'
+    ConstraintDescription: Must be a 12-digit AWS account ID.
+
+  SessionDurationSeconds:
+    Type: Number
+    Description: Maximum session duration in seconds (1h default, 12h max).
+    Default: 3600
+    MinValue: 3600
+    MaxValue: 43200
+
+Resources:
+  ADPReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: adp-hosted-agent-readonly
+      Description: Grants ADP platform read-only access for agent operations.
+      MaxSessionDuration: !Ref SessionDurationSeconds
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${ADPPlatformAccountId}:role/adp-hosted-agent'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Tags:
+        - Key: adp:managed
+          Value: 'true'
+        - Key: adp:permission-tier
+          Value: readonly
+
+Outputs:
+  RoleArn:
+    Description: ARN of the IAM role for ADP to assume.
+    Value: !GetAtt ADPReadOnlyRole.Arn
+
+  RoleName:
+    Description: Name of the IAM role.
+    Value: !Ref ADPReadOnlyRole
