@@ -639,6 +639,9 @@ module "lambda_authorizer" {
   common_tags = local.common_tags
   aws_region  = var.aws_region
 
+  # S3 bucket containing pre-built Lambda layer artifacts (Issue #408)
+  lambda_artifact_bucket = "adp-terraform-state-${var.account_id}"
+
   # Cognito Configuration
   cognito_user_pool_id = module.cognito.cognito_user_pool_id
 

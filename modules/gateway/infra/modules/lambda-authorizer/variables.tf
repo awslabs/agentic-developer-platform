@@ -52,6 +52,15 @@ variable "api_gateway_execution_arn" {
 }
 
 # =============================================================================
+# S3 Artifact Configuration (Issue #408)
+# =============================================================================
+
+variable "lambda_artifact_bucket" {
+  description = "S3 bucket containing the pre-built PyJWT layer zip (uploaded by CodeBuild)"
+  type        = string
+}
+
+# =============================================================================
 # Lambda Configuration
 # =============================================================================
 

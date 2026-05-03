@@ -1,0 +1,32 @@
+version: 0.2
+
+# CodeBuild buildspec for the PyJWT Lambda layer.
+#
+# Builds PyJWT[crypto] for Python 3.13 (x86_64) inside the official Lambda
+# runtime image, then zips and uploads the layer artifact to S3. Gateway Infra
+# Terraform references the zip via `aws_s3_object` data source.
+#
+# Env vars injected by the caller:
+#   AWS_REGION, ACCOUNT_ID, STATE_BUCKET
+
+phases:
+  pre_build:
+    commands:
+      - STATE_BUCKET="${STATE_BUCKET:-adp-terraform-state-${ACCOUNT_ID}}"
+      - LAYER_KEY="lambda-layers/pyjwt-py313.zip"
+      - echo "Will upload layer to s3://${STATE_BUCKET}/${LAYER_KEY}"
+
+  build:
+    commands:
+      - cd modules/gateway/lambda/layers/pyjwt
+      - bash build.sh docker
+      # Zip the python/ directory into Lambda layer format
+      - cd "${CODEBUILD_SRC_DIR}/modules/gateway/lambda/layers/pyjwt"
+      - zip -r /tmp/pyjwt-py313.zip python/
+
+  post_build:
+    commands:
+      - aws s3 cp /tmp/pyjwt-py313.zip "s3://${STATE_BUCKET}/${LAYER_KEY}" --region "${AWS_REGION}"
+      - echo "Uploaded layer artifact to s3://${STATE_BUCKET}/${LAYER_KEY}"
+      - HASH=$(sha256sum /tmp/pyjwt-py313.zip | cut -d' ' -f1)
+      - echo "SHA256: ${HASH}"

@@ -160,43 +160,32 @@ resource "aws_dynamodb_table_item" "test_agent" {
 }
 
 # =============================================================================
-# Lambda Layer for PyJWT
+# Lambda Layer for PyJWT (S3-sourced — Issue #408)
 # =============================================================================
-# Builds PyJWT[crypto] into a Lambda layer for JWT validation.
+# The layer zip is built by CodeBuild (adp-dev-pyjwt-layer project) and
+# uploaded to S3. Terraform references it via data source — no Docker daemon
+# required at apply time.
 
-resource "null_resource" "pyjwt_layer_build" {
-  # Always rebuild — the python/ directory doesn't persist between CI runs
-  triggers = {
-    always_run        = timestamp()
-    build_script_hash = filemd5("${path.root}/../lambda/layers/pyjwt/build.sh")
-  }
-
-  provisioner "local-exec" {
-    command     = "bash build.sh"
-    working_dir = "${path.root}/../lambda/layers/pyjwt"
-  }
-}
-
-data "archive_file" "pyjwt_layer" {
-  type        = "zip"
-  source_dir  = "${path.root}/../lambda/layers/pyjwt"
-  output_path = "${path.module}/pyjwt_layer.zip"
-  excludes    = ["build.sh"]
-
-  depends_on = [null_resource.pyjwt_layer_build]
+data "aws_s3_object" "pyjwt_layer" {
+  bucket = var.lambda_artifact_bucket
+  key    = "lambda-layers/pyjwt-py313.zip"
 }
 
 resource "aws_lambda_layer_version" "pyjwt" {
   layer_name          = "${var.name_prefix}-pyjwt-py313"
   description         = "PyJWT[crypto] for Python 3.13 (x86_64) - JWT validation"
-  filename            = data.archive_file.pyjwt_layer.output_path
-  source_code_hash    = data.archive_file.pyjwt_layer.output_base64sha256
+  s3_bucket           = var.lambda_artifact_bucket
+  s3_key              = "lambda-layers/pyjwt-py313.zip"
+  source_code_hash    = data.aws_s3_object.pyjwt_layer.etag
   compatible_runtimes = ["python3.13"]
 
   compatible_architectures = ["x86_64"]
 
   lifecycle {
     create_before_destroy = true
+    # Layer content is managed by CodeBuild workflow; don't replace on etag drift
+    # during plan if the zip hasn't actually changed semantically.
+    ignore_changes = [source_code_hash]
   }
 }
 

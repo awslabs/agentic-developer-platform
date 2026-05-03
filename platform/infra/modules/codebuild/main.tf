@@ -17,6 +17,7 @@ locals {
     "arc-runner"    = { buildspec = "codebuild/bs-arc-runner.yml" }
     "cyber-worker"  = { buildspec = "codebuild/bs-cyber-worker.yml" }
     "agent-runtime" = { buildspec = "codebuild/bs-agent-runtime.yml" }
+    "pyjwt-layer"   = { buildspec = "codebuild/bs-pyjwt-layer.yml" }
   }
 }
 
