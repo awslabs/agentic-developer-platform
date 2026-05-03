@@ -1,0 +1,69 @@
+name: Fix Gateway Infra Drift (one-shot)
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  TF_WORKING_DIR: modules/gateway/infra
+  BACKEND_CONFIG: environments/dev/modules/gateway-backend.tfvars
+  VAR_FILE: environments/dev/modules/gateway.tfvars
+  POOL_ID: us-east-1_JEhv9xSGG
+
+jobs:
+  fix:
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          if ! command -v aws >/dev/null; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp && sudo /tmp/aws/install
+          fi
+          if ! command -v terraform >/dev/null; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          if ! command -v kubectl >/dev/null; then
+            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          fi
+          aws eks update-kubeconfig --name adp-dev-eks-cluster --region "$AWS_REGION" >/dev/null
+
+      - name: Delete stuck RDS bootstrap K8s Job
+        run: |
+          kubectl delete job bedrockgw-dev-rds-bootstrap-c87c06e1 -n adp-gateway --ignore-not-found
+          echo "stuck job deleted (or was already gone)"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
+
+      - name: Import drifted resources
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -e
+          try_import() {
+            local addr="$1"; local id="$2"
+            if terraform state show "$addr" >/dev/null 2>&1; then
+              echo "SKIP $addr — already in state"
+            else
+              echo "IMPORT $addr <- $id"
+              terraform import -var-file="../../../${{ env.VAR_FILE }}" "$addr" "$id" || echo "  (import failed)"
+            fi
+          }
+          try_import 'module.cognito.aws_cognito_user_group.admins' "${POOL_ID}/admins"
+          try_import 'module.cognito.aws_cognito_user.test_user[0]'  "${POOL_ID}/adp-test@example.com"
+          try_import 'module.cognito.aws_cognito_user.test_admin[0]' "${POOL_ID}/adp-test-admin@example.com"
+          try_import 'module.cognito.aws_secretsmanager_secret.test_user_credentials[0]'  'adp/dev/gateway/test-user-credentials'
+          try_import 'module.cognito.aws_secretsmanager_secret.test_admin_credentials[0]' 'adp/dev/gateway/test-admin-credentials'
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -var-file="../../../${{ env.VAR_FILE }}" -auto-approve
