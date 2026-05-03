@@ -17,33 +17,9 @@ jobs:
           set -euo pipefail
           NS="adp-gateway"
           POD=$(kubectl get pods -n "$NS" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
-
-          # Dump env to find DB URL
-          DB_URL=$(kubectl exec -n "$NS" "$POD" -- bash -c 'env | grep -E "^DATABASE_URL=|^POSTGRES_URL=" | head -1 | cut -d= -f2-')
-          echo "DB_URL found (redacted host): $(echo "$DB_URL" | sed 's/:[^@]*@/:***@/')"
-
-          if [ -z "$DB_URL" ]; then
-            echo "No DATABASE_URL — checking for component vars"
-            kubectl exec -n "$NS" "$POD" -- bash -c 'env | grep -iE "postgres|db_" | grep -v PASSWORD' || true
-            exit 1
-          fi
-
+          echo "Pod: $POD"
           echo
-          echo "=== Drop orphan user_roles via psycopg2 (bundled with gateway image) ==="
-          kubectl exec -n "$NS" "$POD" -- python -c "
-          import os, asyncio, asyncpg
-          async def main():
-              url = os.environ.get('DATABASE_URL','')
-              # Strip +asyncpg + ?sslmode=require
-              url = url.replace('postgresql+asyncpg://','postgresql://').split('?')[0]
-              conn = await asyncpg.connect(url, ssl='require')
-              r = await conn.execute('DROP TABLE IF EXISTS user_roles CASCADE')
-              print('drop result:', r)
-              await conn.close()
-          asyncio.run(main())
-          "
-          echo
-          echo "=== alembic upgrade head ==="
+          echo "=== Trying alembic upgrade directly (now idempotent) ==="
           kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic upgrade head
           echo
           echo "=== Current revision ==="
