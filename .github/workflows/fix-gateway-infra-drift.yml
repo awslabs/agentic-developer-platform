@@ -39,11 +39,32 @@ jobs:
       - name: Delete stuck RDS bootstrap K8s Job
         run: |
           kubectl delete job bedrockgw-dev-rds-bootstrap-c87c06e1 -n adp-gateway --ignore-not-found
-          echo "stuck job deleted (or was already gone)"
+          # Also any other stale bootstrap jobs
+          kubectl get jobs -n adp-gateway --no-headers 2>/dev/null | awk '$2 != "1/1" {print $1}' | while read job; do
+            echo "Deleting incomplete job: $job"
+            kubectl delete job "$job" -n adp-gateway --ignore-not-found
+          done || true
+
+      - name: Build pyjwt layer (required before any terraform command)
+        working-directory: modules/gateway/lambda/layers/pyjwt
+        run: |
+          chmod +x build.sh
+          ./build.sh || echo "build.sh failed — layer may already be built or not needed"
+          ls -la
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
+
+      - name: Resolve secret ARNs
+        id: arns
+        run: |
+          USER_ARN=$(aws secretsmanager describe-secret --secret-id adp/dev/gateway/test-user-credentials --region "$AWS_REGION" --query ARN --output text)
+          ADMIN_ARN=$(aws secretsmanager describe-secret --secret-id adp/dev/gateway/test-admin-credentials --region "$AWS_REGION" --query ARN --output text)
+          echo "user_arn=$USER_ARN" >> "$GITHUB_OUTPUT"
+          echo "admin_arn=$ADMIN_ARN" >> "$GITHUB_OUTPUT"
+          echo "User ARN:  $USER_ARN"
+          echo "Admin ARN: $ADMIN_ARN"
 
       - name: Import drifted resources
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -55,14 +76,14 @@ jobs:
               echo "SKIP $addr — already in state"
             else
               echo "IMPORT $addr <- $id"
-              terraform import -var-file="../../../${{ env.VAR_FILE }}" "$addr" "$id" || echo "  (import failed)"
+              terraform import -var-file="../../../${{ env.VAR_FILE }}" "$addr" "$id" || echo "  (import failed: $addr)"
             fi
           }
           try_import 'module.cognito.aws_cognito_user_group.admins' "${POOL_ID}/admins"
           try_import 'module.cognito.aws_cognito_user.test_user[0]'  "${POOL_ID}/adp-test@example.com"
           try_import 'module.cognito.aws_cognito_user.test_admin[0]' "${POOL_ID}/adp-test-admin@example.com"
-          try_import 'module.cognito.aws_secretsmanager_secret.test_user_credentials[0]'  'adp/dev/gateway/test-user-credentials'
-          try_import 'module.cognito.aws_secretsmanager_secret.test_admin_credentials[0]' 'adp/dev/gateway/test-admin-credentials'
+          try_import 'module.cognito.aws_secretsmanager_secret.test_user_credentials[0]'  '${{ steps.arns.outputs.user_arn }}'
+          try_import 'module.cognito.aws_secretsmanager_secret.test_admin_credentials[0]' '${{ steps.arns.outputs.admin_arn }}'
 
       - name: Terraform Apply
         working-directory: ${{ env.TF_WORKING_DIR }}
