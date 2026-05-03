@@ -19,7 +19,7 @@ from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
-IdentityType = Literal["github_installation_id", "cognito_client_id"]
+IdentityType = Literal["github_installation_id", "cognito_client_id", "channel_user"]
 
 # Default TTL: 7 days (reconcile job refreshes before expiry)
 DEFAULT_TTL_SECONDS = 7 * 86400
@@ -54,12 +54,17 @@ class IdentityIndexClient:
 
     async def put_identity(
         self,
-        identity_type: IdentityType,
+        identity_type: "IdentityType | str",
         identity_value: str,
         org_id: str,
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
+        extra_attrs: dict[str, str | None] | None = None,
     ) -> bool:
         """Write an identity mapping to DynamoDB with retry.
+
+        Args:
+            extra_attrs: Optional dict of additional string attributes to store
+                         (e.g. user_id, provider_username). None values are skipped.
 
         Returns True if write succeeded, False if all retries exhausted.
         """
@@ -70,6 +75,12 @@ class IdentityIndexClient:
             "ttl": {"N": str(int(time.time()) + ttl_seconds)},
             "updated_at": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
         }
+
+        # Add extra attributes (skip None values)
+        if extra_attrs:
+            for key, value in extra_attrs.items():
+                if value is not None:
+                    item[key] = {"S": value}
 
         for attempt in range(MAX_RETRIES):
             try:

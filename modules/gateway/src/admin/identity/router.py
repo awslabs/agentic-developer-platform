@@ -14,6 +14,7 @@ from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
 from .identities_service import IdentitiesService
+from .identity_index_writer import IdentityIndexWriter
 from .organizations_service import OrganizationsService
 from .schemas import (
     IdentityCreateRequest,
@@ -124,7 +125,7 @@ async def create_user(
     current_user: TokenContext = Depends(get_current_user),
 ):
     """Create a user within an organization and optionally send a Cognito invite."""
-    svc = UsersService(db)
+    svc = UsersService(db, identity_writer=IdentityIndexWriter())
     try:
         return await svc.create_user(org_id, req)
     except Exception as e:
@@ -152,7 +153,7 @@ async def delete_user(
     current_user: TokenContext = Depends(get_current_user),
 ):
     """Delete a user from an organization."""
-    svc = UsersService(db)
+    svc = UsersService(db, identity_writer=IdentityIndexWriter())
     deleted = await svc.delete_user(org_id, user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found in org {org_id}")
@@ -171,7 +172,7 @@ async def add_identity(
     current_user: TokenContext = Depends(get_current_user),
 ):
     """Add a new provider identity to an existing user (cross-channel linkage)."""
-    svc = IdentitiesService(db)
+    svc = IdentitiesService(db, identity_writer=IdentityIndexWriter())
     result = await svc.add_identity(user_id, req)
     if result is None:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
@@ -198,7 +199,7 @@ async def delete_identity(
     current_user: TokenContext = Depends(get_current_user),
 ):
     """Remove a provider identity from a user."""
-    svc = IdentitiesService(db)
+    svc = IdentitiesService(db, identity_writer=IdentityIndexWriter())
     deleted = await svc.delete_identity(user_id, identity_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Identity {identity_id} not found for user {user_id}")

@@ -1,7 +1,9 @@
 """Transactional user CRUD service.
 
 Issue #387: Single authoritative writer for user records within an organization.
-Pattern: Postgres transaction first, then Cognito invite post-commit.
+Issue #401: DDB write-through for channel_user identity entries.
+
+Pattern: Postgres transaction first, then DDB write-through + Cognito invite post-commit.
 """
 
 import logging
@@ -13,6 +15,7 @@ from src.shared.models.organization import User
 from src.shared.models.vault import UserIdentity
 
 from .cognito_sync import CognitoSyncService
+from .identity_index_writer import IdentityIndexWriter
 from .schemas import UserCreateRequest, UserResponse
 
 logger = logging.getLogger(__name__)
@@ -33,18 +36,20 @@ def _user_to_response(user: User) -> UserResponse:
 
 
 class UsersService:
-    """Transactional user CRUD with post-commit Cognito side-effects."""
+    """Transactional user CRUD with post-commit DDB + Cognito side-effects."""
 
     def __init__(
         self,
         db: AsyncSession,
         cognito_sync: CognitoSyncService | None = None,
+        identity_writer: IdentityIndexWriter | None = None,
     ):
         self._db = db
         self._cognito_sync = cognito_sync or CognitoSyncService()
+        self._identity_writer = identity_writer
 
     async def create_user(self, org_id: str, req: UserCreateRequest) -> UserResponse:
-        """Create user + identities in Postgres, then send Cognito invite.
+        """Create user + identities in Postgres, then write-through to DDB and Cognito.
 
         Args:
             org_id: Organization ID (from URL path).
@@ -90,7 +95,24 @@ class UsersService:
 
         logger.info("User created: %s in org %s", user.id, org_id)
 
-        # Step 4: Post-commit — Cognito user creation + invite
+        # Step 4: Post-commit — DDB write-through for channel_user entries
+        if self._identity_writer and req.identities:
+            try:
+                await self._identity_writer.sync_user_identities(
+                    user_id=user.id,
+                    org_id=org_id,
+                    identities=[
+                        {
+                            "provider_user_id": ident.provider_user_id,
+                            "provider_username": ident.provider_username,
+                        }
+                        for ident in req.identities
+                    ],
+                )
+            except Exception:
+                logger.exception("DDB write-through failed for user %s (non-fatal)", user.id)
+
+        # Step 5: Post-commit — Cognito user creation + invite
         dept_id = f"{org_id}-dept-default"
         await self._cognito_sync.create_user_and_invite(
             email=req.email,
@@ -123,15 +145,35 @@ class UsersService:
         return _user_to_response(user)
 
     async def delete_user(self, org_id: str, user_id: str) -> bool:
-        """Delete a user from the organization. Returns False if not found."""
+        """Delete a user from the organization.
+
+        Removes from Postgres, then deletes all channel_user DDB entries + Cognito user.
+        Returns False if not found.
+        """
         result = await self._db.execute(select(User).where(User.id == user_id, User.org_id == org_id))
         user = result.scalar_one_or_none()
         if user is None:
             return False
 
+        # Query all identities for this user before deleting (for DDB cleanup)
+        identities_result = await self._db.execute(select(UserIdentity).where(UserIdentity.user_id == user_id))
+        identities = identities_result.scalars().all()
+        provider_user_ids = [i.provider_user_id for i in identities]
+
+        # Explicitly delete identities first (portable across DBs)
+        for ident in identities:
+            await self._db.delete(ident)
+
         email = user.email
         await self._db.delete(user)
         await self._db.commit()
+
+        # Post-commit: remove channel_user entries from DDB (best-effort)
+        if self._identity_writer and provider_user_ids:
+            try:
+                await self._identity_writer.delete_all_user_identities(provider_user_ids)
+            except Exception:
+                logger.exception("DDB delete failed for user %s identities (non-fatal)", user_id)
 
         # Post-commit: remove from Cognito (best-effort)
         await self._cognito_sync.delete_user(email)

@@ -1,6 +1,8 @@
 """User identity linkage CRUD service.
 
 Issue #387: Cross-channel identity linkage for existing users.
+Issue #401: DDB write-through for channel_user entries on add/delete.
+
 Allows adding/removing provider identities (e.g. linking a Slack account to a GitHub user).
 """
 
@@ -12,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.shared.models.organization import User
 from src.shared.models.vault import UserIdentity
 
+from .identity_index_writer import IdentityIndexWriter
 from .schemas import IdentityCreateRequest, IdentityResponse
 
 logger = logging.getLogger(__name__)
@@ -34,14 +37,20 @@ def _identity_to_response(identity: UserIdentity) -> IdentityResponse:
 
 
 class IdentitiesService:
-    """CRUD for user identity linkage."""
+    """CRUD for user identity linkage with DDB write-through."""
 
-    def __init__(self, db: AsyncSession):
+    def __init__(
+        self,
+        db: AsyncSession,
+        identity_writer: IdentityIndexWriter | None = None,
+    ):
         self._db = db
+        self._identity_writer = identity_writer
 
     async def add_identity(self, user_id: str, req: IdentityCreateRequest) -> IdentityResponse | None:
         """Add a new identity to an existing user.
 
+        Writes to Postgres then write-through to DDB channel_user entry.
         Returns None if user not found.
         """
         # Verify user exists
@@ -63,6 +72,21 @@ class IdentitiesService:
         await self._db.commit()
         await self._db.refresh(identity)
 
+        # Post-commit: write channel_user entry to DDB (best-effort)
+        if self._identity_writer:
+            try:
+                await self._identity_writer.put_user_identity(
+                    provider_user_id=req.provider_user_id,
+                    user_id=user_id,
+                    org_id=user.org_id,
+                    provider_username=req.provider_username,
+                )
+            except Exception:
+                logger.exception(
+                    "DDB write-through failed for identity %s (non-fatal)",
+                    req.provider_user_id,
+                )
+
         logger.info(
             "audit: identity_added user_id=%s provider=%s provider_user_id=%s",
             user_id,
@@ -78,7 +102,11 @@ class IdentitiesService:
         return [_identity_to_response(i) for i in identities]
 
     async def delete_identity(self, user_id: str, identity_id: str) -> bool:
-        """Delete an identity from a user. Returns False if not found."""
+        """Delete an identity from a user.
+
+        Removes from Postgres then deletes the channel_user DDB row.
+        Returns False if not found.
+        """
         result = await self._db.execute(
             select(UserIdentity).where(
                 UserIdentity.id == identity_id,
@@ -89,8 +117,19 @@ class IdentitiesService:
         if identity is None:
             return False
 
+        provider_user_id = identity.provider_user_id
         await self._db.delete(identity)
         await self._db.commit()
+
+        # Post-commit: remove channel_user entry from DDB (best-effort)
+        if self._identity_writer:
+            try:
+                await self._identity_writer.delete_user_identity(provider_user_id)
+            except Exception:
+                logger.exception(
+                    "DDB delete failed for identity %s (non-fatal)",
+                    provider_user_id,
+                )
 
         logger.info(
             "audit: identity_deleted user_id=%s identity_id=%s provider=%s",
