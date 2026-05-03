@@ -20,7 +20,19 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Create user_roles table."""
+    """Create user_roles table.
+
+    Idempotent: if the table already exists (e.g. a prior alembic run
+    committed the DDL before failing elsewhere and rolling back the version
+    bump), skip the CREATE and let alembic just advance its version pointer.
+    Without this guard, re-runs fail with DuplicateTableError and block
+    every subsequent migration.
+    """
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if "user_roles" in inspector.get_table_names():
+        return
+
     op.create_table(
         "user_roles",
         sa.Column("id", sa.String(length=36), nullable=False),

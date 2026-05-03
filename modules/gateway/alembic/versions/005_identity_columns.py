@@ -21,40 +21,53 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Add identity columns to organizations table with GIN indexes."""
-    # Add columns — idempotent guard via IF NOT EXISTS on indexes
-    op.add_column(
-        "organizations",
-        sa.Column(
-            "github_installation_ids",
-            JSONB(),
-            nullable=False,
-            server_default=sa.text("'[]'::jsonb"),
-        ),
-    )
-    op.add_column(
-        "organizations",
-        sa.Column(
-            "cognito_client_ids",
-            JSONB(),
-            nullable=False,
-            server_default=sa.text("'[]'::jsonb"),
-        ),
-    )
+    """Add identity columns + GIN indexes. Idempotent across re-runs.
+
+    Inspect the live schema first and skip operations that would fail on a
+    partial prior apply (e.g. columns committed outside a transaction that
+    alembic's version bump then rolled back).
+    """
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    existing_cols = {c["name"] for c in inspector.get_columns("organizations")}
+    existing_indexes = {i["name"] for i in inspector.get_indexes("organizations")}
+
+    if "github_installation_ids" not in existing_cols:
+        op.add_column(
+            "organizations",
+            sa.Column(
+                "github_installation_ids",
+                JSONB(),
+                nullable=False,
+                server_default=sa.text("'[]'::jsonb"),
+            ),
+        )
+    if "cognito_client_ids" not in existing_cols:
+        op.add_column(
+            "organizations",
+            sa.Column(
+                "cognito_client_ids",
+                JSONB(),
+                nullable=False,
+                server_default=sa.text("'[]'::jsonb"),
+            ),
+        )
 
     # GIN indexes for containment queries
-    op.create_index(
-        "ix_organizations_github_installation_ids",
-        "organizations",
-        ["github_installation_ids"],
-        postgresql_using="gin",
-    )
-    op.create_index(
-        "ix_organizations_cognito_client_ids",
-        "organizations",
-        ["cognito_client_ids"],
-        postgresql_using="gin",
-    )
+    if "ix_organizations_github_installation_ids" not in existing_indexes:
+        op.create_index(
+            "ix_organizations_github_installation_ids",
+            "organizations",
+            ["github_installation_ids"],
+            postgresql_using="gin",
+        )
+    if "ix_organizations_cognito_client_ids" not in existing_indexes:
+        op.create_index(
+            "ix_organizations_cognito_client_ids",
+            "organizations",
+            ["cognito_client_ids"],
+            postgresql_using="gin",
+        )
 
 
 def downgrade() -> None:
