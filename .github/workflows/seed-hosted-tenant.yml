@@ -1,0 +1,128 @@
+name: Seed Hosted Tenant (one-shot)
+
+# Seeds the Postgres identity tables for a single hosted tenant:
+#   - organizations (upsert)
+#   - departments (default)
+#   - teams (default)
+#   - channel_tenant_map (github + installation_id → org_id)
+#
+# Runs on ARC so it can reach the VPC-private RDS. Intended for ad-hoc
+# onboarding before the Gateway admin API lands (EPIC #374 Phase A/B).
+#
+# User auto-provisioning (users + user_identities) happens lazily in the
+# webhook Lambda on first inbound webhook — not here. This script is
+# idempotent; re-running is safe.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant_id:
+        description: 'Tenant slug (lowercase-hyphenated, e.g. sophos-test)'
+        required: true
+      org_name:
+        description: 'Human-readable org name (e.g. "Sophos Test")'
+        required: true
+      installation_id:
+        description: 'GitHub App installation ID (numeric)'
+        required: true
+      dry_run:
+        description: 'Only print planned SQL, do not execute'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: us-east-1
+  PGHOST: bedrockgw-dev-postgres.civhekhiupfe.us-east-1.rds.amazonaws.com
+  PGDATABASE: bedrockgateway
+
+jobs:
+  seed:
+    name: Seed tenant in Postgres
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install psql + jq
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client jq
+
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          if [[ ! "${{ inputs.tenant_id }}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+            echo "::error::tenant_id must be lowercase-hyphenated"
+            exit 1
+          fi
+          if [[ ! "${{ inputs.installation_id }}" =~ ^[0-9]+$ ]]; then
+            echo "::error::installation_id must be a positive integer"
+            exit 1
+          fi
+
+      - name: Resolve RDS credentials
+        run: |
+          set -euo pipefail
+          SECRET_ARN=$(aws secretsmanager list-secrets \
+            --region "$AWS_REGION" \
+            --filters Key=name,Values="rds!db-" \
+            --query 'SecretList[0].ARN' --output text)
+          SECRET=$(aws secretsmanager get-secret-value \
+            --secret-id "$SECRET_ARN" \
+            --region "$AWS_REGION" \
+            --query SecretString --output text)
+          PGUSER=$(echo "$SECRET" | jq -r .username)
+          PGPASSWORD=$(echo "$SECRET" | jq -r .password)
+          echo "::add-mask::$PGPASSWORD"
+          echo "PGUSER=$PGUSER" >> "$GITHUB_ENV"
+          echo "PGPASSWORD=$PGPASSWORD" >> "$GITHUB_ENV"
+
+      - name: Build seed SQL
+        run: |
+          set -euo pipefail
+          TENANT_ID='${{ inputs.tenant_id }}'
+          ORG_NAME='${{ inputs.org_name }}'
+          INSTALLATION_ID='${{ inputs.installation_id }}'
+          DEPT_ID="${TENANT_ID}-dept-default"
+          TEAM_ID="${TENANT_ID}-team-default"
+
+          cat > /tmp/seed.sql <<SQL
+          INSERT INTO organizations (id, name, aws_accounts, role_mappings, settings, created_at)
+          VALUES ('$TENANT_ID', '$ORG_NAME', '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, now())
+          ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name;
+
+          INSERT INTO departments (id, name, org_id)
+          VALUES ('$DEPT_ID', 'Default', '$TENANT_ID')
+          ON CONFLICT (id) DO NOTHING;
+
+          INSERT INTO teams (id, name, department_id, org_id)
+          VALUES ('$TEAM_ID', 'Default', '$DEPT_ID', '$TENANT_ID')
+          ON CONFLICT (id) DO NOTHING;
+
+          INSERT INTO channel_tenant_map (id, provider, provider_scope_id, org_id, created_at)
+          VALUES (gen_random_uuid()::text, 'github', '$INSTALLATION_ID', '$TENANT_ID', now())
+          ON CONFLICT (provider, provider_scope_id) DO NOTHING;
+
+          \echo '--- Verify ---'
+          SELECT 'organizations' AS "table", COUNT(*) AS rows FROM organizations WHERE id = '$TENANT_ID'
+          UNION ALL
+          SELECT 'departments',   COUNT(*) FROM departments   WHERE org_id = '$TENANT_ID'
+          UNION ALL
+          SELECT 'teams',         COUNT(*) FROM teams         WHERE org_id = '$TENANT_ID'
+          UNION ALL
+          SELECT 'channel_tenant_map', COUNT(*) FROM channel_tenant_map
+                WHERE provider = 'github' AND provider_scope_id = '$INSTALLATION_ID';
+          SQL
+
+          echo "=== Planned SQL ==="
+          cat /tmp/seed.sql
+
+      - name: Execute seed
+        if: inputs.dry_run == false
+        run: |
+          set -euo pipefail
+          psql -v ON_ERROR_STOP=1 -f /tmp/seed.sql
+
+      - name: Dry-run notice
+        if: inputs.dry_run == true
+        run: echo "::notice::Dry run — SQL printed above, nothing executed."
