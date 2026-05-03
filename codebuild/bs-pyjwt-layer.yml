@@ -26,7 +26,9 @@ phases:
 
   post_build:
     commands:
-      - aws s3 cp /tmp/pyjwt-py313.zip "s3://${STATE_BUCKET}/${LAYER_KEY}" --region "${AWS_REGION}"
-      - echo "Uploaded layer artifact to s3://${STATE_BUCKET}/${LAYER_KEY}"
-      - HASH=$(sha256sum /tmp/pyjwt-py313.zip | cut -d' ' -f1)
-      - echo "SHA256: ${HASH}"
+      # Quote every command — CodeBuild's YAML parser misreads unquoted shell
+      # substitutions like $(...) as YAML flow scalars and rejects the whole
+      # file with "value of the key tag might be empty".
+      - 'aws s3 cp /tmp/pyjwt-py313.zip "s3://${STATE_BUCKET}/${LAYER_KEY}" --region "${AWS_REGION}"'
+      - 'echo "Uploaded layer artifact to s3://${STATE_BUCKET}/${LAYER_KEY}"'
+      - 'HASH=$(sha256sum /tmp/pyjwt-py313.zip | cut -d" " -f1) && echo "SHA256: ${HASH}"'
