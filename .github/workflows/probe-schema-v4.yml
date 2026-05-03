@@ -1,0 +1,25 @@
+name: Probe Schema v4
+on:
+  workflow_dispatch:
+env:
+  AWS_REGION: us-east-1
+jobs:
+  probe:
+    runs-on: arc-runner-org
+    steps:
+      - run: |
+          if ! command -v kubectl >/dev/null; then
+            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          fi
+          aws eks update-kubeconfig --name adp-dev-eks-cluster --region "$AWS_REGION" >/dev/null
+      - run: |
+          set -euo pipefail
+          NS="adp-gateway"
+          POD=$(kubectl get pods -n "$NS" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+          # Show full env from the running container
+          echo "=== App env vars (DB-related) ==="
+          kubectl exec -n "$NS" "$POD" -- env | grep -iE "^(POSTGRES|DATABASE|DB_)" | sort || true
+          echo
+          echo "=== Current alembic head ==="
+          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic current
