@@ -119,6 +119,15 @@ RUN curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release
 # Install pip-based Python tools (uv, poetry)
 RUN pip3 install --no-cache-dir --break-system-packages uv poetry
 
+# Python runtime deps for entrypoint.py + lib/
+#   boto3        — Secrets Manager, STS, DynamoDB clients (vault_client, sts_assume)
+#   PyJWT[crypto] — GitHub App installation-token JWT minting (github_token)
+#   requests     — HTTPS calls to GitHub API (github_token)
+RUN pip3 install --no-cache-dir --break-system-packages \
+    'boto3>=1.34' \
+    'PyJWT[crypto]>=2.9' \
+    'requests>=2.31'
+
 # Create non-root user
 RUN groupadd -g 1001 agent && \
     useradd -m -u 1001 -g agent -s /bin/bash agent && \
