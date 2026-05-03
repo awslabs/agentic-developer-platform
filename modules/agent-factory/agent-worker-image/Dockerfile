@@ -137,8 +137,9 @@ COPY --from=builder --chown=agent:agent /build/prod_modules/ /app/node_modules/
 COPY --from=stager --chown=agent:agent /stage/personas/ /app/personas/
 COPY --from=stager --chown=agent:agent /stage/skills/ /app/skills/
 
-# Copy entrypoint
+# Copy entrypoint and its lib/ support modules (vault_client, github_token, sts_assume)
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/entrypoint.py /app/entrypoint.py
+COPY --chown=agent:agent modules/agent-factory/agent-worker-image/lib/ /app/lib/
 
 # Set working directory and switch to non-root user
 WORKDIR /work
