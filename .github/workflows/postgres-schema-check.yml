@@ -1,0 +1,48 @@
+name: Postgres Schema Check (one-shot)
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  check:
+    name: Probe schema
+    runs-on: arc-runner-org
+    steps:
+      - name: Install psql
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client jq
+
+      - name: Query tables and alembic version
+        run: |
+          set -euo pipefail
+          SECRET_ARN=$(aws secretsmanager list-secrets \
+            --region "$AWS_REGION" \
+            --filters Key=name,Values="rds!db-" \
+            --query 'SecretList[0].ARN' --output text)
+          SECRET=$(aws secretsmanager get-secret-value \
+            --secret-id "$SECRET_ARN" \
+            --region "$AWS_REGION" \
+            --query SecretString --output text)
+          export PGUSER=$(echo "$SECRET" | jq -r .username)
+          export PGPASSWORD=$(echo "$SECRET" | jq -r .password)
+          export PGHOST="bedrockgw-dev-postgres.civhekhiupfe.us-east-1.rds.amazonaws.com"
+          export PGDATABASE="bedrockgateway"
+
+          echo "=== Alembic current revision ==="
+          psql -t -c "SELECT version_num FROM alembic_version;" 2>&1 || true
+          echo
+          echo "=== All tables ==="
+          psql -t -c "\dt" 2>&1
+          echo
+          echo "=== user_identities row count ==="
+          psql -t -c "SELECT COUNT(*) FROM user_identities;" 2>&1 || echo "(table missing)"
+          echo
+          echo "=== channel_tenant_map row count ==="
+          psql -t -c "SELECT COUNT(*) FROM channel_tenant_map;" 2>&1 || echo "(table missing)"
+          echo
+          echo "=== organizations columns ==="
+          psql -t -c "SELECT column_name FROM information_schema.columns WHERE table_name='organizations' ORDER BY ordinal_position;" 2>&1
