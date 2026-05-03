@@ -1,0 +1,38 @@
+name: Probe Schema v3
+on:
+  workflow_dispatch:
+env:
+  AWS_REGION: us-east-1
+jobs:
+  probe:
+    runs-on: arc-runner-org
+    steps:
+      - run: |
+          if ! command -v kubectl >/dev/null; then
+            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          fi
+          aws eks update-kubeconfig --name adp-dev-eks-cluster --region "$AWS_REGION" >/dev/null
+      - run: |
+          set -euo pipefail
+          NS="adp-gateway"
+          POD=$(kubectl get pods -n "$NS" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app python -c "
+          import asyncio, asyncpg, os
+          async def main():
+              url = os.environ.get('DATABASE_URL') or os.environ.get('POSTGRES_URL')
+              if not url:
+                  host = os.environ['POSTGRES_HOST']; db = os.environ.get('POSTGRES_DB','bedrockgateway')
+                  user = os.environ['POSTGRES_USER']; pwd = os.environ['POSTGRES_PASSWORD']
+                  url = f'postgres://{user}:{pwd}@{host}:5432/{db}'
+              url = url.replace('postgresql+asyncpg://','postgres://').replace('postgresql://','postgres://').replace('?sslmode=require','')
+              conn = await asyncpg.connect(url, ssl='require')
+              rev = await conn.fetchval('SELECT version_num FROM alembic_version')
+              print('alembic_rev:', rev)
+              cols = await conn.fetch(\"SELECT column_name FROM information_schema.columns WHERE table_name='organizations' ORDER BY ordinal_position\")
+              print('organizations_cols:', [c['column_name'] for c in cols])
+              tables = await conn.fetch(\"SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename\")
+              print('tables:', [t['tablename'] for t in tables])
+              await conn.close()
+          asyncio.run(main())
+          "
