@@ -130,6 +130,7 @@ for i in 0 1 2; do
   URL="${URL}&contents=write"
   URL="${URL}&issues=write"
   URL="${URL}&pull_requests=write"
+  URL="${URL}&checks=write"
   URL="${URL}&workflows=write"
   URL="${URL}&metadata=read"
   URL="${URL}&members=read"

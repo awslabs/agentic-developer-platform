@@ -24,6 +24,7 @@ from pathlib import Path
 
 import boto3
 
+from lib.check_run import create_check_run, update_check_run
 from lib.github_token import mint_installation_token
 from lib.sts_assume import assume_customer_role
 from lib.vault_client import VaultClient
@@ -155,6 +156,32 @@ def main() -> int:
     run_cmd(["git", "clone", "--depth=20", clone_url, str(WORK_DIR)])
     logger.info("Cloned %s to %s", repo, WORK_DIR)
 
+    # Resolve default-branch HEAD sha for Check Run attachment (best-effort)
+    head_sha = ""
+    try:
+        sha_result = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR)
+        head_sha = sha_result.stdout.strip()
+        logger.info("Resolved HEAD sha: %s", head_sha[:7])
+    except Exception as exc:
+        logger.warning("Could not resolve HEAD sha (non-fatal): %s", exc)
+
+    # Create GitHub Check Run (best-effort — failure must NOT fail the pod)
+    check_run_id: int | None = None
+    check_run_url: str = ""
+    if head_sha:
+        try:
+            cr = create_check_run(
+                repo=repo,
+                head_sha=head_sha,
+                persona=persona,
+                issue=issue,
+                token=token,
+            )
+            check_run_id = cr["id"]
+            check_run_url = cr["html_url"]
+        except Exception as exc:
+            logger.warning("Failed to create check run (non-fatal): %s", exc)
+
     # Step 6: Configure git identity
     bot_email = f"{app_id}+adp-agent[bot]@users.noreply.github.com"
     run_cmd(["git", "config", "user.email", bot_email], cwd=WORK_DIR)
@@ -192,9 +219,15 @@ def main() -> int:
 
     # Step 9: Post "started" comment (idempotent via message_id)
     started_marker = f"<!-- adp-run:{message_id} -->"
+    _live_link = (
+        f"\n\n**Live progress:** [View run ↗]({check_run_url})"
+        if check_run_url
+        else ""
+    )
     started_body = (
         f"{started_marker}\n"
-        f"🤖 **Agent `{persona}` started** working on this issue.\n\n"
+        f"🤖 **Agent `{persona}` started** working on this issue."
+        f"{_live_link}\n\n"
         f"_Run ID: `{message_id}`_"
     )
     try:
@@ -239,6 +272,30 @@ def main() -> int:
         exit_code = _handle_success(repo, issue, branch_name, persona, message_id)
     else:
         exit_code = _handle_failure(repo, issue, persona, message_id, result.returncode)
+
+    # Finalize the Check Run (best-effort — must NOT affect pod exit code)
+    if check_run_id is not None:
+        try:
+            if exit_code == 0:
+                cr_conclusion = "success"
+                cr_title = f"Agent {persona} completed successfully"
+                cr_summary = f"Agent `{persona}` finished processing issue #{issue}."
+            else:
+                cr_conclusion = "failure"
+                cr_title = f"Agent {persona} failed (exit {result.returncode})"
+                cr_summary = (
+                    f"Agent `{persona}` exited with code {result.returncode} on issue #{issue}."
+                )
+            update_check_run(
+                repo=repo,
+                check_run_id=check_run_id,
+                token=token,
+                status="completed",
+                conclusion=cr_conclusion,
+                output={"title": cr_title, "summary": cr_summary},
+            )
+        except Exception as exc:
+            logger.warning("Failed to finalize check run (non-fatal): %s", exc)
 
     # Step 13: Delete the SQS message if everything succeeded.
     # On failure we intentionally do NOT delete — SQS visibility timeout

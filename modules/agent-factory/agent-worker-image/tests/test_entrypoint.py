@@ -15,6 +15,7 @@ import pytest
 # Add parent to path so we can import the modules
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from lib.check_run import create_check_run, update_check_run
 from lib.vault_client import VaultClient
 from lib.github_token import generate_jwt, mint_installation_token
 from lib.sts_assume import assume_customer_role
@@ -373,3 +374,303 @@ class TestEntrypointMain:
         message_id = "msg-abc-123"
         expected_marker = f"<!-- adp-completed:{message_id} -->"
         assert f"adp-completed:{message_id}" in expected_marker
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.rmtree")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_check_run_created_and_finalized_on_success(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_rmtree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_create_cr,
+        mock_update_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Check run is created after clone and finalized after agent succeeds."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-handle-abc")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+
+        # run_cmd: clone, rev-parse, git config x2, label remove, comment check, comment post,
+        # git diff (no changes), completion comment check, completion comment post
+        mock_run_cmd.side_effect = [
+            MagicMock(stdout="", returncode=0),              # git clone
+            MagicMock(stdout="abc1234def5678\n", returncode=0),  # git rev-parse HEAD
+            MagicMock(stdout="", returncode=0),              # git config email
+            MagicMock(stdout="", returncode=0),              # git config name
+            MagicMock(stdout="", returncode=0),              # gh label remove
+            MagicMock(stdout="", returncode=0),              # gh issue view (started comment check)
+            MagicMock(stdout="", returncode=0),              # gh issue comment (started)
+            MagicMock(stdout="", returncode=0),              # git diff --stat (no changes)
+            MagicMock(stdout="", returncode=0),              # gh issue view (completed check)
+            MagicMock(stdout="", returncode=0),              # gh issue comment (completed)
+        ]
+
+        mock_create_cr.return_value = {
+            "id": 9876,
+            "html_url": "https://github.com/acme-corp/flagship-app/runs/9876",
+        }
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        result = main()
+        assert result == 0
+
+        mock_create_cr.assert_called_once_with(
+            repo="acme-corp/flagship-app",
+            head_sha="abc1234def5678",
+            persona="developer",
+            issue=42,
+            token="ghs_test",
+        )
+        mock_update_cr.assert_called_once()
+        call_kwargs = mock_update_cr.call_args[1]
+        assert call_kwargs["status"] == "completed"
+        assert call_kwargs["conclusion"] == "success"
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_check_run_finalized_with_failure_on_agent_error(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_create_cr,
+        mock_update_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Check run is finalized with conclusion=failure when agent exits non-zero."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-handle-xyz")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="deadbeef1234\n", returncode=0)
+
+        mock_create_cr.return_value = {
+            "id": 5555,
+            "html_url": "https://github.com/acme-corp/flagship-app/runs/5555",
+        }
+        mock_subprocess_run.return_value = MagicMock(returncode=2)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        result = main()
+        assert result == 2
+
+        mock_update_cr.assert_called_once()
+        call_kwargs = mock_update_cr.call_args[1]
+        assert call_kwargs["conclusion"] == "failure"
+        assert call_kwargs["status"] == "completed"
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_check_run_failure_does_not_fail_pod(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_create_cr,
+        mock_update_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """A Check Run API error must not cause the pod to fail."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-handle-123")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+
+        # create_check_run raises — should be silently swallowed
+        mock_create_cr.side_effect = RuntimeError("API down")
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        # Pod should still exit 0 despite check run failure
+        result = main()
+        assert result == 0
+        # update_check_run should NOT be called since create failed
+        mock_update_cr.assert_not_called()
+
+
+# --- Test: check_run library ---
+
+
+class TestCheckRun:
+    @patch("lib.check_run.requests.post")
+    def test_create_check_run_success(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 201
+        mock_resp.json.return_value = {
+            "id": 12345,
+            "html_url": "https://github.com/acme/repo/runs/12345",
+        }
+        mock_post.return_value = mock_resp
+
+        result = create_check_run(
+            repo="acme/repo",
+            head_sha="abc123def456",
+            persona="developer",
+            issue=42,
+            token="ghs_test_token",
+        )
+
+        assert result["id"] == 12345
+        assert result["html_url"] == "https://github.com/acme/repo/runs/12345"
+
+        call_kwargs = mock_post.call_args[1]
+        body = call_kwargs["json"]
+        assert body["name"] == "ADP Agent: developer"
+        assert body["head_sha"] == "abc123def456"
+        assert body["status"] == "in_progress"
+        assert "42" in body["details_url"]
+        assert "developer" in body["output"]["title"]
+
+    @patch("lib.check_run.requests.post")
+    def test_create_check_run_api_error_raises(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_resp.text = "Resource not accessible by integration"
+        mock_post.return_value = mock_resp
+
+        with pytest.raises(RuntimeError, match="Failed to create check run"):
+            create_check_run(
+                repo="acme/repo",
+                head_sha="abc123",
+                persona="developer",
+                issue=42,
+                token="bad_token",
+            )
+
+    @patch("lib.check_run.requests.patch")
+    def test_update_check_run_success(self, mock_patch):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_patch.return_value = mock_resp
+
+        update_check_run(
+            repo="acme/repo",
+            check_run_id=12345,
+            token="ghs_test_token",
+            status="completed",
+            conclusion="success",
+            output={"title": "All good", "summary": "Agent completed."},
+        )
+
+        mock_patch.assert_called_once()
+        call_url = mock_patch.call_args[0][0]
+        assert "12345" in call_url
+        body = mock_patch.call_args[1]["json"]
+        assert body["status"] == "completed"
+        assert body["conclusion"] == "success"
+        assert "completed_at" in body
+        assert body["output"]["title"] == "All good"
+
+    @patch("lib.check_run.requests.patch")
+    def test_update_check_run_api_error_raises(self, mock_patch):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.text = "Not Found"
+        mock_patch.return_value = mock_resp
+
+        with pytest.raises(RuntimeError, match="Failed to update check run"):
+            update_check_run(
+                repo="acme/repo",
+                check_run_id=99999,
+                token="ghs_test_token",
+                status="completed",
+                conclusion="failure",
+            )
+
+    @patch("lib.check_run.requests.patch")
+    def test_update_check_run_partial_payload(self, mock_patch):
+        """Only provided fields appear in the PATCH payload."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_patch.return_value = mock_resp
+
+        update_check_run(
+            repo="acme/repo",
+            check_run_id=111,
+            token="ghs_test_token",
+            status="in_progress",
+        )
+
+        body = mock_patch.call_args[1]["json"]
+        assert body["status"] == "in_progress"
+        assert "conclusion" not in body
+        assert "completed_at" not in body
+        assert "output" not in body
