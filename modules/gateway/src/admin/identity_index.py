@@ -19,7 +19,7 @@ from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
-IdentityType = Literal["github_installation_id", "cognito_client_id", "channel_user"]
+IdentityType = Literal["github_installation_id", "cognito_client_id", "github_user"]
 
 # Default TTL: 7 days (reconcile job refreshes before expiry)
 DEFAULT_TTL_SECONDS = 7 * 86400

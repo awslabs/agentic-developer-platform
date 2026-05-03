@@ -12,8 +12,12 @@ from src.admin.identity_index import IdentityIndexClient
 
 logger = logging.getLogger(__name__)
 
-# identity_type value for user-level channel identity rows
-CHANNEL_USER_TYPE = "channel_user"
+# identity_type value for user-level channel identity rows.
+# Provider-in-key convention matches Phase A.1's `github_installation_id`
+# (declared in src/admin/identity_index.py::IdentityType). The webhook
+# Lambda's identity_resolver reads rows keyed as `github_user` — writer and
+# reader must agree.
+GITHUB_USER_TYPE = "github_user"
 
 
 class IdentityIndexWriter:
@@ -84,7 +88,7 @@ class IdentityIndexWriter:
             org_id,
         )
         return await self._client.put_identity(
-            identity_type=CHANNEL_USER_TYPE,
+            identity_type=GITHUB_USER_TYPE,
             identity_value=provider_user_id,
             org_id=org_id,
             extra_attrs={
@@ -103,7 +107,7 @@ class IdentityIndexWriter:
             provider_user_id,
         )
         return await self._client.delete_identity(
-            identity_type=CHANNEL_USER_TYPE,
+            identity_type=GITHUB_USER_TYPE,
             identity_value=provider_user_id,
         )
 
