@@ -5,18 +5,21 @@ on:
 
 env:
   AWS_REGION: us-east-1
+  PGHOST: bedrockgw-dev-postgres.civhekhiupfe.us-east-1.rds.amazonaws.com
+  PGDATABASE: bedrockgateway
+  PGSSLMODE: require
 
 jobs:
   check:
     name: Probe schema
     runs-on: arc-runner-org
     steps:
-      - name: Install psql
+      - name: Install psql + jq
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends postgresql-client jq
 
-      - name: Query tables and alembic version
+      - name: Resolve RDS credentials
         run: |
           set -euo pipefail
           SECRET_ARN=$(aws secretsmanager list-secrets \
@@ -27,22 +30,35 @@ jobs:
             --secret-id "$SECRET_ARN" \
             --region "$AWS_REGION" \
             --query SecretString --output text)
-          export PGUSER=$(echo "$SECRET" | jq -r .username)
-          export PGPASSWORD=$(echo "$SECRET" | jq -r .password)
-          export PGHOST="bedrockgw-dev-postgres.civhekhiupfe.us-east-1.rds.amazonaws.com"
-          export PGDATABASE="bedrockgateway"
+          PGUSER=$(echo "$SECRET" | jq -r .username)
+          PGPASSWORD=$(echo "$SECRET" | jq -r .password)
+          echo "::add-mask::$PGPASSWORD"
+          echo "PGUSER=$PGUSER" >> "$GITHUB_ENV"
+          echo "PGPASSWORD=$PGPASSWORD" >> "$GITHUB_ENV"
 
+      - name: Probe
+        run: |
+          set -euo pipefail
           echo "=== Alembic current revision ==="
-          psql -t -c "SELECT version_num FROM alembic_version;" 2>&1 || true
+          psql -t -c "SELECT version_num FROM alembic_version;"
           echo
-          echo "=== All tables ==="
-          psql -t -c "\dt" 2>&1
+          echo "=== Tables ==="
+          psql -c "\dt"
           echo
-          echo "=== user_identities row count ==="
-          psql -t -c "SELECT COUNT(*) FROM user_identities;" 2>&1 || echo "(table missing)"
+          echo "=== organizations ==="
+          psql -c "SELECT id, name, created_at FROM organizations ORDER BY created_at;"
           echo
-          echo "=== channel_tenant_map row count ==="
-          psql -t -c "SELECT COUNT(*) FROM channel_tenant_map;" 2>&1 || echo "(table missing)"
+          echo "=== departments ==="
+          psql -c "SELECT id, name, org_id FROM departments ORDER BY org_id, id;"
           echo
-          echo "=== organizations columns ==="
-          psql -t -c "SELECT column_name FROM information_schema.columns WHERE table_name='organizations' ORDER BY ordinal_position;" 2>&1
+          echo "=== teams ==="
+          psql -c "SELECT id, name, department_id, org_id FROM teams ORDER BY org_id, id;"
+          echo
+          echo "=== users ==="
+          psql -c "SELECT id, email, team_id, org_id, cognito_sub FROM users ORDER BY org_id, id;"
+          echo
+          echo "=== user_identities ==="
+          psql -c "SELECT id, org_id, user_id, provider, provider_user_id, provider_username FROM user_identities ORDER BY provider, provider_user_id;" || echo "(table missing)"
+          echo
+          echo "=== channel_tenant_map ==="
+          psql -c "SELECT id, provider, provider_scope_id, org_id, created_at FROM channel_tenant_map ORDER BY provider, provider_scope_id;" || echo "(table missing)"
