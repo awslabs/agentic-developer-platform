@@ -18,19 +18,18 @@ jobs:
           fi
           aws eks update-kubeconfig --name adp-dev-eks-cluster --region "$AWS_REGION" >/dev/null
 
-      - name: Discover + run alembic
+      - name: Run alembic
         run: |
           set -euo pipefail
-          echo "=== Namespaces ==="
-          kubectl get ns
-          echo
-          echo "=== Gateway pods ==="
-          kubectl get pods -A --field-selector=status.phase=Running | grep -i gateway || true
-          echo
           NS="adp-gateway"
           POD=$(kubectl get pods -n "$NS" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
-          echo "Running alembic in $NS/$POD"
-          kubectl exec -n "$NS" "$POD" -- alembic upgrade head
+          echo "Using $NS/$POD"
+          # Show current revision
+          echo "=== Before ==="
+          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic current || true
           echo
-          echo "=== Current revision ==="
-          kubectl exec -n "$NS" "$POD" -- alembic current
+          echo "=== Upgrade ==="
+          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic upgrade head
+          echo
+          echo "=== After ==="
+          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic current
