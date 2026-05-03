@@ -19,8 +19,8 @@ os.environ.setdefault("WEBHOOK_SECRET_ARN", "")  # Empty = use WEBHOOK_SECRET fa
 os.environ.setdefault(
     "SUBMIT_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123456789/adp-dev-agent-submit.fifo"
 )
-os.environ.setdefault("TENANTS_TABLE", "adp-tenants")
-os.environ.setdefault("RATE_LIMIT_TABLE", "adp-rate-limits")
+os.environ.setdefault("IDENTITY_INDEX_TABLE", "adp-dev-identity-index")
+os.environ.setdefault("RATE_LIMITS_TABLE", "adp-dev-rate-limits")
 os.environ.setdefault("AWS_REGION", "us-east-1")
 
 
@@ -48,6 +48,26 @@ def _make_event(event_type: str, payload: dict, signed: bool = True) -> dict:
         "body": body,
         "isBase64Encoded": False,
     }
+
+
+def _mock_resolved_identity(tenant_id="acme", user_id="u_test1"):
+    """Create a mock ResolvedIdentity for tests that need a resolved identity."""
+    from common.identity_resolver import ResolvedIdentity
+
+    return ResolvedIdentity(
+        tenant_id=tenant_id,
+        org_id=tenant_id,
+        user_id=user_id,
+        user_provisioning_mode="strict",
+    )
+
+
+def _mock_rate_result(allowed=True, retry_after=0):
+    """Create a mock rate limit result."""
+    mock = MagicMock()
+    mock.allowed = allowed
+    mock.retry_after_seconds = retry_after
+    return mock
 
 
 class TestSignatureValidation:
@@ -82,11 +102,11 @@ class TestSignatureValidation:
 
 class TestTenantResolution:
     @patch("handler._get_events_log")
-    @patch("handler._get_tenant_resolver")
+    @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
-    def test_unknown_installation_returns_200_ignored(self, mock_sig, mock_tenant, mock_log):
+    def test_unknown_installation_returns_403(self, mock_sig, mock_resolver, mock_log):
         mock_sig.return_value.verify_github_signature.return_value = True
-        mock_tenant.return_value.resolve_tenant.return_value = None
+        mock_resolver.return_value.resolve.return_value = (None, "unknown_installation")
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
@@ -102,21 +122,25 @@ class TestTenantResolution:
         event = _make_event("issues", payload)
         result = handler(event, None)
 
-        assert result["statusCode"] == 200
+        assert result["statusCode"] == 403
         body = json.loads(result["body"])
-        assert body["status"] == "ignored"
-        assert body["reason"] == "unknown_installation"
+        assert body["error"] == "unknown_identity"
+        assert body["outcome"] == "unknown_installation"
 
 
 class TestRateLimiting:
     @patch("handler._get_events_log")
-    @patch("handler._get_rate_limit")
-    @patch("handler._get_tenant_resolver")
+    @patch("handler._get_rate_limiter")
+    @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
-    def test_rate_limited_returns_429(self, mock_sig, mock_tenant, mock_rate, mock_log):
+    def test_rate_limited_returns_429(self, mock_sig, mock_resolver, mock_rate, mock_log):
         mock_sig.return_value.verify_github_signature.return_value = True
-        mock_tenant.return_value.resolve_tenant.return_value = {"tenant_id": "acme"}
-        mock_rate.return_value.check_rate_limit.return_value = (False, 45)
+        mock_resolver.return_value.resolve.return_value = (
+            _mock_resolved_identity(), "ok"
+        )
+        mock_rate.return_value.check_and_increment.return_value = _mock_rate_result(
+            allowed=False, retry_after=45
+        )
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
@@ -138,15 +162,17 @@ class TestRateLimiting:
 
 class TestIntentParsing:
     @patch("handler._get_events_log")
-    @patch("handler._get_rate_limit")
-    @patch("handler._get_tenant_resolver")
+    @patch("handler._get_rate_limiter")
+    @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
     def test_no_actionable_intent_returns_200_noop(
-        self, mock_sig, mock_tenant, mock_rate, mock_log
+        self, mock_sig, mock_resolver, mock_rate, mock_log
     ):
         mock_sig.return_value.verify_github_signature.return_value = True
-        mock_tenant.return_value.resolve_tenant.return_value = {"tenant_id": "acme"}
-        mock_rate.return_value.check_rate_limit.return_value = (True, 0)
+        mock_resolver.return_value.resolve.return_value = (
+            _mock_resolved_identity(), "ok"
+        )
+        mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
@@ -170,15 +196,17 @@ class TestIntentParsing:
 class TestSuccessfulPublish:
     @patch("handler._get_events_log")
     @patch("handler._get_sqs_publisher")
-    @patch("handler._get_rate_limit")
-    @patch("handler._get_tenant_resolver")
+    @patch("handler._get_rate_limiter")
+    @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
     def test_labeled_issue_publishes_envelope(
-        self, mock_sig, mock_tenant, mock_rate, mock_sqs, mock_log
+        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log
     ):
         mock_sig.return_value.verify_github_signature.return_value = True
-        mock_tenant.return_value.resolve_tenant.return_value = {"tenant_id": "acme"}
-        mock_rate.return_value.check_rate_limit.return_value = (True, 0)
+        mock_resolver.return_value.resolve.return_value = (
+            _mock_resolved_identity("acme", "u_jane"), "ok"
+        )
+        mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value.publish_envelope.return_value = "msg-id-123"
         mock_log.return_value.log_event = MagicMock()
 
@@ -195,7 +223,7 @@ class TestSuccessfulPublish:
         event = _make_event("issues", payload)
         result = handler(event, None)
 
-        assert result["statusCode"] == 200
+        assert result["statusCode"] == 202
         body = json.loads(result["body"])
         assert body["status"] == "accepted"
         assert body["message_id"] == "msg-id-123"
@@ -206,6 +234,8 @@ class TestSuccessfulPublish:
         assert envelope["channel"] == "github"
         assert envelope["tenant_id"] == "acme"
         assert envelope["persona"] == "developer"
+        assert envelope["actor"]["user_id"] == "u_jane"
+        assert envelope["actor"]["org_id"] == "acme"
         assert envelope["actor"]["github_login"] == "jane"
         assert envelope["actor"]["github_id"] == 999
         assert envelope["actor"]["is_bot"] is False
@@ -218,15 +248,17 @@ class TestSuccessfulPublish:
 
     @patch("handler._get_events_log")
     @patch("handler._get_sqs_publisher")
-    @patch("handler._get_rate_limit")
-    @patch("handler._get_tenant_resolver")
+    @patch("handler._get_rate_limiter")
+    @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
     def test_pr_opened_publishes_reviewer_envelope(
-        self, mock_sig, mock_tenant, mock_rate, mock_sqs, mock_log
+        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log
     ):
         mock_sig.return_value.verify_github_signature.return_value = True
-        mock_tenant.return_value.resolve_tenant.return_value = {"tenant_id": "acme"}
-        mock_rate.return_value.check_rate_limit.return_value = (True, 0)
+        mock_resolver.return_value.resolve.return_value = (
+            _mock_resolved_identity("acme", "u_bob"), "ok"
+        )
+        mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value.publish_envelope.return_value = "msg-id-456"
         mock_log.return_value.log_event = MagicMock()
 
@@ -242,7 +274,7 @@ class TestSuccessfulPublish:
         event = _make_event("pull_request", payload)
         result = handler(event, None)
 
-        assert result["statusCode"] == 200
+        assert result["statusCode"] == 202
         envelope = mock_sqs.return_value.publish_envelope.call_args[0][0]
         assert envelope["persona"] == "reviewer"
         assert envelope["source_ref"]["pr"] == 15
@@ -251,15 +283,17 @@ class TestSuccessfulPublish:
 
     @patch("handler._get_events_log")
     @patch("handler._get_sqs_publisher")
-    @patch("handler._get_rate_limit")
-    @patch("handler._get_tenant_resolver")
+    @patch("handler._get_rate_limiter")
+    @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
     def test_sqs_publish_failure_returns_500(
-        self, mock_sig, mock_tenant, mock_rate, mock_sqs, mock_log
+        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log
     ):
         mock_sig.return_value.verify_github_signature.return_value = True
-        mock_tenant.return_value.resolve_tenant.return_value = {"tenant_id": "acme"}
-        mock_rate.return_value.check_rate_limit.return_value = (True, 0)
+        mock_resolver.return_value.resolve.return_value = (
+            _mock_resolved_identity(), "ok"
+        )
+        mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value.publish_envelope.return_value = None  # failure
         mock_log.return_value.log_event = MagicMock()
 
@@ -344,16 +378,18 @@ class TestSecretResolution:
 class TestBase64Body:
     @patch("handler._get_events_log")
     @patch("handler._get_sqs_publisher")
-    @patch("handler._get_rate_limit")
-    @patch("handler._get_tenant_resolver")
+    @patch("handler._get_rate_limiter")
+    @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
-    def test_base64_encoded_body(self, mock_sig, mock_tenant, mock_rate, mock_sqs, mock_log):
+    def test_base64_encoded_body(self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log):
         """API Gateway may send base64-encoded bodies."""
         import base64
 
         mock_sig.return_value.verify_github_signature.return_value = True
-        mock_tenant.return_value.resolve_tenant.return_value = {"tenant_id": "acme"}
-        mock_rate.return_value.check_rate_limit.return_value = (True, 0)
+        mock_resolver.return_value.resolve.return_value = (
+            _mock_resolved_identity(), "ok"
+        )
+        mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value.publish_envelope.return_value = "msg-id-789"
         mock_log.return_value.log_event = MagicMock()
 
@@ -379,6 +415,6 @@ class TestBase64Body:
         }
 
         result = handler(event, None)
-        assert result["statusCode"] == 200
+        assert result["statusCode"] == 202
         body = json.loads(result["body"])
         assert body["status"] == "accepted"

@@ -66,6 +66,24 @@ variable "lambda_artifact_bucket" {
   default     = "adp-terraform-state-879318057152"
 }
 
+variable "identity_index_table_name" {
+  description = "DynamoDB identity-index table name (managed by gateway infra, read by webhook Lambda). Phase B.1 replaces TENANT_TABLE."
+  type        = string
+  default     = "adp-dev-identity-index"
+}
+
+variable "identity_index_table_arn" {
+  description = "DynamoDB identity-index table ARN for IAM policy. Passed from gateway infra outputs."
+  type        = string
+  default     = ""
+}
+
+variable "gateway_api_url" {
+  description = "Internal Gateway API URL for auto-provisioning calls. Empty disables auto-provision."
+  type        = string
+  default     = ""
+}
+
 # -----------------------------------------------------------------------------
 # EKS / KEDA ScaledJob
 # -----------------------------------------------------------------------------

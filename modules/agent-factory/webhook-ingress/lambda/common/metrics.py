@@ -81,6 +81,25 @@ class WebhookMetrics:
             }
         )
 
+    def record_rejected(self, reason: str) -> None:
+        """Record a rejected webhook with distinct RejectedReason dimension.
+
+        Args:
+            reason: One of "unknown_installation", "unknown_user",
+                "cross_tenant_identity".
+        """
+        self._metric_data.append(
+            {
+                "MetricName": "Rejected",
+                "Dimensions": [
+                    {"Name": "RejectedReason", "Value": reason},
+                ],
+                "Value": 1,
+                "Unit": "Count",
+                "Timestamp": time.time(),
+            }
+        )
+
     def flush(self) -> None:
         """Flush accumulated metrics to CloudWatch.
 

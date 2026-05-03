@@ -76,6 +76,15 @@ resource "aws_iam_policy" "lambda_dynamodb" {
           "${aws_dynamodb_table.webhook_events.arn}/index/*",
           aws_dynamodb_table.rate_limits.arn,
         ]
+      },
+      {
+        Sid    = "IdentityIndexRead"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:Query"
+        ]
+        Resource = var.identity_index_table_arn != "" ? [var.identity_index_table_arn] : ["arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/adp-${var.environment}-identity-index"]
       }
     ]
   })

@@ -123,6 +123,18 @@ resource "aws_ssm_parameter" "rate_limits_table" {
   value       = aws_dynamodb_table.rate_limits.name
 }
 
+resource "aws_ssm_parameter" "identity_index_table" {
+  name        = "/adp/${var.environment}/webhook-ingress/identity-index-table"
+  description = "DynamoDB identity-index table name used by webhook Lambda (Phase B.1)"
+  type        = "String"
+  value       = var.identity_index_table_name
+}
+
+output "identity_index_table" {
+  description = "DynamoDB identity-index table name consumed by webhook Lambda"
+  value       = var.identity_index_table_name
+}
+
 # -----------------------------------------------------------------------------
 # ScaledJob outputs
 # -----------------------------------------------------------------------------

@@ -28,7 +28,8 @@ _webhook_secret: str | None = None
 # Lazy imports to keep cold start fast — these modules import boto3
 _signature_mod = None
 _secrets_mod = None
-_tenant_mod = None
+_identity_mod = None
+_gateway_client_mod = None
 _sqs_mod = None
 _events_log_mod = None
 
@@ -69,13 +70,36 @@ def _resolve_webhook_secret() -> str:
     return _webhook_secret
 
 
-def _get_tenant_resolver():
-    global _tenant_mod
-    if _tenant_mod is None:
-        from common import tenant_resolver
+def _get_identity_resolver():
+    global _identity_mod
+    if _identity_mod is None:
+        from common import identity_resolver
 
-        _tenant_mod = tenant_resolver
-    return _tenant_mod
+        _identity_mod = identity_resolver
+    return _identity_mod
+
+
+def _get_gateway_client():
+    global _gateway_client_mod
+    if _gateway_client_mod is None:
+        from common import gateway_client
+
+        _gateway_client_mod = gateway_client
+    return _gateway_client_mod
+
+
+_metrics_mod = None
+
+
+def _get_metrics():
+    global _metrics_mod
+    if _metrics_mod is None:
+        from common.metrics import WebhookMetrics
+
+        _metrics_mod = WebhookMetrics(
+            region=os.environ.get("AWS_REGION", "us-east-1")
+        )
+    return _metrics_mod
 
 
 _rate_limiter = None
@@ -169,17 +193,50 @@ def handler(event: dict, context) -> dict:
 
     action = payload.get("action", "")
 
-    # 4. Extract installation_id from payload
+    # 4. Extract installation_id + sender from payload
     installation_id = payload.get("installation", {}).get("id", 0)
     repo = payload.get("repository", {}).get("full_name", "")
+    sender = payload.get("sender", {})
+    sender_id = sender.get("id", 0)
 
-    # 5. Resolve tenant
-    tenant = None
-    if installation_id:
-        tenant = _get_tenant_resolver().resolve_tenant(installation_id)
+    # 5. Resolve identity (tenant + sender) via identity-index
+    resolved, outcome_reason = _get_identity_resolver().resolve(
+        installation_id, sender_id
+    )
 
-    # 6. If unknown installation → log + return 200 (don't error)
-    if not tenant:
+    # 6. Auto-provision path: if sender unknown but tenant allows auto-provision
+    if resolved is None and outcome_reason == "unknown_user" and installation_id:
+        # Re-check: we need the tenant item to know provisioning mode.
+        # The resolver already returned the reason, so we do a targeted retry.
+        # Peek at the tenant's provisioning mode by resolving just the installation.
+        _resolver = _get_identity_resolver()
+        table = _resolver._get_table()
+        tenant_resp = table.get_item(
+            Key={
+                "identity_type": "github_installation_id",
+                "identity_value": str(installation_id),
+            }
+        )
+        tenant_item = tenant_resp.get("Item")
+        if (
+            tenant_item
+            and tenant_item.get("user_provisioning_mode") == "auto_provision"
+        ):
+            # Attempt auto-provision via Gateway admin API
+            org_id = tenant_item["org_id"]
+            provisioned = _get_gateway_client().auto_provision_user(
+                org_id=org_id,
+                github_id=sender_id,
+                github_login=sender.get("login", ""),
+            )
+            if provisioned:
+                # Retry resolution after provisioning
+                resolved, outcome_reason = _resolver.resolve(
+                    installation_id, sender_id
+                )
+
+    # 7. If identity resolution failed → 403 Forbidden
+    if resolved is None:
         _log_outcome(
             event_type=event_type,
             action=action,
@@ -187,12 +244,20 @@ def handler(event: dict, context) -> dict:
             tenant_id=None,
             repo=repo,
             persona=None,
-            outcome="unknown_tenant",
+            outcome=outcome_reason,
             start_time=start_time,
         )
-        return _response(200, {"status": "ignored", "reason": "unknown_installation"})
+        # Emit CloudWatch metric with RejectedReason dimension
+        try:
+            _get_metrics().record_rejected(reason=outcome_reason)
+            _get_metrics().flush()
+        except Exception:
+            pass  # Best-effort — never block the response
+        return _response(
+            403, {"error": "unknown_identity", "outcome": outcome_reason}
+        )
 
-    tenant_id = tenant["tenant_id"]
+    tenant_id = resolved.tenant_id
 
     # 7. Check rate limit (class-based API — returns a RateLimitResult)
     rate_result = _get_rate_limiter().check_and_increment(tenant_id)
@@ -235,13 +300,14 @@ def handler(event: dict, context) -> dict:
         return _response(200, {"status": "no_op"})
 
     # 11. Build envelope + publish to SQS
-    sender = payload.get("sender", {})
     envelope = {
         "version": "1.0",
         "channel": "github",
         "tenant_id": tenant_id,
         "persona": intent.persona,
         "actor": {
+            "user_id": resolved.user_id,
+            "org_id": resolved.org_id,
             "github_id": sender.get("id", 0),
             "github_login": sender.get("login", ""),
             "is_bot": sender.get("type") == "Bot",
@@ -293,8 +359,8 @@ def handler(event: dict, context) -> dict:
         start_time=start_time,
     )
 
-    # 13. Return 200
-    return _response(200, {"status": "accepted", "message_id": message_id})
+    # 13. Return 202
+    return _response(202, {"status": "accepted", "message_id": message_id})
 
 
 def _response(status_code: int, body: dict, *, retry_after: int = 0) -> dict:

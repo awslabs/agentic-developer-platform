@@ -12,6 +12,8 @@ from typing import Any
 class Actor:
     """The user/bot that triggered the event."""
 
+    user_id: str = ""
+    org_id: str = ""
     github_id: int = 0
     github_login: str = ""
     is_bot: bool = False
@@ -61,6 +63,8 @@ class WebhookEnvelope:
             "tenant_id": self.tenant_id,
             "persona": self.persona,
             "actor": {
+                "user_id": self.actor.user_id,
+                "org_id": self.actor.org_id,
                 "github_id": self.actor.github_id,
                 "github_login": self.actor.github_login,
                 "is_bot": self.actor.is_bot,
