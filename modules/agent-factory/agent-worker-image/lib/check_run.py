@@ -89,6 +89,7 @@ def update_check_run(
     status: str | None = None,
     conclusion: str | None = None,
     output: dict[str, str] | None = None,
+    details_url: str | None = None,
 ) -> None:
     """Update an existing Check Run.
 
@@ -100,7 +101,8 @@ def update_check_run(
         conclusion: Required when ``status="completed"`` — one of ``"success"``,
             ``"failure"``, ``"neutral"``, ``"cancelled"``, ``"skipped"``,
             ``"timed_out"``, ``"action_required"``.
-        output: Optional dict with ``title`` and ``summary`` keys.
+        output: Optional dict with ``title``, ``summary``, and optional ``text`` keys.
+        details_url: Optional URL to link from the check details button (e.g. PR URL).
 
     Raises:
         RuntimeError: If the API call returns a non-200 status.
@@ -116,6 +118,8 @@ def update_check_run(
         payload["completed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if output is not None:
         payload["output"] = output
+    if details_url is not None:
+        payload["details_url"] = details_url
 
     logger.info(
         "Updating check run %s: status=%s conclusion=%s",

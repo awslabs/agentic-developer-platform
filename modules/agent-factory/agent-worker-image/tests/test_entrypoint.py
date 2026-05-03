@@ -413,19 +413,29 @@ class TestEntrypointMain:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
 
-        # run_cmd: clone, rev-parse, git config x2, label remove, comment check, comment post,
-        # git diff (no changes), completion comment check, completion comment post
+        # run_cmd call sequence with WIP-branch changes:
+        #  clone, git config x2, WIP-branch (checkout -b, commit, push, rev-parse),
+        #  label remove, started-comment check+post,
+        #  [agent runs],
+        #  _handle_success: diff, status, log-check, no-changes-comment check+post,
+        #  finalization: gh pr view for PR url.
         mock_run_cmd.side_effect = [
-            MagicMock(stdout="", returncode=0),              # git clone
-            MagicMock(stdout="abc1234def5678\n", returncode=0),  # git rev-parse HEAD
-            MagicMock(stdout="", returncode=0),              # git config email
-            MagicMock(stdout="", returncode=0),              # git config name
-            MagicMock(stdout="", returncode=0),              # gh label remove
-            MagicMock(stdout="", returncode=0),              # gh issue view (started comment check)
-            MagicMock(stdout="", returncode=0),              # gh issue comment (started)
-            MagicMock(stdout="", returncode=0),              # git diff --stat (no changes)
-            MagicMock(stdout="", returncode=0),              # gh issue view (completed check)
-            MagicMock(stdout="", returncode=0),              # gh issue comment (completed)
+            MagicMock(stdout="", returncode=0),                   # git clone
+            MagicMock(stdout="", returncode=0),                   # git config email
+            MagicMock(stdout="", returncode=0),                   # git config name
+            MagicMock(stdout="", returncode=0),                   # git checkout -b branch
+            MagicMock(stdout="", returncode=0),                   # git commit --allow-empty WIP
+            MagicMock(stdout="", returncode=0),                   # git push -u origin branch
+            MagicMock(stdout="abc1234def5678\n", returncode=0),   # git rev-parse HEAD (WIP sha)
+            MagicMock(stdout="", returncode=0),                   # gh issue edit --remove-label
+            MagicMock(stdout="", returncode=0),                   # gh issue view (started check)
+            MagicMock(stdout="", returncode=0),                   # gh issue comment (started)
+            MagicMock(stdout="", returncode=0),                   # git diff --stat (no changes)
+            MagicMock(stdout="", returncode=0),                   # git status --porcelain
+            MagicMock(stdout="", returncode=0),                   # git log origin/branch..HEAD
+            MagicMock(stdout="", returncode=0),                   # gh issue view (completed check)
+            MagicMock(stdout="", returncode=0),                   # gh issue comment (no changes)
+            MagicMock(stdout="", returncode=0),                   # gh pr view (PR url lookup)
         ]
 
         mock_create_cr.return_value = {

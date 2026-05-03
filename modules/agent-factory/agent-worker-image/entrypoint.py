@@ -156,36 +156,57 @@ def main() -> int:
     run_cmd(["git", "clone", "--depth=20", clone_url, str(WORK_DIR)])
     logger.info("Cloned %s to %s", repo, WORK_DIR)
 
-    # Resolve default-branch HEAD sha for Check Run attachment (best-effort)
-    head_sha = ""
+    # Step 6: Configure git identity (must come BEFORE WIP branch creation)
+    bot_email = f"{app_id}+adp-agent[bot]@users.noreply.github.com"
+    run_cmd(["git", "config", "user.email", bot_email], cwd=WORK_DIR)
+    run_cmd(["git", "config", "user.name", "adp-agent[bot]"], cwd=WORK_DIR)
+
+    # Step 6b: Create the agent branch + WIP commit BEFORE exec so that:
+    #   1. The Check Run attaches to the branch SHA (not default-branch HEAD).
+    #   2. Users see a "WIP" commit immediately on the branch.
+    #   3. Real agent commits stack cleanly on top.
+    branch_name = f"agent/issue-{issue}"
+    wip_sha: str = ""
     try:
+        run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
+        run_cmd(
+            ["git", "commit", "--allow-empty",
+             "-m", f"WIP: agent/{persona} starting #{issue}"],
+            cwd=WORK_DIR,
+        )
+        run_cmd(["git", "push", "-u", "origin", branch_name], cwd=WORK_DIR)
         sha_result = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR)
-        head_sha = sha_result.stdout.strip()
-        logger.info("Resolved HEAD sha: %s", head_sha[:7])
+        wip_sha = sha_result.stdout.strip()
+        logger.info("WIP branch %s created; sha=%s", branch_name, wip_sha[:7])
     except Exception as exc:
-        logger.warning("Could not resolve HEAD sha (non-fatal): %s", exc)
+        logger.warning("WIP branch creation failed (non-fatal): %s", exc)
+        # Fall back to default-branch HEAD sha for the Check Run
+        try:
+            sha_result = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR)
+            wip_sha = sha_result.stdout.strip()
+        except Exception:
+            pass
 
     # Create GitHub Check Run (best-effort — failure must NOT fail the pod)
+    # Use the WIP commit sha so the check attaches to the agent branch.
     check_run_id: int | None = None
     check_run_url: str = ""
-    if head_sha:
+    if wip_sha:
         try:
             cr = create_check_run(
                 repo=repo,
-                head_sha=head_sha,
+                head_sha=wip_sha,
                 persona=persona,
                 issue=issue,
                 token=token,
             )
             check_run_id = cr["id"]
             check_run_url = cr["html_url"]
+            # Expose to the node process so CheckRunStreamer can PATCH live updates
+            os.environ["CHECK_RUN_ID"] = str(check_run_id)
+            logger.info("Check run created: id=%s", check_run_id)
         except Exception as exc:
             logger.warning("Failed to create check run (non-fatal): %s", exc)
-
-    # Step 6: Configure git identity
-    bot_email = f"{app_id}+adp-agent[bot]@users.noreply.github.com"
-    run_cmd(["git", "config", "user.email", bot_email], cwd=WORK_DIR)
-    run_cmd(["git", "config", "user.name", "adp-agent[bot]"], cwd=WORK_DIR)
 
     # Step 7: If persona needs AWS, assume customer role
     if persona in PERSONAS_NEEDING_AWS:
@@ -258,9 +279,8 @@ def main() -> int:
     # Stage personas and skills into workspace
     _stage_personas_and_skills()
 
-    # Step 10: Exec the agent
-    logger.info("Execing agent-worker.js with persona=%s", persona)
-    branch_name = f"agent/issue-{issue}"
+    # Step 10: Exec the agent (already on branch_name from Step 6b above)
+    logger.info("Execing agent-worker.js with persona=%s branch=%s", persona, branch_name)
     result = subprocess.run(
         ["node", AGENT_BINARY],
         cwd=WORK_DIR,
@@ -286,14 +306,49 @@ def main() -> int:
                 cr_summary = (
                     f"Agent `{persona}` exited with code {result.returncode} on issue #{issue}."
                 )
-            update_check_run(
+
+            # Resolve PR URL (if agent created one on the branch) and include it
+            # as details_url so the Check Run links directly to the PR.
+            pr_url: str | None = None
+            try:
+                pr_result = run_cmd(
+                    ["gh", "pr", "view", branch_name, "-R", repo,
+                     "--json", "url", "--jq", ".url"],
+                    env={**os.environ},
+                )
+                pr_url = pr_result.stdout.strip() or None
+            except Exception:
+                pass  # PR may not exist yet; non-fatal
+
+            # Read the final rendered Markdown written by CheckRunStreamer (if any).
+            # This preserves the full per-turn transcript across the process boundary.
+            final_text: str = ""
+            cr_final_path = "/tmp/adp-check-run-final.md"
+            try:
+                if os.path.exists(cr_final_path):
+                    with open(cr_final_path, "r", encoding="utf-8") as fh:
+                        final_text = fh.read()
+            except Exception:
+                pass
+
+            cr_output: dict = {"title": cr_title, "summary": cr_summary}
+            if final_text:
+                # GitHub hard limit for output.text is 65,535 chars
+                cr_output["text"] = final_text[:65535]
+
+            update_kwargs: dict = dict(
                 repo=repo,
                 check_run_id=check_run_id,
                 token=token,
                 status="completed",
                 conclusion=cr_conclusion,
-                output={"title": cr_title, "summary": cr_summary},
+                output=cr_output,
             )
+            if pr_url:
+                update_kwargs["details_url"] = pr_url
+                logger.info("Attaching PR URL to check run: %s", pr_url)
+
+            update_check_run(**update_kwargs)
         except Exception as exc:
             logger.warning("Failed to finalize check run (non-fatal): %s", exc)
 
@@ -329,12 +384,36 @@ def _stage_personas_and_skills() -> None:
 
 
 def _handle_success(repo: str, issue: int, branch: str, persona: str, message_id: str) -> int:
-    """Step 11: Commit, push branch, create PR, post completion comment."""
+    """Step 11: Commit remaining changes, push branch, create PR if needed."""
     try:
-        # Check if there are changes to commit
+        # Commit any uncommitted changes the agent left behind.
+        # (Agents normally commit their own work; this is a safety net.)
         diff = run_cmd(["git", "diff", "--stat"], cwd=WORK_DIR)
-        if not diff.stdout.strip():
-            logger.info("No changes to commit")
+        status_out = run_cmd(["git", "status", "--porcelain"], cwd=WORK_DIR)
+        has_uncommitted = bool(diff.stdout.strip() or status_out.stdout.strip())
+
+        if has_uncommitted:
+            run_cmd(["git", "add", "-A"], cwd=WORK_DIR)
+            run_cmd(
+                ["git", "commit", "-m", f"feat: agent/{persona} work for #{issue}"],
+                cwd=WORK_DIR,
+            )
+
+        # Push any commits that haven't been pushed yet (WIP + agent commits).
+        # The branch tracking was set up during WIP commit creation, so a plain
+        # "git push origin branch" is sufficient.
+        try:
+            unpushed = run_cmd(
+                ["git", "log", f"origin/{branch}..HEAD", "--oneline"],
+                cwd=WORK_DIR,
+            )
+            has_unpushed = bool(unpushed.stdout.strip())
+        except subprocess.CalledProcessError:
+            has_unpushed = has_uncommitted  # fallback: push if we just committed
+
+        if not has_uncommitted and not has_unpushed:
+            # Only the empty WIP commit is on the branch; agent made no real changes.
+            logger.info("No agent changes beyond WIP commit")
             _post_comment(
                 repo,
                 issue,
@@ -344,31 +423,37 @@ def _handle_success(repo: str, issue: int, branch: str, persona: str, message_id
             )
             return 0
 
-        run_cmd(["git", "checkout", "-b", branch], cwd=WORK_DIR)
-        run_cmd(["git", "add", "-A"], cwd=WORK_DIR)
-        run_cmd(
-            ["git", "commit", "-m", f"feat: agent/{persona} work for #{issue}"],
-            cwd=WORK_DIR,
-        )
-        run_cmd(["git", "push", "-u", "origin", branch], cwd=WORK_DIR)
+        if has_unpushed or has_uncommitted:
+            run_cmd(["git", "push", "origin", branch], cwd=WORK_DIR)
 
-        # Create PR
-        run_cmd(
-            [
-                "gh",
-                "pr",
-                "create",
-                "--title",
-                f"[{persona}] Agent work for #{issue}",
-                "--body",
-                f"Automated work by agent `{persona}` for #{issue}.\n\nRun ID: `{message_id}`",
-                "--head",
-                branch,
-                "-R",
-                repo,
-            ],
-            env={**os.environ},
-        )
+        # Create PR if one doesn't already exist on this branch
+        pr_already_exists = False
+        try:
+            existing_pr = run_cmd(
+                ["gh", "pr", "list", "--head", branch, "-R", repo, "--json", "number", "--jq", ".[0].number"],
+                env={**os.environ},
+            )
+            pr_already_exists = bool(existing_pr.stdout.strip())
+        except subprocess.CalledProcessError:
+            pass
+
+        if not pr_already_exists:
+            run_cmd(
+                [
+                    "gh",
+                    "pr",
+                    "create",
+                    "--title",
+                    f"[{persona}] Agent work for #{issue}",
+                    "--body",
+                    f"Automated work by agent `{persona}` for #{issue}.\n\nRun ID: `{message_id}`",
+                    "--head",
+                    branch,
+                    "-R",
+                    repo,
+                ],
+                env={**os.environ},
+            )
         _post_comment(
             repo,
             issue,

@@ -35,6 +35,9 @@ import {
 // Live status comment — edit-in-place progress on GitHub issues
 import { LiveStatusComment, createWorkerStages } from './github-comments';
 
+// Check Run Streamer — per-turn live streaming to GitHub Check Run output
+import { CheckRunStreamer } from './components/checkRunStreamer';
+
 // Beads module - distributed state management for agents
 import {
   configureBeads,
@@ -979,6 +982,30 @@ Your summary will be posted to the parent issue for stakeholders to review. Make
 
 Now, complete the assigned task.`;
 
+  // ── Check Run Streamer ────────────────────────────────────────────────────
+  // Instantiate only when CHECK_RUN_ID is present (pod environment with #417
+  // entrypoint baseline). Absent in ARC-runner flows → complete no-op.
+  let checkRunStreamer: CheckRunStreamer | null = null;
+  const checkRunIdEnv = process.env.CHECK_RUN_ID;
+  if (checkRunIdEnv) {
+    const crId = parseInt(checkRunIdEnv, 10);
+    const crToken = process.env.GITHUB_TOKEN || '';
+    const crRepo = `${REPO_OWNER}/${REPO_NAME}`;
+    if (!isNaN(crId) && crToken && crRepo !== '/') {
+      checkRunStreamer = new CheckRunStreamer({
+        checkRunId: crId,
+        repo: crRepo,
+        token: crToken,
+        persona: AGENT_TYPE,
+        issueNumber: parseInt(ISSUE_NUMBER) || 0,
+        model: MODEL,
+        log: (msg) => log('WARN', msg),
+      });
+      log('INFO', `CheckRunStreamer active for check run ${crId}`);
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   log('INFO', 'Starting agent execution...');
   console.log('\n' + '═'.repeat(60));
   console.log(`Starting @agent-${AGENT_TYPE} Query`);
@@ -1049,12 +1076,17 @@ Now, complete the assigned task.`;
         switch (message.type) {
           case 'assistant': {
             turnCount++;
-            const turnText = logMessage(
-              message as { type: string; message: { content: Array<Record<string, unknown>> } },
-              turnCount
-            );
+            const assistantMsg = message as { type: string; message: { content: Array<Record<string, unknown>> } };
+            const turnText = logMessage(assistantMsg, turnCount);
             fullResponse += turnText;
             lastTurnText = turnText;
+            // Stream turn to Check Run (no-op when streamer is null)
+            if (checkRunStreamer) {
+              checkRunStreamer.onTurn({
+                turn: turnCount,
+                content: assistantMsg.message.content as Array<{ name?: string; input?: Record<string, unknown>; text?: string }>,
+              });
+            }
             break;
           }
 
@@ -1068,6 +1100,14 @@ Now, complete the assigned task.`;
               const msg = `⚠️  Query ended: ${res.subtype}`;
               console.log(msg);
               log('WARN', msg, { phase: 'result', subtype: res.subtype });
+            }
+            // Flush final transcript to Check Run before breaking the loop
+            if (checkRunStreamer) {
+              checkRunStreamer.onResult({
+                costUsd: res.total_cost_usd,
+                turns: res.num_turns,
+                durationMs: res.duration_ms,
+              });
             }
 
             // The 'result' message signals the query is done.  Break out of
@@ -1084,6 +1124,10 @@ Now, complete the assigned task.`;
           case 'tool_progress': {
             const tp = message as { tool_name: string; elapsed_time_seconds: number };
             console.log(`⏳ Tool running: ${tp.tool_name} (${tp.elapsed_time_seconds}s elapsed)`);
+            // Keep mid-turn polling alive for long-running tools
+            if (checkRunStreamer) {
+              checkRunStreamer.onToolProgress(tp.tool_name);
+            }
             break;
           }
 
@@ -1099,6 +1143,10 @@ Now, complete the assigned task.`;
       }
     } finally {
       clearInterval(heartbeat);
+      // Clean up the Check Run streamer timers
+      if (checkRunStreamer) {
+        checkRunStreamer.destroy();
+      }
       // Safety net: if the process doesn't exit within 30s after query completion,
       // force exit. This handles cases where session.close() doesn't kill all
       // child processes (e.g., kubectl port-forward, background bash).
