@@ -17,23 +17,31 @@ jobs:
           set -euo pipefail
           NS="adp-gateway"
           POD=$(kubectl get pods -n "$NS" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
-          echo "Pod: $POD"
+
+          # Dump env to find DB URL
+          DB_URL=$(kubectl exec -n "$NS" "$POD" -- bash -c 'env | grep -E "^DATABASE_URL=|^POSTGRES_URL=" | head -1 | cut -d= -f2-')
+          echo "DB_URL found (redacted host): $(echo "$DB_URL" | sed 's/:[^@]*@/:***@/')"
+
+          if [ -z "$DB_URL" ]; then
+            echo "No DATABASE_URL — checking for component vars"
+            kubectl exec -n "$NS" "$POD" -- bash -c 'env | grep -iE "postgres|db_" | grep -v PASSWORD' || true
+            exit 1
+          fi
+
           echo
-          echo "=== Dropping orphaned user_roles table ==="
-          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app python -c "
-          import asyncio, os
-          from sqlalchemy.ext.asyncio import create_async_engine
-          from sqlalchemy import text
+          echo "=== Drop orphan user_roles via psycopg2 (bundled with gateway image) ==="
+          kubectl exec -n "$NS" "$POD" -- python -c "
+          import os, asyncio, asyncpg
           async def main():
-              # Gateway's own DB URL builder — same one the app uses
-              from src.shared.db import DATABASE_URL  # if this import works, we have the right config
-              eng = create_async_engine(DATABASE_URL)
-              async with eng.begin() as conn:
-                  await conn.execute(text('DROP TABLE IF EXISTS user_roles CASCADE'))
-                  print('dropped user_roles')
-              await eng.dispose()
+              url = os.environ.get('DATABASE_URL','')
+              # Strip +asyncpg + ?sslmode=require
+              url = url.replace('postgresql+asyncpg://','postgresql://').split('?')[0]
+              conn = await asyncpg.connect(url, ssl='require')
+              r = await conn.execute('DROP TABLE IF EXISTS user_roles CASCADE')
+              print('drop result:', r)
+              await conn.close()
           asyncio.run(main())
-          " || echo "(drop attempt finished; may have failed if DATABASE_URL import path differs)"
+          "
           echo
           echo "=== alembic upgrade head ==="
           kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic upgrade head
