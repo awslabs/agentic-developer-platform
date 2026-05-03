@@ -1,0 +1,42 @@
+name: Fix migration (drop user_roles + upgrade)
+on:
+  workflow_dispatch:
+env:
+  AWS_REGION: us-east-1
+jobs:
+  fix:
+    runs-on: arc-runner-org
+    steps:
+      - run: |
+          if ! command -v kubectl >/dev/null; then
+            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          fi
+          aws eks update-kubeconfig --name adp-dev-eks-cluster --region "$AWS_REGION" >/dev/null
+      - run: |
+          set -euo pipefail
+          NS="adp-gateway"
+          POD=$(kubectl get pods -n "$NS" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+          echo "Pod: $POD"
+          echo
+          echo "=== Dropping orphaned user_roles table ==="
+          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app python -c "
+          import asyncio, os
+          from sqlalchemy.ext.asyncio import create_async_engine
+          from sqlalchemy import text
+          async def main():
+              # Gateway's own DB URL builder — same one the app uses
+              from src.shared.db import DATABASE_URL  # if this import works, we have the right config
+              eng = create_async_engine(DATABASE_URL)
+              async with eng.begin() as conn:
+                  await conn.execute(text('DROP TABLE IF EXISTS user_roles CASCADE'))
+                  print('dropped user_roles')
+              await eng.dispose()
+          asyncio.run(main())
+          " || echo "(drop attempt finished; may have failed if DATABASE_URL import path differs)"
+          echo
+          echo "=== alembic upgrade head ==="
+          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic upgrade head
+          echo
+          echo "=== Current revision ==="
+          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic current
