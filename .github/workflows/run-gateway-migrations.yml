@@ -8,7 +8,6 @@ env:
 
 jobs:
   migrate:
-    name: Run alembic upgrade head
     runs-on: arc-runner-org
     steps:
       - name: Install kubectl
@@ -19,24 +18,19 @@ jobs:
           fi
           aws eks update-kubeconfig --name adp-dev-eks-cluster --region "$AWS_REGION" >/dev/null
 
-      - name: Find gateway pod
-        id: pod
+      - name: Discover + run alembic
         run: |
           set -euo pipefail
-          # Discover namespace + pod by image/name match rather than label
-          echo "=== Pods in bedrockgw ==="
-          kubectl get pods -n bedrockgw -o wide
+          echo "=== Namespaces ==="
+          kubectl get ns
           echo
-          # First running pod in the bedrockgw namespace
-          POD=$(kubectl get pods -n bedrockgw --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
-          echo "Selected pod: $POD"
-          echo "pod=$POD" >> "$GITHUB_OUTPUT"
-
-      - name: Run alembic upgrade
-        run: |
-          set -euo pipefail
-          POD='${{ steps.pod.outputs.pod }}'
-          kubectl exec -n bedrockgw "$POD" -- alembic upgrade head
+          echo "=== Gateway pods ==="
+          kubectl get pods -A --field-selector=status.phase=Running | grep -i gateway || true
+          echo
+          NS="adp-gateway"
+          POD=$(kubectl get pods -n "$NS" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+          echo "Running alembic in $NS/$POD"
+          kubectl exec -n "$NS" "$POD" -- alembic upgrade head
           echo
           echo "=== Current revision ==="
-          kubectl exec -n bedrockgw "$POD" -- alembic current
+          kubectl exec -n "$NS" "$POD" -- alembic current
