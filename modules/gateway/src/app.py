@@ -27,6 +27,7 @@ UNIT_MODULES = [
     "src.auth.routes",
     "src.proxy.routes",
     "src.admin.routes",
+    "src.admin.identity.router",
     "src.pool.routes",
     "src.budget.routes",
     "src.ratelimit.routes",
