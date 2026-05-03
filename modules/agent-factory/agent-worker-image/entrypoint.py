@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Agent pod entrypoint: SQS envelope -> vault -> token mint -> clone -> agent exec -> PR.
 
-Bridges the KEDA-injected SQS message to the existing agent-worker.js runtime.
+KEDA's ScaledJob spawns this pod when queue depth >= 1 but does NOT inject
+the message body as an env var — the pod receives its own message via the
+SQS SDK. On success we DeleteMessage so KEDA sees queue drain. On failure
+we leave the message invisible (visibility timeout returns it for retry;
+DLQ kicks in after maxReceiveCount).
+
 Performs a 12-step sequence to set up the environment and exec the agent.
 
 Idempotency: uses envelope message_id to prevent duplicate comments/branches.
@@ -16,6 +21,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import boto3
 
 from lib.github_token import mint_installation_token
 from lib.sts_assume import assume_customer_role
@@ -50,11 +57,50 @@ def run_cmd(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
 
 
+def _receive_one_message(queue_url: str, region: str):
+    """Block for up to 20s waiting for one SQS message.
+
+    Returns (body, receipt_handle) or (None, None) if the queue is empty
+    after the long-poll window. FIFO queues require MessageGroupId-aware
+    receive semantics; for single-message-at-a-time processing the defaults
+    are fine.
+    """
+    sqs = boto3.client("sqs", region_name=region)
+    resp = sqs.receive_message(
+        QueueUrl=queue_url,
+        MaxNumberOfMessages=1,
+        WaitTimeSeconds=20,
+        AttributeNames=["All"],
+        MessageAttributeNames=["All"],
+    )
+    messages = resp.get("Messages", [])
+    if not messages:
+        return None, None
+    msg = messages[0]
+    return msg["Body"], msg["ReceiptHandle"]
+
+
+def _delete_message(queue_url: str, region: str, receipt_handle: str) -> None:
+    """Ack-by-delete so the message doesn't come back after visibility timeout."""
+    boto3.client("sqs", region_name=region).delete_message(
+        QueueUrl=queue_url,
+        ReceiptHandle=receipt_handle,
+    )
+
+
 def main() -> int:
-    raw_message = os.environ.get("SQS_MESSAGE_BODY")
-    if not raw_message:
-        logger.error("SQS_MESSAGE_BODY not set")
+    queue_url = os.environ.get("QUEUE_URL")
+    if not queue_url:
+        logger.error("QUEUE_URL env var is not set")
         return 1
+    region = os.environ.get("AWS_REGION", "us-east-1")
+
+    raw_message, receipt_handle = _receive_one_message(queue_url, region)
+    if raw_message is None:
+        # KEDA spawned us speculatively but the queue drained before we could
+        # receive. Exit clean (not an error — KEDA will handle scaling).
+        logger.info("No message available after long-poll; exiting cleanly")
+        return 0
 
     # Step 1: Parse envelope
     envelope = parse_envelope(raw_message)
@@ -190,9 +236,27 @@ def main() -> int:
 
     # Step 11/12: Post-agent actions
     if result.returncode == 0:
-        return _handle_success(repo, issue, branch_name, persona, message_id)
+        exit_code = _handle_success(repo, issue, branch_name, persona, message_id)
     else:
-        return _handle_failure(repo, issue, persona, message_id, result.returncode)
+        exit_code = _handle_failure(repo, issue, persona, message_id, result.returncode)
+
+    # Step 13: Delete the SQS message if everything succeeded.
+    # On failure we intentionally do NOT delete — SQS visibility timeout
+    # returns the message to the queue for retry; after maxReceiveCount
+    # it lands in the DLQ for operator inspection.
+    if exit_code == 0:
+        try:
+            _delete_message(queue_url, region, receipt_handle)
+            logger.info("SQS message acked and deleted")
+        except Exception as exc:
+            logger.error("Failed to delete SQS message: %s", exc)
+            # Don't fail the pod — agent work already committed to GitHub
+    else:
+        logger.warning(
+            "Agent exited non-zero (%d); leaving SQS message for retry", exit_code
+        )
+
+    return exit_code
 
 
 def _stage_personas_and_skills() -> None:
