@@ -21,21 +21,21 @@ variable "tags" {
 # -----------------------------------------------------------------------------
 
 variable "sqs_visibility_timeout" {
-  description = "SQS visibility timeout in seconds (should exceed max agent runtime)"
+  description = "SQS visibility timeout in seconds. Should match pod activeDeadlineSeconds so a killed pod's message becomes visible for retry promptly. Too long = stuck-message pain when pods die; too short = live pods racing re-delivery."
   type        = number
-  default     = 7200 # 2 hours — generous for longest-running personas
+  default     = 1800 # 30 min — matches pod activeDeadlineSeconds (see scaledjob.tf).
+}
+
+variable "sqs_max_receive_count" {
+  description = "Max SQS receive attempts before message is sent to DLQ."
+  type        = number
+  default     = 3
 }
 
 variable "sqs_message_retention" {
   description = "SQS message retention in seconds"
   type        = number
   default     = 345600 # 4 days
-}
-
-variable "sqs_max_receive_count" {
-  description = "Max SQS receive attempts before message is sent to DLQ"
-  type        = number
-  default     = 3
 }
 
 # -----------------------------------------------------------------------------
@@ -107,7 +107,7 @@ variable "agent_image" {
 }
 
 variable "agent_pod_deadline_seconds" {
-  description = "Max runtime for an agent pod before Kubernetes kills it"
+  description = "Max runtime for an agent pod before Kubernetes kills it. MUST match sqs_visibility_timeout so a killed pod releases its SQS message for retry at the same instant."
   type        = number
-  default     = 7200 # 2 hours — matches SQS visibility timeout
+  default     = 1800 # 30 min — matches sqs_visibility_timeout
 }

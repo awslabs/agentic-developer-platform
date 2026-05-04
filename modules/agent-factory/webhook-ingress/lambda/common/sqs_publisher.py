@@ -1,6 +1,11 @@
 """SQS publisher for normalized webhook envelopes.
 
-Publishes to FIFO queue with MessageGroupId = tenant_id for per-tenant ordering.
+Publishes to a FIFO queue with MessageGroupId scoped to a single run, not a
+tenant. Agent runs are independent — there's no ordering requirement between
+two runs in the same tenant, and using tenant_id as the group means a single
+stuck message blocks the entire tenant (head-of-line blocking) until the
+visibility timeout expires. Using a per-run group ID keeps dedup working
+(via MessageDeduplicationId) without the blocking.
 """
 
 import json
@@ -53,14 +58,19 @@ def publish_envelope(envelope: dict) -> str | None:
         "MessageBody": message_body,
     }
     if queue_url.endswith(".fifo"):
-        send_kwargs["MessageGroupId"] = tenant_id
-        # Dedup by arrived_at + source to prevent double-processing
+        # MessageGroupId scoped per-run (tenant#repo#issue) — not per-tenant.
+        # Agent runs are independent; FIFO ordering inside a tenant buys
+        # nothing and costs us head-of-line blocking when a message gets
+        # stuck. Scoping to (tenant, repo, issue) still lets two triggers
+        # on the same issue serialize (usually what the user wants), while
+        # letting unrelated issues progress in parallel.
         source_ref = envelope.get("source_ref", {})
-        dedup_key = (
-            f"{envelope.get('arrived_at', '')}"
-            f"_{source_ref.get('repo', '')}"
-            f"_{source_ref.get('issue', '')}"
-        )
+        repo = source_ref.get("repo", "")
+        issue = source_ref.get("issue", "")
+        send_kwargs["MessageGroupId"] = f"{tenant_id}#{repo}#{issue}"[:128]
+
+        # Dedup by arrived_at + source to prevent double-processing
+        dedup_key = f"{envelope.get('arrived_at', '')}_{repo}_{issue}"
         send_kwargs["MessageDeduplicationId"] = dedup_key[:128]
 
     try:

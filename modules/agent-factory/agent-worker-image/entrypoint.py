@@ -352,21 +352,30 @@ def main() -> int:
         except Exception as exc:
             logger.warning("Failed to finalize check run (non-fatal): %s", exc)
 
-    # Step 13: Delete the SQS message if everything succeeded.
-    # On failure we intentionally do NOT delete — SQS visibility timeout
-    # returns the message to the queue for retry; after maxReceiveCount
-    # it lands in the DLQ for operator inspection.
-    if exit_code == 0:
-        try:
-            _delete_message(queue_url, region, receipt_handle)
-            logger.info("SQS message acked and deleted")
-        except Exception as exc:
-            logger.error("Failed to delete SQS message: %s", exc)
-            # Don't fail the pod — agent work already committed to GitHub
-    else:
-        logger.warning(
-            "Agent exited non-zero (%d); leaving SQS message for retry", exit_code
+    # Step 13: Delete the SQS message on ANY terminal exit — success or failure.
+    #
+    # Rationale: once the pod has reached _handle_success or _handle_failure,
+    # it has already posted a comment to GitHub reporting the outcome. The
+    # run is terminal. Leaving the message invisible for retry causes two
+    # real problems:
+    #   1. Head-of-line blocking — the FIFO group (tenant#repo#issue) is
+    #      locked for the visibility timeout, blocking subsequent triggers
+    #      on the same issue.
+    #   2. Pointless retries — the retry runs identically to the first
+    #      attempt and posts the same failure comment, spamming the issue.
+    #
+    # Retries belong at a higher level (human re-labeling or manually calling
+    # the webhook) where the operator has had a chance to fix the cause.
+    # DLQ now captures the cases where the pod dies WITHOUT reaching this
+    # code path (OOM, node eviction, unhandled exception before this line).
+    try:
+        _delete_message(queue_url, region, receipt_handle)
+        logger.info(
+            "SQS message acked and deleted (exit_code=%d)", exit_code
         )
+    except Exception as exc:
+        logger.error("Failed to delete SQS message: %s", exc)
+        # Don't fail the pod — agent work already committed to GitHub
 
     return exit_code
 
