@@ -206,6 +206,58 @@ class TestStsAssume:
         assert "adp:persona" in tag_keys
 
 
+# --- Test: _stage_personas_and_skills ---
+
+
+class TestStagePersonasAndSkills:
+    """Staged image files must be hidden from git so they don't land in PRs."""
+
+    def test_exclude_file_written_with_staged_paths(self, tmp_path, monkeypatch):
+        import entrypoint
+
+        work_dir = tmp_path / "repo"
+        (work_dir / ".git" / "info").mkdir(parents=True)
+        personas_src = tmp_path / "personas"
+        personas_src.mkdir()
+        (personas_src / "developer.md").write_text("persona content")
+        skills_src = tmp_path / "skills"
+        (skills_src / "stage-1-triage").mkdir(parents=True)
+        (skills_src / "stage-1-triage" / "SKILL.md").write_text("skill content")
+
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", personas_src)
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", skills_src)
+
+        entrypoint._stage_personas_and_skills()
+
+        exclude = (work_dir / ".git" / "info" / "exclude").read_text()
+        assert ".adp-rules/" in exclude
+        assert ".claude/skills/" in exclude
+        # Files actually copied (agent can still read them at runtime)
+        assert (work_dir / ".adp-rules" / "personas" / "developer.md").exists()
+        assert (work_dir / ".claude" / "skills" / "stage-1-triage" / "SKILL.md").exists()
+
+    def test_exclude_file_appended_not_overwritten(self, tmp_path, monkeypatch):
+        import entrypoint
+
+        work_dir = tmp_path / "repo"
+        (work_dir / ".git" / "info").mkdir(parents=True)
+        (work_dir / ".git" / "info" / "exclude").write_text("# pre-existing\n*.tmp\n")
+        (tmp_path / "personas").mkdir()
+        (tmp_path / "skills").mkdir()
+
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        entrypoint._stage_personas_and_skills()
+
+        exclude = (work_dir / ".git" / "info" / "exclude").read_text()
+        assert "*.tmp" in exclude
+        assert ".adp-rules/" in exclude
+        assert ".claude/skills/" in exclude
+
+
 # --- Test: entrypoint main flow ---
 
 

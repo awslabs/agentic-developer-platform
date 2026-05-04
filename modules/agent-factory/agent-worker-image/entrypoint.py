@@ -382,6 +382,16 @@ def _stage_personas_and_skills() -> None:
         target.mkdir(parents=True, exist_ok=True)
         shutil.copytree(SKILLS_DIR, target, dirs_exist_ok=True)
 
+    # Image-baked runtime artifacts — never commit them. `.git/info/exclude`
+    # is a per-clone gitignore that isn't tracked, so `git add -A` (and the
+    # agent's own git-add calls) skip these paths. Tracked files in the
+    # customer repo at the same paths keep working — exclude only affects
+    # untracked files.
+    exclude_file = WORK_DIR / ".git" / "info" / "exclude"
+    exclude_file.parent.mkdir(parents=True, exist_ok=True)
+    with exclude_file.open("a") as f:
+        f.write("\n.adp-rules/\n.claude/skills/\n")
+
 
 def _handle_success(repo: str, issue: int, branch: str, persona: str, message_id: str) -> int:
     """Step 11: Commit remaining changes, push branch, create PR if needed."""
