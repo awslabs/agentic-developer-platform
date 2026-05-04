@@ -269,6 +269,56 @@ resource "aws_iam_role_policy" "gateway_secretsmanager_read" {
   depends_on = [module.cognito]
 }
 
+# Vault credentials — full CRUD across all 4 ownership scopes.
+# The gateway is the sole writer/reader of user-vault secrets; agent pods
+# have no direct Secrets Manager access and must route through
+# /internal/v1/proxy-request (per docs/user-identity-and-credentials-design.md).
+#
+# Namespaces (issue #440 scope relaxation):
+#   adp/users/<cognito_sub>/*           — user-owned
+#   adp/teams/<team_id>/*               — team-owned
+#   adp/orgs/<org_id>/*                 — tenant-owned
+#   adp/domain-apps/<app>/<org_id>/*    — domain-app, per-tenant install
+resource "aws_iam_role_policy" "gateway_vault_secrets" {
+  name = "${local.name_prefix}-policy-gateway-vault-secrets"
+  role = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "VaultSecretsCRUD"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:UpdateSecret",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:TagResource",
+          "secretsmanager:UntagResource"
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/users/*",
+          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/teams/*",
+          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/orgs/*",
+          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/domain-apps/*"
+        ]
+      },
+      {
+        # ListSecrets is account-wide by necessity (no resource-level scoping).
+        # The gateway uses it to enumerate its own vault inventory (e.g. for
+        # the orphan sweeper, admin listings, and per-user quota checks).
+        Sid      = "VaultSecretsList"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:ListSecrets"]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # Cross-account Bedrock pool assume role (if pool accounts configured)
 resource "aws_iam_role_policy" "gateway_cross_account" {
   count = length(var.pool_account_arns) > 0 ? 1 : 0
