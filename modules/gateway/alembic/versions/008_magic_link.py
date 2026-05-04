@@ -1,4 +1,4 @@
-"""Add magic_link_nonces, audit_logs tables; add is_shadow to users.
+"""Add magic_link_nonces, security_audit_logs tables; add is_shadow to users.
 
 Issue #446: Vault Phase 2b — Magic-link identity linking flow
 
@@ -20,7 +20,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Add magic-link infrastructure: nonces table, audit_logs table, is_shadow column."""
+    """Add magic-link infrastructure: nonces table, security_audit_logs table, is_shadow column."""
 
     # -- magic_link_nonces --
     op.create_table(
@@ -42,9 +42,9 @@ def upgrade() -> None:
     )
     op.create_index("ix_magic_link_nonces_expires_at", "magic_link_nonces", ["expires_at"])
 
-    # -- audit_logs --
+    # -- security_audit_logs --
     op.create_table(
-        "audit_logs",
+        "security_audit_logs",
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("org_id", sa.String(length=255), nullable=False),
         sa.Column(
@@ -63,10 +63,10 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_audit_logs_org_id", "audit_logs", ["org_id"])
-    op.create_index("ix_audit_logs_event_type", "audit_logs", ["event_type"])
-    op.create_index("ix_audit_logs_actor_id", "audit_logs", ["actor_id"])
-    op.create_index("ix_audit_logs_created_at", "audit_logs", ["created_at"])
+    op.create_index("ix_security_audit_logs_org_id", "security_audit_logs", ["org_id"])
+    op.create_index("ix_security_audit_logs_event_type", "security_audit_logs", ["event_type"])
+    op.create_index("ix_security_audit_logs_actor_id", "security_audit_logs", ["actor_id"])
+    op.create_index("ix_security_audit_logs_created_at", "security_audit_logs", ["created_at"])
 
     # -- users.is_shadow --
     bind = op.get_bind()
@@ -93,11 +93,11 @@ def downgrade() -> None:
     if "is_shadow" in existing_cols:
         op.drop_column("users", "is_shadow")
 
-    op.drop_index("ix_audit_logs_created_at", table_name="audit_logs")
-    op.drop_index("ix_audit_logs_actor_id", table_name="audit_logs")
-    op.drop_index("ix_audit_logs_event_type", table_name="audit_logs")
-    op.drop_index("ix_audit_logs_org_id", table_name="audit_logs")
-    op.drop_table("audit_logs")
+    op.drop_index("ix_security_audit_logs_created_at", table_name="security_audit_logs")
+    op.drop_index("ix_security_audit_logs_actor_id", table_name="security_audit_logs")
+    op.drop_index("ix_security_audit_logs_event_type", table_name="security_audit_logs")
+    op.drop_index("ix_security_audit_logs_org_id", table_name="security_audit_logs")
+    op.drop_table("security_audit_logs")
 
     op.drop_index("ix_magic_link_nonces_expires_at", table_name="magic_link_nonces")
     op.drop_table("magic_link_nonces")
