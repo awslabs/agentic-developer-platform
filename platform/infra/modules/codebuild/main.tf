@@ -11,14 +11,13 @@
 
 locals {
   projects = {
-    "gateway-build"      = { buildspec = "codebuild/bs-gateway-build.yml" }
-    "chat-agent"         = { buildspec = "codebuild/bs-chat-agent.yml" }
-    "agent-gateway"      = { buildspec = "codebuild/bs-agent-gateway.yml" }
-    "arc-runner"         = { buildspec = "codebuild/bs-arc-runner.yml" }
-    "cyber-worker"       = { buildspec = "codebuild/bs-cyber-worker.yml" }
-    "agent-runtime"      = { buildspec = "codebuild/bs-agent-runtime.yml" }
-    "agent-runtime-base" = { buildspec = "codebuild/bs-agent-runtime-base.yml" }
-    "pyjwt-layer"        = { buildspec = "codebuild/bs-pyjwt-layer.yml" }
+    "gateway-build" = { buildspec = "codebuild/bs-gateway-build.yml" }
+    "chat-agent"    = { buildspec = "codebuild/bs-chat-agent.yml" }
+    "agent-gateway" = { buildspec = "codebuild/bs-agent-gateway.yml" }
+    "arc-runner"    = { buildspec = "codebuild/bs-arc-runner.yml" }
+    "cyber-worker"  = { buildspec = "codebuild/bs-cyber-worker.yml" }
+    "agent-runtime" = { buildspec = "codebuild/bs-agent-runtime.yml" }
+    "pyjwt-layer"   = { buildspec = "codebuild/bs-pyjwt-layer.yml" }
   }
 }
 

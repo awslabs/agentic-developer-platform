@@ -16,7 +16,6 @@ on:
     paths:
       - 'modules/agent-factory/agent/**'
       - 'modules/agent-factory/agent-worker-image/**'
-      - '!modules/agent-factory/agent-worker-image/Dockerfile.base'  # handled by agent-runtime-base-image.yml
       - 'modules/agent-factory/rules/personas/**'
       - 'modules/domain-apps/*/agent/**'
       - 'codebuild/bs-agent-runtime.yml'
