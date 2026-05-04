@@ -27,6 +27,7 @@ UNIT_MODULES = [
     "src.auth.routes",
     "src.auth.vault_routes",  # Issue #135: vault credential + identity CRUD
     "src.internal.routes",  # Issue #446: internal service-to-service endpoints
+    "src.internal.credential_routes",  # Issue #136: credential delivery paths
     "src.proxy.routes",
     "src.admin.routes",
     "src.admin.identity.router",

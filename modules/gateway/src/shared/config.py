@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     # Defaults to empty; tests inject directly.
     gateway_base_url: str = ""
 
+    # Issue #136: Vault Phase 3 — internal credential delivery paths.
+    # When False (default), POST /internal/v1/credential-raw-read returns 403.
+    # Enable per-org in production only after security review.
+    vault_raw_read_enabled: bool = False
+
+    # S3 bucket used by the credential-materialize path to stage short-lived
+    # credential files for agent tmpfs writes.  Must be set in production.
+    vault_materialization_bucket: str = ""
+
     model_config = {"env_prefix": "BG_", "env_file": ".env"}
 
 
