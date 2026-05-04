@@ -150,9 +150,10 @@ One row per (owner, service, label) credential. The **actual secret value lives 
 | `domain_app_id` | string nullable | Domain-app-owned; installed per tenant (e.g. the cyber app's MISP key). NULL for user/team/org creds. |
 | `strict` | boolean NOT NULL DEFAULT false | When true, the resolver will NOT fall back to this credential from a narrower scope. Use for high-sensitivity creds. |
 | `service` | string | free-form tag, e.g. `github`, `jira`, `linear`, `custom-api-foo` |
-| `credential_type` | enum(`api_key`, `oauth_token`, `basic_auth`, `bearer`, `ssh_key`, `certificate`, `config_file`) | informs how the agent uses it; HTTP types use the proxy path, file types use the file-materialization path |
-| `label` | string | human-readable name, e.g. "Personal GitHub PAT" |
-| `secret_arn` | string | full ARN, e.g. `arn:aws:secretsmanager:us-east-1:ACCT:secret:adp/users/<sub>/github-abc123` |
+| `credential_type` | enum(`api_key`, `oauth_token`, `basic_auth`, `bearer`, `ssh_key`, `certificate`, `config_file`, `oauth_delegated`) | informs how the agent uses it; HTTP types use the proxy path, file types use the file-materialization path, `oauth_delegated` uses the AgentCore token-exchange path |
+| `label` | string | human-readable name, e.g. "Personal GitHub PAT" or "GitHub (OAuth)" |
+| `secret_arn` | string nullable | full ARN, e.g. `arn:aws:secretsmanager:us-east-1:ACCT:secret:adp/users/<sub>/github-abc123`. NULL when `credential_type == oauth_delegated` (no secret stored — AgentCore holds the token). |
+| `agentcore_workload_identity_id` | string nullable | AgentCore workload identity name/ARN used for token exchange. Set only when `credential_type == oauth_delegated`. NULL for all other credential types. |
 | `scopes` | JSONB nullable | scopes/permissions granted; informational only |
 | `expires_at` | timestamp nullable | if the user told us; we don't auto-refresh in v1 |
 | `last_used_at` | timestamp nullable | updated by the runtime resolver |
@@ -287,13 +288,38 @@ This is the right shape for:
 
 It is **not** a substitute for the proxy path — if the credential is an HTTP token, the proxy is strictly better because the agent never even sees the path to a file containing the token.
 
-**Three delivery paths, summarized:**
+**OAuth-delegated path: AgentCore token exchange (4th delivery path — Phase 2 of Issue #453).**
+
+For services that speak OAuth 2.0 and support 3-legged delegation (GitHub, Google, Slack, etc.), a fourth delivery path replaces the "user pastes a long-lived PAT" flow with OAuth consent + short-lived token exchange via Amazon Bedrock AgentCore Identity.
+
+When `credential_type == oauth_delegated`:
+
+1. User completes the OAuth consent flow once (via `POST /auth/credentials/oauth-start` → GitHub OAuth redirect → `GET /auth/credentials/oauth-callback`). The callback writes a `user_credentials` row with `credential_type=oauth_delegated` and `agentcore_workload_identity_id` set; no long-lived token is stored.
+2. On agent invocation the tool posts to `POST /internal/v1/proxy-request` as usual.
+3. The gateway detects `credential_type == oauth_delegated`, looks up `agentcore_workload_identity_id`, and calls `bedrock-agentcore:GetResourceCredentials(workload_identity_id, user_id, provider_name)`.
+4. AgentCore returns a short-lived resource token (or a consent URL if the user's token has been revoked — see below).
+5. The gateway injects `Authorization: Bearer <token>` and proxies the call. The agent never sees the token.
+
+**Consent-required handling**: if AgentCore returns a consent URL (token expired or revoked), the proxy endpoint returns `HTTP 401` with body `{"consent_required": true, "consent_url": "..."}`. The agent surfaces this to the user through the same AG-UI `TOOL_CALL_END` event used for other errors. The user re-consents at the URL; the gateway callback writes the updated token state.
+
+**Session binding**: the OAuth callback URL is protected against authorization hijacking using a `state` parameter tied to the initiating user's Cognito session (same principle as sample 06's `CompleteResourceTokenAuth` + `session_id` pattern). Details in the Phase 2 implementation issues.
+
+**What this path addresses** (Phase 1 security review weaknesses):
+- Impersonation → delegation: agent presents its own workload identity, not the user's PAT
+- No rotation → AgentCore handles token refresh transparently
+- No per-agent revocation → with #421 L, each agent type gets its own workload identity; revoking one does not affect others
+- User pastes PAT → "Connect with GitHub" OAuth consent button replaces the PAT form
+
+**Four delivery paths, summarized:**
 
 | Path | Credential types | Agent sees | Default? |
 |---|---|---|---|
 | HTTP proxy | `api_key`, `oauth_token`, `basic_auth`, `bearer` | API response body | ✅ Default for HTTP |
 | File materialization | `ssh_key`, `certificate`, `config_file` | File path (not value) | ✅ Default for files |
 | Raw-value | Any type, escape hatch only | The raw value | ❌ Opt-in, per-service, per-agent |
+| OAuth delegated (AgentCore) | `oauth_delegated` | API response body (token never exposed) | ✅ Default for OAuth 2.0 services |
+
+Paths 1–3 are unchanged. Path 4 is additive and dispatched by `credential_type` in `/internal/v1/proxy-request`.
 
 **IAM on the gateway service (not the agent):**
 - `secretsmanager:GetSecretValue` on all four credential namespaces:
@@ -301,7 +327,8 @@ It is **not** a substitute for the proxy path — if the credential is an HTTP t
   - `arn:aws:secretsmanager:*:*:secret:adp/teams/*/*`
   - `arn:aws:secretsmanager:*:*:secret:adp/orgs/*/*`
   - `arn:aws:secretsmanager:*:*:secret:adp/domain-apps/*/*/*`
-- Agent pods do **not** have direct Secrets Manager access — they must go through the gateway. This is a deliberate boundary.
+- `bedrock-agentcore:GetResourceCredentials`, `bedrock-agentcore:CreateWorkloadIdentity`, `bedrock-agentcore:CreateOauth2CredentialProvider`, `bedrock-agentcore:UpdateWorkloadIdentity` on `arn:aws:bedrock-agentcore:<region>:<account>:*` (added for Phase 2 / Issue #453)
+- Agent pods do **not** have direct Secrets Manager or AgentCore access — they must go through the gateway. This is a deliberate boundary.
 
 ### REST endpoints (gateway backend, under `/auth`)
 
@@ -312,9 +339,11 @@ Following the existing pattern in `modules/gateway/src/auth/routes.py`.
 - `POST /auth/identities/{provider}/link` — start a link (returns a flow-specific payload: OAuth URL or a code to paste in Slack).
 - `DELETE /auth/identities/{id}` — unlink.
 - `GET /auth/credentials` — list my credentials (metadata only, never values).
-- `POST /auth/credentials` — register: `{service, label, credential_type, value, scopes?, expires_at?}`. Server writes to Secrets Manager, returns metadata.
-- `DELETE /auth/credentials/{id}` — deletes row AND the Secrets Manager secret.
+- `POST /auth/credentials` — register a PAT/API-key credential: `{service, label, credential_type, value, scopes?, expires_at?}`. Server writes to Secrets Manager, returns metadata. `credential_type` must NOT be `oauth_delegated` — use the oauth-start flow for that.
+- `DELETE /auth/credentials/{id}` — deletes row AND the Secrets Manager secret (or revokes AgentCore consent, if `credential_type == oauth_delegated`).
 - `PATCH /auth/credentials/{id}` — update label/expires_at (not value — that requires re-register for audit clarity).
+- `POST /auth/credentials/oauth-start` — **(Phase 2, Issue #453)** initiate OAuth consent for a supported provider. Request body: `{service, label, scopes?}`. Response: `{consent_url, state}`. The user is redirected to `consent_url` (e.g. GitHub's authorization endpoint). State is a signed, short-lived token binding the flow to this user's session.
+- `GET /auth/credentials/oauth-callback` — **(Phase 2, Issue #453)** OAuth authorization code callback. Query params: `code`, `state`. Gateway validates `state` (session binding, anti-hijack), calls AgentCore `CompleteResourceTokenAuth`, writes a `user_credentials` row with `credential_type=oauth_delegated` and `agentcore_workload_identity_id`. Redirects user to the credentials settings page on success.
 
 **Service-to-service (IAM-signed, internal only):**
 
@@ -325,6 +354,48 @@ All internal endpoints carry a `/v1/` prefix so they can evolve without breaking
 - `POST /internal/v1/proxy-request` — `{user_id, agent_id, task_id, service, label?, method, url, headers?, body?, scope_hint?}` → `{status, headers, body, provenance_id}`. Gateway resolves the credential via the fallback chain (user → team → org → domain-app), injects it server-side, and proxies the call; agent never touches the raw value. `scope_hint` is optional but recommended — passing `"user"` prevents accidental use of a team/org credential. `agent_id` + `task_id` correlate the call into the provenance DAG.
 - `POST /internal/v1/credential-raw-read` — `{user_id, agent_id, task_id, service, label?, purpose?, scope_hint?}` → `{value, credential_type, provenance_id, owner_scope}`. Escape hatch for non-HTTP tooling; every call is audit-logged, its value registered with the LCM scrubber, and a provenance record written. Gated by a per-org feature flag *and* by the caller's agent manifest (`permissions.credentials.raw: [<service>]`). `scope_hint` is strongly recommended here — if the resolver finds an org-wide credential but `scope_hint="user"`, it raises rather than silently returning a broader-scope secret. `purpose` is an optional free-text reason captured for audit.
 - `POST /internal/v1/credential-materialize` — `{user_id, agent_id, task_id, service, label?, scope_hint?}` → `{materialize_url, expires_at, provenance_id}`. Returns a short-lived signed URL the agent runtime uses to write the credential into a task-scoped tmpfs volume. Only file-oriented types (`ssh_key`, `certificate`, `config_file`) are accepted. Gated by agent manifest scope (`permissions.credentials.materialize: [<service>]`). The value never transits the agent process memory — it flows tmpfs-write-side only.
+
+## AgentCore Identity Integration (Issue #453)
+
+*Added 2026-05-04. See full spike at `docs/spikes/agentcore-identity-samples.md`.*
+
+### Summary
+
+Amazon Bedrock AgentCore Identity is added as a **fourth delivery path** (`oauth_delegated`) for credentials that speak OAuth 2.0. The existing three delivery paths (HTTP proxy, file materialization, raw-value) are unchanged. AgentCore is dispatched by `credential_type` inside `/internal/v1/proxy-request`; no other endpoint or model changes are required for Phase 2.
+
+**Go/no-go**: GO. All spike questions answered positively. See `docs/spikes/agentcore-identity-samples.md` §6 for full rationale.
+
+### What changes (Phase 2 implementation — follow-up issues)
+
+| Component | Change | Issue |
+|---|---|---|
+| `user_credentials` schema | Add `oauth_delegated` to `credential_type` enum; add `agentcore_workload_identity_id` column (nullable string) | Phase 2 schema issue |
+| Alembic migration | `005_agentcore_oauth_delegated.py` — adds column + extends enum | Phase 2 schema issue |
+| AgentCore setup (Terraform) | Create workload identity `adp-gateway-agent`; register GitHub credential provider | Phase 2 infra issue |
+| Gateway IAM | Add `bedrock-agentcore:GetResourceCredentials` (and setup permissions) to gateway service role | Phase 2 infra issue |
+| `/auth/credentials/oauth-start` | New endpoint — initiates GitHub OAuth consent, returns consent URL | Phase 2 endpoint issue |
+| `/auth/credentials/oauth-callback` | New endpoint — handles GitHub redirect, calls `CompleteResourceTokenAuth`, writes DB row | Phase 2 endpoint issue |
+| `/internal/v1/proxy-request` | Type-dispatch: `oauth_delegated` → call `bedrock-agentcore:GetResourceCredentials` instead of Secrets Manager | Phase 2 proxy issue |
+| Admin UI | "Connect with GitHub" button in `/settings/credentials` (replaces "Paste PAT" for OAuth services) | Phase 2 UI issue |
+
+### What does NOT change
+
+- The three existing delivery paths and their implementations
+- Cognito User Pool configuration (Cognito is the inbound IdP; no changes needed)
+- Agent pod IAM (pods still have no direct Secrets Manager or AgentCore access)
+- The Secrets Manager layout (used for paths 1–3; `oauth_delegated` rows have `secret_arn=NULL`)
+- The agent MCP tool interface (`http_request_with_credential` signature is identical)
+
+### Architecture alignment
+
+Reference sample: **`11-gateway-inbound-outbound-auth`** (gateway-mediated pattern; agent has no credential knowledge). Secondary reference: **`06-Outbound_Auth_Github`** (GitHub 3LO + Cognito inbound). See `docs/spikes/agentcore-identity-samples.md` §4 for full ranking.
+
+### Dependencies
+
+- **Soft**: #421 L (per-agent IAM). Without L, all agents share one workload identity. Per-user token isolation is preserved; per-agent-type revocation is not. Acceptable for Phase 2 — #421 L adds per-agent workload identities as a follow-up.
+- **Hard**: `/internal/v1/proxy-request` must exist (Phase 3 of #132). The `oauth_delegated` dispatch lives inside that endpoint.
+
+---
 
 ## Decisions
 
@@ -371,8 +442,8 @@ Steps 1–6 deliver the identity layer (resolver + linking + credentials API + s
 
 ## Out of scope / deferred
 
-- OAuth app publishing (vs. user-pasted tokens).
-- Credential rotation.
+- OAuth app publishing (vs. user-pasted tokens) — **partially addressed**: AgentCore Identity delivers OAuth 3LO for `oauth_delegated` credentials (Issue #453 Phase 2). Non-OAuth services still use user-pasted tokens.
+- Credential rotation — **addressed for `oauth_delegated`** by AgentCore automatic refresh. Long-lived PATs and API keys remain un-rotated in v1.
 - Admin UI for team/tenant/domain-app credential management (UI issue, tracked separately).
 - Auditing secret reads per-tool-call beyond what CloudTrail gives us.
 - Cross-region secret replication.
