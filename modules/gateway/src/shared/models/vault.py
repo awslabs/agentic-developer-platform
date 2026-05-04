@@ -170,6 +170,29 @@ class UserCredential(Base, TenantMixin):
         return "org"
 
 
+class MagicLinkNonce(Base):
+    """Single-use nonce for magic-link token consumption.
+
+    Issue #446: Vault Phase 2b — Magic-link identity linking flow
+
+    One row per issued token.  The ``jti`` claim in the JWT is the PK here.
+    A token is valid only if its nonce row exists AND ``consumed_at IS NULL``.
+    """
+
+    __tablename__ = "magic_link_nonces"
+
+    jti: Mapped[str] = mapped_column(String(36), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    provider_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    channel_context: Mapped[str | None] = mapped_column(String(512))
+    # target_user_id: set when a signed-in user issues the link; NULL when an
+    # internal Lambda issues it (user picks Cognito identity on landing page).
+    target_user_id: Mapped[str | None] = mapped_column(String(255))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class ChannelTenantMap(Base):
     """Maps external workspaces/orgs (e.g. Slack workspace) to ADP tenants."""
 

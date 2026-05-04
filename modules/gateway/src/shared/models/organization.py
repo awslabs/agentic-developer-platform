@@ -65,6 +65,9 @@ class User(Base, TenantMixin):
     cognito_username: Mapped[str | None] = mapped_column(String(255))
     # Keep legacy field for backward compatibility during migration
     identity_center_user_id: Mapped[str | None] = mapped_column(String(255))
+    # Issue #446: shadow users are auto-provisioned from channel_tenant_map;
+    # they can receive agent messages but cannot log into the ADP UI.
+    is_shadow: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), onupdate=utcnow)

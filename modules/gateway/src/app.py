@@ -26,6 +26,7 @@ logger = logging.getLogger("bedrockgateway")
 UNIT_MODULES = [
     "src.auth.routes",
     "src.auth.vault_routes",  # Issue #135: vault credential + identity CRUD
+    "src.internal.routes",  # Issue #446: internal service-to-service endpoints
     "src.proxy.routes",
     "src.admin.routes",
     "src.admin.identity.router",
@@ -44,6 +45,7 @@ async def lifespan(app: FastAPI):
     try:
         # Import all models so Base.metadata knows about them
         import src.admin.models  # noqa: F401
+        import src.shared.models.audit  # noqa: F401  # Issue #446
         import src.shared.models.budget  # noqa: F401
         import src.shared.models.organization  # noqa: F401
         import src.shared.models.usage  # noqa: F401

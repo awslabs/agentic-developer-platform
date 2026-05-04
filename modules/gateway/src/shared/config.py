@@ -56,6 +56,20 @@ class Settings(BaseSettings):
     otel_service_name: str = "bedrock-gateway"
     otel_exporter_endpoint: str = "http://localhost:4317"
 
+    # Issue #446: Magic-link signing key.
+    # If not set, falls back to token_secret_key (same key, different namespace via issuer check).
+    # Set BG_MAGIC_LINK_SECRET to a separate high-entropy secret in production.
+    magic_link_secret: str = ""
+
+    # Issue #446: Internal API shared secret for Lambda → gateway calls.
+    # Set BG_INTERNAL_API_KEY to a high-entropy secret in production.
+    # The gateway validates X-Internal-Api-Key on all /internal/* endpoints.
+    internal_api_key: str = ""
+
+    # Issue #446: Base URL for magic-link landing page, e.g. "https://gateway.example.com"
+    # Defaults to empty; tests inject directly.
+    gateway_base_url: str = ""
+
     model_config = {"env_prefix": "BG_", "env_file": ".env"}
 
 
