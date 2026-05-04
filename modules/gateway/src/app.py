@@ -25,6 +25,7 @@ logger = logging.getLogger("bedrockgateway")
 
 UNIT_MODULES = [
     "src.auth.routes",
+    "src.auth.vault_routes",  # Issue #135: vault credential + identity CRUD
     "src.proxy.routes",
     "src.admin.routes",
     "src.admin.identity.router",
@@ -46,6 +47,7 @@ async def lifespan(app: FastAPI):
         import src.shared.models.budget  # noqa: F401
         import src.shared.models.organization  # noqa: F401
         import src.shared.models.usage  # noqa: F401
+        import src.shared.models.vault  # noqa: F401  # Issue #135
         from src.shared.database import get_engine
         from src.shared.models.base import Base
 
