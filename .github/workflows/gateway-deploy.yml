@@ -7,6 +7,7 @@ on:
       - 'modules/gateway/Dockerfile'
       - 'modules/gateway/k8s/**'
       - 'modules/gateway/frontend/**'
+      - 'modules/gateway/alembic/versions/**'
       - '.github/workflows/gateway-deploy.yml'
     branches:
       - main
@@ -30,6 +31,7 @@ jobs:
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      migrations: ${{ steps.filter.outputs.migrations }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,6 +41,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "backend=true" >> "$GITHUB_OUTPUT"
             echo "frontend=true" >> "$GITHUB_OUTPUT"
+            echo "migrations=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # On push: diff the merge against its parent.
@@ -54,6 +57,12 @@ jobs:
             echo "frontend=true" >> "$GITHUB_OUTPUT"
           else
             echo "frontend=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$CHANGED" | grep -qE '^modules/gateway/alembic/versions/'; then
+            echo "migrations=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::New Alembic migration detected in this push"
+          else
+            echo "migrations=false" >> "$GITHUB_OUTPUT"
           fi
 
   deploy-backend:
@@ -166,3 +175,14 @@ jobs:
           if [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ]; then
             aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
           fi
+
+  run-migrations:
+    name: Run Pending Migrations
+    needs: [changes, deploy-backend]
+    if: |
+      always() &&
+      needs.changes.outputs.migrations == 'true' &&
+      (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
+    uses: ./.github/workflows/run-gateway-migrations.yml
+    with:
+      environment: dev

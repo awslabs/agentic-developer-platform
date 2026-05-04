@@ -2,6 +2,13 @@ name: Run Gateway Alembic Migrations (one-shot)
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (default: dev)"
+        required: false
+        type: string
+        default: dev
 
 env:
   AWS_REGION: us-east-1
