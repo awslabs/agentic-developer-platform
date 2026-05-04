@@ -289,9 +289,9 @@ def main() -> int:
 
     # Step 11/12: Post-agent actions
     if result.returncode == 0:
-        exit_code = _handle_success(repo, issue, branch_name, persona, message_id)
+        exit_code = _handle_success(repo, issue, branch_name, persona, message_id, check_run_url)
     else:
-        exit_code = _handle_failure(repo, issue, persona, message_id, result.returncode)
+        exit_code = _handle_failure(repo, issue, persona, message_id, result.returncode, check_run_url)
 
     # Finalize the Check Run (best-effort — must NOT affect pod exit code)
     if check_run_id is not None:
@@ -393,7 +393,9 @@ def _stage_personas_and_skills() -> None:
         f.write("\n.adp-rules/\n.claude/skills/\n")
 
 
-def _handle_success(repo: str, issue: int, branch: str, persona: str, message_id: str) -> int:
+def _handle_success(
+    repo: str, issue: int, branch: str, persona: str, message_id: str, check_run_url: str = ""
+) -> int:
     """Step 11: Commit remaining changes, push branch, create PR if needed."""
     try:
         # Commit any uncommitted changes the agent left behind.
@@ -430,6 +432,7 @@ def _handle_success(repo: str, issue: int, branch: str, persona: str, message_id
                 message_id,
                 "completed",
                 f"Agent `{persona}` finished — no changes needed.",
+                check_run_url,
             )
             return 0
 
@@ -470,6 +473,7 @@ def _handle_success(repo: str, issue: int, branch: str, persona: str, message_id
             message_id,
             "completed",
             f"Agent `{persona}` completed. PR opened on branch `{branch}`.",
+            check_run_url,
         )
     except subprocess.CalledProcessError as exc:
         logger.error("Post-agent git/PR step failed: %s", exc.stderr or exc)
@@ -477,17 +481,26 @@ def _handle_success(repo: str, issue: int, branch: str, persona: str, message_id
     return 0
 
 
-def _handle_failure(repo: str, issue: int, persona: str, message_id: str, exit_code: int) -> int:
+def _handle_failure(
+    repo: str, issue: int, persona: str, message_id: str, exit_code: int, check_run_url: str = ""
+) -> int:
     """Step 12: Post failure comment, exit nonzero."""
     summary = f"Agent `{persona}` failed with exit code {exit_code}."
-    _post_comment(repo, issue, message_id, "failed", summary)
+    _post_comment(repo, issue, message_id, "failed", summary, check_run_url)
     return exit_code
 
 
-def _post_comment(repo: str, issue: int, message_id: str, status: str, body: str) -> None:
+def _post_comment(
+    repo: str, issue: int, message_id: str, status: str, body: str, check_run_url: str = ""
+) -> None:
     """Post an idempotent comment (checks for existing marker)."""
     marker = f"<!-- adp-{status}:{message_id} -->"
-    full_body = f"{marker}\n{body}"
+    run_details = (
+        f"\n\n**Run details:** [View run ↗]({check_run_url})"
+        if check_run_url
+        else ""
+    )
+    full_body = f"{marker}\n{body}{run_details}"
     try:
         existing = run_cmd(
             [

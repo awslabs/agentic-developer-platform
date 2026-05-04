@@ -72,6 +72,7 @@ export class CheckRunStreamer {
 
   private turns: TurnRecord[] = [];
   private planText: string | null = null;
+  private reasoningThoughts: string[] = [];
   private totalCostUsd: number = 0;
 
   private patchCount: number = 0;
@@ -119,6 +120,11 @@ export class CheckRunStreamer {
     // First substantive text becomes the "plan"
     if (!this.planText && textPreview) {
       this.planText = textPreview;
+    }
+
+    // Accumulate every thought for the Reasoning summary section
+    if (textPreview) {
+      this.reasoningThoughts.push(textPreview);
     }
 
     if (data.costUsd !== undefined) {
@@ -184,11 +190,13 @@ export class CheckRunStreamer {
       ? `\n\n### Plan\n> ${this.planText.split('\n').join('\n> ')}`
       : '';
 
+    const reasoningSection = this._renderReasoningSection(this.reasoningThoughts);
+
     const activitySection = this.turns.length > 0
       ? `\n\n### Activity\n${this._renderActivity()}`
       : '';
 
-    const full = header + planSection + activitySection;
+    const full = header + planSection + reasoningSection + activitySection;
     if (Buffer.byteLength(full, 'utf8') <= MAX_OUTPUT_BYTES) {
       return full;
     }
@@ -238,8 +246,12 @@ export class CheckRunStreamer {
       summaryLabel = `Turn ${rec.turn}`;
     }
 
-    // Build detail body: first tool block + any text
+    // Build detail body: thought (if any) above the tool block
     const bodyParts: string[] = [];
+
+    if (rec.textPreview) {
+      bodyParts.push(`_${rec.textPreview}_`);
+    }
 
     if (rec.tools.length > 0) {
       const t = rec.tools[0];
@@ -251,10 +263,6 @@ export class CheckRunStreamer {
         const extra = rec.tools.slice(1).map(x => `${x.name}${x.inputPreview ? `: ${x.inputPreview}` : ''}`).join(', ');
         bodyParts.push(`_Also: ${extra}_`);
       }
-    }
-
-    if (rec.textPreview && rec.tools.length === 0) {
-      bodyParts.push(rec.textPreview);
     }
 
     const body = bodyParts.length > 0 ? `\n\n${bodyParts.join('\n\n')}\n` : '…';
@@ -272,8 +280,15 @@ export class CheckRunStreamer {
   /**
    * Build a truncated version: keep header + plan + last N turns that fit.
    */
+  private _renderReasoningSection(thoughts: string[]): string {
+    if (thoughts.length === 0) return '';
+    const bullets = thoughts.map(t => `- ${t}`).join('\n');
+    return `\n\n### Reasoning\n${bullets}`;
+  }
+
   private _truncated(header: string, planSection: string): string {
-    const base = header + planSection;
+    const reasoningSection = this._renderReasoningSection(this.reasoningThoughts.slice(-20));
+    const base = header + planSection + reasoningSection;
     const baseBytes = Buffer.byteLength(base, 'utf8');
     const budget = MAX_OUTPUT_BYTES - baseBytes - 200; // reserve for hidden-count marker
 

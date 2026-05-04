@@ -68,7 +68,7 @@ describe('CheckRunStreamer.buildMarkdown', () => {
     s.onTurn(turn(2, [], 'Plan: do Y'));
     const md = s.buildMarkdown('running');
     // Plan section must contain the FIRST text, not the second
-    const planSection = md.match(/### Plan[\s\S]*?(?=### Activity|$)/)?.[0] ?? '';
+    const planSection = md.match(/### Plan[\s\S]*?(?=### Reasoning|### Activity|$)/)?.[0] ?? '';
     expect(planSection).toContain('Plan: do X');
     expect(planSection).not.toContain('Plan: do Y');
   });
@@ -117,6 +117,45 @@ describe('CheckRunStreamer.buildMarkdown', () => {
     const md = s.buildMarkdown('running');
     expect(md).toContain('Also:');
     expect(md).toContain('Read');
+  });
+
+  it('renders thought in italics above tool block when turn has both', () => {
+    const s = new CheckRunStreamer(makeConfig());
+    // Inject a turn where content has both a tool call and a text block
+    s.onTurn({
+      turn: 5,
+      content: [
+        { name: 'Bash', input: { command: 'pytest tests/test_vault.py' } },
+        { text: 'Let me verify the route works before writing tests.' },
+      ],
+      costUsd: 0.05,
+    });
+    const md = s.buildMarkdown('running');
+    // Thought rendered in italics
+    expect(md).toContain('_Let me verify the route works before writing tests._');
+    // Tool code block still present
+    expect(md).toContain('```bash');
+    expect(md).toContain('pytest tests/test_vault.py');
+    // Thought appears BEFORE the code block in the output
+    const thoughtIdx = md.indexOf('_Let me verify');
+    const codeIdx = md.indexOf('```bash');
+    expect(thoughtIdx).toBeLessThan(codeIdx);
+  });
+
+  it('accumulates thoughts into a Reasoning section, one bullet per turn', () => {
+    const s = new CheckRunStreamer(makeConfig());
+    s.onTurn(turn(1, [], 'First thought about the plan.'));
+    s.onTurn(turn(2, [{ name: 'Bash', input: { command: 'ls' } }], 'Second thought before the tool.'));
+    s.onTurn(turn(3, [], 'Third thought, text-only turn.'));
+    const md = s.buildMarkdown('running');
+    expect(md).toContain('### Reasoning');
+    expect(md).toContain('- First thought about the plan.');
+    expect(md).toContain('- Second thought before the tool.');
+    expect(md).toContain('- Third thought, text-only turn.');
+    // Reasoning section must appear before Activity section
+    const reasoningIdx = md.indexOf('### Reasoning');
+    const activityIdx = md.indexOf('### Activity');
+    expect(reasoningIdx).toBeLessThan(activityIdx);
   });
 });
 
