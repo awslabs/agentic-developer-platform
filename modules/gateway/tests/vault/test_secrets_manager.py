@@ -48,27 +48,28 @@ def helper(mock_sm_client):
 
 class TestCreateSecret:
     def test_returns_arn(self, helper, mock_sm_client):
-        arn = helper.create_secret("sub123", "github", "my-token", {"token": "ghp_xxx"})
+        # Issue #440: create_secret now takes (service, label, payload, *, user_sub=...)
+        arn = helper.create_secret("github", "my-token", {"token": "ghp_xxx"}, user_sub="sub123")
         assert arn.startswith("arn:aws:secretsmanager:")
         mock_sm_client.create_secret.assert_called_once()
 
     def test_passes_correct_name_prefix(self, helper, mock_sm_client):
-        helper.create_secret("user-sub", "openai", "key", "sk-123")
+        helper.create_secret("openai", "key", "sk-123", user_sub="user-sub")
         call_kwargs = mock_sm_client.create_secret.call_args.kwargs
         assert call_kwargs["Name"].startswith("adp/users/user-sub/openai-")
 
     def test_serialises_dict_payload(self, helper, mock_sm_client):
-        helper.create_secret("sub", "svc", "lbl", {"key": "val"})
+        helper.create_secret("svc", "lbl", {"key": "val"}, user_sub="sub")
         call_kwargs = mock_sm_client.create_secret.call_args.kwargs
         assert json.loads(call_kwargs["SecretString"]) == {"key": "val"}
 
     def test_string_payload_passed_directly(self, helper, mock_sm_client):
-        helper.create_secret("sub", "svc", "lbl", "raw-secret")
+        helper.create_secret("svc", "lbl", "raw-secret", user_sub="sub")
         call_kwargs = mock_sm_client.create_secret.call_args.kwargs
         assert call_kwargs["SecretString"] == "raw-secret"
 
     def test_tags_applied(self, helper, mock_sm_client):
-        helper.create_secret("sub123", "github", "my-label", "secret")
+        helper.create_secret("github", "my-label", "secret", user_sub="sub123")
         call_kwargs = mock_sm_client.create_secret.call_args.kwargs
         tags = {t["Key"]: t["Value"] for t in call_kwargs["Tags"]}
         assert tags["adp:user_sub"] == "sub123"
@@ -78,11 +79,11 @@ class TestCreateSecret:
     def test_rejects_oversized_payload(self, helper):
         big = "x" * (MAX_SECRET_SIZE_BYTES + 1)
         with pytest.raises(SecretTooLargeError):
-            helper.create_secret("sub", "svc", "lbl", big)
+            helper.create_secret("svc", "lbl", big, user_sub="sub")
 
     def test_accepts_exactly_max_payload(self, helper, mock_sm_client):
         exact = "x" * MAX_SECRET_SIZE_BYTES
-        arn = helper.create_secret("sub", "svc", "lbl", exact)
+        arn = helper.create_secret("svc", "lbl", exact, user_sub="sub")
         assert arn is not None
 
 
@@ -173,19 +174,19 @@ class TestDeleteSecret:
 class TestSizeCap:
     def test_64kb_boundary_string(self, helper, mock_sm_client):
         """Exactly 65536 bytes should be accepted."""
-        helper.create_secret("sub", "svc", "lbl", "a" * MAX_SECRET_SIZE_BYTES)
+        helper.create_secret("svc", "lbl", "a" * MAX_SECRET_SIZE_BYTES, user_sub="sub")
         mock_sm_client.create_secret.assert_called_once()
 
     def test_64kb_plus_one_rejected(self, helper):
         with pytest.raises(SecretTooLargeError):
-            helper.create_secret("sub", "svc", "lbl", "a" * (MAX_SECRET_SIZE_BYTES + 1))
+            helper.create_secret("svc", "lbl", "a" * (MAX_SECRET_SIZE_BYTES + 1), user_sub="sub")
 
     def test_multibyte_chars_counted_as_bytes(self, helper):
         """Unicode chars take >1 byte; ensure we check byte length."""
         # Each emoji is 4 bytes in UTF-8
         emojis = "\U0001f600" * (MAX_SECRET_SIZE_BYTES // 4 + 1)
         with pytest.raises(SecretTooLargeError):
-            helper.create_secret("sub", "svc", "lbl", emojis)
+            helper.create_secret("svc", "lbl", emojis, user_sub="sub")
 
     def test_bytes_payload_accepted(self, helper, mock_sm_client):
         """bytes input should work too."""

@@ -137,35 +137,49 @@ Links a platform-specific user id (e.g. Slack `U123`, GitHub user id `456`) to a
 
 #### `user_credentials`
 
-One row per (user, service) credential. The **actual secret value lives in AWS Secrets Manager**; this table stores only the reference.
+One row per (owner, service, label) credential. The **actual secret value lives in AWS Secrets Manager**; this table stores only the reference.
+
+**Ownership scopes (Issue #440):** exactly one of `user_id`, `team_id`, or `domain_app_id` must be non-NULL (enforced by a PostgreSQL CHECK constraint). `org_id` (from TenantMixin) is always set for tenant isolation and acts as the implicit owner for org-scoped credentials where all three ownership columns are NULL.
 
 | column | type | notes |
 |---|---|---|
 | `id` | UUID PK | |
-| `org_id` | UUID FK → organizations | TenantMixin |
-| `user_id` | UUID FK → users.id | ON DELETE CASCADE → also deletes the secret (see rollback) |
+| `org_id` | UUID FK → organizations | TenantMixin; always non-NULL |
+| `user_id` | UUID FK → users.id nullable | User-owned; ON DELETE CASCADE. NULL for team/org/domain-app creds. |
+| `team_id` | string nullable | Team-owned; e.g. a deploy bot PAT shared by a team. NULL for user/org/domain-app creds. |
+| `domain_app_id` | string nullable | Domain-app-owned; installed per tenant (e.g. the cyber app's MISP key). NULL for user/team/org creds. |
+| `strict` | boolean NOT NULL DEFAULT false | When true, the resolver will NOT fall back to this credential from a narrower scope. Use for high-sensitivity creds. |
 | `service` | string | free-form tag, e.g. `github`, `jira`, `linear`, `custom-api-foo` |
 | `credential_type` | enum(`api_key`, `oauth_token`, `basic_auth`, `bearer`, `ssh_key`, `certificate`, `config_file`) | informs how the agent uses it; HTTP types use the proxy path, file types use the file-materialization path |
-| `label` | string | user-facing name, e.g. "Personal GitHub PAT" |
+| `label` | string | human-readable name, e.g. "Personal GitHub PAT" |
 | `secret_arn` | string | full ARN, e.g. `arn:aws:secretsmanager:us-east-1:ACCT:secret:adp/users/<sub>/github-abc123` |
-| `scopes` | JSONB nullable | scopes/permissions the user granted; informational only |
+| `scopes` | JSONB nullable | scopes/permissions granted; informational only |
 | `expires_at` | timestamp nullable | if the user told us; we don't auto-refresh in v1 |
 | `last_used_at` | timestamp nullable | updated by the runtime resolver |
 | `created_at`, `updated_at` | timestamp | |
 
 **Indexes:**
-- `UNIQUE (user_id, service, label)` — a user can have multiple credentials per service (e.g. "Work GitHub", "Personal GitHub") but must label them.
+- `UNIQUE (user_id, service, label) WHERE user_id IS NOT NULL` — partial, per-user uniqueness.
+- `UNIQUE (team_id, service, label) WHERE team_id IS NOT NULL` — partial, per-team uniqueness.
+- `UNIQUE (domain_app_id, service, label) WHERE domain_app_id IS NOT NULL` — partial, per-domain-app uniqueness.
 - `(org_id, service)` — admin queries.
+
+**PostgreSQL CHECK constraint:** `(user_id IS NOT NULL)::int + (team_id IS NOT NULL)::int + (domain_app_id IS NOT NULL)::int <= 1`. At most one of the three ownership columns is non-NULL; when all three are NULL, the credential is org-scoped (tenant isolation is provided by `org_id` from TenantMixin, which is always non-NULL). The constraint prevents two or more ownership columns being set simultaneously.
 
 ### AWS Secrets Manager layout
 
-One secret per (user, service, label):
+One secret per (owner, service, label). Four namespaces, one per ownership scope (Issue #440):
 
 ```
-adp/users/<cognito_sub>/<service>-<short_uuid>
+adp/users/<cognito_sub>/<service>-<short_uuid>            # user-scoped
+adp/teams/<team_id>/<service>-<short_uuid>                # team-scoped
+adp/orgs/<org_id>/<service>-<short_uuid>                  # org/tenant-scoped
+adp/domain-apps/<app_id>/<org_id>/<service>-<short_uuid>  # domain-app, per-tenant-installed
 ```
 
-Example: `adp/users/378cm2j.../github-abc123`
+Example: `adp/users/378cm2j.../github-abc123`, `adp/teams/team-xyz/github-def456`
+
+The gateway IAM policy covers all four prefixes. Pod IAM (`adp-dev-agent-scaledjob-role`) has **no direct Secrets Manager access** — reads always route through `/internal/v1/proxy-request`.
 
 **Secret payload (JSON).** Single shape across all credential types; `value` carries the payload, `encoding` tells the delivery path how to interpret it.
 
@@ -222,7 +236,17 @@ Replaces the current `webchat.py` fallback behavior and gives Slack/GitHub the s
 
 ### Agent access to credentials (runtime)
 
-The chat agent must be able to use a credential **only for the user whose task it is currently processing**, and never accidentally one belonging to a different user. The safety invariant comes from **closure injection** (same pattern as the existing artifact store): the current task's `user_id` is hardcoded into the tool, so the tool can only ever resolve credentials for that one user.
+The chat agent must be able to use a credential **only for the user whose task it is currently processing**, and never accidentally acquire credentials belonging to a different user or scope. The safety invariant comes from **closure injection** (same pattern as the existing artifact store): the current task's `user_id` is hardcoded into the tool, so the tool can only ever resolve credentials for that one user.
+
+**Resolver fallback chain (Issue #440):** when the agent requests `service=github`, the resolver walks:
+1. **user** — a credential owned by the task's `user_id`
+2. **team** — a credential shared by the user's `team_id`
+3. **org** — a tenant-wide credential
+4. **domain-app** — a credential installed by a domain app for this tenant
+
+First match wins. If a credential has `strict=True`, it is only returned when its scope is the **narrowest** scope provided by the caller (i.e. a strict team credential will not be returned when the caller is doing a user-context lookup and falling back — it will only be returned if the caller provides `team_id` without a `user_id`).
+
+**Cross-scope safety rail:** callers can pass `scope_hint` (one of `"user"`, `"team"`, `"org"`, `"domain_app"`). If the resolved credential's scope is wider than the hint, the resolver raises `ScopeEscalationError`. This prevents an agent acting on behalf of Alice from silently acquiring a tenant-wide credential. Example: `scope_hint="user"` rejects resolution to `"org"` or `"team"` scope.
 
 **Default path: gateway-side proxy (no raw value in the agent process).**
 
@@ -272,7 +296,11 @@ It is **not** a substitute for the proxy path — if the credential is an HTTP t
 | Raw-value | Any type, escape hatch only | The raw value | ❌ Opt-in, per-service, per-agent |
 
 **IAM on the gateway service (not the agent):**
-- `secretsmanager:GetSecretValue` on `arn:aws:secretsmanager:*:*:secret:adp/users/*/*`.
+- `secretsmanager:GetSecretValue` on all four credential namespaces:
+  - `arn:aws:secretsmanager:*:*:secret:adp/users/*/*`
+  - `arn:aws:secretsmanager:*:*:secret:adp/teams/*/*`
+  - `arn:aws:secretsmanager:*:*:secret:adp/orgs/*/*`
+  - `arn:aws:secretsmanager:*:*:secret:adp/domain-apps/*/*/*`
 - Agent pods do **not** have direct Secrets Manager access — they must go through the gateway. This is a deliberate boundary.
 
 ### REST endpoints (gateway backend, under `/auth`)
@@ -293,10 +321,10 @@ Following the existing pattern in `modules/gateway/src/auth/routes.py`.
 All internal endpoints carry a `/v1/` prefix so they can evolve without breaking callers when they are promoted to harness contracts in v2.
 
 - `POST /internal/v1/resolve-user` — `{provider, provider_user_id, invocation_context?}` → user context or 404+magic-link. `invocation_context` carries the channel adapter's correlation id for provenance. Conceptually part of the invocation surface.
-- `GET /internal/v1/user-credentials` — `?user_id=<sub>&service=<svc>` → list of `{id, service, label, expires_at, last_used_at}`. Metadata only; **never returns `secret_arn` or values** — agents must go through the proxy.
-- `POST /internal/v1/proxy-request` — `{user_id, agent_id, task_id, service, label?, method, url, headers?, body?}` → `{status, headers, body, provenance_id}`. Gateway injects the credential server-side and proxies the call; agent never touches the raw value. `agent_id` + `task_id` correlate the call into the provenance DAG so any produced artifact can trace back to the credential used.
-- `POST /internal/v1/credential-raw-read` — `{user_id, agent_id, task_id, service, label?, purpose?}` → `{value, credential_type, provenance_id}`. Escape hatch for non-HTTP tooling; every call is audit-logged, its value registered with the LCM scrubber, and a provenance record written. Gated by a per-org feature flag *and* by the caller's agent manifest (`permissions.credentials.raw: [<service>]`) — an agent can only raw-read services listed in its manifest, regardless of the tenant flag. `purpose` is an optional free-text reason captured for audit.
-- `POST /internal/v1/credential-materialize` — `{user_id, agent_id, task_id, service, label?}` → `{materialize_url, expires_at, provenance_id}`. Returns a short-lived signed URL the agent runtime uses to write the credential into a task-scoped tmpfs volume. Only file-oriented types (`ssh_key`, `certificate`, `config_file`) are accepted. Gated by agent manifest scope (`permissions.credentials.materialize: [<service>]`). The value never transits the agent process memory — it flows tmpfs-write-side only.
+- `GET /internal/v1/user-credentials` — `?user_id=<sub>&service=<svc>&scope_hint=<scope>` → list of `{id, service, label, expires_at, last_used_at, owner_scope}`. Metadata only; **never returns `secret_arn` or values** — agents must go through the proxy. `scope_hint` restricts which owner scopes are returned (optional).
+- `POST /internal/v1/proxy-request` — `{user_id, agent_id, task_id, service, label?, method, url, headers?, body?, scope_hint?}` → `{status, headers, body, provenance_id}`. Gateway resolves the credential via the fallback chain (user → team → org → domain-app), injects it server-side, and proxies the call; agent never touches the raw value. `scope_hint` is optional but recommended — passing `"user"` prevents accidental use of a team/org credential. `agent_id` + `task_id` correlate the call into the provenance DAG.
+- `POST /internal/v1/credential-raw-read` — `{user_id, agent_id, task_id, service, label?, purpose?, scope_hint?}` → `{value, credential_type, provenance_id, owner_scope}`. Escape hatch for non-HTTP tooling; every call is audit-logged, its value registered with the LCM scrubber, and a provenance record written. Gated by a per-org feature flag *and* by the caller's agent manifest (`permissions.credentials.raw: [<service>]`). `scope_hint` is strongly recommended here — if the resolver finds an org-wide credential but `scope_hint="user"`, it raises rather than silently returning a broader-scope secret. `purpose` is an optional free-text reason captured for audit.
+- `POST /internal/v1/credential-materialize` — `{user_id, agent_id, task_id, service, label?, scope_hint?}` → `{materialize_url, expires_at, provenance_id}`. Returns a short-lived signed URL the agent runtime uses to write the credential into a task-scoped tmpfs volume. Only file-oriented types (`ssh_key`, `certificate`, `config_file`) are accepted. Gated by agent manifest scope (`permissions.credentials.materialize: [<service>]`). The value never transits the agent process memory — it flows tmpfs-write-side only.
 
 ## Decisions
 
@@ -345,20 +373,19 @@ Steps 1–6 deliver the identity layer (resolver + linking + credentials API + s
 
 - OAuth app publishing (vs. user-pasted tokens).
 - Credential rotation.
-- Team-shared credentials (e.g. "the team's deploy bot PAT").
-- App-scoped / tenant-scoped credentials (e.g. an org's VirusTotal Enterprise key used by a threat-research agent, a SageMaker execution role for an ML agent). Schema relaxation from `user_id NOT NULL` plus proxy-path changes to accept an app identity instead of a user identity.
+- Admin UI for team/tenant/domain-app credential management (UI issue, tracked separately).
 - Auditing secret reads per-tool-call beyond what CloudTrail gives us.
 - Cross-region secret replication.
 - Promotion of the `/internal/v1/*` endpoints and the two MCP tools into `modules/harness/` as versioned harness contracts consumable by any app.
 - HITL-gated raw-reads in high-trust tenants (first raw-read in a task opens an approval ticket before returning the value).
 
-## v1.5 follow-ups for multi-team SaaS self-serve
+## Follow-ups for multi-team SaaS self-serve
 
-v1 targets hand-onboarded tenants (small number of teams, admin pre-maps channels). These items become material as we onboard more self-serve teams:
+v1 targets hand-onboarded tenants (small number of teams, admin pre-maps channels). The credential scope relaxation (Issue #440) landed all four ownership scopes in v1. Remaining items:
 
-1. **App-scoped / team-scoped credentials.** The `user_id NOT NULL` constraint on `user_credentials` is a v1 simplification — expect teams to want shared credentials within days of onboarding (team deploy bot PAT, team-owned GitHub App install token, shared internal API keys). Relax to `(user_id XOR team_id XOR org_id) NOT NULL` with a CHECK constraint, extend the resolver to walk user → team → org, and add an admin UI for team/org-scoped credential management.
-2. **Self-serve `channel_tenant_map` creation.** Today the doc assumes admins pre-populate this at tenant onboarding. For self-serve SaaS, a new team admin needs to link their own Slack workspace / GitHub org during onboarding — without an ops team round-trip. Approach: OAuth flow where the team admin installs the ADP Slack app in their workspace; the install callback populates `channel_tenant_map` with the `team_id` → `org_id` binding, gated by the admin's Cognito session org.
-3. **Cross-org user identity.** v1's `(provider, provider_user_id)` uniqueness rejects the consultant / contractor case (same GitHub account used across two client orgs). Relax uniqueness and add a separate `user_identity_memberships` table mapping one identity to N `(user_id, org_id)` pairs, with the inbound resolver asking the user to disambiguate ("You're linked to two orgs — which one is this message for?") when the channel context is ambiguous.
-4. **Domain-based auto-team-assignment.** Optional convenience: a new Cognito signup with `@company.com` email can auto-join the `company.com` team if the admin has enabled domain-whitelist signup. Removes the per-user invite step for larger teams. Requires a `team_domain_claims` table and a `post-confirmation` Cognito Lambda.
+1. **Self-serve `channel_tenant_map` creation.** Today the doc assumes admins pre-populate this at tenant onboarding. For self-serve SaaS, a new team admin needs to link their own Slack workspace / GitHub org during onboarding — without an ops team round-trip. Approach: OAuth flow where the team admin installs the ADP Slack app in their workspace; the install callback populates `channel_tenant_map` with the `team_id` → `org_id` binding, gated by the admin's Cognito session org.
+2. **Cross-org user identity.** v1's `(provider, provider_user_id)` uniqueness rejects the consultant / contractor case (same GitHub account used across two client orgs). Relax uniqueness and add a separate `user_identity_memberships` table mapping one identity to N `(user_id, org_id)` pairs, with the inbound resolver asking the user to disambiguate ("You're linked to two orgs — which one is this message for?") when the channel context is ambiguous.
+3. **Domain-based auto-team-assignment.** Optional convenience: a new Cognito signup with `@company.com` email can auto-join the `company.com` team if the admin has enabled domain-whitelist signup. Removes the per-user invite step for larger teams. Requires a `team_domain_claims` table and a `post-confirmation` Cognito Lambda.
+4. **Admin UI for team/tenant/domain-app credential management.** The schema and resolver are v1; the admin UI for creating and rotating shared credentials is a follow-up UI issue.
 
-None of these block v1. Each becomes a separate issue when the concrete customer pain arrives — don't build them preemptively.
+None of items 1–4 block v1. Each becomes a separate issue when the concrete customer pain arrives — don't build them preemptively.
