@@ -146,6 +146,14 @@ def main() -> int:
         "CLAUDE_CODE_USE_BEDROCK": "1",
         "ANTHROPIC_MODEL": os.environ.get("ANTHROPIC_MODEL", "global.anthropic.claude-opus-4-6-v1"),
     }
+
+    # Vault credential context for adp-cred CLI (#137)
+    user_id = envelope.get("user_id") or actor.get("user_id", "")
+    if user_id:
+        env_vars["ADP_USER_ID"] = user_id
+        env_vars["ADP_AGENT_ID"] = persona
+        env_vars["ADP_TASK_ID"] = message_id or f"{repo}#{issue}"
+
     os.environ.update(env_vars)
 
     # Step 5: Clone customer repo

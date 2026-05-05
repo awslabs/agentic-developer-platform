@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     # Defaults to empty; tests inject directly.
     gateway_base_url: str = ""
 
+    # Issue #137: Vault Phase 4 — enable credential MCP tools + adp-cred CLI.
+    # When False, vault tools are not registered in the chat-agent and
+    # adp-cred CLI returns 503 on every invocation.
+    enable_user_credentials: bool = False
+
     # Issue #136: Vault Phase 3 — internal credential delivery paths.
     # When False (default), POST /internal/v1/credential-raw-read returns 403.
     # Enable per-org in production only after security review.

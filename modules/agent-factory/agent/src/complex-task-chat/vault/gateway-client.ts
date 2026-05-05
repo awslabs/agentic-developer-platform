@@ -1,0 +1,131 @@
+/**
+ * Vault Gateway Client — signed internal-endpoint caller for vault operations.
+ *
+ * Calls the gateway's /internal/v1/* credential endpoints on behalf of the
+ * chat-agent. Authentication is via the X-Internal-Api-Key shared secret.
+ *
+ * Issue #137: Vault Phase 4
+ */
+
+export interface VaultClientConfig {
+  /** Base URL of the gateway (e.g. http://bedrockgateway.adp-gateway:8080) */
+  baseUrl: string;
+  /** Shared secret for internal API authentication */
+  apiKey: string;
+}
+
+export interface ProxyRequestInput {
+  user_id: string;
+  agent_id: string;
+  task_id: string;
+  service: string;
+  label?: string;
+  method: string;
+  url: string;
+  headers?: Record<string, string>;
+  body?: unknown;
+}
+
+export interface ProxyResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+  provenance_id: string;
+}
+
+export interface MaterializeInput {
+  user_id: string;
+  agent_id: string;
+  task_id: string;
+  service: string;
+  label?: string;
+}
+
+export interface MaterializeResponse {
+  materialize_url: string;
+  expires_at: string;
+  provenance_id: string;
+}
+
+export interface RawReadInput {
+  user_id: string;
+  agent_id: string;
+  task_id: string;
+  service: string;
+  label?: string;
+  purpose?: string;
+}
+
+export interface RawReadResponse {
+  value: string;
+  credential_type: string;
+  provenance_id: string;
+}
+
+export interface CredentialMetadata {
+  id: string;
+  service: string;
+  label: string;
+  credential_type: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  scope?: string;
+}
+
+export class VaultGatewayClient {
+  private readonly baseUrl: string;
+  private readonly apiKey: string;
+
+  constructor(config: VaultClientConfig) {
+    this.baseUrl = config.baseUrl.replace(/\/$/, '');
+    this.apiKey = config.apiKey;
+  }
+
+  async proxyRequest(input: ProxyRequestInput): Promise<ProxyResponse> {
+    const resp = await this.post('/internal/v1/proxy-request', input);
+    return resp as ProxyResponse;
+  }
+
+  async materialize(input: MaterializeInput): Promise<MaterializeResponse> {
+    const resp = await this.post('/internal/v1/credential-materialize', input);
+    return resp as MaterializeResponse;
+  }
+
+  async rawRead(input: RawReadInput): Promise<RawReadResponse> {
+    const resp = await this.post('/internal/v1/credential-raw-read', input);
+    return resp as RawReadResponse;
+  }
+
+  async listCredentials(userId: string): Promise<CredentialMetadata[]> {
+    const url = `${this.baseUrl}/internal/v1/user-credentials?user_id=${encodeURIComponent(userId)}`;
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'X-Internal-Api-Key': this.apiKey,
+        'Content-Type': 'application/json',
+      },
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(`Vault gateway GET failed (${resp.status}): ${text}`);
+    }
+    return (await resp.json()) as CredentialMetadata[];
+  }
+
+  private async post(path: string, body: unknown): Promise<unknown> {
+    const url = `${this.baseUrl}${path}`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'X-Internal-Api-Key': this.apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(`Vault gateway POST ${path} failed (${resp.status}): ${text}`);
+    }
+    return resp.json();
+  }
+}

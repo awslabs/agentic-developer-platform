@@ -243,9 +243,12 @@ def _check_agent_scope(x_agent_scopes: str | None, required: str) -> None:
 @router.get(
     "/user-credentials",
     response_model=list[CredentialMetadata],
-    summary="List credential metadata for a user+service (internal)",
+    summary="List credential metadata for a user (internal)",
     description=(
-        "Returns credential metadata rows for the given user_id and service. "
+        "Returns credential metadata rows for the given user_id. "
+        "When service is provided, filters to that service only (backwards compat). "
+        "When service is omitted, returns all credentials the user can access "
+        "(user-owned + team/org/domain-app via scope chain). "
         "secret_arn and values are NEVER returned. "
         "Intended for agents and ingest Lambdas to check available credentials before "
         "deciding which delivery path to use."
@@ -253,20 +256,22 @@ def _check_agent_scope(x_agent_scopes: str | None, required: str) -> None:
 )
 async def list_user_credentials(
     user_id: str = Query(..., description="Internal user UUID (cognito sub or shadow user id)"),
-    service: str = Query(..., description="Service name, e.g. 'github'"),
+    service: str | None = Query(None, description="Service name filter (optional). When omitted, returns all services."),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(_verify_internal_key),
 ) -> list[CredentialMetadata]:
     # Validate user exists.
     user = await _get_user_context(user_id, db)
 
-    # Return all credential rows for this user (user-scoped).
-    # Agents listing team/org-scoped creds should use the scope chain resolver.
-    stmt = select(UserCredential).where(
+    # Build query — filter by service only when provided (backwards compat).
+    conditions = [
         UserCredential.org_id == user.org_id,
-        UserCredential.service == service,
         UserCredential.user_id == user_id,
-    )
+    ]
+    if service is not None:
+        conditions.append(UserCredential.service == service)
+
+    stmt = select(UserCredential).where(*conditions)
     result = await db.execute(stmt)
     creds = result.scalars().all()
 
@@ -274,7 +279,7 @@ async def list_user_credentials(
         "Listed %d credentials user=%s service=%s",
         len(creds),
         user_id,
-        service,
+        service or "(all)",
     )
     return [CredentialMetadata.from_model(c) for c in creds]
 

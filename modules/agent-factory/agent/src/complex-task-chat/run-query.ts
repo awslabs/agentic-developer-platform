@@ -71,6 +71,9 @@ export type ProgressEvent =
       turn: number;
     };
 
+/** Map of tool name → inputSummarySanitizer for AG-UI event sanitization. */
+export type ToolSanitizers = Map<string, (input: Record<string, unknown>) => Record<string, unknown>>;
+
 export interface RunQueryInput {
   systemPrompt: string;
   /** Prior turns (user + assistant) already in the conversation. */
@@ -79,6 +82,8 @@ export interface RunQueryInput {
   userMessage: string;
   /** Port-provided tools to expose to the agent. */
   tools?: AgentTool[];
+  /** Per-tool input sanitizers for AG-UI TOOL_CALL_ARGS events. */
+  toolSanitizers?: ToolSanitizers;
   model?: string;
   cwd?: string;
   maxTurns?: number;
@@ -108,6 +113,7 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
     history,
     userMessage,
     tools: customTools = [],
+    toolSanitizers,
     model = process.env.ANTHROPIC_MODEL ?? 'global.anthropic.claude-sonnet-4-6',
     cwd = '/tmp/workspace',
     maxTurns = 50,
@@ -282,7 +288,13 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
               // Log per-tool-call so hung workers are diagnosable from pod
               // logs alone — heartbeat-only logs tell us "stuck on turn N"
               // but not which tool call is wedged.
-              const inputSummary = summarizeToolInput(block.input as Record<string, unknown>);
+              // Apply inputSummarySanitizer if the tool has one (vault tools
+              // strip credential-bearing fields from AG-UI events, #137).
+              const rawInput = block.input as Record<string, unknown>;
+              const toolBaseName = (block.name as string).replace(/^mcp__chat-agent-tools__/, '');
+              const sanitizer = toolSanitizers?.get(toolBaseName);
+              const sanitizedInput = sanitizer ? sanitizer(rawInput) : rawInput;
+              const inputSummary = summarizeToolInput(sanitizedInput);
               log(
                 `[run-query] turn ${turnCount} tool_use: ${block.name}${inputSummary ? ' → ' + inputSummary : ''}`,
               );

@@ -30,6 +30,7 @@ const TRANSACT_LIMIT = 100;
 
 export class DynamoContextStore implements ContextStore {
   private readonly ddb: DynamoDBDocumentClient;
+  private scrubber?: { scrub(text: string): string };
 
   constructor(
     private readonly tableName: string,
@@ -46,6 +47,20 @@ export class DynamoContextStore implements ContextStore {
     }
   }
 
+  /**
+   * Attach a scrubber instance. All subsequent write operations (recordTurn,
+   * appendSummary, replaceRangeWithSummary) will scrub text content before
+   * persisting to DDB. Task-scoped: set once per task run.
+   */
+  setScrubber(scrubber: { scrub(text: string): string }): void {
+    this.scrubber = scrubber;
+  }
+
+  /** Apply scrubber to text if one is configured. */
+  private scrubText(text: string): string {
+    return this.scrubber ? this.scrubber.scrub(text) : text;
+  }
+
   async recordTurn(input: {
     sessionId: string;
     userMessage: StoredMessage;
@@ -59,6 +74,10 @@ export class DynamoContextStore implements ContextStore {
     const userMessageId = newMessageId();
     const assistantMessageId = newMessageId();
 
+    // Scrub message content before persistence (LCM scrubber, #137)
+    const userContent = this.scrubText(input.userMessage.content);
+    const assistantContent = this.scrubText(input.assistantMessage.content);
+
     // 5 writes in one transaction: 2 msg rows + 2 item rows + 1 header UPDATE
     const items: Array<Record<string, unknown>> = [
       {
@@ -68,7 +87,7 @@ export class DynamoContextStore implements ContextStore {
             PK: pk,
             SK: `msg#${userMessageId}`,
             role: input.userMessage.role,
-            content: input.userMessage.content,
+            content: userContent,
             parts: input.userMessage.parts ? JSON.stringify(input.userMessage.parts) : undefined,
             ts: input.userMessage.ts,
             tokens: input.userMessage.tokens,
@@ -95,7 +114,7 @@ export class DynamoContextStore implements ContextStore {
             PK: pk,
             SK: `msg#${assistantMessageId}`,
             role: input.assistantMessage.role,
-            content: input.assistantMessage.content,
+            content: assistantContent,
             parts: input.assistantMessage.parts ? JSON.stringify(input.assistantMessage.parts) : undefined,
             ts: input.assistantMessage.ts,
             tokens: input.assistantMessage.tokens,
@@ -137,9 +156,11 @@ export class DynamoContextStore implements ContextStore {
   }
 
   async appendSummary(sessionId: string, sum: StoredSummary): Promise<string> {
+    // Scrub summary content before persistence and hash derivation (#137)
+    const scrubbedContent = this.scrubText(sum.content);
     const hash = crypto
       .createHash('sha256')
-      .update(sum.content)
+      .update(scrubbedContent)
       .digest('hex')
       .slice(0, 8);
     const summaryId = `sum_${sessionId}_${hash}`;
@@ -153,7 +174,7 @@ export class DynamoContextStore implements ContextStore {
           SK: `sum#${summaryId}`,
           depth: sum.depth,
           kind: sum.kind,
-          content: sum.content,
+          content: scrubbedContent,
           sourceIds: sum.sourceIds,
           parentIds: sum.parentIds,
           earliestAt: sum.earliestAt,
@@ -193,7 +214,9 @@ export class DynamoContextStore implements ContextStore {
     sum: StoredSummary,
   ): Promise<string> {
     const pk = `session#${sessionId}`;
-    const summaryId = deriveSummaryId(sessionId, sum.content);
+    // Scrub summary content before persistence (#137)
+    const scrubbedContent = this.scrubText(sum.content);
+    const summaryId = deriveSummaryId(sessionId, scrubbedContent);
 
     // Build full delete list for the ordinal range
     const deletes: Array<Record<string, unknown>> = [];
@@ -215,7 +238,7 @@ export class DynamoContextStore implements ContextStore {
           SK: `sum#${summaryId}`,
           depth: sum.depth,
           kind: sum.kind,
-          content: sum.content,
+          content: scrubbedContent,
           sourceIds: sum.sourceIds,
           parentIds: sum.parentIds,
           earliestAt: sum.earliestAt,

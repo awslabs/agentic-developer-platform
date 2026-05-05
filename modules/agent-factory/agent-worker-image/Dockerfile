@@ -152,6 +152,12 @@ COPY --from=stager --chown=agent:agent /stage/skills/ /app/skills/
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/entrypoint.py /app/entrypoint.py
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/lib/ /app/lib/
 
+# Install adp-cred CLI (vault credential access for skills, #137)
+COPY --chown=agent:agent modules/agent-factory/agent-worker-image/adp_cred/ /app/adp_cred/
+RUN ln -sf /app/adp_cred/cli_wrapper.sh /usr/local/bin/adp-cred 2>/dev/null || \
+    printf '#!/bin/sh\nexec python3 -m adp_cred "$@"\n' > /usr/local/bin/adp-cred && \
+    chmod +x /usr/local/bin/adp-cred
+
 # Set working directory and switch to non-root user
 WORKDIR /work
 USER agent
@@ -160,6 +166,7 @@ USER agent
 ENV NODE_ENV=production
 ENV HOME=/home/agent
 ENV PATH="/app/node_modules/.bin:${PATH}"
+ENV PYTHONPATH="/app:${PYTHONPATH}"
 
 # Healthcheck: verify node and python are available
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

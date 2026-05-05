@@ -22,8 +22,20 @@ import {
   agUiId,
   type AgUiEvent,
 } from './ag-ui-events';
+import { Scrubber } from './context/scrubber';
+import { vaultToolsForTurn } from './vault/tools';
+import { VaultGatewayClient } from './vault/gateway-client';
 
 const TOKEN_BUDGET = Number(process.env.CONTEXT_TOKEN_BUDGET ?? 150_000);
+
+/**
+ * Feature flag: enable vault credential tools. Requires ENABLE_USER_CREDENTIALS=1
+ * AND a valid VAULT_GATEWAY_URL + VAULT_INTERNAL_API_KEY. When off, vault tools
+ * are simply not registered.
+ */
+const VAULT_ENABLED = (process.env.ENABLE_USER_CREDENTIALS ?? '0') === '1';
+const VAULT_GATEWAY_URL = process.env.VAULT_GATEWAY_URL ?? '';
+const VAULT_INTERNAL_API_KEY = process.env.VAULT_INTERNAL_API_KEY ?? '';
 
 /**
  * Feature flag: emit AG-UI events alongside legacy frames. Set
@@ -206,10 +218,46 @@ async function processOne(
         '</user-attachments>';
     }
 
+    // Vault credential tools — gated by ENABLE_USER_CREDENTIALS + user_id presence.
+    // Per-task scrubber: lives for one run, destroyed on task completion.
+    const scrubber = new Scrubber();
+    let vaultTools: AgentTool[] = [];
+    let credentialsSummary = '';
+    if (VAULT_ENABLED && user_id && VAULT_GATEWAY_URL && VAULT_INTERNAL_API_KEY) {
+      const vaultClient = new VaultGatewayClient({
+        baseUrl: VAULT_GATEWAY_URL,
+        apiKey: VAULT_INTERNAL_API_KEY,
+      });
+      vaultTools = vaultToolsForTurn({
+        userId: user_id,
+        agentId: agent_type,
+        taskId: task_id,
+        scrubber,
+        client: vaultClient,
+      });
+      // Fetch credential list for system-prompt injection (best-effort)
+      try {
+        const creds = await vaultClient.listCredentials(user_id);
+        if (creds.length > 0) {
+          const lines = creds.map(c =>
+            `  - ${c.service} (${c.credential_type})${c.label ? ` — ${c.label}` : ''}`,
+          );
+          credentialsSummary =
+            '\n\nAvailable credentials for this user:\n' +
+            lines.join('\n') +
+            '\n\nUse http_request_with_credential(service="<name>", ...) to make authenticated HTTP calls.\n' +
+            'Use materialize_user_credential(service="<name>") to get a file path for SSH keys / certs / config files.\n' +
+            'Use get_user_credential_raw(service="<name>", purpose="<reason>") only when neither of the above works.';
+        }
+      } catch (err) {
+        console.warn(`[chat-agent] Failed to fetch credentials list (non-fatal): ${(err as Error).message}`);
+      }
+    }
+
     const systemPrompt = composeSystemPrompt({
       base: channelDirective
-        ? channelDirective + '\n\n' + persona.baseSystemPrompt + attachmentBlock
-        : persona.baseSystemPrompt + attachmentBlock,
+        ? channelDirective + '\n\n' + persona.baseSystemPrompt + attachmentBlock + credentialsSummary
+        : persona.baseSystemPrompt + attachmentBlock + credentialsSummary,
       personaLearnings: persona.learnings,
       memories: memBlock,
     });
@@ -241,13 +289,25 @@ async function processOne(
       ...deps.context.tools(),
       ...deps.memory.tools(),
       ...artifactTools,
+      ...vaultTools,
     ];
+
+    // Build per-tool input sanitizers for AG-UI event sanitization (#137).
+    // Vault tools declare inputSummarySanitizer to strip credential-bearing fields.
+    const toolSanitizers = new Map<string, (input: Record<string, unknown>) => Record<string, unknown>>();
+    for (const t of vaultTools) {
+      const sanitizable = t as { inputSummarySanitizer?: (input: Record<string, unknown>) => Record<string, unknown> };
+      if (sanitizable.inputSummarySanitizer) {
+        toolSanitizers.set(t.name, sanitizable.inputSummarySanitizer);
+      }
+    }
 
     const result = await runQuery({
       systemPrompt,
       history: ctx.messages,
       userMessage: message,
       tools,
+      toolSanitizers: toolSanitizers.size > 0 ? toolSanitizers : undefined,
       model: persona.modelOverride ?? process.env.ANTHROPIC_MODEL,
       cwd: '/tmp/workspace',
       effort: getChannelEffort(channel ?? ''),
@@ -323,8 +383,8 @@ async function processOne(
 
     await deps.context.record({
       sessionId: session_id,
-      userMessage: { role: 'user', content: message },
-      assistantMessage: { role: 'assistant', content: result.text },
+      userMessage: { role: 'user', content: scrubber.scrub(message) },
+      assistantMessage: { role: 'assistant', content: scrubber.scrub(result.text) },
     });
 
     checkDeliveryConsistency(result.text, publishCount);
