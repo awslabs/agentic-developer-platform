@@ -625,3 +625,52 @@ Always use non-interactive flags to avoid hanging:
 - `apt-get -y`, `yum -y`
 - Never use interactive editors (vim, nano) — use `cat >` or `sed`
 - `kubectl apply` (already non-interactive)
+
+## Issue-authoring convention (MANDATORY for every new issue)
+
+Every issue you file (or edit to complete) **must** include these four top-level sections, in this order, before any secondary content:
+
+### 1. `## Description`
+What we're trying to achieve and why. One paragraph stating the goal in plain language, one paragraph on motivation (the problem this solves or the gap it closes). No implementation detail here — a product manager should be able to understand this section without reading the rest.
+
+### 2. `## Design`
+The concrete technical shape of the solution. Must include, when relevant:
+- **Database schema** — new tables, new columns, migrations needed (or explicit "no migrations"), FK/index/constraint decisions
+- **API contracts** — endpoint paths, request body JSON, response body JSON, error cases, HTTP codes
+- **File-level changes** — list of files to create + list of files to modify, with full paths
+- **Integration points** — which existing services/tables/endpoints this piece plugs into and reuses (or explicitly forks)
+- **Tenant isolation / authz** — how scoping is enforced (especially for multi-tenant features)
+- **Reuse table** — "X lives in module Y, we call it here" to prevent duplicate implementations
+
+Goal: a developer (human or agent) should be able to implement this issue without guessing where anything goes or duplicating existing code.
+
+### 3. `## Deployment`
+What must happen after the PR merges for the change to be effective. Must include:
+- **Automatic on merge** — which CI workflows fire (`gateway-deploy.yml`, `agent-worker-image.yml`, `webhook-ingress-deploy.yml`, etc.), what each produces, typical timing
+- **Explicit NOT-triggered** — what won't rebuild/redeploy that someone might expect (e.g. "no agent-runtime image rebuild needed; code is gateway-side only"). Prevents agents from trying to touch infra they don't need.
+- **Manual follow-ups** — Terraform apply, migration workflow, secret seeding, IAM approvals, etc., each with the exact command or workflow name
+- **Environment coverage** — "ships to dev on merge; prod promotion is a manual `workflow_dispatch`"
+- **Rollback plan** — how to revert if something goes wrong
+
+### 4. `## Validation`
+How to verify the change is working. Must include:
+- **Unit tests** to add (one bullet per test, stating what it proves)
+- **Integration tests** — what runs in CI vs. what a human runs locally
+- **Smoke test** — the one end-to-end check an operator runs after deploy to confirm it works. Should be a concrete command or URL, not a vague "verify the feature works."
+- **Regression checks** — existing callers/flows that must keep working
+
+### Secondary sections (use as needed)
+After the four mandatory sections, the issue may include: `## Scope`, `## Non-goals`, `## Dependencies`, `## Acceptance`, `## References`, `## Related issues`. These are optional supplements, not replacements for the four mandatory sections.
+
+### Enforcement
+
+- **When filing an issue**: include all four sections from the first draft. Empty/placeholder sections are a code smell — if you don't know the design yet, file the issue as a *spike* (label: `architect`) and the design section explicitly says "spike — produces design note."
+- **When reviewing an existing issue** (before labeling it to trigger an agent): if Description / Design / Deployment / Validation are missing, add them before labeling. An agent without a Design section will invent one; without a Deployment section will not know whether Terraform must apply; without a Validation section will skip writing meaningful tests.
+- **For EPIC-level issues** that aren't directly implementable: the four-section rule still applies but Deployment/Validation can be "see child issues."
+- **For doc-only issues**: Deployment is "merge the PR, no service redeploys"; Validation is "PR review confirms the doc reads correctly."
+
+### Why this matters
+
+Agents that implement issues (hosted `developer` flow) have no context beyond the issue body. Missing design detail → agent invents a design, often wrong (example: PR #449 introduced a table-name collision we spent two PRs recovering from because the issue didn't say "check for name collisions with existing `admin/models.py`"). Missing deployment detail → agent assumes wrong workflow fires, operator finds out days later when nothing works (example: migration 008 never auto-ran because nothing told the agent about `run-gateway-migrations.yml`). Missing validation → agent declares success on a broken feature.
+
+Four explicit sections eliminate all three failure modes at the planning stage, before the agent ever starts coding.
