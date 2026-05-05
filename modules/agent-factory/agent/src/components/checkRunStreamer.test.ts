@@ -275,3 +275,48 @@ describe('CheckRunStreamer debounce / patch cap', () => {
     Date.now = origDateNow;
   });
 });
+
+// ---------------------------------------------------------------------------
+// destroy — must flush final markdown to disk so entrypoint.py can read it
+// ---------------------------------------------------------------------------
+
+describe('CheckRunStreamer.destroy', () => {
+  it('writes final markdown to /tmp/adp-check-run-final.md', () => {
+    const fs = require('fs');
+    const FINAL_PATH = '/tmp/adp-check-run-final.md';
+
+    // Clear any prior content
+    try { fs.unlinkSync(FINAL_PATH); } catch { /* ignore */ }
+
+    const s = new CheckRunStreamer(makeConfig());
+    s.onTurn(turn(1, [], 'Analyzing the codebase'));
+    s.onTurn(turn(2, [{ name: 'Bash', input: { command: 'ls' } }]));
+
+    s.destroy();
+
+    expect(fs.existsSync(FINAL_PATH)).toBe(true);
+    const content = fs.readFileSync(FINAL_PATH, 'utf8');
+    // Final file must reflect the completed status and contain both turns
+    expect(content).toContain('## Agent: developer · issue #411');
+    expect(content).toContain('Analyzing the codebase');
+    expect(content).toContain('Bash');
+    expect(content).toMatch(/Turn:\*\*\s*2\s*\/\s*done/);
+
+    // Cleanup
+    try { fs.unlinkSync(FINAL_PATH); } catch { /* ignore */ }
+  });
+
+  it('does not throw when the filesystem write fails', () => {
+    const fs = require('fs');
+    const origWrite = fs.writeFileSync;
+    fs.writeFileSync = () => { throw new Error('disk full'); };
+
+    const s = new CheckRunStreamer(makeConfig());
+    s.onTurn(turn(1, [], 'plan'));
+
+    // Must not throw even though the write fails
+    expect(() => s.destroy()).not.toThrow();
+
+    fs.writeFileSync = origWrite;
+  });
+});

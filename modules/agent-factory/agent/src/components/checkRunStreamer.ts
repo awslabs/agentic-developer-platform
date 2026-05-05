@@ -165,6 +165,18 @@ export class CheckRunStreamer {
       clearTimeout(this.pendingTimer);
       this.pendingTimer = null;
     }
+
+    // Flush the final rendered Markdown to disk so entrypoint.py's
+    // finalize-check-run step can read it and pass it to the completion
+    // PATCH. Without this, GitHub's output.text ends up empty on the
+    // completed check run — the page looks blank after the run finishes.
+    // Best-effort: if the write fails, entrypoint falls back to a
+    // summary-only completion.
+    try {
+      fs.writeFileSync(FINAL_OUTPUT_PATH, this.buildMarkdown('completed'), 'utf8');
+    } catch {
+      // best-effort; don't throw on shutdown
+    }
   }
 
   // ---------------------------------------------------------------------------
