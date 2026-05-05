@@ -256,11 +256,15 @@ async def install_callback(
         except PermissionError:
             raise
     else:
-        # Personal account — hand off to #466 adp-default flow (stub for now)
-        logger.info(
-            "GitHub install-callback personal account installation_id=%d login=%s — adp-default path (issue #466)",
-            installation_id,
-            account_login,
+        # Personal account — attach to adp-default free-tier tenant (issue #466)
+        from .adp_default import attach_to_adp_default
+
+        await attach_to_adp_default(
+            installation_id=installation_id,
+            account_login=account_login,
+            github_account_id=github_org_id,
+            caller_user_id=caller_user_id,
+            db=db,
         )
 
     return {

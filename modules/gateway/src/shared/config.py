@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     # credential files for agent tmpfs writes.  Must be set in production.
     vault_materialization_bucket: str = ""
 
+    # Issue #466: Well-known UUID for the adp-default free-tier tenant.
+    # Every environment uses the same UUID so seed scripts and code agree.
+    adp_default_org_id: str = "00000000-0000-4000-a000-000000000001"
+
     model_config = {"env_prefix": "BG_", "env_file": ".env"}
 
 

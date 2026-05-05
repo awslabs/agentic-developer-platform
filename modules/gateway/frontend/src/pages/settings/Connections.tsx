@@ -12,6 +12,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useToast } from '@/contexts/ToastContext';
+import { FreeTierBanner } from '@/components/FreeTierBanner';
+import { useAuth } from '@/hooks/useAuth';
 import {
   deleteGitHubConnection,
   listConnections,
@@ -20,9 +22,13 @@ import {
 } from '@/services/connections';
 import { GitHubTile } from './components/GitHubTile';
 
+/** Well-known org ID for the adp-default free-tier tenant. */
+const ADP_DEFAULT_ORG_ID = '00000000-0000-4000-a000-000000000001';
+
 export default function Connections() {
   const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
+  const { user } = useAuth();
 
   const [connections, setConnections] = useState<GitHubConnectionItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -119,6 +125,9 @@ export default function Connections() {
           Connect external services to enable agent triggers and integrations.
         </p>
       </div>
+
+      {/* Free tier banner — shown when user is on adp-default */}
+      {user?.orgId === ADP_DEFAULT_ORG_ID && <FreeTierBanner />}
 
       {/* GitHub section */}
       <div className="space-y-6">
