@@ -144,7 +144,7 @@ def main() -> int:
         "WORK_DIR": str(WORK_DIR),
         "TENANT_ID": tenant_id,
         "CLAUDE_CODE_USE_BEDROCK": "1",
-        "ANTHROPIC_MODEL": os.environ.get("ANTHROPIC_MODEL", "global.anthropic.claude-sonnet-4-6"),
+        "ANTHROPIC_MODEL": os.environ.get("ANTHROPIC_MODEL", "global.anthropic.claude-opus-4-6-v1"),
     }
     os.environ.update(env_vars)
 
