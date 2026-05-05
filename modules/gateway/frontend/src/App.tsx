@@ -20,6 +20,7 @@ const BudgetManagement = lazy(() => import('./pages/BudgetManagement')); // Issu
 const RateLimitManagement = lazy(() => import('./pages/RateLimitManagement')); // Issue #185
 const MyChats = lazy(() => import('./pages/MyChats')); // Issue #179
 const AgentChat = lazy(() => import('./pages/AgentChat')); // Issue #97
+const Connections = lazy(() => import('./pages/settings/Connections')); // Issue #465
 const NotFound = lazy(() => import('./pages/NotFound'));
 
 function App() {
@@ -54,6 +55,7 @@ function App() {
             <Route path="/ratelimits" element={<RateLimitManagement />} /> {/* Issue #185 */}
             <Route path="/my-chats" element={<MyChats />} /> {/* Issue #179 */}
             <Route path="/chat" element={<AgentChat />} /> {/* Issue #97 */}
+            <Route path="/settings/connections" element={<Connections />} /> {/* Issue #465 */}
           </Route>
 
           {/* 404 */}

@@ -1,0 +1,467 @@
+"""Unit tests for the connections service layer.
+
+Issue #465: GitHub App install + connection management.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+
+from src.admin.connections.github_client import GitHubAppClient
+from src.admin.connections.service import (
+    _PROVIDER_GITHUB_INSTALL,
+    delete_connection,
+    install_callback,
+    install_start,
+    list_connections,
+)
+from src.shared.models.base import Base
+from src.shared.models.organization import Organization
+from src.shared.models.vault import ChannelTenantMap, MagicLinkNonce
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+
+@pytest.fixture
+async def db_engine():
+    engine = create_async_engine(
+        TEST_DATABASE_URL,
+        echo=False,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
+        # Import all models so metadata is complete
+        import src.admin.models  # noqa: F401
+        import src.shared.models.organization  # noqa: F401
+        import src.shared.models.vault  # noqa: F401
+
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
+
+
+@pytest.fixture
+async def db_session(db_engine) -> AsyncSession:
+    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with session_factory() as session:
+        yield session
+        await session.rollback()
+
+
+@pytest.fixture
+async def org_in_db(db_session: AsyncSession) -> Organization:
+    """Create a minimal org row required by ChannelTenantMap FK."""
+    org = Organization(
+        id="org-test-001",
+        name="Test Org",
+        aws_accounts=[],
+        role_mappings={},
+        settings={},
+    )
+    db_session.add(org)
+    await db_session.commit()
+    return org
+
+
+def _mock_github_client(
+    *,
+    installation_id: int = 124731131,
+    account_login: str = "sophos-test",
+    account_type: str = "Organization",
+    account_github_id: int = 98765,
+) -> MagicMock:
+    client = MagicMock(spec=GitHubAppClient)
+    client.get_installation = AsyncMock(
+        return_value={
+            "id": installation_id,
+            "account": {
+                "type": account_type,
+                "login": account_login,
+                "id": account_github_id,
+            },
+            "repository_selection": "selected",
+            "created_at": "2026-05-01T10:00:00Z",
+        }
+    )
+    client.delete_installation = AsyncMock(return_value=None)
+    client.list_installation_repositories = AsyncMock(return_value=2)
+    return client
+
+
+# ---------------------------------------------------------------------------
+# install_start
+# ---------------------------------------------------------------------------
+
+
+class TestInstallStart:
+    async def test_writes_nonce_with_correct_provider(self, db_session: AsyncSession):
+        result = await install_start(
+            cognito_sub="sub-abc",
+            user_id="user-001",
+            db=db_session,
+        )
+
+        assert result.state_token
+        assert "github_install" in result.install_url or result.state_token in result.install_url
+        assert result.expires_at > datetime.now(UTC)
+
+        # Verify nonce row written to DB
+        from sqlalchemy import select
+
+        stmt = select(MagicLinkNonce).where(MagicLinkNonce.jti == result.state_token)
+        row = (await db_session.execute(stmt)).scalar_one_or_none()
+        assert row is not None
+        assert row.provider == _PROVIDER_GITHUB_INSTALL
+        assert row.provider_user_id == "sub-abc"
+        assert row.target_user_id == "user-001"
+        assert row.consumed_at is None
+
+    async def test_nonce_ttl_is_15_minutes(self, db_session: AsyncSession):
+        before = datetime.now(UTC)
+        result = await install_start(
+            cognito_sub="sub-abc",
+            user_id="user-001",
+            db=db_session,
+        )
+        after = datetime.now(UTC)
+
+        expected_low = before + timedelta(seconds=890)
+        expected_high = after + timedelta(seconds=910)
+        assert expected_low <= result.expires_at <= expected_high
+
+    async def test_install_url_contains_state(self, db_session: AsyncSession):
+        result = await install_start(
+            cognito_sub="sub-abc",
+            user_id="user-001",
+            db=db_session,
+        )
+        assert f"state={result.state_token}" in result.install_url
+
+    async def test_each_call_generates_unique_nonce(self, db_session: AsyncSession):
+        r1 = await install_start(cognito_sub="sub-abc", user_id="user-001", db=db_session)
+        r2 = await install_start(cognito_sub="sub-abc", user_id="user-001", db=db_session)
+        assert r1.state_token != r2.state_token
+
+
+# ---------------------------------------------------------------------------
+# install_callback
+# ---------------------------------------------------------------------------
+
+
+class TestInstallCallback:
+    async def _write_nonce(
+        self,
+        db: AsyncSession,
+        *,
+        jti: str = "test-jti-001",
+        target_user_id: str = "user-001",
+        expired: bool = False,
+        consumed: bool = False,
+    ) -> MagicLinkNonce:
+        now = datetime.now(UTC)
+        nonce = MagicLinkNonce(
+            jti=jti,
+            provider=_PROVIDER_GITHUB_INSTALL,
+            provider_user_id="sub-abc",
+            channel_context=None,
+            target_user_id=target_user_id,
+            expires_at=now - timedelta(minutes=1) if expired else now + timedelta(minutes=15),
+            consumed_at=now if consumed else None,
+        )
+        db.add(nonce)
+        await db.commit()
+        return nonce
+
+    async def test_rejects_expired_nonce(self, db_session: AsyncSession, org_in_db):
+        await self._write_nonce(db_session, jti="exp-jti", expired=True)
+
+        from src.auth.magic_link import TokenExpiredError
+
+        with pytest.raises(TokenExpiredError):
+            await install_callback(
+                installation_id=100,
+                setup_action="install",
+                state="exp-jti",
+                caller_user_id="user-001",
+                caller_org_id="org-test-001",
+                db=db_session,
+            )
+
+    async def test_rejects_consumed_nonce(self, db_session: AsyncSession, org_in_db):
+        await self._write_nonce(db_session, jti="con-jti", consumed=True)
+
+        from src.auth.magic_link import NonceAlreadyConsumedError
+
+        with pytest.raises(NonceAlreadyConsumedError):
+            await install_callback(
+                installation_id=100,
+                setup_action="install",
+                state="con-jti",
+                caller_user_id="user-001",
+                caller_org_id="org-test-001",
+                db=db_session,
+            )
+
+    async def test_rejects_missing_nonce(self, db_session: AsyncSession, org_in_db):
+        from src.auth.magic_link import NonceNotFoundError
+
+        with pytest.raises(NonceNotFoundError):
+            await install_callback(
+                installation_id=100,
+                setup_action="install",
+                state="nonexistent-jti",
+                caller_user_id="user-001",
+                caller_org_id="org-test-001",
+                db=db_session,
+            )
+
+    async def test_rejects_cross_user_nonce(self, db_session: AsyncSession, org_in_db):
+        await self._write_nonce(db_session, jti="cross-jti", target_user_id="other-user")
+
+        from src.auth.magic_link import TargetUserMismatchError
+
+        with pytest.raises(TargetUserMismatchError):
+            await install_callback(
+                installation_id=100,
+                setup_action="install",
+                state="cross-jti",
+                caller_user_id="user-001",  # different user
+                caller_org_id="org-test-001",
+                db=db_session,
+            )
+
+    async def test_successful_org_installation(self, db_session: AsyncSession, org_in_db):
+        await self._write_nonce(db_session, jti="ok-jti")
+        gh = _mock_github_client()
+
+        result = await install_callback(
+            installation_id=124731131,
+            setup_action="install",
+            state="ok-jti",
+            caller_user_id="user-001",
+            caller_org_id="org-test-001",
+            db=db_session,
+            github_client=gh,
+        )
+
+        assert result["success"] is True
+        assert result["account_login"] == "sophos-test"
+        assert result["account_type"] == "Organization"
+
+    async def test_nonce_consumed_after_success(self, db_session: AsyncSession, org_in_db):
+        from sqlalchemy import select
+
+        await self._write_nonce(db_session, jti="consume-jti")
+        gh = _mock_github_client()
+
+        await install_callback(
+            installation_id=124731131,
+            setup_action="install",
+            state="consume-jti",
+            caller_user_id="user-001",
+            caller_org_id="org-test-001",
+            db=db_session,
+            github_client=gh,
+        )
+
+        stmt = select(MagicLinkNonce).where(MagicLinkNonce.jti == "consume-jti")
+        nonce = (await db_session.execute(stmt)).scalar_one()
+        assert nonce.consumed_at is not None
+
+    async def test_cross_tenant_conflict_raises_permission_error(self, db_session: AsyncSession, org_in_db):
+        # Add a second org
+        other_org = Organization(
+            id="org-other-001",
+            name="Other Org",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+        )
+        db_session.add(other_org)
+        await db_session.commit()
+
+        # Pre-existing mapping owned by the other org
+        existing = ChannelTenantMap(
+            provider="github",
+            provider_scope_id="98765",  # same github_org_id as the mock client
+            org_id="org-other-001",
+        )
+        db_session.add(existing)
+        await db_session.commit()
+
+        await self._write_nonce(db_session, jti="conflict-jti")
+        gh = _mock_github_client(account_github_id=98765)
+
+        with pytest.raises(PermissionError, match="already connected to another ADP tenant"):
+            await install_callback(
+                installation_id=124731131,
+                setup_action="install",
+                state="conflict-jti",
+                caller_user_id="user-001",
+                caller_org_id="org-test-001",
+                db=db_session,
+                github_client=gh,
+            )
+
+    async def test_personal_account_does_not_raise(self, db_session: AsyncSession, org_in_db):
+        """Personal account installs are handed off to #466; must not raise."""
+        await self._write_nonce(db_session, jti="personal-jti")
+        gh = _mock_github_client(account_type="User", account_login="alice")
+
+        result = await install_callback(
+            installation_id=999,
+            setup_action="install",
+            state="personal-jti",
+            caller_user_id="user-001",
+            caller_org_id="org-test-001",
+            db=db_session,
+            github_client=gh,
+        )
+        assert result["success"] is True
+        assert result["account_type"] == "User"
+
+
+# ---------------------------------------------------------------------------
+# list_connections
+# ---------------------------------------------------------------------------
+
+
+class TestListConnections:
+    async def test_returns_empty_list_when_no_mappings(self, db_session: AsyncSession, org_in_db):
+        result = await list_connections(caller_org_id="org-test-001", db=db_session)
+        assert result.connections == []
+
+    async def test_returns_connections_for_tenant(self, db_session: AsyncSession, org_in_db):
+        mapping = ChannelTenantMap(
+            provider="github",
+            provider_scope_id="98765",
+            org_id="org-test-001",
+        )
+        db_session.add(mapping)
+        await db_session.commit()
+
+        result = await list_connections(caller_org_id="org-test-001", db=db_session)
+        assert len(result.connections) == 1
+        assert result.connections[0].provider == "github"
+
+    async def test_does_not_return_other_tenants_connections(self, db_session: AsyncSession, org_in_db):
+        other_org = Organization(
+            id="org-other-002",
+            name="Other Org",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+        )
+        db_session.add(other_org)
+        mapping = ChannelTenantMap(
+            provider="github",
+            provider_scope_id="11111",
+            org_id="org-other-002",
+        )
+        db_session.add(mapping)
+        await db_session.commit()
+
+        result = await list_connections(caller_org_id="org-test-001", db=db_session)
+        assert result.connections == []
+
+
+# ---------------------------------------------------------------------------
+# delete_connection
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteConnection:
+    async def test_delete_requires_admin_ownership(self, db_session: AsyncSession, org_in_db):
+        other_org = Organization(
+            id="org-other-003",
+            name="Other Org",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+        )
+        db_session.add(other_org)
+        mapping = ChannelTenantMap(
+            provider="github",
+            provider_scope_id="98765",
+            org_id="org-other-003",
+        )
+        db_session.add(mapping)
+        await db_session.commit()
+
+        gh = _mock_github_client(account_github_id=98765)
+        with pytest.raises(PermissionError):
+            await delete_connection(
+                installation_id=124731131,
+                caller_org_id="org-test-001",  # different tenant
+                db=db_session,
+                github_client=gh,
+            )
+
+    async def test_delete_not_found_raises_value_error(self, db_session: AsyncSession, org_in_db):
+        gh = _mock_github_client(account_github_id=99999)
+        with pytest.raises(ValueError):
+            await delete_connection(
+                installation_id=9999,
+                caller_org_id="org-test-001",
+                db=db_session,
+                github_client=gh,
+            )
+
+    async def test_successful_delete_removes_mapping(self, db_session: AsyncSession, org_in_db):
+        from sqlalchemy import select
+
+        mapping = ChannelTenantMap(
+            provider="github",
+            provider_scope_id="98765",
+            org_id="org-test-001",
+        )
+        db_session.add(mapping)
+        await db_session.commit()
+
+        gh = _mock_github_client(account_github_id=98765)
+        result = await delete_connection(
+            installation_id=124731131,
+            caller_org_id="org-test-001",
+            db=db_session,
+            github_client=gh,
+        )
+
+        assert result.deleted is True
+        assert result.installation_id == 124731131
+
+        # Verify row removed
+        stmt = select(ChannelTenantMap).where(
+            ChannelTenantMap.provider == "github",
+            ChannelTenantMap.provider_scope_id == "98765",
+        )
+        row = (await db_session.execute(stmt)).scalar_one_or_none()
+        assert row is None
+
+    async def test_successful_delete_calls_github_api(self, db_session: AsyncSession, org_in_db):
+        mapping = ChannelTenantMap(
+            provider="github",
+            provider_scope_id="98765",
+            org_id="org-test-001",
+        )
+        db_session.add(mapping)
+        await db_session.commit()
+
+        gh = _mock_github_client(account_github_id=98765)
+        await delete_connection(
+            installation_id=124731131,
+            caller_org_id="org-test-001",
+            db=db_session,
+            github_client=gh,
+        )
+
+        gh.delete_installation.assert_called_once_with(124731131)

@@ -82,6 +82,9 @@ export function Navigation() {
   // Setup page for all authenticated users
   navItems.push({ to: '/setup', label: 'Claude Code Setup', icon: '⚙️' });
 
+  // Connections page — link external services (Issue #465)
+  navItems.push({ to: '/settings/connections', label: 'Connections', icon: '🔗' });
+
   return (
     <nav className="flex flex-col gap-1" aria-label="Main navigation">
       {navItems.map((item) => (

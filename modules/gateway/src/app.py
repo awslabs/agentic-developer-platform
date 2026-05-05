@@ -31,6 +31,7 @@ UNIT_MODULES = [
     "src.proxy.routes",
     "src.admin.routes",
     "src.admin.identity.router",
+    "src.admin.connections.routes",  # Issue #465: GitHub App install + connections
     "src.pool.routes",
     "src.budget.routes",
     "src.ratelimit.routes",
