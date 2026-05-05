@@ -45,19 +45,17 @@ export interface DeleteConnectionResponse {
  * Returns the install_url the user should be redirected to.
  */
 export async function startGitHubInstall(): Promise<InstallStartResponse> {
-  const resp = await apiClient.post<InstallStartResponse>(
+  return apiClient.post<InstallStartResponse>(
     '/api/admin/connections/github/install-start',
     {},
   );
-  return resp.data;
 }
 
 /**
  * List all GitHub installations connected to the current tenant.
  */
 export async function listConnections(): Promise<ConnectionsListResponse> {
-  const resp = await apiClient.get<ConnectionsListResponse>('/api/admin/connections');
-  return resp.data;
+  return apiClient.get<ConnectionsListResponse>('/api/admin/connections');
 }
 
 /**
@@ -67,8 +65,7 @@ export async function listConnections(): Promise<ConnectionsListResponse> {
 export async function deleteGitHubConnection(
   installationId: number,
 ): Promise<DeleteConnectionResponse> {
-  const resp = await apiClient.delete<DeleteConnectionResponse>(
+  return apiClient.delete<DeleteConnectionResponse>(
     `/api/admin/connections/github/${installationId}`,
   );
-  return resp.data;
 }
