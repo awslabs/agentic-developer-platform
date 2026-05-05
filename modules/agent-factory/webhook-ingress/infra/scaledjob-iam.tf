@@ -132,3 +132,40 @@ resource "aws_iam_role_policy" "agent_scaledjob_sts" {
     }]
   })
 }
+
+# ---------------------------------------------------------------------------
+# AgentCore Browser — for the url-analysis skill (EPIC #224 / #484)
+# ---------------------------------------------------------------------------
+# The hosted webhook agent image bundles cyber's url-analysis skill (via
+# stage-personas.sh), so the developer/ops persona can run it directly
+# without delegating to a cyber worker pod. Grant ephemeral browser-session
+# permissions on the same role.
+#
+# Scoped to the current region via aws:RequestedRegion to prevent a
+# misconfigured skill from spinning up sessions elsewhere (cost + audit
+# containment).
+
+resource "aws_iam_role_policy" "agent_scaledjob_agentcore_browser" {
+  name = "agentcore-browser-access"
+  role = aws_iam_role.agent_scaledjob.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "AgentCoreBrowserSessions"
+      Effect = "Allow"
+      Action = [
+        "bedrock-agentcore:CreateBrowserSession",
+        "bedrock-agentcore:InvokeBrowser",
+        "bedrock-agentcore:StopBrowserSession",
+        "bedrock-agentcore:GetBrowserSession",
+      ]
+      Resource = "*"
+      Condition = {
+        StringEquals = {
+          "aws:RequestedRegion" = var.aws_region
+        }
+      }
+    }]
+  })
+}
