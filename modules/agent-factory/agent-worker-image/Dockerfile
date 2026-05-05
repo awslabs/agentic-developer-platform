@@ -152,10 +152,12 @@ COPY --from=stager --chown=agent:agent /stage/skills/ /app/skills/
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/entrypoint.py /app/entrypoint.py
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/lib/ /app/lib/
 
-# Install adp-cred CLI (vault credential access for skills, #137)
+# Install adp-cred CLI (vault credential access for skills, #137).
+# /usr/local/bin/adp-cred is a small shell wrapper that execs the Python
+# package at /app/adp_cred/. No symlink; the package doesn't ship a
+# wrapper script of its own.
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/adp_cred/ /app/adp_cred/
-RUN ln -sf /app/adp_cred/cli_wrapper.sh /usr/local/bin/adp-cred 2>/dev/null || \
-    printf '#!/bin/sh\nexec python3 -m adp_cred "$@"\n' > /usr/local/bin/adp-cred && \
+RUN printf '#!/bin/sh\nexec python3 -m adp_cred "$@"\n' > /usr/local/bin/adp-cred && \
     chmod +x /usr/local/bin/adp-cred
 
 # Set working directory and switch to non-root user
