@@ -32,11 +32,16 @@ spec:
             limits:
               cpu: 1000m
               memory: 1Gi
+          # Startup delay sized for 4 uvicorn workers each registering all
+          # routes from scratch. New modules (vault, internal, connections)
+          # have added ~5-8s to cold start since the last probe tuning.
+          # If startup gets slower again, prefer a startupProbe over raising
+          # these further — cleaner semantic.
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 15
+            initialDelaySeconds: 60
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
@@ -44,7 +49,7 @@ spec:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 5
+            initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
