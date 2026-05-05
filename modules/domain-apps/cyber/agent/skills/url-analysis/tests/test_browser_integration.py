@@ -25,7 +25,7 @@ def mock_config() -> dict:
 def mock_boto_client() -> MagicMock:
     """Mock boto3 client for AgentCore Browser."""
     client = MagicMock()
-    client.create_browser_session.return_value = {
+    client.start_browser_session.return_value = {
         "sessionId": "test-session-123",
         "liveViewUrl": "https://live.agentcore.aws/test-session-123",
     }
@@ -200,9 +200,9 @@ class TestBrowserClientRetry:
         error_response = {
             "Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}
         }
-        mock_boto_client.create_browser_session.side_effect = [
-            ClientError(error_response, "CreateBrowserSession"),
-            ClientError(error_response, "CreateBrowserSession"),
+        mock_boto_client.start_browser_session.side_effect = [
+            ClientError(error_response, "StartBrowserSession"),
+            ClientError(error_response, "StartBrowserSession"),
             {"sessionId": "retry-success", "liveViewUrl": ""},
         ]
 
@@ -211,7 +211,7 @@ class TestBrowserClientRetry:
             session = client.create_session()
 
         assert session.session_id == "retry-success"
-        assert mock_boto_client.create_browser_session.call_count == 3
+        assert mock_boto_client.start_browser_session.call_count == 3
 
     def test_raises_after_max_retries(self, mock_boto_client: MagicMock) -> None:
         """Client raises after exhausting retries."""
@@ -220,8 +220,8 @@ class TestBrowserClientRetry:
         error_response = {
             "Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}
         }
-        mock_boto_client.create_browser_session.side_effect = ClientError(
-            error_response, "CreateBrowserSession"
+        mock_boto_client.start_browser_session.side_effect = ClientError(
+            error_response, "StartBrowserSession"
         )
 
         client = AgentCoreBrowserClient(boto_client=mock_boto_client)
@@ -229,7 +229,7 @@ class TestBrowserClientRetry:
             with pytest.raises(ClientError):
                 client.create_session()
 
-        assert mock_boto_client.create_browser_session.call_count == 3
+        assert mock_boto_client.start_browser_session.call_count == 3
 
     def test_stop_session_ignores_not_found(self, mock_boto_client: MagicMock) -> None:
         """StopSession gracefully handles already-terminated sessions."""

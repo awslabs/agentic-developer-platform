@@ -136,7 +136,8 @@ class AgentCoreBrowserClient:
         Raises on failure after retries.
         """
         response = self._retry_call(
-            "create_browser_session",
+            "start_browser_session",
+            browserIdentifier="aws.browser.v1",
             sessionTimeoutSeconds=self._session_timeout,
             browserSettings={
                 "headless": True,

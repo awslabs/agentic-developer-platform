@@ -155,10 +155,11 @@ resource "aws_iam_role_policy" "agent_scaledjob_agentcore_browser" {
       Sid    = "AgentCoreBrowserSessions"
       Effect = "Allow"
       Action = [
-        "bedrock-agentcore:CreateBrowserSession",
+        "bedrock-agentcore:StartBrowserSession",
         "bedrock-agentcore:InvokeBrowser",
         "bedrock-agentcore:StopBrowserSession",
         "bedrock-agentcore:GetBrowserSession",
+        "bedrock-agentcore:ListBrowserSessions",
       ]
       Resource = "*"
       Condition = {
