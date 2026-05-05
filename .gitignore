@@ -60,3 +60,4 @@ logs/
 # Agent-generated per-issue learnings dumps — do not commit to repo
 agent_learning/
 .adp-scratch/
+docs/bedrock-agentcore-dg.pdf
