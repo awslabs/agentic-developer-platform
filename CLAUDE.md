@@ -675,6 +675,44 @@ After the five mandatory sections, the issue may include: `## Scope`, `## Non-go
 - **When reviewing an existing issue** (before labeling it to trigger an agent): if Description / Impact analysis / Design / Deployment / Validation are missing, add them before labeling. An agent without a Design section will invent one; without a Deployment section will not know whether Terraform must apply; without a Validation section will skip writing meaningful tests; without Impact analysis it will miss failure modes that should have been surfaced as test cases.
 - **For EPIC-level issues** that aren't directly implementable: the five-section rule still applies but Deployment/Validation can be "see child issues."
 - **For doc-only issues**: Deployment is "merge the PR, no service redeploys"; Validation is "PR review confirms the doc reads correctly."
+- **For test-coverage issues** (adding tests for a feature that already shipped): use the template below instead of the five-section rule — the generic template doesn't fit because Deployment is trivial and Validation IS the work.
+
+### Template for test-coverage issues
+
+Test-coverage issues follow this shape instead of the five-section rule:
+
+```markdown
+## Description
+One paragraph: what feature is this adding tests for, and why it matters (usually: feature shipped without coverage; first regression would have nothing to catch it).
+
+## Why now
+Trigger for filing — "PR #N shipped feature X with only backend tests", "audit showed UI component Y has 0% coverage", "regression bug #Z would have been caught", etc.
+
+## What the feature does (brief recap)
+2-3 sentences recapping the user-facing flow + key endpoints/components so the agent doesn't need to spelunk the parent issue.
+
+## Tests to add
+Grouped by test layer (E2E, unit, integration, component, etc.) with ONE bullet per test. Each bullet states what the test proves — not how to write it. Examples:
+- "Install flow happy path: click button → POST fired → redirect URL has `state=` param"
+- "Disconnect: click Disconnect → DELETE fired → card removed from list on refetch"
+- "Non-admin sees Disconnect button hidden"
+
+## Validation
+- [ ] All specs pass in CI
+- [ ] Coverage for the specific files ≥ N% (e.g. ≥85%)
+- [ ] No flaky tests (retry threshold must not be raised to pass)
+
+## Non-goals
+Tests explicitly NOT in scope — usually visual regression, load testing, real-API integration, etc.
+
+## Files to create
+List of new test files with full paths.
+
+## References
+Parent feature issue, implementation PR, any post-merge fix PRs, existing test harness file to follow as a pattern.
+```
+
+This template drops Impact Analysis (tests don't change production behavior), drops Design (the design is "write tests for the named layers"), drops Deployment ("merge the PR; CI runs the tests"). Adds "What the feature does (brief recap)" so the agent has enough context without reading the parent issue end-to-end.
 
 ### Why this matters
 
