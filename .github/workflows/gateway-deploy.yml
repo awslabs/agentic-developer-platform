@@ -116,9 +116,22 @@ jobs:
         run: |
           REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+          # Apply the deployment manifest FIRST so changes to probes, env,
+          # resource limits, volume mounts, etc. actually propagate.
+          # Previously this step only ran `kubectl set image`, which updates
+          # the image tag in-place but silently drops every other manifest
+          # change — we hit this during #465 rollout when raised probe
+          # delays didn't take effect until a manual `kubectl patch`.
+          kubectl apply -f modules/gateway/k8s/deployment.yaml -n ${{ env.NAMESPACE }}
+
+          # Then stamp the image tag for this build. `set image` is still
+          # needed because the manifest has a generic `adp-gateway:latest`
+          # placeholder; this line pins to the commit SHA for audit.
           kubectl set image deployment/bedrockgateway \
             bedrockgateway=${REGISTRY}/adp-gateway:${{ github.sha }} \
             -n ${{ env.NAMESPACE }}
+
           kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=300s
 
   deploy-frontend:
