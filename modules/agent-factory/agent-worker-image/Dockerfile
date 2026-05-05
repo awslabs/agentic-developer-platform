@@ -121,14 +121,21 @@ RUN curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release
 # Install pip-based Python tools (uv, poetry). The slim image has pip built-in.
 RUN pip3 install --no-cache-dir --break-system-packages uv poetry
 
-# Python runtime deps for entrypoint.py + lib/
-#   boto3        — Secrets Manager, STS, DynamoDB clients (vault_client, sts_assume)
-#   PyJWT[crypto] — GitHub App installation-token JWT minting (github_token)
-#   requests     — HTTPS calls to GitHub API (github_token)
+# Python runtime deps for entrypoint.py + lib/ and bundled skills.
+#   boto3             — Secrets Manager, STS, DynamoDB clients (vault_client, sts_assume)
+#   PyJWT[crypto]     — GitHub App installation-token JWT minting (github_token)
+#   requests          — HTTPS calls to GitHub API (github_token)
+#   bedrock-agentcore — AgentCore Browser client (generate_ws_headers for
+#                       SigV4-signed CDP WebSocket) used by the url-analysis skill
+#   playwright        — Chromium automation over CDP for url-analysis
+#   pydantic          — evidence_schema.py / verdict.py models
 RUN pip3 install --no-cache-dir --break-system-packages \
     'boto3>=1.34' \
     'PyJWT[crypto]>=2.9' \
-    'requests>=2.31'
+    'requests>=2.31' \
+    'bedrock-agentcore>=0.1' \
+    'playwright>=1.45' \
+    'pydantic>=2.0'
 
 # Create non-root user
 RUN groupadd -g 1001 agent && \

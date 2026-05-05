@@ -20,10 +20,15 @@ resource "aws_iam_role_policy" "cyber_worker_agentcore_browser" {
         Sid    = "AgentCoreBrowserSessions"
         Effect = "Allow"
         Action = [
-          "bedrock-agentcore:CreateBrowserSession",
+          "bedrock-agentcore:StartBrowserSession",
           "bedrock-agentcore:InvokeBrowser",
           "bedrock-agentcore:StopBrowserSession",
           "bedrock-agentcore:GetBrowserSession",
+          "bedrock-agentcore:ListBrowserSessions",
+          # Required for Playwright-over-CDP (DOM/network/form access).
+          # Without this the CDP WebSocket returns 403.
+          "bedrock-agentcore:ConnectBrowserAutomationStream",
+          "bedrock-agentcore:UpdateBrowserStream",
         ]
         Resource = "*"
         Condition = {

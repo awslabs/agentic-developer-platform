@@ -160,6 +160,12 @@ resource "aws_iam_role_policy" "agent_scaledjob_agentcore_browser" {
         "bedrock-agentcore:StopBrowserSession",
         "bedrock-agentcore:GetBrowserSession",
         "bedrock-agentcore:ListBrowserSessions",
+        # Required for Playwright-over-CDP (skill's preferred path —
+        # gives DOM/network/form access that InvokeBrowser lacks).
+        # Without this the CDP WebSocket returns 403 "User is not
+        # authorized to access automation stream".
+        "bedrock-agentcore:ConnectBrowserAutomationStream",
+        "bedrock-agentcore:UpdateBrowserStream",
       ]
       Resource = "*"
       Condition = {

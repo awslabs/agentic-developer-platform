@@ -154,10 +154,21 @@ terminated, the API returns without error (ResourceNotFoundException is safe to 
 
 ## Example orchestration scripts
 
-See `examples/` for 3 reference scripts demonstrating successful analyses:
-- `001-basic-clean.py` — Clean URL via Playwright CDP
-- `002-broken-tls.py` — Handling TLS errors gracefully
-- `003-malware-delivery.py` — Malware URL with auto-download detection
+See `examples/` for reference scripts covering the common scenarios:
+
+| # | File | Scenario | Evidence surface exercised |
+|---|------|----------|----------------------------|
+| 001 | `001-basic-clean.py` | Clean URL baseline | navigation, screenshot, forms, text |
+| 002 | `002-broken-tls.py` | TLS errors (expired, mismatch) | graceful degradation, partial evidence |
+| 003 | `003-malware-delivery.py` | Direct-file delivery (`.sh`, `.dll`) | `page.on("download", ...)`, SHA-256 without persisting payload |
+| 004 | `004-phishing-form.py` | Credential harvest / brand-impersonation forms | `page.evaluate()` form enumeration, detached-input detection, brand-host mismatch signals |
+| 005 | `005-redirect-chain.py` | Link shorteners, cloaking, exploit-kit hops | `page.on("response")` + `page.on("framenavigated")` → `RedirectHop[]`, TLD-drift + registered-domain-fanout signals |
+| 006 | `006-cloudflare-interstitial.py` | Vendor block pages (Cloudflare / Google SB / SmartScreen) | interstitial signature detection, Ray ID extraction, `status=partial`, **do not bypass** |
+
+Pick the closest match to the URL's signal profile. You can combine
+patterns — a phishing URL that also uses redirects wants forms from
+004 + hop tracking from 005 + the `status=partial` pattern from 006
+if it gets intercepted.
 
 Use these as starting points, not as gospel. The API may drift; if the contract
 seems wrong, try small experiments and document the real shape in a comment.

@@ -10,18 +10,14 @@ Produced a "partial" status with TLS error noted in evidence.
 
 import base64
 import sys
-import time
 from datetime import datetime, timezone
 
-import boto3
+from bedrock_agentcore.tools.browser_client import BrowserClient
 from playwright.sync_api import sync_playwright
 
 # -- Config --
 URL = sys.argv[1] if len(sys.argv) > 1 else "https://expired.badssl.com"
 REGION = "us-east-1"
-SESSION_TIMEOUT = 300
-
-client = boto3.client("bedrock-agentcore", region_name=REGION)
 
 
 def iso_now() -> str:
@@ -30,29 +26,21 @@ def iso_now() -> str:
 
 # -- Main --
 run_started_at = iso_now()
+bc = BrowserClient(region=REGION)
 session_id = None
 error_msg = None
 
 try:
     # 1. Start browser session
-    resp = client.start_browser_session(
-        browserIdentifier="aws.browser.v1",
-        name=f"url-analysis-tls-{int(time.time())}",
-        sessionTimeoutSeconds=SESSION_TIMEOUT,
-        viewPort={"height": 819, "width": 1456},
-    )
-    session_id = resp["sessionId"]
+    session_id = bc.start()
 
-    # 2. Get CDP WebSocket endpoint
-    session_info = client.get_browser_session(
-        browserIdentifier="aws.browser.v1",
-        sessionId=session_id,
-    )
-    ws_url = session_info["streams"]["automationStream"]["streamEndpoint"]
+    # 2. Get CDP WebSocket URL + SigV4 auth headers
+    # (requires bedrock-agentcore:ConnectBrowserAutomationStream on the role)
+    ws_url, headers = bc.generate_ws_headers()
 
     # 3. Connect Playwright with TLS error tolerance
     with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(ws_url)
+        browser = p.chromium.connect_over_cdp(ws_url, headers=headers)
         # Create context that ignores HTTPS errors to allow capture
         context = browser.new_context(ignore_https_errors=True)
         page = context.new_page()
@@ -126,12 +114,8 @@ try:
     print(f"Anti-analysis signals: {anti_analysis_signals}")
 
 finally:
-    if session_id:
-        try:
-            client.stop_browser_session(
-                browserIdentifier="aws.browser.v1",
-                sessionId=session_id,
-            )
-            print(f"Session stopped: {session_id}")
-        except Exception:
-            print(f"Session cleanup failed (will auto-terminate): {session_id}")
+    try:
+        bc.stop()
+        print(f"Session stopped: {session_id}")
+    except Exception:
+        print(f"Session cleanup failed (will auto-terminate): {session_id}")

@@ -9,19 +9,14 @@ Run context: executed by the agent inside the analysis pod.
 
 import base64
 import sys
-import time
 from datetime import datetime, timezone
 
-import boto3
+from bedrock_agentcore.tools.browser_client import BrowserClient
 from playwright.sync_api import sync_playwright
 
 # -- Config --
 URL = sys.argv[1] if len(sys.argv) > 1 else "https://example.com"
 REGION = "us-east-1"
-SESSION_TIMEOUT = 300
-
-# -- Helpers --
-client = boto3.client("bedrock-agentcore", region_name=REGION)
 
 
 def iso_now() -> str:
@@ -30,29 +25,22 @@ def iso_now() -> str:
 
 # -- Main --
 run_started_at = iso_now()
+bc = BrowserClient(region=REGION)
 session_id = None
 
 try:
-    # 1. Start browser session
-    resp = client.start_browser_session(
-        browserIdentifier="aws.browser.v1",
-        name=f"url-analysis-{int(time.time())}",
-        sessionTimeoutSeconds=SESSION_TIMEOUT,
-        viewPort={"height": 819, "width": 1456},
-    )
-    session_id = resp["sessionId"]
+    # 1. Start browser session (SDK wraps start_browser_session)
+    session_id = bc.start()
     print(f"Session started: {session_id}")
 
-    # 2. Get CDP WebSocket endpoint
-    session_info = client.get_browser_session(
-        browserIdentifier="aws.browser.v1",
-        sessionId=session_id,
-    )
-    ws_url = session_info["streams"]["automationStream"]["streamEndpoint"]
+    # 2. Get CDP WebSocket URL + SigV4-signed auth headers.
+    # The WebSocket upstream requires bedrock-agentcore:ConnectBrowserAutomationStream
+    # on the calling role. Without it, connect_over_cdp returns 403.
+    ws_url, headers = bc.generate_ws_headers()
 
     # 3. Connect Playwright and navigate
     with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(ws_url)
+        browser = p.chromium.connect_over_cdp(ws_url, headers=headers)
         context = browser.contexts[0] if browser.contexts else browser.new_context()
         page = context.pages[0] if context.pages else context.new_page()
 
@@ -124,13 +112,9 @@ try:
     print(f"Verdict input ready: {len(forms_raw)} forms, {len(visible_text)} chars text")
 
 finally:
-    # 8. Always stop the session
-    if session_id:
-        try:
-            client.stop_browser_session(
-                browserIdentifier="aws.browser.v1",
-                sessionId=session_id,
-            )
-            print(f"Session stopped: {session_id}")
-        except client.exceptions.ResourceNotFoundException:
-            print(f"Session already terminated: {session_id}")
+    # 8. Always stop the session (SDK wraps stop_browser_session, idempotent)
+    try:
+        bc.stop()
+        print(f"Session stopped: {session_id}")
+    except Exception as e:
+        print(f"Session cleanup failed (will auto-terminate): {session_id} — {e}")
