@@ -176,3 +176,31 @@ resource "aws_iam_role_policy" "agent_scaledjob_agentcore_browser" {
     }]
   })
 }
+
+# ---------------------------------------------------------------------------
+# url-analysis evidence bucket — identity-side grant
+# ---------------------------------------------------------------------------
+# The bucket (owned by the cyber module) has a resource-based policy that
+# allows this role to PutObject/GetObject. S3 also requires an identity-
+# based grant for same-account principals — a bucket policy alone is not
+# sufficient. Without this, the skill's evidence_store.upload_screenshot()
+# hits AccessDenied and falls back to inline base64 (PR #502's resilience
+# path), meaning no evidence ever lands in S3.
+
+resource "aws_iam_role_policy" "agent_scaledjob_url_analysis_evidence" {
+  name = "url-analysis-evidence-s3"
+  role = aws_iam_role.agent_scaledjob.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "UrlAnalysisEvidenceS3"
+      Effect = "Allow"
+      Action = [
+        "s3:PutObject",
+        "s3:GetObject",
+      ]
+      Resource = "arn:aws:s3:::adp-${var.environment}-url-analysis-evidence-v2-${local.account_id}/*"
+    }]
+  })
+}
