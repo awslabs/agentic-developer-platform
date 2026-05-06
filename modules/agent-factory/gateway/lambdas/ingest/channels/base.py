@@ -165,6 +165,10 @@ class UnifiedMessage:
     is_direct_message: bool = True
     reply_to_message_id: str | None = None
     platform_data: dict[str, Any] = field(default_factory=dict)
+    # Vault Phase 5 (#138): provider identity for resolve-user integration.
+    # Set by channel adapters; consumed by the resolver in handler.py.
+    provider: str = ""
+    provider_user_id: str = ""
 
     @property
     def session_key(self) -> str:

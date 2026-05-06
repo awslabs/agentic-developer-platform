@@ -158,6 +158,10 @@ class WebChatAdapter(ChannelAdapter):
             attachments=attachments,
             is_mention=True,  # WebChat messages are always directed at the bot
             is_direct_message=True,
+            # Vault Phase 5 (#138): WebChat is already resolved via Cognito $connect.
+            # Set provider for optional consistency call to resolve-user.
+            provider="cognito",
+            provider_user_id=user_id,
             platform_data={
                 "connection_id": connection_id,
                 "connected_at": request_context.get("connectedAt"),

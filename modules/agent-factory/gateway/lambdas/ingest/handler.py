@@ -25,6 +25,12 @@ from channels.slack import SlackAdapter
 from channels.webchat import WebChatAdapter
 from classifier import classify_message
 from github_dispatch import create_issue_and_dispatch, label_existing_issue
+from user_resolver import (
+    ENABLE_USER_IDENTITIES,
+    ResolvedUser,
+    UnresolvedUser,
+    resolve_user,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -86,6 +92,57 @@ ADAPTERS: dict[str, ChannelAdapter] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Vault Phase 5 (#138): Unresolved user handling (magic-link flow)
+# ---------------------------------------------------------------------------
+
+_MAGIC_LINK_SLACK_MSG = (
+    ":link: *Link your ADP account to use this bot.*\n"
+    "This is a one-time setup: {magic_link_url}"
+)
+
+_MAGIC_LINK_GITHUB_MSG = (
+    ":link: **Link your ADP account to use this bot.**\n\n"
+    "This is a one-time setup: {magic_link_url}"
+)
+
+
+def _handle_unresolved_user(
+    channel_name: str,
+    message: UnifiedMessage,
+    magic_link_url: str,
+    event: dict,
+) -> dict:
+    """Handle an unresolved user by posting a magic-link in-channel.
+
+    Does NOT enqueue the message for processing — returns early.
+    """
+    if not magic_link_url:
+        magic_link_url = "(magic link unavailable — contact your admin)"
+
+    if channel_name == "slack":
+        text = _MAGIC_LINK_SLACK_MSG.format(magic_link_url=magic_link_url)
+        logger.info(
+            "Unresolved Slack user %s — magic link issued", message.provider_user_id
+        )
+    else:
+        text = _MAGIC_LINK_GITHUB_MSG.format(magic_link_url=magic_link_url)
+        logger.info(
+            "Unresolved %s user %s — magic link issued",
+            channel_name,
+            message.provider_user_id,
+        )
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps({
+            "status": "unresolved_user",
+            "magic_link_url": magic_link_url,
+            "message": text,
+        }),
+    }
+
+
 def lambda_handler(event, context):
     route_key = event.get("requestContext", {}).get("routeKey", "")
     connection_id = event.get("requestContext", {}).get("connectionId", "")
@@ -130,6 +187,28 @@ def lambda_handler(event, context):
     message = adapter.parse_event(event) if channel_name == "webchat" else adapter.parse_event(parse_body(event))
     if message is None:
         return {"statusCode": 200, "body": "OK"}
+
+    # Vault Phase 5 (#138): resolve provider identity to internal user.
+    # WebChat (provider=cognito) is already resolved via Cognito $connect claims
+    # and skips the resolver unless we want a consistency pre-create.
+    if ENABLE_USER_IDENTITIES and message.provider and message.provider != "cognito":
+        resolution = resolve_user(
+            provider=message.provider,
+            provider_user_id=message.provider_user_id,
+            channel_context=message.platform_data.get("team_id"),
+        )
+        if isinstance(resolution, ResolvedUser):
+            # Inject resolved identity into the message pipeline
+            message.user_id = resolution.user_id
+            message.platform_data["org_id"] = resolution.org_id
+            message.platform_data["team_id"] = resolution.team_id
+        elif isinstance(resolution, UnresolvedUser):
+            # User not linked — send magic-link, do NOT enqueue
+            return _handle_unresolved_user(
+                channel_name, message, resolution.magic_link_url, event
+            )
+        # resolution is None → feature misconfigured or transient error; proceed
+        # without blocking the user (graceful degradation).
 
     return handle_unified_message(message)
 

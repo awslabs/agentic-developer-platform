@@ -243,6 +243,11 @@ class SlackAdapter(ChannelAdapter):
         # OpenClaw: actions.ts handles file downloads
         attachments = self._parse_files(event.get("files", []))
 
+        # Vault Phase 5 (#138): provider identity for resolve-user.
+        # Convention: provider_user_id = "<workspace_id>:<user_id>"
+        workspace_id = payload.get("team_id", "")
+        provider_uid = f"{workspace_id}:{user_id}" if workspace_id else user_id
+
         return UnifiedMessage(
             channel=ChannelType.SLACK,
             channel_id=event.get("channel", ""),
@@ -255,8 +260,10 @@ class SlackAdapter(ChannelAdapter):
             attachments=attachments,
             is_mention=False,
             is_direct_message=is_dm,
+            provider="slack",
+            provider_user_id=provider_uid,
             platform_data={
-                "team_id": payload.get("team_id", ""),
+                "team_id": workspace_id,
                 "event_id": payload.get("event_id", ""),
                 "channel_type": channel_type,
                 "subtype": subtype,
@@ -287,6 +294,10 @@ class SlackAdapter(ChannelAdapter):
         if not text:
             return None
 
+        # Vault Phase 5 (#138): provider identity for resolve-user.
+        workspace_id = payload.get("team_id", "")
+        provider_uid = f"{workspace_id}:{user_id}" if workspace_id else user_id
+
         return UnifiedMessage(
             channel=ChannelType.SLACK,
             channel_id=event.get("channel", ""),
@@ -298,8 +309,10 @@ class SlackAdapter(ChannelAdapter):
             timestamp=float(event.get("ts", time.time())),
             is_mention=True,
             is_direct_message=False,
+            provider="slack",
+            provider_user_id=provider_uid,
             platform_data={
-                "team_id": payload.get("team_id", ""),
+                "team_id": workspace_id,
                 "event_id": payload.get("event_id", ""),
             },
         )
