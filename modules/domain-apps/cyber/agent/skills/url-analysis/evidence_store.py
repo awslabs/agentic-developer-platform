@@ -5,6 +5,7 @@ Public API:
     upload_screenshot(png_bytes, *, run_id, url_index, shot_index) -> str
     upload_evidence_envelope(evidence, *, run_id, url_index) -> str
     presign(s3_uri, *, expires_in=86400) -> str
+    shrink_for_claude(png_bytes, *, max_side=1024) -> bytes
 
 Env:
     URL_ANALYSIS_EVIDENCE_BUCKET — deterministic bucket name. If unset, all
@@ -14,8 +15,9 @@ Safety rails:
     - upload_screenshot rejects non-PNG and >5MB payloads
     - upload_evidence_envelope strips image_base64 and rejects >2MB envelopes
     - Only bytes are accepted (never file paths)
+    - shrink_for_claude enforces a Claude-safe byte budget before visual reasoning
 
-Issue #499
+Issues: #499, #503
 """
 
 from __future__ import annotations
@@ -42,6 +44,12 @@ _PNG_MAGIC = b"\x89PNG"
 _MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024  # 5 MB
 _MAX_ENVELOPE_BYTES = 2 * 1024 * 1024  # 2 MB
 _DEFAULT_PRESIGN_EXPIRES = 86400  # 24 hours
+
+# Claude-safe ceiling for images passed to Bedrock/Anthropic image input.
+# Bedrock's Messages API rejects images > ~3.75 MB with a 400 "Could not
+# process image" error. We target a comfortable margin.
+_CLAUDE_IMAGE_BYTES_CAP = 3 * 1024 * 1024  # 3 MB
+_CLAUDE_IMAGE_DEFAULT_MAX_SIDE = 1024  # px
 
 # ---------------------------------------------------------------------------
 # Lazy S3 client (initialized on first use)
@@ -270,3 +278,103 @@ def presign(s3_uri: str, *, expires_in: int = _DEFAULT_PRESIGN_EXPIRES) -> str:
     except ClientError as e:
         logger.error("Failed to generate presigned URL for %s: %s", s3_uri, e)
         return ""
+
+
+# ---------------------------------------------------------------------------
+# Claude image helper
+# ---------------------------------------------------------------------------
+
+
+def shrink_for_claude(
+    png_bytes: bytes,
+    *,
+    max_side: int = _CLAUDE_IMAGE_DEFAULT_MAX_SIDE,
+) -> bytes:
+    """
+    Downscale a PNG so it fits Bedrock/Claude's image-input size limit.
+
+    Full-page browser screenshots at default viewport can exceed the ~3.75 MB
+    Bedrock image cap, producing `API Error: 400 Could not process image` and
+    crashing the URL-analysis run. This helper resizes the longest side to
+    `max_side` pixels and re-encodes as PNG.
+
+    - No-op if `png_bytes` is already under the byte cap AND the longest side
+      is already <= `max_side`.
+    - If Pillow is not installed in the runtime, returns a best-effort result:
+      the original bytes if they're under the cap, otherwise an empty bytes
+      object (caller must treat `b""` as "no image, reason from text only").
+    - Never raises. The skill's reasoning step must tolerate a missing image.
+
+    Args:
+        png_bytes: Original PNG bytes (e.g. from `page.screenshot(full_page=True)`)
+        max_side: Target max dimension in pixels (longest side)
+
+    Returns:
+        Resized PNG bytes safe to pass to Claude, OR b"" if nothing can be
+        produced (PIL missing + image too big).
+    """
+    # Fast path: already safe AND we can't improve without PIL
+    already_small_bytes = len(png_bytes) <= _CLAUDE_IMAGE_BYTES_CAP
+
+    try:
+        from io import BytesIO
+
+        from PIL import Image  # type: ignore[import-untyped]
+    except ImportError:
+        if already_small_bytes:
+            return png_bytes
+        logger.warning(
+            "Pillow not available and screenshot is %d bytes (> %d cap); "
+            "returning empty bytes — caller must reason from text only.",
+            len(png_bytes),
+            _CLAUDE_IMAGE_BYTES_CAP,
+        )
+        return b""
+
+    try:
+        with Image.open(BytesIO(png_bytes)) as img:
+            w, h = img.size
+            longest = max(w, h)
+            if already_small_bytes and longest <= max_side:
+                return png_bytes
+
+            scale = max_side / longest if longest > max_side else 1.0
+            new_w = max(1, int(w * scale))
+            new_h = max(1, int(h * scale))
+
+            # Normalize mode — PNG can carry paletted images; convert to
+            # RGB/RGBA so resize is consistent.
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA" if "A" in img.mode else "RGB")
+
+            resized = img.resize((new_w, new_h), Image.LANCZOS)
+            out = BytesIO()
+            resized.save(out, format="PNG", optimize=True)
+            result = out.getvalue()
+
+            # If still over cap (possible for photorealistic content),
+            # reduce further by halving repeatedly.
+            attempts = 0
+            while len(result) > _CLAUDE_IMAGE_BYTES_CAP and attempts < 3:
+                attempts += 1
+                resized = resized.resize(
+                    (max(1, resized.width // 2), max(1, resized.height // 2)),
+                    Image.LANCZOS,
+                )
+                out = BytesIO()
+                resized.save(out, format="PNG", optimize=True)
+                result = out.getvalue()
+
+            logger.info(
+                "Resized screenshot %dx%d (%d bytes) -> %dx%d (%d bytes)",
+                w,
+                h,
+                len(png_bytes),
+                resized.width,
+                resized.height,
+                len(result),
+            )
+            return result
+    except Exception as e:
+        logger.warning("shrink_for_claude failed (%s); returning original bytes", e)
+        return png_bytes if already_small_bytes else b""

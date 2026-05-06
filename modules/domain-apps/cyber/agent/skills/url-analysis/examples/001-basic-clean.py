@@ -53,6 +53,16 @@ try:
         screenshot_bytes = page.screenshot(full_page=True)
         screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
 
+        # Claude-safe copy for the agent's own visual reasoning. Full-page
+        # screenshots at default viewport often exceed Bedrock's image cap
+        # and produce "API Error: 400 Could not process image".
+        from evidence_store import shrink_for_claude
+
+        claude_safe = shrink_for_claude(screenshot_bytes)
+        if claude_safe:
+            with open(f"/tmp/screenshot_{session_id}.png", "wb") as fh:
+                fh.write(claude_safe)
+
         # 5. Extract visible text
         visible_text = page.inner_text("body")
 

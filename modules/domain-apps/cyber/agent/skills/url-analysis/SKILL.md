@@ -62,17 +62,43 @@ Write a Python script that:
 - Always call `stop_browser_session` in a finally block
 - Save the script to `/tmp/run-artifacts/{run_id}/orchestration.py`
 
-**Two approaches to browser interaction (choose based on task):**
+**Two approaches to browser interaction. Default to CDP. Only fall back to InvokeBrowser if CDP fails at runtime.**
 
-1. **Playwright via CDP WebSocket** (preferred for URL analysis):
-   - Start session, get `automationStream.streamEndpoint` from get_browser_session
-   - Connect Playwright over CDP: `chromium.connect_over_cdp(ws_url, headers=headers)`
-   - Use standard Playwright APIs: `page.goto()`, `page.screenshot()`, `page.content()`
-   - Full DOM access, network interception, form detection
+1. **Playwright via CDP WebSocket — DEFAULT. USE THIS FIRST.**
 
-2. **InvokeBrowser OS actions** (for dialogs, CAPTCHAs, OS-level interaction):
-   - Use `invoke_browser` with action types: mouseClick, keyType, screenshot, etc.
-   - Lower-level, no DOM access — use when CDP can't handle the interaction
+   Do NOT reject this path because "CDP requires SigV4." The
+   `bedrock-agentcore` SDK handles SigV4 for you. The one-line idiom is:
+
+   ```python
+   from bedrock_agentcore.tools.browser_client import BrowserClient
+   from playwright.sync_api import sync_playwright
+
+   bc = BrowserClient(region="us-east-1")
+   session_id = bc.start()                     # start_browser_session
+   ws_url, headers = bc.generate_ws_headers()  # SigV4-signed, ready to use
+
+   with sync_playwright() as p:
+       browser = p.chromium.connect_over_cdp(ws_url, headers=headers)
+       page = browser.contexts[0].pages[0] if browser.contexts else browser.new_context().new_page()
+       page.goto(url, wait_until="networkidle", timeout=30000)
+       screenshot_bytes = page.screenshot(full_page=True)
+       text = page.inner_text("body")
+       # ... extract forms, redirects, etc.
+
+   bc.stop()
+   ```
+
+   This gives full DOM access, network interception, form detection, and
+   download events. See `examples/001-basic-clean.py` for the complete
+   template and `examples/004`/`005`/`006` for scenario variants.
+
+2. **InvokeBrowser OS actions — FALLBACK ONLY.**
+
+   Use only when CDP raises a runtime error you can't work around (e.g., a
+   specific site breaks Playwright, or you need OS-level keyboard input
+   for a native dialog). Lower-level, no DOM access, no form detection,
+   no network interception. Screenshots from InvokeBrowser are full-OS
+   desktop PNGs — resize them before passing to Claude (see Section 9).
 
 ### 3. Enrichment (parallel with browser work if possible)
 
@@ -151,6 +177,33 @@ md_report = render_markdown_report(safe_url, findings, verdict.to_dict(), durati
 
 Always call `stop_browser_session` in a finally block. If the session is already
 terminated, the API returns without error (ResourceNotFoundException is safe to ignore).
+
+### 8. Screenshot handling (MANDATORY — do not skip)
+
+Browser screenshots at the default viewport (1456×819, full_page=True) can be
+several MB. Bedrock rejects over-size images with
+`API Error: 400 Could not process image` and the whole run dies. Resize before
+showing to Claude OR keep the screenshot on disk and reason from text evidence.
+
+**Before opening a screenshot for visual reasoning, always resize it:**
+
+```python
+from url_analysis.evidence_store import shrink_for_claude
+
+resized_bytes = shrink_for_claude(screenshot_bytes, max_side=1024)
+with open("/tmp/url1_screenshot.png", "wb") as f:
+    f.write(resized_bytes)
+```
+
+`shrink_for_claude` downscales the longest side to `max_side` pixels and
+re-encodes as PNG. It's a no-op if the image is already small. Full-resolution
+bytes stay in the Evidence envelope (uploaded to S3 when the bucket is
+configured); the on-disk copy is only for Claude's visual input.
+
+**If Pillow/PIL is unavailable in the runtime**, skip the screenshot read
+entirely — `page.title()` + `page.inner_text("body")` + detected forms give
+Claude enough to reason from without the image. A missing image must NEVER
+crash the run.
 
 ## Example orchestration scripts
 

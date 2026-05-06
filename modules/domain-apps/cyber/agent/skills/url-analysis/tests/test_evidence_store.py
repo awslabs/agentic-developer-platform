@@ -279,3 +279,80 @@ class TestPresign:
         url = evidence_store.presign("")
         assert url == ""
         mock_s3.generate_presigned_url.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# shrink_for_claude tests
+# ---------------------------------------------------------------------------
+
+
+def _make_real_png(width: int, height: int, fill=(0, 128, 0)) -> bytes:
+    """Create a real PNG of given dimensions (requires Pillow)."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    img = Image.new("RGB", (width, height), fill)
+    out = BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+class TestShrinkForClaude:
+    def test_small_image_unchanged(self):
+        """A 200x200 image under the byte cap should pass through unchanged."""
+        png = _make_real_png(200, 200)
+        result = evidence_store.shrink_for_claude(png)
+        assert result == png
+
+    def test_large_dimension_resized(self):
+        """2000x2000 must be resized so longest side = max_side (1024)."""
+        png = _make_real_png(2000, 2000)
+        result = evidence_store.shrink_for_claude(png, max_side=1024)
+        assert result != png
+        # Verify the resize actually happened
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.open(BytesIO(result))
+        assert max(img.size) <= 1024
+
+    def test_asymmetric_dimension_preserves_aspect(self):
+        """A 4000x1000 image should become ~1024x256, keeping aspect ratio."""
+        png = _make_real_png(4000, 1000)
+        result = evidence_store.shrink_for_claude(png, max_side=1024)
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.open(BytesIO(result))
+        assert img.size == (1024, 256)
+
+    def test_result_under_claude_cap(self):
+        """Output must be under the 3MB Claude image cap even for huge input."""
+        # Create a large image with noise so PNG compression can't shrink it trivially
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.new("RGB", (5000, 5000))
+        # Tile a colorful pattern
+        for y in range(0, 5000, 10):
+            for x in range(0, 5000, 10):
+                img.putpixel((x, y), ((x * 7) % 256, (y * 11) % 256, ((x + y) * 3) % 256))
+        out = BytesIO()
+        img.save(out, format="PNG")
+        big_png = out.getvalue()
+
+        result = evidence_store.shrink_for_claude(big_png, max_side=1024)
+        assert len(result) <= evidence_store._CLAUDE_IMAGE_BYTES_CAP
+        assert result.startswith(b"\x89PNG")
+
+    def test_never_raises(self):
+        """Invalid bytes should not raise — return fallback."""
+        # Random bytes that aren't a valid PNG
+        garbage = b"not a png" * 100
+        # Under the byte cap → returns original
+        result = evidence_store.shrink_for_claude(garbage)
+        assert result == garbage
