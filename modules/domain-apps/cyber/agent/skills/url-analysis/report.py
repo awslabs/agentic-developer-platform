@@ -181,18 +181,44 @@ def render_markdown_report(
             lines.append(f"- {action}")
         lines.append("")
 
-    # Artifacts
-    screenshots = findings.get("screenshots", [])
-    if screenshots:
-        lines.extend(["### Artifacts", ""])
-        for s in screenshots:
-            lines.append(f"- Screenshot: `{s}`")
-        dom_uri = findings.get("dom_snapshot_uri", "")
-        if dom_uri:
-            lines.append(f"- DOM snapshot: `{dom_uri}`")
-        har_uri = findings.get("har_file_uri", "")
-        if har_uri:
-            lines.append(f"- HAR file: `{har_uri}`")
+    # Screenshots (rendered inline via presigned URLs when available)
+    screenshot_urls = findings.get("screenshot_presigned_urls", [])
+    if screenshot_urls:
+        lines.extend(["### Screenshots", ""])
+        for i, url in enumerate(screenshot_urls, 1):
+            lines.append(f"![screenshot-{i}]({url})")
+            lines.append("")
+    else:
+        # Fallback: show screenshot paths if no presigned URLs
+        screenshots = findings.get("screenshots", [])
+        if screenshots:
+            lines.extend(["### Artifacts", ""])
+            for s in screenshots:
+                lines.append(f"- Screenshot: `{s}`")
+            lines.append("")
+
+    # Evidence envelope download link
+    evidence_url = findings.get("evidence_envelope_url", "")
+    if evidence_url:
+        lines.extend(
+            [
+                "### Evidence",
+                "",
+                f"[Full evidence envelope (JSON)]({evidence_url})",
+                "",
+            ]
+        )
+
+    # Other artifacts
+    dom_uri = findings.get("dom_snapshot_uri", "")
+    if dom_uri:
+        if not evidence_url and not screenshot_urls:
+            lines.extend(["### Artifacts", ""])
+        lines.append(f"- DOM snapshot: `{dom_uri}`")
+    har_uri = findings.get("har_file_uri", "")
+    if har_uri:
+        lines.append(f"- HAR file: `{har_uri}`")
+    if dom_uri or har_uri:
         lines.append("")
 
     # Full JSON envelope (collapsed)
