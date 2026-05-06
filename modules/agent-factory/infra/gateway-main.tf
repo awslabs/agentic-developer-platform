@@ -376,11 +376,23 @@ resource "aws_iam_role_policy" "gateway_agent_secrets" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["secretsmanager:GetSecretValue"]
-      Resource = "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/*"
-    }]
+    Statement = [
+      {
+        Sid      = "AllowGitHubAppSecrets"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/*/gh-app-*"
+      },
+      {
+        # Deny direct access to tenant-level AWS credentials.
+        # AWS creds are now fetched via gateway /internal/v1/credential-raw-read
+        # which resolves user-scoped credentials (issue #455).
+        Sid      = "DenyTenantAwsAccess"
+        Effect   = "Deny"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/*/tenants/*/aws-access-*"
+      }
+    ]
   })
 }
 

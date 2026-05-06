@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.check_run import create_check_run, update_check_run
+from lib.gateway_credential_client import GatewayCredentialClient, GatewayCredentialError
 from lib.vault_client import VaultClient
 from lib.github_token import generate_jwt, mint_installation_token
 from lib.sts_assume import assume_customer_role
@@ -32,6 +33,7 @@ SAMPLE_ENVELOPE = {
     "actor": {
         "github_id": 12345678,
         "github_login": "jane-dev",
+        "user_id": "cognito-sub-jane-123",
         "is_bot": False,
     },
     "source_ref": {
@@ -367,41 +369,46 @@ class TestEntrypointMain:
         result = main()
         assert result == 1
 
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.create_check_run")
     @patch("entrypoint.run_cmd")
     @patch("entrypoint.mint_installation_token")
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_operations_persona_assumes_aws_role(
+    def test_operations_persona_assumes_aws_role_via_gateway(
         self,
         mock_subprocess_run,
         mock_copytree,
         mock_vault_cls,
         mock_mint,
         mock_run_cmd,
+        mock_create_cr,
+        mock_update_cr,
+        mock_delete_msg,
+        mock_receive_msg,
         monkeypatch,
         tmp_path,
     ):
-        """Operations persona should attempt AWS role assumption."""
+        """Operations persona fetches AWS creds via gateway and assumes role."""
         from entrypoint import main
         import entrypoint
 
         ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
-        monkeypatch.setenv("SQS_MESSAGE_BODY", json.dumps(ops_envelope))
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("VAULT_GATEWAY_URL", "http://gateway:8080")
+        monkeypatch.setenv("VAULT_INTERNAL_API_KEY", "test-key")
 
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-handle-ops")
         mock_vault = MagicMock()
         mock_vault_cls.return_value = mock_vault
-        mock_vault.get_secret.side_effect = [
-            {"app_id": "123", "private_key": "k"},  # github-app
-            {  # aws-access
-                "role_arn": "arn:aws:iam::111:role/test",
-                "external_id": "ext-123",
-                "session_duration_seconds": 3600,
-            },
-        ]
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
-        mock_run_cmd.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 111, "html_url": "https://github.com/x/runs/111"}
         mock_subprocess_run.return_value = MagicMock(returncode=0)
 
         work_dir = tmp_path / "repo"
@@ -410,14 +417,31 @@ class TestEntrypointMain:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        with patch("entrypoint.assume_customer_role") as mock_assume:
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
+             patch("entrypoint.assume_customer_role") as mock_assume:
+            mock_gw = MagicMock()
+            mock_gw_cls.return_value = mock_gw
+            mock_gw.is_configured = True
+            mock_gw.raw_read.return_value = {
+                "value": json.dumps({
+                    "role_arn": "arn:aws:iam::111:role/test",
+                    "external_id": "ext-123",
+                    "session_duration_seconds": 3600,
+                }),
+                "credential_type": "api_key",
+                "provenance_id": "prov-123",
+            }
             mock_assume.return_value = {
                 "AWS_ACCESS_KEY_ID": "AK",
                 "AWS_SECRET_ACCESS_KEY": "SK",
                 "AWS_SESSION_TOKEN": "ST",
             }
             main()
+            mock_gw.raw_read.assert_called_once()
             mock_assume.assert_called_once()
+            # Verify user_id is passed to assume_customer_role
+            call_kwargs = mock_assume.call_args[1]
+            assert call_kwargs["user_id"] == "cognito-sub-jane-123"
 
     def test_idempotency_marker_in_comments(self):
         """Verify marker format uses message_id for idempotency."""
@@ -736,3 +760,205 @@ class TestCheckRun:
         assert "conclusion" not in body
         assert "completed_at" not in body
         assert "output" not in body
+
+
+# --- Test: gateway_credential_client ---
+
+
+class TestGatewayCredentialClient:
+    def test_is_configured_true(self, monkeypatch):
+        monkeypatch.setenv("VAULT_GATEWAY_URL", "http://gw:8080")
+        monkeypatch.setenv("VAULT_INTERNAL_API_KEY", "key-123")
+        client = GatewayCredentialClient()
+        assert client.is_configured is True
+
+    def test_is_configured_false_missing_url(self, monkeypatch):
+        monkeypatch.delenv("VAULT_GATEWAY_URL", raising=False)
+        monkeypatch.setenv("VAULT_INTERNAL_API_KEY", "key-123")
+        client = GatewayCredentialClient()
+        assert client.is_configured is False
+
+    def test_is_configured_false_missing_key(self, monkeypatch):
+        monkeypatch.setenv("VAULT_GATEWAY_URL", "http://gw:8080")
+        monkeypatch.delenv("VAULT_INTERNAL_API_KEY", raising=False)
+        client = GatewayCredentialClient()
+        assert client.is_configured is False
+
+    @patch("lib.gateway_credential_client.urlopen")
+    def test_raw_read_success(self, mock_urlopen, monkeypatch):
+        monkeypatch.setenv("VAULT_GATEWAY_URL", "http://gw:8080")
+        monkeypatch.setenv("VAULT_INTERNAL_API_KEY", "key-123")
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "value": '{"role_arn": "arn:aws:iam::111:role/test"}',
+            "credential_type": "api_key",
+            "provenance_id": "prov-abc",
+        }).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        client = GatewayCredentialClient()
+        result = client.raw_read(
+            user_id="user-123",
+            agent_id="operations",
+            task_id="task-456",
+            service="aws_role_assume",
+        )
+
+        assert result["credential_type"] == "api_key"
+        assert "role_arn" in result["value"]
+
+    @patch("lib.gateway_credential_client.urlopen")
+    def test_raw_read_http_error(self, mock_urlopen, monkeypatch):
+        from urllib.error import HTTPError
+        monkeypatch.setenv("VAULT_GATEWAY_URL", "http://gw:8080")
+        monkeypatch.setenv("VAULT_INTERNAL_API_KEY", "key-123")
+
+        mock_urlopen.side_effect = HTTPError(
+            url="http://gw:8080/internal/v1/credential-raw-read",
+            code=404,
+            msg="Not Found",
+            hdrs={},
+            fp=MagicMock(read=MagicMock(return_value=b'{"error":"credential_not_found"}')),
+        )
+
+        client = GatewayCredentialClient()
+        with pytest.raises(GatewayCredentialError, match="HTTP 404"):
+            client.raw_read(
+                user_id="user-123",
+                agent_id="operations",
+                task_id="task-456",
+                service="aws_role_assume",
+            )
+
+
+# --- Test: _fetch_aws_credentials ---
+
+
+class TestFetchAwsCredentials:
+    def test_raises_on_empty_user_id(self):
+        from entrypoint import _fetch_aws_credentials
+
+        with pytest.raises(ValueError, match="no user_id"):
+            _fetch_aws_credentials(user_id="", agent_id="ops", task_id="t1")
+
+    @patch("entrypoint.GatewayCredentialClient")
+    def test_raises_on_unconfigured_client(self, mock_gw_cls, monkeypatch):
+        from entrypoint import _fetch_aws_credentials
+
+        monkeypatch.delenv("VAULT_GATEWAY_URL", raising=False)
+        monkeypatch.delenv("VAULT_INTERNAL_API_KEY", raising=False)
+        mock_gw = MagicMock()
+        mock_gw_cls.return_value = mock_gw
+        mock_gw.is_configured = False
+
+        with pytest.raises(GatewayCredentialError, match="not configured"):
+            _fetch_aws_credentials(user_id="user-1", agent_id="ops", task_id="t1")
+
+    @patch("entrypoint.GatewayCredentialClient")
+    def test_success_returns_parsed_cred(self, mock_gw_cls):
+        from entrypoint import _fetch_aws_credentials
+
+        mock_gw = MagicMock()
+        mock_gw_cls.return_value = mock_gw
+        mock_gw.is_configured = True
+        mock_gw.raw_read.return_value = {
+            "value": json.dumps({
+                "role_arn": "arn:aws:iam::111:role/test",
+                "external_id": "ext-abc",
+                "session_duration_seconds": 1800,
+            }),
+            "credential_type": "api_key",
+            "provenance_id": "prov-xyz",
+        }
+
+        result = _fetch_aws_credentials(user_id="user-1", agent_id="ops", task_id="t1")
+        assert result["role_arn"] == "arn:aws:iam::111:role/test"
+        assert result["external_id"] == "ext-abc"
+        assert result["session_duration_seconds"] == 1800
+
+    @patch("entrypoint.GatewayCredentialClient")
+    def test_raises_on_missing_role_arn(self, mock_gw_cls):
+        from entrypoint import _fetch_aws_credentials
+
+        mock_gw = MagicMock()
+        mock_gw_cls.return_value = mock_gw
+        mock_gw.is_configured = True
+        mock_gw.raw_read.return_value = {
+            "value": json.dumps({"external_id": "ext-abc"}),
+            "credential_type": "api_key",
+            "provenance_id": "prov-xyz",
+        }
+
+        with pytest.raises(GatewayCredentialError, match="missing required field 'role_arn'"):
+            _fetch_aws_credentials(user_id="user-1", agent_id="ops", task_id="t1")
+
+
+# --- Test: sts_assume user_id tag ---
+
+
+class TestStsAssumeUserIdTag:
+    @patch("lib.sts_assume.boto3.client")
+    def test_user_id_tag_included_when_provided(self, mock_boto_client):
+        mock_sts = MagicMock()
+        mock_boto_client.return_value = mock_sts
+        mock_sts.assume_role.return_value = {
+            "Credentials": {
+                "AccessKeyId": "AK",
+                "SecretAccessKey": "SK",
+                "SessionToken": "ST",
+                "Expiration": "2026-05-01T00:00:00Z",
+            }
+        }
+
+        assume_customer_role(
+            role_arn="arn:aws:iam::111:role/test",
+            external_id="ext-123",
+            tenant_id="acme",
+            actor_login="jane",
+            actor_id="123",
+            user_id="cognito-sub-jane",
+            run_id="run-1",
+            repo="acme/app",
+            issue=42,
+            persona="operations",
+        )
+
+        call_kwargs = mock_sts.assume_role.call_args[1]
+        tags = call_kwargs["Tags"]
+        tag_map = {t["Key"]: t["Value"] for t in tags}
+        assert "adp:user_id" in tag_map
+        assert tag_map["adp:user_id"] == "cognito-sub-jane"
+
+    @patch("lib.sts_assume.boto3.client")
+    def test_user_id_tag_omitted_when_empty(self, mock_boto_client):
+        mock_sts = MagicMock()
+        mock_boto_client.return_value = mock_sts
+        mock_sts.assume_role.return_value = {
+            "Credentials": {
+                "AccessKeyId": "AK",
+                "SecretAccessKey": "SK",
+                "SessionToken": "ST",
+                "Expiration": "2026-05-01T00:00:00Z",
+            }
+        }
+
+        assume_customer_role(
+            role_arn="arn:aws:iam::111:role/test",
+            external_id="ext-123",
+            tenant_id="acme",
+            actor_login="jane",
+            actor_id="123",
+            user_id="",
+            run_id="run-1",
+            repo="acme/app",
+            issue=42,
+            persona="operations",
+        )
+
+        call_kwargs = mock_sts.assume_role.call_args[1]
+        tags = call_kwargs["Tags"]
+        tag_keys = [t["Key"] for t in tags]
+        assert "adp:user_id" not in tag_keys

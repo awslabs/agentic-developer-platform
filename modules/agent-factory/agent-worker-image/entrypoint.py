@@ -25,6 +25,7 @@ from pathlib import Path
 import boto3
 
 from lib.check_run import create_check_run, update_check_run
+from lib.gateway_credential_client import GatewayCredentialClient, GatewayCredentialError
 from lib.github_token import mint_installation_token
 from lib.sts_assume import assume_customer_role
 from lib.vault_client import VaultClient
@@ -216,16 +217,21 @@ def main() -> int:
         except Exception as exc:
             logger.warning("Failed to create check run (non-fatal): %s", exc)
 
-    # Step 7: If persona needs AWS, assume customer role
+    # Step 7: If persona needs AWS, assume customer role via user-scoped creds
     if persona in PERSONAS_NEEDING_AWS:
         try:
-            aws_creds = vault.get_secret(f"tenants/{tenant_id}/aws-access")
+            aws_creds = _fetch_aws_credentials(
+                user_id=user_id,
+                agent_id=persona,
+                task_id=message_id or f"{repo}#{issue}",
+            )
             creds = assume_customer_role(
                 role_arn=aws_creds["role_arn"],
                 external_id=aws_creds["external_id"],
                 tenant_id=tenant_id,
                 actor_login=actor.get("github_login", "unknown"),
                 actor_id=str(actor.get("github_id", "0")),
+                user_id=user_id,
                 run_id=message_id,
                 repo=repo,
                 issue=issue,
@@ -233,7 +239,7 @@ def main() -> int:
                 duration_seconds=aws_creds.get("session_duration_seconds", 3600),
             )
             os.environ.update(creds)
-            logger.info("Assumed customer AWS role")
+            logger.info("Assumed customer AWS role (user-scoped)")
         except Exception as exc:
             logger.warning("AWS role assumption failed (non-fatal): %s", exc)
 
@@ -386,6 +392,59 @@ def main() -> int:
         # Don't fail the pod — agent work already committed to GitHub
 
     return exit_code
+
+
+def _fetch_aws_credentials(*, user_id: str, agent_id: str, task_id: str) -> dict:
+    """Fetch AWS credentials via the gateway's user-scoped credential endpoint.
+
+    Calls /internal/v1/credential-raw-read with service="aws_role_assume".
+    The gateway resolves the credential through the user -> team -> org scope chain.
+
+    Returns:
+        Dict with at least {role_arn, external_id} and optionally
+        {session_duration_seconds, default_region}.
+
+    Raises:
+        GatewayCredentialError: If the gateway call fails.
+        ValueError: If the user_id is empty (no acting user in envelope).
+    """
+    if not user_id:
+        raise ValueError(
+            "Cannot fetch user-scoped AWS credentials: no user_id in envelope. "
+            "Ensure the envelope includes actor.user_id."
+        )
+
+    gw_client = GatewayCredentialClient()
+    if not gw_client.is_configured:
+        raise GatewayCredentialError(
+            "Gateway credential client not configured. "
+            "Set VAULT_GATEWAY_URL and VAULT_INTERNAL_API_KEY."
+        )
+
+    resp = gw_client.raw_read(
+        user_id=user_id,
+        agent_id=agent_id,
+        task_id=task_id,
+        service="aws_role_assume",
+        label="default",
+        purpose="entrypoint: assume customer AWS role for operations persona",
+    )
+
+    # The raw value is a JSON string; parse it to get the credential fields.
+    value = resp.get("value", "")
+    try:
+        cred_data = json.loads(value)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise GatewayCredentialError(
+            f"Failed to parse credential value as JSON: {exc}"
+        ) from exc
+
+    if "role_arn" not in cred_data:
+        raise GatewayCredentialError(
+            f"Credential value missing required field 'role_arn'. Got keys: {list(cred_data.keys())}"
+        )
+
+    return cred_data
 
 
 def _stage_personas_and_skills() -> None:

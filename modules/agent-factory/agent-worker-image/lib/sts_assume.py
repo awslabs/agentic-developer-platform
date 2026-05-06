@@ -21,6 +21,7 @@ def assume_customer_role(
     tenant_id: str,
     actor_login: str,
     actor_id: str,
+    user_id: str = "",
     run_id: str,
     repo: str,
     issue: int,
@@ -36,6 +37,7 @@ def assume_customer_role(
         tenant_id: Internal tenant identifier.
         actor_login: GitHub login of the triggering user.
         actor_id: GitHub user ID of the triggering user.
+        user_id: Cognito sub / internal user ID of the acting user.
         run_id: Unique identifier for this agent run.
         repo: Full repo name (owner/name).
         issue: Issue number.
@@ -48,20 +50,25 @@ def assume_customer_role(
     """
     sts = boto3.client("sts", region_name=region)
 
-    logger.info("Assuming role %s for tenant %s", role_arn, tenant_id)
+    tags = [
+        {"Key": "adp:tenant_id", "Value": tenant_id},
+        {"Key": "adp:actor_github_login", "Value": actor_login},
+        {"Key": "adp:actor_github_id", "Value": str(actor_id)},
+        {"Key": "adp:run_id", "Value": run_id},
+        {"Key": "adp:github_issue", "Value": f"{repo}#{issue}"},
+        {"Key": "adp:persona", "Value": persona},
+    ]
+    # Include user_id tag for CloudTrail cross-referencing (issue #455)
+    if user_id:
+        tags.append({"Key": "adp:user_id", "Value": user_id})
+
+    logger.info("Assuming role %s for tenant %s (user_id=%s)", role_arn, tenant_id, user_id or "n/a")
     resp = sts.assume_role(
         RoleArn=role_arn,
         ExternalId=external_id,
         RoleSessionName=f"adp-agent-{run_id}"[:64],
         DurationSeconds=duration_seconds,
-        Tags=[
-            {"Key": "adp:tenant_id", "Value": tenant_id},
-            {"Key": "adp:actor_github_login", "Value": actor_login},
-            {"Key": "adp:actor_github_id", "Value": str(actor_id)},
-            {"Key": "adp:run_id", "Value": run_id},
-            {"Key": "adp:github_issue", "Value": f"{repo}#{issue}"},
-            {"Key": "adp:persona", "Value": persona},
-        ],
+        Tags=tags,
     )
 
     creds: dict[str, Any] = resp["Credentials"]

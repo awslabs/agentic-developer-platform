@@ -212,6 +212,33 @@ For file-oriented types (`ssh_key`, `certificate`, `config_file`):
 
 `encoding` values: `plain` (HTTP token types), `pem` (SSH/certs), `base64` (binary blobs), `json` (structured config). `filename_hint` and `mode_hint` are consumed by the file-materialization path; they are hints, not trusted — the delivery path validates and sanitizes both.
 
+### AWS Role Assumption credentials (Issue #455)
+
+For AWS cross-account role assumption, use `service = "aws_role_assume"` with `credential_type = "api_key"` and `encoding = "json"`. The pod fetches this via `/internal/v1/credential-raw-read` and parses the JSON value to extract the role ARN and external ID for STS AssumeRole.
+
+```json
+{
+  "type": "api_key",
+  "encoding": "json",
+  "value": "{\"role_arn\": \"arn:aws:iam::111122223333:role/adp-hosted-agent\", \"external_id\": \"ext-id-abc-123\", \"session_duration_seconds\": 3600, \"default_region\": \"us-east-1\"}",
+  "metadata": {
+    "added_at": "2026-05-06T00:00:00Z",
+    "migrated_from": "adp/dev/tenants/acme-corp/aws-access"
+  }
+}
+```
+
+Parsed `value` JSON fields:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `role_arn` | string | yes | ARN of the customer IAM role to assume |
+| `external_id` | string | yes | Per-tenant external ID for trust policy verification |
+| `session_duration_seconds` | int | no | STS session duration (default: 3600) |
+| `default_region` | string | no | AWS region for the assumed session (default: us-east-1) |
+
+**Migration from tenant-scoped path:** Previously stored at `adp/<env>/tenants/<tenant_id>/aws-access` (one per org). Now stored as a user-scoped credential at `adp/users/<cognito_sub>/aws-default`, resolved through the standard user → team → org scope chain. Migration script: `scripts/migrate-tenant-aws-creds-to-user.py`.
+
 **Size cap:** vault entries are for credentials, not arbitrary file storage. Max payload size is 64 KB (matches AWS Secrets Manager's efficient range and covers every credential file we've seen). Larger files are rejected at registration time with a clear error.
 
 **Why one-secret-per-credential instead of one blob per user:**
