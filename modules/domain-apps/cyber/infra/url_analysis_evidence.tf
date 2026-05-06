@@ -6,12 +6,21 @@
 #
 # Key layout: tenant=<tenant_id>/issue=<issue_number>/run=<run_id>/url-<n>/...
 # Lifecycle: 30-day expiration (bounded steady-state storage).
-# Access: resource-based policy grants PutObject/GetObject to both the cyber
+# Access: resource-based policy grants data-plane actions to both the cyber
 # worker role AND the agent-factory scaledjob role.
+#
+# NOTE on bucket name suffix: the original bucket (no suffix) self-locked
+# when its policy used `s3:*` Deny — that Deny caught even bucket-management
+# operations (PutBucketPolicy, DeleteBucketPolicy, DeleteBucket), leaving
+# the bucket only reachable from the two allowlisted roles. Recovery requires
+# account root. To unblock the URL-analysis flow without waiting on root,
+# this module now provisions a v2 bucket with a *narrow* Deny (data-plane
+# only). The orphaned v1 bucket (`adp-<env>-url-analysis-evidence-<acct>`)
+# stays behind until root-level cleanup. See PR #509 thread for context.
 # =============================================================================
 
 resource "aws_s3_bucket" "url_analysis_evidence" {
-  bucket = "adp-${var.environment}-url-analysis-evidence-${data.aws_caller_identity.current.account_id}"
+  bucket = "adp-${var.environment}-url-analysis-evidence-v2-${data.aws_caller_identity.current.account_id}"
 
   tags = {
     Component    = "cyber"
@@ -73,10 +82,23 @@ data "aws_iam_policy_document" "url_analysis_evidence" {
   }
 
   statement {
-    sid    = "DenyOthers"
+    sid    = "DenyOtherDataPlaneAccess"
     effect = "Deny"
+    # Data-plane actions only. We deliberately do NOT include `s3:*` here —
+    # a wildcard Deny catches bucket-management operations (GetBucketPolicy,
+    # PutBucketPolicy, DeleteBucketPolicy, DeleteBucket, etc.), which locks
+    # the bucket out of Terraform / admin recovery paths. The v1 bucket was
+    # lost this way. Public-access-block + BPA independently guarantee "no
+    # unsolicited public read"; this statement guarantees "only the two
+    # allowlisted roles can read or write evidence objects".
     actions = [
-      "s3:*",
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+      "s3:PutObject",
+      "s3:PutObjectAcl",
+      "s3:DeleteObject",
+      "s3:DeleteObjectVersion",
+      "s3:ListBucket",
     ]
     resources = [
       aws_s3_bucket.url_analysis_evidence.arn,

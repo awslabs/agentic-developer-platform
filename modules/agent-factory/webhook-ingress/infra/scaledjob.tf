@@ -112,7 +112,7 @@ locals {
                   - name: QUEUE_URL
                     value: ${aws_sqs_queue.agent_submit.url}
                   - name: URL_ANALYSIS_EVIDENCE_BUCKET
-                    value: adp-${var.environment}-url-analysis-evidence-${local.account_id}
+                    value: adp-${var.environment}-url-analysis-evidence-v2-${local.account_id}
                 resources:
                   requests:
                     cpu: "1"
