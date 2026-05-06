@@ -147,12 +147,23 @@ def upload_screenshot(
     )
 
     s3 = _get_s3_client()
-    s3.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=png_bytes,
-        ContentType="image/png",
-    )
+    try:
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=png_bytes,
+            ContentType="image/png",
+        )
+    except ClientError as e:
+        # Infra-level failure (NoSuchBucket, AccessDenied, etc.) degrades
+        # gracefully to the inline-base64 fallback — same contract as
+        # URL_ANALYSIS_EVIDENCE_BUCKET being unset. An upload miss must
+        # never crash a URL-analysis run.
+        logger.warning(
+            "S3 upload failed for screenshot; falling back to inline base64: %s",
+            e,
+        )
+        return ""
 
     uri = f"s3://{bucket}/{key}"
     logger.info("Uploaded screenshot: %s (%d bytes)", uri, len(png_bytes))
@@ -204,12 +215,18 @@ def upload_evidence_envelope(
     )
 
     s3 = _get_s3_client()
-    s3.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=json_bytes,
-        ContentType="application/json",
-    )
+    try:
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=json_bytes,
+            ContentType="application/json",
+        )
+    except ClientError as e:
+        logger.warning(
+            "S3 upload failed for evidence envelope; skipping: %s", e
+        )
+        return ""
 
     uri = f"s3://{bucket}/{key}"
     logger.info("Uploaded evidence envelope: %s (%d bytes)", uri, len(json_bytes))
@@ -227,6 +244,11 @@ def presign(s3_uri: str, *, expires_in: int = _DEFAULT_PRESIGN_EXPIRES) -> str:
     Returns:
         Presigned HTTPS URL, or "" on error.
     """
+    # Empty URI = upstream upload was skipped/failed; return "" so the
+    # caller renders the fallback (inline base64) instead of crashing.
+    if not s3_uri:
+        return ""
+
     # Clamp to 24h max
     expires_in = min(expires_in, _DEFAULT_PRESIGN_EXPIRES)
 

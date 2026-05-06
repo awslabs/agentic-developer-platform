@@ -11,6 +11,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 # evidence_store is in the parent directory (added to path by conftest.py)
 import evidence_store
@@ -140,6 +141,31 @@ class TestUploadScreenshot:
         )
         assert uri == ""
 
+    def test_returns_empty_on_nosuchbucket(self, mock_s3):
+        """NoSuchBucket (bucket missing in AWS) must degrade gracefully,
+        not crash the analysis run."""
+        mock_s3.put_object.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchBucket", "Message": "The specified bucket does not exist"}},
+            "PutObject",
+        )
+        png = _make_png(100)
+        uri = evidence_store.upload_screenshot(
+            png, run_id="run-1", url_index=0, shot_index=1
+        )
+        assert uri == ""
+
+    def test_returns_empty_on_accessdenied(self, mock_s3):
+        """AccessDenied must also degrade gracefully."""
+        mock_s3.put_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}},
+            "PutObject",
+        )
+        png = _make_png(100)
+        uri = evidence_store.upload_screenshot(
+            png, run_id="run-1", url_index=0, shot_index=1
+        )
+        assert uri == ""
+
 
 # ---------------------------------------------------------------------------
 # upload_evidence_envelope tests
@@ -198,6 +224,18 @@ class TestUploadEvidenceEnvelope:
         )
         assert uri == ""
 
+    def test_returns_empty_on_nosuchbucket(self, mock_s3):
+        """NoSuchBucket must not crash the analysis run."""
+        mock_s3.put_object.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchBucket", "Message": "missing"}},
+            "PutObject",
+        )
+        evidence = _make_evidence()
+        uri = evidence_store.upload_evidence_envelope(
+            evidence, run_id="run-1", url_index=0
+        )
+        assert uri == ""
+
 
 # ---------------------------------------------------------------------------
 # presign tests
@@ -234,3 +272,10 @@ class TestPresign:
             "s3://adp-dev-url-analysis-evidence-123456789012/tenant=t/issue=1/run=r/url-0/screenshot-1.png"
         )
         assert url.startswith("https://")
+
+    def test_presign_empty_uri_returns_empty(self, mock_s3):
+        """Empty string (from a failed/skipped upload) must return ""
+        so the report can render the inline-base64 fallback."""
+        url = evidence_store.presign("")
+        assert url == ""
+        mock_s3.generate_presigned_url.assert_not_called()

@@ -1,0 +1,114 @@
+name: Cyber Infra Plan
+
+on:
+  pull_request:
+    paths:
+      - 'modules/domain-apps/cyber/infra/**'
+      - 'environments/dev/modules/cyber-sandbox-backend.tfvars'
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1
+  TF_VAR_environment: dev
+  MODULE_NAME: cyber
+  TF_WORKING_DIR: modules/domain-apps/cyber/infra
+  BACKEND_CONFIG: environments/dev/modules/cyber-sandbox-backend.tfvars
+  VAR_FILE: modules/domain-apps/cyber/infra/terraform.tfvars
+
+jobs:
+  plan:
+    name: Terraform Plan
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend-config="../../../../${{ env.BACKEND_CONFIG }}" -input=false
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -e
+          terraform plan -var-file="terraform.tfvars" -out=tfplan -no-color 2>&1 | tee /tmp/plan-output.txt
+
+      - name: Post or update PR comment
+        uses: actions/github-script@v7
+        if: always() && github.event_name == 'pull_request'
+        env:
+          PLAN_OUTPUT: ${{ steps.plan.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = `<!-- tf-plan:${{ env.MODULE_NAME }} -->`;
+            let planText = '';
+            try {
+              planText = fs.readFileSync('/tmp/plan-output.txt', 'utf8');
+            } catch (e) {
+              planText = 'Plan output not available.';
+            }
+            if (planText.length > 60000) {
+              planText = planText.substring(0, 60000) + '\n\n... (truncated)';
+            }
+            const status = process.env.PLAN_OUTPUT === 'success' ? ':white_check_mark:' : ':x:';
+            const body = `${marker}\n${status} **Terraform Plan — \`${{ env.MODULE_NAME }}\`**\n\n<details>\n<summary>Plan output</summary>\n\n\`\`\`\n${planText}\n\`\`\`\n\n</details>\n\n*Updated: ${new Date().toISOString()} | Run: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})*`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(c => c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Terraform Plan -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status**: ${{ steps.plan.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Working dir**: ${{ env.TF_WORKING_DIR }}" >> "$GITHUB_STEP_SUMMARY"

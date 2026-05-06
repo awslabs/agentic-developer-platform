@@ -1,0 +1,114 @@
+name: Cyber Infra Apply
+
+on:
+  # Manual-only trigger. Operator reviews the plan comment on the merged PR,
+  # then triggers this workflow via Actions → Cyber Infra Apply → Run workflow.
+  workflow_dispatch:
+
+concurrency:
+  group: tf-apply-cyber
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  TF_VAR_environment: dev
+  MODULE_NAME: cyber
+  TF_WORKING_DIR: modules/domain-apps/cyber/infra
+  BACKEND_CONFIG: environments/dev/modules/cyber-sandbox-backend.tfvars
+  VAR_FILE: modules/domain-apps/cyber/infra/terraform.tfvars
+
+jobs:
+  apply:
+    name: Terraform Apply
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend-config="../../../../${{ env.BACKEND_CONFIG }}" -input=false
+
+      - name: Terraform Plan (destroy-safety check)
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -e
+          set -o pipefail
+          EXIT_CODE=0
+          terraform plan -var-file="terraform.tfvars" -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
+          echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          if [ "$EXIT_CODE" -eq 1 ]; then
+            echo "::error::Terraform plan failed."
+            exit 1
+          fi
+
+      - name: Destroy-safety label gate
+        if: steps.plan.outputs.detailed_exitcode == '2'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          DESTROYS=$(grep -c 'will be destroyed' /tmp/plan-output.txt || echo "0")
+          if [ "$DESTROYS" -gt 0 ]; then
+            echo "Plan includes $DESTROYS resource(s) to destroy."
+            COMMIT_SHA="${{ github.sha }}"
+            PR_NUMBER=$(gh pr list --state merged --search "$COMMIT_SHA" --json number --jq '.[0].number // empty' 2>/dev/null || echo "")
+            if [ -z "$PR_NUMBER" ]; then
+              echo "::error::This apply would destroy $DESTROYS resource(s) but no associated PR was found. Cannot verify destructive-apply-approved label. Re-run via workflow_dispatch after adding the label to the source PR."
+              exit 1
+            fi
+            echo "Associated PR: #$PR_NUMBER"
+            HAS_LABEL=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' 2>/dev/null | grep -c 'destructive-apply-approved' || echo "0")
+            if [ "$HAS_LABEL" -eq 0 ]; then
+              echo "::error::This apply would destroy $DESTROYS resource(s). The PR #$PR_NUMBER does NOT have the 'destructive-apply-approved' label. Add the label to PR #$PR_NUMBER and re-run this workflow."
+              echo ""
+              echo "Resources to be destroyed:"
+              grep 'will be destroyed' /tmp/plan-output.txt || true
+              exit 1
+            fi
+            echo "PR #$PR_NUMBER has 'destructive-apply-approved' label. Proceeding."
+          else
+            echo "No destroys in plan. Proceeding."
+          fi
+
+      - name: Terraform Apply
+        id: apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply tfplan
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Terraform Apply -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status**: ${{ steps.apply.outcome == 'success' && 'applied' || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Working dir**: ${{ env.TF_WORKING_DIR }}" >> "$GITHUB_STEP_SUMMARY"
