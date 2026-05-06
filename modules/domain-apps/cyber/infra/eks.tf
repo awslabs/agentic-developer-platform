@@ -71,6 +71,14 @@ resource "aws_iam_role" "cyber_eks_node" {
   tags = {
     Name = "${local.name_prefix}-eks-node-role"
   }
+
+  # EKS auto-adds the `eks:eks-cluster-name` tag to node roles attached to
+  # a cluster. Untagging requires `iam:UntagRole`, which the CI runner
+  # role's permissions boundary does not grant. Let the service manage
+  # this tag — we never touch it ourselves.
+  lifecycle {
+    ignore_changes = [tags["eks:eks-cluster-name"], tags_all["eks:eks-cluster-name"]]
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "cyber_eks_node_worker" {
@@ -208,14 +216,19 @@ resource "aws_eks_access_entry" "cyber_admins" {
 }
 
 resource "aws_eks_access_policy_association" "cyber_admins" {
-  for_each      = aws_eks_access_entry.cyber_admins
+  # Iterate over the variable (static keys) rather than the access_entry
+  # resource output — the latter forces `-target` on first apply because
+  # Terraform can't know the keys until the entries exist.
+  for_each      = toset(var.cyber_cluster_admin_principal_arns)
   cluster_name  = aws_eks_cluster.cyber.name
-  principal_arn = each.value.principal_arn
+  principal_arn = each.key
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
 
   access_scope {
     type = "cluster"
   }
+
+  depends_on = [aws_eks_access_entry.cyber_admins]
 }
 
 # ---------------------------------------------------------------------------
