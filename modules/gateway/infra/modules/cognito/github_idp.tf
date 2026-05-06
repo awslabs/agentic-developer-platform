@@ -3,35 +3,30 @@
 # =============================================================================
 # Adds GitHub as a federated OIDC identity provider to Cognito.
 # GitHub does not implement full OIDC discovery, so endpoints are configured
-# explicitly. Gated behind var.enable_github_oauth.
-#
-# Secret handling: the OAuth App's client_id + client_secret are NOT passed
-# through Terraform variables — that would leave them in plaintext in TF
-# state. Instead, the secret is pre-provisioned out-of-band in Secrets
-# Manager at `adp/<env>/cognito/github-oauth-credentials` with a JSON body
-# {"client_id":"...","client_secret":"..."} and read via a data source at
-# apply-time. State still holds the resolved secret in the aws_cognito_
-# identity_provider.github resource (Cognito requires it at create), but
-# it is not written to tfvars, environment variables, or any git-tracked
-# file.
+# explicitly. This is gated behind var.enable_github_oauth.
 # =============================================================================
 
-# --- Read GitHub OAuth credentials from Secrets Manager ----------------------
+# --- Secrets Manager: GitHub OAuth App credentials ----------------------------
 
-data "aws_secretsmanager_secret" "github_oauth" {
-  count = var.enable_github_oauth ? 1 : 0
-  name  = "adp/${var.environment}/cognito/github-oauth-credentials"
+resource "aws_secretsmanager_secret" "github_oauth" {
+  count       = var.enable_github_oauth ? 1 : 0
+  name        = "adp/${var.environment}/cognito/github-oauth-credentials"
+  description = "GitHub OAuth App client_id and client_secret for Cognito federation"
+
+  tags = merge(var.common_tags, {
+    Name    = "adp-${var.environment}-github-oauth-credentials"
+    Service = "secrets-manager"
+    Purpose = "github-oauth-federation"
+  })
 }
 
-data "aws_secretsmanager_secret_version" "github_oauth" {
+resource "aws_secretsmanager_secret_version" "github_oauth" {
   count     = var.enable_github_oauth ? 1 : 0
-  secret_id = data.aws_secretsmanager_secret.github_oauth[0].id
-}
-
-locals {
-  github_oauth = var.enable_github_oauth ? jsondecode(
-    data.aws_secretsmanager_secret_version.github_oauth[0].secret_string
-  ) : { client_id = "", client_secret = "" }
+  secret_id = aws_secretsmanager_secret.github_oauth[0].id
+  secret_string = jsonencode({
+    client_id     = var.github_oauth_client_id
+    client_secret = var.github_oauth_client_secret
+  })
 }
 
 # --- Cognito Identity Provider: GitHub (OIDC) --------------------------------
@@ -45,8 +40,8 @@ resource "aws_cognito_identity_provider" "github" {
   provider_details = {
     # GitHub OAuth endpoints (not standard OIDC discovery — configured explicitly)
     authorize_scopes              = "user:email read:org"
-    client_id                     = local.github_oauth.client_id
-    client_secret                 = local.github_oauth.client_secret
+    client_id                     = var.github_oauth_client_id
+    client_secret                 = var.github_oauth_client_secret
     oidc_issuer                   = "https://github.com"
     authorize_url                 = "https://github.com/login/oauth/authorize"
     token_url                     = "https://github.com/login/oauth/access_token"

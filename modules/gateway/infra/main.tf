@@ -428,9 +428,10 @@ module "cognito" {
   # Issue #60: Provision test users (admins group, test user, test admin)
   create_test_users = var.create_test_users
 
-  # Issue #313: GitHub OAuth identity provider. Client_id + client_secret are
-  # pulled from Secrets Manager inside the module to keep them out of TF vars.
-  enable_github_oauth = var.enable_github_oauth
+  # Issue #313: GitHub OAuth identity provider
+  enable_github_oauth        = var.enable_github_oauth
+  github_oauth_client_id     = var.github_oauth_client_id
+  github_oauth_client_secret = var.github_oauth_client_secret
 
   depends_on = [module.cloudfront]
 }

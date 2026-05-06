@@ -21,9 +21,3 @@ enable_api_gateway = true
 
 # Issue #60: Provision test users for dev environment
 create_test_users = true
-
-# Issue #313: enable "Sign in with GitHub" on the admin UI.
-# Client_id + client_secret are read from Secrets Manager at
-# adp/dev/cognito/github-oauth-credentials (pre-provisioned out-of-band)
-# rather than passed through tfvars to keep them out of TF state.
-enable_github_oauth = true
