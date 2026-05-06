@@ -116,22 +116,8 @@ variable "test_admin_email" {
 
 variable "enable_github_oauth" {
   type        = bool
-  description = "Enable GitHub as a federated identity provider via OAuth/OIDC"
+  description = "Enable GitHub as a federated identity provider via OAuth/OIDC. When true, reads client_id+client_secret from Secrets Manager at adp/<env>/cognito/github-oauth-credentials (pre-provisioned out-of-band to avoid plaintext in TF state)."
   default     = false
-}
-
-variable "github_oauth_client_id" {
-  type        = string
-  description = "GitHub OAuth App client ID. Required when enable_github_oauth is true."
-  default     = ""
-  sensitive   = false
-}
-
-variable "github_oauth_client_secret" {
-  type        = string
-  description = "GitHub OAuth App client secret. Required when enable_github_oauth is true."
-  default     = ""
-  sensitive   = true
 }
 
 # =============================================================================

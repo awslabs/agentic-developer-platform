@@ -201,21 +201,8 @@ variable "cognito_id_token_validity" {
 
 variable "enable_github_oauth" {
   type        = bool
-  description = "Enable GitHub as a federated identity provider in Cognito via OAuth/OIDC"
+  description = "Enable GitHub as a federated identity provider in Cognito via OAuth/OIDC. When true, client_id+client_secret are pulled from Secrets Manager at adp/<env>/cognito/github-oauth-credentials (pre-provisioned out-of-band)."
   default     = false
-}
-
-variable "github_oauth_client_id" {
-  type        = string
-  description = "GitHub OAuth App client ID. Required when enable_github_oauth is true."
-  default     = ""
-}
-
-variable "github_oauth_client_secret" {
-  type        = string
-  description = "GitHub OAuth App client secret. Required when enable_github_oauth is true."
-  default     = ""
-  sensitive   = true
 }
 
 # =============================================================================

@@ -195,6 +195,6 @@ output "github_sign_in_url" {
 }
 
 output "github_oauth_credentials_secret_arn" {
-  description = "ARN of the Secrets Manager secret storing GitHub OAuth App credentials"
-  value       = var.enable_github_oauth ? aws_secretsmanager_secret.github_oauth[0].arn : ""
+  description = "ARN of the Secrets Manager secret storing GitHub OAuth App credentials (pre-provisioned out-of-band; read by data source)"
+  value       = var.enable_github_oauth ? data.aws_secretsmanager_secret.github_oauth[0].arn : ""
 }
