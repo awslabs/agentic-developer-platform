@@ -166,28 +166,21 @@ export async function buildLoginUrl(): Promise<string> {
 }
 
 /**
- * Build the Cognito hosted UI login URL specifically for GitHub identity provider.
- * Adds identity_provider=GitHub parameter to route directly to GitHub OAuth.
+ * Build the GitHub sign-in URL via the Lambda auth broker (Issue #520).
+ *
+ * Instead of routing through Cognito hosted UI (which requires OIDC discovery
+ * that GitHub doesn't support), this redirects to our broker Lambda's /start
+ * endpoint. The broker handles the GitHub OAuth flow and returns Cognito tokens.
+ *
+ * The broker URL is configured via VITE_GITHUB_AUTH_BROKER_URL env var.
  */
 export async function buildGitHubLoginUrl(): Promise<string> {
-  const config = getCognitoConfig();
-  const pkce = await generatePKCEChallenge();
-
-  // Store verifier for the callback
-  storePKCEVerifier(pkce.verifier);
-
-  // Build the authorization URL with PKCE + GitHub identity provider
-  const params = new URLSearchParams({
-    response_type: 'code',
-    client_id: config.clientId,
-    redirect_uri: config.redirectUri,
-    scope: 'openid email profile',
-    code_challenge: pkce.challenge,
-    code_challenge_method: 'S256',
-    identity_provider: 'GitHub',
-  });
-
-  return `${getCognitoAuthorizeUrl()}?${params.toString()}`;
+  const brokerUrl = import.meta.env.VITE_GITHUB_AUTH_BROKER_URL;
+  if (!brokerUrl) {
+    throw new Error('GitHub sign-in is not configured (VITE_GITHUB_AUTH_BROKER_URL not set)');
+  }
+  // The broker's /start endpoint handles state generation and redirects to GitHub
+  return `${brokerUrl.replace(/\/$/, '')}/start`;
 }
 
 /**

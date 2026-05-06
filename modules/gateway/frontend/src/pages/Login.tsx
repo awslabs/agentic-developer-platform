@@ -2,7 +2,7 @@
  * Login Page - Dual-path authentication
  *
  * Shows two sign-in options:
- * 1. "Sign in with GitHub" — redirects to Cognito hosted UI with identity_provider=GitHub
+ * 1. "Sign in with GitHub" — redirects to Lambda auth broker (Issue #520)
  * 2. "Sign in with Email" — redirects to Cognito hosted UI (default provider selection)
  */
 
@@ -21,13 +21,6 @@ export default function Login() {
     setError(null);
     setIsRedirecting(true);
     try {
-      if (!isCognitoConfigured()) {
-        setError(
-          'Authentication is not configured. Please contact your administrator.'
-        );
-        setIsRedirecting(false);
-        return;
-      }
       const loginUrl = await buildGitHubLoginUrl();
       window.location.href = loginUrl;
     } catch (err) {

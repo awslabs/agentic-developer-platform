@@ -813,6 +813,34 @@ resource "aws_ssm_parameter" "identity_index_table" {
   tags = local.common_tags
 }
 
+# =============================================================================
+# GitHub Auth Broker Lambda (Issue #520)
+# =============================================================================
+# Lambda-based broker that converts GitHub OAuth flow into Cognito sessions.
+# Replaces the failed Cognito-native OIDC approach (#518/#519).
+# =============================================================================
+
+module "github_auth_broker" {
+  count  = var.enable_github_oauth ? 1 : 0
+  source = "./modules/github-auth-broker"
+
+  environment          = var.environment
+  name_prefix          = local.name_prefix
+  common_tags          = local.common_tags
+  aws_region           = var.aws_region
+  cognito_user_pool_id = module.cognito.cognito_user_pool_id
+  cognito_user_pool_arn = module.cognito.cognito_user_pool_arn
+  cognito_client_id    = module.cognito.cognito_user_pool_client_id
+  github_oauth_secret_arn = module.cognito.github_oauth_credentials_secret_arn
+  frontend_url         = "https://${module.cloudfront.distribution_domain_name}"
+  allowlist_mode       = var.github_auth_allowlist_mode
+  allowed_orgs         = var.github_auth_allowed_orgs
+  github_token_secret_arn = var.github_auth_token_secret_arn
+  lambda_artifact_bucket  = "adp-terraform-state-${var.account_id}"
+
+  depends_on = [module.cognito, module.cloudfront]
+}
+
 # IAM policy for Gateway IRSA role to access identity-index table
 resource "aws_iam_role_policy" "gateway_identity_index" {
   name = "${local.name_prefix}-policy-gateway-identity-index"

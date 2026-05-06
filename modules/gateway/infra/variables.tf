@@ -219,6 +219,28 @@ variable "github_oauth_client_secret" {
 }
 
 # =============================================================================
+# GitHub Auth Broker Configuration (Issue #520)
+# =============================================================================
+
+variable "github_auth_allowlist_mode" {
+  type        = string
+  description = "Allowlist mode for GitHub auth broker: open, org, or explicit"
+  default     = "open"
+}
+
+variable "github_auth_allowed_orgs" {
+  type        = string
+  description = "Comma-separated GitHub orgs for allowlist_mode=org"
+  default     = ""
+}
+
+variable "github_auth_token_secret_arn" {
+  type        = string
+  description = "Secrets Manager ARN for GitHub API token used in org membership checks"
+  default     = ""
+}
+
+# =============================================================================
 # Frontend Configuration
 # =============================================================================
 

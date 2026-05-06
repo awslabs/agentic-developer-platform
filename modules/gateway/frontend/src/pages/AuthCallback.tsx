@@ -24,8 +24,6 @@ export default function AuthCallback() {
   useEffect(() => {
     async function processCallback() {
       try {
-        // Get authorization code from URL
-        const code = searchParams.get('code');
         const errorParam = searchParams.get('error');
         const errorDescription = searchParams.get('error_description');
 
@@ -36,7 +34,52 @@ export default function AuthCallback() {
           return;
         }
 
-        // Validate authorization code exists
+        // Check if this is a broker callback (tokens in query params)
+        const brokerSource = searchParams.get('source');
+        if (brokerSource === 'github_broker') {
+          // Tokens come directly from the GitHub auth broker Lambda (Issue #520)
+          const idToken = searchParams.get('id_token');
+          const accessToken = searchParams.get('access_token');
+          const refreshToken = searchParams.get('refresh_token');
+          const expiresIn = searchParams.get('expires_in');
+
+          if (!idToken || !accessToken) {
+            setError('Invalid broker response — missing tokens. Please try again.');
+            setIsProcessing(false);
+            return;
+          }
+
+          // Store tokens using the existing auth service
+          const { storeTokens, parseIdTokenForUser } = await import('@/services/auth');
+          storeTokens({
+            id_token: idToken,
+            access_token: accessToken,
+            refresh_token: refreshToken || '',
+            expires_in: parseInt(expiresIn || '3600', 10),
+            token_type: 'Bearer',
+          });
+
+          const user = parseIdTokenForUser(idToken);
+          if (!user) {
+            setError('Failed to parse user from token. Please try again.');
+            setIsProcessing(false);
+            return;
+          }
+
+          setAuthState({
+            user,
+            token: accessToken,
+            isAuthenticated: true,
+            isLoading: false,
+          });
+
+          navigate('/', { replace: true });
+          return;
+        }
+
+        // Standard Cognito OAuth code exchange flow (email/password login)
+        const code = searchParams.get('code');
+
         if (!code) {
           setError('No authorization code received. Please try logging in again.');
           setIsProcessing(false);
