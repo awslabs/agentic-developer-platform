@@ -1,0 +1,15 @@
+[bandit]
+# Bandit configuration for ADP security scanning
+# Docs: https://bandit.readthedocs.io/en/latest/config.html
+
+# Exclude test files and generated code
+exclude_dirs = tests,node_modules,.git,venv,.venv,__pycache__
+
+# Skip low-confidence findings to reduce noise
+skips = B101,B311
+
+# B101: assert used — acceptable in tests (excluded above) and type narrowing
+# B311: random — non-security random usage is common in non-crypto code
+
+[bandit.assert_used]
+skips = */tests/*

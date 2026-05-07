@@ -1,0 +1,478 @@
+name: Security Scan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+concurrency:
+  group: security-scan-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  CHECKOV_VERSION: "3.2.346"
+  SEMGREP_VERSION: "1.80.0"
+  DETECT_SECRETS_VERSION: "1.5.0"
+  GRYPE_VERSION: "0.80.2"
+  SYFT_VERSION: "1.11.1"
+  BANDIT_VERSION: "1.7.9"
+  CFN_NAG_VERSION: "0.8.10"
+
+jobs:
+  # ---------- Dynamic discovery for container scanning ----------
+  discover-dockerfiles:
+    name: Discover Dockerfiles
+    runs-on: arc-runner-org
+    outputs:
+      matrix: ${{ steps.find.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find Dockerfiles
+        id: find
+        run: |
+          python3 .github/scripts/discover_dockerfiles.py >> "$GITHUB_OUTPUT"
+
+  # ---------- Job 1: Checkov (IaC) ----------
+  checkov:
+    name: Checkov (IaC)
+    runs-on: arc-runner-org
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Checkov
+        run: pip install checkov==${{ env.CHECKOV_VERSION }}
+
+      - name: Run Checkov
+        run: |
+          checkov \
+            --directory . \
+            --config-file .github/security/checkov.yml \
+            --baseline .github/security/checkov-baseline.json \
+            --output sarif \
+            --output-file checkov-results.sarif \
+            --soft-fail \
+            || true
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov-results.sarif
+          category: security/checkov
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkov-findings
+          path: checkov-results.sarif
+          retention-days: 14
+
+  # ---------- Job 2: Semgrep (SAST) ----------
+  semgrep:
+    name: Semgrep (SAST)
+    runs-on: arc-runner-org
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Semgrep
+        run: pip install semgrep==${{ env.SEMGREP_VERSION }}
+
+      - name: Run Semgrep
+        run: |
+          semgrep scan \
+            --config auto \
+            --config .github/security/semgrep.yml \
+            --sarif \
+            --output semgrep-results.sarif \
+            --error \
+            || true
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep-results.sarif
+          category: security/semgrep
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-findings
+          path: semgrep-results.sarif
+          retention-days: 14
+
+  # ---------- Job 3: detect-secrets ----------
+  detect-secrets:
+    name: detect-secrets
+    runs-on: arc-runner-org
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install detect-secrets
+        run: pip install detect-secrets==${{ env.DETECT_SECRETS_VERSION }}
+
+      - name: Run detect-secrets
+        run: |
+          detect-secrets scan \
+            --baseline .github/security/.secrets.baseline \
+            --list-all-plugins \
+            > detect-secrets-results.json \
+            || true
+
+      - name: Audit for new secrets
+        run: |
+          detect-secrets audit --report --json .github/security/.secrets.baseline \
+            > detect-secrets-audit.json 2>/dev/null \
+            || true
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: detect-secrets-findings
+          path: |
+            detect-secrets-results.json
+            detect-secrets-audit.json
+          retention-days: 14
+
+  # ---------- Job 4: Grype (CVE scan) ----------
+  grype:
+    name: Grype (${{ matrix.dockerfile }})
+    runs-on: ubuntu-latest
+    needs: discover-dockerfiles
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile: ${{ fromJson(needs.discover-dockerfiles.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image slug
+        id: slug
+        run: |
+          SLUG=$(echo "${{ matrix.dockerfile }}" | sed 's|^\./||;s|/Dockerfile$||;s|/|-|g')
+          echo "slug=${SLUG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image for scanning
+        run: |
+          docker build -t "scan-target:${{ steps.slug.outputs.slug }}" \
+            -f "${{ matrix.dockerfile }}" \
+            "$(dirname ${{ matrix.dockerfile }})"
+
+      - name: Install Grype
+        uses: anchore/scan-action/download-grype@v4
+        with:
+          grype-version: ${{ env.GRYPE_VERSION }}
+
+      - name: Run Grype
+        run: |
+          grype "scan-target:${{ steps.slug.outputs.slug }}" \
+            --output sarif \
+            --file "grype-${{ steps.slug.outputs.slug }}.sarif" \
+            || true
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: grype-${{ steps.slug.outputs.slug }}.sarif
+          category: security/grype-${{ steps.slug.outputs.slug }}
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-findings-${{ steps.slug.outputs.slug }}
+          path: grype-${{ steps.slug.outputs.slug }}.sarif
+          retention-days: 14
+
+  # ---------- Job 5: Bandit (Python SAST) ----------
+  bandit:
+    name: Bandit (Python)
+    runs-on: arc-runner-org
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Bandit
+        run: pip install bandit[sarif]==${{ env.BANDIT_VERSION }}
+
+      - name: Run Bandit
+        run: |
+          bandit -r . \
+            --ini .github/security/.banditrc \
+            --format sarif \
+            --output bandit-results.sarif \
+            --exit-zero \
+            || true
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bandit-results.sarif
+          category: security/bandit
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-findings
+          path: bandit-results.sarif
+          retention-days: 14
+
+  # ---------- Job 6: cfn-nag (CloudFormation) ----------
+  cfn-nag:
+    name: cfn-nag (CloudFormation)
+    runs-on: arc-runner-org
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+
+      - name: Install cfn-nag
+        run: gem install cfn-nag -v ${{ env.CFN_NAG_VERSION }}
+
+      - name: Run cfn-nag
+        run: |
+          cfn_nag_scan \
+            --input-path modules/agent-factory/agent-worker-image/aws/ \
+            --deny-list-path .github/security/cfn-nag-suppressions.yml \
+            --output-format json \
+            > cfn-nag-results.json \
+            || true
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cfn-nag-findings
+          path: cfn-nag-results.json
+          retention-days: 14
+
+  # ---------- Job 7: npm audit ----------
+  npm-audit:
+    name: npm audit (${{ matrix.package_dir }})
+    runs-on: arc-runner-org
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        package_dir:
+          - modules/gateway/frontend
+          - modules/agent-factory/agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run npm audit
+        working-directory: ${{ matrix.package_dir }}
+        run: |
+          npm audit --json --audit-level=high > npm-audit-results.json 2>/dev/null || true
+
+      - name: Set artifact name
+        id: name
+        run: |
+          NAME=$(echo "${{ matrix.package_dir }}" | sed 's|/|-|g')
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-findings-${{ steps.name.outputs.name }}
+          path: ${{ matrix.package_dir }}/npm-audit-results.json
+          retention-days: 14
+
+  # ---------- Job 8: Syft (SBOM) ----------
+  syft:
+    name: Syft SBOM (${{ matrix.dockerfile }})
+    runs-on: ubuntu-latest
+    needs: discover-dockerfiles
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile: ${{ fromJson(needs.discover-dockerfiles.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image slug
+        id: slug
+        run: |
+          SLUG=$(echo "${{ matrix.dockerfile }}" | sed 's|^\./||;s|/Dockerfile$||;s|/|-|g')
+          echo "slug=${SLUG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image for scanning
+        run: |
+          docker build -t "scan-target:${{ steps.slug.outputs.slug }}" \
+            -f "${{ matrix.dockerfile }}" \
+            "$(dirname ${{ matrix.dockerfile }})"
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+        with:
+          syft-version: ${{ env.SYFT_VERSION }}
+
+      - name: Generate SBOM
+        run: |
+          syft "scan-target:${{ steps.slug.outputs.slug }}" \
+            --output cyclonedx-json \
+            --file "sbom-${{ steps.slug.outputs.slug }}.cdx.json"
+
+      - name: Upload SBOM artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ steps.slug.outputs.slug }}
+          path: sbom-${{ steps.slug.outputs.slug }}.cdx.json
+          retention-days: 14
+
+  # ---------- Summary job ----------
+  summary:
+    name: Security Summary
+    runs-on: arc-runner-org
+    if: always() && github.event_name == 'pull_request'
+    needs:
+      - checkov
+      - semgrep
+      - detect-secrets
+      - grype
+      - bandit
+      - cfn-nag
+      - npm-audit
+      - syft
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download all findings artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: findings/
+          pattern: '*-findings*'
+
+      - name: Diff findings against baseline
+        run: |
+          python3 .github/scripts/diff_security_findings.py \
+            --findings-dir findings/ \
+            --baseline-dir .github/security/ \
+            --output summary.json
+
+      - name: Post PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python3 .github/scripts/post_security_pr_comment.py \
+            --summary summary.json \
+            --repo "${{ github.repository }}" \
+            --pr "${{ github.event.pull_request.number }}"
+
+  # ---------- Baseline update (nightly only) ----------
+  update-baseline:
+    name: Update Baselines
+    runs-on: arc-runner-org
+    if: github.event_name == 'schedule'
+    needs:
+      - checkov
+      - semgrep
+      - detect-secrets
+      - grype
+      - bandit
+      - cfn-nag
+      - npm-audit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download all findings artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: findings/
+          pattern: '*-findings*'
+
+      - name: Update baseline files
+        id: update
+        run: |
+          python3 .github/scripts/diff_security_findings.py \
+            --findings-dir findings/ \
+            --baseline-dir .github/security/ \
+            --update-baselines \
+            --output baseline-diff.json
+
+          if git diff --quiet .github/security/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create baseline PR
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="chore/security-baseline-$(date +%Y%m%d)"
+          git checkout -b "$BRANCH"
+          git add .github/security/
+          git commit -m "chore(security): refresh baselines $(date +%Y-%m-%d)"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "chore(security): refresh baselines $(date +%Y-%m-%d)" \
+            --body "Automated baseline refresh from nightly security scan. Review and merge to update the known-findings baseline." \
+            --base main \
+            --head "$BRANCH"

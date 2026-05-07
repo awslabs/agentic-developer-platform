@@ -1,0 +1,10 @@
+rules: []
+# Semgrep configuration for ADP
+# Uses 'auto' config (p/default) as the primary ruleset.
+# This file can hold custom rules or overrides.
+#
+# Path exclusions are handled via .semgrepignore in repo root if needed.
+# Tool-specific tuning:
+# - Focus: Python (modules/gateway, modules/agent-factory/gateway, lambdas)
+# - Focus: TypeScript (modules/agent-factory/agent, modules/gateway/frontend)
+# - Exclude: generated code, vendored deps, test fixtures

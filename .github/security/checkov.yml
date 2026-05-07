@@ -1,0 +1,28 @@
+---
+# Checkov configuration for ADP security scanning
+# Docs: https://www.checkov.io/2.Basics/CLI%20Command%20Reference.html
+
+framework:
+  - terraform
+  - cloudformation
+  - dockerfile
+  - kubernetes
+
+directory:
+  - modules/gateway/infra
+  - modules/agent-factory/infra
+  - modules/agent-context/terraform
+  - platform/infra
+  - modules/agent-factory/agent-worker-image/aws
+
+# Skip checks that produce excessive false-positives in dev environments
+skip-check:
+  # S3 bucket logging — not needed in dev
+  - CKV_AWS_18
+  # S3 bucket versioning — controlled via Terraform var, not always needed
+  - CKV_AWS_21
+  # CloudWatch log encryption — not required in dev
+  - CKV_AWS_158
+
+compact: true
+quiet: true

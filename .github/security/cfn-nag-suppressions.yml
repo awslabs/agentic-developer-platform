@@ -1,0 +1,11 @@
+---
+# cfn-nag suppressions for documented false-positives
+# Format: https://github.com/stelligent/cfn_nag#per-resource-rule-suppression
+#
+# Add suppression entries here when a cfn-nag rule fires on a resource
+# that is intentionally configured that way, with justification.
+#
+# Example:
+# RuleSuppression:
+#   - id: W28
+#     reason: "Explicit resource name required for cross-stack reference"
