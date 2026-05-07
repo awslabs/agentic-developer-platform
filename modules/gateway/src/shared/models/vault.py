@@ -37,6 +37,7 @@ class CredentialType(StrEnum):
     ssh_key = "ssh_key"
     certificate = "certificate"
     config_file = "config_file"
+    aws_role = "aws_role"
 
 
 # ---------------------------------------------------------------------------

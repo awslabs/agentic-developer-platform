@@ -5,6 +5,7 @@ Usage:
   python -m adp_cred http GET https://api.github.com/user --service github
   python -m adp_cred materialize --service ssh-key-prod
   python -m adp_cred raw --service github --purpose "gh CLI auth"
+  python -m adp_cred assume --service aws --label prod --purpose "deploy"
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import json
 import sys
 
+from adp_cred.assume import cmd_assume
 from adp_cred.client import list_credentials, materialize, proxy_http, raw_read
 
 
@@ -21,7 +23,8 @@ def _usage() -> None:
         "  adp-cred list\n"
         "  adp-cred http METHOD URL --service SERVICE [--label LABEL] [--header KEY:VALUE ...]\n"
         "  adp-cred materialize --service SERVICE [--label LABEL]\n"
-        "  adp-cred raw --service SERVICE [--label LABEL] [--purpose PURPOSE]\n",
+        "  adp-cred raw --service SERVICE [--label LABEL] [--purpose PURPOSE]\n"
+        "  adp-cred assume [--service SERVICE] [--label LABEL] [--purpose PURPOSE]\n",
         file=sys.stderr,
     )
     sys.exit(2)
@@ -143,6 +146,8 @@ def main() -> None:
         cmd_materialize(rest)
     elif command == "raw":
         cmd_raw(rest)
+    elif command == "assume":
+        cmd_assume(rest)
     else:
         print(f"error: unknown command: {command}", file=sys.stderr)
         _usage()

@@ -28,6 +28,7 @@ UNIT_MODULES = [
     "src.auth.vault_routes",  # Issue #135: vault credential + identity CRUD
     "src.internal.routes",  # Issue #446: internal service-to-service endpoints
     "src.internal.credential_routes",  # Issue #136: credential delivery paths
+    "src.internal.assume_role_routes",  # Issue #481: aws_role STS assume delivery path
     "src.proxy.routes",
     "src.admin.routes",
     "src.admin.identity.router",

@@ -250,13 +250,121 @@ describe('vault tools', () => {
     });
   });
 
+  describe('assume_user_aws_role', () => {
+    it('returns only profile_name, expiration, region — no raw creds', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          profile_name: 'adp-aws-prod',
+          access_key_id: 'ASIAEXAMPLE',
+          secret_access_key: 'wJalrXUtnFEMI/SECRET',
+          session_token: 'FwoGZXIvYXdz_SESSION_TOKEN',
+          expiration: '2026-05-07T17:00:00Z',
+          region: 'us-west-2',
+          provenance_id: 'prov-assume-1',
+        }),
+      });
+
+      const tool = findTool('assume_user_aws_role');
+      const result = await tool.handler({ service: 'aws', label: 'prod' });
+      const parsed = JSON.parse(result.content[0].text);
+
+      // Only safe metadata returned to the agent.
+      expect(parsed.profile_name).toBe('adp-aws-prod');
+      expect(parsed.expiration).toBe('2026-05-07T17:00:00Z');
+      expect(parsed.region).toBe('us-west-2');
+      // Raw creds NOT in output.
+      expect(parsed).not.toHaveProperty('access_key_id');
+      expect(parsed).not.toHaveProperty('secret_access_key');
+      expect(parsed).not.toHaveProperty('session_token');
+    });
+
+    it('registers secret_access_key and session_token with scrubber', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          profile_name: 'adp-aws-staging',
+          access_key_id: 'ASIASTAGING',
+          secret_access_key: 'stagingSecretKey123',
+          session_token: 'stagingSessionToken456',
+          expiration: '2026-05-07T18:00:00Z',
+          region: 'eu-west-1',
+          provenance_id: 'prov-assume-2',
+        }),
+      });
+
+      const tool = findTool('assume_user_aws_role');
+      await tool.handler({ service: 'aws', label: 'staging' });
+
+      // Scrubber should redact both secret values.
+      expect(scrubber.scrub('key: stagingSecretKey123')).toBe(
+        'key: <<redacted:aws:staging:secret>>',
+      );
+      expect(scrubber.scrub('token: stagingSessionToken456')).toBe(
+        'token: <<redacted:aws:staging:session>>',
+      );
+    });
+
+    it('uses closure-injected userId — cannot be overridden by input', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          profile_name: 'adp-aws-default',
+          access_key_id: 'ASIATEST',
+          secret_access_key: 'testSecret',
+          session_token: 'testSession',
+          expiration: '2026-05-07T19:00:00Z',
+          region: 'us-east-1',
+          provenance_id: 'prov-assume-3',
+        }),
+      });
+
+      const tool = findTool('assume_user_aws_role');
+      await tool.handler({
+        service: 'aws',
+        user_id: 'attacker-id', // attempt to override
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.user_id).toBe('user-123');
+    });
+
+    it('uses default label in scrubber replacement when label not provided', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          profile_name: 'adp-aws-default',
+          access_key_id: 'ASIADEFAULT',
+          secret_access_key: 'defaultSecretXYZ',
+          session_token: 'defaultSessionXYZ',
+          expiration: '2026-05-07T20:00:00Z',
+          region: 'us-east-1',
+          provenance_id: 'prov-assume-4',
+        }),
+      });
+
+      const tool = findTool('assume_user_aws_role');
+      await tool.handler({ service: 'aws' });
+
+      expect(scrubber.scrub('defaultSecretXYZ')).toBe('<<redacted:aws:default:secret>>');
+      expect(scrubber.scrub('defaultSessionXYZ')).toBe('<<redacted:aws:default:session>>');
+    });
+
+    it('inputSummarySanitizer returns input unchanged (no secrets in input)', () => {
+      const tool = findTool('assume_user_aws_role');
+      const input = { service: 'aws', label: 'prod', purpose: 'deploy' };
+      expect(tool.inputSummarySanitizer!(input)).toEqual(input);
+    });
+  });
+
   describe('tools gating', () => {
-    it('returns 4 tools when all config provided', () => {
-      expect(tools).toHaveLength(4);
+    it('returns 5 tools when all config provided', () => {
+      expect(tools).toHaveLength(5);
       const names = tools.map(t => t.name);
       expect(names).toContain('list_user_credentials');
       expect(names).toContain('http_request_with_credential');
       expect(names).toContain('materialize_user_credential');
+      expect(names).toContain('assume_user_aws_role');
       expect(names).toContain('get_user_credential_raw');
     });
   });

@@ -62,6 +62,25 @@ export interface RawReadResponse {
   provenance_id: string;
 }
 
+export interface AssumeRoleInput {
+  user_id: string;
+  agent_id: string;
+  task_id: string;
+  service: string;
+  label?: string;
+  purpose?: string;
+}
+
+export interface AssumeRoleResponse {
+  profile_name: string;
+  access_key_id: string;
+  secret_access_key: string;
+  session_token: string;
+  expiration: string;
+  region: string;
+  provenance_id: string;
+}
+
 export interface CredentialMetadata {
   id: string;
   service: string;
@@ -94,6 +113,11 @@ export class VaultGatewayClient {
   async rawRead(input: RawReadInput): Promise<RawReadResponse> {
     const resp = await this.post('/internal/v1/credential-raw-read', input);
     return resp as RawReadResponse;
+  }
+
+  async assumeRole(input: AssumeRoleInput): Promise<AssumeRoleResponse> {
+    const resp = await this.post('/internal/v1/credential-assume-role', input);
+    return resp as AssumeRoleResponse;
   }
 
   async listCredentials(userId: string): Promise<CredentialMetadata[]> {

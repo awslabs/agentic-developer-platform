@@ -143,7 +143,53 @@ export function vaultToolsForTurn(config: VaultToolsConfig): SanitizableAgentToo
       },
     },
 
-    // 4. get_user_credential_raw
+    // 4. assume_user_aws_role
+    {
+      name: 'assume_user_aws_role',
+      description:
+        'Assume an AWS role stored in the user\'s vault. Returns short-lived temp ' +
+        'credentials written to an AWS profile; subsequent aws/terraform/kubectl calls ' +
+        'can use --profile <name>. The raw credentials are registered with the scrubber ' +
+        'and NOT returned in the tool output — only profile_name, expiration, and region.',
+      inputSchema: {
+        service: z.string().optional().default('aws').describe('Service name, typically "aws"'),
+        label: z.string().optional().describe('Credential label, e.g. "prod", "staging"'),
+        purpose: z.string().optional().describe('Free-text reason for audit'),
+      },
+      inputSummarySanitizer: (input) => input,
+      handler: async (input: Record<string, unknown>): Promise<AgentToolResult> => {
+        try {
+          const resp = await client.assumeRole({
+            user_id: userId,
+            agent_id: agentId,
+            task_id: taskId,
+            service: (input.service as string) || 'aws',
+            label: input.label as string | undefined,
+            purpose: input.purpose as string | undefined,
+          });
+          // CRITICAL: register sensitive values with scrubber BEFORE returning.
+          const labelStr = (input.label as string) ?? 'default';
+          scrubber.registerSensitiveValue(
+            resp.secret_access_key,
+            `<<redacted:aws:${labelStr}:secret>>`,
+          );
+          scrubber.registerSensitiveValue(
+            resp.session_token,
+            `<<redacted:aws:${labelStr}:session>>`,
+          );
+          // Return only safe metadata — raw creds stay out of agent memory.
+          return text(JSON.stringify({
+            profile_name: resp.profile_name,
+            expiration: resp.expiration,
+            region: resp.region,
+          }, null, 2));
+        } catch (err) {
+          return error(`Assume role failed: ${(err as Error).message}`);
+        }
+      },
+    },
+
+    // 5. get_user_credential_raw
     {
       name: 'get_user_credential_raw',
       description:
