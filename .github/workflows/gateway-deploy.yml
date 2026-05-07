@@ -154,6 +154,19 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Resolve GitHub auth broker URL from SSM
+        id: broker_url
+        run: |
+          # Written by module.github_auth_broker when var.enable_github_auth_broker=true.
+          # Empty string (fallback) when broker isn't deployed — the Login page
+          # handles this by disabling the GitHub button with a friendly error.
+          URL=$(aws ssm get-parameter \
+            --name "/adp/${{ env.ENVIRONMENT }}/gateway/github-auth-broker-url" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+          echo "Broker URL: ${URL:-'<not set — GitHub sign-in will be disabled>'}"
+
       - name: Build frontend
         # Vite inlines these at build time. Without them, the SPA falls back
         # to stale literals in src/config/cognito.ts and shows "Authentication
@@ -169,6 +182,7 @@ jobs:
           VITE_COGNITO_CLIENT_ID: 6cg7ba3hb4v41vbhm0cg8pl17j
           VITE_COGNITO_DOMAIN: bedrockgw-dev-auth-18057152
           VITE_COGNITO_REGION: us-east-1
+          VITE_GITHUB_AUTH_BROKER_URL: ${{ steps.broker_url.outputs.url }}
         run: |
           cd modules/gateway/frontend
           npm ci

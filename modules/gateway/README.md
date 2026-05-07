@@ -2,287 +2,137 @@
 
 A multi-tenant SaaS proxy for Amazon Bedrock with Cognito authentication, cascading budget management, rate limiting, and an admin dashboard.
 
-## Overview
+## What It Does
 
-Bedrock Gateway enables organizations to provide secure, controlled access to Amazon Bedrock models for their developers and automated agents. It supports Claude Code, OpenAI-compatible tools (Cursor, Continue), and custom applications.
+Bedrock Gateway gives organizations controlled, metered access to Amazon Bedrock models. Developers use Claude Code, Cursor, Continue, or any OpenAI-compatible client — the gateway handles authentication, tenant isolation, budgets, rate limits, and audit logging transparently.
+
+Think of it as a corporate API gateway purpose-built for LLM traffic: one endpoint, many tenants, full cost visibility.
+
+## Architecture
 
 ```
-                             Internet
-                                |
-                   +------------v-----------+
-                   |       CloudFront       |
-                   | (HTTPS, VPC Origin)    |
-                   +------------+-----------+
-                                |
-               +----------------+----------------+
-               |                                 |
-   +-----------v-----------+      +--------------v--------------+
-   |    S3 (Admin UI)      |      |    Internal ALB (EKS)       |
-   |   React + Tailwind    |      |  via VPC Origin - HTTP      |
-   +------------------------+      +--------------+--------------+
-                                                  |
-                                   +--------------v--------------+
-                                   |     Bedrock Gateway         |
-                                   |     (FastAPI on EKS)        |
-                                   +--------------+--------------+
-                                                  |
-                    +-----------------------------+-----------------------------+
-                    |                             |                             |
-         +----------v----------+      +-----------v-----------+      +----------v----------+
-         |   RDS PostgreSQL    |      |   ElastiCache Redis   |      |   Amazon Bedrock    |
-         |   (Multi-tenant)    |      |   (Rate Limiting)     |      |   (Claude, etc.)    |
-         +---------------------+      +-----------------------+      +---------------------+
+                              Internet
+                                 │
+                    ┌────────────▼────────────┐
+                    │       CloudFront        │
+                    │   (HTTPS termination,   │
+                    │    VPC Origin)          │
+                    └────────────┬────────────┘
+                                 │
+                ┌────────────────┼────────────────┐
+                │                                 │
+    ┌───────────▼───────────┐      ┌──────────────▼──────────────┐
+    │    S3 (Admin UI)      │      │    Internal ALB (EKS)       │
+    │   React + Tailwind    │      │  via VPC Origin — HTTP      │
+    └───────────────────────┘      └──────────────┬──────────────┘
+                                                  │
+                                   ┌──────────────▼──────────────┐
+                                   │     Bedrock Gateway         │
+                                   │     (FastAPI on EKS)        │
+                                   └──────────────┬──────────────┘
+                                                  │
+                    ┌─────────────────────────────┼─────────────────────────────┐
+                    │                             │                             │
+         ┌──────────▼──────────┐      ┌──────────▼───────────┐      ┌──────────▼──────────┐
+         │   RDS PostgreSQL    │      │   ElastiCache Redis   │      │   Amazon Bedrock    │
+         │   (Multi-tenant)    │      │   (Rate Limiting)     │      │   (Claude, etc.)    │
+         └─────────────────────┘      └──────────────────────┘      └─────────────────────┘
 ```
 
-## Key Features
+### How a Request Flows
 
-- **Multi-Tenant Architecture**: Org -> Department -> Team -> User hierarchy with data isolation
-- **Unified Authentication**: Cognito PKCE for humans, client_credentials for agents
-- **Cascading Budgets**: Set spending limits at any hierarchy level with soft/hard enforcement
-- **Rate Limiting**: RPM, TPM, and concurrent request limits with token bucket algorithm
-- **Multi-Format API**: OpenAI, Anthropic Messages, and Bedrock pass-through formats
-- **Claude Code Integration**: First-class support with CLI authentication helper
-- **Admin Dashboard**: React UI for onboarding, configuration, and usage monitoring
-- **Cross-Account Pool**: Round-robin Bedrock calls across multiple AWS accounts
+1. Client sends a request (OpenAI, Anthropic, or Bedrock format) to CloudFront
+2. CloudFront routes `/api/*` to the internal ALB via VPC Origin (never internet-facing)
+3. FastAPI validates the JWT (Cognito JWKS, no network call needed)
+4. Tenant is resolved from the token claims → org/department/team/user hierarchy
+5. Budget check: cascading limits at any hierarchy level (soft warn, hard reject)
+6. Rate limit check: RPM, TPM, concurrent requests via Redis token bucket
+7. Model resolution: maps requested model to a Bedrock endpoint (supports cross-account pool)
+8. Bedrock invocation: streaming or synchronous, with per-segment timing
+9. Usage logged to Postgres; chat content optionally logged to S3
+10. Response returned with `X-Gateway-Timing` header showing per-segment latency
 
-## Prerequisites
+## Key Components
 
-- AWS CLI v2 configured with admin access
-- Terraform >= 1.14
-- Docker
-- kubectl
-- Node.js >= 22 (frontend)
-- Python >= 3.12 (backend)
-- GitHub CLI (`gh`) — for CI/CD workflow management
+### Backend (`src/`)
 
-## Setup Guide — From Scratch to Production
+| Package | Responsibility |
+|---------|---------------|
+| `proxy/` | Multi-format Bedrock proxy — translates OpenAI, Anthropic Messages, and native Bedrock formats. Handles streaming via SSE. |
+| `auth/` | Cognito JWT validation, service account management, tenant resolution, magic-link auth, vault credential injection |
+| `admin/` | CRUD API for organizations, departments, teams, users, agents. Policy scoping, identity index, metrics. |
+| `budget/` | Cascading budget enforcement at org/dept/team/user level. Soft (warn) and hard (reject) thresholds. Pricing engine per model. |
+| `ratelimit/` | Token bucket algorithm backed by Redis. Per-entity RPM, TPM, and concurrent request limits. |
+| `pool/` | Cross-account Bedrock pool — round-robin calls across multiple AWS accounts for throughput scaling. Health tracking per account. |
+| `chat_logging/` | Optional conversation logging to S3. PII scrubbing via Comprehend. Configurable scrub levels (off/basic/standard). |
+| `usage/` | Usage analytics — per-user, per-model, per-org token consumption and cost tracking. |
+| `shared/` | Database, config, logging, metrics, timing, tracing infrastructure. |
 
-This guide walks through the complete setup: bootstrapping the Terraform state backend, provisioning infrastructure, deploying the application, and configuring CI/CD.
+### Frontend (`frontend/`)
 
-### Step 0: Clone the Repository
+React + Tailwind admin dashboard. Provides:
+- Organization/team/user management
+- Budget configuration and status monitoring
+- Rate limit configuration
+- Usage analytics and cost dashboards
+- Agent onboarding and credential management
+
+### Infrastructure (`infra/`)
+
+Terraform modules (14 total):
+
+| Module | What It Creates |
+|--------|----------------|
+| `cognito/` | User Pool, Identity Pool, App Clients (PKCE + M2M) |
+| `cloudfront/` | CDN distribution with VPC Origin to internal ALB |
+| `rds/` | PostgreSQL with IAM auth, automated backups |
+| `redis/` | ElastiCache for rate limiting state |
+| `s3-frontend/` | Bucket for React SPA |
+| `s3-chat-logs/` | Bucket for conversation logs |
+| `api-gateway/` | REST API Gateway with 15-min timeout (optional, for long-running agent calls) |
+| `lambda-authorizer/` | JWT + IAM auth for API Gateway routes |
+| `budget-lambda/` | Usage aggregation Lambdas |
+| `cloudwatch-dashboard/` | Latency and error dashboards |
+| `alb/` | Internal Application Load Balancer |
+| `s3-cloudfront-logs/` | Access log storage |
+| `rds-bootstrap/` | K8s Job that grants IAM auth to the Postgres admin role |
+| `github-auth-broker/` | Lambda for GitHub OAuth federated sign-in |
+
+### Kubernetes (`k8s/`)
+
+- `deployment.yaml` — FastAPI pods (2 replicas default, HPA-ready)
+- `service.yaml` — ClusterIP service
+- `ingress.yaml` — ALB Ingress (internal, used by CloudFront VPC Origin)
+- `configmap.yaml` — Environment configuration
+- `pdb.yaml` — Pod disruption budget
+- `namespace.yaml` — `adp-gateway` namespace
+
+## Authentication
+
+Three methods, one token format:
+
+| Method | Use Case | Flow |
+|--------|----------|------|
+| Email/password | Default for all users | Cognito User Pool sign-in |
+| GitHub SSO | Teams using GitHub identity | Cognito federated via GitHub OAuth App |
+| Client credentials (M2M) | Automated agents and services | Cognito App Client with `client_credentials` grant |
+
+All methods produce Cognito JWTs. The backend validates them identically regardless of how they were issued.
+
+### Claude Code Integration
 
 ```bash
-git clone https://github.com/aws-e/adp.git
-cd adp/modules/gateway
-```
-
-### Step 1: Bootstrap Terraform State Backend
-
-Before any Terraform commands can run, you need an S3 bucket for state storage and a DynamoDB table for state locking. The repo includes a bootstrap script that creates these.
-
-```bash
-# From the repo root
-cd platform/scripts
-
-# Set your target region and environment
-export AWS_REGION=us-east-1
-export ENVIRONMENT=dev
-
-# Run the bootstrap script (requires AWS CLI with admin access)
-./bootstrap.sh
-```
-
-This script will:
-1. Detect your AWS account ID via `aws sts get-caller-identity`
-2. Create S3 bucket `adp-terraform-state-<ACCOUNT_ID>` with versioning, encryption, and public access block
-3. Create DynamoDB table `adp-terraform-locks` (PAY_PER_REQUEST)
-4. Replace `ACCOUNT_ID` placeholders in all `environments/**/*.tfvars` files
-
-After bootstrap, verify:
-```bash
-aws s3 ls | grep adp-terraform-state
-aws dynamodb describe-table --table-name adp-terraform-locks --query 'Table.TableStatus'
-```
-
-### Step 2: Deploy Platform Infrastructure (Optional)
-
-If you don't already have a shared VPC and EKS cluster, deploy the platform-level infrastructure first:
-
-```bash
-cd platform/infra
-
-terraform init -backend-config=../../environments/dev/backend.tfvars
-terraform plan -var-file=../../environments/dev/platform.tfvars
-terraform apply -var-file=../../environments/dev/platform.tfvars
-```
-
-This creates the base VPC, EKS cluster, ECR repositories, and IAM roles. Review `environments/dev/platform.tfvars` to customize:
-
-```hcl
-environment = "dev"
-aws_region  = "us-east-1"
-vpc_cidr    = "10.0.0.0/16"
-eks_node_instance_types = ["m5.large", "m5.xlarge"]
-eks_node_desired_size   = 2
-```
-
-### Step 3: Deploy Gateway Infrastructure
-
-The gateway module provisions its own resources (Cognito, RDS, Redis, CloudFront, S3, etc.) on top of the platform.
-
-```bash
-cd modules/gateway/infra
-
-terraform init -backend-config=../../../environments/dev/modules/gateway-backend.tfvars
-terraform plan -var-file=../../../environments/dev/modules/gateway.tfvars
-terraform apply -var-file=../../../environments/dev/modules/gateway.tfvars
-```
-
-Review `environments/dev/modules/gateway.tfvars` to customize:
-
-```hcl
-environment           = "dev"
-aws_region            = "us-east-1"
-rds_instance_class    = "db.t3.medium"
-rds_allocated_storage = 20
-redis_node_type       = "cache.t3.micro"
-cognito_domain_prefix = "adp-gateway-dev"
-```
-
-Note the Terraform outputs — you'll need these for the next steps:
-- `cloudfront_domain_name`
-- `cognito_user_pool_id`
-- `cognito_client_id`
-- `ecr_repository_url`
-
-**Infrastructure modules provisioned:**
-
-| Module | Resources |
-|--------|-----------|
-| `networking` | VPC, subnets, security groups |
-| `eks` | EKS Auto Mode cluster, node groups, IRSA |
-| `rds` | PostgreSQL with IAM auth |
-| `redis` | ElastiCache Redis (optional) |
-| `cognito` | User Pool, Identity Pool, App Clients |
-| `cloudfront` | CDN with VPC Origin to internal ALB |
-| `s3-frontend` | S3 bucket for React SPA |
-| `ecr` | Container registry |
-| `cloudtrail` | Audit logging |
-| `cloudwatch-dashboard` | Latency dashboard |
-| `s3-chat-logs` | Chat log storage (optional) |
-| `budget-lambda` | Usage tracking Lambdas (optional) |
-| `api-gateway` | REST API with 15min timeout (optional) |
-| `lambda-authorizer` | JWT + IAM auth for API Gateway (optional) |
-
-### Step 4: Deploy the Backend
-
-```bash
-cd modules/gateway
-
-# Build the container
-docker build -t adp-gateway .
-
-# Push to ECR
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-REGISTRY="${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
-
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $REGISTRY
-docker tag adp-gateway:latest $REGISTRY/adp-gateway:latest
-docker push $REGISTRY/adp-gateway:latest
-
-# Configure kubectl
-aws eks update-kubeconfig --name adp-dev-eks --region us-east-1
-
-# Create the secrets (token secret from Secrets Manager)
-kubectl create secret generic bedrockgateway-secrets \
-  --from-literal=token-secret-key=$(aws secretsmanager get-secret-value \
-    --secret-id /adp/dev/gateway/token-secret --query SecretString --output text) \
-  -n adp-gateway
-
-# Deploy k8s manifests
-kubectl apply -f k8s/ -n adp-gateway
-
-# Verify rollout
-kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s
-```
-
-### Step 5: Deploy the Frontend
-
-```bash
-cd modules/gateway/frontend
-
-npm ci
-VITE_API_URL="/api/gateway" npm run build
-
-# Upload to S3 (get bucket name from Terraform output or SSM)
-BUCKET=$(aws ssm get-parameter --name "/adp/dev/gateway/frontend-bucket" --query "Parameter.Value" --output text)
-aws s3 sync dist/ "s3://${BUCKET}/" --delete
-
-# Invalidate CloudFront cache
-DIST_ID=$(aws ssm get-parameter --name "/adp/dev/gateway/cloudfront-id" --query "Parameter.Value" --output text)
-aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
-```
-
-### Step 6: Configure GitHub Actions CI/CD
-
-The repo includes three workflows for automated builds and deployments. To enable them:
-
-1. **Create an IAM OIDC identity provider** for GitHub Actions in your AWS account:
-   ```bash
-   aws iam create-open-id-connect-provider \
-     --url https://token.actions.githubusercontent.com \
-     --client-id-list sts.amazonaws.com \
-     --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
-   ```
-
-2. **Create an IAM role** for GitHub Actions with trust policy for your repo:
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [{
-       "Effect": "Allow",
-       "Principal": {
-         "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
-       },
-       "Action": "sts:AssumeRoleWithWebIdentity",
-       "Condition": {
-         "StringEquals": {
-           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
-         },
-         "StringLike": {
-           "token.actions.githubusercontent.com:sub": "repo:aws-e/adp:*"
-         }
-       }
-     }]
-   }
-   ```
-   Attach policies for ECR, EKS, S3, CloudFront, SSM, and Terraform state access.
-
-3. **Set the GitHub repository secret**:
-   ```bash
-   gh secret set AWS_ROLE_ARN --body "arn:aws:iam::<ACCOUNT_ID>:role/<role-name>" --repo aws-e/adp
-   ```
-
-**Workflow summary:**
-
-| Workflow | File | Trigger | What it does |
-|----------|------|---------|-------------|
-| Gateway CI | `gateway-ci.yml` | PR/push to `src/`, `tests/`, `pyproject.toml` | Lint → Test → Docker build |
-| Gateway Deploy | `gateway-deploy.yml` | Push to main (`src/`, `Dockerfile`, `k8s/`) | ECR push → EKS deploy → S3 sync → CF invalidation |
-| Gateway Infra | `gateway-infra.yml` | Push/PR to `infra/**` | Terraform plan (PR) / apply (merge) |
-| Platform Infra Plan | `platform-infra-plan.yml` | Platform infra changes | Terraform plan |
-| Platform Infra Apply | `platform-infra-apply.yml` | Platform infra changes | Terraform apply |
-
-### Step 7: Configure Claude Code
-
-```bash
-# Install CLI helper
+# Install the CLI helper
 cp cli/bg-cognito-auth.sh ~/bin/
 chmod +x ~/bin/bg-cognito-auth.sh
 
-# Login (one-time)
+# One-time login
 bg-cognito-auth.sh login --gateway-url https://<cloudfront-domain>/api
 
-# Use Claude Code
-CLAUDE_CODE_USE_BEDROCK=1 claude
-```
-
-Add to `~/.claude/settings.json`:
-
-```json
+# Configure Claude Code (~/.claude/settings.json)
 {
   "env": {
-    "ANTHROPIC_BEDROCK_BASE_URL": "https://your-gateway.cloudfront.net/api",
+    "ANTHROPIC_BEDROCK_BASE_URL": "https://<cloudfront-domain>/api",
     "CLAUDE_CODE_USE_BEDROCK": "1",
     "CLAUDE_CODE_SKIP_BEDROCK_AUTH": "1"
   },
@@ -291,261 +141,129 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-## Local Development (Quick Path)
+## API Surface
 
-For local development without deploying infrastructure:
+### Proxy (Multi-Format)
+
+| Method | Path | Format |
+|--------|------|--------|
+| POST | `/v1/chat/completions` | OpenAI-compatible |
+| POST | `/v1/messages` | Anthropic Messages |
+| POST | `/v1/messages/count_tokens` | Anthropic token counting |
+| POST | `/bedrock/invoke` | Bedrock native pass-through |
+| POST | `/bedrock/invoke-with-response-stream` | Bedrock streaming |
+| GET | `/v1/models` | List available models |
+
+### Admin, Budgets, Rate Limits
+
+| Area | Key Endpoints |
+|------|---------------|
+| Admin | `POST /admin/organizations`, `POST /admin/agents`, `GET /admin/pool/status` |
+| Budgets | `POST /budgets`, `GET /budgets/status/{entity_type}/{entity_id}` |
+| Rate Limits | `PUT /ratelimits/{entity_type}/{entity_id}`, `GET /ratelimits/{entity_type}/{entity_id}/status` |
+| Auth | `GET /auth/me`, `POST /auth/service-accounts` |
+| Health | `GET /health` |
+
+Full specification: [docs/openapi.yaml](docs/openapi.yaml)
+
+## Deployment
+
+### Automated (recommended)
+
+The gateway deploys as part of the full platform via `deploy-all.sh`:
+
+```bash
+# From repo root — deploys everything including gateway
+./platform/scripts/deploy-all.sh
+
+# Gateway-only (skips agent-factory)
+./platform/scripts/deploy-all.sh --gateway-only
+```
+
+The script handles: Terraform apply (two-pass for ALB wiring) → CodeBuild image build → EKS rollout → frontend build → S3 upload → CloudFront invalidation.
+
+### Manual Step-by-Step
+
+```bash
+# 1. Infrastructure
+cd modules/gateway/infra
+terraform init -backend-config=../../../environments/dev/modules/gateway-backend.tfvars
+terraform apply -var-file=../../../environments/dev/modules/gateway.tfvars -auto-approve
+
+# 2. Backend image
+docker build -t adp-gateway .
+REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com"
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $REGISTRY
+docker tag adp-gateway:latest $REGISTRY/adp-gateway:latest
+docker push $REGISTRY/adp-gateway:latest
+
+# 3. Deploy to EKS
+kubectl apply -f k8s/ -n adp-gateway
+kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s
+
+# 4. Frontend
+cd frontend && npm ci
+VITE_API_URL="/api/gateway" npm run build
+BUCKET=$(aws ssm get-parameter --name "/adp/dev/gateway/frontend-bucket" --query "Parameter.Value" --output text)
+aws s3 sync dist/ "s3://${BUCKET}/" --delete
+```
+
+### CI/CD Workflows
+
+| Workflow | Trigger | What It Does |
+|----------|---------|--------------|
+| `gateway-ci.yml` | PR to `src/`, `tests/`, `pyproject.toml` | Lint → Test → Docker build |
+| `gateway-deploy.yml` | Push to main | ECR push → EKS rollout → S3 sync → CF invalidation |
+| `gateway-infra-apply.yml` | Push to `infra/**` | Terraform plan (PR) / apply (merge) with two-pass ALB wiring |
+
+## Local Development
 
 ```bash
 cd modules/gateway
 
-# Start backend + Postgres + Redis
+# Full stack (backend + Postgres + Redis)
 docker compose up
+# Backend at http://localhost:8080, Postgres at :5432, Redis at :6379
 
-# Backend is available at http://localhost:8080
-# Postgres at localhost:5432 (postgres/postgres)
-# Redis at localhost:6379
-```
-
-For backend development without Docker:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-
-# Run locally (requires Postgres and Redis running)
+# Backend only (requires running Postgres + Redis)
+uv sync
 uvicorn src.app:create_app --factory --reload --port 8080
 
-# Run tests
-pytest tests/ -v
+# Tests
+uv run pytest tests/ -v
 
 # Lint
-ruff check src/ tests/
-ruff format src/ tests/
+uv run ruff check src/ tests/
+uv run ruff format src/ tests/
+
+# Frontend dev
+cd frontend && npm install && npm run dev  # http://localhost:5173
 ```
 
-For frontend development:
+## Security Model
 
-```bash
-cd frontend
-npm install
-npm run dev       # Dev server at http://localhost:5173
-npm test          # Run tests
-npm run lint      # Lint
-npm run build     # Production build
-```
+| Layer | Mechanism |
+|-------|-----------|
+| Network | Internal ALB — not internet-facing. CloudFront VPC Origin is the only ingress path. |
+| Authentication | Cognito JWT validated via JWKS (cached, no network call per request) |
+| AWS Access | IRSA — pods use IAM Roles for Service Accounts, no static credentials |
+| Database | RDS IAM Auth — no passwords stored or rotated |
+| Tenant Isolation | All queries include `org_id` filter; logical isolation at the application layer |
+| Credentials | AWS credentials used once for STS validation, never stored. Secrets in Secrets Manager only. |
+| Audit | CloudTrail for infrastructure; application-level usage logging per request |
 
-## Authentication
+## Observability
 
-The gateway supports multiple authentication methods for different use cases.
+- `X-Gateway-Timing` header on every response: `auth=5ms;budget_check=12ms;bedrock=1847ms;total=1870ms`
+- Optional X-Ray distributed tracing via OpenTelemetry (set `BG_OTEL_ENABLED=true`)
+- CloudWatch dashboard for P50/P90/P99 latency, error rates, request counts
+- Structured JSON logging with correlation IDs
 
-### Authentication Options
+## Further Reading
 
-| Method | Use Case | Configuration |
-|--------|----------|---------------|
-| Email/password | Default for all users | Cognito User Pool (always enabled) |
-| GitHub sign-in | SSO for GitHub-based teams | Cognito + GitHub OAuth App ([admin guide](../../docs/admin/github-sign-in.md)) |
-| Client credentials (M2M) | Automated agents and services | Cognito App Client with secret |
-
-GitHub sign-in is an optional federated identity provider. When enabled, users see a "Sign in with GitHub" button alongside the standard email/password form. Both methods issue the same Cognito tokens and are interchangeable from the backend's perspective. See the [full admin documentation](../../docs/admin/github-sign-in.md) for setup instructions.
-
-### Human Users (Claude Code, Admin UI)
-
-Human users authenticate via Cognito PKCE flow:
-
-1. Run `bg-cognito-auth.sh login` to authenticate with your corporate IdP
-2. CLI obtains Cognito tokens and exchanges for AWS credentials via Identity Pool
-3. Credentials stored in `~/.aws/credentials` under `[bedrock-gateway]` profile
-4. Claude Code uses SigV4 authentication with these credentials
-
-```bash
-# One-time login
-./cli/bg-cognito-auth.sh login --gateway-url https://gateway.company.com/api
-
-# Check status
-./cli/bg-cognito-auth.sh status
-
-# Refresh credentials
-./cli/bg-cognito-auth.sh refresh
-```
-
-### Automated Agents (M2M)
-
-Agents authenticate using Cognito's `client_credentials` flow:
-
-1. Admin creates an agent via `/admin/agents` API
-2. Agent receives `client_id` and `client_secret`
-3. Agent calls Cognito token endpoint to get JWT access token
-4. JWT used as Bearer token for gateway requests
-
-```bash
-# Get access token
-TOKEN=$(curl -X POST "https://cognito-idp.us-east-1.amazonaws.com/<pool-id>/oauth2/token" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=client_credentials&client_id=<id>&client_secret=<secret>&scope=bedrockgw/invoke")
-
-# Use token
-curl -H "Authorization: Bearer $TOKEN" \
-  https://gateway.company.com/api/v1/chat/completions
-```
-
-## CLI Usage
-
-The `bg-cognito-auth.sh` CLI handles Cognito authentication:
-
-```bash
-# Commands
-bg-cognito-auth.sh login    # Authenticate and get AWS credentials
-bg-cognito-auth.sh refresh  # Refresh tokens and credentials
-bg-cognito-auth.sh status   # Show authentication status
-bg-cognito-auth.sh logout   # Clear stored credentials
-bg-cognito-auth.sh token    # Output access token (for apiKeyHelper)
-
-# Options
---gateway-url <url>         # Gateway URL (required for login)
---user-pool-id <id>         # Cognito User Pool ID (auto-discovered)
---client-id <id>            # Cognito App Client ID (auto-discovered)
---region <region>           # AWS region (default: us-east-1)
-```
-
-## Project Structure
-
-```
-bedrock-gateway/
-├── src/                    # Backend Python code
-│   ├── auth/               # Authentication (Cognito JWT, service accounts)
-│   ├── proxy/              # Bedrock proxy (OpenAI, Anthropic, Bedrock formats)
-│   ├── admin/              # Admin CRUD API
-│   ├── budget/             # Budget tracking and enforcement
-│   ├── ratelimit/          # Rate limiting (token bucket, Redis)
-│   ├── usage/              # Usage logging and analytics
-│   ├── pool/               # Cross-account Bedrock pool
-│   └── shared/             # Shared models, schemas, utilities
-├── tests/                  # Backend tests (pytest)
-├── frontend/               # Admin UI (React + Tailwind)
-├── infra/                  # Terraform infrastructure
-│   ├── main.tf             # Root module
-│   └── modules/            # Terraform modules
-│       ├── cognito/        # User Pool, Identity Pool, App Clients
-│       ├── cloudfront/     # Distribution with VPC Origin
-│       ├── eks/            # EKS Auto Mode cluster
-│       ├── rds/            # PostgreSQL database
-│       ├── redis/          # ElastiCache Redis
-│       └── ...
-├── k8s/                    # Kubernetes manifests
-│   ├── deployment.yaml     # Gateway deployment
-│   ├── service.yaml        # ClusterIP service
-│   ├── ingress.yaml        # ALB Ingress (internal)
-│   ├── configmap.yaml      # Environment configuration
-│   ├── pdb.yaml            # Pod disruption budget
-│   └── namespace.yaml      # Namespace definition
-├── cli/                    # CLI tools
-│   └── bg-cognito-auth.sh  # Cognito authentication CLI
-├── docs/                   # Documentation
-│   ├── openapi.yaml        # OpenAPI 3.0 specification
-│   ├── database-schema.md  # Database table documentation
-│   ├── sequence-diagrams.md # Mermaid sequence diagrams
-│   └── traceability-matrix.md # Requirements to code mapping
-├── alembic/                # Database migrations
-│   └── versions/           # Migration scripts
-├── docker-compose.yml      # Local development stack
-├── Dockerfile              # Production container build
-└── .github/workflows/      # CI/CD pipelines
-    ├── gateway-ci.yml      # Lint, test, build on PR
-    ├── gateway-deploy.yml  # Deploy backend + frontend on merge
-    └── gateway-infra.yml   # Terraform plan/apply
-```
-
-## API Endpoints
-
-### Proxy (Multi-Format)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/v1/chat/completions` | OpenAI-compatible chat completions |
-| GET | `/v1/models` | List available models |
-| POST | `/v1/messages` | Anthropic Messages format |
-| POST | `/v1/messages/count_tokens` | Count tokens (Anthropic) |
-| POST | `/bedrock/invoke` | Bedrock InvokeModel pass-through |
-| POST | `/bedrock/invoke-with-response-stream` | Bedrock streaming |
-
-### Authentication
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/auth/exchange` | Exchange AWS creds for token (deprecated) |
-| GET | `/auth/me` | Get current user info |
-| POST | `/auth/logout` | Logout current user |
-| POST | `/auth/service-accounts` | Create service account |
-
-### Admin
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/admin/organizations` | Create organization |
-| GET | `/admin/organizations/{org_id}` | Get organization |
-| POST | `/admin/agents` | Create M2M agent |
-| GET | `/admin/pool/status` | Get Bedrock pool status |
-
-### Budgets
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/budgets` | Create budget config |
-| GET | `/budgets/status/{entity_type}/{entity_id}` | Get budget status |
-
-### Rate Limits
-
-| Method | Path | Description |
-|--------|------|-------------|
-| PUT | `/ratelimits/{entity_type}/{entity_id}` | Configure rate limits |
-| GET | `/ratelimits/{entity_type}/{entity_id}/status` | Get rate limit status |
-
-See [docs/openapi.yaml](docs/openapi.yaml) for the complete API specification.
-
-## Distributed Request Tracing
-
-### X-Gateway-Timing Header
-
-Every proxy response includes an `X-Gateway-Timing` header with per-segment latency breakdown:
-
-```
-X-Gateway-Timing: auth=5ms;model_resolve=1ms;budget_check=12ms;ratelimit_check=3ms;bedrock=1847ms;serialize=2ms;total=1870ms
-```
-
-### AWS X-Ray Distributed Tracing (Opt-in)
-
-Full distributed tracing with X-Ray via OpenTelemetry. Enable by setting:
-
-```bash
-BG_OTEL_ENABLED=true
-BG_OTEL_SERVICE_NAME=bedrock-gateway
-BG_OTEL_EXPORTER_ENDPOINT=http://localhost:4317
-```
-
-Requires:
-- OpenTelemetry Collector sidecar (see `k8s/otel-collector-config.yaml`)
-- X-Ray IAM permissions (set `enable_xray_tracing = true` in Terraform)
-- Tracing dependencies: `pip install ".[tracing]"`
-
-## Security
-
-- **Internal ALB**: Load balancer is not internet-facing; CloudFront VPC Origin is the only ingress
-- **Cognito Authentication**: JWT validation via JWKS (no network call required)
-- **IRSA**: EKS pods use IAM Roles for Service Accounts for AWS access
-- **RDS IAM Auth**: Database authentication via IAM (no passwords)
-- **Tenant Isolation**: All queries include `org_id` filter; data is logically isolated
-- **Credential Handling**: AWS credentials used once for STS validation, never stored
-
-## Detailed Documentation
-
-- [OpenAPI Specification](docs/openapi.yaml) - Complete API reference
-- [Database Schema](docs/database-schema.md) - All tables and relationships
-- [Sequence Diagrams](docs/sequence-diagrams.md) - Key flow visualizations
-- [Requirements Traceability](docs/traceability-matrix.md) - Requirements to code mapping
-- [Security Review](docs/security-review.md) - Security assessment
-- [Budget & Rate Limiting](docs/budget-ratelimit.md) - Budget and rate limit design
-
-## License
-
-Private - Internal use only.
+- [OpenAPI Specification](docs/openapi.yaml)
+- [Database Schema](docs/database-schema.md)
+- [Sequence Diagrams](docs/sequence-diagrams.md)
+- [Security Review](docs/security-review.md)
+- [Budget & Rate Limiting Design](docs/budget-ratelimit.md)
+- [GitHub Sign-In Admin Guide](../../docs/admin/github-sign-in.md)
