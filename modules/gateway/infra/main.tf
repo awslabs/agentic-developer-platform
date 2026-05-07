@@ -847,7 +847,12 @@ module "github_auth_broker" {
   github_token_secret_arn = var.github_auth_token_secret_arn
   lambda_artifact_bucket  = "adp-terraform-state-${var.account_id}"
 
-  depends_on = [module.cognito, module.cloudfront]
+  # Issue #525: Route broker through API Gateway instead of a public Function URL
+  rest_api_id            = module.api_gateway[0].api_gateway_id
+  rest_api_execution_arn = module.api_gateway[0].api_gateway_execution_arn
+  root_resource_id       = module.api_gateway[0].api_gateway_root_resource_id
+
+  depends_on = [module.cognito, module.cloudfront, module.api_gateway]
 }
 
 # IAM policy for Gateway IRSA role to access identity-index table

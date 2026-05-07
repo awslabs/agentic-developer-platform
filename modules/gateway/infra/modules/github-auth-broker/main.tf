@@ -1,16 +1,15 @@
 # =============================================================================
-# GitHub Auth Broker Lambda Module (Issue #520)
+# GitHub Auth Broker Lambda Module (Issue #520, Issue #525)
 # =============================================================================
-# Creates a Lambda function with a Function URL that acts as a broker between
-# GitHub OAuth and Cognito. Replaces the failed Cognito-native OIDC approach.
+# Creates a Lambda function behind API Gateway that acts as a broker between
+# GitHub OAuth and Cognito. The broker is only invokable via the REST API
+# (no public Function URL). Routes: /api/auth/github/{start,callback}.
 # =============================================================================
 
 data "aws_caller_identity" "current" {}
 
 locals {
   function_name = "${var.name_prefix}-github-auth-broker"
-  # The callback URL is the Lambda Function URL + /callback path
-  # Set after creation via SSM or passed to frontend at build time
 }
 
 # --- IAM Role for the Lambda ---
@@ -163,18 +162,55 @@ data "archive_file" "placeholder" {
   }
 }
 
-# --- Lambda Function URL (public, no auth — the Lambda itself verifies state) ---
+# --- API Gateway Integration (Issue #525) ---
+# Route: /api/auth/github/{proxy+} → Lambda (AWS_PROXY)
+# Replaces the previously-deleted public Function URL.
 
-resource "aws_lambda_function_url" "broker" {
-  function_name      = aws_lambda_function.broker.function_name
-  authorization_type = "NONE"
+resource "aws_api_gateway_resource" "auth" {
+  rest_api_id = var.rest_api_id
+  parent_id   = var.root_resource_id
+  path_part   = "auth"
+}
 
-  cors {
-    allow_origins = [var.frontend_url]
-    allow_methods = ["GET"]
-    allow_headers = ["cookie"]
-    max_age       = 3600
+resource "aws_api_gateway_resource" "auth_github" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.auth.id
+  path_part   = "github"
+}
+
+resource "aws_api_gateway_resource" "auth_github_proxy" {
+  rest_api_id = var.rest_api_id
+  parent_id   = aws_api_gateway_resource.auth_github.id
+  path_part   = "{proxy+}"
+}
+
+resource "aws_api_gateway_method" "auth_github_proxy_any" {
+  rest_api_id   = var.rest_api_id
+  resource_id   = aws_api_gateway_resource.auth_github_proxy.id
+  http_method   = "ANY"
+  authorization = "NONE"
+
+  request_parameters = {
+    "method.request.path.proxy" = true
   }
+}
+
+resource "aws_api_gateway_integration" "auth_github_proxy" {
+  rest_api_id             = var.rest_api_id
+  resource_id             = aws_api_gateway_resource.auth_github_proxy.id
+  http_method             = aws_api_gateway_method.auth_github_proxy_any.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.broker.invoke_arn
+}
+
+# Permission for API Gateway to invoke the broker Lambda
+resource "aws_lambda_permission" "api_gateway_invoke_broker" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.broker.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${var.rest_api_execution_arn}/*/*"
 }
 
 # --- CloudWatch Log Group ---
@@ -187,15 +223,4 @@ resource "aws_cloudwatch_log_group" "broker" {
     Name    = "${local.function_name}-logs"
     Service = "cloudwatch"
   })
-}
-
-# --- SSM Parameters for discovery ---
-
-resource "aws_ssm_parameter" "broker_function_url" {
-  name        = "/adp/${var.environment}/gateway/github-auth-broker-url"
-  description = "Lambda Function URL for the GitHub auth broker"
-  type        = "String"
-  value       = aws_lambda_function_url.broker.function_url
-
-  tags = var.common_tags
 }

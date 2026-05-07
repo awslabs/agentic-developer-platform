@@ -345,6 +345,84 @@ class TestUsernameFormat:
         assert create_call.kwargs["Username"] == "GitHub_42"
 
 
+class TestAPIGatewayV1EventShape:
+    """Test handler with API Gateway v1 REST event format (Issue #525)."""
+
+    def test_start_route_via_path_field(self, mock_secrets):
+        """API Gateway v1 uses 'path' instead of 'rawPath'."""
+        import handler
+
+        event = {
+            "path": "/api/auth/github/start",
+            "httpMethod": "GET",
+            "requestContext": {
+                "resourcePath": "/auth/github/{proxy+}",
+                "httpMethod": "GET",
+            },
+            "headers": {},
+            "queryStringParameters": None,
+        }
+        response = handler.handler(event, None)
+        assert response["statusCode"] == 302
+        assert "github.com/login/oauth/authorize" in response["headers"]["Location"]
+
+    def test_callback_route_via_path_field(self, mock_secrets):
+        """API Gateway v1 callback with cookies in headers."""
+        import handler
+
+        handler._github_client_secret = "test-secret-123"
+        state = _make_valid_state("test-secret-123")
+
+        event = {
+            "path": "/api/auth/github/callback",
+            "httpMethod": "GET",
+            "requestContext": {
+                "resourcePath": "/auth/github/{proxy+}",
+                "httpMethod": "GET",
+            },
+            "headers": {
+                "Cookie": f"gh_oauth_state={state}",
+            },
+            "queryStringParameters": {"code": "test-code", "state": state},
+        }
+
+        with patch("handler.exchange_code_for_token") as mock_exchange, \
+             patch("handler.get_github_user") as mock_get_user, \
+             patch("handler.provision_and_authenticate") as mock_provision:
+            mock_exchange.return_value = "gh-token"
+            mock_get_user.return_value = {
+                "id": 100,
+                "login": "v1user",
+                "email": "v1@example.com",
+                "name": "V1 User",
+                "avatar_url": "",
+            }
+            mock_provision.return_value = {
+                "id_token": "idt",
+                "access_token": "at",
+                "refresh_token": "rt",
+                "expires_in": 3600,
+            }
+            response = handler.handler(event, None)
+
+        assert response["statusCode"] == 302
+        assert "access_token=at" in response["headers"]["Location"]
+
+    def test_unknown_path_v1_returns_404(self, mock_secrets):
+        """Unknown path returns 404 for v1 event shape."""
+        import handler
+
+        event = {
+            "path": "/api/auth/github/invalid",
+            "httpMethod": "GET",
+            "requestContext": {"resourcePath": "/auth/github/{proxy+}", "httpMethod": "GET"},
+            "headers": {},
+            "queryStringParameters": None,
+        }
+        response = handler.handler(event, None)
+        assert response["statusCode"] == 404
+
+
 class TestCookieParsing:
     """Test cookie parsing from different event formats."""
 
