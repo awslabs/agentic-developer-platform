@@ -133,6 +133,19 @@ class TestIssueCommentEvents:
         assert result is not None
         assert result.persona == "operations"
 
+    def test_mention_architect(self):
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-architect please review this design"},
+            "issue": {"number": 42},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issue_comment", payload)
+        assert result is not None
+        assert result.persona == "architect"
+        assert result.trigger == "mentioned"
+
     def test_no_mention_returns_none(self):
         payload = {
             "action": "created",

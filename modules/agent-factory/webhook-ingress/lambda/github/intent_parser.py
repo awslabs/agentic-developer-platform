@@ -17,6 +17,7 @@ LABEL_TO_PERSONA: dict[str, str] = {
     "pm": "pm",
     "agent-operations": "operations",
     "agent-reviewer": "reviewer",
+    "agent-architect": "architect",
     "malware-analysis-agent": "malware-analysis-agent",
     "superpower": "pt-superpower",
 }
@@ -27,6 +28,7 @@ MENTION_TO_PERSONA: dict[str, str] = {
     "@agent-pm": "pm",
     "@agent-operations": "operations",
     "@agent-reviewer": "reviewer",
+    "@agent-architect": "architect",
     "@agent-malware-analysis-agent": "malware-analysis-agent",
     "@agent-superpower": "pt-superpower",
 }
