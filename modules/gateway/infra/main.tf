@@ -820,21 +820,30 @@ resource "aws_ssm_parameter" "identity_index_table" {
 # Replaces the failed Cognito-native OIDC approach (#518/#519).
 # =============================================================================
 
+# The GitHub OAuth App credentials are provisioned out-of-band in Secrets
+# Manager (see #520). Read the ARN via a data source instead of relying on
+# the cognito submodule, whose own IdP output is gated behind the separate
+# var.enable_github_oauth flag (that path was reverted in #519).
+data "aws_secretsmanager_secret" "github_oauth_for_broker" {
+  count = var.enable_github_auth_broker ? 1 : 0
+  name  = "adp/${var.environment}/cognito/github-oauth-credentials"
+}
+
 module "github_auth_broker" {
-  count  = var.enable_github_oauth ? 1 : 0
+  count  = var.enable_github_auth_broker ? 1 : 0
   source = "./modules/github-auth-broker"
 
-  environment          = var.environment
-  name_prefix          = local.name_prefix
-  common_tags          = local.common_tags
-  aws_region           = var.aws_region
-  cognito_user_pool_id = module.cognito.cognito_user_pool_id
-  cognito_user_pool_arn = module.cognito.cognito_user_pool_arn
-  cognito_client_id    = module.cognito.cognito_user_pool_client_id
-  github_oauth_secret_arn = module.cognito.github_oauth_credentials_secret_arn
-  frontend_url         = "https://${module.cloudfront.distribution_domain_name}"
-  allowlist_mode       = var.github_auth_allowlist_mode
-  allowed_orgs         = var.github_auth_allowed_orgs
+  environment             = var.environment
+  name_prefix             = local.name_prefix
+  common_tags             = local.common_tags
+  aws_region              = var.aws_region
+  cognito_user_pool_id    = module.cognito.cognito_user_pool_id
+  cognito_user_pool_arn   = module.cognito.cognito_user_pool_arn
+  cognito_client_id       = module.cognito.cognito_user_pool_client_id
+  github_oauth_secret_arn = data.aws_secretsmanager_secret.github_oauth_for_broker[0].arn
+  frontend_url            = "https://${module.cloudfront.distribution_domain_name}"
+  allowlist_mode          = var.github_auth_allowlist_mode
+  allowed_orgs            = var.github_auth_allowed_orgs
   github_token_secret_arn = var.github_auth_token_secret_arn
   lambda_artifact_bucket  = "adp-terraform-state-${var.account_id}"
 

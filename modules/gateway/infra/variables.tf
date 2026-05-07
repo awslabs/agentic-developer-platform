@@ -222,6 +222,12 @@ variable "github_oauth_client_secret" {
 # GitHub Auth Broker Configuration (Issue #520)
 # =============================================================================
 
+variable "enable_github_auth_broker" {
+  type        = bool
+  description = "Enable the GitHub auth broker Lambda (replaces the failed Cognito-OIDC attempt). Independent of var.enable_github_oauth."
+  default     = false
+}
+
 variable "github_auth_allowlist_mode" {
   type        = string
   description = "Allowlist mode for GitHub auth broker: open, org, or explicit"

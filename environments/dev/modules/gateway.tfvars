@@ -21,3 +21,9 @@ enable_api_gateway = true
 
 # Issue #60: Provision test users for dev environment
 create_test_users = true
+
+# Issue #520: enable the GitHub auth broker Lambda (replaces the reverted
+# Cognito-OIDC attempt from #518/#519). Reads OAuth App credentials from
+# Secrets Manager at adp/dev/cognito/github-oauth-credentials
+# (pre-provisioned out-of-band).
+enable_github_auth_broker = true
