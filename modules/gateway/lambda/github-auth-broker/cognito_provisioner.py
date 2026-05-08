@@ -121,10 +121,15 @@ def _ensure_user_exists(
     # User doesn't exist — create
     logger.info("Creating Cognito user: %s", username)
     user_attributes = [
-        {"Name": "email", "Value": email},
-        {"Name": "email_verified", "Value": "true"},
         {"Name": "name", "Value": name},
     ]
+    # Only set email + email_verified together. Cognito rejects email_verified=true
+    # without an email. GitHub users who keep their email private AND whose
+    # OAuth App lacks user:email scope land here with email="" — we skip both
+    # attributes and let the user fill them in later via the admin UI.
+    if email:
+        user_attributes.append({"Name": "email", "Value": email})
+        user_attributes.append({"Name": "email_verified", "Value": "true"})
     if github_login:
         user_attributes.append({"Name": "custom:github_username", "Value": github_login})
 
