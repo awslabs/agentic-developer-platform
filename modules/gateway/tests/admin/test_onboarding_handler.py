@@ -120,20 +120,20 @@ async def admin_app_client(db_engine, admin_context):
 
 
 # ---------------------------------------------------------------------------
-# GET /api/access/status
+# GET /access/status
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_access_status_new_user(app_client):
     """New user with no existing rows gets status='new'."""
-    resp = await app_client.get("/api/access/status")
+    resp = await app_client.get("/access/status")
     assert resp.status_code == 200
     assert resp.json()["status"] == "new"
 
 
 # ---------------------------------------------------------------------------
-# POST /api/access/request — proposed_tenant_id validation
+# POST /access/request — proposed_tenant_id validation
 # ---------------------------------------------------------------------------
 
 
@@ -142,7 +142,7 @@ async def test_access_status_new_user(app_client):
 async def test_request_rejects_reserved_name(app_client):
     """Reserved names like 'admin' should be rejected with 422."""
     resp = await app_client.post(
-        "/api/access/request",
+        "/access/request",
         json={
             "proposed_tenant_id": "admin",
             "target_login": "testuser",
@@ -158,7 +158,7 @@ async def test_request_rejects_reserved_name(app_client):
 async def test_request_rejects_short_id(app_client):
     """IDs shorter than 3 chars should be rejected."""
     resp = await app_client.post(
-        "/api/access/request",
+        "/access/request",
         json={
             "proposed_tenant_id": "ab",
             "target_login": "testuser",
@@ -174,7 +174,7 @@ async def test_request_rejects_short_id(app_client):
 async def test_request_rejects_leading_hyphen(app_client):
     """Leading hyphen should be rejected."""
     resp = await app_client.post(
-        "/api/access/request",
+        "/access/request",
         json={
             "proposed_tenant_id": "-bad-name",
             "target_login": "testuser",
@@ -190,7 +190,7 @@ async def test_request_rejects_leading_hyphen(app_client):
 async def test_request_rejects_uppercase(app_client):
     """Uppercase chars should be rejected."""
     resp = await app_client.post(
-        "/api/access/request",
+        "/access/request",
         json={
             "proposed_tenant_id": "BadName",
             "target_login": "testuser",
@@ -202,7 +202,7 @@ async def test_request_rejects_uppercase(app_client):
 
 
 # ---------------------------------------------------------------------------
-# POST /api/access/request — feature flag preflight
+# POST /access/request — feature flag preflight
 # ---------------------------------------------------------------------------
 
 
@@ -211,7 +211,7 @@ async def test_request_rejects_uppercase(app_client):
 async def test_request_503_when_flag_off(app_client):
     """Returns unavailable status when V2 write flag is off."""
     resp = await app_client.post(
-        "/api/access/request",
+        "/access/request",
         json={
             "proposed_tenant_id": "my-tenant",
             "target_login": "testuser",
@@ -225,7 +225,7 @@ async def test_request_503_when_flag_off(app_client):
 
 
 # ---------------------------------------------------------------------------
-# POST /api/access/request — collision detection
+# POST /access/request — collision detection
 # ---------------------------------------------------------------------------
 
 
@@ -247,7 +247,7 @@ async def test_request_collision_on_existing_org(app_client, db_engine):
         await session.commit()
 
     resp = await app_client.post(
-        "/api/access/request",
+        "/access/request",
         json={
             "proposed_tenant_id": "taken-org",
             "target_login": "testuser",
@@ -261,7 +261,7 @@ async def test_request_collision_on_existing_org(app_client, db_engine):
 
 
 # ---------------------------------------------------------------------------
-# POST /api/access/request — pending path + idempotency
+# POST /access/request — pending path + idempotency
 # ---------------------------------------------------------------------------
 
 
@@ -270,7 +270,7 @@ async def test_request_collision_on_existing_org(app_client, db_engine):
 async def test_request_pending_path(app_client):
     """Non-auto-approve user gets pending status."""
     resp = await app_client.post(
-        "/api/access/request",
+        "/access/request",
         json={
             "proposed_tenant_id": "new-tenant",
             "target_login": "unknown-user",
@@ -294,7 +294,7 @@ async def test_request_duplicate_is_idempotent(app_client):
         "provider": "github",
         "provider_user_id": "88888",
     }
-    resp1 = await app_client.post("/api/access/request", json=payload)
+    resp1 = await app_client.post("/access/request", json=payload)
     assert resp1.json()["status"] == "pending"
     request_id = resp1.json()["request_id"]
 
@@ -305,13 +305,13 @@ async def test_request_duplicate_is_idempotent(app_client):
         "provider": "github",
         "provider_user_id": "88888",
     }
-    resp2 = await app_client.post("/api/access/request", json=payload2)
+    resp2 = await app_client.post("/access/request", json=payload2)
     assert resp2.json()["status"] == "pending"
     assert resp2.json()["request_id"] == request_id
 
 
 # ---------------------------------------------------------------------------
-# POST /api/access/request — auto-approve path
+# POST /access/request — auto-approve path
 # ---------------------------------------------------------------------------
 
 
@@ -333,7 +333,7 @@ async def test_request_auto_approve(app_client):
         return_value=mock_writer,
     ):
         resp = await app_client.post(
-            "/api/access/request",
+            "/access/request",
             json={
                 "proposed_tenant_id": "auto-tenant",
                 "target_login": "auto-user",

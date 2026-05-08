@@ -61,7 +61,7 @@ def _v2_write_enabled() -> bool:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/access/status", response_model=AccessStatusResponse)
+@router.get("/access/status", response_model=AccessStatusResponse)
 async def get_access_status(
     current_user: TokenContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -89,7 +89,7 @@ async def get_access_status(
     return AccessStatusResponse(status="new")
 
 
-@router.post("/api/access/request", response_model=AccessRequestResponse)
+@router.post("/access/request", response_model=AccessRequestResponse)
 async def submit_access_request(
     payload: AccessRequestPayload,
     current_user: TokenContext = Depends(get_current_user),
