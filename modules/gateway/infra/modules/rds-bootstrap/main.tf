@@ -121,8 +121,9 @@ resource "kubernetes_job" "grant_rds_iam" {
       }
 
       spec {
-        service_account_name = kubernetes_service_account.rds_bootstrap.metadata[0].name
-        restart_policy       = "OnFailure"
+        service_account_name    = kubernetes_service_account.rds_bootstrap.metadata[0].name
+        restart_policy          = "OnFailure"
+        active_deadline_seconds = 300
 
         container {
           name  = "bootstrap"
@@ -190,7 +191,7 @@ resource "kubernetes_job" "grant_rds_iam" {
   wait_for_completion = true
 
   timeouts {
-    create = "10m"
+    create = "6m"
   }
 
   depends_on = [

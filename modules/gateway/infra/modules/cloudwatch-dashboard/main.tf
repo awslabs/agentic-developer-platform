@@ -113,10 +113,11 @@ resource "aws_cloudwatch_dashboard" "latency" {
 
       # =====================================================================
       # ALB Section
-      # ALB metrics always reference alb_arn_suffix. When empty, widgets
-      # simply show "No data available" in the dashboard — no Terraform error.
+      # ALB metrics require a non-empty alb_arn_suffix. When the ALB has not
+      # yet been created (suffix is empty), we omit these widgets entirely to
+      # avoid CloudWatch API validation errors on empty dimension values.
       # =====================================================================
-      [
+      var.alb_arn_suffix != "" ? [
         {
           type   = "text"
           x      = 0
@@ -186,7 +187,7 @@ resource "aws_cloudwatch_dashboard" "latency" {
             yAxis   = { left = { label = "count", showUnits = false } }
           }
         },
-      ],
+      ] : [],
 
       # =====================================================================
       # Gateway Pod Section (Logs Insights)
