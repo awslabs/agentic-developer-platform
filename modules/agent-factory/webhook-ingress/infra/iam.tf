@@ -85,6 +85,14 @@ resource "aws_iam_policy" "lambda_dynamodb" {
           "dynamodb:Query"
         ]
         Resource = var.identity_index_table_arn != "" ? [var.identity_index_table_arn] : ["arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/adp-${var.environment}-identity-index"]
+      },
+      {
+        Sid    = "UserIdentityIndexRead"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem"
+        ]
+        Resource = "arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/adp-${var.environment}-user-identity-index"
       }
     ]
   })

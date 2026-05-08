@@ -148,7 +148,7 @@ class TestChannelTenantMapModel:
 
 class TestEnums:
     def test_identity_provider_values(self):
-        assert set(IdentityProvider) == {"slack", "github", "whatsapp", "discord"}
+        assert set(IdentityProvider) == {"cognito", "slack", "github", "teams", "discord", "email", "whatsapp"}
 
     def test_verification_method_values(self):
         assert set(VerificationMethod) == {"oauth", "magic_link", "admin_manual"}

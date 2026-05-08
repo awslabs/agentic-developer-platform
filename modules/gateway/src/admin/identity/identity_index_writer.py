@@ -2,13 +2,18 @@
 
 Issue #387: Wraps the existing IdentityIndexClient with audit logging.
 Issue #401: Extended with channel_user write-through for user identities.
+Issue #537: Sequential dual-write to old table + new user-identity-index table,
+            gated by USER_IDENTITY_INDEX_V2_WRITE feature flag.
 
 Called post-commit — failures are logged but don't roll back Postgres.
 """
 
 import logging
+import os
 
 from src.admin.identity_index import IdentityIndexClient
+
+from .user_identity_index import UserIdentityIndexClient
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +25,21 @@ logger = logging.getLogger(__name__)
 GITHUB_USER_TYPE = "github_user"
 
 
+def _v2_write_enabled() -> bool:
+    """Check if dual-write to user-identity-index is enabled."""
+    return os.environ.get("USER_IDENTITY_INDEX_V2_WRITE", "false").lower() == "true"
+
+
 class IdentityIndexWriter:
     """Write-through to DDB identity-index with audit logging."""
 
-    def __init__(self, client: IdentityIndexClient | None = None):
+    def __init__(
+        self,
+        client: IdentityIndexClient | None = None,
+        user_identity_client: UserIdentityIndexClient | None = None,
+    ):
         self._client = client or IdentityIndexClient()
+        self._user_identity_client = user_identity_client or UserIdentityIndexClient()
 
     async def sync_org_channels(
         self,
@@ -64,7 +79,7 @@ class IdentityIndexWriter:
         )
 
     # ------------------------------------------------------------------
-    # channel_user write-through (Issue #401)
+    # channel_user write-through (Issue #401, extended by #537)
     # ------------------------------------------------------------------
 
     async def put_user_identity(
@@ -72,22 +87,33 @@ class IdentityIndexWriter:
         provider_user_id: str,
         user_id: str,
         org_id: str,
+        provider: str = "github",
         provider_username: str | None = None,
     ) -> bool:
         """Write a channel_user entry to DDB for a single identity.
 
+        Sequential dual-write (Issue #537):
+          1. Write to OLD table (identity_type=github_user) — backward compat.
+             Failure of this write is propagated to the caller.
+          2. If OLD write succeeded AND USER_IDENTITY_INDEX_V2_WRITE=true,
+             write to NEW table (PK=provider, SK=provider_user_id).
+             Failure of the NEW write is logged but NOT propagated.
+
         Uses upsert semantics (PutItem overwrites) so re-creating the same
         user does not cause DDB write errors.
 
-        Returns True if write succeeded, False if all retries exhausted.
+        Returns True if the OLD-table write succeeded, False if exhausted retries.
         """
         logger.info(
-            "identity-index put channel_user: provider_user_id=%s user_id=%s org_id=%s",
+            "identity-index put channel_user: provider=%s provider_user_id=%s user_id=%s org_id=%s",
+            provider,
             provider_user_id,
             user_id,
             org_id,
         )
-        return await self._client.put_identity(
+
+        # Step 1: Write to OLD table (backward compat — uses github_user identity_type)
+        old_success = await self._client.put_identity(
             identity_type=GITHUB_USER_TYPE,
             identity_value=provider_user_id,
             org_id=org_id,
@@ -97,19 +123,76 @@ class IdentityIndexWriter:
             },
         )
 
-    async def delete_user_identity(self, provider_user_id: str) -> bool:
+        if not old_success:
+            return False
+
+        # Step 2: Write to NEW table (feature-flag gated)
+        if _v2_write_enabled():
+            try:
+                new_success = await self._user_identity_client.put_user_identity(
+                    provider=provider,
+                    provider_user_id=provider_user_id,
+                    user_id=user_id,
+                    org_id=org_id,
+                    provider_username=provider_username,
+                )
+                if not new_success:
+                    logger.warning(
+                        "user-identity-index v2 write failed (non-fatal): provider=%s provider_user_id=%s",
+                        provider,
+                        provider_user_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "user-identity-index v2 write exception (non-fatal): provider=%s provider_user_id=%s",
+                    provider,
+                    provider_user_id,
+                )
+
+        return True
+
+    async def delete_user_identity(self, provider_user_id: str, provider: str = "github") -> bool:
         """Delete a single channel_user entry from DDB.
 
-        Returns True if delete succeeded, False if all retries exhausted.
+        Sequential dual-delete: OLD table first, then NEW table (flag-gated).
+        Returns True if OLD-table delete succeeded, False if all retries exhausted.
         """
         logger.info(
-            "identity-index delete channel_user: provider_user_id=%s",
+            "identity-index delete channel_user: provider=%s provider_user_id=%s",
+            provider,
             provider_user_id,
         )
-        return await self._client.delete_identity(
+
+        # Step 1: Delete from OLD table
+        old_success = await self._client.delete_identity(
             identity_type=GITHUB_USER_TYPE,
             identity_value=provider_user_id,
         )
+
+        if not old_success:
+            return False
+
+        # Step 2: Delete from NEW table (feature-flag gated)
+        if _v2_write_enabled():
+            try:
+                new_success = await self._user_identity_client.delete_user_identity(
+                    provider=provider,
+                    provider_user_id=provider_user_id,
+                )
+                if not new_success:
+                    logger.warning(
+                        "user-identity-index v2 delete failed (non-fatal): provider=%s provider_user_id=%s",
+                        provider,
+                        provider_user_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "user-identity-index v2 delete exception (non-fatal): provider=%s provider_user_id=%s",
+                    provider,
+                    provider_user_id,
+                )
+
+        return True
 
     async def sync_user_identities(
         self,
@@ -119,7 +202,7 @@ class IdentityIndexWriter:
     ) -> None:
         """Write channel_user entries for all identities of a user.
 
-        Each identity dict must have: provider_user_id, and optionally provider_username.
+        Each identity dict must have: provider_user_id, and optionally provider_username, provider.
         Best-effort — failures are logged but don't propagate.
         """
         import asyncio
@@ -132,6 +215,7 @@ class IdentityIndexWriter:
                 provider_user_id=ident["provider_user_id"],
                 user_id=user_id,
                 org_id=org_id,
+                provider=ident.get("provider", "github"),
                 provider_username=ident.get("provider_username"),
             )
             for ident in identities

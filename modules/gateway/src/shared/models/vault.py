@@ -7,7 +7,9 @@ from datetime import datetime
 from enum import StrEnum
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Index, String
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
+
+from src.shared.identity.providers import SUPPORTED_PROVIDERS, IdentityProvider
 
 from .base import Base, TenantMixin, new_uuid, utcnow
 
@@ -15,12 +17,9 @@ from .base import Base, TenantMixin, new_uuid, utcnow
 # Enums (stored as varchar in DB for portability with SQLite tests)
 # ---------------------------------------------------------------------------
 
-
-class IdentityProvider(StrEnum):
-    slack = "slack"
-    github = "github"
-    whatsapp = "whatsapp"
-    discord = "discord"
+# IdentityProvider is now imported from src.shared.identity.providers
+# and re-exported here for backward compatibility.
+__all__ = ["IdentityProvider"]
 
 
 class VerificationMethod(StrEnum):
@@ -79,6 +78,13 @@ class UserIdentity(Base, TenantMixin):
     # Relationship (optional, for ORM navigation).
     # passive_deletes=True tells SQLAlchemy to let the DB handle CASCADE.
     user = relationship("User", backref="identities", lazy="selectin", passive_deletes=True)
+
+    @validates("provider")
+    def validate_provider(self, _key: str, value: str) -> str:
+        """Reject unsupported provider values at write time (Issue #537)."""
+        if value not in SUPPORTED_PROVIDERS:
+            raise ValueError(f"Unsupported provider: {value!r}. Must be one of: {sorted(SUPPORTED_PROVIDERS)}")
+        return value
 
 
 class UserCredential(Base, TenantMixin):

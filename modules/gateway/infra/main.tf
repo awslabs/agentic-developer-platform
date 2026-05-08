@@ -813,6 +813,12 @@ resource "aws_ssm_parameter" "identity_index_table" {
   tags = local.common_tags
 }
 
+# Issue #537: The existing identity-index table is retained as the
+# channel-tenant cache (github_installation_id, cognito_client_id rows).
+# Once github_user rows are removed post-migration, a future cleanup PR
+# may rename this resource to aws_dynamodb_table.channel_tenant_cache
+# using a `moved` block. The AWS table name stays unchanged.
+
 # =============================================================================
 # GitHub Auth Broker Lambda (Issue #520)
 # =============================================================================
