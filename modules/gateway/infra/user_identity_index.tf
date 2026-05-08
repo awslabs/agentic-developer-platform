@@ -47,12 +47,13 @@ resource "aws_ssm_parameter" "user_identity_index_table" {
   tags = local.common_tags
 }
 
-# IAM: Grant gateway IRSA role PutItem/GetItem/DeleteItem on new table
-# (The actual IRSA policy attachment depends on the gateway role resource name;
-# this adds a standalone policy that can be attached.)
-resource "aws_iam_policy" "gateway_user_identity_index" {
-  name        = "adp-${var.environment}-gateway-user-identity-index"
-  description = "Allow gateway to write/read user-identity-index table (Issue #537)"
+# IAM: Grant gateway IRSA role PutItem/GetItem/DeleteItem on new table.
+# Matches the `aws_iam_role_policy.gateway_identity_index` pattern in main.tf
+# (inline role policy, not a standalone aws_iam_policy + attachment) so the
+# permissions actually land on the role.
+resource "aws_iam_role_policy" "gateway_user_identity_index" {
+  name = "${local.name_prefix}-policy-gateway-user-identity-index"
+  role = local.gateway_service_irsa_role_name
 
   policy = jsonencode({
     Version = "2012-10-17"

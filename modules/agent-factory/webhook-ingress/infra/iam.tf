@@ -126,3 +126,35 @@ resource "aws_iam_role_policy_attachment" "lambda_secrets" {
   role       = aws_iam_role.lambda_execution.name
   policy_arn = aws_iam_policy.lambda_secrets.arn
 }
+
+# CloudWatch PutMetricData — required by identity_resolver.py to emit
+# IdentityResolver.CrossTenantMismatch on installation/user tenant disagreement
+# (issue #537 follow-up; flagged by reviewer on PR #539).
+#
+# Narrow-scoped by namespace via the cloudwatch:namespace condition key so
+# the Lambda can only publish under its own namespace, not overwrite others.
+resource "aws_iam_policy" "lambda_cloudwatch_metrics" {
+  name        = "${local.name_prefix}-webhook-lambda-cloudwatch-metrics"
+  description = "Allow webhook Lambda to emit custom CloudWatch metrics under ADP/IdentityResolver"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "cloudwatch:PutMetricData"
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "ADP/IdentityResolver"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_cloudwatch_metrics" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = aws_iam_policy.lambda_cloudwatch_metrics.arn
+}
