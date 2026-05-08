@@ -114,10 +114,14 @@ resource "aws_cloudwatch_dashboard" "latency" {
       # =====================================================================
       # ALB Section
       # ALB metrics require a non-empty alb_arn_suffix. When the ALB has not
-      # yet been created (suffix is empty), we omit these widgets entirely to
-      # avoid CloudWatch API validation errors on empty dimension values.
+      # yet been created (suffix is empty), we omit these widgets entirely
+      # (via a for-filter) to avoid CloudWatch API validation errors on empty
+      # dimension values AND to keep Terraform's type-unification happy
+      # (the `? [widgets] : []` form fails "inconsistent conditional result
+      # types" because HCL can't unify the tuple of widget objects with [] —
+      # the for/if below produces a uniformly-typed list in both cases).
       # =====================================================================
-      var.alb_arn_suffix != "" ? [
+      [for w in [
         {
           type   = "text"
           x      = 0
@@ -187,7 +191,7 @@ resource "aws_cloudwatch_dashboard" "latency" {
             yAxis   = { left = { label = "count", showUnits = false } }
           }
         },
-      ] : [],
+      ] : w if var.alb_arn_suffix != ""],
 
       # =====================================================================
       # Gateway Pod Section (Logs Insights)
