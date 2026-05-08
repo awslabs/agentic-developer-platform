@@ -96,19 +96,19 @@ def _slugify_tenant_id(login: str) -> str:
     return s
 
 
-def _extract_github_identity(claims: dict) -> tuple[str, str]:
-    """Return (github_login, github_numeric_id) from the JWT claims.
+def _extract_from_claims(claims: dict) -> tuple[str, str]:
+    """Best-effort (github_login, github_numeric_id) from JWT claims alone.
 
-    Raises HTTPException(400) if the JWT isn't a GitHub-federated session.
+    Returns empty strings for anything missing — caller decides whether to
+    fall back to an AdminGetUser lookup.
     """
-    github_login = claims.get("custom:github_username", "")
-    # cognito:username for GitHub-federated users is "github_<numeric_id>"
-    # (set by the broker's AdminCreateUser call with that username)
+    github_login = claims.get("custom:github_username") or ""
     cognito_username = claims.get("cognito:username") or claims.get("username") or ""
     github_id = ""
     if cognito_username.startswith("github_"):
         github_id = cognito_username[len("github_") :]
-    # Fallback: try the `identities` claim (Cognito-native federation shape)
+    # Cognito-native federation fallback (not used by our broker flow today,
+    # kept for forward compat if we ever re-add native GitHub IdP)
     if not github_id and claims.get("identities"):
         try:
             ids = claims["identities"]
@@ -120,6 +120,62 @@ def _extract_github_identity(claims: dict) -> tuple[str, str]:
                     break
         except (ValueError, json.JSONDecodeError):
             pass
+    return github_login, github_id
+
+
+def _fetch_github_identity_from_cognito(cognito_sub: str) -> tuple[str, str]:
+    """Look up the Cognito user by sub and extract GitHub identity from attrs.
+
+    Needed because Cognito access tokens don't include `custom:*` claims by
+    default (unless the pre-token-gen Lambda injects them). ID tokens do, but
+    the SPA sends the access token as Bearer. Rather than couple onboarding
+    to the pre-token-gen flow, we just do one admin API call here.
+
+    Username convention (set by the broker on AdminCreateUser):
+      github_<numeric_github_id>  →  we parse the id back out of the username
+    """
+    user_pool_id = os.environ.get("COGNITO_USER_POOL_ID", "")
+    if not user_pool_id:
+        return "", ""
+    try:
+        import boto3
+
+        client = boto3.client("cognito-idp")
+        # sub is a UUID; we need to list by sub attribute since AdminGetUser
+        # takes Username (not sub). Cognito supports a Filter for this.
+        resp = client.list_users(
+            UserPoolId=user_pool_id,
+            Filter=f'sub = "{cognito_sub}"',
+            Limit=1,
+        )
+        users = resp.get("Users", [])
+        if not users:
+            return "", ""
+        user = users[0]
+        username = user.get("Username", "")
+        attrs = {a["Name"]: a["Value"] for a in user.get("Attributes", [])}
+        github_login = attrs.get("custom:github_username") or attrs.get("name") or ""
+        github_id = username[len("github_") :] if username.startswith("github_") else ""
+        return github_login, github_id
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Cognito AdminGetUser fallback failed for sub=%s: %s", cognito_sub, exc)
+        return "", ""
+
+
+def _extract_github_identity(claims: dict, cognito_sub: str) -> tuple[str, str]:
+    """Return (github_login, github_numeric_id) — claims first, Cognito lookup as fallback.
+
+    Raises HTTPException(400) only when neither source yields both values.
+    """
+    github_login, github_id = _extract_from_claims(claims)
+    if github_login and github_id:
+        return github_login, github_id
+
+    # Fallback: look the user up in Cognito directly (sub is always in JWT)
+    fallback_login, fallback_id = _fetch_github_identity_from_cognito(cognito_sub)
+    github_login = github_login or fallback_login
+    github_id = github_id or fallback_id
+
     if not github_login or not github_id:
         raise HTTPException(
             status_code=400,
@@ -235,9 +291,9 @@ async def submit_access_request(
             eta_hours=24,
         )
 
-    # Derive GitHub identity from the JWT claims (user already signed in)
+    # Derive GitHub identity — JWT claims first, Cognito AdminGetUser fallback
     claims = _decode_jwt_claims(request_in.headers.get("authorization"))
-    github_login, github_id = _extract_github_identity(claims)
+    github_login, github_id = _extract_github_identity(claims, cognito_sub)
 
     # Derive tenant ID from the GitHub login; reject on collision so an
     # admin can decide whether this user belongs in the existing tenant
