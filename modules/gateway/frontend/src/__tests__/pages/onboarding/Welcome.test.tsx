@@ -53,95 +53,34 @@ describe('Welcome Page', () => {
 
   it('renders the welcome form with user info', () => {
     renderWelcome();
-
     expect(screen.getByText('Welcome to ADP')).toBeInTheDocument();
     expect(screen.getByText('testuser')).toBeInTheDocument();
     expect(screen.getByText('test@example.com')).toBeInTheDocument();
   });
 
-  it('pre-populates tenant ID from GitHub login', () => {
+  it('does NOT ask for a workspace/tenant ID — server derives it from the JWT', () => {
     renderWelcome();
-
-    const input = screen.getByLabelText('Workspace ID') as HTMLInputElement;
-    expect(input.value).toBe('testuser');
-  });
-
-  it('rejects empty tenant ID', async () => {
-    const user = userEvent.setup();
-    renderWelcome();
-
-    const input = screen.getByLabelText('Workspace ID');
-    await user.clear(input);
-
-    const button = screen.getByRole('button', { name: /request access/i });
-    await user.click(button);
-
-    expect(screen.getByText('Tenant ID is required')).toBeInTheDocument();
-    expect(mockSubmit).not.toHaveBeenCalled();
-  });
-
-  it('rejects tenant ID that is too short', async () => {
-    const user = userEvent.setup();
-    renderWelcome();
-
-    const input = screen.getByLabelText('Workspace ID');
-    await user.clear(input);
-    await user.type(input, 'ab');
-
-    const button = screen.getByRole('button', { name: /request access/i });
-    await user.click(button);
-
-    expect(screen.getByText('Tenant ID must be at least 3 characters')).toBeInTheDocument();
-  });
-
-  it('rejects tenant ID with invalid characters', async () => {
-    const user = userEvent.setup();
-    renderWelcome();
-
-    const input = screen.getByLabelText('Workspace ID');
-    await user.clear(input);
-    await user.type(input, '-invalid-start');
-
-    const button = screen.getByRole('button', { name: /request access/i });
-    await user.click(button);
-
-    expect(screen.getByText(/Must start and end with a letter or number/)).toBeInTheDocument();
-  });
-
-  it('rejects reserved names', async () => {
-    const user = userEvent.setup();
-    renderWelcome();
-
-    const input = screen.getByLabelText('Workspace ID');
-    await user.clear(input);
-    await user.type(input, 'admin');
-
-    const button = screen.getByRole('button', { name: /request access/i });
-    await user.click(button);
-
-    expect(screen.getByText('This name is reserved. Please choose another.')).toBeInTheDocument();
+    // Form must have NO input labelled workspace/tenant ID
+    expect(screen.queryByLabelText(/workspace|tenant/i)).toBeNull();
   });
 
   it('requires motivation field', async () => {
     const user = userEvent.setup();
     renderWelcome();
-
-    // Tenant ID is pre-filled, so just submit without motivation
     const button = screen.getByRole('button', { name: /request access/i });
     await user.click(button);
-
     expect(screen.getByText('Please provide a reason for requesting access.')).toBeInTheDocument();
+    expect(mockSubmit).not.toHaveBeenCalled();
   });
 
-  it('submits correct payload and navigates on 200 (approved)', async () => {
+  it('submits only motivation (no tenant_id, provider, provider_user_id)', async () => {
     const user = userEvent.setup();
     mockSubmit.mockResolvedValue({
       status: 200,
-      json: async () => ({ redirect: '/dashboard' }),
+      json: async () => ({ status: 'pending', request_id: 'req-999' }),
     });
 
     renderWelcome();
-
     const textarea = screen.getByLabelText('Why do you need access?');
     await user.type(textarea, 'I need access for development');
 
@@ -150,30 +89,37 @@ describe('Welcome Page', () => {
 
     await waitFor(() => {
       expect(mockSubmit).toHaveBeenCalledWith({
-        proposed_tenant_id: 'testuser',
         motivation: 'I need access for development',
       });
     });
+  });
+
+  it('navigates to /dashboard on auto-approved response', async () => {
+    const user = userEvent.setup();
+    mockSubmit.mockResolvedValue({
+      status: 200,
+      json: async () => ({ status: 'approved', redirect: '/dashboard' }),
+    });
+
+    renderWelcome();
+    await user.type(screen.getByLabelText('Why do you need access?'), 'test');
+    await user.click(screen.getByRole('button', { name: /request access/i }));
 
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/dashboard', { replace: true });
     });
   });
 
-  it('navigates to pending on 202', async () => {
+  it('navigates to /onboarding/pending on pending response', async () => {
     const user = userEvent.setup();
     mockSubmit.mockResolvedValue({
-      status: 202,
-      json: async () => ({ request_id: 'req-123' }),
+      status: 200,
+      json: async () => ({ status: 'pending', request_id: 'req-123' }),
     });
 
     renderWelcome();
-
-    const textarea = screen.getByLabelText('Why do you need access?');
-    await user.type(textarea, 'Development work');
-
-    const button = screen.getByRole('button', { name: /request access/i });
-    await user.click(button);
+    await user.type(screen.getByLabelText('Why do you need access?'), 'Development work');
+    await user.click(screen.getByRole('button', { name: /request access/i }));
 
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/onboarding/pending', {
@@ -183,60 +129,36 @@ describe('Welcome Page', () => {
     });
   });
 
-  it('shows inline error on 400 (invalid_tenant_id)', async () => {
+  it('shows a collision message (non-blocking) on collision response', async () => {
     const user = userEvent.setup();
     mockSubmit.mockResolvedValue({
-      status: 400,
-      json: async () => ({ hint: 'Tenant ID must not start with a number' }),
+      status: 200,
+      json: async () => ({
+        status: 'collision',
+        reason: "A workspace named 'testuser' already exists.",
+      }),
     });
 
     renderWelcome();
-
-    const textarea = screen.getByLabelText('Why do you need access?');
-    await user.type(textarea, 'Need access');
-
-    const button = screen.getByRole('button', { name: /request access/i });
-    await user.click(button);
+    await user.type(screen.getByLabelText('Why do you need access?'), 'test');
+    await user.click(screen.getByRole('button', { name: /request access/i }));
 
     await waitFor(() => {
-      expect(screen.getByText('Tenant ID must not start with a number')).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveTextContent(/already exists/);
     });
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  it('shows collision error on 409', async () => {
+  it('shows unavailable page on unavailable response', async () => {
     const user = userEvent.setup();
     mockSubmit.mockResolvedValue({
-      status: 409,
-      json: async () => ({}),
+      status: 200,
+      json: async () => ({ status: 'unavailable' }),
     });
 
     renderWelcome();
-
-    const textarea = screen.getByLabelText('Why do you need access?');
-    await user.type(textarea, 'Need access');
-
-    const button = screen.getByRole('button', { name: /request access/i });
-    await user.click(button);
-
-    await waitFor(() => {
-      expect(screen.getByText('This tenant name is already taken. Pick another.')).toBeInTheDocument();
-    });
-  });
-
-  it('shows unavailable message on 503', async () => {
-    const user = userEvent.setup();
-    mockSubmit.mockResolvedValue({
-      status: 503,
-      json: async () => ({}),
-    });
-
-    renderWelcome();
-
-    const textarea = screen.getByLabelText('Why do you need access?');
-    await user.type(textarea, 'Need access');
-
-    const button = screen.getByRole('button', { name: /request access/i });
-    await user.click(button);
+    await user.type(screen.getByLabelText('Why do you need access?'), 'test');
+    await user.click(screen.getByRole('button', { name: /request access/i }));
 
     await waitFor(() => {
       expect(screen.getByText('Onboarding Not Available')).toBeInTheDocument();
@@ -246,10 +168,8 @@ describe('Welcome Page', () => {
 
   it('does not render script tags from user-supplied fields (XSS safety)', () => {
     renderWelcome();
-
     // React default escaping ensures script tags are rendered as text, not executed
     // The user info is rendered via React JSX (no dangerouslySetInnerHTML)
-    const elements = document.querySelectorAll('script');
-    expect(elements).toHaveLength(0);
+    expect(document.querySelectorAll('script')).toHaveLength(0);
   });
 });

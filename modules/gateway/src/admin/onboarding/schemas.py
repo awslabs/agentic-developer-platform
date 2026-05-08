@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 # Regex: lowercase alphanumeric + hyphens, 3-64 chars, no leading/trailing hyphen
 TENANT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
@@ -20,20 +20,15 @@ class AccessStatusResponse(BaseModel):
 
 
 class AccessRequestPayload(BaseModel):
-    proposed_tenant_id: str
-    target_login: str
-    provider: str
-    provider_user_id: str
-    motivation: str | None = None
+    """Onboarding request payload — the only field a user supplies is motivation.
 
-    @field_validator("proposed_tenant_id")
-    @classmethod
-    def validate_tenant_id(cls, v: str) -> str:
-        if v in RESERVED_TENANT_IDS:
-            raise ValueError(f"'{v}' is a reserved name and cannot be used as a tenant ID")
-        if not TENANT_ID_PATTERN.match(v):
-            raise ValueError("Tenant ID must be 3-64 characters, lowercase alphanumeric + hyphens, no leading/trailing hyphen")
-        return v
+    Tenant ID, provider, and provider_user_id are all derived server-side from
+    the authenticated JWT (GitHub login + numeric ID). Previously these were
+    required inputs which forced the Welcome form to show a confusing
+    "Workspace ID" field.
+    """
+
+    motivation: str | None = None
 
 
 class AccessRequestResponse(BaseModel):

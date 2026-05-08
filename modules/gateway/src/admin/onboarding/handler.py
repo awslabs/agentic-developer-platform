@@ -5,11 +5,13 @@ Issue #538: Self-serve onboarding flow routes.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
+import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +23,8 @@ from src.shared.schemas.auth import TokenContext
 
 from .approval import approve_request, deny_request
 from .schemas import (
+    RESERVED_TENANT_IDS,
+    TENANT_ID_PATTERN,
     AccessRequestPayload,
     AccessRequestResponse,
     AccessStatusResponse,
@@ -54,6 +58,109 @@ def _is_auto_approve(target_login: str) -> bool:
 
 def _v2_write_enabled() -> bool:
     return os.environ.get("USER_IDENTITY_INDEX_V2_WRITE", "false").lower() == "true"
+
+
+def _decode_jwt_claims(authorization: str | None) -> dict:
+    """Decode (without validation) the claims of the Authorization Bearer JWT.
+
+    The token has already been validated upstream by get_current_user; we just
+    need the raw claims for fields TokenContext doesn't carry
+    (custom:github_username, cognito:username, etc).
+    """
+    if not authorization:
+        return {}
+    if authorization.lower().startswith("bearer "):
+        token = authorization[7:]
+    else:
+        token = authorization
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return {}
+        padded = parts[1] + "=" * (-len(parts[1]) % 4)
+        return json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+
+
+def _slugify_tenant_id(login: str) -> str:
+    """Slugify a GitHub login into a safe tenant ID.
+
+    lowercase, alphanumeric + hyphens, no leading/trailing hyphen, trim to 64.
+    """
+    s = login.lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = s.strip("-")
+    if len(s) > 64:
+        s = s[:64].rstrip("-")
+    return s
+
+
+def _extract_github_identity(claims: dict) -> tuple[str, str]:
+    """Return (github_login, github_numeric_id) from the JWT claims.
+
+    Raises HTTPException(400) if the JWT isn't a GitHub-federated session.
+    """
+    github_login = claims.get("custom:github_username", "")
+    # cognito:username for GitHub-federated users is "github_<numeric_id>"
+    # (set by the broker's AdminCreateUser call with that username)
+    cognito_username = claims.get("cognito:username") or claims.get("username") or ""
+    github_id = ""
+    if cognito_username.startswith("github_"):
+        github_id = cognito_username[len("github_") :]
+    # Fallback: try the `identities` claim (Cognito-native federation shape)
+    if not github_id and claims.get("identities"):
+        try:
+            ids = claims["identities"]
+            if isinstance(ids, str):
+                ids = json.loads(ids)
+            for ident in ids or []:
+                if ident.get("providerName", "").lower() in {"github", "loginwithgithub"}:
+                    github_id = str(ident.get("userId") or "")
+                    break
+        except (ValueError, json.JSONDecodeError):
+            pass
+    if not github_login or not github_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason": "not_a_github_session",
+                "hint": "Onboarding currently requires signing in via GitHub.",
+            },
+        )
+    return github_login, github_id
+
+
+async def _pick_tenant_id(db: AsyncSession, base_slug: str, cognito_sub: str) -> str | None:
+    """Pick a tenant ID derived from the GitHub login slug.
+
+    - Validates the slug against TENANT_ID_PATTERN + RESERVED_TENANT_IDS.
+    - If the slug is already taken in organizations or by a *different* user's
+      pending request, return None — the caller returns a collision response
+      asking an admin to resolve (we do NOT auto-append suffixes; admins should
+      decide whether this is a legitimate same-org sign-up or a different
+      user wanting their own tenant).
+    - If the caller already has a pending request, the caller reuses it
+      (idempotency) — this function is only reached when there's no prior
+      request, so the only reason to return None is a genuine collision.
+    """
+    if base_slug in RESERVED_TENANT_IDS or not TENANT_ID_PATTERN.match(base_slug):
+        # Very unlikely for real GitHub logins, but defend against weird inputs
+        return None
+    # Collision check 1: organizations
+    existing_org = await db.get(Organization, base_slug)
+    if existing_org is not None:
+        return None
+    # Collision check 2: someone else's pending request for the same tenant
+    stmt = select(TenantAccessRequest).where(
+        TenantAccessRequest.proposed_tenant_id == base_slug,
+        TenantAccessRequest.status == "pending",
+    )
+    result = await db.execute(stmt)
+    other = result.scalar_one_or_none()
+    if other is not None and other.cognito_sub != cognito_sub:
+        return None
+    return base_slug
 
 
 # ---------------------------------------------------------------------------
@@ -91,11 +198,20 @@ async def get_access_status(
 
 @router.post("/access/request", response_model=AccessRequestResponse)
 async def submit_access_request(
+    request_in: Request,
     payload: AccessRequestPayload,
     current_user: TokenContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> AccessRequestResponse:
-    """Submit an onboarding access request."""
+    """Submit an onboarding access request.
+
+    The only field the user supplies is `motivation`. Tenant ID, provider,
+    and provider_user_id are derived from the authenticated JWT — the user
+    already proved who they are via GitHub + Cognito, so re-asking them
+    is pure friction. Slug defaults to the GitHub login; collisions return
+    a collision response so an admin can route the user into an existing
+    tenant (invite flow) rather than silently suffixing.
+    """
     # Preflight: check feature flag
     if not _v2_write_enabled():
         return AccessRequestResponse(
@@ -104,30 +220,8 @@ async def submit_access_request(
         )
 
     cognito_sub = current_user.user_id
-    proposed_id = payload.proposed_tenant_id
 
-    # Collision check 1: organizations table
-    existing_org = await db.get(Organization, proposed_id)
-    if existing_org is not None:
-        return AccessRequestResponse(
-            status="collision",
-            reason="proposed_tenant_id already exists",
-        )
-
-    # Collision check 2: pending requests for same tenant_id by someone else
-    stmt = select(TenantAccessRequest).where(
-        TenantAccessRequest.proposed_tenant_id == proposed_id,
-        TenantAccessRequest.status == "pending",
-    )
-    result = await db.execute(stmt)
-    existing_request = result.scalar_one_or_none()
-    if existing_request is not None and existing_request.cognito_sub != cognito_sub:
-        return AccessRequestResponse(
-            status="collision",
-            reason="proposed_tenant_id already requested by another user",
-        )
-
-    # Idempotency: check if this user already has a pending request
+    # Idempotency first — if this user already has a pending request, reuse it.
     stmt = select(TenantAccessRequest).where(
         TenantAccessRequest.cognito_sub == cognito_sub,
         TenantAccessRequest.status == "pending",
@@ -141,25 +235,45 @@ async def submit_access_request(
             eta_hours=24,
         )
 
+    # Derive GitHub identity from the JWT claims (user already signed in)
+    claims = _decode_jwt_claims(request_in.headers.get("authorization"))
+    github_login, github_id = _extract_github_identity(claims)
+
+    # Derive tenant ID from the GitHub login; reject on collision so an
+    # admin can decide whether this user belongs in the existing tenant
+    # (invite flow, not this flow) or needs different routing.
+    base_slug = _slugify_tenant_id(github_login)
+    tenant_id = await _pick_tenant_id(db, base_slug, cognito_sub)
+    if tenant_id is None:
+        return AccessRequestResponse(
+            status="collision",
+            reason=(
+                f"A workspace named '{base_slug}' already exists or is being "
+                f"requested by another user. Contact an administrator to "
+                f"join an existing workspace."
+            ),
+        )
+
     # Create the request
     request = TenantAccessRequest(
         cognito_sub=cognito_sub,
-        provider=payload.provider,
-        provider_user_id=payload.provider_user_id,
-        proposed_tenant_id=proposed_id,
-        target_login=payload.target_login,
+        provider="github",
+        provider_user_id=github_id,
+        proposed_tenant_id=tenant_id,
+        target_login=github_login,
         motivation=payload.motivation,
     )
     db.add(request)
     await db.commit()
     await db.refresh(request)
 
-    # Auto-approve check
-    if _is_auto_approve(payload.target_login):
+    # Auto-approve check (no-op today — TF var is empty — but kept for when
+    # a future DB-backed allowlist ships).
+    if _is_auto_approve(github_login):
         from src.admin.identity.identity_index_writer import IdentityIndexWriter
 
         writer = IdentityIndexWriter()
-        tenant_id = await approve_request(
+        approved_tenant_id = await approve_request(
             db=db,
             request=request,
             admin_sub="system:auto-approve",
@@ -167,7 +281,7 @@ async def submit_access_request(
         )
         return AccessRequestResponse(
             status="approved",
-            tenant_id=tenant_id,
+            tenant_id=approved_tenant_id,
             redirect="/dashboard",
         )
 

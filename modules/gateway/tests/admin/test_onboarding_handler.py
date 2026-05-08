@@ -133,72 +133,33 @@ async def test_access_status_new_user(app_client):
 
 
 # ---------------------------------------------------------------------------
-# POST /access/request — proposed_tenant_id validation
+# POST /access/request — JWT-derived identity
 # ---------------------------------------------------------------------------
+#
+# The handler now derives tenant_id / provider / provider_user_id from the
+# JWT claims. Tests inject those claims via an Authorization header with an
+# unsigned JWT payload (the get_current_user dependency is overridden, so
+# signature validation is skipped; the handler reads the raw claims itself).
 
 
-@pytest.mark.asyncio
-@patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
-async def test_request_rejects_reserved_name(app_client):
-    """Reserved names like 'admin' should be rejected with 422."""
-    resp = await app_client.post(
-        "/access/request",
-        json={
-            "proposed_tenant_id": "admin",
-            "target_login": "testuser",
-            "provider": "github",
-            "provider_user_id": "12345",
-        },
-    )
-    assert resp.status_code == 422
+def _fake_bearer(claims: dict) -> str:
+    """Build an unsigned Bearer token whose base64 payload decodes to claims.
+
+    The handler's _decode_jwt_claims just base64-decodes the middle segment;
+    signature is irrelevant for these tests (auth is overridden upstream).
+    """
+    import base64 as _b64
+    import json as _json
+
+    payload = _b64.urlsafe_b64encode(_json.dumps(claims).encode("utf-8")).decode("ascii").rstrip("=")
+    return f"Bearer header.{payload}.signature"
 
 
-@pytest.mark.asyncio
-@patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
-async def test_request_rejects_short_id(app_client):
-    """IDs shorter than 3 chars should be rejected."""
-    resp = await app_client.post(
-        "/access/request",
-        json={
-            "proposed_tenant_id": "ab",
-            "target_login": "testuser",
-            "provider": "github",
-            "provider_user_id": "12345",
-        },
-    )
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-@patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
-async def test_request_rejects_leading_hyphen(app_client):
-    """Leading hyphen should be rejected."""
-    resp = await app_client.post(
-        "/access/request",
-        json={
-            "proposed_tenant_id": "-bad-name",
-            "target_login": "testuser",
-            "provider": "github",
-            "provider_user_id": "12345",
-        },
-    )
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-@patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
-async def test_request_rejects_uppercase(app_client):
-    """Uppercase chars should be rejected."""
-    resp = await app_client.post(
-        "/access/request",
-        json={
-            "proposed_tenant_id": "BadName",
-            "target_login": "testuser",
-            "provider": "github",
-            "provider_user_id": "12345",
-        },
-    )
-    assert resp.status_code == 422
+def _github_claims(login: str, numeric_id: str) -> dict:
+    return {
+        "custom:github_username": login,
+        "cognito:username": f"github_{numeric_id}",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -208,36 +169,96 @@ async def test_request_rejects_uppercase(app_client):
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "false"})
-async def test_request_503_when_flag_off(app_client):
-    """Returns unavailable status when V2 write flag is off."""
+async def test_request_unavailable_when_flag_off(app_client):
+    """Returns unavailable status when V2 write flag is off — before JWT decode."""
     resp = await app_client.post(
         "/access/request",
-        json={
-            "proposed_tenant_id": "my-tenant",
-            "target_login": "testuser",
-            "provider": "github",
-            "provider_user_id": "12345",
-        },
+        json={"motivation": "test"},
+        headers={"Authorization": _fake_bearer(_github_claims("anyuser", "123"))},
     )
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "unavailable"
+    assert resp.json()["status"] == "unavailable"
 
 
 # ---------------------------------------------------------------------------
-# POST /access/request — collision detection
+# POST /access/request — rejects non-GitHub sessions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
+async def test_request_rejects_non_github_session(app_client):
+    """JWT without github claims → 400 not_a_github_session."""
+    resp = await app_client.post(
+        "/access/request",
+        json={"motivation": "test"},
+        headers={"Authorization": _fake_bearer({"cognito:username": "plain-user"})},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["reason"] == "not_a_github_session"
+
+
+# ---------------------------------------------------------------------------
+# POST /access/request — tenant ID derived from GitHub login
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
+async def test_request_derives_tenant_id_from_github_login(app_client, db_engine):
+    """Tenant ID comes from slugified github_login — no user input."""
+    resp = await app_client.post(
+        "/access/request",
+        json={"motivation": "I want to test ADP"},
+        headers={"Authorization": _fake_bearer(_github_claims("PranavSharma1000", "20402445"))},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "pending"
+
+    # Verify the stored row has tenant_id = slugified login
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with factory() as session:
+        req = await session.get(TenantAccessRequest, data["request_id"])
+        assert req is not None
+        assert req.proposed_tenant_id == "pranavsharma1000"
+        assert req.provider == "github"
+        assert req.provider_user_id == "20402445"
+        assert req.target_login == "PranavSharma1000"
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
+async def test_request_slugifies_non_alphanum(app_client, db_engine):
+    """GitHub logins with dots/underscores get hyphens."""
+    resp = await app_client.post(
+        "/access/request",
+        json={"motivation": "test"},
+        headers={"Authorization": _fake_bearer(_github_claims("my.user_name", "12345"))},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "pending"
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with factory() as session:
+        req = await session.get(TenantAccessRequest, data["request_id"])
+        assert req.proposed_tenant_id == "my-user-name"
+
+
+# ---------------------------------------------------------------------------
+# POST /access/request — collision when slug taken by another org
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
 async def test_request_collision_on_existing_org(app_client, db_engine):
-    """409 collision when proposed_tenant_id matches an existing org."""
-    # Seed an organization
+    """If derived slug matches an existing organization, return collision."""
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as session:
         org = Organization(
-            id="taken-org",
+            id="takenuser",
             name="Taken Org",
             aws_accounts=[],
             role_mappings={},
@@ -248,35 +269,26 @@ async def test_request_collision_on_existing_org(app_client, db_engine):
 
     resp = await app_client.post(
         "/access/request",
-        json={
-            "proposed_tenant_id": "taken-org",
-            "target_login": "testuser",
-            "provider": "github",
-            "provider_user_id": "12345",
-        },
+        json={"motivation": "hi"},
+        headers={"Authorization": _fake_bearer(_github_claims("takenuser", "999"))},
     )
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "collision"
+    assert resp.json()["status"] == "collision"
 
 
 # ---------------------------------------------------------------------------
-# POST /access/request — pending path + idempotency
+# POST /access/request — pending + idempotency
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
 async def test_request_pending_path(app_client):
-    """Non-auto-approve user gets pending status."""
+    """Fresh request returns pending."""
     resp = await app_client.post(
         "/access/request",
-        json={
-            "proposed_tenant_id": "new-tenant",
-            "target_login": "unknown-user",
-            "provider": "github",
-            "provider_user_id": "99999",
-        },
+        json={"motivation": "reason"},
+        headers={"Authorization": _fake_bearer(_github_claims("unknownuser", "555"))},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -287,25 +299,13 @@ async def test_request_pending_path(app_client):
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
 async def test_request_duplicate_is_idempotent(app_client):
-    """Second request from same user returns same pending request."""
-    payload = {
-        "proposed_tenant_id": "dup-tenant",
-        "target_login": "dup-user",
-        "provider": "github",
-        "provider_user_id": "88888",
-    }
-    resp1 = await app_client.post("/access/request", json=payload)
+    """Second request from same user (same JWT sub) returns the same pending row."""
+    headers = {"Authorization": _fake_bearer(_github_claims("dupuser", "888"))}
+    resp1 = await app_client.post("/access/request", json={"motivation": "first"}, headers=headers)
     assert resp1.json()["status"] == "pending"
     request_id = resp1.json()["request_id"]
 
-    # Second call — same user, different proposed_tenant_id but still pending
-    payload2 = {
-        "proposed_tenant_id": "different-tenant",
-        "target_login": "dup-user",
-        "provider": "github",
-        "provider_user_id": "88888",
-    }
-    resp2 = await app_client.post("/access/request", json=payload2)
+    resp2 = await app_client.post("/access/request", json={"motivation": "second"}, headers=headers)
     assert resp2.json()["status"] == "pending"
     assert resp2.json()["request_id"] == request_id
 
@@ -324,7 +324,7 @@ async def test_request_duplicate_is_idempotent(app_client):
     },
 )
 async def test_request_auto_approve(app_client):
-    """Auto-approved user gets immediate approval."""
+    """GitHub login in the auto-approve list → immediate approval."""
     mock_writer = MagicMock()
     mock_writer.put_user_identity = AsyncMock(return_value=True)
 
@@ -334,18 +334,15 @@ async def test_request_auto_approve(app_client):
     ):
         resp = await app_client.post(
             "/access/request",
-            json={
-                "proposed_tenant_id": "auto-tenant",
-                "target_login": "auto-user",
-                "provider": "github",
-                "provider_user_id": "77777",
-            },
+            json={"motivation": "auto"},
+            headers={"Authorization": _fake_bearer(_github_claims("auto-user", "777"))},
         )
 
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "approved"
-    assert data["tenant_id"] == "auto-tenant"
+    # Auto-approved tenant_id is the slugified login
+    assert data["tenant_id"] == "auto-user"
     assert data["redirect"] == "/dashboard"
 
 

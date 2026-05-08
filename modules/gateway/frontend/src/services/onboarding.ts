@@ -10,7 +10,8 @@ export interface AccessStatusResponse {
 }
 
 export interface AccessRequestPayload {
-  proposed_tenant_id: string;
+  // The only field the user supplies. Server derives tenant_id + provider +
+  // provider_user_id from the authenticated JWT.
   motivation: string;
 }
 
