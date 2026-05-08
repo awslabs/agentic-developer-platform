@@ -170,8 +170,12 @@ jobs:
           VITE_COGNITO_CLIENT_ID: 6cg7ba3hb4v41vbhm0cg8pl17j
           VITE_COGNITO_DOMAIN: bedrockgw-dev-auth-18057152
           VITE_COGNITO_REGION: us-east-1
-          # Issue #525: Broker is now behind API Gateway, same domain as frontend
-          VITE_GITHUB_AUTH_BROKER_URL: /api/auth/github
+          # Issue #525: Broker behind API Gateway. Same-domain routing via
+          # CloudFront is not yet wired (CloudFront only has /api/* → ALB,
+          # no behavior for /auth/* → broker). Until that's added (tracked
+          # as a follow-up), point the frontend directly at the broker API
+          # Gateway invoke URL. Full-page redirect flow, no CORS impact.
+          VITE_GITHUB_AUTH_BROKER_URL: https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev/auth/github
         run: |
           cd modules/gateway/frontend
           npm ci
