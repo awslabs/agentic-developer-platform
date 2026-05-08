@@ -1,0 +1,143 @@
+name: GitHub Auth Broker Deploy
+
+# Packages modules/gateway/lambda/github-auth-broker/ and updates the live
+# bedrockgw-dev-github-auth-broker Lambda function code.
+#
+# Terraform (in modules/gateway/infra/modules/github-auth-broker/) creates
+# the Lambda function resource with a placeholder zip. This workflow ships
+# the real handler code. Without this running, the broker returns 503
+# "Not deployed yet" to every /auth/github/* request and Sign-in-with-GitHub
+# doesn't work end-to-end.
+
+on:
+  push:
+    paths:
+      - 'modules/gateway/lambda/github-auth-broker/**'
+      - '.github/workflows/github-auth-broker-deploy.yml'
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: github-auth-broker-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+  ACCOUNT_ID: "879318057152"
+  STATE_BUCKET: adp-terraform-state-879318057152
+  FUNCTION_NAME: bedrockgw-dev-github-auth-broker
+  LAMBDA_SRC_DIR: modules/gateway/lambda/github-auth-broker
+
+jobs:
+  deploy:
+    name: Package and Deploy Broker Lambda
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          aws --version
+
+      - name: Package Lambda
+        run: |
+          set -e
+          BUILD_DIR="${LAMBDA_SRC_DIR}/build"
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR"
+          # Install Python deps into the build dir
+          pip install \
+            --target "$BUILD_DIR" \
+            --platform manylinux2014_x86_64 \
+            --only-binary=:all: \
+            --implementation cp \
+            --python-version 3.12 \
+            -r "${LAMBDA_SRC_DIR}/requirements.txt"
+          # Copy all Python source modules (exclude tests, build/, __pycache__)
+          cd "${LAMBDA_SRC_DIR}"
+          for f in *.py; do
+            [ -f "$f" ] && cp "$f" build/
+          done
+          # Zip from inside the build dir so the layout is flat at the root
+          cd build
+          find . -type d -name __pycache__ -prune -exec rm -rf {} + || true
+          zip -r -q ../broker.zip .
+          cd ..
+          ls -la broker.zip
+          echo "Size: $(stat -c %s broker.zip 2>/dev/null || stat -f %z broker.zip) bytes"
+
+      - name: Upload artifact to S3
+        run: |
+          aws s3 cp "${LAMBDA_SRC_DIR}/broker.zip" \
+            "s3://${STATE_BUCKET}/lambda-artifacts/github-auth-broker/broker.zip" \
+            --metadata "commit=${{ github.sha }}"
+          echo "Uploaded to s3://${STATE_BUCKET}/lambda-artifacts/github-auth-broker/broker.zip"
+
+      - name: Update Lambda function code
+        run: |
+          set -e
+          aws lambda update-function-code \
+            --function-name "${FUNCTION_NAME}" \
+            --s3-bucket "${STATE_BUCKET}" \
+            --s3-key "lambda-artifacts/github-auth-broker/broker.zip" \
+            --region "${AWS_REGION}" \
+            --publish \
+            --query '{func:FunctionName,version:Version,codeSize:CodeSize,state:State,lastUpdateStatus:LastUpdateStatus}' \
+            --output table
+
+      - name: Wait for update to settle
+        run: |
+          aws lambda wait function-updated \
+            --function-name "${FUNCTION_NAME}" \
+            --region "${AWS_REGION}"
+          aws lambda get-function-configuration \
+            --function-name "${FUNCTION_NAME}" \
+            --region "${AWS_REGION}" \
+            --query '{state:State,lastUpdateStatus:LastUpdateStatus,codeSize:CodeSize}' \
+            --output json
+
+      - name: Smoke test — /start endpoint should return 302 to github.com
+        run: |
+          set -e
+          API_URL="https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev/auth/github/start"
+          echo "Hitting: $API_URL"
+          HTTP_CODE=$(curl -sS -o /tmp/resp.out -w "%{http_code}" --max-redirs 0 "$API_URL" || true)
+          echo "HTTP code: $HTTP_CODE"
+          echo "Response body:"
+          cat /tmp/resp.out || true
+          # Expect 302 redirect to github.com (the broker's /start handler
+          # returns a Location header to GitHub's OAuth authorize URL)
+          if [ "$HTTP_CODE" = "302" ] || [ "$HTTP_CODE" = "301" ]; then
+            echo "✅ /start responded with redirect as expected"
+          else
+            echo "❌ /start did not return a redirect. Expected 301/302, got $HTTP_CODE."
+            exit 1
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## GitHub Auth Broker Deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Function**: ${FUNCTION_NAME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit**: ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status**: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
