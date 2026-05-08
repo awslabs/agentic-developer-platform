@@ -85,6 +85,11 @@ export function Navigation() {
   // Connections page — link external services (Issue #465)
   navItems.push({ to: '/settings/connections', label: 'Connections', icon: '🔗' });
 
+  // Access Requests page for platform admins (Issue #545)
+  if (isPlatformAdmin()) {
+    navItems.push({ to: '/admin/access-requests', label: 'Access Requests', icon: '📋' });
+  }
+
   return (
     <nav className="flex flex-col gap-1" aria-label="Main navigation">
       {navItems.map((item) => (

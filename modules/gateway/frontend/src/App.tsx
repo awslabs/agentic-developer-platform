@@ -3,6 +3,7 @@ import { Suspense, lazy } from 'react';
 import { MainLayout } from './layouts/MainLayout';
 import { AuthLayout } from './layouts/AuthLayout';
 import { ProtectedRoute } from './components/ProtectedRoute';
+import { OnboardingGuard } from './components/OnboardingGuard';
 import { LoadingScreen } from './components/LoadingScreen';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { RoleBasedRedirect } from './components/RoleBasedRedirect';
@@ -21,6 +22,10 @@ const RateLimitManagement = lazy(() => import('./pages/RateLimitManagement')); /
 const MyChats = lazy(() => import('./pages/MyChats')); // Issue #179
 const AgentChat = lazy(() => import('./pages/AgentChat')); // Issue #97
 const Connections = lazy(() => import('./pages/settings/Connections')); // Issue #465
+const Welcome = lazy(() => import('./pages/onboarding/Welcome')); // Issue #545
+const Pending = lazy(() => import('./pages/onboarding/Pending')); // Issue #545
+const Denied = lazy(() => import('./pages/onboarding/Denied')); // Issue #545
+const AccessRequests = lazy(() => import('./pages/admin/AccessRequests')); // Issue #545
 const NotFound = lazy(() => import('./pages/NotFound'));
 
 function App() {
@@ -36,7 +41,7 @@ function App() {
           {/* OAuth callback route (must be outside ProtectedRoute) */}
           <Route path="/auth/callback" element={<AuthCallback />} />
 
-          {/* Protected routes */}
+          {/* Onboarding routes (authenticated but no tenant yet) — Issue #545 */}
           <Route
             element={
               <ProtectedRoute>
@@ -44,18 +49,34 @@ function App() {
               </ProtectedRoute>
             }
           >
-            <Route path="/" element={<RoleBasedRedirect />} />
-            <Route path="/dashboard" element={<PlatformDashboard />} />
-            <Route path="/org/:orgId" element={<OrgDashboard />} />
-            <Route path="/org/:orgId/department/:deptId" element={<DepartmentDashboard />} />
-            <Route path="/logs" element={<LogViewer />} />
-            <Route path="/setup" element={<ClaudeSetup />} />
-            <Route path="/agents" element={<AgentManagement />} /> {/* Issue #119 */}
-            <Route path="/budgets" element={<BudgetManagement />} /> {/* Issue #185 */}
-            <Route path="/ratelimits" element={<RateLimitManagement />} /> {/* Issue #185 */}
-            <Route path="/my-chats" element={<MyChats />} /> {/* Issue #179 */}
-            <Route path="/chat" element={<AgentChat />} /> {/* Issue #97 */}
-            <Route path="/settings/connections" element={<Connections />} /> {/* Issue #465 */}
+            <Route path="/onboarding/welcome" element={<Welcome />} />
+            <Route path="/onboarding/pending" element={<Pending />} />
+            <Route path="/onboarding/denied" element={<Denied />} />
+          </Route>
+
+          {/* Protected routes with onboarding guard */}
+          <Route
+            element={
+              <ProtectedRoute>
+                <OnboardingGuard />
+              </ProtectedRoute>
+            }
+          >
+            <Route element={<MainLayout />}>
+              <Route path="/" element={<RoleBasedRedirect />} />
+              <Route path="/dashboard" element={<PlatformDashboard />} />
+              <Route path="/org/:orgId" element={<OrgDashboard />} />
+              <Route path="/org/:orgId/department/:deptId" element={<DepartmentDashboard />} />
+              <Route path="/logs" element={<LogViewer />} />
+              <Route path="/setup" element={<ClaudeSetup />} />
+              <Route path="/agents" element={<AgentManagement />} /> {/* Issue #119 */}
+              <Route path="/budgets" element={<BudgetManagement />} /> {/* Issue #185 */}
+              <Route path="/ratelimits" element={<RateLimitManagement />} /> {/* Issue #185 */}
+              <Route path="/my-chats" element={<MyChats />} /> {/* Issue #179 */}
+              <Route path="/chat" element={<AgentChat />} /> {/* Issue #97 */}
+              <Route path="/settings/connections" element={<Connections />} /> {/* Issue #465 */}
+              <Route path="/admin/access-requests" element={<AccessRequests />} /> {/* Issue #545 */}
+            </Route>
           </Route>
 
           {/* 404 */}
