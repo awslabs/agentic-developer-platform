@@ -193,6 +193,12 @@ def handler(event: dict, context) -> dict:
 
     action = payload.get("action", "")
 
+    # Issue #538: Bypass identity resolution for installation lifecycle events.
+    # These arrive during onboarding before any identity row exists.
+    if event_type == "installation" and action in ("created", "new_permissions_accepted"):
+        logger.info("Installation %s event — no agent dispatch, no identity check", action)
+        return _response(200, {"status": "no_op", "reason": "installation_event"})
+
     # 4. Extract installation_id + sender from payload
     installation_id = payload.get("installation", {}).get("id", 0)
     repo = payload.get("repository", {}).get("full_name", "")
