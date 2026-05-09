@@ -5,7 +5,8 @@
 /**
  * Format a number as currency (USD)
  */
-export function formatCurrency(value: number, decimals: number = 2): string {
+export function formatCurrency(value: number | null | undefined, decimals: number = 2): string {
+  if (value == null || Number.isNaN(value)) value = 0;
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
@@ -42,15 +43,16 @@ export function formatNumberWithCommas(value: number | null | undefined): string
 /**
  * Format a percentage
  */
-export function formatPercent(value: number, decimals: number = 1): string {
+export function formatPercent(value: number | null | undefined, decimals: number = 1): string {
+  if (value == null || Number.isNaN(value)) return '0%';
   return `${value.toFixed(decimals)}%`;
 }
 
 /**
  * Format bytes to human-readable size
  */
-export function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null || Number.isNaN(bytes) || bytes === 0) return '0 B';
 
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
@@ -115,7 +117,8 @@ export function formatRelativeTime(date: string | Date): string {
 /**
  * Format duration in milliseconds
  */
-export function formatDuration(ms: number): string {
+export function formatDuration(ms: number | null | undefined): string {
+  if (ms == null || Number.isNaN(ms)) return '0ms';
   if (ms < 1000) {
     return `${ms}ms`;
   }
