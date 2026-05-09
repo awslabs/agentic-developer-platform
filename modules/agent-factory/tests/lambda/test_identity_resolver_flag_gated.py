@@ -175,10 +175,13 @@ class TestResolverFlagOn:
 
 
 class TestCrossTenantMetric:
-    """Tests for cross-tenant mismatch CloudWatch metric emission."""
+    """Cross-tenant policy: known users from a different home tenant are
+    allowed to trigger agents; the event is routed to the installation's
+    tenant. The mismatch is still logged + metric-emitted for audit."""
 
-    def test_emits_metric_on_cross_tenant_mismatch(self, monkeypatch):
-        """Cross-tenant mismatch emits CloudWatch metric."""
+    def test_cross_tenant_allowed_routes_to_installation_tenant(self, monkeypatch):
+        """Sender's home tenant differs from installation's — returns ok,
+        routed to installation's tenant, metric still emitted for audit."""
         monkeypatch.setenv("USER_IDENTITY_INDEX_V2_READ", "false")
 
         with patch("boto3.resource") as mock_resource, patch("boto3.client") as mock_client:
@@ -196,14 +199,19 @@ class TestCrossTenantMetric:
 
             mock_table.get_item.side_effect = [
                 {"Item": {"org_id": "org-001", "user_provisioning_mode": "strict"}},
-                {"Item": {"org_id": "org-OTHER", "user_id": "user-001"}},  # different org!
+                {"Item": {"org_id": "org-OTHER", "user_id": "user-001"}},  # different home org!
             ]
 
             result, reason = resolver.resolve(installation_id=111, sender_id=222)
-            assert result is None
-            assert reason == "cross_tenant_identity"
+            # Cross-tenant is now ACCEPTED — routed to installation's tenant
+            assert reason == "ok"
+            assert result is not None
+            assert result.tenant_id == "org-001"  # installation's tenant, not sender's
+            assert result.org_id == "org-001"
+            assert result.user_id == "user-001"
 
-            # CloudWatch metric was emitted
+            # Metric is still emitted for audit — ops can still monitor
+            # cross-tenant activity even though it's no longer a block.
             mock_cw.put_metric_data.assert_called_once()
             call_args = mock_cw.put_metric_data.call_args[1]
             assert call_args["Namespace"] == "ADP/IdentityResolver"

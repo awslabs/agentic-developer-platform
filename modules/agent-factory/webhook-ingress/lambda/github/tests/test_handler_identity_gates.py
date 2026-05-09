@@ -119,12 +119,19 @@ class TestUnknownUser:
 
 
 class TestCrossTenantIdentity:
-    """Webhook where sender belongs to different org than installation → 403."""
+    """Cross-tenant policy: if the resolver returns 'cross_tenant_identity'
+    anyway (e.g. in a future stricter mode gated by config), the handler
+    must still reject it with 403. The current resolver accepts cross-tenant
+    and returns 'ok' — see test_cross_tenant_returns_ok in the resolver tests."""
 
     @patch("handler._get_events_log")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
-    def test_cross_tenant_returns_403(self, mock_sig, mock_resolver, mock_log):
+    def test_cross_tenant_outcome_from_resolver_still_403s(
+        self, mock_sig, mock_resolver, mock_log
+    ):
+        # This keeps the handler-level contract intact: if something upstream
+        # ever decides to hard-block cross-tenant again, the handler will 403.
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (
             None,

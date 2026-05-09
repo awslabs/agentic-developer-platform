@@ -175,18 +175,30 @@ def resolve(
             )
             return None, "unknown_user"
 
-        # Step 3: Cross-check org membership
+        # Step 3: Cross-tenant membership
+        # A user's `user_identities` row pins them to ONE home tenant (the one
+        # where admin approval happened). But GitHub users can legitimately
+        # belong to many orgs — a sophos employee has a personal GitHub too.
+        # When they comment on a repo in another ADP tenant, we route the
+        # event to the REPO's tenant (installation.org_id), not the sender's
+        # home tenant. The commenter just has to be a known ADP user.
+        #
+        # Trade-off (accepted): billing/quota attaches to the repo's tenant,
+        # not the commenter's. Suits hackathon/dev; if production tenants
+        # later need stricter membership, we'd add an opt-in flag on the
+        # installation row (e.g. "only members of home tenant can trigger").
+        #
+        # The mismatch is still logged + metric-emitted for audit trails.
         if user_item["org_id"] != org_id:
-            logger.warning(
-                "Cross-tenant identity: sender_id=%d belongs to org=%s but "
-                "installation_id=%d belongs to org=%s",
+            logger.info(
+                "Cross-tenant ok: sender_id=%d (home org=%s) triggering in "
+                "installation_id=%d org=%s — routing to repo tenant",
                 sender_id,
                 user_item["org_id"],
                 installation_id,
                 org_id,
             )
             _emit_cross_tenant_metric()
-            return None, "cross_tenant_identity"
 
         return (
             ResolvedIdentity(
