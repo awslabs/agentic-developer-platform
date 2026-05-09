@@ -59,7 +59,11 @@ export interface User {
   id: string;
   email?: string;
   name?: string;
-  role: AdminRole;
+  // Undefined when the JWT carries no custom:role claim (e.g. a freshly
+  // signed-up GitHub user who hasn't been approved + assigned yet). UI
+  // should hide the role label in that case rather than default to a
+  // misleading "org admin" badge.
+  role?: AdminRole;
   orgId?: string;
   deptId?: string;
   permissions: Permission[];

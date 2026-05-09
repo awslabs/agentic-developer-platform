@@ -363,15 +363,18 @@ export function parseIdTokenForUser(idToken: string): User | null {
   const payload = parseTokenPayload<CognitoIdTokenPayload>(idToken);
   if (!payload) return null;
 
-  // Determine role from custom attribute or default to ORG_ADMIN
-  let role: AdminRole;
+  // Determine role from custom attribute. Leave undefined when the JWT
+  // carries no claim — the UI hides the role badge in that case rather
+  // than showing a misleading default like "org admin" for users who
+  // haven't been approved/assigned yet.
+  let role: AdminRole | undefined;
   const customRole = payload['custom:role'];
   if (customRole === 'platform_admin') {
     role = AdminRole.PLATFORM_ADMIN;
+  } else if (customRole === 'org_admin') {
+    role = AdminRole.ORG_ADMIN;
   } else if (customRole === 'dept_admin') {
     role = AdminRole.DEPT_ADMIN;
-  } else {
-    role = AdminRole.ORG_ADMIN;
   }
 
   // Extract GitHub identity info if present
@@ -410,7 +413,7 @@ export function parseIdTokenForUser(idToken: string): User | null {
     role,
     orgId: payload['custom:org_id'],
     deptId: payload['custom:department_id'],
-    permissions: ROLE_PERMISSIONS[role],
+    permissions: role ? ROLE_PERMISSIONS[role] : [],
     createdAt: new Date(payload.auth_time * 1000).toISOString(),
     avatarUrl,
     githubLogin,

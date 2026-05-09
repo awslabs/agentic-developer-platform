@@ -36,7 +36,7 @@ export default function ClaudeSetup() {
                 Role
               </label>
               <p className="mt-1 text-gray-900 dark:text-white capitalize">
-                {user.role.replace(/_/g, ' ')}
+                {user.role ? user.role.replace(/_/g, ' ') : '—'}
               </p>
             </div>
             {user.orgId && (
