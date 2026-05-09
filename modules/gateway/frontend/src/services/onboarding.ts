@@ -35,7 +35,11 @@ export interface AccessRequestItem {
 }
 
 export interface AccessRequestListResponse {
-  items: AccessRequestItem[];
+  // Backend schema name — see AdminAccessRequestList in
+  // modules/gateway/src/admin/onboarding/schemas.py. Previously this
+  // interface called the field `items`, but the server returns `requests`,
+  // so the admin page always saw an empty array.
+  requests: AccessRequestItem[];
 }
 
 /**
@@ -72,7 +76,7 @@ export async function submitAccessRequest(
  */
 export async function getAccessRequests(): Promise<AccessRequestItem[]> {
   const response = await apiClient.get<AccessRequestListResponse>('/admin/access-requests');
-  return Array.isArray(response?.items) ? response.items : [];
+  return Array.isArray(response?.requests) ? response.requests : [];
 }
 
 /**
