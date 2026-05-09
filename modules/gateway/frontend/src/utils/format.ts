@@ -17,7 +17,8 @@ export function formatCurrency(value: number, decimals: number = 2): string {
 /**
  * Format a large number with abbreviations (K, M, B)
  */
-export function formatNumber(value: number): string {
+export function formatNumber(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '0';
   if (value >= 1_000_000_000) {
     return `${(value / 1_000_000_000).toFixed(1)}B`;
   }
@@ -33,7 +34,8 @@ export function formatNumber(value: number): string {
 /**
  * Format a number with commas
  */
-export function formatNumberWithCommas(value: number): string {
+export function formatNumberWithCommas(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '0';
   return value.toLocaleString();
 }
 
