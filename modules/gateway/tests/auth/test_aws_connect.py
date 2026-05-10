@@ -71,8 +71,16 @@ def _make_context(
     )
 
 
-ALICE = _make_context(user_id="user-alice")
-BOB = _make_context(user_id="user-bob")
+# IMPORTANT: TokenContext.user_id is the Cognito sub (a UUID). The handler
+# resolves it to the Postgres users.id via cognito_sub, which is why we seed
+# a matching `users` row per test context below.
+ALICE_COGNITO_SUB = "sub-alice-cognito"
+ALICE_DB_ID = "db-id-alice"
+BOB_COGNITO_SUB = "sub-bob-cognito"
+BOB_DB_ID = "db-id-bob"
+
+ALICE = _make_context(user_id=ALICE_COGNITO_SUB)
+BOB = _make_context(user_id=BOB_COGNITO_SUB)
 
 
 class MockSecretsManager:
@@ -125,10 +133,31 @@ def app_and_client(mock_sm):
             await conn.run_sync(Base.metadata.create_all)
 
         async with session_factory() as session:
+            from src.shared.models.organization import User
+
             org = Organization(id="org-acme", name="Acme Corp")
             session.add(org)
             team = Team(id="team-eng", name="Eng Team", org_id="org-acme", department_id="dept-eng")
             session.add(team)
+            # Seed Postgres users rows keyed by cognito_sub — the handler
+            # looks these up via User.cognito_sub to resolve the FK for
+            # user_credentials.user_id.
+            session.add(User(
+                id=ALICE_DB_ID,
+                org_id="org-acme",
+                team_id="team-eng",
+                email="alice@example.com",
+                name="Alice",
+                cognito_sub=ALICE_COGNITO_SUB,
+            ))
+            session.add(User(
+                id=BOB_DB_ID,
+                org_id="org-acme",
+                team_id="team-eng",
+                email="bob@example.com",
+                name="Bob",
+                cognito_sub=BOB_COGNITO_SUB,
+            ))
             await session.commit()
 
     asyncio.get_event_loop().run_until_complete(_setup())
@@ -199,7 +228,9 @@ class TestConnectStart:
         # Check key parameters are in the URL
         assert "stackName=ADP-Agent-my-role" in url
         assert "param_Nickname=my-role" in url
-        assert "param_UserSessionTag=user-alice" in url
+        # UserSessionTag must be the Postgres users.id (what STS sees in the
+        # session tag), not the Cognito sub — see handler comment.
+        assert f"param_UserSessionTag={ALICE_DB_ID}" in url
         assert "param_GatewayRolePrincipal=" in url
 
     def test_launch_url_under_browser_limit(self, alice_client):

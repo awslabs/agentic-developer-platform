@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.internal.sts_assume_service import STSAssumeError, assume_role
 from src.shared.database import get_db
+from src.shared.models.organization import User
 from src.shared.models.vault import UserCredential
 from src.shared.schemas.auth import TokenContext
 from src.shared.services.secrets_manager import SecretsManagerHelper
@@ -36,6 +37,29 @@ from .vault_routes import get_secrets_manager
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth/credentials/aws", tags=["aws-connect"])
+
+
+async def _resolve_user_id(cognito_sub: str, db: AsyncSession) -> str:
+    """Resolve a Cognito sub (what TokenContext.user_id actually holds) to
+    the Postgres `users.id` UUID required by user_credentials.user_id FK.
+
+    Raises 404 if no matching Postgres user exists (shouldn't happen for a
+    registered user — but defensive in case someone signed in without going
+    through onboarding).
+    """
+    stmt = select(User).where(User.cognito_sub == cognito_sub)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "reason": "user_not_found",
+                "hint": "Your account isn't registered in this tenant yet. "
+                "Complete onboarding first.",
+            },
+        )
+    return user.id
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +131,9 @@ async def connect_start(
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
 ) -> ConnectStartResponse:
+    # Resolve Cognito sub → Postgres users.id (FK on user_credentials.user_id)
+    db_user_id = await _resolve_user_id(token_context.user_id, db)
+
     # Generate a unique external ID for confused-deputy protection
     external_id = str(uuid.uuid4())
 
@@ -135,7 +162,7 @@ async def connect_start(
     # Create the DB row with status=pending in scopes JSON
     cred = UserCredential(
         org_id=token_context.org_id,
-        user_id=token_context.user_id,
+        user_id=db_user_id,
         service="aws",
         credential_type="aws_role",
         label=data.nickname,
@@ -150,12 +177,16 @@ async def connect_start(
     await db.commit()
     await db.refresh(cred)
 
-    # Build the launch URL
+    # Build the launch URL. UserSessionTag must equal what the STS service
+    # sends at assume-role time — which is the Postgres users.id (set by
+    # assume_role_routes.py passing body.user_id=users.id), not the Cognito
+    # sub. Get it wrong and the trust policy's RequestTag condition will
+    # AccessDenied every call.
     launch_url = build_launch_url(
         nickname=data.nickname,
         external_id=external_id,
         account_id=data.account_id,
-        user_id=token_context.user_id,
+        user_id=db_user_id,
         role_name=data.role_name,
     )
 
@@ -181,10 +212,13 @@ async def connect_verify(
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
 ) -> ConnectVerifyResponse:
+    # Resolve Cognito sub → Postgres users.id for the scoped lookup
+    db_user_id = await _resolve_user_id(token_context.user_id, db)
+
     # Fetch the credential row (scoped to caller)
     stmt = select(UserCredential).where(
         UserCredential.id == data.credential_id,
-        UserCredential.user_id == token_context.user_id,
+        UserCredential.user_id == db_user_id,
         UserCredential.org_id == token_context.org_id,
         UserCredential.credential_type == "aws_role",
     )
@@ -208,7 +242,9 @@ async def connect_verify(
     role_arn = secret_data["role_arn"]
     external_id = secret_data.get("external_id")
 
-    # Attempt STS AssumeRole using the existing service
+    # Attempt STS AssumeRole using the existing service. user_id here must
+    # match what the trust policy's RequestTag condition expects — the
+    # Postgres users.id, not the Cognito sub (same as connect_start).
     try:
         await asyncio.to_thread(
             assume_role,
@@ -216,7 +252,7 @@ async def connect_verify(
             external_id=external_id,
             session_duration_seconds=900,  # minimum for verify
             default_region=secret_data.get("default_region", "us-east-1"),
-            user_id=token_context.user_id,
+            user_id=db_user_id,
             agent_id="connect-verify",
             task_id="verify",
             label=cred.label,
