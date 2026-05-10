@@ -26,6 +26,7 @@ logger = logging.getLogger("bedrockgateway")
 UNIT_MODULES = [
     "src.auth.routes",
     "src.auth.vault_routes",  # Issue #135: vault credential + identity CRUD
+    "src.auth.aws_connect_routes",  # Issue #562: self-serve AWS account connect
     "src.internal.routes",  # Issue #446: internal service-to-service endpoints
     "src.internal.credential_routes",  # Issue #136: credential delivery paths
     "src.internal.assume_role_routes",  # Issue #481: aws_role STS assume delivery path

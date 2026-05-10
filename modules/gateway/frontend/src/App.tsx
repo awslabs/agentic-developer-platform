@@ -22,6 +22,8 @@ const RateLimitManagement = lazy(() => import('./pages/RateLimitManagement')); /
 const MyChats = lazy(() => import('./pages/MyChats')); // Issue #179
 const AgentChat = lazy(() => import('./pages/AgentChat')); // Issue #97
 const Connections = lazy(() => import('./pages/settings/Connections')); // Issue #465
+const SettingsCredentials = lazy(() => import('./pages/settings/SettingsCredentials')); // Issue #562
+const ConnectAws = lazy(() => import('./pages/settings/ConnectAws')); // Issue #562
 const Welcome = lazy(() => import('./pages/onboarding/Welcome')); // Issue #545
 const Pending = lazy(() => import('./pages/onboarding/Pending')); // Issue #545
 const Denied = lazy(() => import('./pages/onboarding/Denied')); // Issue #545
@@ -75,6 +77,8 @@ function App() {
               <Route path="/my-chats" element={<MyChats />} /> {/* Issue #179 */}
               <Route path="/chat" element={<AgentChat />} /> {/* Issue #97 */}
               <Route path="/settings/connections" element={<Connections />} /> {/* Issue #465 */}
+              <Route path="/settings/credentials" element={<SettingsCredentials />} /> {/* Issue #562 */}
+              <Route path="/settings/credentials/aws/connect" element={<ConnectAws />} /> {/* Issue #562 */}
               <Route path="/admin/access-requests" element={<AccessRequests />} /> {/* Issue #545 */}
             </Route>
           </Route>

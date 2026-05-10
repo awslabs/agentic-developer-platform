@@ -1,0 +1,40 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ADP — cross-account role for agent delegation
+Parameters:
+  Nickname:
+    Type: String
+    Default: default
+  ExternalId:
+    Type: String
+    NoEcho: true
+  GatewayRolePrincipal:
+    Type: String
+    Description: ARN of ADP's gateway pod IRSA role
+  UserSessionTag:
+    Type: String
+    Description: ADP user ID, used as a session tag
+Resources:
+  AdpAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "ADP-Agent-${Nickname}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref GatewayRolePrincipal
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+                "aws:RequestTag/adp:user_id": !Ref UserSessionTag
+      Description: !Sub "ADP delegated role for ${Nickname} — managed by user"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+Outputs:
+  RoleArn:
+    Value: !GetAtt AdpAgentRole.Arn
+    Description: The ARN of the created role
