@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import os
+from datetime import UTC, datetime
 import time
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,51 @@ def _get_identity_resolver():
 
         _identity_mod = identity_resolver
     return _identity_mod
+
+
+def _auto_register_installation(installation_id: int, org_login: str) -> str | None:
+    """Write an installation_id → org_id row to the identity-index.
+
+    Called when webhooks reveal a previously-unknown installation. We default
+    the ADP org_id to the GitHub org login (e.g. `sophos-hackathon`). If that
+    GitHub org's login isn't a known ADP tenant, we skip the write (caller
+    will 403 with "unknown_installation"). This keeps the "if the org is
+    registered we just work" contract without requiring ops to manually map
+    each installation.
+
+    Returns the org_id we wrote, or None if we couldn't determine a tenant.
+    """
+    if not org_login:
+        return None
+    resolver = _get_identity_resolver()
+    try:
+        table = resolver._get_table()
+        # Idempotent write — if the row already exists, overwrite with the
+        # same data. We use the GitHub org login as the ADP tenant id by
+        # convention; if the operator wants a different tenant mapping,
+        # they can overwrite this row explicitly.
+        now = datetime.now(UTC).isoformat()
+        table.put_item(
+            Item={
+                "identity_type": "github_installation_id",
+                "identity_value": str(installation_id),
+                "org_id": org_login,
+                "updated_at": now,
+                "ttl": int((datetime.now(UTC)).timestamp()) + 60 * 60 * 24 * 365,
+                "auto_registered": True,
+            }
+        )
+        logger.info(
+            "Auto-registered installation_id=%d → org_id=%s",
+            installation_id,
+            org_login,
+        )
+        return org_login
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to auto-register installation_id=%d: %s", installation_id, exc
+        )
+        return None
 
 
 def _get_gateway_client():
@@ -194,8 +240,16 @@ def handler(event: dict, context) -> dict:
     action = payload.get("action", "")
 
     # Issue #538: Bypass identity resolution for installation lifecycle events.
-    # These arrive during onboarding before any identity row exists.
+    # These arrive during onboarding before any identity row exists. We also
+    # use this opportunity to auto-register the installation_id → org_id
+    # mapping so subsequent webhooks (issue comments, PRs) route correctly
+    # without operator intervention.
     if event_type == "installation" and action in ("created", "new_permissions_accepted"):
+        install = payload.get("installation", {}) or {}
+        install_id = install.get("id", 0)
+        org_login = (install.get("account") or {}).get("login", "")
+        if install_id and org_login:
+            _auto_register_installation(install_id, org_login)
         logger.info("Installation %s event — no agent dispatch, no identity check", action)
         return _response(200, {"status": "no_op", "reason": "installation_event"})
 
@@ -209,6 +263,27 @@ def handler(event: dict, context) -> dict:
     resolved, outcome_reason = _get_identity_resolver().resolve(
         installation_id, sender_id
     )
+
+    # 5a. Self-heal unknown installation: if the webhook tells us the repo's
+    # GitHub org (e.g. `sophos-hackathon`) and we don't have an installation
+    # row yet, auto-register it using the org login as the ADP tenant id.
+    # This makes the routing "if the org is registered, it just works" —
+    # no operator needs to manually map each App installation.
+    if resolved is None and outcome_reason == "unknown_installation" and installation_id:
+        repo_obj = payload.get("repository", {}) or {}
+        org_obj = payload.get("organization") or {}
+        org_login = (
+            org_obj.get("login")
+            or (repo_obj.get("owner") or {}).get("login")
+            or ""
+        )
+        if org_login:
+            registered_org = _auto_register_installation(installation_id, org_login)
+            if registered_org:
+                # Retry resolution now that the row exists
+                resolved, outcome_reason = _get_identity_resolver().resolve(
+                    installation_id, sender_id
+                )
 
     # 6. Auto-provision path: if sender unknown but tenant allows auto-provision
     if resolved is None and outcome_reason == "unknown_user" and installation_id:

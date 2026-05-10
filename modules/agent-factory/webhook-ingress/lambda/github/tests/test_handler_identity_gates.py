@@ -61,18 +61,23 @@ def _labeled_payload(
 
 
 class TestUnknownInstallation:
-    """Webhook from an installation not in identity-index → 403."""
+    """Webhook from an installation not in identity-index — behavior depends
+    on whether the webhook carries an org login (auto-heal) or not (403)."""
 
     @patch("handler._get_events_log")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
-    def test_unknown_installation_returns_403(self, mock_sig, mock_resolver, mock_log):
+    def test_unknown_installation_no_org_login_returns_403(
+        self, mock_sig, mock_resolver, mock_log
+    ):
+        """If the webhook has no org/owner login to derive tenant from, 403."""
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (None, "unknown_installation")
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
 
+        # _labeled_payload has no `repository.owner.login` or `organization`
         event = _make_event("issues", _labeled_payload(installation_id=999999))
         result = handler(event, None)
 
@@ -80,6 +85,55 @@ class TestUnknownInstallation:
         body = json.loads(result["body"])
         assert body["error"] == "unknown_identity"
         assert body["outcome"] == "unknown_installation"
+
+    @patch("handler._get_events_log")
+    @patch("handler._auto_register_installation")
+    @patch("handler._get_identity_resolver")
+    @patch("handler._get_signature")
+    def test_unknown_installation_with_org_auto_registers_and_retries(
+        self, mock_sig, mock_resolver, mock_auto_reg, mock_log
+    ):
+        """If the webhook has an org login, auto-register and retry resolve."""
+        from common.identity_resolver import ResolvedIdentity
+
+        mock_sig.return_value.verify_github_signature.return_value = True
+        # First resolve: unknown_installation. After auto-register + retry: ok.
+        mock_resolver.return_value.resolve.side_effect = [
+            (None, "unknown_installation"),
+            (
+                ResolvedIdentity(
+                    tenant_id="sophos-hackathon",
+                    org_id="sophos-hackathon",
+                    user_id="u_xyz",
+                    user_provisioning_mode="strict",
+                ),
+                "ok",
+            ),
+        ]
+        mock_auto_reg.return_value = "sophos-hackathon"
+        mock_log.return_value.log_event = MagicMock()
+
+        # Patch downstream dispatch bits so the handler can complete
+        with (
+            patch("handler._get_rate_limiter") as mock_rate,
+            patch("handler._get_sqs_publisher") as mock_sqs,
+        ):
+            mock_rate.return_value.check_and_increment.return_value = MagicMock(
+                allowed=True, retry_after_seconds=0
+            )
+            mock_sqs.return_value.publish_envelope.return_value = "msg-heal-1"
+
+            from handler import handler
+
+            # Payload carries the org login via repository.owner.login
+            payload = _labeled_payload(installation_id=888888)
+            payload["repository"]["owner"] = {"login": "sophos-hackathon"}
+            event = _make_event("issues", payload)
+            result = handler(event, None)
+
+        assert result["statusCode"] == 202
+        mock_auto_reg.assert_called_once_with(888888, "sophos-hackathon")
+        assert mock_resolver.return_value.resolve.call_count == 2
 
 
 class TestUnknownUser:
