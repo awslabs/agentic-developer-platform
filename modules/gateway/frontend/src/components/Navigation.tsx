@@ -85,6 +85,9 @@ export function Navigation() {
   // Connections page — link external services (Issue #465)
   navItems.push({ to: '/settings/connections', label: 'Connections', icon: '🔗' });
 
+  // Credentials — user vault + connected AWS accounts (Issue #562)
+  navItems.push({ to: '/settings/credentials', label: 'Credentials', icon: '🔑' });
+
   // Access Requests page for platform admins (Issue #545)
   if (isPlatformAdmin()) {
     navItems.push({ to: '/admin/access-requests', label: 'Access Requests', icon: '📋' });
