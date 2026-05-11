@@ -44,6 +44,11 @@ data:
   # CORS allowed origins - CloudFront frontend URL and localhost for development
   CORS_ALLOWED_ORIGINS: "__CORS_ALLOWED_ORIGINS__"
 
+  # Public base URL the app uses to build absolute links (magic-link emails,
+  # CFN template URLs for AWS Console, etc.). Must point at CloudFront so that
+  # requests from browsers and AWS services are reachable without auth headers.
+  BG_GATEWAY_BASE_URL: "__GATEWAY_BASE_URL__"
+
   # Issue #133: SECURITY FIX - BG_TOKEN_SECRET_KEY REMOVED from ConfigMap
   # =============================================================================
   # The legacy token secret key is now stored in AWS Secrets Manager for security.
