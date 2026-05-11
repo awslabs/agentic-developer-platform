@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ADP — cross-account role for agent delegation
+Description: ADP - cross-account role for agent delegation
 Parameters:
   Nickname:
     Type: String
@@ -31,7 +31,7 @@ Resources:
               StringEquals:
                 sts:ExternalId: !Ref ExternalId
                 "aws:RequestTag/adp:user_id": !Ref UserSessionTag
-      Description: !Sub "ADP delegated role for ${Nickname} — managed by user"
+      Description: !Sub "ADP delegated role for ${Nickname} - managed by user"
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/ReadOnlyAccess
 Outputs:
