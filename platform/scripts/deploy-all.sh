@@ -576,6 +576,7 @@ else
       -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \
       -e "s|__CORS_ALLOWED_ORIGINS__|https://${CF_DOMAIN},http://localhost:5173|g" \
       -e "s|__GATEWAY_BASE_URL__|https://${CF_DOMAIN}|g" \
+      -e "s|__CFN_TEMPLATE_BUCKET__|$(terraform output -raw frontend_bucket_name 2>/dev/null || echo '')|g" \
       -e "s|__CHAT_LOGGING_ENABLED__|false|g" \
       -e "s|__CHAT_LOGGING_BUCKET__||g" \
       -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|off|g" \

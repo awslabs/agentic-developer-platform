@@ -13,16 +13,26 @@ Coverage:
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 from urllib.parse import unquote
 
+import boto3
 import pytest
-import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from moto import mock_aws
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
+
+# The cfn_template module reads ADP_CFN_TEMPLATE_BUCKET from env to decide
+# which bucket to pre-sign against.  Set it BEFORE the module is imported
+# anywhere in the test process so the first call gets the right value.
+os.environ.setdefault("ADP_CFN_TEMPLATE_BUCKET", "adp-test-cfn-templates")
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 
 from src.auth.aws_connect_routes import router
 from src.auth.middleware import get_current_user_context
@@ -113,6 +123,20 @@ class MockSecretsManager:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _moto_s3():
+    """Stub S3 so ``generate_presigned_url`` returns a URL for a real (mock) bucket."""
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=os.environ["ADP_CFN_TEMPLATE_BUCKET"])
+        s3.put_object(
+            Bucket=os.environ["ADP_CFN_TEMPLATE_BUCKET"],
+            Key="cfn-templates/aws_role_v1.yaml",
+            Body=b"placeholder",
+        )
+        yield
 
 
 @pytest.fixture
@@ -245,8 +269,8 @@ class TestConnectStart:
         url = resp.json()["launch_url"]
         assert len(url) < 8000, f"Launch URL exceeds browser limit: {len(url)} chars"
 
-    def test_launch_url_uses_template_url(self, alice_client):
-        """AWS Console requires templateURL, not templateBody."""
+    def test_launch_url_uses_s3_presigned_template_url(self, alice_client):
+        """AWS Console requires templateURL, and CFN only accepts S3 hosts."""
         resp = alice_client.post(
             "/auth/credentials/aws/connect",
             json={"nickname": "test", "account_id": "123456789012"},
@@ -257,61 +281,13 @@ class TestConnectStart:
         assert "templateURL=" in fragment_query
         assert "templateBody=" not in fragment_query
 
-        # Signed-URL params must be present and point at the CloudFront /api path
-        # (CloudFront Function strips /api before forwarding to the backend)
         template_url_param = next(p for p in fragment_query.split("&") if p.startswith("templateURL="))
         decoded = unquote(template_url_param[len("templateURL=") :])
-        assert "/api/auth/credentials/aws/cfn-template.yaml" in decoded
-        assert "cid=" in decoded and "exp=" in decoded and "sig=" in decoded
-
-    def test_cfn_template_endpoint_serves_yaml(self, alice_client):
-        """Follow the signed URL and verify the served YAML is valid + has CRITICAL session-tag key."""
-        resp = alice_client.post(
-            "/auth/credentials/aws/connect",
-            json={"nickname": "serve-test", "account_id": "123456789012"},
-        )
-        launch_url = resp.json()["launch_url"]
-        fragment_query = launch_url.split("quickcreate?", 1)[1]
-        template_url_param = next(p for p in fragment_query.split("&") if p.startswith("templateURL="))
-        template_url = unquote(template_url_param[len("templateURL=") :])
-
-        # Call the backend route directly (CloudFront strips the /api prefix in prod;
-        # in tests we hit the FastAPI route without the prefix).
-        path_and_query = template_url.split("/api/auth/credentials/aws/cfn-template.yaml", 1)[1]
-        serve_resp = alice_client.get(f"/auth/credentials/aws/cfn-template.yaml{path_and_query}")
-        assert serve_resp.status_code == 200
-        assert serve_resp.headers["content-type"].startswith("application/x-yaml")
-
-        class CFNLoader(yaml.SafeLoader):
-            pass
-
-        for tag in ("!Ref", "!Sub", "!GetAtt", "!Select", "!Join", "!If"):
-            CFNLoader.add_constructor(tag, lambda loader, node: loader.construct_scalar(node))
-
-        parsed = yaml.load(serve_resp.text, Loader=CFNLoader)
-        assert parsed["AWSTemplateFormatVersion"] == "2010-09-09"
-        assert "AdpAgentRole" in parsed["Resources"]
-        trust_policy = parsed["Resources"]["AdpAgentRole"]["Properties"]["AssumeRolePolicyDocument"]
-        condition = trust_policy["Statement"][0]["Condition"]["StringEquals"]
-        assert "aws:RequestTag/adp:user_id" in condition
-
-    def test_cfn_template_rejects_bad_signature(self, alice_client):
-        resp = alice_client.get(
-            "/auth/credentials/aws/cfn-template.yaml",
-            params={"cid": "anything", "exp": 99999999999, "sig": "not-a-real-sig"},
-        )
-        assert resp.status_code == 403
-
-    def test_cfn_template_rejects_expired_token(self, alice_client):
-        from src.auth.cfn_template import _sign
-
-        past = 1  # 1970 — long expired
-        sig = _sign("anything", past)
-        resp = alice_client.get(
-            "/auth/credentials/aws/cfn-template.yaml",
-            params={"cid": "anything", "exp": past, "sig": sig},
-        )
-        assert resp.status_code == 403
+        # Virtual-hosted S3 host + pre-signed query params.  Match the bucket
+        # from the test-env ADP_CFN_TEMPLATE_BUCKET setting (see conftest).
+        assert ".s3." in decoded or ".s3.amazonaws.com" in decoded
+        assert "X-Amz-Signature=" in decoded or "Signature=" in decoded
+        assert "cfn-templates/aws_role_v1.yaml" in decoded
 
     def test_rejects_invalid_account_id(self, alice_client):
         resp = alice_client.post(

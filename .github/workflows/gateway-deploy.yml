@@ -112,6 +112,19 @@ jobs:
           done
           echo "IMAGE_TAG=${{ github.sha }}" >> $GITHUB_ENV
 
+      - name: Upload CFN template to S3
+        # Issue #562: the AWS connect flow pre-signs a GET URL on this object.
+        # It needs to exist in S3 before the gateway pod can build valid Quick-Create
+        # URLs. Idempotent — copy-over on every deploy picks up template edits.
+        run: |
+          BUCKET=$(aws ssm get-parameter \
+            --name "/adp/${{ env.ENVIRONMENT }}/gateway/frontend-bucket" \
+            --query "Parameter.Value" --output text)
+          aws s3 cp \
+            modules/gateway/src/auth/cfn_templates/aws_role_v1.yaml \
+            "s3://${BUCKET}/cfn-templates/aws_role_v1.yaml" \
+            --content-type application/x-yaml
+
       - name: Roll out new image
         run: |
           REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
@@ -187,7 +200,9 @@ jobs:
             --name "/adp/${{ env.ENVIRONMENT }}/gateway/frontend-bucket" \
             --query "Parameter.Value" --output text)
           cd modules/gateway/frontend
-          aws s3 sync dist/ "s3://${BUCKET}/" --delete
+          # Exclude cfn-templates/ so it isn't wiped by --delete (populated by
+          # the backend deploy job per issue #562).
+          aws s3 sync dist/ "s3://${BUCKET}/" --delete --exclude "cfn-templates/*"
 
           DIST_ID=$(aws ssm get-parameter \
             --name "/adp/${{ env.ENVIRONMENT }}/gateway/cloudfront-id" \

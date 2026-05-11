@@ -44,10 +44,18 @@ data:
   # CORS allowed origins - CloudFront frontend URL and localhost for development
   CORS_ALLOWED_ORIGINS: "__CORS_ALLOWED_ORIGINS__"
 
-  # Public base URL the app uses to build absolute links (magic-link emails,
-  # CFN template URLs for AWS Console, etc.). Must point at CloudFront so that
-  # requests from browsers and AWS services are reachable without auth headers.
+  # Public base URL the app uses to build absolute links (magic-link emails, etc.).
+  # Must point at CloudFront so that requests from browsers are reachable
+  # without auth headers.
   BG_GATEWAY_BASE_URL: "__GATEWAY_BASE_URL__"
+
+  # S3 bucket + key where the CloudFormation template YAML lives.  The gateway
+  # pre-signs a GET URL on this object each time a user clicks "Connect AWS
+  # account" — AWS Console's Quick-Create flow requires templateURL to be an
+  # S3 host, which is why we host the template in this existing bucket rather
+  # than serving it from the gateway directly.
+  ADP_CFN_TEMPLATE_BUCKET: "__CFN_TEMPLATE_BUCKET__"
+  ADP_CFN_TEMPLATE_KEY: "cfn-templates/aws_role_v1.yaml"
 
   # Issue #133: SECURITY FIX - BG_TOKEN_SECRET_KEY REMOVED from ConfigMap
   # =============================================================================

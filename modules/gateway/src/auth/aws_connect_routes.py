@@ -18,8 +18,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,12 +30,7 @@ from src.shared.models.vault import UserCredential
 from src.shared.schemas.auth import TokenContext
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
-from .cfn_template import (
-    build_launch_url,
-    compute_role_arn,
-    get_template_body,
-    verify_template_token,
-)
+from .cfn_template import build_launch_url, compute_role_arn
 from .middleware import get_current_user_context
 from .vault_routes import get_secrets_manager
 
@@ -289,41 +283,6 @@ async def connect_verify(
     )
 
     return ConnectVerifyResponse(status="verified")
-
-
-@router.get(
-    "/cfn-template.yaml",
-    summary="Serve the CFN template for AWS Console fetch",
-    description=(
-        "Public, unauthenticated endpoint called by AWS CloudFormation when the "
-        "user clicks Launch. Gated by a per-credential HMAC-signed token with "
-        "a short TTL (minted by /connect). Returns raw YAML."
-    ),
-    responses={200: {"content": {"application/x-yaml": {}}}},
-)
-async def serve_cfn_template(
-    cid: str = Query(..., description="Credential ID the URL was issued for"),
-    exp: int = Query(..., description="Unix timestamp the token expires at"),
-    sig: str = Query(..., description="HMAC signature of cid+exp"),
-) -> Response:
-    if not verify_template_token(cid, exp, sig):
-        # Same response for expired / tampered / unknown — don't leak which
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "invalid_token",
-                "message": "Template URL is invalid or expired. Re-initiate the connect flow.",
-            },
-        )
-    body = get_template_body()
-    return Response(
-        content=body,
-        media_type="application/x-yaml",
-        headers={
-            "Cache-Control": "no-store",
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
 
 
 # ---------------------------------------------------------------------------

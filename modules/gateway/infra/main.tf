@@ -175,6 +175,29 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
   depends_on = [module.cognito]
 }
 
+# CFN template read permissions (issue #562)
+# The gateway pre-signs an S3 GET URL for the CloudFormation template YAML;
+# AWS Console requires templateURL to be an S3 host, so we host the template
+# in the existing frontend bucket and let the gateway sign a short-lived URL.
+resource "aws_iam_role_policy" "gateway_cfn_template_read" {
+  name = "${local.name_prefix}-policy-gateway-cfn-template-read"
+  role = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "CfnTemplateGet"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "${module.frontend_s3.bucket_arn}/cfn-templates/*"
+      }
+    ]
+  })
+
+  depends_on = [module.frontend_s3]
+}
+
 # S3 chat logs write permissions
 resource "aws_iam_role_policy" "gateway_chat_logs_s3" {
   count = var.enable_chat_logging ? 1 : 0
