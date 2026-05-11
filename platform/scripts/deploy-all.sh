@@ -562,6 +562,9 @@ else
   COGNITO_DOMAIN=$(terraform output -raw cognito_domain 2>/dev/null || echo "")
   CF_DOMAIN=$(terraform output -raw frontend_cloudfront_domain_name 2>/dev/null || echo "")
   AGENT_REGISTRY_TABLE=$(terraform output -raw agent_registry_table_name 2>/dev/null || echo "")
+  # Gateway IRSA role ARN lives in the platform layer; read it from IAM rather
+  # than cross-layer terraform_remote_state. Deterministic given name_prefix.
+  GATEWAY_ROLE_ARN=$(aws iam get-role --role-name "adp-${ENVIRONMENT}-role-gateway-service" --query 'Role.Arn' --output text 2>/dev/null || echo "")
   cd "$ROOT_DIR/modules/gateway"
   kubectl create namespace adp-gateway --dry-run=client -o yaml | kubectl apply -f -
   sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
@@ -577,6 +580,7 @@ else
       -e "s|__CORS_ALLOWED_ORIGINS__|https://${CF_DOMAIN},http://localhost:5173|g" \
       -e "s|__GATEWAY_BASE_URL__|https://${CF_DOMAIN}|g" \
       -e "s|__CFN_TEMPLATE_BUCKET__|$(terraform output -raw frontend_bucket_name 2>/dev/null || echo '')|g" \
+      -e "s|__GATEWAY_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
       -e "s|__CHAT_LOGGING_ENABLED__|false|g" \
       -e "s|__CHAT_LOGGING_BUCKET__||g" \
       -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|off|g" \

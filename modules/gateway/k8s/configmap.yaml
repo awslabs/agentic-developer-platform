@@ -51,11 +51,17 @@ data:
 
   # S3 bucket + key where the CloudFormation template YAML lives.  The gateway
   # pre-signs a GET URL on this object each time a user clicks "Connect AWS
-  # account" — AWS Console's Quick-Create flow requires templateURL to be an
+  # account" - AWS Console's Quick-Create flow requires templateURL to be an
   # S3 host, which is why we host the template in this existing bucket rather
   # than serving it from the gateway directly.
   ADP_CFN_TEMPLATE_BUCKET: "__CFN_TEMPLATE_BUCKET__"
   ADP_CFN_TEMPLATE_KEY: "cfn-templates/aws_role_v1.yaml"
+
+  # Gateway IRSA role ARN - interpolated into the CFN template as the trust
+  # principal so the user's newly-created role can be assumed by this pod.
+  # Falls back to a placeholder ARN if unset; IAM rejects that placeholder at
+  # stack-create time, so this value must be set in every environment.
+  ADP_GATEWAY_ROLE_ARN: "__GATEWAY_ROLE_ARN__"
 
   # Issue #133: SECURITY FIX - BG_TOKEN_SECRET_KEY REMOVED from ConfigMap
   # =============================================================================
