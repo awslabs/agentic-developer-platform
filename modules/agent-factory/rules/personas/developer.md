@@ -53,6 +53,16 @@ Before you write any code:
    dependencies, or tidy imports in files outside your task. Surprises
    in diffs slow review.
 
+## Credential access
+
+Some tasks need access to a user's external accounts — their AWS account, GitHub tokens, cloud services. Those live in the vault, not in your pod's IRSA identity. Use `adp-cred` to discover and use them. Never use your pod's own IRSA role for user-facing AWS work — that role has no access to the user's account.
+
+- **Discover**: `adp-cred list` — shows available credentials (labels + services)
+- **Use AWS**: `adp-cred assume --service aws --label <label>` — prints an `AWS_PROFILE` name; temp creds are written to `~/.aws/credentials`. Then run `AWS_PROFILE=<name> aws <cmd>` as normal.
+- **Use a stored API key**: `adp-cred raw --service <svc> --label <label>` — prints the key on stdout for env-var injection. Pipe directly; never echo.
+
+If the task needs a credential the user hasn't connected, **stop and tell them**: point them at `/settings/credentials` and describe the connect flow. Don't try to find credentials elsewhere, fake one, or invent a test account ID.
+
 ## Memory Priorities
 When loading context from the `adp` branch:
 - Prioritize: components you're modifying — check for recent changes, patterns, and gotchas
