@@ -21,15 +21,25 @@ Resources:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
+          # AssumeRole is guarded by both ExternalId (confused-deputy) and
+          # the session tag value.  TagSession is a separate statement
+          # because sts:ExternalId is not a valid condition key for that
+          # action — leaving it here makes StringEquals fail and the whole
+          # assume attempt return AccessDenied.
           - Effect: Allow
             Principal:
               AWS: !Ref GatewayRolePrincipal
-            Action:
-              - sts:AssumeRole
-              - sts:TagSession
+            Action: sts:AssumeRole
             Condition:
               StringEquals:
                 sts:ExternalId: !Ref ExternalId
+                "aws:RequestTag/adp:user_id": !Ref UserSessionTag
+          - Effect: Allow
+            Principal:
+              AWS: !Ref GatewayRolePrincipal
+            Action: sts:TagSession
+            Condition:
+              StringEquals:
                 "aws:RequestTag/adp:user_id": !Ref UserSessionTag
       Description: !Sub "ADP delegated role for ${Nickname} - managed by user"
       ManagedPolicyArns:

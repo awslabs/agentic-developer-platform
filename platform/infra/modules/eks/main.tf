@@ -235,7 +235,10 @@ resource "aws_iam_role_policy" "gateway_bedrock_invoke" {
   })
 }
 
-# STS permissions for cross-account pool access
+# STS permissions for cross-account pool access + assuming user-connected AWS roles.
+# Issue #562: users connect their AWS account by creating a role named
+# ADP-Agent-<nickname> in their account; the gateway then calls AssumeRole +
+# TagSession to get short-lived credentials for that user's workloads.
 resource "aws_iam_role_policy" "gateway_sts" {
   name = "${var.name_prefix}-policy-gateway-sts"
   role = aws_iam_role.gateway_service_irsa.id
@@ -247,6 +250,12 @@ resource "aws_iam_role_policy" "gateway_sts" {
         Effect   = "Allow"
         Action   = ["sts:GetCallerIdentity"]
         Resource = "*"
+      },
+      {
+        Sid      = "AssumeUserConnectedAwsRoles"
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole", "sts:TagSession"]
+        Resource = "arn:aws:iam::*:role/ADP-Agent-*"
       }
     ]
   })
