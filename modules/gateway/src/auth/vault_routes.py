@@ -77,6 +77,29 @@ def get_secrets_manager() -> SecretsManagerHelper:
     return _sm_helper
 
 
+async def _resolve_user_id_in_context(token_context, db: AsyncSession) -> None:
+    """Resolve Cognito sub → Postgres users.id and mutate token_context in place.
+
+    TokenContext.user_id holds the Cognito sub for human users (the JWT `sub`
+    claim), but user_credentials.user_id is a FK on users.id.  Without this
+    resolution, vault_service._visible_credential_filter compares sub vs UUID
+    and silently returns zero rows.  Same bug that #567 fixed on the
+    aws_connect_routes side — applying it here too.
+
+    Service accounts don't hit this path (their JWT sub IS the users.id).
+    If no users row matches (shouldn't happen for registered humans), leave
+    the context untouched — the downstream query will return empty, which is
+    the safe behavior.
+    """
+    if token_context.account_type != "human":
+        return
+    stmt = select(User).where(User.cognito_sub == token_context.user_id)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+    if user is not None:
+        token_context.user_id = user.id
+
+
 # ---------------------------------------------------------------------------
 # Credential endpoints
 # ---------------------------------------------------------------------------
@@ -100,6 +123,7 @@ async def list_credentials_endpoint(
     if scope is not None and scope not in VALID_SCOPES:
         raise HTTPException(status_code=400, detail={"error": "invalid_scope", "message": f"scope must be one of {VALID_SCOPES}"})
 
+    await _resolve_user_id_in_context(token_context, db)
     creds = await list_credentials(db, token_context, scope_filter=scope)
     return [CredentialResponse.from_model(c) for c in creds]
 
@@ -121,6 +145,7 @@ async def create_credential_endpoint(
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
 ) -> CredentialResponse:
     try:
+        await _resolve_user_id_in_context(token_context, db)
         cred = await create_credential(data, db, token_context, sm)
         return CredentialResponse.from_model(cred)
     except InsufficientPrivilegesError as exc:
@@ -145,6 +170,7 @@ async def update_credential_endpoint(
     db: AsyncSession = Depends(get_db),
 ) -> CredentialResponse:
     try:
+        await _resolve_user_id_in_context(token_context, db)
         cred = await update_credential(credential_id, data, db, token_context)
         return CredentialResponse.from_model(cred)
     except CredentialNotFoundError:
@@ -170,6 +196,7 @@ async def delete_credential_endpoint(
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
 ) -> None:
     try:
+        await _resolve_user_id_in_context(token_context, db)
         await delete_credential(credential_id, db, token_context, sm)
     except CredentialNotFoundError:
         raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Credential not found"})
@@ -193,6 +220,7 @@ async def list_identities_endpoint(
     token_context=Depends(get_current_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> list[IdentityResponse]:
+    await _resolve_user_id_in_context(token_context, db)
     identities = await list_identities(db, token_context)
     return [IdentityResponse.from_model(i) for i in identities]
 
@@ -210,6 +238,7 @@ async def unlink_identity_endpoint(
     db: AsyncSession = Depends(get_db),
 ) -> None:
     try:
+        await _resolve_user_id_in_context(token_context, db)
         await unlink_identity(identity_id, db, token_context)
     except IdentityNotFoundError:
         raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Identity not found"})
