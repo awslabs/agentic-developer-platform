@@ -184,6 +184,7 @@ class TestAssumeRoleHappyPath:
 
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
         ):
@@ -223,6 +224,7 @@ class TestAssumeRoleHappyPath:
 
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
         ):
@@ -255,6 +257,7 @@ class TestAssumeRoleHappyPath:
 
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
         ):
@@ -290,6 +293,7 @@ class TestAssumeRoleHappyPath:
 
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
         ):
@@ -321,6 +325,7 @@ class TestAssumeRoleHappyPath:
 
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
         ):
@@ -364,6 +369,7 @@ class TestAssumeRoleErrors:
 
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
         ):
             client = _make_app(db, mock_sm)
@@ -388,6 +394,7 @@ class TestAssumeRoleErrors:
 
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
         ):
             client = _make_app(db, mock_sm)
@@ -425,6 +432,7 @@ class TestAssumeRoleErrors:
 
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
         ):
             client = _make_app(db, mock_sm)
@@ -447,7 +455,10 @@ class TestAssumeRoleErrors:
     async def test_missing_api_key_returns_403(self, db):
         mock_sm = MagicMock()
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with (
+            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+        ):
             client = _make_app(db, mock_sm)
             resp = client.post(
                 "/internal/v1/credential-assume-role",
@@ -472,6 +483,7 @@ class TestAssumeRoleErrors:
 
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
         ):
@@ -533,6 +545,7 @@ class TestAssumeRoleScopeFallback:
 
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
         ):

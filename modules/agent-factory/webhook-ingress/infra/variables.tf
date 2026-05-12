@@ -111,3 +111,13 @@ variable "agent_pod_deadline_seconds" {
   type        = number
   default     = 1800 # 30 min — matches sqs_visibility_timeout
 }
+
+# -----------------------------------------------------------------------------
+# Gateway API Gateway (Issue #575: IRSA/SigV4 auth for internal endpoints)
+# -----------------------------------------------------------------------------
+
+variable "gateway_apigw_invoke_url" {
+  description = "Invoke URL of the gateway's API Gateway (for /agent/* path). When set, worker pods use SigV4 auth instead of shared-secret. Pass from gateway infra outputs."
+  type        = string
+  default     = ""
+}

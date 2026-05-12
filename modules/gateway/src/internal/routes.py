@@ -28,6 +28,7 @@ from src.auth.magic_link import (
     issue_token,
     store_nonce,
 )
+from src.internal.auth_deps import verify_internal_or_irsa
 from src.shared.config import get_settings
 from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
@@ -152,7 +153,7 @@ async def _write_audit(
 async def issue_magic_link(
     body: IssueMagicLinkRequest,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_verify_internal_key),
+    _: None = Depends(verify_internal_or_irsa),
 ) -> IssueMagicLinkResponse:
     secret = _get_magic_link_secret()
     if not secret:
@@ -228,7 +229,7 @@ async def issue_magic_link(
 async def resolve_user(
     body: ResolveUserRequest,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_verify_internal_key),
+    _: None = Depends(verify_internal_or_irsa),
 ):
     # 1. Check user_identities
     stmt = select(UserIdentity).where(

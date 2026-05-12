@@ -133,6 +133,23 @@ resource "aws_iam_role_policy" "agent_scaledjob_sts" {
   })
 }
 
+# --- API Gateway: invoke internal endpoints via SigV4 (Issue #575) ---
+
+resource "aws_iam_role_policy" "agent_scaledjob_apigw_internal" {
+  name = "apigw-invoke-internal"
+  role = aws_iam_role.agent_scaledjob.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "InvokeGatewayInternalApi"
+      Effect   = "Allow"
+      Action   = "execute-api:Invoke"
+      Resource = "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/*/agent/internal/*"
+    }]
+  })
+}
+
 # ---------------------------------------------------------------------------
 # AgentCore Browser — for the url-analysis skill (EPIC #224 / #484)
 # ---------------------------------------------------------------------------

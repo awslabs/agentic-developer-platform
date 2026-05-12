@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.internal.routes import _verify_internal_key
+from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.sts_assume_service import STSAssumeError, assume_role
 from src.shared.config import get_settings
 from src.shared.database import get_db
@@ -154,7 +154,7 @@ async def credential_assume_role(
     body: AssumeRoleRequestBody,
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
-    _: None = Depends(_verify_internal_key),
+    _: None = Depends(verify_internal_or_irsa),
 ) -> AssumeRoleResponse:
     provenance_id = str(uuid.uuid4())
     settings = get_settings()

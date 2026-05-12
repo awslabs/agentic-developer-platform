@@ -34,8 +34,8 @@ from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.credential_injector import FILE_CREDENTIAL_TYPES, inject_credential
-from src.internal.routes import _verify_internal_key
 from src.shared.config import get_settings
 from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
@@ -258,7 +258,7 @@ async def list_user_credentials(
     user_id: str = Query(..., description="Internal user UUID (cognito sub or shadow user id)"),
     service: str | None = Query(None, description="Service name filter (optional). When omitted, returns all services."),
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_verify_internal_key),
+    _: None = Depends(verify_internal_or_irsa),
 ) -> list[CredentialMetadata]:
     # Validate user exists.
     user = await _get_user_context(user_id, db)
@@ -303,7 +303,7 @@ async def proxy_request(
     body: ProxyRequestBody,
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
-    _: None = Depends(_verify_internal_key),
+    _: None = Depends(verify_internal_or_irsa),
 ) -> ProxyResponse:
     provenance_id = str(uuid.uuid4())
 
@@ -409,7 +409,7 @@ async def credential_materialize(
     x_agent_scopes: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
-    _: None = Depends(_verify_internal_key),
+    _: None = Depends(verify_internal_or_irsa),
 ) -> MaterializeResponse:
     # Scope gate.
     _check_agent_scope(x_agent_scopes, "credential:materialize")
@@ -528,7 +528,7 @@ async def credential_raw_read(
     x_agent_scopes: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
-    _: None = Depends(_verify_internal_key),
+    _: None = Depends(verify_internal_or_irsa),
 ) -> RawReadResponse:
     provenance_id = str(uuid.uuid4())
     settings = get_settings()
