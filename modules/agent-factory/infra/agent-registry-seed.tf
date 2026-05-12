@@ -10,16 +10,16 @@
 # (chat, webhook, future) share this single entry.
 # =============================================================================
 
-variable "agent_registry_table_name" {
-  description = "DynamoDB agent registry table name (from gateway infra output). Empty disables seeding."
-  type        = string
-  default     = ""
+# Table name is published to SSM by modules/gateway/infra/ rather than
+# plumbed through as a tfvar — same pattern used for other cross-layer
+# values (cloudfront-domain, frontend-bucket, apigw-invoke-url, etc.).
+# Requires gateway infra to apply first (it creates the param).
+data "aws_ssm_parameter" "agent_registry_table" {
+  name = "/adp/${var.environment}/gateway/agent-registry-table"
 }
 
 resource "aws_dynamodb_table_item" "scaledjob_worker_agent" {
-  count = var.agent_registry_table_name != "" ? 1 : 0
-
-  table_name = var.agent_registry_table_name
+  table_name = data.aws_ssm_parameter.agent_registry_table.value
   hash_key   = "agent_id"
 
   item = jsonencode({

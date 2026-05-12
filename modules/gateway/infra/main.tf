@@ -773,6 +773,20 @@ resource "aws_ssm_parameter" "apigw_invoke_url" {
   tags = local.common_tags
 }
 
+# Issue #575: Worker pods need this table name to seed their IRSA role entry.
+# Publishing here rather than reading via cross-module state so agent-factory
+# stays loosely coupled to gateway-infra.
+resource "aws_ssm_parameter" "agent_registry_table" {
+  count = var.enable_api_gateway ? 1 : 0
+
+  name        = "/adp/${var.environment}/gateway/agent-registry-table"
+  description = "DynamoDB table name for the agent registry (IAM ARN → agent mapping)"
+  type        = "String"
+  value       = module.lambda_authorizer[0].agent_registry_table_name
+
+  tags = local.common_tags
+}
+
 resource "aws_ssm_parameter" "internal_alb_arn" {
   name        = "/adp/${var.environment}/gateway/internal-alb-arn"
   description = "ARN of the internal ALB created by EKS Ingress controller"
