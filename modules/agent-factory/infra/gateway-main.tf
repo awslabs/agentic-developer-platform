@@ -75,7 +75,8 @@ data "terraform_remote_state" "gateway" {
 
 locals {
   # Authorizer Lambda from gateway module (empty if gateway not deployed)
-  authorizer_invoke_arn = var.gateway_deployed ? try(data.terraform_remote_state.gateway[0].outputs.authorizer_lambda_invoke_arn, "") : ""
+  authorizer_invoke_arn    = var.gateway_deployed ? try(data.terraform_remote_state.gateway[0].outputs.authorizer_lambda_invoke_arn, "") : ""
+  authorizer_function_name = var.gateway_deployed ? try(data.terraform_remote_state.gateway[0].outputs.lambda_authorizer_name, "") : ""
 }
 
 # --- WebSocket API Gateway ---
@@ -83,11 +84,12 @@ locals {
 module "gateway_apigw" {
   source = "./modules/api-gateway-ws"
 
-  name_prefix                  = local.name_prefix
-  ingest_lambda_arn            = module.gateway_lambda.ingest_lambda_arn
-  ingest_lambda_name           = module.gateway_lambda.ingest_lambda_name
-  authorizer_lambda_invoke_arn = local.authorizer_invoke_arn
-  tags                         = { Component = "agent-gateway" }
+  name_prefix                     = local.name_prefix
+  ingest_lambda_arn               = module.gateway_lambda.ingest_lambda_arn
+  ingest_lambda_name              = module.gateway_lambda.ingest_lambda_name
+  authorizer_lambda_invoke_arn    = local.authorizer_invoke_arn
+  authorizer_lambda_function_name = local.authorizer_function_name
+  tags                            = { Component = "agent-gateway" }
 }
 
 # --- KEDA ---

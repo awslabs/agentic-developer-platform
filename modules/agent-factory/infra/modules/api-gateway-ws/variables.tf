@@ -21,6 +21,12 @@ variable "authorizer_lambda_invoke_arn" {
   default     = ""
 }
 
+variable "authorizer_lambda_function_name" {
+  description = "Function name of the gateway Lambda authorizer (for aws_lambda_permission). Required when authorizer_lambda_invoke_arn is set."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

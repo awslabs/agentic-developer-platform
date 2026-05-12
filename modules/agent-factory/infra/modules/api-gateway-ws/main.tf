@@ -40,7 +40,7 @@ resource "aws_lambda_permission" "authorizer_invoke" {
 
   statement_id  = "AllowAgentGatewayWSInvoke"
   action        = "lambda:InvokeFunction"
-  function_name = replace(var.authorizer_lambda_invoke_arn, "/.*:function:/", "")
+  function_name = var.authorizer_lambda_function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.ws.execution_arn}/*"
 }

@@ -110,7 +110,7 @@ resource "kubernetes_job" "grant_rds_iam" {
 
   spec {
     ttl_seconds_after_finished = 120
-    backoff_limit              = 4
+    backoff_limit              = 6
 
     template {
       metadata {
@@ -123,7 +123,7 @@ resource "kubernetes_job" "grant_rds_iam" {
       spec {
         service_account_name    = kubernetes_service_account.rds_bootstrap.metadata[0].name
         restart_policy          = "OnFailure"
-        active_deadline_seconds = 300
+        active_deadline_seconds = 600
 
         container {
           name  = "bootstrap"
@@ -191,7 +191,7 @@ resource "kubernetes_job" "grant_rds_iam" {
   wait_for_completion = true
 
   timeouts {
-    create = "6m"
+    create = "15m"
   }
 
   depends_on = [
