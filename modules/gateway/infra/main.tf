@@ -758,6 +758,21 @@ resource "aws_ssm_parameter" "cloudfront_domain" {
   tags = local.common_tags
 }
 
+# Issue #575: Worker pods read this to SigV4-sign calls to /agent/internal/*.
+# Published here so any consumer (agent-factory, webhook-ingress, etc.) can
+# resolve it at apply time rather than plumbing the invoke URL through as
+# a hardcoded tfvar per environment.
+resource "aws_ssm_parameter" "apigw_invoke_url" {
+  count = var.enable_api_gateway ? 1 : 0
+
+  name        = "/adp/${var.environment}/gateway/apigw-invoke-url"
+  description = "Gateway API Gateway stage invoke URL (for /agent/* IAM-authed routes)"
+  type        = "String"
+  value       = module.api_gateway[0].api_gateway_invoke_url
+
+  tags = local.common_tags
+}
+
 resource "aws_ssm_parameter" "internal_alb_arn" {
   name        = "/adp/${var.environment}/gateway/internal-alb-arn"
   description = "ARN of the internal ALB created by EKS Ingress controller"

@@ -113,10 +113,8 @@ locals {
                     value: ${aws_sqs_queue.agent_submit.url}
                   - name: URL_ANALYSIS_EVIDENCE_BUCKET
                     value: adp-${var.environment}-url-analysis-evidence-v2-${local.account_id}
-                  %{if var.gateway_apigw_invoke_url != ""}
                   - name: ADP_GATEWAY_ENDPOINT
-                    value: ${var.gateway_apigw_invoke_url}
-                  %{endif}
+                    value: ${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}
                 resources:
                   requests:
                     cpu: "1"

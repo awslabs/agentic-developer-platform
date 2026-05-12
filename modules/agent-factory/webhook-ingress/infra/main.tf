@@ -73,3 +73,14 @@ locals {
 data "aws_iam_role" "keda_operator" {
   name = var.keda_operator_role_name
 }
+
+# Issue #575: the gateway's API Gateway invoke URL, published to SSM by
+# modules/gateway/infra/. Nullable because the param may not exist in a
+# freshly-bootstrapped environment — consumers handle "" gracefully.
+data "aws_ssm_parameter" "gateway_apigw_invoke_url" {
+  name = "/adp/${var.environment}/gateway/apigw-invoke-url"
+
+  # Workflow-dispatch apply ordering: gateway infra must apply first so this
+  # param exists. If the param is missing at plan time, Terraform fails loudly
+  # rather than silently producing an empty value — which is what we want.
+}
