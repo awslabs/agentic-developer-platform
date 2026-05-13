@@ -1,12 +1,18 @@
 """adp-cred assume — STS AssumeRole via the vault gateway.
 
 Issue #481: aws_role credential type + STS assume_role as a vault delivery path.
+Issue #583: --exec flag to run commands with assumed-role creds in env (defeats IRSA precedence).
 
 Usage:
     adp-cred assume --service aws --label prod --purpose "deploy to prod"
+    adp-cred assume --service aws --label prod --exec aws sts get-caller-identity
 
-Writes temporary credentials to ~/.aws/credentials as a named profile.
-Prints only the profile name to stdout (for script consumption).
+Without --exec: writes temporary credentials to ~/.aws/credentials as a named profile,
+prints only the profile name to stdout (legacy behavior).
+
+With --exec: runs the specified command with assumed-role credentials injected as
+environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
+AWS_REGION, AWS_DEFAULT_REGION) and IRSA env vars removed. Scoped to that one command.
 NEVER prints secret_access_key or session_token to stdout/stderr.
 """
 
@@ -14,24 +20,33 @@ from __future__ import annotations
 
 import configparser
 import os
+import shutil
 import sys
 
-from adp_cred.client import _check_enabled, _get_config, _request
+from adp_cred.client import _check_enabled, _do_request, _get_config
 
 
 def cmd_assume(args: list[str]) -> None:
     """Assume an AWS role stored in the user's vault.
 
-    Writes temp creds to ~/.aws/credentials under the returned profile name.
-    Prints the profile name to stdout.
+    Without --exec: writes temp creds to ~/.aws/credentials under the returned
+    profile name, prints the profile name to stdout.
+
+    With --exec: runs the given command with assumed-role creds in its env,
+    stripping IRSA vars so boto3 uses the assumed credentials.
     """
     service: str = "aws"
     label: str | None = None
     purpose: str | None = None
+    exec_args: list[str] | None = None
 
     i = 0
     while i < len(args):
-        if args[i] == "--service" and i + 1 < len(args):
+        if args[i] == "--exec":
+            # Everything after --exec is the command to run.
+            exec_args = args[i + 1 :]
+            break
+        elif args[i] == "--service" and i + 1 < len(args):
             service = args[i + 1]
             i += 2
         elif args[i] == "--label" and i + 1 < len(args):
@@ -43,13 +58,23 @@ def cmd_assume(args: list[str]) -> None:
         else:
             print(f"error: unknown argument: {args[i]}", file=sys.stderr)
             print(
-                "Usage: adp-cred assume [--service SERVICE] [--label LABEL] [--purpose PURPOSE]",
+                "Usage: adp-cred assume [--service SERVICE] [--label LABEL] "
+                "[--purpose PURPOSE] [--exec CMD [ARGS...]]",
                 file=sys.stderr,
             )
             sys.exit(2)
 
+    # Validate --exec has a command.
+    if exec_args is not None and len(exec_args) == 0:
+        print(
+            "error: --exec requires a command. "
+            "Usage: adp-cred assume [--service S] [--label L] --exec <cmd> [args...]",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     _check_enabled()
-    base_url, api_key, user_id, agent_id, task_id = _get_config()
+    base_url, api_key, user_id, agent_id, task_id, use_sigv4 = _get_config()
 
     payload = {
         "user_id": user_id,
@@ -60,9 +85,9 @@ def cmd_assume(args: list[str]) -> None:
         "purpose": purpose,
     }
     endpoint = f"{base_url}/internal/v1/credential-assume-role"
-    result = _request("POST", endpoint, api_key, payload)
+    result = _do_request("POST", endpoint, api_key, use_sigv4, payload)
 
-    # Write to ~/.aws/credentials.
+    # Write to ~/.aws/credentials (backward compat — always done).
     profile_name = result["profile_name"]
     _write_aws_credentials(
         profile_name=profile_name,
@@ -72,8 +97,31 @@ def cmd_assume(args: list[str]) -> None:
         region=result.get("region", ""),
     )
 
-    # Print ONLY the profile name to stdout — never credentials.
-    print(profile_name, end="")
+    if exec_args is not None:
+        # Build a scoped env with assumed-role creds; remove IRSA vars.
+        env = os.environ.copy()
+
+        # Inject assumed-role credentials (boto3 chain priority #2 — env vars).
+        env["AWS_ACCESS_KEY_ID"] = result["access_key_id"]
+        env["AWS_SECRET_ACCESS_KEY"] = result["secret_access_key"]
+        env["AWS_SESSION_TOKEN"] = result["session_token"]
+
+        # Region: prefer the response's region, fall back to existing env.
+        region = result.get("region") or os.environ.get("AWS_REGION") or "us-east-1"
+        env["AWS_REGION"] = region
+        env["AWS_DEFAULT_REGION"] = region
+
+        # Remove anything that could route boto3 elsewhere.
+        for var in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"):
+            env.pop(var, None)
+
+        # Replace this process with the user's command.
+        exec_cmd = exec_args[0]
+        exec_path = shutil.which(exec_cmd) or exec_cmd
+        os.execvpe(exec_path, exec_args, env)
+    else:
+        # Legacy behavior: print ONLY the profile name to stdout.
+        print(profile_name, end="")
 
 
 def _write_aws_credentials(

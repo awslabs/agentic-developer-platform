@@ -58,7 +58,13 @@ Before you write any code:
 Some tasks need access to a user's external accounts — their AWS account, GitHub tokens, cloud services. Those live in the vault, not in your pod's IRSA identity. Use `adp-cred` to discover and use them. Never use your pod's own IRSA role for user-facing AWS work — that role has no access to the user's account.
 
 - **Discover**: `adp-cred list` — shows available credentials (labels + services)
-- **Use AWS**: `adp-cred assume --service aws --label <label>` — prints an `AWS_PROFILE` name; temp creds are written to `~/.aws/credentials`. Then run `AWS_PROFILE=<name> aws <cmd>` as normal.
+- **Use AWS**: `adp-cred assume --service aws --label <label> --exec aws <cmd>`
+  runs `aws <cmd>` with the assumed-role credentials in its environment, scoped
+  to that single invocation. Use this for every AWS call — the pod has IRSA
+  env vars set that would otherwise override `AWS_PROFILE`.
+- **Use AWS via Python**: `adp-cred assume --service aws --label <label> --exec python3 my-script.py`
+- **Multi-command flows**: wrap in `bash -c`: `adp-cred assume --service aws --label <label> --exec bash -c "aws ... && aws ..."`
+- **Don't use** `AWS_PROFILE=<name> aws <cmd>` — it's silently overridden by pod IRSA.
 - **Use a stored API key**: `adp-cred raw --service <svc> --label <label>` — prints the key on stdout for env-var injection. Pipe directly; never echo.
 
 If the task needs a credential the user hasn't connected, **stop and tell them**: point them at `/settings/credentials` and describe the connect flow. Don't try to find credentials elsewhere, fake one, or invent a test account ID.
