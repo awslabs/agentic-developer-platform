@@ -418,31 +418,27 @@ class TestEntrypointMain:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
-             patch("entrypoint.assume_customer_role") as mock_assume:
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
             mock_gw = MagicMock()
             mock_gw_cls.return_value = mock_gw
             mock_gw.is_configured = True
-            mock_gw.raw_read.return_value = {
-                "value": json.dumps({
-                    "role_arn": "arn:aws:iam::111:role/test",
-                    "external_id": "ext-123",
-                    "session_duration_seconds": 3600,
-                }),
-                "credential_type": "api_key",
+            mock_gw.assume_role.return_value = {
+                "profile_name": "adp-aws-default",
+                "access_key_id": "AK",
+                "secret_access_key": "SK",
+                "session_token": "ST",
+                "expiration": "2026-05-13T22:00:00Z",
+                "region": "us-east-1",
                 "provenance_id": "prov-123",
             }
-            mock_assume.return_value = {
-                "AWS_ACCESS_KEY_ID": "AK",
-                "AWS_SECRET_ACCESS_KEY": "SK",
-                "AWS_SESSION_TOKEN": "ST",
-            }
             main()
-            mock_gw.raw_read.assert_called_once()
-            mock_assume.assert_called_once()
-            # Verify user_id is passed to assume_customer_role
-            call_kwargs = mock_assume.call_args[1]
+            # Gateway-side assume-role is called once (replaces raw_read+local STS)
+            mock_gw.raw_read.assert_not_called()
+            mock_gw.assume_role.assert_called_once()
+            call_kwargs = mock_gw.assume_role.call_args.kwargs
             assert call_kwargs["user_id"] == "cognito-sub-jane-123"
+            assert call_kwargs["agent_id"] == "operations"
+            assert call_kwargs["service"] == "aws"
 
     def test_idempotency_marker_in_comments(self):
         """Verify marker format uses message_id for idempotency."""
@@ -838,16 +834,16 @@ class TestGatewayCredentialClient:
 # --- Test: _fetch_aws_credentials ---
 
 
-class TestFetchAwsCredentials:
+class TestFetchAssumedAwsCredentials:
     def test_raises_on_empty_user_id(self):
-        from entrypoint import _fetch_aws_credentials
+        from entrypoint import _fetch_assumed_aws_credentials
 
         with pytest.raises(ValueError, match="no user_id"):
-            _fetch_aws_credentials(user_id="", agent_id="ops", task_id="t1")
+            _fetch_assumed_aws_credentials(user_id="", agent_id="ops", task_id="t1")
 
     @patch("entrypoint.GatewayCredentialClient")
     def test_raises_on_unconfigured_client(self, mock_gw_cls, monkeypatch):
-        from entrypoint import _fetch_aws_credentials
+        from entrypoint import _fetch_assumed_aws_credentials
 
         monkeypatch.delenv("VAULT_GATEWAY_URL", raising=False)
         monkeypatch.delenv("VAULT_INTERNAL_API_KEY", raising=False)
@@ -856,45 +852,61 @@ class TestFetchAwsCredentials:
         mock_gw.is_configured = False
 
         with pytest.raises(GatewayCredentialError, match="not configured"):
-            _fetch_aws_credentials(user_id="user-1", agent_id="ops", task_id="t1")
+            _fetch_assumed_aws_credentials(user_id="user-1", agent_id="ops", task_id="t1")
 
     @patch("entrypoint.GatewayCredentialClient")
-    def test_success_returns_parsed_cred(self, mock_gw_cls):
-        from entrypoint import _fetch_aws_credentials
+    def test_success_returns_sts_creds(self, mock_gw_cls):
+        from entrypoint import _fetch_assumed_aws_credentials
 
         mock_gw = MagicMock()
         mock_gw_cls.return_value = mock_gw
         mock_gw.is_configured = True
-        mock_gw.raw_read.return_value = {
-            "value": json.dumps({
-                "role_arn": "arn:aws:iam::111:role/test",
-                "external_id": "ext-abc",
-                "session_duration_seconds": 1800,
-            }),
-            "credential_type": "api_key",
+        mock_gw.assume_role.return_value = {
+            "profile_name": "adp-aws-default",
+            "access_key_id": "ASIATEST",
+            "secret_access_key": "secret",
+            "session_token": "token",
+            "expiration": "2026-05-13T22:00:00Z",
+            "region": "us-east-1",
             "provenance_id": "prov-xyz",
         }
 
-        result = _fetch_aws_credentials(user_id="user-1", agent_id="ops", task_id="t1")
-        assert result["role_arn"] == "arn:aws:iam::111:role/test"
-        assert result["external_id"] == "ext-abc"
-        assert result["session_duration_seconds"] == 1800
+        result = _fetch_assumed_aws_credentials(user_id="user-1", agent_id="ops", task_id="t1")
+        assert result["access_key_id"] == "ASIATEST"
+        assert result["secret_access_key"] == "secret"
+        assert result["session_token"] == "token"
+        # Caller (entrypoint) only reads access_key_id/secret_access_key/session_token,
+        # plus provenance_id and expiration for logging. Don't over-constrain other fields.
 
     @patch("entrypoint.GatewayCredentialClient")
-    def test_raises_on_missing_role_arn(self, mock_gw_cls):
-        from entrypoint import _fetch_aws_credentials
+    def test_calls_assume_role_endpoint_with_correct_args(self, mock_gw_cls):
+        from entrypoint import _fetch_assumed_aws_credentials
 
         mock_gw = MagicMock()
         mock_gw_cls.return_value = mock_gw
         mock_gw.is_configured = True
-        mock_gw.raw_read.return_value = {
-            "value": json.dumps({"external_id": "ext-abc"}),
-            "credential_type": "api_key",
-            "provenance_id": "prov-xyz",
+        mock_gw.assume_role.return_value = {
+            "access_key_id": "AK",
+            "secret_access_key": "SK",
+            "session_token": "ST",
+            "expiration": "2026-05-13T22:00:00Z",
+            "region": "us-east-1",
+            "profile_name": "p",
+            "provenance_id": "prov",
         }
 
-        with pytest.raises(GatewayCredentialError, match="missing required field 'role_arn'"):
-            _fetch_aws_credentials(user_id="user-1", agent_id="ops", task_id="t1")
+        _fetch_assumed_aws_credentials(user_id="user-1", agent_id="operations", task_id="t1")
+
+        # Verify assume_role (not raw_read) was called with the right args.
+        # raw_read MUST NOT be called — that endpoint is gated by a feature flag.
+        mock_gw.raw_read.assert_not_called()
+        mock_gw.assume_role.assert_called_once()
+        call_kwargs = mock_gw.assume_role.call_args.kwargs
+        assert call_kwargs["user_id"] == "user-1"
+        assert call_kwargs["agent_id"] == "operations"
+        assert call_kwargs["task_id"] == "t1"
+        assert call_kwargs["service"] == "aws"
+        assert call_kwargs["label"] == "default"
 
 
 # --- Test: sts_assume user_id tag ---
@@ -1020,18 +1032,18 @@ class TestBedrockViaFlag:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
-             patch("entrypoint.assume_customer_role") as mock_assume:
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
             mock_gw = MagicMock()
             mock_gw_cls.return_value = mock_gw
             mock_gw.is_configured = True
-            mock_gw.raw_read.return_value = {
-                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
-            }
-            mock_assume.return_value = {
-                "AWS_ACCESS_KEY_ID": "AKUSER",
-                "AWS_SECRET_ACCESS_KEY": "SKUSER",
-                "AWS_SESSION_TOKEN": "STUSER",
+            mock_gw.assume_role.return_value = {
+                "profile_name": "adp-aws-default",
+                "access_key_id": "AKUSER",
+                "secret_access_key": "SKUSER",
+                "session_token": "STUSER",
+                "expiration": "2026-05-13T22:00:00Z",
+                "region": "us-east-1",
+                "provenance_id": "prov-test",
             }
             main()
 
@@ -1090,18 +1102,18 @@ class TestBedrockViaFlag:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
-             patch("entrypoint.assume_customer_role") as mock_assume:
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
             mock_gw = MagicMock()
             mock_gw_cls.return_value = mock_gw
             mock_gw.is_configured = True
-            mock_gw.raw_read.return_value = {
-                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
-            }
-            mock_assume.return_value = {
-                "AWS_ACCESS_KEY_ID": "AKUSER",
-                "AWS_SECRET_ACCESS_KEY": "SKUSER",
-                "AWS_SESSION_TOKEN": "STUSER",
+            mock_gw.assume_role.return_value = {
+                "profile_name": "adp-aws-default",
+                "access_key_id": "AKUSER",
+                "secret_access_key": "SKUSER",
+                "session_token": "STUSER",
+                "expiration": "2026-05-13T22:00:00Z",
+                "region": "us-east-1",
+                "provenance_id": "prov-test",
             }
             main()
 
@@ -1158,18 +1170,18 @@ class TestBedrockViaFlag:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
-             patch("entrypoint.assume_customer_role") as mock_assume:
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
             mock_gw = MagicMock()
             mock_gw_cls.return_value = mock_gw
             mock_gw.is_configured = True
-            mock_gw.raw_read.return_value = {
-                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
-            }
-            mock_assume.return_value = {
-                "AWS_ACCESS_KEY_ID": "AKUSER",
-                "AWS_SECRET_ACCESS_KEY": "SKUSER",
-                "AWS_SESSION_TOKEN": "STUSER",
+            mock_gw.assume_role.return_value = {
+                "profile_name": "adp-aws-default",
+                "access_key_id": "AKUSER",
+                "secret_access_key": "SKUSER",
+                "session_token": "STUSER",
+                "expiration": "2026-05-13T22:00:00Z",
+                "region": "us-east-1",
+                "provenance_id": "prov-test",
             }
             main()
 
@@ -1232,18 +1244,18 @@ class TestBedrockViaFlag:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
-             patch("entrypoint.assume_customer_role") as mock_assume:
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
             mock_gw = MagicMock()
             mock_gw_cls.return_value = mock_gw
             mock_gw.is_configured = True
-            mock_gw.raw_read.return_value = {
-                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
-            }
-            mock_assume.return_value = {
-                "AWS_ACCESS_KEY_ID": "AKUSER",
-                "AWS_SECRET_ACCESS_KEY": "SKUSER",
-                "AWS_SESSION_TOKEN": "STUSER",
+            mock_gw.assume_role.return_value = {
+                "profile_name": "adp-aws-default",
+                "access_key_id": "AKUSER",
+                "secret_access_key": "SKUSER",
+                "session_token": "STUSER",
+                "expiration": "2026-05-13T22:00:00Z",
+                "region": "us-east-1",
+                "provenance_id": "prov-test",
             }
             main()
 
@@ -1358,18 +1370,18 @@ class TestBedrockViaFlag:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
-             patch("entrypoint.assume_customer_role") as mock_assume:
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
             mock_gw = MagicMock()
             mock_gw_cls.return_value = mock_gw
             mock_gw.is_configured = True
-            mock_gw.raw_read.return_value = {
-                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
-            }
-            mock_assume.return_value = {
-                "AWS_ACCESS_KEY_ID": "AKUSER",
-                "AWS_SECRET_ACCESS_KEY": "SKUSER",
-                "AWS_SESSION_TOKEN": "STUSER",
+            mock_gw.assume_role.return_value = {
+                "profile_name": "adp-aws-default",
+                "access_key_id": "AKUSER",
+                "secret_access_key": "SKUSER",
+                "session_token": "STUSER",
+                "expiration": "2026-05-13T22:00:00Z",
+                "region": "us-east-1",
+                "provenance_id": "prov-test",
             }
             main()
 
@@ -1425,18 +1437,18 @@ class TestBedrockViaFlag:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
-             patch("entrypoint.assume_customer_role") as mock_assume:
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
             mock_gw = MagicMock()
             mock_gw_cls.return_value = mock_gw
             mock_gw.is_configured = True
-            mock_gw.raw_read.return_value = {
-                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
-            }
-            mock_assume.return_value = {
-                "AWS_ACCESS_KEY_ID": "AKUSER",
-                "AWS_SECRET_ACCESS_KEY": "SKUSER",
-                "AWS_SESSION_TOKEN": "STUSER",
+            mock_gw.assume_role.return_value = {
+                "profile_name": "adp-aws-default",
+                "access_key_id": "AKUSER",
+                "secret_access_key": "SKUSER",
+                "session_token": "STUSER",
+                "expiration": "2026-05-13T22:00:00Z",
+                "region": "us-east-1",
+                "provenance_id": "prov-test",
             }
             main()
 
@@ -1492,18 +1504,18 @@ class TestBedrockViaFlag:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
-             patch("entrypoint.assume_customer_role") as mock_assume:
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
             mock_gw = MagicMock()
             mock_gw_cls.return_value = mock_gw
             mock_gw.is_configured = True
-            mock_gw.raw_read.return_value = {
-                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
-            }
-            mock_assume.return_value = {
-                "AWS_ACCESS_KEY_ID": "AKUSER",
-                "AWS_SECRET_ACCESS_KEY": "SKUSER",
-                "AWS_SESSION_TOKEN": "STUSER",
+            mock_gw.assume_role.return_value = {
+                "profile_name": "adp-aws-default",
+                "access_key_id": "AKUSER",
+                "secret_access_key": "SKUSER",
+                "session_token": "STUSER",
+                "expiration": "2026-05-13T22:00:00Z",
+                "region": "us-east-1",
+                "provenance_id": "prov-test",
             }
             main()
 
