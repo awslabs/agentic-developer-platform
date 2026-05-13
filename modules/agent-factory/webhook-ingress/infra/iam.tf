@@ -78,11 +78,12 @@ resource "aws_iam_policy" "lambda_dynamodb" {
         ]
       },
       {
-        Sid    = "IdentityIndexRead"
+        Sid    = "IdentityIndexReadWrite"
         Effect = "Allow"
         Action = [
           "dynamodb:GetItem",
-          "dynamodb:Query"
+          "dynamodb:Query",
+          "dynamodb:PutItem"
         ]
         Resource = var.identity_index_table_arn != "" ? [var.identity_index_table_arn] : ["arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/adp-${var.environment}-identity-index"]
       },
@@ -103,20 +104,41 @@ resource "aws_iam_role_policy_attachment" "lambda_dynamodb" {
   policy_arn = aws_iam_policy.lambda_dynamodb.arn
 }
 
-# Secrets Manager read
+# Secrets Manager read/write
 resource "aws_iam_policy" "lambda_secrets" {
   name        = "${local.name_prefix}-webhook-lambda-secrets"
-  description = "Allow webhook Lambda to read webhook secret from Secrets Manager"
+  description = "Allow webhook Lambda to read webhook secret and manage per-tenant GitHub App secrets"
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "ReadWebhookSecret"
         Effect = "Allow"
         Action = [
           "secretsmanager:GetSecretValue"
         ]
         Resource = aws_secretsmanager_secret.webhook_secret.arn
+      },
+      {
+        Sid    = "ReadPlatformGitHubAppSecrets"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          aws_secretsmanager_secret.github_app_id.arn,
+          aws_secretsmanager_secret.github_app_key.arn,
+        ]
+      },
+      {
+        Sid    = "WritePerTenantGitHubAppSecrets"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:TagResource"
+        ]
+        Resource = "arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:adp/${var.environment}/tenants/*"
       }
     ]
   })

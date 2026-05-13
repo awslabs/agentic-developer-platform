@@ -148,6 +148,117 @@ def _get_metrics():
     return _metrics_mod
 
 
+# Lazy Secrets Manager client for auto-provisioning per-tenant secrets
+_sm_client = None
+
+
+def _get_sm_client():
+    """Return a cached Secrets Manager client (lazy init to protect cold-start)."""
+    global _sm_client
+    if _sm_client is None:
+        import boto3
+
+        _sm_client = boto3.client(
+            "secretsmanager",
+            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        )
+    return _sm_client
+
+
+def _emit_metric(metric_name: str) -> None:
+    """Emit a single CloudWatch metric under the WebhookIngress namespace.
+
+    Best-effort — failures are logged but never block the Lambda response.
+    """
+    try:
+        metrics = _get_metrics()
+        metrics._metric_data.append(
+            {
+                "MetricName": metric_name,
+                "Dimensions": [
+                    {"Name": "Operation", "Value": "AutoRegister"},
+                ],
+                "Value": 1,
+                "Unit": "Count",
+                "Timestamp": time.time(),
+            }
+        )
+        metrics.flush()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to emit metric %s: %s", metric_name, exc)
+
+
+def _auto_provision_tenant_github_app_secret(tenant_id: str, installation_id: int) -> None:
+    """Create per-tenant GitHub App SM secret. Idempotent.
+
+    Reads platform App credentials from the module's adp-agent-platform-* secrets,
+    composes the JSON the worker pod expects, writes to adp/<env>/tenants/<tenant>/github-app.
+
+    Failures are logged and swallowed — auto-register's DDB write has already
+    succeeded; first-task crash is recoverable manually. Emits CloudWatch metric
+    on failure for operator visibility.
+    """
+    sm = _get_sm_client()
+    env = os.environ.get("ENVIRONMENT", "dev")
+    target = f"adp/{env}/tenants/{tenant_id}/github-app"
+
+    try:
+        # Read platform App credentials (same Terraform module owns these)
+        app_id_resp = sm.get_secret_value(
+            SecretId=f"adp/{env}/github-app/adp-agent-platform-id"
+        )
+        app_key_resp = sm.get_secret_value(
+            SecretId=f"adp/{env}/github-app/adp-agent-platform-key"
+        )
+        payload = json.dumps({
+            "app_id": app_id_resp["SecretString"],
+            "private_key": app_key_resp["SecretString"],
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Auto-provision: failed to read platform App secrets for tenant=%s — %s",
+            tenant_id,
+            exc,
+        )
+        _emit_metric("AutoRegister.PlatformSecretReadFailed")
+        return
+
+    try:
+        sm.create_secret(
+            Name=target,
+            Description=(
+                f"GitHub App credentials for tenant {tenant_id} "
+                f"(auto-provisioned via webhook auto-register)"
+            ),
+            SecretString=payload,
+            Tags=[
+                {"Key": "ManagedBy", "Value": "auto-register"},
+                {"Key": "Tenant", "Value": tenant_id},
+                {"Key": "InstallationId", "Value": str(installation_id)},
+            ],
+        )
+        logger.info(
+            "Auto-provisioned GitHub App secret tenant=%s path=%s installation_id=%d",
+            tenant_id,
+            target,
+            installation_id,
+        )
+    except sm.exceptions.ResourceExistsException:
+        logger.info(
+            "GitHub App secret already exists tenant=%s path=%s — skipping",
+            tenant_id,
+            target,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Auto-provision: SM CreateSecret failed tenant=%s path=%s — %s",
+            tenant_id,
+            target,
+            exc,
+        )
+        _emit_metric("AutoRegister.SecretCreationFailed")
+
+
 _rate_limiter = None
 
 
@@ -249,7 +360,9 @@ def handler(event: dict, context) -> dict:
         install_id = install.get("id", 0)
         org_login = (install.get("account") or {}).get("login", "")
         if install_id and org_login:
-            _auto_register_installation(install_id, org_login)
+            registered = _auto_register_installation(install_id, org_login)
+            if registered:
+                _auto_provision_tenant_github_app_secret(registered, install_id)
         logger.info("Installation %s event — no agent dispatch, no identity check", action)
         return _response(200, {"status": "no_op", "reason": "installation_event"})
 
@@ -280,6 +393,7 @@ def handler(event: dict, context) -> dict:
         if org_login:
             registered_org = _auto_register_installation(installation_id, org_login)
             if registered_org:
+                _auto_provision_tenant_github_app_secret(registered_org, installation_id)
                 # Retry resolution now that the row exists
                 resolved, outcome_reason = _get_identity_resolver().resolve(
                     installation_id, sender_id
