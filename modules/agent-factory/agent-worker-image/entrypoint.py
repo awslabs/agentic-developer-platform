@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -38,6 +39,15 @@ PERSONAS_DIR = Path("/app/personas")
 SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
+
+# STS session tag values must match [\p{L}\p{Z}\p{N}_.:/=+\-@]*. The natural
+# task ID shape `<owner>/<repo>#<issue>` contains '#' which fails validation.
+# Replace any character outside the allowed set with '_'.
+_STS_TAG_FORBIDDEN = re.compile(r"[^A-Za-z0-9_.:/=+\-@]")
+
+
+def _sanitize_for_sts_tag(value: str) -> str:
+    return _STS_TAG_FORBIDDEN.sub("_", value)
 
 
 def parse_envelope(raw: str) -> dict:
@@ -148,12 +158,17 @@ def main() -> int:
         "ANTHROPIC_MODEL": os.environ.get("ANTHROPIC_MODEL", "global.anthropic.claude-opus-4-6-v1"),
     }
 
-    # Vault credential context for adp-cred CLI (#137)
+    # Vault credential context for adp-cred CLI (#137).
+    # task_id flows into STS session tags via assume_customer_role; STS rejects
+    # values outside [\p{L}\p{Z}\p{N}_.:/=+\-@]*. The natural shape "<repo>#<issue>"
+    # contains '#', which fails STS validation. Sanitize here so every consumer
+    # (env var + assume_customer_role below) sees the same safe value.
+    task_id = _sanitize_for_sts_tag(message_id or f"{repo}#{issue}")
     user_id = envelope.get("user_id") or actor.get("user_id", "")
     if user_id:
         env_vars["ADP_USER_ID"] = user_id
         env_vars["ADP_AGENT_ID"] = persona
-        env_vars["ADP_TASK_ID"] = message_id or f"{repo}#{issue}"
+        env_vars["ADP_TASK_ID"] = task_id
 
     os.environ.update(env_vars)
 
@@ -223,7 +238,7 @@ def main() -> int:
             aws_creds = _fetch_aws_credentials(
                 user_id=user_id,
                 agent_id=persona,
-                task_id=message_id or f"{repo}#{issue}",
+                task_id=task_id,
             )
             creds = assume_customer_role(
                 role_arn=aws_creds["role_arn"],

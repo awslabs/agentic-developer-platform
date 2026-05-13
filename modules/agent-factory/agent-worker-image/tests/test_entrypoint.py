@@ -1570,3 +1570,41 @@ class TestBedrockViaFlag:
             "does not assume customer role" in record.message
             for record in caplog.records
         )
+
+
+class TestSanitizeForStsTag:
+    r"""Verify task IDs are sanitized for STS session tag values.
+
+    STS rejects tags outside [\p{L}\p{Z}\p{N}_.:/=+\-@]*. The natural task ID
+    shape "<owner>/<repo>#<issue>" contains "#" which fails validation.
+    """
+
+    def test_replaces_hash(self):
+        from entrypoint import _sanitize_for_sts_tag
+
+        assert _sanitize_for_sts_tag("iankouls-aws/ai-superlane-agent-test#8") == \
+            "iankouls-aws/ai-superlane-agent-test_8"
+
+    def test_keeps_allowed_chars(self):
+        from entrypoint import _sanitize_for_sts_tag
+
+        # All chars in the STS-allowed set per AWS docs
+        s = "abcXYZ012_./=+-@:"
+        assert _sanitize_for_sts_tag(s) == s
+
+    def test_replaces_other_disallowed(self):
+        from entrypoint import _sanitize_for_sts_tag
+
+        assert _sanitize_for_sts_tag("foo bar!baz") == "foo_bar_baz"
+        assert _sanitize_for_sts_tag("a$b%c&d") == "a_b_c_d"
+
+    def test_empty_string(self):
+        from entrypoint import _sanitize_for_sts_tag
+
+        assert _sanitize_for_sts_tag("") == ""
+
+    def test_already_safe_unchanged(self):
+        from entrypoint import _sanitize_for_sts_tag
+
+        s = "msg-id-abcd1234"
+        assert _sanitize_for_sts_tag(s) == s
