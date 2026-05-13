@@ -91,6 +91,14 @@ export interface RunQueryInput {
    *  profiles (e.g. webchat → 'low' for concise, fast replies). The SDK
    *  Options type supports 'low' | 'medium' | 'high' | 'max'. */
   effort?: 'low' | 'medium' | 'high' | 'max';
+  /**
+   * Scoped environment variables for the Claude Code subprocess. Strips pod-IRSA
+   * vars and injects user's assumed-role creds so the agent's bash shells see the
+   * right AWS identity. When omitted, the SDK defaults to `process.env`.
+   *
+   * Issue #586: Make pod-IRSA invisible to the agent's bash shells.
+   */
+  env?: Record<string, string | undefined>;
   log?: (msg: string) => void;
   /**
    * Optional progress sink. Called with mid-turn signals (tool invocations +
@@ -118,6 +126,7 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
     cwd = '/tmp/workspace',
     maxTurns = 50,
     effort,
+    env,
     log = console.log,
     onProgress,
   } = input;
@@ -242,6 +251,11 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
       persistSession: false,
       maxTurns,
     };
+    if (env !== undefined) {
+      // Issue #586: Pass scoped env to the SDK so the agent's bash subshells
+      // see the user's assumed-role creds instead of pod IRSA.
+      streamOptions.env = env;
+    }
     if (effort !== undefined) {
       // The Claude Agent SDK's Options type has no `maxTokens` / `maxOutputTokens`
       // input field — those are only reported in `ModelUsage`.  The supported

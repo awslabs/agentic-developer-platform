@@ -25,6 +25,7 @@ import {
 import { Scrubber } from './context/scrubber';
 import { vaultToolsForTurn } from './vault/tools';
 import { VaultGatewayClient } from './vault/gateway-client';
+import { createCredsInjector, CredsInjector } from '../aws-creds-injector';
 
 const TOKEN_BUDGET = Number(process.env.CONTEXT_TOKEN_BUDGET ?? 150_000);
 
@@ -223,6 +224,7 @@ async function processOne(
     const scrubber = new Scrubber();
     let vaultTools: AgentTool[] = [];
     let credentialsSummary = '';
+    let credsInjector: CredsInjector | null = null;
     if (VAULT_ENABLED && user_id && VAULT_GATEWAY_URL && VAULT_INTERNAL_API_KEY) {
       const vaultClient = new VaultGatewayClient({
         baseUrl: VAULT_GATEWAY_URL,
@@ -235,6 +237,17 @@ async function processOne(
         scrubber,
         client: vaultClient,
       });
+
+      // Issue #586: Create a per-task credentials injector to scope AWS env
+      // vars for the agent's bash subshells. The agent's `aws ...` commands
+      // will use the user's assumed role instead of pod IRSA.
+      credsInjector = createCredsInjector({
+        userId: user_id,
+        agentId: agent_type,
+        taskId: task_id,
+        vaultClient,
+      });
+
       // Fetch credential list for system-prompt injection (best-effort)
       try {
         const creds = await vaultClient.listCredentials(user_id);
@@ -254,10 +267,22 @@ async function processOne(
       }
     }
 
+    // Issue #586: system-prompt hint when no AWS credential is connected.
+    // The agent needs the "why" in its prompt to give a helpful response when
+    // `aws ...` returns "Unable to locate credentials".
+    let awsEnvHint = '';
+    if (credsInjector) {
+      // Eagerly resolve creds so hasCredential() reflects reality before prompt assembly.
+      await credsInjector.getScopedEnv();
+      awsEnvHint = credsInjector.hasCredential()
+        ? '\n\nUser has a connected AWS account. AWS commands (aws ..., boto3, etc.) will use their account automatically — just run them directly.'
+        : '\n\nUser has NOT connected an AWS account. If they ask for AWS operations, tell them to visit /settings/credentials to connect one.';
+    }
+
     const systemPrompt = composeSystemPrompt({
       base: channelDirective
-        ? channelDirective + '\n\n' + persona.baseSystemPrompt + attachmentBlock + credentialsSummary
-        : persona.baseSystemPrompt + attachmentBlock + credentialsSummary,
+        ? channelDirective + '\n\n' + persona.baseSystemPrompt + attachmentBlock + credentialsSummary + awsEnvHint
+        : persona.baseSystemPrompt + attachmentBlock + credentialsSummary + awsEnvHint,
       personaLearnings: persona.learnings,
       memories: memBlock,
     });
@@ -302,6 +327,11 @@ async function processOne(
       }
     }
 
+    // Issue #586: Get scoped env for the agent's bash subshells. This env has
+    // pod-IRSA stripped and user's assumed-role creds injected. When no injector
+    // is available (vault disabled), omit `env` so the SDK defaults to process.env.
+    const scopedEnv = credsInjector ? await credsInjector.getScopedEnv() : undefined;
+
     const result = await runQuery({
       systemPrompt,
       history: ctx.messages,
@@ -310,6 +340,7 @@ async function processOne(
       toolSanitizers: toolSanitizers.size > 0 ? toolSanitizers : undefined,
       model: persona.modelOverride ?? process.env.ANTHROPIC_MODEL,
       cwd: '/tmp/workspace',
+      env: scopedEnv,
       effort: getChannelEffort(channel ?? ''),
       // Forward mid-turn progress to the user over the same channel as the
       // final reply. Keeps the WebSocket warm (API Gateway's 10-min idle
