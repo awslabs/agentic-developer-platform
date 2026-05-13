@@ -293,12 +293,43 @@ def main() -> int:
     # Stage personas and skills into workspace
     _stage_personas_and_skills()
 
-    # Step 10: Exec the agent (already on branch_name from Step 6b above)
+    # Step 10: Build scoped agent env and exec the agent.
+    # ADP_BEDROCK_VIA controls whether the agent's AWS calls route through
+    # the platform account (pod IRSA) or the user's connected account.
+    # CRITICAL: We build a SEPARATE env dict for the child process. We do NOT
+    # mutate os.environ — the entrypoint's post-agent SQS delete (line ~386)
+    # needs os.environ to retain IRSA for platform-account access.
+    agent_env = os.environ.copy()
+    bedrock_via_raw = os.environ.get("ADP_BEDROCK_VIA")
+    bedrock_via = (bedrock_via_raw or "platform").strip().lower()
+
+    if bedrock_via == "user" and "AWS_ACCESS_KEY_ID" in agent_env:
+        for var in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"):
+            agent_env.pop(var, None)
+        logger.info(
+            "ADP_BEDROCK_VIA=%r (normalized: user) — agent env stripped of IRSA; "
+            "user account credentials will be used for all agent AWS calls",
+            bedrock_via_raw,
+        )
+    elif bedrock_via == "user" and persona not in PERSONAS_NEEDING_AWS:
+        logger.warning(
+            "ADP_BEDROCK_VIA=user set but persona=%r does not assume customer role "
+            "(not in PERSONAS_NEEDING_AWS=%s). Agent will use pod IRSA for all AWS "
+            "calls including Bedrock. Either add this persona to PERSONAS_NEEDING_AWS "
+            "or unset ADP_BEDROCK_VIA on the ScaledJob.",
+            persona, sorted(PERSONAS_NEEDING_AWS),
+        )
+    else:
+        logger.info(
+            "ADP_BEDROCK_VIA=%r (normalized: %s) — agent env retains pod IRSA",
+            bedrock_via_raw, bedrock_via,
+        )
+
     logger.info("Execing agent-worker.js with persona=%s branch=%s", persona, branch_name)
     result = subprocess.run(
         ["node", AGENT_BINARY],
         cwd=WORK_DIR,
-        env={**os.environ},
+        env=agent_env,
     )
 
     # Step 11/12: Post-agent actions

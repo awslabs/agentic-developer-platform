@@ -6,6 +6,7 @@ Covers the 12-step sequence with mocked external dependencies.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -962,3 +963,610 @@ class TestStsAssumeUserIdTag:
         tags = call_kwargs["Tags"]
         tag_keys = [t["Key"] for t in tags]
         assert "adp:user_id" not in tag_keys
+
+
+# --- Test: ADP_BEDROCK_VIA feature flag ---
+
+
+class TestBedrockViaFlag:
+    """Tests for the ADP_BEDROCK_VIA feature flag (scoped agent_env, not os.environ mutation)."""
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_default_no_flag_agent_env_retains_irsa(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """When ADP_BEDROCK_VIA is not set, agent_env retains all IRSA vars."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.delenv("ADP_BEDROCK_VIA", raising=False)
+
+        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-1")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
+             patch("entrypoint.assume_customer_role") as mock_assume:
+            mock_gw = MagicMock()
+            mock_gw_cls.return_value = mock_gw
+            mock_gw.is_configured = True
+            mock_gw.raw_read.return_value = {
+                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
+            }
+            mock_assume.return_value = {
+                "AWS_ACCESS_KEY_ID": "AKUSER",
+                "AWS_SECRET_ACCESS_KEY": "SKUSER",
+                "AWS_SESSION_TOKEN": "STUSER",
+            }
+            main()
+
+        # Agent subprocess should have been called with env containing IRSA vars
+        call_kwargs = mock_subprocess_run.call_args
+        agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
+        assert agent_env["AWS_ROLE_ARN"] == "arn:aws:iam::879318057152:role/irsa-role"
+        assert agent_env["AWS_WEB_IDENTITY_TOKEN_FILE"] == "/var/run/secrets/token"
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_platform_explicit_agent_env_retains_irsa(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """When ADP_BEDROCK_VIA=platform, agent_env retains IRSA (same as default)."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "platform")
+
+        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-2")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
+             patch("entrypoint.assume_customer_role") as mock_assume:
+            mock_gw = MagicMock()
+            mock_gw_cls.return_value = mock_gw
+            mock_gw.is_configured = True
+            mock_gw.raw_read.return_value = {
+                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
+            }
+            mock_assume.return_value = {
+                "AWS_ACCESS_KEY_ID": "AKUSER",
+                "AWS_SECRET_ACCESS_KEY": "SKUSER",
+                "AWS_SESSION_TOKEN": "STUSER",
+            }
+            main()
+
+        agent_env = mock_subprocess_run.call_args.kwargs.get("env") or mock_subprocess_run.call_args[1].get("env")
+        assert "AWS_ROLE_ARN" in agent_env
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_user_mode_strips_irsa_from_agent_env(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """When ADP_BEDROCK_VIA=user and user creds exist, agent_env has IRSA stripped."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("AWS_PROFILE", "default")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
+
+        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-3")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
+             patch("entrypoint.assume_customer_role") as mock_assume:
+            mock_gw = MagicMock()
+            mock_gw_cls.return_value = mock_gw
+            mock_gw.is_configured = True
+            mock_gw.raw_read.return_value = {
+                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
+            }
+            mock_assume.return_value = {
+                "AWS_ACCESS_KEY_ID": "AKUSER",
+                "AWS_SECRET_ACCESS_KEY": "SKUSER",
+                "AWS_SESSION_TOKEN": "STUSER",
+            }
+            main()
+
+        agent_env = mock_subprocess_run.call_args.kwargs.get("env") or mock_subprocess_run.call_args[1].get("env")
+        # IRSA vars stripped from agent env
+        assert "AWS_ROLE_ARN" not in agent_env
+        assert "AWS_WEB_IDENTITY_TOKEN_FILE" not in agent_env
+        assert "AWS_PROFILE" not in agent_env
+        # User creds remain
+        assert agent_env["AWS_ACCESS_KEY_ID"] == "AKUSER"
+        assert agent_env["AWS_SECRET_ACCESS_KEY"] == "SKUSER"
+        assert agent_env["AWS_SESSION_TOKEN"] == "STUSER"
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_user_mode_os_environ_unchanged(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """CRITICAL: os.environ must retain IRSA vars even when ADP_BEDROCK_VIA=user."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
+
+        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-4")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
+             patch("entrypoint.assume_customer_role") as mock_assume:
+            mock_gw = MagicMock()
+            mock_gw_cls.return_value = mock_gw
+            mock_gw.is_configured = True
+            mock_gw.raw_read.return_value = {
+                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
+            }
+            mock_assume.return_value = {
+                "AWS_ACCESS_KEY_ID": "AKUSER",
+                "AWS_SECRET_ACCESS_KEY": "SKUSER",
+                "AWS_SESSION_TOKEN": "STUSER",
+            }
+            main()
+
+        # os.environ MUST still have IRSA (for post-agent SQS delete)
+        assert os.environ.get("AWS_ROLE_ARN") == "arn:aws:iam::879318057152:role/irsa-role"
+        assert os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE") == "/var/run/secrets/token"
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_user_mode_no_user_creds_no_strip(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """When ADP_BEDROCK_VIA=user but no AWS_ACCESS_KEY_ID (assume-role didn't run), no strip."""
+        from entrypoint import main
+        import entrypoint
+
+        # developer persona does NOT trigger assume-role
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
+        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+
+        # developer persona — not in PERSONAS_NEEDING_AWS, so no assume-role
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-5")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        agent_env = mock_subprocess_run.call_args.kwargs.get("env") or mock_subprocess_run.call_args[1].get("env")
+        # IRSA vars should still be present — no strip because no user creds
+        assert agent_env["AWS_ROLE_ARN"] == "arn:aws:iam::879318057152:role/irsa-role"
+        assert agent_env["AWS_WEB_IDENTITY_TOKEN_FILE"] == "/var/run/secrets/token"
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_user_mode_case_insensitive(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """ADP_BEDROCK_VIA=USER (uppercase) works the same as 'user'."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "USER")
+
+        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-6")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
+             patch("entrypoint.assume_customer_role") as mock_assume:
+            mock_gw = MagicMock()
+            mock_gw_cls.return_value = mock_gw
+            mock_gw.is_configured = True
+            mock_gw.raw_read.return_value = {
+                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
+            }
+            mock_assume.return_value = {
+                "AWS_ACCESS_KEY_ID": "AKUSER",
+                "AWS_SECRET_ACCESS_KEY": "SKUSER",
+                "AWS_SESSION_TOKEN": "STUSER",
+            }
+            main()
+
+        agent_env = mock_subprocess_run.call_args.kwargs.get("env") or mock_subprocess_run.call_args[1].get("env")
+        assert "AWS_ROLE_ARN" not in agent_env
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_user_mode_whitespace_tolerance(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """ADP_BEDROCK_VIA=' user ' (with whitespace) is handled correctly."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", " user ")
+
+        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-7")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
+             patch("entrypoint.assume_customer_role") as mock_assume:
+            mock_gw = MagicMock()
+            mock_gw_cls.return_value = mock_gw
+            mock_gw.is_configured = True
+            mock_gw.raw_read.return_value = {
+                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
+            }
+            mock_assume.return_value = {
+                "AWS_ACCESS_KEY_ID": "AKUSER",
+                "AWS_SECRET_ACCESS_KEY": "SKUSER",
+                "AWS_SESSION_TOKEN": "STUSER",
+            }
+            main()
+
+        agent_env = mock_subprocess_run.call_args.kwargs.get("env") or mock_subprocess_run.call_args[1].get("env")
+        assert "AWS_ROLE_ARN" not in agent_env
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_garbage_value_falls_through_to_platform(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """ADP_BEDROCK_VIA=foobar falls through to platform mode (safe default)."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "foobar")
+
+        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-8")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls, \
+             patch("entrypoint.assume_customer_role") as mock_assume:
+            mock_gw = MagicMock()
+            mock_gw_cls.return_value = mock_gw
+            mock_gw.is_configured = True
+            mock_gw.raw_read.return_value = {
+                "value": json.dumps({"role_arn": "arn:aws:iam::111:role/t", "external_id": "e"}),
+            }
+            mock_assume.return_value = {
+                "AWS_ACCESS_KEY_ID": "AKUSER",
+                "AWS_SECRET_ACCESS_KEY": "SKUSER",
+                "AWS_SESSION_TOKEN": "STUSER",
+            }
+            main()
+
+        agent_env = mock_subprocess_run.call_args.kwargs.get("env") or mock_subprocess_run.call_args[1].get("env")
+        # IRSA retained — garbage value means platform mode
+        assert "AWS_ROLE_ARN" in agent_env
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_user_mode_non_aws_persona_logs_warning(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+        caplog,
+    ):
+        """When ADP_BEDROCK_VIA=user but persona not in PERSONAS_NEEDING_AWS, warning logged."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
+        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+
+        # 'developer' persona — not in PERSONAS_NEEDING_AWS
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-9")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            main()
+
+        assert any(
+            "does not assume customer role" in record.message
+            for record in caplog.records
+        )
