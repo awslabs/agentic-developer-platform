@@ -24,6 +24,7 @@ from src.shared.models.vault import UserCredential, UserIdentity
 from src.shared.schemas.auth import TokenContext
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
+from .org_id_resolver import resolve_effective_org_id
 from .vault_schemas import CredentialCreate, CredentialUpdate
 
 logger = logging.getLogger(__name__)
@@ -177,6 +178,10 @@ async def create_credential(
 
     Writes the raw value to Secrets Manager; stores only the ARN in DB.
     """
+    # Resolve effective org_id — falls back to users.org_id when token is empty
+    # (Issue #600: GitHub-federated users may have empty org_id in token)
+    effective_org_id = await resolve_effective_org_id(caller, db)
+
     scope_hint = data.scope_hint
 
     # Non-user scopes require admin privileges
@@ -216,7 +221,7 @@ async def create_credential(
 
     # Persist metadata row
     cred = UserCredential(
-        org_id=caller.org_id,
+        org_id=effective_org_id,
         user_id=user_id,
         team_id=team_id,
         domain_app_id=domain_app_id,

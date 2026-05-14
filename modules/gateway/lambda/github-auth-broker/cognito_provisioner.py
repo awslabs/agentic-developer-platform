@@ -151,6 +151,7 @@ def _update_user_attributes(
     name: str,
     github_login: str,
     avatar_url: str,
+    org_id: str = "",
 ) -> None:
     """Update mutable attributes for an existing user."""
     attributes = [
@@ -161,6 +162,11 @@ def _update_user_attributes(
         attributes.append({"Name": "email_verified", "Value": "true"})
     if github_login:
         attributes.append({"Name": "custom:github_username", "Value": github_login})
+    # Issue #600: Write custom:org_id so Pre-Token-Generation can include it
+    # in claims. Only write when we have a non-empty value to avoid blanking
+    # an already-correct attribute.
+    if org_id:
+        attributes.append({"Name": "custom:org_id", "Value": org_id})
 
     try:
         client.admin_update_user_attributes(
@@ -171,6 +177,49 @@ def _update_user_attributes(
     except ClientError as e:
         # Non-fatal: log and continue
         logger.warning("Failed to update user attributes for %s: %s", username, e)
+
+
+def write_org_id_attribute(
+    user_pool_id: str,
+    username: str,
+    org_id: str,
+) -> None:
+    """Write custom:org_id to a Cognito user after Postgres org provisioning.
+
+    Issue #600: Called after the gateway creates/resolves the user's org row
+    in Postgres. Ensures the next token refresh carries the correct org_id
+    claim so credential writes don't fall through to the DB fallback.
+
+    This is a standalone function that can be called by the gateway service
+    (which has DB access to read users.org_id) separately from the main
+    provision_and_authenticate flow.
+
+    Args:
+        user_pool_id: Cognito User Pool ID.
+        username: Cognito username (e.g., 'GitHub_<numeric-id>').
+        org_id: The org_id from Postgres users table (source of truth).
+    """
+    if not org_id:
+        logger.warning(
+            "write_org_id_attribute called with empty org_id for %s; skipping",
+            username,
+        )
+        return
+
+    client = boto3.client("cognito-idp")
+    try:
+        client.admin_update_user_attributes(
+            UserPoolId=user_pool_id,
+            Username=username,
+            UserAttributes=[
+                {"Name": "custom:org_id", "Value": org_id},
+            ],
+        )
+        logger.info("Wrote custom:org_id=%s for user %s", org_id, username)
+    except ClientError as e:
+        logger.warning(
+            "Failed to write custom:org_id for %s: %s", username, e
+        )
 
 
 def _set_permanent_password(client, user_pool_id: str, username: str, password: str) -> None:

@@ -32,6 +32,7 @@ from src.shared.services.secrets_manager import SecretsManagerHelper
 
 from .cfn_template import build_launch_url, compute_role_arn
 from .middleware import get_current_user_context
+from .org_id_resolver import resolve_effective_org_id
 from .vault_routes import get_secrets_manager
 
 logger = logging.getLogger(__name__)
@@ -55,8 +56,7 @@ async def _resolve_user_id(cognito_sub: str, db: AsyncSession) -> str:
             status_code=404,
             detail={
                 "reason": "user_not_found",
-                "hint": "Your account isn't registered in this tenant yet. "
-                "Complete onboarding first.",
+                "hint": "Your account isn't registered in this tenant yet. Complete onboarding first.",
             },
         )
     return user.id
@@ -134,6 +134,10 @@ async def connect_start(
     # Resolve Cognito sub → Postgres users.id (FK on user_credentials.user_id)
     db_user_id = await _resolve_user_id(token_context.user_id, db)
 
+    # Resolve effective org_id — falls back to users.org_id when token is empty
+    # (Issue #600: GitHub-federated users may have empty org_id in token)
+    effective_org_id = await resolve_effective_org_id(token_context, db)
+
     # Generate a unique external ID for confused-deputy protection
     external_id = str(uuid.uuid4())
 
@@ -161,7 +165,7 @@ async def connect_start(
 
     # Create the DB row with status=pending in scopes JSON
     cred = UserCredential(
-        org_id=token_context.org_id,
+        org_id=effective_org_id,
         user_id=db_user_id,
         service="aws",
         credential_type="aws_role",
@@ -216,11 +220,15 @@ async def connect_verify(
     # Resolve Cognito sub → Postgres users.id for the scoped lookup
     db_user_id = await _resolve_user_id(token_context.user_id, db)
 
+    # Resolve effective org_id — falls back to users.org_id when token is empty
+    # (Issue #600: GitHub-federated users may have empty org_id in token)
+    effective_org_id = await resolve_effective_org_id(token_context, db)
+
     # Fetch the credential row (scoped to caller)
     stmt = select(UserCredential).where(
         UserCredential.id == data.credential_id,
         UserCredential.user_id == db_user_id,
-        UserCredential.org_id == token_context.org_id,
+        UserCredential.org_id == effective_org_id,
         UserCredential.credential_type == "aws_role",
     )
     result = await db.execute(stmt)
