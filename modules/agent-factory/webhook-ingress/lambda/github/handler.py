@@ -15,6 +15,7 @@ import logging
 import os
 from datetime import UTC, datetime
 import time
+import uuid
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -526,6 +527,7 @@ def handler(event: dict, context) -> dict:
         "payload": payload,
         "arrived_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    envelope["message_id"] = str(uuid.uuid4())
 
     message_id = _get_sqs_publisher().publish_envelope(envelope)
     if not message_id:

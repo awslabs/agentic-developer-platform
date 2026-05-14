@@ -375,6 +375,89 @@ class TestSecretResolution:
             handler._webhook_secret = None
 
 
+class TestMessageIdOnEnvelope:
+    """Verify handler sets a unique message_id UUID on the envelope before publish."""
+
+    @patch("handler._get_events_log")
+    @patch("handler._get_sqs_publisher")
+    @patch("handler._get_rate_limiter")
+    @patch("handler._get_identity_resolver")
+    @patch("handler._get_signature")
+    def test_handler_sets_message_id_on_envelope(
+        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log
+    ):
+        """Envelope passed to publish_envelope contains a valid UUID4 message_id."""
+        import uuid as uuid_mod
+
+        mock_sig.return_value.verify_github_signature.return_value = True
+        mock_resolver.return_value.resolve.return_value = (
+            _mock_resolved_identity(), "ok"
+        )
+        mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
+        mock_sqs.return_value.publish_envelope.return_value = "msg-id-100"
+        mock_log.return_value.log_event = MagicMock()
+
+        known_uuid = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+        with patch("handler.uuid.uuid4", return_value=uuid_mod.UUID(known_uuid)):
+            from handler import handler
+
+            payload = {
+                "action": "labeled",
+                "label": {"name": "developer"},
+                "issue": {"number": 10},
+                "repository": {"full_name": "acme/repo"},
+                "sender": {"login": "user", "id": 1, "type": "User"},
+                "installation": {"id": 123},
+            }
+            event = _make_event("issues", payload)
+            result = handler(event, None)
+
+        assert result["statusCode"] == 202
+        envelope = mock_sqs.return_value.publish_envelope.call_args[0][0]
+        assert envelope["message_id"] == known_uuid
+
+    @patch("handler._get_events_log")
+    @patch("handler._get_sqs_publisher")
+    @patch("handler._get_rate_limiter")
+    @patch("handler._get_identity_resolver")
+    @patch("handler._get_signature")
+    def test_two_dispatches_get_distinct_message_ids(
+        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log
+    ):
+        """Two consecutive dispatches produce different message_id UUIDs."""
+        mock_sig.return_value.verify_github_signature.return_value = True
+        mock_resolver.return_value.resolve.return_value = (
+            _mock_resolved_identity(), "ok"
+        )
+        mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
+        mock_sqs.return_value.publish_envelope.return_value = "msg-id-200"
+        mock_log.return_value.log_event = MagicMock()
+
+        from handler import handler
+
+        payload = {
+            "action": "labeled",
+            "label": {"name": "developer"},
+            "issue": {"number": 10},
+            "repository": {"full_name": "acme/repo"},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        event = _make_event("issues", payload)
+
+        handler(event, None)
+        handler(event, None)
+
+        calls = mock_sqs.return_value.publish_envelope.call_args_list
+        id_1 = calls[-2][0][0]["message_id"]
+        id_2 = calls[-1][0][0]["message_id"]
+        assert id_1 != id_2
+        # Both should be valid UUID4 strings
+        import uuid as uuid_mod
+        uuid_mod.UUID(id_1, version=4)
+        uuid_mod.UUID(id_2, version=4)
+
+
 class TestBase64Body:
     @patch("handler._get_events_log")
     @patch("handler._get_sqs_publisher")

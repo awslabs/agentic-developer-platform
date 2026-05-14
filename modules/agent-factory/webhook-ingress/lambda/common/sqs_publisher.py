@@ -77,7 +77,10 @@ def publish_envelope(envelope: dict) -> str | None:
         sqs = _get_sqs()
         resp = sqs.send_message(**send_kwargs)
         msg_id = resp.get("MessageId", "")
-        logger.info("Published envelope tenant=%s message_id=%s", tenant_id, msg_id)
+        logger.info(
+            "Published envelope tenant=%s sqs_message_id=%s run_id=%s",
+            tenant_id, msg_id, envelope.get("message_id", ""),
+        )
         return msg_id
     except Exception as e:
         logger.error("Failed to publish envelope for tenant=%s: %s", tenant_id, e)
