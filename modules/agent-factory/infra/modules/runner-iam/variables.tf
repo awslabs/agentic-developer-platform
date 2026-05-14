@@ -29,3 +29,9 @@ variable "runner_namespace" {
   type        = string
   default     = "arc-runners"
 }
+
+variable "security_scans_bucket_arn" {
+  description = "ARN of the security scans S3 bucket for SARIF archival"
+  type        = string
+  default     = ""
+}

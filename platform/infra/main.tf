@@ -172,3 +172,12 @@ module "codebuild" {
   state_bucket = local.state_bucket
   common_tags  = local.common_tags
 }
+
+# -----------------------------------------------------------------------------
+# Security Scans (S3 archival for SARIF results)
+# -----------------------------------------------------------------------------
+module "security_scans" {
+  source = "./modules/security-scans"
+
+  environment = var.environment
+}

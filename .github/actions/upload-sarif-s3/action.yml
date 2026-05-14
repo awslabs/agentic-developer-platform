@@ -1,0 +1,27 @@
+name: Upload SARIF to S3
+description: Archive a SARIF file to the security-scans S3 bucket with date-partitioned key
+inputs:
+  sarif-file:
+    description: 'Path to SARIF file'
+    required: true
+  tool-name:
+    description: 'Tool that produced the SARIF (bandit, checkov, semgrep)'
+    required: true
+  bucket:
+    description: 'S3 bucket name'
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        if [ ! -f "${{ inputs.sarif-file }}" ]; then
+          echo "::warning::SARIF file '${{ inputs.sarif-file }}' not found — scanner may have crashed; skipping S3 upload"
+          exit 0
+        fi
+        DATE=$(date -u +%Y/%m/%d)
+        KEY="sarif/${DATE}/${{ github.run_id }}/${{ github.job }}/${{ inputs.tool-name }}.sarif"
+        aws s3 cp "${{ inputs.sarif-file }}" "s3://${{ inputs.bucket }}/${KEY}" \
+          --content-type application/sarif+json \
+          --metadata "commit=${{ github.sha }},workflow=${{ github.workflow }},run-attempt=${{ github.run_attempt }}"
+        echo "Uploaded: s3://${{ inputs.bucket }}/${KEY}"

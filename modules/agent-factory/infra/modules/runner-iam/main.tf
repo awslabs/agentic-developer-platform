@@ -125,6 +125,25 @@ resource "aws_iam_role" "runner" {
   })
 }
 
+resource "aws_iam_role_policy" "runner_security_scan_upload" {
+  count = var.security_scans_bucket_arn != "" ? 1 : 0
+
+  name = "security-scan-s3-upload"
+  role = aws_iam_role.runner.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "SecurityScanSARIFUpload"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "${var.security_scans_bucket_arn}/sarif/*"
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role_policy" "runner_permissions" {
   name = "runner-permissions"
   role = aws_iam_role.runner.id

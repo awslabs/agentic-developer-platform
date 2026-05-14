@@ -110,3 +110,17 @@ output "codebuild_project_names" {
   description = "Map of logical key to CodeBuild project name"
   value       = module.codebuild.project_names
 }
+
+# ---------------------------------------------------------------------------
+# Security Scans outputs
+# ---------------------------------------------------------------------------
+
+output "security_scans_bucket_arn" {
+  description = "ARN of the security scans S3 bucket"
+  value       = module.security_scans.bucket_arn
+}
+
+output "security_scans_bucket_name" {
+  description = "Name of the security scans S3 bucket"
+  value       = module.security_scans.bucket_name
+}
