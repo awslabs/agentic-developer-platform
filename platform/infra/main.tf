@@ -168,9 +168,11 @@ module "ecr" {
 module "codebuild" {
   source = "./modules/codebuild"
 
-  name_prefix  = local.name_prefix
-  state_bucket = local.state_bucket
-  common_tags  = local.common_tags
+  name_prefix                = local.name_prefix
+  state_bucket               = local.state_bucket
+  common_tags                = local.common_tags
+  security_scans_bucket_arn  = module.security_scans.bucket_arn
+  security_scans_bucket_name = module.security_scans.bucket_name
 }
 
 # -----------------------------------------------------------------------------

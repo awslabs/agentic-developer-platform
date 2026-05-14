@@ -1,0 +1,65 @@
+version: 0.2
+
+env:
+  variables:
+    GRYPE_VERSION: "0.80.2"  # default; can be overridden at start-build time
+
+phases:
+  install:
+    commands:
+      - curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin "v${GRYPE_VERSION}"
+      - grype version
+  pre_build:
+    commands:
+      - aws sts get-caller-identity
+      - DATE=$(date -u +%Y/%m/%d)
+      - RUN_ID="${CODEBUILD_BUILD_ID##*:}"
+      - echo "Run ID=${RUN_ID} date=${DATE}"
+      - test -n "${SECURITY_SCANS_BUCKET}" || { echo "ERROR: SECURITY_SCANS_BUCKET not set"; exit 1; }
+  build:
+    commands:
+      - |
+        # In-buildspec discovery (CodeBuild source is independent of workflow discovery)
+        DOCKERFILES=$(find . -name 'Dockerfile' -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/.terraform/*' | sort)
+        TOTAL=$(echo "$DOCKERFILES" | wc -l)
+        echo "Found ${TOTAL} Dockerfiles"
+        echo "$DOCKERFILES"
+
+        FAIL_COUNT=0
+        UPLOAD_COUNT=0
+
+        for DF in $DOCKERFILES; do
+          SLUG=$(echo "$DF" | sed 's|^\./||;s|/Dockerfile$||;s|/|-|g')
+          IMAGE_TAG="grype-scan-target:${SLUG}"
+          BUILD_DIR=$(dirname "$DF")
+          KEY="sarif/${DATE}/${RUN_ID}/grype/${SLUG}.sarif"
+
+          echo "=== Scanning ${DF} (slug=${SLUG}) ==="
+
+          if ! docker build --quiet -t "${IMAGE_TAG}" "${BUILD_DIR}" 2>&1 | tail -5; then
+            echo "WARN: docker build failed for ${DF} — skipping"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            continue
+          fi
+
+          if ! grype "${IMAGE_TAG}" -o sarif > "/tmp/grype-${SLUG}.sarif" 2>&1; then
+            echo "WARN: grype scan failed for ${DF} — skipping upload"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            docker rmi "${IMAGE_TAG}" >/dev/null 2>&1 || true
+            continue
+          fi
+
+          aws s3 cp "/tmp/grype-${SLUG}.sarif" "s3://${SECURITY_SCANS_BUCKET}/${KEY}" \
+            --content-type application/sarif+json \
+            --metadata "commit=${CODEBUILD_RESOLVED_SOURCE_VERSION},dockerfile=${DF}"
+
+          UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
+          docker rmi "${IMAGE_TAG}" >/dev/null 2>&1 || true
+        done
+
+        echo "Summary: ${UPLOAD_COUNT}/${TOTAL} SARIFs uploaded; ${FAIL_COUNT} scans failed."
+        # Best-effort: do NOT fail the build for individual scan failures
+        exit 0
+
+artifacts:
+  files: []

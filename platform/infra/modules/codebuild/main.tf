@@ -18,6 +18,7 @@ locals {
     "cyber-worker"  = { buildspec = "codebuild/bs-cyber-worker.yml" }
     "agent-runtime" = { buildspec = "codebuild/bs-agent-runtime.yml" }
     "pyjwt-layer"   = { buildspec = "codebuild/bs-pyjwt-layer.yml" }
+    "grype-scan"    = { buildspec = "codebuild/bs-grype-scan.yml" }
   }
 }
 
@@ -73,7 +74,31 @@ resource "aws_codebuild_project" "main" {
     compute_type                = "BUILD_GENERAL1_MEDIUM"
     privileged_mode             = true
     image_pull_credentials_type = "CODEBUILD"
+
+    environment_variable {
+      name  = "SECURITY_SCANS_BUCKET"
+      value = var.security_scans_bucket_name
+    }
   }
 
   tags = var.common_tags
+}
+
+# -----------------------------------------------------------------------------
+# Scoped S3 grant for security scan SARIF uploads (defense-in-depth — survives
+# future scope-down of AdministratorAccess above)
+# -----------------------------------------------------------------------------
+resource "aws_iam_role_policy" "codebuild_security_scan_upload" {
+  name = "security-scan-s3-upload"
+  role = aws_iam_role.codebuild.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "SecurityScanSARIFUpload"
+      Effect   = "Allow"
+      Action   = ["s3:PutObject"]
+      Resource = "${var.security_scans_bucket_arn}/sarif/*"
+    }]
+  })
 }
