@@ -25,10 +25,17 @@ spec:
         app.kubernetes.io/part-of: agent-context-platform
         app.kubernetes.io/component: application
     spec:
+      # TODO: bake deps into a custom image so this can be fully hardened.
+      # apt-get install at startup is incompatible with readOnlyRootFilesystem,
+      # runAsNonRoot, and drop ALL capabilities. See architect I2 in #634.
+      automountServiceAccountToken: true
       serviceAccountName: agent-context-sa
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
       - name: install-cgc
-        image: python:3.12-slim
+        image: python:3.12.4-slim
         command: ["/bin/bash", "-c"]
         args:
         - |
@@ -44,7 +51,7 @@ spec:
           mountPath: /install
       containers:
       - name: codegraph
-        image: python:3.12-slim
+        image: python:3.12.4-slim
         command: ["/bin/bash", "-c"]
         args:
         - |

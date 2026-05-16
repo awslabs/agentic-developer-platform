@@ -25,10 +25,18 @@ spec:
         app.kubernetes.io/part-of: agent-context-platform
         app.kubernetes.io/component: application
     spec:
+      automountServiceAccountToken: true
       serviceAccountName: agent-context-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
       - name: config-injector
-        image: python:3.12-slim
+        image: python:3.12.4-slim
         command: ["python3", "-c"]
         args:
         - |
@@ -57,6 +65,11 @@ spec:
       - name: openviking
         image: ghcr.io/volcengine/openviking:main
         imagePullPolicy: Always
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
         ports:
         - containerPort: 1933
           name: http
@@ -79,6 +92,8 @@ spec:
           readOnly: true
         - name: data
           mountPath: /app/data
+        - name: tmp
+          mountPath: /tmp
         resources:
           requests:
             cpu: "2"
@@ -123,6 +138,8 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: openviking-data
+      - name: tmp
+        emptyDir: {}
       restartPolicy: Always
       terminationGracePeriodSeconds: 30
 ---
