@@ -287,13 +287,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.2'
-
-      - name: Install cfn-nag
-        run: gem install cfn-nag -v ${{ env.CFN_NAG_VERSION }}
+      - name: Install Ruby + cfn-nag
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ruby-full
+          sudo gem install cfn-nag -v ${{ env.CFN_NAG_VERSION }}
 
       - name: Run cfn-nag
         run: |
