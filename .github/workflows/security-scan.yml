@@ -180,11 +180,11 @@ jobs:
           fetch-depth: 1
 
       - name: Refresh CodeBuild source zip
-        env:
-          STATE_BUCKET: adp-terraform-state-${{ secrets.AWS_ACCOUNT_ID || vars.AWS_ACCOUNT_ID }}
         run: |
           # CodeBuild reads a snapshot zip; refresh it before triggering.
-          # Same pattern as gateway-deploy.yml uses.
+          # Same pattern as gateway-deploy.yml + arc-runner-build.yml use.
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
           ./platform/scripts/zip-source.sh . /tmp/adp-source.zip
           aws s3 cp /tmp/adp-source.zip "s3://${STATE_BUCKET}/codebuild/adp-source.zip"
 
