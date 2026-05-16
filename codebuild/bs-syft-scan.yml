@@ -1,0 +1,66 @@
+version: 0.2
+
+env:
+  variables:
+    SYFT_VERSION: "1.11.1"  # default; can be overridden at start-build time
+
+phases:
+  install:
+    commands:
+      - curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}"
+      - syft version
+  pre_build:
+    commands:
+      - aws sts get-caller-identity
+      - DATE=$(date -u +%Y/%m/%d)
+      - RUN_ID="${CODEBUILD_BUILD_ID##*:}"
+      - echo "Run ID=${RUN_ID} date=${DATE}"
+      - if [ -z "${SECURITY_SCANS_BUCKET}" ]; then echo "ERROR SECURITY_SCANS_BUCKET not set" && exit 1; fi
+  build:
+    commands:
+      - |
+        # In-buildspec discovery (CodeBuild source is independent of workflow discovery)
+        DOCKERFILES=$(find . -name 'Dockerfile' -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/.terraform/*' | sort)
+        TOTAL=$(echo "$DOCKERFILES" | wc -l)
+        echo "Found ${TOTAL} Dockerfiles"
+        echo "$DOCKERFILES"
+
+        FAIL_COUNT=0
+        UPLOAD_COUNT=0
+
+        for DF in $DOCKERFILES; do
+          SLUG=$(echo "$DF" | sed 's|^\./||;s|/Dockerfile$||;s|/|-|g')
+          IMAGE_TAG="syft-scan-target:${SLUG}"
+          BUILD_DIR=$(dirname "$DF")
+          KEY="sbom/${DATE}/${RUN_ID}/${SLUG}.cdx.json"
+
+          echo "=== Scanning ${DF} (slug=${SLUG}) ==="
+
+          if ! docker build --quiet -t "${IMAGE_TAG}" "${BUILD_DIR}" 2>&1 | tail -5; then
+            echo "WARN: docker build failed for ${DF} — skipping"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            docker system prune -f >/dev/null 2>&1 || true
+            continue
+          fi
+
+          if ! syft "${IMAGE_TAG}" -o cyclonedx-json --file "/tmp/sbom-${SLUG}.cdx.json" 2>&1; then
+            echo "WARN: syft scan failed for ${DF} — skipping upload"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            docker rmi "${IMAGE_TAG}" >/dev/null 2>&1 || true
+            continue
+          fi
+
+          aws s3 cp "/tmp/sbom-${SLUG}.cdx.json" "s3://${SECURITY_SCANS_BUCKET}/${KEY}" \
+            --content-type application/json \
+            --metadata "commit=${CODEBUILD_RESOLVED_SOURCE_VERSION},dockerfile=${DF}"
+
+          UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
+          docker rmi "${IMAGE_TAG}" >/dev/null 2>&1 || true
+        done
+
+        echo "Summary: ${UPLOAD_COUNT}/${TOTAL} SBOMs uploaded; ${FAIL_COUNT} scans failed."
+        # Best-effort: do NOT fail the build for individual scan failures
+        exit 0
+
+artifacts:
+  files: []

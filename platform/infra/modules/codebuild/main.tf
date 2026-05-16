@@ -19,6 +19,7 @@ locals {
     "agent-runtime" = { buildspec = "codebuild/bs-agent-runtime.yml" }
     "pyjwt-layer"   = { buildspec = "codebuild/bs-pyjwt-layer.yml" }
     "grype-scan"    = { buildspec = "codebuild/bs-grype-scan.yml" }
+    "syft-scan"     = { buildspec = "codebuild/bs-syft-scan.yml" }
   }
 }
 
@@ -95,10 +96,13 @@ resource "aws_iam_role_policy" "codebuild_security_scan_upload" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid      = "SecurityScanSARIFUpload"
-      Effect   = "Allow"
-      Action   = ["s3:PutObject"]
-      Resource = "${var.security_scans_bucket_arn}/sarif/*"
+      Sid    = "SecurityScanUpload"
+      Effect = "Allow"
+      Action = ["s3:PutObject"]
+      Resource = [
+        "${var.security_scans_bucket_arn}/sarif/*",
+        "${var.security_scans_bucket_arn}/sbom/*"
+      ]
     }]
   })
 }
