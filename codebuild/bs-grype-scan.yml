@@ -15,7 +15,7 @@ phases:
       - DATE=$(date -u +%Y/%m/%d)
       - RUN_ID="${CODEBUILD_BUILD_ID##*:}"
       - echo "Run ID=${RUN_ID} date=${DATE}"
-      - test -n "${SECURITY_SCANS_BUCKET}" || { echo "ERROR: SECURITY_SCANS_BUCKET not set"; exit 1; }
+      - if [ -z "${SECURITY_SCANS_BUCKET}" ]; then echo "ERROR SECURITY_SCANS_BUCKET not set" && exit 1; fi
   build:
     commands:
       - |
