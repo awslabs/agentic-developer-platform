@@ -290,7 +290,10 @@ jobs:
       - name: Install Ruby + cfn-nag
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ruby-full
+          # ruby-full + ruby-dev + build-essential + libyaml-dev so gems
+          # with native extensions (psych -> yaml.h) compile cleanly.
+          sudo apt-get install -y --no-install-recommends \
+            ruby-full ruby-dev build-essential libyaml-dev
           sudo gem install cfn-nag -v ${{ env.CFN_NAG_VERSION }}
 
       - name: Run cfn-nag
