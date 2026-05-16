@@ -52,7 +52,9 @@ class TestIdentityIndexClient:
         assert item["identity_type"]["S"] == "github_installation_id"
         assert item["identity_value"]["S"] == "12345678"
         assert item["org_id"]["S"] == "org-001"
-        assert "ttl" in item
+        # Identity rows are authoritative; we no longer set TTL by default
+        # (caller can opt in by passing ttl_seconds > 0)
+        assert "ttl" not in item
 
     @pytest.mark.asyncio
     async def test_put_identity_retry_on_failure(self, index_client, mock_dynamodb):

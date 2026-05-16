@@ -9,10 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from botocore.exceptions import ClientError
 
-from src.admin.identity.user_identity_index import (
-    DEFAULT_TTL_SECONDS,
-    UserIdentityIndexClient,
-)
+from src.admin.identity.user_identity_index import UserIdentityIndexClient
 
 
 class TestUserIdentityIndexClient:
@@ -55,22 +52,25 @@ class TestUserIdentityIndexClient:
         assert item["user_id"]["S"] == "user-001"
         assert item["org_id"]["S"] == "org-001"
         assert item["provider_username"]["S"] == "testuser"
-        assert "ttl" in item
+        # Identity rows are authoritative; default no TTL.
+        # Offboarding deletes rows explicitly. Caller can opt in via ttl_seconds > 0.
+        assert "ttl" not in item
         assert "updated_at" in item
 
     @pytest.mark.asyncio
-    async def test_put_user_identity_ttl_is_30_days(self, index_client, mock_dynamodb):
-        """TTL is set to ~30 days from now."""
+    async def test_put_user_identity_ttl_opt_in(self, index_client, mock_dynamodb):
+        """TTL is set when caller explicitly opts in with ttl_seconds > 0."""
         await index_client.put_user_identity(
             provider="github",
             provider_user_id="12345",
             user_id="user-001",
             org_id="org-001",
+            ttl_seconds=3600,  # 1 hour, opt-in
         )
         item = mock_dynamodb.put_item.call_args[1]["Item"]
         ttl_value = int(item["ttl"]["N"])
-        expected_min = int(time.time()) + DEFAULT_TTL_SECONDS - 5
-        expected_max = int(time.time()) + DEFAULT_TTL_SECONDS + 5
+        expected_min = int(time.time()) + 3600 - 5
+        expected_max = int(time.time()) + 3600 + 5
         assert expected_min <= ttl_value <= expected_max
 
     @pytest.mark.asyncio

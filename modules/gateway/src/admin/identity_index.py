@@ -21,8 +21,12 @@ logger = logging.getLogger(__name__)
 
 IdentityType = Literal["github_installation_id", "cognito_client_id", "github_user"]
 
-# Default TTL: 7 days (reconcile job refreshes before expiry)
-DEFAULT_TTL_SECONDS = 7 * 86400
+# Identity rows are authoritative-from-Postgres projections; they live as long
+# as the user is real. Offboarding deletes the row explicitly. We previously set
+# a 7d TTL "backstop" assuming a reconcile job would refresh — that job doesn't
+# run reliably, and rows were getting GC'd, breaking webhook routing for active
+# users (#TBD bug). New writes do NOT set the ttl attribute.
+DEFAULT_TTL_SECONDS = 0  # Sentinel: 0 = "do not write a ttl"
 
 # Retry config
 MAX_RETRIES = 3
@@ -72,9 +76,10 @@ class IdentityIndexClient:
             "identity_type": {"S": identity_type},
             "identity_value": {"S": identity_value},
             "org_id": {"S": org_id},
-            "ttl": {"N": str(int(time.time()) + ttl_seconds)},
             "updated_at": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
         }
+        if ttl_seconds > 0:
+            item["ttl"] = {"N": str(int(time.time()) + ttl_seconds)}
 
         # Add extra attributes (skip None values)
         if extra_attrs:

@@ -103,13 +103,16 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
         # convention; if the operator wants a different tenant mapping,
         # they can overwrite this row explicitly.
         now = datetime.now(UTC).isoformat()
+        # Identity rows are authoritative; offboarding deletes them explicitly.
+        # No TTL — writers were previously setting a 7d/30d/365d expiry assuming
+        # a reconcile job would refresh, but rows GC'd silently and broke webhook
+        # routing for active users (#TBD bug).
         table.put_item(
             Item={
                 "identity_type": "github_installation_id",
                 "identity_value": str(installation_id),
                 "org_id": org_login,
                 "updated_at": now,
-                "ttl": int((datetime.now(UTC)).timestamp()) + 60 * 60 * 24 * 365,
                 "auto_registered": True,
             }
         )

@@ -21,8 +21,12 @@ from src.shared.identity.providers import SUPPORTED_PROVIDERS
 
 logger = logging.getLogger(__name__)
 
-# 30-day TTL (refreshed by 7d reconcile job — 23d headroom on failures)
-DEFAULT_TTL_SECONDS = 30 * 86400
+# Identity rows are authoritative-from-Postgres projections; they live as long
+# as the user is real. Offboarding deletes the row explicitly. We previously set
+# a 30d TTL "backstop" assuming a reconcile job would refresh — that job doesn't
+# run reliably, and rows were getting GC'd, breaking webhook routing for active
+# users (#TBD bug). New writes do NOT set the ttl attribute.
+DEFAULT_TTL_SECONDS = 0  # Sentinel: 0 = "do not write a ttl"
 
 # Retry config (matches existing identity_index.py pattern)
 MAX_RETRIES = 3
@@ -87,8 +91,9 @@ class UserIdentityIndexClient:
             "user_id": {"S": user_id},
             "org_id": {"S": org_id},
             "updated_at": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
-            "ttl": {"N": str(int(time.time()) + ttl_seconds)},
         }
+        if ttl_seconds > 0:
+            item["ttl"] = {"N": str(int(time.time()) + ttl_seconds)}
 
         if provider_username is not None:
             item["provider_username"] = {"S": provider_username}
