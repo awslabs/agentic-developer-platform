@@ -308,6 +308,7 @@ def handler(event: dict, context) -> dict:
         API Gateway response dict.
     """
     start_time = time.time()
+    print("DBG handler:start")
 
     # 1. Extract headers + body
     # Normalize header keys to lowercase: REST API v1 preserves original case
@@ -322,10 +323,14 @@ def handler(event: dict, context) -> dict:
     else:
         body_bytes = raw_body.encode("utf-8") if isinstance(raw_body, str) else raw_body
 
+    print(f"DBG handler:headers x-github-event={headers.get('x-github-event','')!r} x-github-delivery={headers.get('x-github-delivery','')!r} content-type={headers.get('content-type','')!r} body_len={len(body_bytes)}")
+
     # 2. Verify HMAC signature
     signature_header = headers.get("x-hub-signature-256", "")
     webhook_secret = _resolve_webhook_secret()
+    print(f"DBG handler:sig sig_header_len={len(signature_header)} secret_len={len(webhook_secret)}")
     if not _get_signature().verify_github_signature(body_bytes, signature_header, webhook_secret):
+        print("DBG handler:sig FAIL invalid_signature")
         _log_outcome(
             event_type="unknown",
             action="",
@@ -337,19 +342,23 @@ def handler(event: dict, context) -> dict:
             start_time=start_time,
         )
         return _response(401, {"error": "Invalid signature"})
+    print("DBG handler:sig OK")
 
     # 3. Parse event type from X-GitHub-Event header
     event_type = headers.get("x-github-event", "")
     if not event_type:
+        print("DBG handler:no_event_type")
         return _response(400, {"error": "Missing X-GitHub-Event header"})
 
     # Parse body
     try:
         payload = json.loads(body_bytes)
     except (json.JSONDecodeError, ValueError):
+        print("DBG handler:invalid_json")
         return _response(400, {"error": "Invalid JSON body"})
 
     action = payload.get("action", "")
+    print(f"DBG handler:event event_type={event_type!r} action={action!r}")
 
     # Issue #538: Bypass identity resolution for installation lifecycle events.
     # These arrive during onboarding before any identity row exists. We also
@@ -372,11 +381,13 @@ def handler(event: dict, context) -> dict:
     repo = payload.get("repository", {}).get("full_name", "")
     sender = payload.get("sender", {})
     sender_id = sender.get("id", 0)
+    print(f"DBG handler:identity install_id={installation_id} repo={repo!r} sender_id={sender_id} sender_login={sender.get('login','')!r}")
 
     # 5. Resolve identity (tenant + sender) via identity-index
     resolved, outcome_reason = _get_identity_resolver().resolve(
         installation_id, sender_id
     )
+    print(f"DBG handler:resolved resolved={resolved is not None} outcome_reason={outcome_reason!r}")
 
     # 5a. Self-heal unknown installation: if the webhook tells us the repo's
     # GitHub org (e.g. `sophos-hackathon`) and we don't have an installation
@@ -433,6 +444,7 @@ def handler(event: dict, context) -> dict:
 
     # 7. If identity resolution failed → 403 Forbidden
     if resolved is None:
+        print(f"DBG handler:reject_403 outcome={outcome_reason!r}")
         _log_outcome(
             event_type=event_type,
             action=action,
@@ -460,6 +472,7 @@ def handler(event: dict, context) -> dict:
     allowed = rate_result.allowed
     retry_after = rate_result.retry_after_seconds
 
+    print(f"DBG handler:rate_limit allowed={allowed} retry_after={retry_after}")
     # 8. If rate-limited → return 429 with Retry-After
     if not allowed:
         _log_outcome(
@@ -481,6 +494,7 @@ def handler(event: dict, context) -> dict:
 
     intent = extract_intent(event_type, payload)
 
+    print(f"DBG handler:intent intent={intent!r}")
     # 10. If no actionable intent → log + return 200 (no-op)
     if intent is None:
         _log_outcome(
@@ -528,8 +542,10 @@ def handler(event: dict, context) -> dict:
         "arrived_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     envelope["message_id"] = str(uuid.uuid4())
+    print(f"DBG handler:publish_attempt message_id={envelope['message_id']} persona={intent.persona}")
 
     message_id = _get_sqs_publisher().publish_envelope(envelope)
+    print(f"DBG handler:publish_result sqs_message_id={message_id!r}")
     if not message_id:
         _log_outcome(
             event_type=event_type,
