@@ -9,13 +9,14 @@
 #   Sidecar container: SIDECAR_MODE=true   (loops, refreshing before expiry)
 # =============================================================================
 
-FROM public.ecr.aws/amazonlinux/amazonlinux:2023-minimal
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023
 
-# Install minimal dependencies (baked in, not at runtime)
+# Install minimal dependencies (baked in, not at runtime).
+# curl is omitted: amazonlinux:2023 ships curl-minimal, which provides curl
+# and conflicts with the full curl package. curl-minimal is sufficient here.
 RUN dnf install -y \
       aws-cli \
       openssl \
-      curl \
       python3 \
       shadow-utils \
     && dnf clean all \

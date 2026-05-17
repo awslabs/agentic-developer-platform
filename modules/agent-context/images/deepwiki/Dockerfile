@@ -1,15 +1,15 @@
 # DeepWiki image for Agent Context Intelligence Platform
 # Based on upstream AsyncFuncAI/deepwiki-open, configured for LiteLLM proxy + Bedrock
 #
-# Build: docker build -t deepwiki:latest -f images/deepwiki/Dockerfile .
+# Build: docker build -t deepwiki:latest .
 # The image uses OPENAI_BASE_URL to route all LLM calls through the LiteLLM proxy.
 
 FROM ghcr.io/asyncfuncai/deepwiki-open:latest
 
 # Override default config with our LiteLLM-proxy-aware configs
 # These point the "openai" provider at our LiteLLM proxy which routes to Bedrock
-COPY config/deepwiki-generator.json /app/api/config/generator.json
-COPY config/deepwiki-embedder.json /app/api/config/embedder.json
+COPY config/generator.json /app/api/config/generator.json
+COPY config/embedder.json /app/api/config/embedder.json
 
 # Create wiki cache directory
 RUN mkdir -p /root/.adalflow/wikicache
