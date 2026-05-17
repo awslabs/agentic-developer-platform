@@ -19,6 +19,8 @@ phases:
   build:
     commands:
       - |
+        set -euo pipefail
+
         # In-buildspec discovery (CodeBuild source is independent of workflow discovery)
         DOCKERFILES=$(find . -name 'Dockerfile' -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/.terraform/*' | sort)
         TOTAL=$(echo "$DOCKERFILES" | wc -l)
@@ -36,11 +38,15 @@ phases:
 
           echo "=== Scanning ${DF} (slug=${SLUG}) ==="
 
-          if ! docker build --quiet -t "${IMAGE_TAG}" "${BUILD_DIR}" 2>&1 | tail -5; then
-            echo "WARN: docker build failed for ${DF} — skipping"
+          # Capture docker build output without piping (avoids pipefail masking failures)
+          # Per-image 10-min timeout prevents heavy builds from starving others
+          BUILD_OUT=$(timeout 600 docker build --quiet -t "${IMAGE_TAG}" "${BUILD_DIR}" 2>&1) || {
+            echo "WARN: docker build failed/timed-out for ${DF} (rc=$?)"
+            echo "$BUILD_OUT" | tail -10
             FAIL_COUNT=$((FAIL_COUNT + 1))
+            docker rmi "${IMAGE_TAG}" >/dev/null 2>&1 || true
             continue
-          fi
+          }
 
           if ! grype "${IMAGE_TAG}" -o sarif > "/tmp/grype-${SLUG}.sarif" 2>&1; then
             echo "WARN: grype scan failed for ${DF} — skipping upload"
@@ -58,7 +64,12 @@ phases:
         done
 
         echo "Summary: ${UPLOAD_COUNT}/${TOTAL} SARIFs uploaded; ${FAIL_COUNT} scans failed."
-        # Best-effort: do NOT fail the build for individual scan failures
+
+        # Minimum-coverage assertion — fail loudly if scope regresses
+        if [ "${UPLOAD_COUNT}" -lt "$((TOTAL / 2))" ]; then
+          echo "ERROR: Only ${UPLOAD_COUNT}/${TOTAL} images scanned — below 50% threshold"
+          exit 1
+        fi
         exit 0
 
 artifacts:

@@ -18,7 +18,7 @@ locals {
     "cyber-worker"  = { buildspec = "codebuild/bs-cyber-worker.yml" }
     "agent-runtime" = { buildspec = "codebuild/bs-agent-runtime.yml" }
     "pyjwt-layer"   = { buildspec = "codebuild/bs-pyjwt-layer.yml" }
-    "grype-scan"    = { buildspec = "codebuild/bs-grype-scan.yml" }
+    "grype-scan"    = { buildspec = "codebuild/bs-grype-scan.yml", build_timeout = 90 }
     "syft-scan"     = { buildspec = "codebuild/bs-syft-scan.yml" }
   }
 }
@@ -55,9 +55,10 @@ resource "aws_iam_role_policy_attachment" "codebuild_admin" {
 resource "aws_codebuild_project" "main" {
   for_each = local.projects
 
-  name         = "${var.name_prefix}-${each.key}"
-  description  = "ADP docker build: ${each.key}"
-  service_role = aws_iam_role.codebuild.arn
+  name          = "${var.name_prefix}-${each.key}"
+  description   = "ADP docker build: ${each.key}"
+  service_role  = aws_iam_role.codebuild.arn
+  build_timeout = lookup(each.value, "build_timeout", 60)
 
   artifacts {
     type = "NO_ARTIFACTS"
