@@ -224,6 +224,134 @@
           "check_ids": ["CKV2_AWS_34"]
         }
       ]
+    },
+    {
+      "_comment": "CKV_AWS_338: Dev-environment CloudWatch log groups use 7-30d retention as intentional cost optimization. Logs are ephemeral debugging data, not audit records. Re-evaluate per-group when promoting to prod or if audit/compliance requirements arise. Reviewed in issue #637.",
+      "file": "/platform/infra/modules/ecr/main.tf",
+      "findings": [
+        {
+          "resource": "aws_cloudwatch_log_group.ecr_logs",
+          "check_ids": ["CKV_AWS_338"]
+        }
+      ]
+    },
+    {
+      "_comment": "CKV_AWS_338: Dev log retention 30d — ephemeral debugging data. See #637.",
+      "file": "/modules/gateway/infra/modules/rds/main.tf",
+      "findings": [
+        {
+          "resource": "aws_cloudwatch_log_group.rds_log_group",
+          "check_ids": ["CKV_AWS_338"]
+        }
+      ]
+    },
+    {
+      "_comment": "CKV_AWS_338: Dev log retention 30d — ephemeral debugging data. See #637.",
+      "file": "/modules/gateway/infra/modules/github-auth-broker/main.tf",
+      "findings": [
+        {
+          "resource": "aws_cloudwatch_log_group.broker",
+          "check_ids": ["CKV_AWS_338"]
+        }
+      ]
+    },
+    {
+      "_comment": "CKV_AWS_338: Dev log retention 7d — ephemeral Cognito trigger logs. See #637.",
+      "file": "/modules/gateway/infra/modules/cognito/lambda.tf",
+      "findings": [
+        {
+          "resource": "aws_cloudwatch_log_group.pre_token_generation",
+          "check_ids": ["CKV_AWS_338"]
+        }
+      ]
+    },
+    {
+      "_comment": "CKV_AWS_338: Dev log retention 7d — ephemeral Cognito trigger logs. See #637.",
+      "file": "/modules/gateway/infra/modules/cognito/pre_signup.tf",
+      "findings": [
+        {
+          "resource": "aws_cloudwatch_log_group.pre_signup",
+          "check_ids": ["CKV_AWS_338"]
+        }
+      ]
+    },
+    {
+      "_comment": "CKV_AWS_338: Dev log retention 30d — budget Lambda debugging data. See #637.",
+      "file": "/modules/gateway/infra/modules/budget-lambda/main.tf",
+      "findings": [
+        {
+          "resource": "aws_cloudwatch_log_group.usage_tracker",
+          "check_ids": ["CKV_AWS_338"]
+        },
+        {
+          "resource": "aws_cloudwatch_log_group.pricing_refresh",
+          "check_ids": ["CKV_AWS_338"]
+        }
+      ]
+    },
+    {
+      "_comment": "CKV_AWS_338: Dev log retention 30d — API Gateway access logs. See #637.",
+      "file": "/modules/gateway/infra/modules/api-gateway/main.tf",
+      "findings": [
+        {
+          "resource": "aws_cloudwatch_log_group.api_gateway",
+          "check_ids": ["CKV_AWS_338"]
+        }
+      ]
+    },
+    {
+      "_comment": "CKV_AWS_338: Dev log retention 30d — Lambda authorizer logs. See #637.",
+      "file": "/modules/gateway/infra/modules/lambda-authorizer/main.tf",
+      "findings": [
+        {
+          "resource": "aws_cloudwatch_log_group.authorizer",
+          "check_ids": ["CKV_AWS_338"]
+        }
+      ]
+    },
+    {
+      "_comment": "CKV_AWS_338: Dev log retention 30d — agent gateway Lambda logs. See #637.",
+      "file": "/modules/agent-factory/infra/modules/lambda-gateway/main.tf",
+      "findings": [
+        {
+          "resource": "aws_cloudwatch_log_group.ingest",
+          "check_ids": ["CKV_AWS_338"]
+        },
+        {
+          "resource": "aws_cloudwatch_log_group.response",
+          "check_ids": ["CKV_AWS_338"]
+        }
+      ]
+    },
+    {
+      "_comment": "CKV_AWS_338: Dev log retention 30d — WebSocket API access logs. See #637.",
+      "file": "/modules/agent-factory/infra/modules/api-gateway-ws/main.tf",
+      "findings": [
+        {
+          "resource": "aws_cloudwatch_log_group.ws",
+          "check_ids": ["CKV_AWS_338"]
+        }
+      ]
+    },
+    {
+      "_comment": "CKV_AWS_338: Dev log retention 14d — webhook ingress Lambda logs. See #637.",
+      "file": "/modules/agent-factory/webhook-ingress/infra/lambdas.tf",
+      "findings": [
+        {
+          "resource": "aws_cloudwatch_log_group.lambda",
+          "check_ids": ["CKV_AWS_338"]
+        }
+      ]
+    },
+    {
+      "_comment": "CKV_AWS_338: Dev log retention 14d — webhook API Gateway access logs. See #637.",
+      "file": "/modules/agent-factory/webhook-ingress/infra/api-gateway.tf",
+      "findings": [
+        {
+          "resource": "aws_cloudwatch_log_group.api_gateway",
+          "check_ids": ["CKV_AWS_338"]
+        }
+      ]
     }
   ]
 }
