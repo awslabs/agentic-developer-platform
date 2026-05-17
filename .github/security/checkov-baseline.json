@@ -144,6 +144,86 @@
           ]
         }
       ]
+    },
+    {
+      "_comment": "CKV2_AWS_34: SSM parameters storing non-secret infrastructure config (table names, URLs, ARNs, bucket names). None contain credentials. Reviewed in issue #635.",
+      "file": "/modules/gateway/infra/main.tf",
+      "findings": [
+        {
+          "resource": "aws_ssm_parameter.frontend_bucket",
+          "check_ids": ["CKV2_AWS_34"]
+        },
+        {
+          "resource": "aws_ssm_parameter.cloudfront_id",
+          "check_ids": ["CKV2_AWS_34"]
+        },
+        {
+          "resource": "aws_ssm_parameter.cloudfront_domain",
+          "check_ids": ["CKV2_AWS_34"]
+        },
+        {
+          "resource": "aws_ssm_parameter.apigw_invoke_url",
+          "check_ids": ["CKV2_AWS_34"]
+        },
+        {
+          "resource": "aws_ssm_parameter.agent_registry_table",
+          "check_ids": ["CKV2_AWS_34"]
+        },
+        {
+          "resource": "aws_ssm_parameter.internal_alb_arn",
+          "check_ids": ["CKV2_AWS_34"]
+        },
+        {
+          "resource": "aws_ssm_parameter.internal_alb_dns",
+          "check_ids": ["CKV2_AWS_34"]
+        },
+        {
+          "resource": "aws_ssm_parameter.identity_index_table",
+          "check_ids": ["CKV2_AWS_34"]
+        }
+      ]
+    },
+    {
+      "file": "/modules/gateway/infra/user_identity_index.tf",
+      "findings": [
+        {
+          "resource": "aws_ssm_parameter.user_identity_index_table",
+          "check_ids": ["CKV2_AWS_34"]
+        }
+      ]
+    },
+    {
+      "file": "/modules/agent-factory/webhook-ingress/infra/outputs.tf",
+      "findings": [
+        {
+          "resource": "aws_ssm_parameter.webhook_endpoint",
+          "check_ids": ["CKV2_AWS_34"]
+        },
+        {
+          "resource": "aws_ssm_parameter.sqs_queue_url",
+          "check_ids": ["CKV2_AWS_34"]
+        },
+        {
+          "resource": "aws_ssm_parameter.webhook_secret_arn",
+          "check_ids": ["CKV2_AWS_34"]
+        },
+        {
+          "resource": "aws_ssm_parameter.webhook_events_table",
+          "check_ids": ["CKV2_AWS_34"]
+        },
+        {
+          "resource": "aws_ssm_parameter.tenant_registry_table",
+          "check_ids": ["CKV2_AWS_34"]
+        },
+        {
+          "resource": "aws_ssm_parameter.rate_limits_table",
+          "check_ids": ["CKV2_AWS_34"]
+        },
+        {
+          "resource": "aws_ssm_parameter.identity_index_table",
+          "check_ids": ["CKV2_AWS_34"]
+        }
+      ]
     }
   ]
 }
