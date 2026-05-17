@@ -59,6 +59,46 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
 
+      - name: State fixups (import drift, clean stale jobs)
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -e
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          # --- Fix 1: Import Cognito domain if it exists in AWS but not in state ---
+          POOL_ID=$(terraform state show 'module.cognito.aws_cognito_user_pool.main' 2>/dev/null | grep '^\s*id\s' | awk '{print $NF}' | tr -d '"' || echo "")
+          if [ -n "$POOL_ID" ]; then
+            DOMAIN="bedrockgw-dev-auth-${ACCOUNT_ID:4:8}"
+            # Check if the domain resource is already in state
+            if ! terraform state show 'module.cognito.aws_cognito_user_pool_domain.main' >/dev/null 2>&1; then
+              echo "Importing Cognito domain '$DOMAIN' into state..."
+              terraform import -var-file="../../../${{ env.VAR_FILE }}" \
+                'module.cognito.aws_cognito_user_pool_domain.main' "$DOMAIN" || echo "Import failed (may not exist yet) — continuing"
+            else
+              echo "Cognito domain already in state."
+            fi
+          else
+            echo "Cognito user pool not in state yet — skipping domain import."
+          fi
+
+          # --- Fix 2: Delete stale RDS bootstrap K8s job if stuck ---
+          # Install kubectl if needed
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          fi
+          aws eks update-kubeconfig --name adp-dev-eks --region us-east-1 2>/dev/null || true
+          # Find and delete any stuck rds-bootstrap jobs
+          STALE_JOBS=$(kubectl get jobs -n adp-gateway -l app=bedrockgw-dev-rds-bootstrap -o name 2>/dev/null || echo "")
+          if [ -n "$STALE_JOBS" ]; then
+            echo "Deleting stale RDS bootstrap job(s): $STALE_JOBS"
+            kubectl delete $STALE_JOBS -n adp-gateway --force --grace-period=0 2>/dev/null || true
+            # Also remove from Terraform state so it gets cleanly recreated
+            terraform state rm 'module.rds_bootstrap.kubernetes_job.grant_rds_iam' 2>/dev/null || true
+          else
+            echo "No stale RDS bootstrap jobs found."
+          fi
+
       - name: Terraform Plan (destroy-safety check)
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
