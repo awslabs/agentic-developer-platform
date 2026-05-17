@@ -25,13 +25,18 @@ resource "aws_iam_policy" "runner_boundary" {
           "secretsmanager:*",
           "ssm:*",
 
-          # KMS — encrypt/decrypt for data, plus wildcarded reads for
-          # Terraform refresh. The DenyDangerousActions block below covers
-          # anything risky (billing, root keys are separate). Read wildcards
-          # stop the whack-a-mole of enumerating every Describe/Get/List
-          # variant Terraform refresh calls for each resource type.
+          # KMS — encrypt/decrypt for data, key management for Terraform
+          # create/destroy, plus wildcarded reads for Terraform refresh.
+          # The DenyDangerousActions block below covers anything risky
+          # (billing, root keys are separate). Read wildcards stop the
+          # whack-a-mole of enumerating every Describe/Get/List variant
+          # Terraform refresh calls for each resource type.
           "kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*",
           "kms:Describe*", "kms:Get*", "kms:List*",
+          "kms:CreateKey", "kms:TagResource", "kms:UntagResource",
+          "kms:ScheduleKeyDeletion", "kms:PutKeyPolicy",
+          "kms:EnableKeyRotation", "kms:DisableKeyRotation",
+          "kms:CreateAlias", "kms:DeleteAlias", "kms:UpdateAlias",
 
           # IAM — broad read-only via wildcards. The DenyDangerousActions
           # statement below explicitly denies user/login-profile/access-key
@@ -188,9 +193,16 @@ resource "aws_iam_role_policy" "runner_permissions" {
         Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:adp/*"
       },
       {
-        Sid      = "KMSAccess"
-        Effect   = "Allow"
-        Action   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*"]
+        Sid    = "KMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*",
+          "kms:Describe*", "kms:Get*", "kms:List*",
+          "kms:CreateKey", "kms:TagResource", "kms:UntagResource",
+          "kms:ScheduleKeyDeletion", "kms:PutKeyPolicy",
+          "kms:EnableKeyRotation", "kms:DisableKeyRotation",
+          "kms:CreateAlias", "kms:DeleteAlias", "kms:UpdateAlias"
+        ]
         Resource = "*"
       },
       {
