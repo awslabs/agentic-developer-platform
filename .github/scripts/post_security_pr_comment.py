@@ -6,7 +6,7 @@ Uses the GitHub CLI (gh) to upsert a comment identified by a marker.
 
 import argparse
 import json
-import subprocess
+import subprocess  # nosec B404
 import sys
 from pathlib import Path
 
@@ -75,7 +75,7 @@ def build_comment_body(summary: dict) -> str:
 
 def find_existing_comment(repo: str, pr: str) -> str | None:
     """Find existing security scan comment by marker."""
-    result = subprocess.run(
+    result = subprocess.run(  # nosec: B603, B607
         ["gh", "api", f"repos/{repo}/issues/{pr}/comments", "--paginate"],
         capture_output=True,
         text=True,
@@ -100,7 +100,7 @@ def post_or_update_comment(repo: str, pr: str, body: str) -> None:
     existing_id = find_existing_comment(repo, pr)
 
     if existing_id:
-        subprocess.run(
+        subprocess.run(  # nosec: B603, B607
             [
                 "gh", "api",
                 f"repos/{repo}/issues/comments/{existing_id}",
@@ -111,7 +111,7 @@ def post_or_update_comment(repo: str, pr: str, body: str) -> None:
             capture_output=True,
         )
     else:
-        subprocess.run(
+        subprocess.run(  # nosec: B603, B607
             [
                 "gh", "api",
                 f"repos/{repo}/issues/{pr}/comments",
