@@ -57,7 +57,7 @@ phases:
 
           aws s3 cp "/tmp/grype-${SLUG}.sarif" "s3://${SECURITY_SCANS_BUCKET}/${KEY}" \
             --content-type application/sarif+json \
-            --metadata "commit=${CODEBUILD_RESOLVED_SOURCE_VERSION},dockerfile=${DF}"
+            --metadata "commit=${CODEBUILD_RESOLVED_SOURCE_VERSION:-unknown},dockerfile=${DF}"
 
           UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
           docker rmi "${IMAGE_TAG}" >/dev/null 2>&1 || true

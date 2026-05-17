@@ -1,7 +1,7 @@
 # Agent Gateway — SQS Consumer (Pure Python)
 # Uses Claude via Bedrock directly — no TypeScript, no subprocess.
 
-FROM python:3.12-slim
+FROM public.ecr.aws/docker/library/python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     dumb-init curl git bash unzip && \

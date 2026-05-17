@@ -1,6 +1,6 @@
 # LiteLLM Proxy — pre-baked image for Agent Context Intelligence Platform
 # Eliminates slow pip install at pod startup; dependencies are cached in the image layer.
-FROM python:3.11-slim
+FROM public.ecr.aws/docker/library/python:3.11-slim
 
 RUN pip install --no-cache-dir 'litellm[proxy]'
 

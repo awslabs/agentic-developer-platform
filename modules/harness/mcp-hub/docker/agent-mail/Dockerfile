@@ -4,7 +4,7 @@
 # This builds the actual MCP Agent Mail Python application,
 # NOT the Node.js GitHub Agent that was previously containerized.
 
-FROM python:3.14-slim
+FROM public.ecr.aws/docker/library/python:3.14-slim
 
 LABEL maintainer="agent-operations"
 LABEL description="MCP Agent Mail - Agent registration, messaging, FTS5 search, Web UI"
