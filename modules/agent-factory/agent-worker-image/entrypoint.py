@@ -184,14 +184,82 @@ def main() -> int:
     run_cmd(["git", "config", "user.email", bot_email], cwd=WORK_DIR)
     run_cmd(["git", "config", "user.name", "adp-agent[bot]"], cwd=WORK_DIR)
 
-    # Step 6b: Create the agent branch + WIP commit BEFORE exec so that:
+    # Step 6b: Create or reset the agent branch + WIP commit BEFORE exec so that:
     #   1. The Check Run attaches to the branch SHA (not default-branch HEAD).
     #   2. Users see a "WIP" commit immediately on the branch.
     #   3. Real agent commits stack cleanly on top.
+    #
+    # Branch convention `agent/issue-NNN` is fixed (A4 auto-merge, reviewer
+    # workflows, operators all rely on it). When this issue has been worked
+    # before — typically architect-then-developer in sequence — the remote
+    # branch already exists. Two cases:
+    #
+    #   (a) Stale branch, no open PR:  prior architect/developer run created
+    #       a WIP commit but no PR shipped. Force-reset to current main so
+    #       this run starts clean. Otherwise the agent's `git fetch`+`merge`
+    #       pulls in everything that landed on main since the prior run,
+    #       inflating the eventual PR diff with already-merged work.
+    #
+    #   (b) Branch with an open PR:  operator may be iterating, or an
+    #       earlier architect run shipped a PR (rare). Don't force-reset —
+    #       extend the existing branch so the PR's review state is preserved.
+    #
+    # SQS FIFO MessageGroupId=tenant#repo#issue serializes runs on the same
+    # issue, so concurrent-run race conditions don't apply here.
     branch_name = f"agent/issue-{issue}"
     wip_sha: str = ""
     try:
-        run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
+        # Detect whether the remote branch exists. Use subprocess.run directly
+        # because run_cmd hardcodes check=True; we want to inspect returncode.
+        remote_check = subprocess.run(
+            ["git", "ls-remote", "--exit-code", "--heads", "origin", branch_name],
+            cwd=WORK_DIR,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        remote_branch_exists = remote_check.returncode == 0
+
+        if remote_branch_exists:
+            # Check whether an open PR exists for this branch
+            open_pr_check = subprocess.run(
+                ["gh", "pr", "list", "--repo", repo,
+                 "--head", branch_name, "--state", "open",
+                 "--json", "number", "--jq", ".[0].number // empty"],
+                cwd=WORK_DIR,
+                capture_output=True,
+                text=True,
+                check=False,
+                env={**os.environ},
+            )
+            has_open_pr = bool(open_pr_check.stdout.strip())
+
+            if has_open_pr:
+                # (b) Extend the existing branch — preserve the PR's review state.
+                logger.info(
+                    "Branch %s exists with open PR; extending instead of resetting",
+                    branch_name,
+                )
+                run_cmd(["git", "fetch", "origin", branch_name], cwd=WORK_DIR)
+                run_cmd(["git", "checkout", branch_name], cwd=WORK_DIR)
+            else:
+                # (a) Stale branch, no PR — delete it and start fresh from main.
+                logger.info(
+                    "Branch %s exists with no open PR; resetting from main",
+                    branch_name,
+                )
+                subprocess.run(
+                    ["git", "push", "--delete", "origin", branch_name],
+                    cwd=WORK_DIR,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
+        else:
+            # First run on this issue — clean creation
+            run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
+
         run_cmd(
             ["git", "commit", "--allow-empty",
              "-m", f"WIP: agent/{persona} starting #{issue}"],
