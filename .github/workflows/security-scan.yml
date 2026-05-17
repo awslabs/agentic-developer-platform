@@ -99,14 +99,15 @@ jobs:
           python-version: '3.12'
 
       - name: Install Semgrep
-        # Python 3.12 stopped bundling pkg_resources. Semgrep's transitive
-        # dep `opentelemetry.instrumentation.dependencies` imports it, so
-        # the Semgrep run crashes with ModuleNotFoundError on Python 3.12.
-        # Install setuptools AFTER semgrep — installing it first lets pip
-        # downgrade it as a transitive dep when resolving semgrep's deps.
+        # `pkg_resources` was removed from setuptools in 80+. Semgrep's
+        # transitive dep `opentelemetry.instrumentation.dependencies`
+        # imports it, so a fresh `pip install semgrep` (which pulls in
+        # latest setuptools as a transitive dep) crashes at run time.
+        # Pin setuptools to <80 to keep pkg_resources available, AFTER
+        # the semgrep install so pip can't downgrade it.
         run: |
           pip install semgrep==${{ env.SEMGREP_VERSION }}
-          pip install --upgrade 'setuptools>=70'
+          pip install 'setuptools<80'
 
       - name: Run Semgrep
         run: |
