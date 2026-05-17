@@ -62,6 +62,14 @@ Rules:
 Resources:
   ADPFullAdminRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W43
+            reason: >
+              Intentional admin role for tenant bootstrapping. Access is
+              scoped by ExternalId condition, explicit CONFIRM parameter,
+              and CloudTrail session-tag auditing.
     Properties:
       RoleName: adp-hosted-agent-full-admin
       Description: >
