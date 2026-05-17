@@ -27,20 +27,32 @@ phases:
         echo "Found ${TOTAL} Dockerfiles"
         echo "$DOCKERFILES"
 
+        # Per-Dockerfile build context overrides. Some Dockerfiles use COPY paths
+        # outside their own directory, so dirname(Dockerfile) isn't a valid context.
+        # Each entry maps Dockerfile path -> build context directory.
+        # Defaults to dirname(Dockerfile) when not listed here.
+        resolve_context() {
+          case "$1" in
+            ./modules/agent-factory/agent-worker-image/Dockerfile) echo "." ;;
+            ./modules/agent-factory/agent/Dockerfile)              echo "./modules/agent-factory" ;;
+            *) dirname "$1" ;;
+          esac
+        }
+
         FAIL_COUNT=0
         UPLOAD_COUNT=0
 
         for DF in $DOCKERFILES; do
           SLUG=$(echo "$DF" | sed 's|^\./||;s|/Dockerfile$||;s|/|-|g')
           IMAGE_TAG="grype-scan-target:${SLUG}"
-          BUILD_DIR=$(dirname "$DF")
+          BUILD_DIR=$(resolve_context "$DF")
           KEY="sarif/${DATE}/${RUN_ID}/grype/${SLUG}.sarif"
 
-          echo "=== Scanning ${DF} (slug=${SLUG}) ==="
+          echo "=== Scanning ${DF} (slug=${SLUG}, context=${BUILD_DIR}) ==="
 
           # Capture docker build output without piping (avoids pipefail masking failures)
           # Per-image 10-min timeout prevents heavy builds from starving others
-          BUILD_OUT=$(timeout 600 docker build --quiet -t "${IMAGE_TAG}" "${BUILD_DIR}" 2>&1) || {
+          BUILD_OUT=$(timeout 600 docker build --quiet -f "${DF}" -t "${IMAGE_TAG}" "${BUILD_DIR}" 2>&1) || {
             echo "WARN: docker build failed/timed-out for ${DF} (rc=$?)"
             echo "$BUILD_OUT" | tail -10
             FAIL_COUNT=$((FAIL_COUNT + 1))
