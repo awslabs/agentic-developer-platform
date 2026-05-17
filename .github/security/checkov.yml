@@ -15,7 +15,8 @@ directory:
   - platform/infra
   - modules/agent-factory/agent-worker-image/aws
 
-# Skip checks that produce excessive false-positives in dev environments
+# Skip checks that produce excessive false-positives in dev environments.
+# These are accepted-risk for dev; re-evaluate when promoting to prod.
 skip-check:
   # S3 bucket logging — not needed in dev
   - CKV_AWS_18
@@ -23,6 +24,20 @@ skip-check:
   - CKV_AWS_21
   # CloudWatch log encryption — not required in dev
   - CKV_AWS_158
+  # Lambda code signing — unnecessary friction in dev iteration cycle;
+  # implement for prod to verify deployment artifact integrity
+  - CKV_AWS_272
+  # Lambda DLQ — dev Lambdas are mostly synchronous (auth-broker,
+  # authorizer, webhook-ingress) where caller gets errors directly.
+  # Async utility Lambdas (session_sweeper, pricing_refresh) are
+  # low-criticality in dev. Add DLQs for async Lambdas in prod.
+  - CKV_AWS_116
+  # Lambda reserved concurrency — can throttle during dev testing;
+  # implement per-function limits in prod based on observed traffic
+  - CKV_AWS_115
+  # Lambda X-Ray tracing — adds cost without value at dev traffic levels;
+  # enable in prod for production observability
+  - CKV_AWS_50
 
 compact: true
 quiet: true
