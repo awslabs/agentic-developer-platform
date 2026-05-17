@@ -40,10 +40,10 @@ output "keda_operator_role_name" {
 
 output "public_cfn_bucket" {
   description = "S3 bucket name for public CloudFormation templates"
-  value       = aws_s3_bucket.public_cfn.id
+  value       = var.enable_public_cfn_bucket ? aws_s3_bucket.public_cfn[0].id : ""
 }
 
 output "public_cfn_bucket_url" {
   description = "Base URL for CloudFormation template downloads"
-  value       = "https://${aws_s3_bucket.public_cfn.bucket}.s3.amazonaws.com"
+  value       = var.enable_public_cfn_bucket ? "https://${aws_s3_bucket.public_cfn[0].bucket}.s3.amazonaws.com" : ""
 }

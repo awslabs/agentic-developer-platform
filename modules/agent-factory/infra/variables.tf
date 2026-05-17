@@ -48,3 +48,15 @@ variable "runner_image" {
   type        = string
   default     = ""
 }
+
+variable "enable_public_cfn_bucket" {
+  description = "Whether to create the public S3 bucket for CloudFormation templates. Requires account-level S3 Block Public Access to be disabled. Set false in environments with account-level public access blocks."
+  type        = bool
+  default     = false
+}
+
+variable "seed_agent_registry" {
+  description = "Whether to seed the agent_registry DDB table with the scaledjob-worker entry. Set false if the item already exists (e.g. from a prior partial apply) and hasn't been imported into state."
+  type        = bool
+  default     = false
+}

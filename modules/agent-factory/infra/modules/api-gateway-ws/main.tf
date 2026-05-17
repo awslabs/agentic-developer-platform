@@ -26,12 +26,12 @@ resource "aws_apigatewayv2_route" "connect" {
 resource "aws_apigatewayv2_authorizer" "gateway" {
   count = var.authorizer_lambda_invoke_arn != "" && var.authorizer_lambda_function_name != "" ? 1 : 0
 
-  api_id                            = aws_apigatewayv2_api.ws.id
-  authorizer_type                   = "REQUEST"
-  authorizer_uri                    = var.authorizer_lambda_invoke_arn
-  name                              = "gateway-cognito-jwt"
-  identity_sources                  = ["route.request.querystring.token"]
-  authorizer_result_ttl_in_seconds  = 300
+  api_id           = aws_apigatewayv2_api.ws.id
+  authorizer_type  = "REQUEST"
+  authorizer_uri   = var.authorizer_lambda_invoke_arn
+  name             = "gateway-cognito-jwt"
+  identity_sources = ["route.request.querystring.token"]
+  # Note: authorizer_result_ttl_in_seconds is not supported for WEBSOCKET APIs
 }
 
 # Allow this WebSocket API to invoke the gateway's authorizer Lambda

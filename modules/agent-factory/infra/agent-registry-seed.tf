@@ -19,6 +19,9 @@ data "aws_ssm_parameter" "agent_registry_table" {
 }
 
 resource "aws_dynamodb_table_item" "scaledjob_worker_agent" {
+  # Skip creation if item already exists (e.g. seeded by a prior partial apply).
+  # Set to false to skip; once the item is imported into state, set back to true.
+  count      = var.seed_agent_registry ? 1 : 0
   table_name = data.aws_ssm_parameter.agent_registry_table.value
   hash_key   = "agent_id"
 

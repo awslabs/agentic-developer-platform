@@ -207,6 +207,7 @@ resource "aws_eks_access_policy_association" "runner_admin" {
 # =============================================================================
 
 resource "aws_s3_bucket" "public_cfn" {
+  count  = var.enable_public_cfn_bucket ? 1 : 0
   bucket = "adp-public-cfn"
 
   tags = {
@@ -216,7 +217,8 @@ resource "aws_s3_bucket" "public_cfn" {
 }
 
 resource "aws_s3_bucket_public_access_block" "public_cfn" {
-  bucket = aws_s3_bucket.public_cfn.id
+  count  = var.enable_public_cfn_bucket ? 1 : 0
+  bucket = aws_s3_bucket.public_cfn[0].id
 
   block_public_acls       = false
   block_public_policy     = false
@@ -225,7 +227,8 @@ resource "aws_s3_bucket_public_access_block" "public_cfn" {
 }
 
 resource "aws_s3_bucket_policy" "public_cfn" {
-  bucket = aws_s3_bucket.public_cfn.id
+  count  = var.enable_public_cfn_bucket ? 1 : 0
+  bucket = aws_s3_bucket.public_cfn[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -235,7 +238,7 @@ resource "aws_s3_bucket_policy" "public_cfn" {
         Effect    = "Allow"
         Principal = "*"
         Action    = "s3:GetObject"
-        Resource  = "${aws_s3_bucket.public_cfn.arn}/*"
+        Resource  = "${aws_s3_bucket.public_cfn[0].arn}/*"
       }
     ]
   })
