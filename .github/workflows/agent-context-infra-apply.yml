@@ -7,6 +7,12 @@ on:
   # platform-infra-apply.yml for the full rationale. Extra caution here:
   # applying with `graphrag_enabled=true` adds ~$800/mo idle cost.
   workflow_dispatch:
+    inputs:
+      terraform_target:
+        description: 'Optional Terraform -target (e.g. module.images_build). Leave blank for full apply.'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: tf-apply-agent-context
@@ -59,6 +65,14 @@ jobs:
       - name: GraphRAG cost guard
         run: |
           set -e
+          TARGET="${{ inputs.terraform_target }}"
+          # Skip cost guard when targeting a non-GraphRAG module
+          if [ -n "$TARGET" ]; then
+            if echo "$TARGET" | grep -qvE '(neptune|opensearch)'; then
+              echo "Targeted apply ($TARGET) — does not include GraphRAG resources. Skipping cost guard."
+              exit 0
+            fi
+          fi
           # Check effective graphrag_enabled value (TF_VAR overrides tfvars)
           GRAPHRAG_ENABLED="${TF_VAR_graphrag_enabled:-}"
           if [ -z "$GRAPHRAG_ENABLED" ]; then
@@ -92,8 +106,14 @@ jobs:
         run: |
           set -e
           set -o pipefail
+          TARGET="${{ inputs.terraform_target }}"
+          TARGET_FLAG=""
+          if [ -n "$TARGET" ]; then
+            TARGET_FLAG="-target=$TARGET"
+            echo "Targeted plan: $TARGET_FLAG"
+          fi
           EXIT_CODE=0
-          terraform plan -var-file="../../../${{ env.VAR_FILE }}" -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
+          terraform plan -var-file="../../../${{ env.VAR_FILE }}" $TARGET_FLAG -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
           echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           if [ "$EXIT_CODE" -eq 1 ]; then
             echo "::error::Terraform plan failed."
