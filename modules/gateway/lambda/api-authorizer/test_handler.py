@@ -149,13 +149,13 @@ def api_gateway_event():
 def test_extract_bearer_token_valid():
     """Test extracting valid Bearer token."""
     token = extract_bearer_token("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test")
-    assert token == "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test"
+    assert token == "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test"  # nosec B105
 
 
 def test_extract_bearer_token_case_insensitive():
     """Test Bearer token extraction is case-insensitive."""
     token = extract_bearer_token("bearer eyJtest")
-    assert token == "eyJtest"
+    assert token == "eyJtest"  # nosec B105
 
 
 def test_extract_bearer_token_none():

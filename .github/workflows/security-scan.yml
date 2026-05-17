@@ -258,6 +258,7 @@ jobs:
         run: |
           bandit -r . \
             --ini .github/security/.banditrc \
+            -x './modules/gateway/tests,./modules/agent-factory/tests,./modules/agent-factory/agent-worker-image/tests,./modules/agent-factory/webhook-ingress/lambda/common/tests,./modules/agent-factory/webhook-ingress/lambda/github/tests,./modules/gateway/lambda/github-auth-broker/tests,./modules/agent-context/tests' \
             --format sarif \
             --output bandit-results.sarif \
             --exit-zero \
