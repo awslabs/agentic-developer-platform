@@ -12,13 +12,14 @@ FROM public.ecr.aws/docker/library/python:3.11-slim
 
 # System deps: git for cloning, build tools for tree-sitter native extensions
 RUN apt-get update && \
+    apt-get -y upgrade && \
     apt-get install -y --no-install-recommends \
         git \
         curl \
         gcc \
         g++ \
         make \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Python deps
 RUN pip install --no-cache-dir \

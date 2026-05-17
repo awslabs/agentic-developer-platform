@@ -11,10 +11,10 @@ LABEL description="MCP Agent Mail - Agent registration, messaging, FTS5 search, 
 LABEL source="https://github.com/Dicklesworthstone/mcp_agent_mail"
 
 # Install system dependencies for SQLite FTS5 and git
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
     git \
     sqlite3 \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install uv for fast Python package management
 RUN pip install --no-cache-dir uv

@@ -3,8 +3,9 @@
 FROM public.ecr.aws/docker/library/python:3.11-slim
 
 RUN apt-get update && \
+    apt-get -y upgrade && \
     apt-get install -y --no-install-recommends git curl gcc g++ make && \
-    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
     pip install --no-cache-dir codegraphcontext
 
 # Non-root user for security

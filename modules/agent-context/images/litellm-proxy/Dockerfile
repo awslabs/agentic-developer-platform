@@ -2,6 +2,10 @@
 # Eliminates slow pip install at pod startup; dependencies are cached in the image layer.
 FROM public.ecr.aws/docker/library/python:3.11-slim
 
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get -y upgrade \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir 'litellm[proxy]'
 
 # Non-root user for security

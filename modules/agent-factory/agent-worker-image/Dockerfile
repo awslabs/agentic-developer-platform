@@ -64,7 +64,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 #
 # fzf and fd-find are available in Debian bookworm with the same names;
 # vim-tiny is vim-tiny on Debian too. We just drop apt cache after install.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
     libssl-dev \

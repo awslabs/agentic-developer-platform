@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 # System tools for triage + static analysis
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
       file \
       binutils \
       yara \
@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       unzip \
       binwalk \
       ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # YARA rules are fetched at runtime via initContainer from S3.
 # See: modules/domain-apps/cyber/k8s/cyber-static-scaledjob.yaml

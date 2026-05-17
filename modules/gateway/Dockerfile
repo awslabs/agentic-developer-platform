@@ -12,6 +12,11 @@ RUN pip install --no-cache-dir ".[tracing]" || echo "Tracing dependencies not av
 
 # Runtime stage
 FROM public.ecr.aws/docker/library/python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get -y upgrade \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
