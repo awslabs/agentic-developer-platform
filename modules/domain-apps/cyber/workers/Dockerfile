@@ -1,4 +1,4 @@
-FROM public.ecr.aws/docker/library/python:3.12-slim AS base
+FROM public.ecr.aws/docker/library/python:3.12.13-slim@sha256:401f6e1a67dad31a1bd78e9ad22d0ee0a3b52154e6bd30e90be696bb6a3d7461 AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
