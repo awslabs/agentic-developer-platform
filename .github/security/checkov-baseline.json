@@ -5,7 +5,7 @@
       "file": "/modules/agent-context/terraform/modules/s3-files/main.tf",
       "findings": [
         {
-          "resource": "aws_s3_bucket.platform_data",
+          "resource": "module.s3_files.aws_s3_bucket.platform_data",
           "check_ids": [
             "CKV2_AWS_62",
             "CKV_AWS_144"
@@ -41,7 +41,7 @@
       "file": "/modules/agent-factory/infra/modules/beads-state/main.tf",
       "findings": [
         {
-          "resource": "aws_s3_bucket.beads_state",
+          "resource": "module.beads_state.aws_s3_bucket.beads_state",
           "check_ids": [
             "CKV2_AWS_62",
             "CKV_AWS_144"
@@ -89,7 +89,7 @@
       "file": "/modules/gateway/infra/modules/s3-chat-logs/main.tf",
       "findings": [
         {
-          "resource": "aws_s3_bucket.chat_logs",
+          "resource": "module.s3_chat_logs.aws_s3_bucket.chat_logs",
           "check_ids": [
             "CKV2_AWS_62",
             "CKV_AWS_144"
@@ -101,7 +101,7 @@
       "file": "/modules/gateway/infra/modules/s3-cloudfront-logs/main.tf",
       "findings": [
         {
-          "resource": "aws_s3_bucket.cloudfront_logs",
+          "resource": "module.s3_cloudfront_logs.aws_s3_bucket.cloudfront_logs",
           "check_ids": [
             "CKV2_AWS_62",
             "CKV_AWS_144"
@@ -113,7 +113,7 @@
       "file": "/modules/gateway/infra/modules/s3-frontend/main.tf",
       "findings": [
         {
-          "resource": "aws_s3_bucket.frontend",
+          "resource": "module.frontend_s3.aws_s3_bucket.frontend",
           "check_ids": [
             "CKV2_AWS_62",
             "CKV_AWS_144"
@@ -137,7 +137,7 @@
       "file": "/platform/infra/modules/security-scans/main.tf",
       "findings": [
         {
-          "resource": "aws_s3_bucket.security_scans",
+          "resource": "module.security_scans.aws_s3_bucket.security_scans",
           "check_ids": [
             "CKV2_AWS_62",
             "CKV_AWS_144"
