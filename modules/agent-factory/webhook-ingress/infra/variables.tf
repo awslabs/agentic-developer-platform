@@ -84,6 +84,12 @@ variable "gateway_api_url" {
   default     = ""
 }
 
+variable "internal_api_key_arn" {
+  description = "Secrets Manager ARN for the X-Internal-Api-Key shared secret used to call /internal/v1/* endpoints on the gateway."
+  type        = string
+  default     = ""
+}
+
 # -----------------------------------------------------------------------------
 # EKS / KEDA ScaledJob
 # -----------------------------------------------------------------------------

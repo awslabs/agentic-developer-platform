@@ -142,6 +142,12 @@ resource "aws_iam_policy" "lambda_secrets" {
         ]
       },
       {
+        Sid      = "ReadInternalApiKey"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = var.internal_api_key_arn != "" ? [var.internal_api_key_arn] : []
+      },
+      {
         Sid    = "WritePerTenantGitHubAppSecrets"
         Effect = "Allow"
         Action = [

@@ -1,8 +1,12 @@
-"""Gateway admin API client for auto-provisioning users.
+"""Gateway API client for identity resolution and auto-provisioning.
 
 Phase B.1 (Issue #402): Used by the identity resolver when a tenant has
 user_provisioning_mode="auto_provision". Calls the Gateway admin API to
 create a minimal user record, which writes both Postgres + DDB identity-index.
+
+Issue #702: Added resolve_user_by_identity() to call the existing
+POST /internal/v1/resolve-user endpoint as a Postgres safety-net for
+canonical user_id resolution.
 
 Only invoked from the webhook Lambda when:
   1. Tenant is resolved (installation is known)
@@ -22,8 +26,10 @@ logger = logging.getLogger(__name__)
 
 GATEWAY_API_URL = os.environ.get("GATEWAY_API_URL", "")
 GATEWAY_ADMIN_TOKEN_ARN = os.environ.get("GATEWAY_ADMIN_TOKEN_ARN", "")
+INTERNAL_API_KEY_ARN = os.environ.get("INTERNAL_API_KEY_ARN", "")
 
 _admin_token: str | None = None
+_internal_api_key: str | None = None
 
 
 def _resolve_admin_token() -> str:
@@ -45,6 +51,99 @@ def _resolve_admin_token() -> str:
         _admin_token = os.environ.get("GATEWAY_ADMIN_TOKEN", "")
 
     return _admin_token
+
+
+def _resolve_internal_api_key() -> str:
+    """Resolve the internal API key from Secrets Manager (cached for Lambda lifetime)."""
+    global _internal_api_key
+    if _internal_api_key is not None:
+        return _internal_api_key
+
+    arn = os.environ.get("INTERNAL_API_KEY_ARN", "")
+    if arn:
+        import boto3
+
+        client = boto3.client(
+            "secretsmanager",
+            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        )
+        resp = client.get_secret_value(SecretId=arn)
+        _internal_api_key = resp["SecretString"]
+    else:
+        _internal_api_key = os.environ.get("BG_INTERNAL_API_KEY", "")
+
+    return _internal_api_key
+
+
+def resolve_user_by_identity(
+    provider: str, provider_user_id: str
+) -> dict | None:
+    """Call POST /internal/v1/resolve-user to resolve canonical user via Postgres.
+
+    Returns dict with keys {user_id, org_id, team_id, is_shadow} on success,
+    or None on 404 / error.
+    """
+    if not GATEWAY_API_URL:
+        logger.warning("GATEWAY_API_URL not set — cannot resolve user via gateway")
+        return None
+
+    url = f"{GATEWAY_API_URL}/internal/v1/resolve-user"
+    body = {
+        "provider": provider,
+        "provider_user_id": provider_user_id,
+    }
+
+    api_key = _resolve_internal_api_key()
+    if not api_key:
+        logger.warning("Internal API key not available — cannot resolve user via gateway")
+        return None
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Internal-Api-Key": api_key,
+    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status in (200, 201):
+                data = json.loads(resp.read().decode("utf-8"))
+                return {
+                    "user_id": data.get("user_id", ""),
+                    "org_id": data.get("org_id", ""),
+                    "team_id": data.get("team_id", ""),
+                    "is_shadow": data.get("is_shadow", False),
+                }
+            return None
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            logger.info(
+                "resolve_user_by_identity: 404 for provider=%s provider_user_id=%s",
+                provider,
+                provider_user_id,
+            )
+            return None
+        logger.error(
+            "resolve_user_by_identity HTTP error %d for provider=%s provider_user_id=%s: %s",
+            e.code,
+            provider,
+            provider_user_id,
+            e.reason,
+        )
+        return None
+    except Exception as e:
+        logger.error(
+            "resolve_user_by_identity failed for provider=%s provider_user_id=%s: %s",
+            provider,
+            provider_user_id,
+            e,
+        )
+        return None
 
 
 def auto_provision_user(

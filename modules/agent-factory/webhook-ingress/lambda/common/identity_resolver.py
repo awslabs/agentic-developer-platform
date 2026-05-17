@@ -2,14 +2,18 @@
 
 Phase B.1 (Issue #402): Replaces tenant_resolver.py.
 Issue #537: Feature-flag-gated reads from new user-identity-index table.
+Issue #702: Postgres safety-net via POST /internal/v1/resolve-user — cross-validates
+v2 DDB result against Postgres, trusts Postgres on disagreement (IdentityIndexDrift).
 
 Reads from adp-dev-identity-index DynamoDB table (PK=identity_type, SK=identity_value).
 When USER_IDENTITY_INDEX_V2_READ=true, reads user from new table first with fallback.
+When RESOLVE_CANONICAL_VIA_GATEWAY=true, cross-validates against Postgres.
 
 Flow:
   1. Resolve tenant via identity_type="github_installation_id"
   2. Resolve sender via new table (flag-gated) or old table (fallback)
-  3. Cross-check: sender's org_id must match installation's org_id
+  3. Postgres safety-net: cross-validate canonical user_id (flag-gated)
+  4. Cross-check: sender's org_id must match installation's org_id
 """
 
 from __future__ import annotations
@@ -68,6 +72,11 @@ def _v2_read_enabled() -> bool:
     return os.environ.get("USER_IDENTITY_INDEX_V2_READ", "false").lower() == "true"
 
 
+def _resolve_canonical_via_gateway_enabled() -> bool:
+    """Check if Postgres cross-validation via gateway is enabled."""
+    return os.environ.get("RESOLVE_CANONICAL_VIA_GATEWAY", "false").lower() == "true"
+
+
 def _emit_cross_tenant_metric() -> None:
     """Emit CloudWatch metric on cross-tenant mismatch."""
     try:
@@ -84,6 +93,24 @@ def _emit_cross_tenant_metric() -> None:
         )
     except Exception as e:
         logger.warning("Failed to emit CrossTenantMismatch metric: %s", e)
+
+
+def _emit_identity_index_drift_metric() -> None:
+    """Emit CloudWatch metric when v2 DDB and Postgres disagree on user_id."""
+    try:
+        cw = _get_cloudwatch()
+        cw.put_metric_data(
+            Namespace="ADP/IdentityResolver",
+            MetricData=[
+                {
+                    "MetricName": "IdentityIndexDrift",
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:
+        logger.warning("Failed to emit IdentityIndexDrift metric: %s", e)
 
 
 def _resolve_user_from_new_table(sender_id: int) -> dict | None:
@@ -168,6 +195,39 @@ def resolve(
         else:
             # Flag off: read from old table only (default behavior)
             user_item = _resolve_user_from_old_table(sender_id)
+
+        # Step 2b: Postgres safety-net (Issue #702)
+        # Cross-validate against Postgres via POST /internal/v1/resolve-user.
+        # Trusts Postgres on disagreement (canonical source of truth).
+        if _resolve_canonical_via_gateway_enabled():
+            from common.gateway_client import resolve_user_by_identity
+
+            pg_result = resolve_user_by_identity("github", str(sender_id))
+
+            if pg_result and user_item:
+                # Both returned a result — check for drift
+                if pg_result["user_id"] != user_item.get("user_id"):
+                    logger.warning(
+                        "IdentityIndexDrift: v2/legacy user_id=%s, Postgres user_id=%s "
+                        "for sender_id=%d — trusting Postgres",
+                        user_item.get("user_id"),
+                        pg_result["user_id"],
+                        sender_id,
+                    )
+                    _emit_identity_index_drift_metric()
+                    # Trust Postgres — overwrite user_item
+                    user_item = pg_result
+            elif pg_result and not user_item:
+                # v2/legacy missed but Postgres has it (write-through lag)
+                logger.info(
+                    "Postgres resolved sender_id=%d (user_id=%s) but DDB missed — "
+                    "using Postgres result",
+                    sender_id,
+                    pg_result["user_id"],
+                )
+                user_item = pg_result
+            # If pg_result is None but user_item exists: Postgres miss/error,
+            # keep using the DDB result (fail-open, same as today).
 
         if not user_item:
             logger.info(
