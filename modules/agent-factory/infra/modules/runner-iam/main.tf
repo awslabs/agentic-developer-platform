@@ -52,6 +52,8 @@ resource "aws_iam_policy" "runner_boundary" {
           "iam:CreateServiceLinkedRole",
           "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy",
           "iam:DeletePolicy",
+          "iam:CreatePolicyVersion", "iam:DeletePolicyVersion",
+          "iam:SetDefaultPolicyVersion",
           "iam:UpdateAssumeRolePolicy",
           "iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile",
           "iam:DeleteInstanceProfile", "iam:RemoveRoleFromInstanceProfile",
@@ -218,6 +220,8 @@ resource "aws_iam_role_policy" "runner_permissions" {
           "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
           "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy",
           "iam:DeletePolicy",
+          "iam:CreatePolicyVersion", "iam:DeletePolicyVersion",
+          "iam:SetDefaultPolicyVersion",
           "iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile",
           "iam:DeleteInstanceProfile", "iam:RemoveRoleFromInstanceProfile",
           "iam:TagInstanceProfile"
