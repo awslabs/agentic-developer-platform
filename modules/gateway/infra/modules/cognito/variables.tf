@@ -159,3 +159,8 @@ variable "github_token_secret_arn" {
   description = "ARN of the Secrets Manager secret containing a GitHub API token for org membership checks. Required when allowlist_mode is 'org'."
   default     = ""
 }
+
+variable "kms_key_arn" {
+  description = "KMS key ARN for DynamoDB server-side encryption"
+  type        = string
+}

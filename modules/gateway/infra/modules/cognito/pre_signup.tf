@@ -79,6 +79,16 @@ resource "aws_iam_role_policy" "pre_signup_dynamodb" {
           aws_dynamodb_table.signup_allowlist.arn,
           "${aws_dynamodb_table.signup_allowlist.arn}/index/*"
         ]
+      },
+      {
+        Sid    = "DynamoDBKMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = [var.kms_key_arn]
       }
     ]
   })
@@ -177,6 +187,11 @@ resource "aws_dynamodb_table" "signup_allowlist" {
   # Enable point-in-time recovery in prod
   point_in_time_recovery {
     enabled = var.environment == "prod" ? true : false
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = var.kms_key_arn
   }
 
   tags = merge(var.common_tags, {

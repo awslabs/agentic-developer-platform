@@ -55,7 +55,8 @@ resource "aws_dynamodb_table" "cyber_analysis_results" {
   }
 
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
   }
 
   tags = {

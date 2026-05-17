@@ -78,6 +78,16 @@ resource "aws_iam_role_policy" "pre_token_generation_dynamodb" {
           aws_dynamodb_table.agent_clients.arn,
           "${aws_dynamodb_table.agent_clients.arn}/index/*"
         ]
+      },
+      {
+        Sid    = "DynamoDBKMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = [var.kms_key_arn]
       }
     ]
   })

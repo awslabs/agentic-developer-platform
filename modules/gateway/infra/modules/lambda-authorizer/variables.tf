@@ -101,3 +101,8 @@ variable "log_retention_days" {
     error_message = "Log retention days must be a valid CloudWatch retention value."
   }
 }
+
+variable "kms_key_arn" {
+  description = "KMS key ARN for DynamoDB server-side encryption"
+  type        = string
+}

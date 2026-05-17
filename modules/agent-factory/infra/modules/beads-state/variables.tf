@@ -9,3 +9,8 @@ variable "name_prefix" {
 variable "account_id" {
   type = string
 }
+
+variable "kms_key_arn" {
+  description = "KMS key ARN for DynamoDB server-side encryption"
+  type        = string
+}

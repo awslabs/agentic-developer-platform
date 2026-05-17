@@ -95,18 +95,30 @@ resource "aws_iam_role_policy" "cyber_worker_dynamodb" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "dynamodb:PutItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:Query"
-      ]
-      Resource = [
-        aws_dynamodb_table.cyber_analysis_results.arn,
-        "${aws_dynamodb_table.cyber_analysis_results.arn}/index/*",
-      ]
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query"
+        ]
+        Resource = [
+          aws_dynamodb_table.cyber_analysis_results.arn,
+          "${aws_dynamodb_table.cyber_analysis_results.arn}/index/*",
+        ]
+      },
+      {
+        Sid    = "DynamoDBKMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = [aws_kms_key.dynamodb.arn]
+      }
+    ]
   })
 }
 

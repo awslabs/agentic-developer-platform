@@ -456,6 +456,9 @@ module "cognito" {
   github_oauth_client_id     = var.github_oauth_client_id
   github_oauth_client_secret = var.github_oauth_client_secret
 
+  # Issue #642: KMS encryption for DynamoDB tables
+  kms_key_arn = aws_kms_key.dynamodb.arn
+
   depends_on = [module.cloudfront]
 }
 
@@ -722,6 +725,9 @@ module "lambda_authorizer" {
   api_gateway_id            = module.api_gateway[0].api_gateway_id
   api_gateway_execution_arn = module.api_gateway[0].api_gateway_execution_arn
 
+  # Issue #642: KMS encryption for DynamoDB tables
+  kms_key_arn = aws_kms_key.dynamodb.arn
+
   depends_on = [module.api_gateway, module.cognito]
 }
 
@@ -849,6 +855,11 @@ resource "aws_dynamodb_table" "identity_index" {
     enabled = true
   }
 
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
+  }
+
   tags = merge(local.common_tags, {
     Name    = "adp-${var.environment}-identity-index"
     Service = "dynamodb"
@@ -934,6 +945,16 @@ resource "aws_iam_role_policy" "gateway_identity_index" {
         Resource = [
           aws_dynamodb_table.identity_index.arn
         ]
+      },
+      {
+        Sid    = "DynamoDBKMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = [aws_kms_key.dynamodb.arn]
       }
     ]
   })

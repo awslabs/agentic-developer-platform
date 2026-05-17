@@ -29,5 +29,10 @@ resource "aws_dynamodb_table" "sessions" {
     enabled = true
   }
 
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = var.kms_key_arn
+  }
+
   tags = var.tags
 }

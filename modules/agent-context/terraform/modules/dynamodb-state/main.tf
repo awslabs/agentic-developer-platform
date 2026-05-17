@@ -61,6 +61,11 @@ resource "aws_dynamodb_table" "ingestion_state" {
     enabled = var.enable_pitr
   }
 
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = var.kms_key_arn
+  }
+
   tags = merge(var.tags, {
     Component = "ingestion-state"
   })
@@ -90,6 +95,16 @@ resource "aws_iam_policy" "dynamodb_readwrite" {
           aws_dynamodb_table.ingestion_state.arn,
           "${aws_dynamodb_table.ingestion_state.arn}/index/*",
         ]
+      },
+      {
+        Sid    = "DynamoDBKMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = [var.kms_key_arn]
       }
     ]
   })

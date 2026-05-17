@@ -94,6 +94,16 @@ resource "aws_iam_policy" "lambda_dynamodb" {
           "dynamodb:GetItem"
         ]
         Resource = "arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/adp-${var.environment}-user-identity-index"
+      },
+      {
+        Sid    = "DynamoDBKMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = [aws_kms_key.dynamodb.arn]
       }
     ]
   })

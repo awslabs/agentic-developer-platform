@@ -42,6 +42,11 @@ resource "aws_dynamodb_table" "chat_context" {
     enabled = true
   }
 
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
+  }
+
   tags = {
     Component = "chat-agent"
   }
@@ -97,6 +102,11 @@ resource "aws_dynamodb_table" "chat_artifacts" {
     enabled = true
   }
 
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
+  }
+
   tags = {
     Component = "chat-agent"
   }
@@ -136,6 +146,11 @@ resource "aws_dynamodb_table" "agent_memory" {
 
   point_in_time_recovery {
     enabled = true
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
   }
 
   tags = {
@@ -330,6 +345,16 @@ resource "aws_iam_role_policy" "session_sweeper_dynamodb" {
           aws_dynamodb_table.chat_artifacts.arn,
           "${aws_dynamodb_table.chat_artifacts.arn}/index/*",
         ]
+      },
+      {
+        Sid    = "DynamoDBKMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = [aws_kms_key.dynamodb.arn]
       }
     ]
   })
@@ -370,26 +395,38 @@ resource "aws_iam_role_policy" "gateway_agent_chat_dynamodb" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "dynamodb:PutItem",
-        "dynamodb:GetItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:Query",
-        "dynamodb:BatchGetItem",
-        "dynamodb:BatchWriteItem",
-        "dynamodb:TransactWriteItems"
-      ]
-      Resource = [
-        aws_dynamodb_table.chat_context.arn,
-        "${aws_dynamodb_table.chat_context.arn}/index/*",
-        aws_dynamodb_table.chat_artifacts.arn,
-        "${aws_dynamodb_table.chat_artifacts.arn}/index/*",
-        aws_dynamodb_table.agent_memory.arn,
-        "${aws_dynamodb_table.agent_memory.arn}/index/*",
-      ]
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:BatchGetItem",
+          "dynamodb:BatchWriteItem",
+          "dynamodb:TransactWriteItems"
+        ]
+        Resource = [
+          aws_dynamodb_table.chat_context.arn,
+          "${aws_dynamodb_table.chat_context.arn}/index/*",
+          aws_dynamodb_table.chat_artifacts.arn,
+          "${aws_dynamodb_table.chat_artifacts.arn}/index/*",
+          aws_dynamodb_table.agent_memory.arn,
+          "${aws_dynamodb_table.agent_memory.arn}/index/*",
+        ]
+      },
+      {
+        Sid    = "DynamoDBKMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = [aws_kms_key.dynamodb.arn]
+      }
+    ]
   })
 }
 

@@ -152,6 +152,7 @@ module "dynamodb_state" {
 
   table_name     = var.dynamodb_table_name
   irsa_role_name = module.iam.role_name
+  kms_key_arn    = aws_kms_key.dynamodb.arn
   tags           = var.tags
 
   depends_on = [module.iam]

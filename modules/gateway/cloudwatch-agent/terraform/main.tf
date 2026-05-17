@@ -108,6 +108,11 @@ resource "aws_dynamodb_table" "dedup" {
     enabled        = true
   }
 
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
+  }
+
   tags = {
     Name    = "${var.project_name}-dedup"
     Project = var.project_name
@@ -169,6 +174,16 @@ resource "aws_iam_role_policy" "lambda" {
           "dynamodb:PutItem"
         ]
         Resource = aws_dynamodb_table.dedup.arn
+      },
+      {
+        Sid    = "DynamoDBKMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = [aws_kms_key.dynamodb.arn]
       },
       {
         Sid    = "STS"

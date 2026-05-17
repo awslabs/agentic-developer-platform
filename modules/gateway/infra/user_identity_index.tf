@@ -31,6 +31,11 @@ resource "aws_dynamodb_table" "user_identity_index" {
     enabled = true
   }
 
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
+  }
+
   tags = merge(local.common_tags, {
     Name    = "adp-${var.environment}-user-identity-index"
     Service = "dynamodb"
@@ -67,6 +72,16 @@ resource "aws_iam_role_policy" "gateway_user_identity_index" {
           "dynamodb:DeleteItem"
         ]
         Resource = aws_dynamodb_table.user_identity_index.arn
+      },
+      {
+        Sid    = "DynamoDBKMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = [aws_kms_key.dynamodb.arn]
       }
     ]
   })

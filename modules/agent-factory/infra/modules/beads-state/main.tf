@@ -18,6 +18,11 @@ resource "aws_dynamodb_table" "beads_manifest" {
     type = "S"
   }
 
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = var.kms_key_arn
+  }
+
   tags = {
     Component = "agent-factory"
   }

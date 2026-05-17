@@ -25,6 +25,7 @@ module "gateway_sessions" {
   source      = "./modules/dynamodb-sessions"
   name_prefix = local.name_prefix
   tags        = { Component = "agent-gateway" }
+  kms_key_arn = aws_kms_key.dynamodb.arn
 }
 
 # --- Lambda Functions ---
@@ -356,19 +357,31 @@ resource "aws_iam_role_policy" "gateway_agent_dynamodb" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:Query"
-      ]
-      Resource = [
-        module.gateway_sessions.table_arn,
-        "${module.gateway_sessions.table_arn}/index/*"
-      ]
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query"
+        ]
+        Resource = [
+          module.gateway_sessions.table_arn,
+          "${module.gateway_sessions.table_arn}/index/*"
+        ]
+      },
+      {
+        Sid    = "DynamoDBKMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = [aws_kms_key.dynamodb.arn]
+      }
+    ]
   })
 }
 
@@ -454,10 +467,18 @@ resource "aws_iam_role_policy" "runner_gateway_dynamodb" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["dynamodb:GetItem", "dynamodb:Query"]
-      Resource = [module.gateway_sessions.table_arn, "${module.gateway_sessions.table_arn}/index/*"]
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = [module.gateway_sessions.table_arn, "${module.gateway_sessions.table_arn}/index/*"]
+      },
+      {
+        Sid      = "DynamoDBKMSAccess"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt", "kms:GenerateDataKey*", "kms:DescribeKey"]
+        Resource = [aws_kms_key.dynamodb.arn]
+      }
+    ]
   })
 }

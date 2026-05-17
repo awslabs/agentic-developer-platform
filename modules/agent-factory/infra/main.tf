@@ -141,6 +141,7 @@ module "beads_state" {
   environment = var.environment
   name_prefix = local.name_prefix
   account_id  = data.aws_caller_identity.current.account_id
+  kms_key_arn = aws_kms_key.dynamodb.arn
 }
 
 # =============================================================================

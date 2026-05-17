@@ -85,9 +85,10 @@ resource "aws_dynamodb_table" "agent_registry" {
     enabled = true
   }
 
-  # Server-side encryption with AWS managed key
+  # Server-side encryption with customer-managed KMS key (CKV_AWS_119)
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = var.kms_key_arn
   }
 
   tags = merge(var.common_tags, {
@@ -285,6 +286,17 @@ resource "aws_iam_role_policy" "authorizer" {
           aws_dynamodb_table.agent_registry.arn,
           "${aws_dynamodb_table.agent_registry.arn}/index/*"
         ]
+      },
+      # KMS access for DynamoDB encryption (CKV_AWS_119)
+      {
+        Sid    = "DynamoDBKMSAccess"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = [var.kms_key_arn]
       },
       # CloudWatch Logs
       {
