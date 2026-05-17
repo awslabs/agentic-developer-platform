@@ -6,14 +6,14 @@
 #
 # Adapted from aws-innovate/AISuperPlane's infra/arc-runner/Dockerfile.
 #
-# Base: ghcr.io/actions/actions-runner:2.333.1 (pinned per session-context —
+# Base: ghcr.io/actions/actions-runner:2.334.0 (pinned per session-context —
 # do NOT use `:latest`, which GitHub can flag "deprecated" and cause the
 # runner to exit-7 loop).
 #
 # Build context: this directory (no parent references).
 # =============================================================================
 
-FROM ghcr.io/actions/actions-runner:2.333.1
+FROM ghcr.io/actions/actions-runner:2.334.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
