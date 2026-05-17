@@ -1,0 +1,140 @@
+name: Agent Context Images Build
+
+# Builds and pushes agent-context Docker images to ECR when their Dockerfile
+# or build context changes. Mirrors the arc-runner-build.yml pattern.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/agent-context/images/ingestion/**'
+      - 'modules/agent-context/images/codegraph-context/**'
+      - 'modules/agent-context/images/litellm-proxy/**'
+      - 'modules/agent-context/images/deepwiki/**'
+      - 'codebuild/bs-agent-context-image.yml'
+      - '.github/workflows/agent-context-images-build.yml'
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Image to rebuild (or "all")'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - ingestion
+          - codegraph-context
+          - litellm-proxy
+          - deepwiki
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+  ACCOUNT_ID: "879318057152"
+  STATE_BUCKET: adp-terraform-state-879318057152
+
+concurrency:
+  group: agent-context-images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  detect-changes:
+    name: Detect Changed Images
+    runs-on: arc-runner-org
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - id: detect
+        name: Build matrix from changed paths or dispatch input
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            INPUT="${{ inputs.image }}"
+            if [ "$INPUT" = "all" ]; then
+              echo 'matrix={"image":["ingestion","codegraph-context","litellm-proxy","deepwiki"]}' >> "$GITHUB_OUTPUT"
+            else
+              echo "matrix={\"image\":[\"$INPUT\"]}" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            # Detect which image directories changed
+            CHANGED=$(git diff --name-only HEAD^ HEAD \
+              | grep '^modules/agent-context/images/' \
+              | awk -F/ '{print $4}' \
+              | sort -u \
+              | jq -R . \
+              | jq -s .)
+            # If buildspec or workflow changed, rebuild all
+            if git diff --name-only HEAD^ HEAD | grep -qE '(codebuild/bs-agent-context-image\.yml|\.github/workflows/agent-context-images-build\.yml)'; then
+              echo 'matrix={"image":["ingestion","codegraph-context","litellm-proxy","deepwiki"]}' >> "$GITHUB_OUTPUT"
+            elif [ "$CHANGED" = "[]" ] || [ -z "$CHANGED" ]; then
+              echo 'matrix={"image":[]}' >> "$GITHUB_OUTPUT"
+            else
+              echo "matrix={\"image\":$CHANGED}" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  build:
+    name: Build ${{ matrix.image }}
+    needs: detect-changes
+    if: ${{ fromJson(needs.detect-changes.outputs.matrix).image[0] != null }}
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package source and upload to S3
+        run: |
+          bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
+          aws s3 cp /tmp/adp-source.zip \
+            "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip" \
+            --region "${{ env.AWS_REGION }}"
+          rm -f /tmp/adp-source.zip
+
+      - name: Trigger CodeBuild and wait
+        id: build
+        run: |
+          PROJECT_NAME="adp-${{ env.ENVIRONMENT }}-agent-context-${{ matrix.image }}-build"
+          IMAGE_TAG="${{ github.sha }}"
+
+          BUILD_ID=$(aws codebuild start-build \
+            --region "${{ env.AWS_REGION }}" \
+            --project-name "$PROJECT_NAME" \
+            --environment-variables-override \
+              "name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT" \
+            --query 'build.id' --output text)
+          echo "Started CodeBuild: $BUILD_ID"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+
+          PHASE=""
+          while true; do
+            RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${{ env.AWS_REGION }}" \
+              --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
+            STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
+            CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
+            [ "$CUR_PHASE" != "$PHASE" ] && [ -n "$CUR_PHASE" ] && echo "Phase: $CUR_PHASE" && PHASE="$CUR_PHASE"
+            case "$STATUS" in
+              SUCCEEDED) echo "Build succeeded"; break ;;
+              FAILED|FAULT|STOPPED|TIMED_OUT)
+                LOG=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${{ env.AWS_REGION }}" \
+                  --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
+                echo "Build failed ($STATUS). Logs: $LOG" >&2
+                exit 1
+                ;;
+              *) sleep 30 ;;
+            esac
+          done
+
+      - name: Summary
+        run: |
+          echo "## Agent Context Image Built: ${{ matrix.image }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Project**: adp-${{ env.ENVIRONMENT }}-agent-context-${{ matrix.image }}-build" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag**: ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **CodeBuild**: ${{ steps.build.outputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"

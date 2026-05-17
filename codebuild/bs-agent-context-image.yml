@@ -1,0 +1,29 @@
+version: 0.2
+
+# Parameterized buildspec for agent-context Docker images.
+#
+# Shared by all 4 agent-context CodeBuild projects. Per-project differences
+# come from CodeBuild environment variables:
+#   BUILD_DIR  — relative path to the image's build context (e.g., modules/agent-context/images/ingestion)
+#   ECR_REPO   — full ECR repository URL (e.g., 123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion)
+#   AWS_REGION — region for ECR login
+#   IMAGE_TAG  — git SHA tag (passed as override from workflow; falls back to CODEBUILD_RESOLVED_SOURCE_VERSION)
+
+phases:
+  pre_build:
+    commands:
+      - IMAGE_TAG="${IMAGE_TAG:-${CODEBUILD_RESOLVED_SOURCE_VERSION:-$(date -u +%Y%m%d%H%M%S)}}"
+      - SHORT_TAG="${IMAGE_TAG:0:7}"
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REPO"
+
+  build:
+    commands:
+      - cd "$BUILD_DIR"
+      - docker build -t "$ECR_REPO:$IMAGE_TAG" -t "$ECR_REPO:$SHORT_TAG" -t "$ECR_REPO:latest" .
+
+  post_build:
+    commands:
+      - docker push "$ECR_REPO:$IMAGE_TAG"
+      - docker push "$ECR_REPO:$SHORT_TAG"
+      - docker push "$ECR_REPO:latest"
+      - echo "Pushed $ECR_REPO:$IMAGE_TAG (and :$SHORT_TAG, :latest)"
