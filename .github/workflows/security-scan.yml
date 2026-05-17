@@ -99,7 +99,12 @@ jobs:
           python-version: '3.12'
 
       - name: Install Semgrep
-        run: pip install semgrep==${{ env.SEMGREP_VERSION }}
+        # Python 3.12 stopped bundling pkg_resources from setuptools, so
+        # semgrep's installer fails with `ModuleNotFoundError: No module named
+        # 'pkg_resources'` on a fresh runner. Pre-install setuptools.
+        run: |
+          pip install --upgrade setuptools
+          pip install semgrep==${{ env.SEMGREP_VERSION }}
 
       - name: Run Semgrep
         run: |

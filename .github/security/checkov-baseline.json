@@ -2,148 +2,148 @@
   "_comment": "Per-finding suppressions for dev environment. Re-evaluate each bucket when promoting to prod.",
   "failed_checks": [
     {
-      "check_id": "CKV_AWS_144",
-      "resource": "aws_s3_bucket.security_scans",
-      "file_path": "/platform/infra/modules/security-scans/main.tf",
-      "reason": "dev-only S3 bucket; data is recreatable. Re-evaluate when promoting to prod."
+      "file": "/modules/agent-context/terraform/modules/s3-files/main.tf",
+      "findings": [
+        {
+          "resource": "aws_s3_bucket.platform_data",
+          "check_ids": [
+            "CKV2_AWS_62",
+            "CKV_AWS_144"
+          ]
+        }
+      ]
     },
     {
-      "check_id": "CKV_AWS_144",
-      "resource": "aws_s3_bucket.cloudtrail",
-      "file_path": "/platform/infra/modules/cloudtrail/main.tf",
-      "reason": "dev-only S3 bucket; data is recreatable. Re-evaluate when promoting to prod."
+      "file": "/modules/agent-factory/infra/chat-agent-infra.tf",
+      "findings": [
+        {
+          "resource": "aws_s3_bucket.chat_artifacts",
+          "check_ids": [
+            "CKV2_AWS_62",
+            "CKV_AWS_144"
+          ]
+        }
+      ]
     },
     {
-      "check_id": "CKV_AWS_144",
-      "resource": "aws_s3_bucket.url_analysis_evidence",
-      "file_path": "/modules/domain-apps/cyber/infra/url_analysis_evidence.tf",
-      "reason": "dev-only S3 bucket; data is recreatable. Re-evaluate when promoting to prod."
+      "file": "/modules/agent-factory/infra/main.tf",
+      "findings": [
+        {
+          "resource": "aws_s3_bucket.public_cfn",
+          "check_ids": [
+            "CKV2_AWS_62",
+            "CKV_AWS_144"
+          ]
+        }
+      ]
     },
     {
-      "check_id": "CKV_AWS_144",
-      "resource": "aws_s3_bucket.platform_data",
-      "file_path": "/modules/agent-context/terraform/modules/s3-files/main.tf",
-      "reason": "dev-only S3 bucket; data is recreatable. Re-evaluate when promoting to prod."
+      "file": "/modules/agent-factory/infra/modules/beads-state/main.tf",
+      "findings": [
+        {
+          "resource": "aws_s3_bucket.beads_state",
+          "check_ids": [
+            "CKV2_AWS_62",
+            "CKV_AWS_144"
+          ]
+        }
+      ]
     },
     {
-      "check_id": "CKV_AWS_144",
-      "resource": "aws_s3_bucket.cape_assets",
-      "file_path": "/modules/domain-apps/cyber/image-builder/s3.tf",
-      "reason": "dev-only S3 bucket; data is recreatable. Re-evaluate when promoting to prod."
+      "file": "/modules/domain-apps/cyber/image-builder/s3.tf",
+      "findings": [
+        {
+          "resource": "aws_s3_bucket.cape_assets",
+          "check_ids": [
+            "CKV2_AWS_62",
+            "CKV_AWS_144"
+          ]
+        }
+      ]
     },
     {
-      "check_id": "CKV_AWS_144",
-      "resource": "aws_s3_bucket.frontend",
-      "file_path": "/modules/gateway/infra/modules/s3-frontend/main.tf",
-      "reason": "dev-only S3 bucket; data is recreatable. Re-evaluate when promoting to prod."
+      "file": "/modules/domain-apps/cyber/infra/url_analysis_evidence.tf",
+      "findings": [
+        {
+          "resource": "aws_s3_bucket.url_analysis_evidence",
+          "check_ids": [
+            "CKV2_AWS_62",
+            "CKV_AWS_144"
+          ]
+        }
+      ]
     },
     {
-      "check_id": "CKV_AWS_144",
-      "resource": "aws_s3_bucket.cloudfront_logs",
-      "file_path": "/modules/gateway/infra/modules/s3-cloudfront-logs/main.tf",
-      "reason": "dev-only S3 bucket; data is recreatable. Re-evaluate when promoting to prod."
+      "file": "/modules/gateway/infra/modules/alb/main.tf",
+      "findings": [
+        {
+          "resource": "aws_s3_bucket.alb_logs",
+          "check_ids": [
+            "CKV2_AWS_62",
+            "CKV_AWS_144"
+          ]
+        }
+      ]
     },
     {
-      "check_id": "CKV_AWS_144",
-      "resource": "aws_s3_bucket.chat_logs",
-      "file_path": "/modules/gateway/infra/modules/s3-chat-logs/main.tf",
-      "reason": "dev-only S3 bucket; data is recreatable. Re-evaluate when promoting to prod."
+      "file": "/modules/gateway/infra/modules/s3-chat-logs/main.tf",
+      "findings": [
+        {
+          "resource": "aws_s3_bucket.chat_logs",
+          "check_ids": [
+            "CKV2_AWS_62",
+            "CKV_AWS_144"
+          ]
+        }
+      ]
     },
     {
-      "check_id": "CKV_AWS_144",
-      "resource": "aws_s3_bucket.alb_logs",
-      "file_path": "/modules/gateway/infra/modules/alb/main.tf",
-      "reason": "dev-only S3 bucket; data is recreatable. Re-evaluate when promoting to prod."
+      "file": "/modules/gateway/infra/modules/s3-cloudfront-logs/main.tf",
+      "findings": [
+        {
+          "resource": "aws_s3_bucket.cloudfront_logs",
+          "check_ids": [
+            "CKV2_AWS_62",
+            "CKV_AWS_144"
+          ]
+        }
+      ]
     },
     {
-      "check_id": "CKV_AWS_144",
-      "resource": "aws_s3_bucket.beads_state",
-      "file_path": "/modules/agent-factory/infra/modules/beads-state/main.tf",
-      "reason": "dev-only S3 bucket; data is recreatable. Re-evaluate when promoting to prod."
+      "file": "/modules/gateway/infra/modules/s3-frontend/main.tf",
+      "findings": [
+        {
+          "resource": "aws_s3_bucket.frontend",
+          "check_ids": [
+            "CKV2_AWS_62",
+            "CKV_AWS_144"
+          ]
+        }
+      ]
     },
     {
-      "check_id": "CKV_AWS_144",
-      "resource": "aws_s3_bucket.chat_artifacts",
-      "file_path": "/modules/agent-factory/infra/chat-agent-infra.tf",
-      "reason": "dev-only S3 bucket; data is recreatable. Re-evaluate when promoting to prod."
+      "file": "/platform/infra/modules/cloudtrail/main.tf",
+      "findings": [
+        {
+          "resource": "aws_s3_bucket.cloudtrail",
+          "check_ids": [
+            "CKV2_AWS_62",
+            "CKV_AWS_144"
+          ]
+        }
+      ]
     },
     {
-      "check_id": "CKV_AWS_144",
-      "resource": "aws_s3_bucket.public_cfn",
-      "file_path": "/modules/agent-factory/infra/main.tf",
-      "reason": "dev-only S3 bucket; data is recreatable. Re-evaluate when promoting to prod."
-    },
-    {
-      "check_id": "CKV2_AWS_62",
-      "resource": "aws_s3_bucket.security_scans",
-      "file_path": "/platform/infra/modules/security-scans/main.tf",
-      "reason": "dev-only S3 bucket; event notifications not needed for recreatable data. Re-evaluate when promoting to prod."
-    },
-    {
-      "check_id": "CKV2_AWS_62",
-      "resource": "aws_s3_bucket.cloudtrail",
-      "file_path": "/platform/infra/modules/cloudtrail/main.tf",
-      "reason": "dev-only S3 bucket; event notifications not needed for recreatable data. Re-evaluate when promoting to prod."
-    },
-    {
-      "check_id": "CKV2_AWS_62",
-      "resource": "aws_s3_bucket.url_analysis_evidence",
-      "file_path": "/modules/domain-apps/cyber/infra/url_analysis_evidence.tf",
-      "reason": "dev-only S3 bucket; event notifications not needed for recreatable data. Re-evaluate when promoting to prod."
-    },
-    {
-      "check_id": "CKV2_AWS_62",
-      "resource": "aws_s3_bucket.platform_data",
-      "file_path": "/modules/agent-context/terraform/modules/s3-files/main.tf",
-      "reason": "dev-only S3 bucket; event notifications not needed for recreatable data. Re-evaluate when promoting to prod."
-    },
-    {
-      "check_id": "CKV2_AWS_62",
-      "resource": "aws_s3_bucket.cape_assets",
-      "file_path": "/modules/domain-apps/cyber/image-builder/s3.tf",
-      "reason": "dev-only S3 bucket; event notifications not needed for recreatable data. Re-evaluate when promoting to prod."
-    },
-    {
-      "check_id": "CKV2_AWS_62",
-      "resource": "aws_s3_bucket.frontend",
-      "file_path": "/modules/gateway/infra/modules/s3-frontend/main.tf",
-      "reason": "dev-only S3 bucket; event notifications not needed for recreatable data. Re-evaluate when promoting to prod."
-    },
-    {
-      "check_id": "CKV2_AWS_62",
-      "resource": "aws_s3_bucket.cloudfront_logs",
-      "file_path": "/modules/gateway/infra/modules/s3-cloudfront-logs/main.tf",
-      "reason": "dev-only S3 bucket; event notifications not needed for recreatable data. Re-evaluate when promoting to prod."
-    },
-    {
-      "check_id": "CKV2_AWS_62",
-      "resource": "aws_s3_bucket.chat_logs",
-      "file_path": "/modules/gateway/infra/modules/s3-chat-logs/main.tf",
-      "reason": "dev-only S3 bucket; event notifications not needed for recreatable data. Re-evaluate when promoting to prod."
-    },
-    {
-      "check_id": "CKV2_AWS_62",
-      "resource": "aws_s3_bucket.alb_logs",
-      "file_path": "/modules/gateway/infra/modules/alb/main.tf",
-      "reason": "dev-only S3 bucket; event notifications not needed for recreatable data. Re-evaluate when promoting to prod."
-    },
-    {
-      "check_id": "CKV2_AWS_62",
-      "resource": "aws_s3_bucket.beads_state",
-      "file_path": "/modules/agent-factory/infra/modules/beads-state/main.tf",
-      "reason": "dev-only S3 bucket; event notifications not needed for recreatable data. Re-evaluate when promoting to prod."
-    },
-    {
-      "check_id": "CKV2_AWS_62",
-      "resource": "aws_s3_bucket.chat_artifacts",
-      "file_path": "/modules/agent-factory/infra/chat-agent-infra.tf",
-      "reason": "dev-only S3 bucket; event notifications not needed for recreatable data. Re-evaluate when promoting to prod."
-    },
-    {
-      "check_id": "CKV2_AWS_62",
-      "resource": "aws_s3_bucket.public_cfn",
-      "file_path": "/modules/agent-factory/infra/main.tf",
-      "reason": "dev-only S3 bucket; event notifications not needed for recreatable data. Re-evaluate when promoting to prod."
+      "file": "/platform/infra/modules/security-scans/main.tf",
+      "findings": [
+        {
+          "resource": "aws_s3_bucket.security_scans",
+          "check_ids": [
+            "CKV2_AWS_62",
+            "CKV_AWS_144"
+          ]
+        }
+      ]
     }
   ]
 }
