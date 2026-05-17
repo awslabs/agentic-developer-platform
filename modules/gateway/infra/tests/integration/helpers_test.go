@@ -184,7 +184,7 @@ func CreateTerraformOptions(t *testing.T, modulePath string, vars map[string]int
 
 // CheckTCPConnection tests TCP connectivity to an endpoint
 func CheckTCPConnection(t *testing.T, host string, port int, timeout time.Duration) bool {
-	address := fmt.Sprintf("%s:%d", host, port)
+	address := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	conn, err := net.DialTimeout("tcp", address, timeout)
 	if err != nil {
 		t.Logf("TCP connection to %s failed: %v", address, err)
