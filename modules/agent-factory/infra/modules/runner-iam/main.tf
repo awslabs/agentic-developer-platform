@@ -33,7 +33,8 @@ resource "aws_iam_policy" "runner_boundary" {
           # Terraform refresh calls for each resource type.
           "kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*",
           "kms:Describe*", "kms:Get*", "kms:List*",
-          "kms:CreateKey", "kms:TagResource", "kms:UntagResource",
+          "kms:CreateKey", "kms:CreateGrant", "kms:RetireGrant",
+          "kms:TagResource", "kms:UntagResource",
           "kms:ScheduleKeyDeletion", "kms:PutKeyPolicy",
           "kms:EnableKeyRotation", "kms:DisableKeyRotation",
           "kms:CreateAlias", "kms:DeleteAlias", "kms:UpdateAlias",
@@ -198,7 +199,8 @@ resource "aws_iam_role_policy" "runner_permissions" {
         Action = [
           "kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey*",
           "kms:Describe*", "kms:Get*", "kms:List*",
-          "kms:CreateKey", "kms:TagResource", "kms:UntagResource",
+          "kms:CreateKey", "kms:CreateGrant", "kms:RetireGrant",
+          "kms:TagResource", "kms:UntagResource",
           "kms:ScheduleKeyDeletion", "kms:PutKeyPolicy",
           "kms:EnableKeyRotation", "kms:DisableKeyRotation",
           "kms:CreateAlias", "kms:DeleteAlias", "kms:UpdateAlias"
