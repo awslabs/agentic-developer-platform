@@ -182,4 +182,5 @@ module "security_scans" {
   source = "./modules/security-scans"
 
   environment = var.environment
+  account_id  = data.aws_caller_identity.current.account_id
 }

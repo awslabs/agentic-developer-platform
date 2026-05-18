@@ -5,8 +5,12 @@
 # Replaces broken GitHub Code Scanning uploads (GHAS not enabled).
 # =============================================================================
 
+locals {
+  bucket_suffix = var.account_id != "" ? "-${var.account_id}" : ""
+}
+
 resource "aws_s3_bucket" "security_scans" {
-  bucket = "adp-${var.environment}-security-scans"
+  bucket = "adp-${var.environment}-security-scans${local.bucket_suffix}"
 }
 
 resource "aws_s3_bucket_versioning" "security_scans" {
@@ -38,6 +42,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "security_scans" {
   rule {
     id     = "transition-and-expire"
     status = "Enabled"
+    filter {}
     transition {
       days          = var.security_scan_glacier_days
       storage_class = "GLACIER"
