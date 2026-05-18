@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, DateTime, Numeric, String, Text
+from sqlalchemy import JSON, DateTime, Index, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TenantMixin, new_uuid, utcnow
@@ -54,6 +54,16 @@ class Team(Base, TenantMixin):
 
 class User(Base, TenantMixin):
     __tablename__ = "users"
+    __table_args__ = (
+        # Issue #700: prevent duplicate canonical rows for the same Cognito identity.
+        # Partial unique index — only enforced for non-NULL cognito_sub values.
+        Index(
+            "uq_users_cognito_sub",
+            "cognito_sub",
+            unique=True,
+            postgresql_where=text("cognito_sub IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True, default=new_uuid)
     team_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)

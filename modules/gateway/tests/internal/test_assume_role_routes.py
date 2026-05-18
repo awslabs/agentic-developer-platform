@@ -568,3 +568,68 @@ class TestAssumeRoleScopeFallback:
 
         assert resp.status_code == 200
         assert resp.json()["profile_name"] == "adp-aws-shared"
+
+
+class TestAssumeRoleCanonicalResolution:
+    """Test 7: assume-role uses canonical user resolution (Issue #700)."""
+
+    @pytest.mark.asyncio
+    async def test_assume_role_uses_canonical_user(self, db):
+        """Canonical user with cognito_sub resolves correctly for assume-role.
+
+        Verifies that the canonical user's org_id and id are used for
+        credential resolution, not just the inbound user_id blindly.
+        """
+        # Seed a user with cognito_sub and a credential
+        canonical = User(
+            id="user-canonical-700",
+            org_id="org-test",
+            team_id="team-eng",
+            email="canonical@test.com",
+            cognito_sub="cognito-sub-700",
+        )
+        db.add(canonical)
+        await db.flush()
+
+        cred = UserCredential(
+            id="cred-canonical-700",
+            org_id="org-test",
+            user_id="user-canonical-700",
+            service="aws",
+            label="canonical-role",
+            credential_type="aws_role",
+            secret_arn="arn:aws:secretsmanager:us-east-1:123:secret:canonical",
+        )
+        db.add(cred)
+        await db.commit()
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret.return_value = _ROLE_SECRET_JSON
+
+        with (
+            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+            patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.sts_assume_service.boto3") as mock_boto3,
+        ):
+            client = _make_app(db, mock_sm)
+            mock_sts_client = MagicMock()
+            mock_boto3.client.return_value = mock_sts_client
+            mock_sts_client.assume_role.return_value = _mock_sts_response()
+
+            resp = client.post(
+                "/internal/v1/credential-assume-role",
+                json={
+                    "user_id": "user-canonical-700",
+                    "agent_id": "developer",
+                    "task_id": "task-700",
+                    "service": "aws",
+                    "label": "canonical-role",
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["access_key_id"] == "ASIAIOSFODNN7EXAMPLE"
+        assert "provenance_id" in data

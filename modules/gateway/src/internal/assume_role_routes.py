@@ -28,6 +28,7 @@ from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
 from src.shared.models.organization import User
 from src.shared.models.vault import UserCredential
+from src.shared.services.canonical_user import resolve_canonical_user
 from src.shared.services.credential_resolver import CredentialNotFoundError, CredentialResolver
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
@@ -77,12 +78,12 @@ class AssumeRoleResponse(BaseModel):
 
 
 async def _get_user(user_id: str, db: AsyncSession) -> User:
-    """Fetch User row or raise 404."""
-    from sqlalchemy import select
+    """Fetch canonical User row or raise 404.
 
-    stmt = select(User).where(User.id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
+    Issue #700: uses canonical user resolution to ensure credential queries
+    use the correct user_id and org_id even when the inbound row has drifted.
+    """
+    user = await resolve_canonical_user(db, user_id, calling_endpoint="credential-assume-role")
     if user is None:
         raise HTTPException(
             status_code=404,
@@ -160,12 +161,13 @@ async def credential_assume_role(
     settings = get_settings()
 
     user = await _get_user(body.user_id, db)
+    # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,
         org_id=user.org_id,
         service=body.service,
         label=body.label,
-        user_id=body.user_id,
+        user_id=user.id,
         team_id=user.team_id,
     )
 

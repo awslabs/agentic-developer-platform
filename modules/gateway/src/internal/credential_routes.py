@@ -41,6 +41,7 @@ from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
 from src.shared.models.organization import User
 from src.shared.models.vault import UserCredential
+from src.shared.services.canonical_user import resolve_canonical_user
 from src.shared.services.credential_resolver import CredentialNotFoundError, CredentialResolver
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
@@ -146,11 +147,13 @@ class RawReadResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def _get_user_context(user_id: str, db: AsyncSession) -> User:
-    """Fetch the User row or raise 404."""
-    stmt = select(User).where(User.id == user_id)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
+async def _get_user_context(user_id: str, db: AsyncSession, *, calling_endpoint: str = "unknown") -> User:
+    """Fetch the canonical User row or raise 404.
+
+    Issue #700: uses canonical user resolution to ensure credential queries
+    use the correct user_id and org_id even when the inbound row has drifted.
+    """
+    user = await resolve_canonical_user(db, user_id, calling_endpoint=calling_endpoint)
     if user is None:
         raise HTTPException(
             status_code=404,
@@ -260,13 +263,14 @@ async def list_user_credentials(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> list[CredentialMetadata]:
-    # Validate user exists.
-    user = await _get_user_context(user_id, db)
+    # Validate user exists and resolve canonical user (Issue #700).
+    user = await _get_user_context(user_id, db, calling_endpoint="user-credentials")
 
     # Build query — filter by service only when provided (backwards compat).
+    # Issue #700: use canonical user's id and org_id, not the inbound values.
     conditions = [
         UserCredential.org_id == user.org_id,
-        UserCredential.user_id == user_id,
+        UserCredential.user_id == user.id,
     ]
     if service is not None:
         conditions.append(UserCredential.service == service)
@@ -307,13 +311,14 @@ async def proxy_request(
 ) -> ProxyResponse:
     provenance_id = str(uuid.uuid4())
 
-    user = await _get_user_context(body.user_id, db)
+    user = await _get_user_context(body.user_id, db, calling_endpoint="proxy-request")
+    # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,
         org_id=user.org_id,
         service=body.service,
         label=body.label,
-        user_id=body.user_id,
+        user_id=user.id,
         team_id=user.team_id,
     )
 
@@ -417,13 +422,14 @@ async def credential_materialize(
     provenance_id = str(uuid.uuid4())
     settings = get_settings()
 
-    user = await _get_user_context(body.user_id, db)
+    user = await _get_user_context(body.user_id, db, calling_endpoint="credential-materialize")
+    # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,
         org_id=user.org_id,
         service=body.service,
         label=body.label,
-        user_id=body.user_id,
+        user_id=user.id,
         team_id=user.team_id,
     )
 
@@ -547,13 +553,14 @@ async def credential_raw_read(
     # Scope gate.
     _check_agent_scope(x_agent_scopes, "credential:raw-read")
 
-    user = await _get_user_context(body.user_id, db)
+    user = await _get_user_context(body.user_id, db, calling_endpoint="credential-raw-read")
+    # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,
         org_id=user.org_id,
         service=body.service,
         label=body.label,
-        user_id=body.user_id,
+        user_id=user.id,
         team_id=user.team_id,
     )
 
