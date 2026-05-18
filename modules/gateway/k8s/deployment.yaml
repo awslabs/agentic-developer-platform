@@ -86,9 +86,12 @@ spec:
               value: "bedrock-gateway"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://cloudwatch-agent.amazon-cloudwatch.svc.cluster.local:4315"
-            # Issue #537: Identity projection feature flags (default off until migration completes)
+            # Issue #537: Identity projection feature flags. Backfill complete in dev
+            # (v2 table adp-dev-user-identity-index has all 4 distinct users from v1).
+            # WRITE=true unblocks the onboarding endpoint; READ stays false through
+            # the 48h dual-write soak per the migration plan in #537.
             - name: USER_IDENTITY_INDEX_V2_WRITE
-              value: "false"
+              value: "true"
             - name: USER_IDENTITY_INDEX_V2_READ
               value: "false"
       # Pod topology spread constraints for HA across availability zones
