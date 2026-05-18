@@ -103,7 +103,16 @@ resource "aws_iam_policy" "lambda_dynamodb" {
           "kms:GenerateDataKey*",
           "kms:DescribeKey"
         ]
-        Resource = [aws_kms_key.dynamodb.arn]
+        # Two keys: this module's own KMS (encrypts tenant-registry,
+        # webhook-events, rate-limits) plus the gateway's KMS (encrypts
+        # identity-index + user-identity-index, which the Lambda READS to
+        # resolve installation_id → tenant and sender_id → user). Without
+        # the gateway key, every GetItem on those tables returns
+        # AccessDeniedException and webhooks 403 with outcome=unknown_installation.
+        Resource = [
+          aws_kms_key.dynamodb.arn,
+          data.aws_kms_alias.gateway_dynamodb.target_key_arn,
+        ]
       }
     ]
   })

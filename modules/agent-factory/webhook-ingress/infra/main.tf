@@ -84,3 +84,14 @@ data "aws_ssm_parameter" "gateway_apigw_invoke_url" {
   # param exists. If the param is missing at plan time, Terraform fails loudly
   # rather than silently producing an empty value — which is what we want.
 }
+
+# Gateway's customer-managed KMS key (created by gateway-infra at
+# modules/gateway/infra/kms.tf). It encrypts adp-<env>-identity-index and
+# adp-<env>-user-identity-index, which the webhook Lambda reads at every
+# webhook to resolve installation→tenant and sender→user. Without
+# kms:Decrypt on this key, those GetItem calls fail with AccessDeniedException
+# and the handler returns 403 unknown_installation for every webhook.
+# Referenced by alias so key rotation doesn't break the policy.
+data "aws_kms_alias" "gateway_dynamodb" {
+  name = "alias/adp-${var.environment}-gateway-dynamodb"
+}
