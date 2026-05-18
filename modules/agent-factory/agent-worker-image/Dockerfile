@@ -118,6 +118,20 @@ RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tm
 RUN curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
     -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl
 
+# Install Terraform — required by deploy-test agents running platform/infra,
+# gateway/infra, agent-factory/infra, webhook-ingress/infra apply steps.
+# Pinned to 1.15.3 (latest stable as of 2026-05-13) which satisfies the
+# strictest module constraint (gateway/infra requires >= 1.14.0).
+ARG TERRAFORM_VERSION=1.15.3
+ARG TERRAFORM_SHA256=c3d4b579064745a5f7e918125db23b12ba52a8a7287adb9f32c49d637e02e3bf
+RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
+      -o /tmp/terraform.zip && \
+    echo "${TERRAFORM_SHA256}  /tmp/terraform.zip" | sha256sum -c - && \
+    unzip -q /tmp/terraform.zip -d /usr/local/bin && \
+    chmod +x /usr/local/bin/terraform && \
+    rm /tmp/terraform.zip && \
+    terraform version
+
 # Install pip-based Python tools (uv, poetry). The slim image has pip built-in.
 RUN pip3 install --no-cache-dir --break-system-packages uv poetry
 
