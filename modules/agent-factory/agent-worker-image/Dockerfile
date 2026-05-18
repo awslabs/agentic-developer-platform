@@ -80,6 +80,7 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-reco
     jq \
     vim-tiny \
     unzip \
+    zip \
     sudo \
     procps \
     && rm -rf /var/lib/apt/lists/*
