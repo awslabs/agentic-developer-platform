@@ -53,9 +53,7 @@ def build_template_url(credential_id: str) -> str:  # credential_id kept for cal
     """
     bucket = _template_bucket()
     if not bucket:
-        raise RuntimeError(
-            "ADP_CFN_TEMPLATE_BUCKET is not set — cannot build CFN templateURL"
-        )
+        raise RuntimeError("ADP_CFN_TEMPLATE_BUCKET is not set — cannot build CFN templateURL")
 
     # Virtual-hosted addressing keeps the host on *.s3.amazonaws.com, which is
     # what CloudFormation's URL validator accepts.
