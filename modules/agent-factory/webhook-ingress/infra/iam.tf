@@ -130,42 +130,46 @@ resource "aws_iam_policy" "lambda_secrets" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "ReadWebhookSecret"
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = aws_secretsmanager_secret.webhook_secret.arn
-      },
-      {
-        Sid    = "ReadPlatformGitHubAppSecrets"
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = [
-          aws_secretsmanager_secret.github_app_id.arn,
-          aws_secretsmanager_secret.github_app_key.arn,
-        ]
-      },
-      {
-        Sid      = "ReadInternalApiKey"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = var.internal_api_key_arn != "" ? [var.internal_api_key_arn] : []
-      },
-      {
-        Sid    = "WritePerTenantGitHubAppSecrets"
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:CreateSecret",
-          "secretsmanager:TagResource"
-        ]
-        Resource = "arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:adp/${var.environment}/tenants/*"
-      }
-    ]
+    Statement = concat(
+      [
+        {
+          Sid    = "ReadWebhookSecret"
+          Effect = "Allow"
+          Action = [
+            "secretsmanager:GetSecretValue"
+          ]
+          Resource = aws_secretsmanager_secret.webhook_secret.arn
+        },
+        {
+          Sid    = "ReadPlatformGitHubAppSecrets"
+          Effect = "Allow"
+          Action = [
+            "secretsmanager:GetSecretValue"
+          ]
+          Resource = [
+            aws_secretsmanager_secret.github_app_id.arn,
+            aws_secretsmanager_secret.github_app_key.arn,
+          ]
+        },
+        {
+          Sid    = "WritePerTenantGitHubAppSecrets"
+          Effect = "Allow"
+          Action = [
+            "secretsmanager:CreateSecret",
+            "secretsmanager:TagResource"
+          ]
+          Resource = "arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:adp/${var.environment}/tenants/*"
+        }
+      ],
+      var.internal_api_key_arn != "" ? [
+        {
+          Sid      = "ReadInternalApiKey"
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue"]
+          Resource = [var.internal_api_key_arn]
+        }
+      ] : []
+    )
   })
 }
 
