@@ -4,7 +4,7 @@
 # Build: docker build -t deepwiki:latest .
 # The image uses OPENAI_BASE_URL to route all LLM calls through the LiteLLM proxy.
 
-FROM ghcr.io/asyncfuncai/deepwiki-open:latest
+FROM ghcr.io/asyncfuncai/deepwiki-open:v1.2.2
 
 # Override default config with our LiteLLM-proxy-aware configs
 # These point the "openai" provider at our LiteLLM proxy which routes to Bedrock

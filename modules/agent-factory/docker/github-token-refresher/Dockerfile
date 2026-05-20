@@ -14,7 +14,8 @@ FROM public.ecr.aws/amazonlinux/amazonlinux:2023
 # Install minimal dependencies (baked in, not at runtime).
 # curl is omitted: amazonlinux:2023 ships curl-minimal, which provides curl
 # and conflicts with the full curl package. curl-minimal is sufficient here.
-RUN dnf install -y \
+RUN dnf upgrade -y \
+    && dnf install -y \
       aws-cli \
       openssl \
       python3 \

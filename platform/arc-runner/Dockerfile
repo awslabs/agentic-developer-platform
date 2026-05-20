@@ -20,7 +20,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 USER root
 
 # ── Base utilities ──────────────────────────────────────────────────────────
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
         curl \
         wget \
         zip \
