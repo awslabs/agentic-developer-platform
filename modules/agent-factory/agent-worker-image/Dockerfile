@@ -1,6 +1,6 @@
 # =============================================================================
 # adp-agent worker image
-# Base: python:3.12-slim-bookworm (Debian, Python pre-installed)
+# Base: python:3.13-slim-bookworm (Debian, Python pre-installed)
 # Pulls from Debian apt mirrors (Fastly CDN) — more reliable than
 # archive.ubuntu.com, which had repeated connection-timeout outages
 # blocking our builds.
@@ -9,7 +9,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Build the TypeScript agent runtime
 # -----------------------------------------------------------------------------
-FROM public.ecr.aws/docker/library/node:22-bookworm-slim AS builder
+FROM public.ecr.aws/docker/library/node:24-bookworm-slim AS builder
 
 WORKDIR /build
 
@@ -27,7 +27,7 @@ RUN npx tsc --project tsconfig.json
 # -----------------------------------------------------------------------------
 # Stage 2: Stage personas and skills
 # -----------------------------------------------------------------------------
-FROM public.ecr.aws/docker/library/debian:bookworm-slim AS stager
+FROM public.ecr.aws/docker/library/debian:trixie-slim AS stager
 
 WORKDIR /stage
 
@@ -45,10 +45,10 @@ RUN /stage/stage-personas.sh /source /stage
 # -----------------------------------------------------------------------------
 # Stage 3: Final runtime image
 # -----------------------------------------------------------------------------
-# python:3.12-slim-bookworm includes Python 3.12 + pip, based on Debian 12.
+# python:3.13-slim-bookworm includes Python 3.13 + pip, based on Debian 12.
 # Uses deb.debian.org (Fastly CDN) for apt — far more reliable than
 # Ubuntu's archive.ubuntu.com.
-FROM public.ecr.aws/docker/library/python:3.12-slim-bookworm
+FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm
 
 LABEL org.opencontainers.image.title="adp-agent"
 LABEL org.opencontainers.image.description="ADP hosted agent worker image"
@@ -89,12 +89,12 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-reco
 RUN curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" \
     -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq
 
-# Install Node.js 22 from NodeSource (works on Debian bookworm).
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+# Install Node.js 24 from NodeSource (works on Debian bookworm).
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-# Install pnpm and yarn via corepack. The Node 22 image ships a yarn stub
+# Install pnpm and yarn via corepack. The Node 24 image ships a yarn stub
 # at /usr/bin/yarn, so `npm install -g yarn` fails with EEXIST. Corepack
 # is the modern way to install both and handles replacement idempotently.
 RUN corepack enable && \
