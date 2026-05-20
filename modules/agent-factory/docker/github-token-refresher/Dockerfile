@@ -9,10 +9,10 @@
 #   Sidecar container: SIDECAR_MODE=true   (loops, refreshing before expiry)
 # =============================================================================
 
-FROM public.ecr.aws/amazonlinux/amazonlinux:2023
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023.7.20250512
 
 # Install minimal dependencies (baked in, not at runtime).
-# curl is omitted: amazonlinux:2023 ships curl-minimal, which provides curl
+# curl is omitted: amazonlinux:2023.x ships curl-minimal, which provides curl
 # and conflicts with the full curl package. curl-minimal is sufficient here.
 RUN dnf upgrade -y \
     && dnf install -y \
