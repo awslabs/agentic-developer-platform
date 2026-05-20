@@ -277,6 +277,24 @@ async def install_callback(
     }
 
 
+def _build_install_metadata(
+    *,
+    installation_id: int,
+    account_login: str,
+    account_type: str,
+    repository_selection: str = "selected",
+    repository_count: int = 0,
+) -> dict[str, Any]:
+    """Build the metadata dict stored on ChannelTenantMap at install time."""
+    return {
+        "installation_id": installation_id,
+        "account_login": account_login,
+        "account_type": account_type,
+        "repository_selection": repository_selection,
+        "repository_count": repository_count,
+    }
+
+
 async def _attach_org_installation(
     *,
     installation_id: int,
@@ -313,7 +331,13 @@ async def _attach_org_installation(
             raise PermissionError(
                 f"GitHub org '{github_org_login}' is already connected to another ADP tenant. Contact support if you believe this is an error."
             )
-        # Already mapped to this tenant — update installation_id in metadata (idempotent re-install)
+        # Already mapped to this tenant — update metadata (idempotent re-install)
+        existing.install_metadata = _build_install_metadata(
+            installation_id=installation_id,
+            account_login=github_org_login,
+            account_type="Organization",
+        )
+        await db.commit()
         logger.info(
             "GitHub org %s re-installed installation_id=%d tenant=%s",
             github_org_login,
@@ -322,11 +346,16 @@ async def _attach_org_installation(
         )
         return
 
-    # New mapping — record it
+    # New mapping — record it with metadata
     mapping = ChannelTenantMap(
         provider="github",
         provider_scope_id=scope_id,
         org_id=caller_org_id,
+        install_metadata=_build_install_metadata(
+            installation_id=installation_id,
+            account_login=github_org_login,
+            account_type="Organization",
+        ),
     )
     db.add(mapping)
     await db.commit()
@@ -341,17 +370,24 @@ async def _attach_org_installation(
 async def list_connections(
     *,
     caller_org_id: str,
+    caller_user_id: str,
     db: AsyncSession,
     github_client: GitHubAppClient | None = None,
 ) -> ConnectionsListResponse:
     """Return all GitHub installations connected to the caller's ADP tenant.
 
-    Queries ChannelTenantMap for this org's GitHub entries, then enriches each
-    with live metadata from GitHub (cached ~5 minutes).
+    Queries ChannelTenantMap for this org's GitHub entries. For personal accounts
+    within adp-default, scopes to only the caller's own installations to prevent
+    cross-user data leakage.
+
+    Enrichment data is read from the `metadata` JSON column (written at install time).
+    Legacy rows without metadata are skipped with a warning.
     """
     from sqlalchemy import select
 
     from src.shared.models.vault import ChannelTenantMap
+
+    from .adp_default import is_adp_default
 
     stmt = select(ChannelTenantMap).where(
         ChannelTenantMap.provider == "github",
@@ -363,51 +399,40 @@ async def list_connections(
     if not mappings:
         return ConnectionsListResponse(connections=[])
 
-    # Build GitHub client if credentials available
-    app_id, private_key = _get_github_app_credentials()
-    if github_client is None and app_id and private_key:
-        github_client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
+    # For personal accounts in adp-default, filter to this user's installs only.
+    # provider_scope_id format for personal: "personal:<github_id>:<adp_user_id>"
+    if is_adp_default(caller_org_id):
+        mappings = [m for m in mappings if m.provider_scope_id.endswith(f":{caller_user_id}")]
 
     connections: list[GitHubConnectionItem] = []
     for mapping in mappings:
-        # provider_scope_id is either a GitHub org numeric ID or the login slug
-        # For the list view we store the installation_id separately in channel_context if available,
-        # but since ChannelTenantMap doesn't carry installation_id directly, we use provider_scope_id
-        # as a lookup key and enrich via GitHub API.
-        # For now, derive installation_id from a best-effort GitHub API call.
-        scope_id = mapping.provider_scope_id
+        md = mapping.install_metadata or {}
+        install_id = int(md.get("installation_id") or 0)
 
-        # Try to get installation_id from GitHub if we have credentials
-        installation_id_val = 0
-        account_login = scope_id
-        account_type = "Organization"
-        repo_selection = "selected"
-        repo_count = 0
-        installed_at: datetime | None = None
+        if install_id == 0:
+            # Legacy row without metadata — skip and warn.
+            logger.warning(
+                "ChannelTenantMap row %s has no installation_id metadata — skipping",
+                mapping.id,
+            )
+            continue
 
-        # Check cache by scope_id (use a sentinel key)
-        cached = _cache_get(int(scope_id) if scope_id.isdigit() else hash(scope_id) % (2**31))
+        account_login = md.get("account_login", "(unknown)")
+        account_type = md.get("account_type", "Organization")
+        repo_selection = md.get("repository_selection", "selected")
+        repo_count = int(md.get("repository_count") or 0)
 
-        if cached is None and github_client is not None:
-            try:
-                # List installations for this app and find the one matching scope_id
-                # We use a simplified approach: if scope_id is numeric it's a GitHub org ID
-                # Otherwise fall back to the login
-                pass  # metadata fetched per installation below
-            except Exception as exc:
-                logger.warning("Could not enrich GitHub connection %s: %s", scope_id, exc)
+        configure_url = f"https://github.com/settings/installations/{install_id}"
 
-        # Build item with what we have
-        configure_url = f"https://github.com/organizations/{account_login}/settings/installations/{installation_id_val}"
         connections.append(
             GitHubConnectionItem(
                 provider="github",
-                installation_id=installation_id_val,
+                installation_id=install_id,
                 account_login=account_login,
                 account_type=account_type,
                 repository_selection=repo_selection,
                 repository_count=repo_count,
-                installed_at=installed_at,
+                installed_at=mapping.created_at,
                 configure_url=configure_url,
             )
         )

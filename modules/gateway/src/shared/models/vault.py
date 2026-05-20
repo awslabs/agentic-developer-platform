@@ -214,6 +214,7 @@ class ChannelTenantMap(Base):
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
     )
+    install_metadata: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     # Relationship

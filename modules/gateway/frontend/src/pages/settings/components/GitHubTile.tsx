@@ -53,10 +53,14 @@ export function GitHubTile({
           onClick={onInstall}
           disabled={isInstalling || isLoading}
           isLoading={isInstalling}
-          variant="primary"
+          variant={connections.length > 0 ? 'secondary' : 'primary'}
           size="sm"
         >
-          {isInstalling ? 'Opening GitHub…' : 'Install on GitHub'}
+          {isInstalling
+            ? 'Opening GitHub…'
+            : connections.length > 0
+              ? '+ Add another connection'
+              : 'Install on GitHub'}
         </Button>
       </div>
 

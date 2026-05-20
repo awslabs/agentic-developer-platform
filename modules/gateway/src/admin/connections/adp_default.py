@@ -132,11 +132,18 @@ async def attach_to_adp_default(
         # Different ADP user already claimed this GitHub personal account
         raise PermissionError(f"GitHub account '{account_login}' is already connected under a different ADP user.")
 
-    # Create new mapping
+    # Create new mapping with metadata for list enrichment
     mapping = ChannelTenantMap(
         provider="github",
         provider_scope_id=user_scope_id,
         org_id=adp_default_id,
+        install_metadata={
+            "installation_id": installation_id,
+            "account_login": account_login,
+            "account_type": "User",
+            "repository_selection": "selected",
+            "repository_count": 0,
+        },
     )
     db.add(mapping)
     await db.commit()

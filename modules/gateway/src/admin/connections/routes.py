@@ -25,6 +25,7 @@ from src.auth.magic_link import (
     TargetUserMismatchError,
     TokenExpiredError,
 )
+from src.auth.org_id_resolver import resolve_effective_org_id
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
@@ -152,10 +153,14 @@ async def get_connections(
 ) -> ConnectionsListResponse:
     """List all GitHub App installations connected to the caller's ADP tenant."""
     try:
+        effective_org_id = await resolve_effective_org_id(current_user, db)
         return await list_connections(
-            caller_org_id=current_user.org_id,
+            caller_org_id=effective_org_id,
+            caller_user_id=current_user.user_id,
             db=db,
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("list-connections failed for org=%s: %s", current_user.org_id, exc)
         raise HTTPException(status_code=500, detail="Failed to list connections") from exc

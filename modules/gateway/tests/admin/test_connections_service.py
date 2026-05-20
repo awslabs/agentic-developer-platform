@@ -338,7 +338,7 @@ class TestInstallCallback:
 
 class TestListConnections:
     async def test_returns_empty_list_when_no_mappings(self, db_session: AsyncSession, org_in_db):
-        result = await list_connections(caller_org_id="org-test-001", db=db_session)
+        result = await list_connections(caller_org_id="org-test-001", caller_user_id="user-1", db=db_session)
         assert result.connections == []
 
     async def test_returns_connections_for_tenant(self, db_session: AsyncSession, org_in_db):
@@ -346,11 +346,16 @@ class TestListConnections:
             provider="github",
             provider_scope_id="98765",
             org_id="org-test-001",
+            install_metadata={
+                "installation_id": 98765,
+                "account_login": "test-org",
+                "account_type": "Organization",
+            },
         )
         db_session.add(mapping)
         await db_session.commit()
 
-        result = await list_connections(caller_org_id="org-test-001", db=db_session)
+        result = await list_connections(caller_org_id="org-test-001", caller_user_id="user-1", db=db_session)
         assert len(result.connections) == 1
         assert result.connections[0].provider == "github"
 
@@ -367,11 +372,16 @@ class TestListConnections:
             provider="github",
             provider_scope_id="11111",
             org_id="org-other-002",
+            install_metadata={
+                "installation_id": 11111,
+                "account_login": "other-org",
+                "account_type": "Organization",
+            },
         )
         db_session.add(mapping)
         await db_session.commit()
 
-        result = await list_connections(caller_org_id="org-test-001", db=db_session)
+        result = await list_connections(caller_org_id="org-test-001", caller_user_id="user-1", db=db_session)
         assert result.connections == []
 
 
