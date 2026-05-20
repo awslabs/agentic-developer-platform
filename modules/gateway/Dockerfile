@@ -2,7 +2,7 @@
 # dodge the unauthenticated Docker Hub pull rate limit that periodically
 # fails CodeBuild runs with HTTP 429.
 # Build stage
-FROM public.ecr.aws/docker/library/python:3.12-slim AS builder
+FROM public.ecr.aws/docker/library/python:3.13-slim AS builder
 WORKDIR /app
 COPY pyproject.toml .
 # Install core dependencies
@@ -11,14 +11,14 @@ RUN pip install --no-cache-dir .
 RUN pip install --no-cache-dir ".[tracing]" || echo "Tracing dependencies not available, skipping"
 
 # Runtime stage
-FROM public.ecr.aws/docker/library/python:3.12-slim
+FROM public.ecr.aws/docker/library/python:3.13-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get -y upgrade \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY src/ src/
 COPY alembic/ alembic/
