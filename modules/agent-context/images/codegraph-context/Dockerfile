@@ -1,6 +1,6 @@
 # CodeGraphContext — pre-baked image for Agent Context Intelligence Platform
 # Eliminates slow apt-get + pip install at pod startup.
-FROM public.ecr.aws/docker/library/python:3.11-slim
+FROM public.ecr.aws/docker/library/python:3.13-slim
 
 RUN apt-get update && \
     apt-get -y upgrade && \

@@ -8,7 +8,7 @@
 #   docker build -t agent-context/ingestion:latest .
 #   docker tag agent-context/ingestion:latest ${ECR_REGISTRY}/agent-context/ingestion:latest
 #   docker push ${ECR_REGISTRY}/agent-context/ingestion:latest
-FROM public.ecr.aws/docker/library/python:3.11-slim
+FROM public.ecr.aws/docker/library/python:3.13-slim
 
 # System deps: git for cloning, build tools for tree-sitter native extensions
 RUN apt-get update && \
