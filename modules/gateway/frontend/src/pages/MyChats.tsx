@@ -259,7 +259,7 @@ export default function MyChats() {
           My Chats
         </h1>
         <p className="text-gray-500 dark:text-gray-400 mt-1">
-          View your conversation history through the Bedrock Gateway
+          View your conversation history
         </p>
       </div>
 
@@ -395,7 +395,7 @@ export default function MyChats() {
         ) : (
           <div className="text-center py-12">
             <p className="text-gray-500 dark:text-gray-400">
-              No chats found. Start using the Bedrock Gateway to see your
+              No chats found. Start using the platform to see your
               conversation history here.
             </p>
           </div>

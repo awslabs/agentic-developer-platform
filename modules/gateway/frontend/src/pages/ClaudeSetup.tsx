@@ -14,7 +14,7 @@ export default function ClaudeSetup() {
           Claude Code Setup
         </h1>
         <p className="text-gray-500 dark:text-gray-400 mt-1">
-          Configure Claude Code to use the Bedrock Gateway
+          Configure Claude Code to use the platform
         </p>
       </div>
 
@@ -64,8 +64,8 @@ export default function ClaudeSetup() {
       )}
 
       {/* Info alert */}
-      <Alert variant="info" title="About the Bedrock Gateway">
-        The Bedrock Gateway provides a secure, managed way to access Amazon Bedrock from Claude Code.
+      <Alert variant="info" title="About the platform">
+        The platform provides a secure, managed way to access Amazon Bedrock from Claude Code.
         It handles authentication, rate limiting, cost tracking, and usage monitoring automatically.
       </Alert>
 

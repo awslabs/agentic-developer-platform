@@ -59,7 +59,7 @@ export default function PlatformDashboard() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Platform Dashboard</h1>
         <p className="text-gray-500 dark:text-gray-400 mt-1">
-          Overview of the entire Bedrock Gateway platform
+          Overview of the platform
         </p>
       </div>
 

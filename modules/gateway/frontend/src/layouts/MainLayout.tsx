@@ -24,7 +24,7 @@ export function MainLayout() {
             <div className="flex items-center gap-4">
               <MobileNav />
               <h1 className="text-xl font-bold text-gray-900 dark:text-white">
-                Bedrock Gateway Admin
+                Agentic Developer Platform
               </h1>
             </div>
 

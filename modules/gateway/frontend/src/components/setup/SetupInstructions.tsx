@@ -97,7 +97,7 @@ export function SetupInstructions() {
             Configure Claude Code
           </h3>
           <p className="mt-2 ml-8 text-sm mb-2">
-            Set the Bedrock Gateway as your API endpoint in Claude Code:
+            Set the platform as your API endpoint in Claude Code:
           </p>
           <pre className="ml-8 p-3 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm overflow-x-auto">
 {`# Set environment variables
@@ -119,7 +119,7 @@ export ANTHROPIC_BASE_URL="https://your-gateway-url/v1"
             Test the Connection
           </h3>
           <p className="mt-2 ml-8 text-sm">
-            Run Claude Code and verify it connects through the Bedrock Gateway. You should see your requests logged in the Log Viewer.
+            Run Claude Code and verify it connects through the platform. You should see your requests logged in the Log Viewer.
           </p>
         </div>
       </div>
