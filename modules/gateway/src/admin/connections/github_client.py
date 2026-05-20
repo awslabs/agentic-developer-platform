@@ -130,5 +130,38 @@ class GitHubAppClient:
             logger.warning("Could not fetch repository count for installation %d: %s", installation_id, exc)
             return 0
 
+    async def get_installation_token(self, installation_id: int) -> str:
+        """Exchange the App JWT for a short-lived installation access token.
+
+        Returns the token string. Raises on HTTP errors.
+        """
+        resp = await self._http_client.post(
+            f"/app/installations/{installation_id}/access_tokens",
+            headers=self._auth_headers(),
+        )
+        resp.raise_for_status()
+        return resp.json().get("token", "")
+
+    async def check_org_membership(
+        self,
+        installation_id: int,
+        org_login: str,
+        username: str,
+    ) -> bool:
+        """Return True if `username` is a member of `org_login`.
+
+        Uses an installation token for `installation_id`. Per GitHub docs:
+        GET /orgs/{org}/members/{username} returns 204 for members, 404 for non-members.
+        """
+        token = await self.get_installation_token(installation_id)
+        resp = await self._http_client.get(
+            f"/orgs/{org_login}/members/{username}",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        return resp.status_code == 204
+
     async def aclose(self) -> None:  # pragma: no cover
         await self._http_client.aclose()

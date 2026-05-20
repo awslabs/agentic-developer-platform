@@ -187,6 +187,217 @@ def _extract_github_identity(claims: dict, cognito_sub: str) -> tuple[str, str]:
     return github_login, github_id
 
 
+async def _find_matching_tenant_for_user(
+    db: AsyncSession,
+    github_login: str,
+) -> str | None:
+    """Find an existing ADP tenant that this GitHub user is a verified member of.
+
+    Iterates orgs with non-empty github_installation_ids. For each, calls
+    GitHub's org membership API using the App's installation token. Returns
+    the org_id of the first matched tenant, or None.
+
+    Failure mode: any GitHub API error -> log + skip that org (fail-closed,
+    do not auto-attach when verification fails).
+    """
+    from src.admin.connections.github_client import GitHubAppClient
+    from src.admin.connections.service import _get_github_app_credentials
+
+    # Fetch all orgs and filter in Python — small N, no perf concern
+    stmt = select(Organization)
+    candidates = (await db.execute(stmt)).scalars().all()
+    candidates = [o for o in candidates if o.github_installation_ids]
+    if not candidates:
+        return None
+
+    app_id, private_key = _get_github_app_credentials()
+    if not app_id or not private_key:
+        logger.warning("GitHub App credentials not configured; cannot verify org membership")
+        return None
+
+    client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
+    try:
+        for org in candidates:
+            for install_id in org.github_installation_ids:
+                try:
+                    is_member = await client.check_org_membership(
+                        installation_id=int(install_id),
+                        org_login=org.name,
+                        username=github_login,
+                    )
+                    if is_member:
+                        return org.id
+                except Exception as exc:
+                    logger.warning(
+                        "org membership check failed org=%s install=%s user=%s: %s",
+                        org.name,
+                        install_id,
+                        github_login,
+                        exc,
+                    )
+                    continue  # try next install / next org
+    finally:
+        await client.aclose()
+    return None
+
+
+async def _determine_role_for_matched_user(
+    github_login: str,
+    org_login: str,
+    installation_id: int,
+) -> str:
+    """Return 'org_admin' if the user is a GitHub org admin, else 'member'.
+
+    Uses GET /orgs/{org}/memberships/{username} with installation token.
+    """
+    from src.admin.connections.github_client import GitHubAppClient
+    from src.admin.connections.service import _get_github_app_credentials
+
+    try:
+        app_id, private_key = _get_github_app_credentials()
+        if not app_id or not private_key:
+            return "member"
+        client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
+        try:
+            token = await client.get_installation_token(installation_id)
+            resp = await client._http_client.get(
+                f"/orgs/{org_login}/memberships/{github_login}",
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+            if resp.status_code == 200 and resp.json().get("role") == "admin":
+                return "org_admin"
+        finally:
+            await client.aclose()
+    except Exception:
+        logger.warning("role check failed for %s in %s; defaulting to member", github_login, org_login)
+    return "member"
+
+
+async def _attach_user_to_existing_tenant(
+    db: AsyncSession,
+    org_id: str,
+    cognito_sub: str,
+    github_login: str,
+    github_id: str,
+) -> AccessRequestResponse:
+    """Attach a user to an existing tenant as a member (or org_admin if GitHub org admin).
+
+    Creates a TenantAccessRequest row (for audit trail) + User row + UserIdentity rows.
+    Respects the org's member_approval_policy.
+    """
+    from src.shared.models.base import new_uuid, utcnow
+    from src.shared.models.vault import UserIdentity
+
+    org = await db.get(Organization, org_id)
+    if org is None:
+        # Should not happen — caller verified it exists. Fall through to new-tenant flow.
+        return AccessRequestResponse(
+            status="collision",
+            reason="Matched org not found; please contact an administrator.",
+        )
+
+    # Determine role via GitHub API
+    install_id = int(org.github_installation_ids[0]) if org.github_installation_ids else 0
+    role = await _determine_role_for_matched_user(github_login, org.name, install_id)
+
+    # Check approval policy
+    auto_approve = org.member_approval_policy == "auto_approve_org_members"
+
+    # Create audit trail row
+    now = utcnow()
+    request = TenantAccessRequest(
+        cognito_sub=cognito_sub,
+        provider="github",
+        provider_user_id=github_id,
+        proposed_tenant_id=org_id,
+        target_login=github_login,
+        motivation=f"Auto-matched to org '{org.name}' via GitHub org membership",
+        status="approved" if auto_approve else "pending",
+        decided_by="system:org-member-match" if auto_approve else None,
+        decided_at=now if auto_approve else None,
+    )
+    db.add(request)
+
+    if not auto_approve:
+        await db.commit()
+        await db.refresh(request)
+        return AccessRequestResponse(
+            status="pending",
+            request_id=request.id,
+            eta_hours=24,
+        )
+
+    # Auto-approve: create user + identities in the existing tenant
+    # Find the default team in this org
+    from src.shared.models.organization import Team
+
+    stmt = select(Team).where(Team.org_id == org_id)
+    result = await db.execute(stmt)
+    team = result.scalars().first()
+    if team is None:
+        # No team — can't attach. Fall through to pending.
+        request.status = "pending"
+        request.decided_by = None
+        request.decided_at = None
+        await db.commit()
+        await db.refresh(request)
+        return AccessRequestResponse(
+            status="pending",
+            request_id=request.id,
+            eta_hours=24,
+        )
+
+    user_id = new_uuid()
+    user = User(
+        id=user_id,
+        org_id=org_id,
+        team_id=team.id,
+        email=f"{github_login}@github.onboard",
+        name=github_login,
+        cognito_sub=cognito_sub,
+        role=role,
+    )
+    db.add(user)
+
+    # User identities: cognito + github
+    cognito_identity = UserIdentity(
+        id=new_uuid(),
+        user_id=user_id,
+        org_id=org_id,
+        team_id=team.id,
+        provider="cognito",
+        provider_user_id=cognito_sub,
+        provider_username=github_login,
+        verification_method="oauth",
+        verified_at=now,
+    )
+    db.add(cognito_identity)
+
+    github_identity = UserIdentity(
+        id=new_uuid(),
+        user_id=user_id,
+        org_id=org_id,
+        team_id=team.id,
+        provider="github",
+        provider_user_id=github_id,
+        provider_username=github_login,
+        verification_method="oauth",
+        verified_at=now,
+    )
+    db.add(github_identity)
+
+    await db.commit()
+
+    return AccessRequestResponse(
+        status="approved",
+        tenant_id=org_id,
+        redirect="/dashboard",
+    )
+
+
 async def _pick_tenant_id(db: AsyncSession, base_slug: str, cognito_sub: str) -> str | None:
     """Pick a tenant ID derived from the GitHub login slug.
 
@@ -294,6 +505,18 @@ async def submit_access_request(
     # Derive GitHub identity — JWT claims first, Cognito AdminGetUser fallback
     claims = _decode_jwt_claims(request_in.headers.get("authorization"))
     github_login, github_id = _extract_github_identity(claims, cognito_sub)
+
+    # Issue #719: Before slug derivation, check if this user belongs to an
+    # existing ADP tenant (via verified GitHub org membership).
+    matched_org_id = await _find_matching_tenant_for_user(db, github_login)
+    if matched_org_id is not None:
+        return await _attach_user_to_existing_tenant(
+            db=db,
+            org_id=matched_org_id,
+            cognito_sub=cognito_sub,
+            github_login=github_login,
+            github_id=github_id,
+        )
 
     # Derive tenant ID from the GitHub login; reject on collision so an
     # admin can decide whether this user belongs in the existing tenant

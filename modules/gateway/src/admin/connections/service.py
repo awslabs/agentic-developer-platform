@@ -255,6 +255,14 @@ async def install_callback(
             )
         except PermissionError:
             raise
+
+        # Issue #719: Populate organizations.github_installation_ids so that
+        # future users from this org are matched to this tenant automatically.
+        await _append_installation_id_to_org(
+            installation_id=installation_id,
+            caller_org_id=caller_org_id,
+            db=db,
+        )
     else:
         # Personal account — attach to adp-default free-tier tenant (issue #466)
         from .adp_default import attach_to_adp_default
@@ -365,6 +373,41 @@ async def _attach_org_installation(
         installation_id,
         caller_org_id,
     )
+
+
+async def _append_installation_id_to_org(
+    *,
+    installation_id: int,
+    caller_org_id: str,
+    db: AsyncSession,
+) -> None:
+    """Append installation_id to the caller's organization.github_installation_ids.
+
+    Issue #719: Ensures the org's installation list is populated so that the
+    onboarding handler can match future users from the same GitHub org.
+    Idempotent — does not double-append.
+    """
+    from src.shared.models.organization import Organization
+
+    org = await db.get(Organization, caller_org_id)
+    if org is None:
+        logger.warning(
+            "Cannot append installation_id=%d: org %s not found",
+            installation_id,
+            caller_org_id,
+        )
+        return
+
+    install_id_str = str(installation_id)
+    current_ids = org.github_installation_ids or []
+    if install_id_str not in current_ids:
+        org.github_installation_ids = current_ids + [install_id_str]
+        await db.commit()
+        logger.info(
+            "Appended installation_id=%d to org %s github_installation_ids",
+            installation_id,
+            caller_org_id,
+        )
 
 
 async def list_connections(

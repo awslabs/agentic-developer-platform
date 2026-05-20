@@ -19,6 +19,14 @@ class Organization(Base):
     # Uses JSON type in model (compatible with SQLite for tests); migration uses JSONB with GIN indexes.
     github_installation_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     cognito_client_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # Issue #719: Per-tenant policy for auto-approving org members on sign-up.
+    # Valid values: "auto_approve_org_members", "require_admin_approval"
+    member_approval_policy: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="auto_approve_org_members",
+        server_default="auto_approve_org_members",
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
