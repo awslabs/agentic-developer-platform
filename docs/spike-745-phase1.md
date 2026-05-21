@@ -189,6 +189,60 @@ per-request, not per-conversation.
 
 **No risk.**
 
+### 3A. Tenant Identity Flow (Operator Question — Comment 7)
+
+**Problem**: The `adp-dev-agent-scaledjob-role` is shared across all tenants. Every
+agent pod's SigV4 request authenticates as the same IAM identity. `X-Caller-Identity`
+from API Gateway only provides the role ARN — not the tenant the agent acts for.
+
+The actual tenant context lives in the **SQS message envelope** (`tenant_id`,
+`actor.user_id`, `actor.org_id`) that triggered the pod.
+
+#### Options Evaluated
+
+| Option | Security | Feasibility | Latency | Verdict |
+|--------|----------|-------------|---------|---------|
+| **A. Per-tenant IAM role** | Strongest — IAM-layer isolation | Poor (IAM quota: 1000 roles/acct; IRSA per-SA; KEDA can't dynamically select SA) | None | **Rejected** |
+| **B. Session-tagged AssumeRole** | Strong (STS-validated tags) | Good with workaround (see below) | +100-200ms one-time at pod start | **Recommended for Phase 4** |
+| **C. Trusted explicit headers** | Acceptable (bounded by IAM policy on `/agent/*`) | Easy (5-10 line middleware change) | None | **Recommended for Phase 2-3** |
+
+#### Recommended Hybrid: C → B
+
+**Phase 2-3 (now):** Option C — sigv4-proxy passes `X-Agent-OrgId` header from SQS
+envelope. Gateway middleware trusts it for `scope=internal` agents. Same trust model
+as existing webhook-ingress Lambda (which also sets headers from verified envelope data).
+
+**Phase 4:** Upgrade to Option B — entrypoint self-assumes role with
+`RoleSessionName=adp-<tenant_id>-<run_id>`. Gateway parses tenant from the
+assumed-role ARN in `X-Caller-Identity`. Headers become redundant.
+
+#### Critical Finding: API Gateway Cannot Expose STS Session Tags
+
+STS session tags (e.g., `adp:tenant_id`) are only evaluable in IAM policy conditions
+(`aws:PrincipalTag/key`). API Gateway's integration request mappings can only access
+`context.identity.userArn`, `context.identity.accountId`, etc. — **not** arbitrary
+session tags.
+
+**Workaround for Option B:** Encode tenant in the `RoleSessionName` (which becomes
+part of the ARN). Session name limit is 64 chars; format `adp-<tenant_id>-<suffix>`
+fits all current tenant IDs. The gateway's `extract_iam_identity_from_headers()`
+already parses the full ARN — adding session-name parsing is trivial.
+
+#### Answers to Operator's Specific Questions
+
+| Question | Answer |
+|----------|--------|
+| Can SigV4 signing include session tags reliably? | Yes. Entrypoint does one-time `sts:AssumeRole` with tags, exports creds. sigv4-proxy picks up via `defaultProvider()`. Signing is identical regardless of tags. |
+| Can API Gateway pass session tags to the backend? | **No.** Only `context.identity.userArn` is available. Workaround: parse tenant from session name in the ARN. |
+| Latency overhead of assume-role-with-tags per turn? | **Zero per-turn.** AssumeRole happens once at pod startup. Creds valid 1 hour. All subsequent requests reuse them. |
+
+#### Impact on GO Recommendation
+
+The tenant identity question has a clear two-phase answer (C→B) that requires no
+experimental validation — it uses known AWS capabilities and existing code patterns.
+**This does not change the GO recommendation.** Phase 2 uses Option C (lowest risk,
+5-line change); Phase 4 upgrades to Option B (strongest security).
+
 ---
 
 ## 4. Manual Smoke Test Protocol
@@ -353,18 +407,26 @@ Given that the infrastructure already exists, the EPIC #745 phases collapse:
   ```
 - Remove `CLAUDE_CODE_USE_BEDROCK=1` from pod template
 - Start sigv4-proxy before Claude Code in entrypoint
+- **Tenant context (Option C)**: sigv4-proxy injects `X-Agent-OrgId` header from
+  `TENANT_ID` env var (set from SQS envelope by entrypoint). Gateway middleware
+  trusts it for `scope=internal` agents (~5-line change in `middleware.py`).
 - **Fallback**: if proxy health-check fails, fall back to direct Bedrock
-- **No gateway code changes**
+- **Gateway change**: ~5 lines in `extract_iam_identity_from_headers()` to accept
+  `X-Agent-OrgId` override when the registry entry has `scope=internal`
 
 ### Phase 3: Full Cutover
 - Remove fallback logic
 - All agent traffic goes through gateway
 - Monitor usage_logs for anomalies
 
-### Phase 4: Revoke Direct Bedrock
+### Phase 4: Revoke Direct Bedrock + Upgrade Tenant Auth
 - Remove `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` from `adp-dev-agent-scaledjob-role`
 - Keep `execute-api:Invoke` (already present)
-- Implement per-tenant attribution (update agent registry or pass tenant context from SQS envelope)
+- **Tenant context (Option B)**: entrypoint does `sts:AssumeRole` with
+  `RoleSessionName=adp-<tenant_id>-<run_id>` at pod start. Gateway parses
+  tenant from the assumed-role ARN session name in `X-Caller-Identity`.
+  `X-Agent-OrgId` header becomes redundant (but kept for backward compat).
+- Grant `sts:AssumeRole` (self-assume) on the scaledjob role's trust policy
 
 ---
 
