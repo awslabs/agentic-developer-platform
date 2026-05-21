@@ -340,6 +340,91 @@ class TestExtractIamIdentityFromHeaders:
             assert exc_info.value.status_code == 403
             assert "not registered" in exc_info.value.message.lower()
 
+    def test_accepts_x_agent_org_id_for_internal_scope(self):
+        """Test that internal-scope agents can override org_id via X-Agent-OrgId header.
+
+        Issue #747: Internal agents (scaledjob-worker) pass the triggering tenant's
+        org_id so usage_logs attribute calls to the correct tenant.
+        """
+        headers = {
+            API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::123456789012:assumed-role/test-agent/session",
+            "X-Agent-OrgId": "customer-tenant-123",
+        }
+        request = self._create_mock_request(headers)
+
+        mock_entry: AgentRegistryEntry = {
+            "agent_id": "00000000-0000-0000-0000-000000000001",
+            "role_arn": "arn:aws:iam::123456789012:role/test-agent",
+            "agent_name": "scaledjob-worker",
+            "org_id": "__platform__",
+            "team_id": "__agents__",
+            "owner": "platform",
+            "scope": "internal",
+            "budget_config_id": "",
+            "allowed_models": ["*"],
+            "status": "active",
+            "description": "Internal worker",
+            "image_uri": "",
+            "code_repo": "",
+            "workflow_name": "",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+        }
+
+        with patch("src.auth.agent_registry.get_agent_registry_service") as mock_get_service:
+            mock_service = MagicMock()
+            mock_service.get_agent_by_role_arn.return_value = mock_entry
+            mock_get_service.return_value = mock_service
+
+            context = extract_iam_identity_from_headers(request)
+
+            assert context is not None
+            assert context.org_id == "customer-tenant-123"
+            assert context.user_id == "scaledjob-worker"
+
+    def test_rejects_x_agent_org_id_for_external_scope(self):
+        """Test that non-internal agents cannot override org_id via X-Agent-OrgId.
+
+        Issue #747: Security guard — only internal-scope agents may claim arbitrary
+        org_ids. External/shared agents must use their registry-assigned org_id.
+        """
+        headers = {
+            API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::123456789012:assumed-role/external-agent/session",
+            "X-Agent-OrgId": "spoofed-tenant-id",
+        }
+        request = self._create_mock_request(headers)
+
+        mock_entry: AgentRegistryEntry = {
+            "agent_id": "00000000-0000-0000-0000-000000000002",
+            "role_arn": "arn:aws:iam::123456789012:role/external-agent",
+            "agent_name": "external-agent",
+            "org_id": "real-org",
+            "team_id": "team-a",
+            "owner": "customer",
+            "scope": "shared",
+            "budget_config_id": "",
+            "allowed_models": ["claude-sonnet"],
+            "status": "active",
+            "description": "External agent",
+            "image_uri": "",
+            "code_repo": "",
+            "workflow_name": "",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+        }
+
+        with patch("src.auth.agent_registry.get_agent_registry_service") as mock_get_service:
+            mock_service = MagicMock()
+            mock_service.get_agent_by_role_arn.return_value = mock_entry
+            mock_get_service.return_value = mock_service
+
+            context = extract_iam_identity_from_headers(request)
+
+            assert context is not None
+            # org_id should remain the registry-assigned value, NOT the spoofed one
+            assert context.org_id == "real-org"
+            assert context.org_id != "spoofed-tenant-id"
+
     def test_returns_none_for_invalid_arn(self):
         """Test returns None when ARN cannot be parsed."""
         headers = {

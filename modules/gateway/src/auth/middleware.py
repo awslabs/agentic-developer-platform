@@ -500,7 +500,17 @@ def extract_iam_identity_from_headers(request: Request) -> TokenContext | None:
 
     # Build TokenContext from agent entry
     token_context = agent_entry_to_token_context(agent_entry)
-    logger.info(f"IAM auth successful: agent={agent_entry['agent_name']}, org={agent_entry['org_id']}, team={agent_entry['team_id']}")
+
+    # Issue #747: Accept X-Agent-OrgId override for internal-scope agents.
+    # Internal agents (e.g. scaledjob-worker) pass the triggering tenant's
+    # org_id via this header so usage_logs attribute calls to the right tenant.
+    if agent_entry.get("scope") == "internal":
+        override_org_id = headers.get(API_GATEWAY_HEADER_ORG_ID, "").strip()
+        if override_org_id:
+            token_context.org_id = override_org_id
+            logger.debug(f"Internal agent org_id overridden to: {override_org_id}")
+
+    logger.info(f"IAM auth successful: agent={agent_entry['agent_name']}, org={token_context.org_id}, team={agent_entry['team_id']}")
     return token_context
 
 

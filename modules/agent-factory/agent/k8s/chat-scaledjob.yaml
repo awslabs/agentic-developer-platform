@@ -42,10 +42,15 @@ data:
   LCM_SUMMARY_MODEL: "global.anthropic.claude-sonnet-4-6"
   LCM_SUMMARY_ENDPOINT: "bedrock"
   MODEL_ENDPOINT: "bedrock"
-  # Route Claude Agent SDK calls through AWS Bedrock (IRSA provides AWS creds).
-  # Without this, the SDK falls back to Anthropic's direct API and returns
-  # "Not logged in · Please run /login" because ANTHROPIC_API_KEY is unset.
-  CLAUDE_CODE_USE_BEDROCK: "1"
+  # Gateway-routed Bedrock (Phase 2, issue #747). The entrypoint starts a
+  # local sigv4-proxy that re-signs requests for API Gateway. On proxy
+  # health-check failure, the entrypoint falls back to direct Bedrock
+  # (sets CLAUDE_CODE_USE_BEDROCK=1 dynamically). Kill switch: set
+  # ADP_BEDROCK_VIA=direct on the ScaledJob to bypass gateway entirely.
+  ADP_BEDROCK_VIA: "gateway"
+  SIGV4_PROXY_TARGET: "REPLACE_WITH_GATEWAY_APIGW_INVOKE_URL"
+  SIGV4_PROXY_PORT: "9090"
+  ANTHROPIC_BASE_URL: "http://127.0.0.1:9090"
 
   # Personas baked into the image
   PERSONAS_DIR: "/app/personas"

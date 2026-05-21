@@ -28,9 +28,10 @@ const get = (flag: string, def: string) => {
   return i !== -1 && args[i + 1] ? args[i + 1] : def;
 };
 
-const TARGET = get('--target', process.env.SIGV4_PROXY_TARGET || '');
-const PORT   = parseInt(get('--port', process.env.SIGV4_PROXY_PORT || '8080'), 10);
-const REGION = get('--region', process.env.AWS_REGION || 'us-east-1');
+const TARGET    = get('--target', process.env.SIGV4_PROXY_TARGET || '');
+const PORT      = parseInt(get('--port', process.env.SIGV4_PROXY_PORT || '8080'), 10);
+const REGION    = get('--region', process.env.AWS_REGION || 'us-east-1');
+const TENANT_ID = process.env.TENANT_ID || '';
 
 if (!TARGET) { console.error('ERROR: --target is required'); process.exit(1); }
 
@@ -49,6 +50,13 @@ const signer = new SignatureV4({
 });
 
 const server = http.createServer(async (req, res) => {
+  // Health-check endpoint for entrypoint readiness probe (issue #747)
+  if (req.url === '/__health') {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('ok');
+    return;
+  }
+
   const method = req.method || 'GET';
   const upstreamPath = targetUrl.pathname.replace(/\/$/, '') + (req.url || '/');
   const upstreamUrl  = `${targetUrl.protocol}//${targetUrl.host}${upstreamPath}`;
@@ -64,6 +72,11 @@ const server = http.createServer(async (req, res) => {
     if (!STRIP.has(k.toLowerCase()) && typeof v === 'string') {
       headers[k.toLowerCase()] = v;
     }
+  }
+
+  // Inject tenant identity header (Phase 2, issue #747)
+  if (TENANT_ID) {
+    headers['x-agent-orgid'] = TENANT_ID;
   }
 
   // Re-sign with execute-api
