@@ -35,7 +35,7 @@ phases:
     commands:
       # Build context is the repo root — the Dockerfile's COPY paths are
       # `modules/agent-factory/...` and `modules/domain-apps/...`.
-      - docker build
+      - docker build --no-cache --pull
           -f modules/agent-factory/agent-worker-image/Dockerfile
           -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
           -t "$REGISTRY/$ECR_REPO:latest"

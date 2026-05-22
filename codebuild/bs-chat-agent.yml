@@ -36,7 +36,7 @@ phases:
       # Build context is modules/agent-factory/ so the Dockerfile can COPY
       # rules/personas/ alongside agent/. See the Dockerfile's top-of-file note.
       - cd modules/agent-factory
-      - docker build -f agent/Dockerfile -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
+      - docker build --no-cache --pull -f agent/Dockerfile -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
       - docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
       - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
       - docker push "$REGISTRY/$ECR_REPO:latest"

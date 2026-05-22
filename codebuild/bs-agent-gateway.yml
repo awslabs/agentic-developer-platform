@@ -28,7 +28,7 @@ phases:
       - cp -r agent "$BUILD_DIR/agent"
       - cp gateway/Dockerfile "$BUILD_DIR/Dockerfile"
       - cp gateway/entrypoint.sh "$BUILD_DIR/entrypoint.sh"
-      - docker build -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$BUILD_DIR"
+      - docker build --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$BUILD_DIR"
       - docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
       - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
       - docker push "$REGISTRY/$ECR_REPO:latest"

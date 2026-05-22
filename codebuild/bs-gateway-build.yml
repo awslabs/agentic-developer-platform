@@ -14,7 +14,7 @@ phases:
   build:
     commands:
       - cd modules/gateway
-      - docker build -t $REGISTRY/adp-gateway:latest .
+      - docker build --no-cache --pull -t $REGISTRY/adp-gateway:latest .
       - '[ -n "${IMAGE_TAG:-}" ] && docker tag $REGISTRY/adp-gateway:latest $REGISTRY/adp-gateway:$IMAGE_TAG || true'
   post_build:
     commands:

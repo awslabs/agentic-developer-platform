@@ -31,7 +31,7 @@ phases:
   build:
     commands:
       - cd platform/arc-runner
-      - docker build -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" -t "$REGISTRY/$ECR_REPO:latest" -f Dockerfile .
+      - docker build --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" -t "$REGISTRY/$ECR_REPO:latest" -f Dockerfile .
       - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
       - docker push "$REGISTRY/$ECR_REPO:latest"
 

@@ -36,7 +36,7 @@ phases:
 
           echo "=== Scanning ${DF} (slug=${SLUG}) ==="
 
-          if ! docker build --quiet -t "${IMAGE_TAG}" "${BUILD_DIR}" 2>&1 | tail -5; then
+          if ! docker build --no-cache --pull --quiet -t "${IMAGE_TAG}" "${BUILD_DIR}" 2>&1 | tail -5; then
             echo "WARN: docker build failed for ${DF} — skipping"
             FAIL_COUNT=$((FAIL_COUNT + 1))
             docker system prune -f >/dev/null 2>&1 || true

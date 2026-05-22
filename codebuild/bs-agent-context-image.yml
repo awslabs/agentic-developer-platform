@@ -19,7 +19,7 @@ phases:
   build:
     commands:
       - cd "$BUILD_DIR"
-      - docker build -t "$ECR_REPO:$IMAGE_TAG" -t "$ECR_REPO:$SHORT_TAG" -t "$ECR_REPO:latest" .
+      - docker build --no-cache --pull -t "$ECR_REPO:$IMAGE_TAG" -t "$ECR_REPO:$SHORT_TAG" -t "$ECR_REPO:latest" .
 
   post_build:
     commands:
