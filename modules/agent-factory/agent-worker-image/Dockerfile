@@ -101,13 +101,16 @@ RUN corepack enable && \
     corepack prepare pnpm@latest --activate && \
     corepack prepare yarn@stable --activate
 
-# Install GitHub CLI — same apt-repo approach works on Debian.
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-    | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
-    apt-get update && apt-get install -y --no-install-recommends gh && \
-    rm -rf /var/lib/apt/lists/*
+# Install GitHub CLI from official tarball (not apt) to avoid inheriting
+# Debian's Go 1.19 toolchain CVEs (7 critical Go stdlib CVEs cleared).
+ARG GH_VERSION=2.92.0
+RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+      -o /tmp/gh.tar.gz && \
+    tar xzf /tmp/gh.tar.gz -C /tmp && \
+    mv /tmp/gh_${GH_VERSION}_linux_amd64/bin/gh /usr/local/bin/gh && \
+    chmod +x /usr/local/bin/gh && \
+    rm -rf /tmp/gh.tar.gz /tmp/gh_${GH_VERSION}_linux_amd64 && \
+    gh --version
 
 # Install AWS CLI v2 (binary install from AWS — mirror-independent)
 RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip && \
