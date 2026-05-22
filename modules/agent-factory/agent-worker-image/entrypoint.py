@@ -21,10 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
-from urllib.request import urlopen
-from urllib.error import URLError
 
 import boto3
 
@@ -156,6 +153,7 @@ def main() -> int:
         "TARGET_REPO": repo,
         "WORK_DIR": str(WORK_DIR),
         "TENANT_ID": tenant_id,
+        "CLAUDE_CODE_USE_BEDROCK": "1",
         "ANTHROPIC_MODEL": os.environ.get("ANTHROPIC_MODEL", "global.anthropic.claude-opus-4-6-v1"),
     }
 
@@ -385,30 +383,9 @@ def main() -> int:
     # needs os.environ to retain IRSA for platform-account access.
     agent_env = os.environ.copy()
     bedrock_via_raw = os.environ.get("ADP_BEDROCK_VIA")
-    bedrock_via = (bedrock_via_raw or "direct").strip().lower()
+    bedrock_via = (bedrock_via_raw or "platform").strip().lower()
 
-    # --- Gateway routing (Phase 2, issue #747) ---
-    # Start local sigv4-proxy, health-check, fall back to direct on failure.
-    proxy_process = None
-    proxy_healthy = False
-
-    if bedrock_via == "gateway":
-        proxy_process, proxy_healthy = _start_sigv4_proxy(agent_env)
-        if proxy_healthy:
-            # Inject tenant context for the proxy to pass as X-Agent-OrgId header
-            agent_env["TENANT_ID"] = tenant_id
-        else:
-            # Fallback: remove gateway-routing env vars, set direct Bedrock
-            agent_env.pop("ANTHROPIC_BASE_URL", None)
-            agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
-
-        logger.info(
-            "bedrock_routing_path=%s proxy_healthy=%s tenant_id=%s",
-            "gateway" if proxy_healthy else "direct-fallback",
-            proxy_healthy,
-            tenant_id,
-        )
-    elif bedrock_via == "user" and "AWS_ACCESS_KEY_ID" in agent_env:
+    if bedrock_via == "user" and "AWS_ACCESS_KEY_ID" in agent_env:
         for var in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"):
             agent_env.pop(var, None)
         logger.info(
@@ -424,11 +401,6 @@ def main() -> int:
             "or unset ADP_BEDROCK_VIA on the ScaledJob.",
             persona, sorted(PERSONAS_NEEDING_AWS),
         )
-    elif bedrock_via == "direct":
-        # Explicit direct mode — ensure CLAUDE_CODE_USE_BEDROCK is set
-        agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
-        agent_env.pop("ANTHROPIC_BASE_URL", None)
-        logger.info("ADP_BEDROCK_VIA=direct — using direct Bedrock (no proxy)")
     else:
         logger.info(
             "ADP_BEDROCK_VIA=%r (normalized: %s) — agent env retains pod IRSA",
@@ -574,48 +546,6 @@ def _fetch_assumed_aws_credentials(*, user_id: str, agent_id: str, task_id: str)
         label="default",
         purpose="entrypoint: assume customer AWS role",
     )
-
-
-def _start_sigv4_proxy(agent_env: dict) -> tuple:
-    """Start the sigv4-proxy process and health-check it.
-
-    Returns (process, healthy) tuple. On failure, process may be None.
-    The proxy re-signs requests with execute-api service for API Gateway.
-    """
-    proxy_port = agent_env.get("SIGV4_PROXY_PORT", "9090")
-    proxy_target = agent_env.get("SIGV4_PROXY_TARGET", "")
-
-    if not proxy_target:
-        logger.warning("SIGV4_PROXY_TARGET not set — cannot start proxy")
-        return None, False
-
-    try:
-        proxy = subprocess.Popen(
-            ["node", "/app/dist/sigv4-proxy.js"],
-            env={**agent_env},
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-    except Exception as exc:
-        logger.warning("Failed to start sigv4-proxy: %s", exc)
-        return None, False
-
-    # Health-check loop: max 5s with 100ms polls (50 attempts)
-    health_url = f"http://127.0.0.1:{proxy_port}/__health"
-    for _ in range(50):
-        # Check if process died
-        if proxy.poll() is not None:
-            stderr_out = proxy.stderr.read().decode(errors="replace") if proxy.stderr else ""
-            logger.warning("sigv4-proxy exited early (rc=%d): %s", proxy.returncode, stderr_out[:500])
-            return proxy, False
-        try:
-            urlopen(health_url, timeout=0.5)  # noqa: S310
-            return proxy, True
-        except (URLError, OSError):
-            time.sleep(0.1)
-
-    logger.warning("sigv4-proxy not ready after 5s — falling back to direct Bedrock")
-    return proxy, False
 
 
 def _stage_personas_and_skills() -> None:
