@@ -145,7 +145,7 @@ resource "aws_iam_role_policy" "agent_scaledjob_apigw_internal" {
       Sid      = "InvokeGatewayInternalApi"
       Effect   = "Allow"
       Action   = "execute-api:Invoke"
-      Resource = "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/*/agent/internal/*"
+      Resource = "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/*/agent/*"
     }]
   })
 }
