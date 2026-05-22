@@ -1,0 +1,191 @@
+# Grype ignore rules for upstream-controlled and false-positive CVEs.
+# Each entry removes the finding from SARIF output (unlike grype-baseline.json
+# which only gates workflow pass/fail).
+#
+# Re-evaluate quarterly. Next review: 2026-08-22.
+# Source: CVE Remediation Research Spike (#744), CP-4.0 (#741).
+
+ignore:
+  # ============================================================================
+  # Arc-runner: upstream-controlled Go stdlib in ghcr.io/actions/actions-runner:2.334.0
+  # Cannot fix until GitHub ships >2.334.0 with newer Go toolchain.
+  # Re-evaluate quarterly (next: 2026-08-22).
+  # Source: https://github.com/actions/runner/releases
+  # ============================================================================
+
+  - vulnerability: CVE-2025-22871
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-22873
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-22874
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-4673
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-4674
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-47906
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-47907
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-47912
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-58183
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-58185
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-58186
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-58187
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-58188
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-58189
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-61723
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-61724
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-61725
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-61726
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-61727
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-61728
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-61729
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-61730
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-61731
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-61732
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-68119
+    package:
+      type: go-module
+      name: stdlib
+
+  - vulnerability: CVE-2025-68121
+    package:
+      type: go-module
+      name: stdlib
+
+  # ============================================================================
+  # Agent-worker-image: gh CLI false positive.
+  # CVE-2024-52308 was fixed in gh 2.62.0; our image ships gh 2.92.0+.
+  # Ubuntu CVE feed hasn't updated the 'no fix available' status.
+  # Source: https://ubuntu.com/security/CVE-2024-52308
+  # ============================================================================
+
+  - vulnerability: CVE-2024-52308
+    package:
+      name: gh
+
+  # CVE-2024-53858: gh CLI path traversal, fixed in gh 2.63.1+. Our image
+  # ships 2.92.0+. Ubuntu feed still shows as unfixed.
+  # Source: https://ubuntu.com/security/CVE-2024-53858
+  - vulnerability: CVE-2024-53858
+    package:
+      name: gh
+
+  # CVE-2024-54132: gh CLI credential exposure, fixed in gh 2.64.0+. Our
+  # image ships 2.92.0+. Ubuntu feed still shows as unfixed.
+  # Source: https://ubuntu.com/security/CVE-2024-54132
+  - vulnerability: CVE-2024-54132
+    package:
+      name: gh
+
+  # ============================================================================
+  # Agent-worker-image: zlib1g false positive.
+  # Debian/Ubuntu does NOT compile minizip from zlib source. The vulnerable
+  # code path (MiniZip contrib) is not present in the binary package.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2023-45853
+  # ============================================================================
+
+  - vulnerability: CVE-2023-45853
+    package:
+      name: zlib1g
+
+  # ============================================================================
+  # Agent-worker-image: Node.js false positive.
+  # CVE-2025-55130 affects Node <24.13.0; our image ships Node 24.15.0+.
+  # Grype matches on the package presence but misses the installed version.
+  # Source: https://nodejs.org/en/blog/vulnerability/may-2025-security-releases
+  # ============================================================================
+
+  - vulnerability: CVE-2025-55130
+    package:
+      name: nodejs

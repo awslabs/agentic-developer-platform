@@ -60,7 +60,7 @@ phases:
             continue
           }
 
-          if ! grype "${IMAGE_TAG}" -o sarif > "/tmp/grype-${SLUG}.sarif" 2>&1; then
+          if ! grype "${IMAGE_TAG}" -o sarif --config "${CODEBUILD_SRC_DIR}/.grype.yaml" > "/tmp/grype-${SLUG}.sarif" 2>&1; then
             echo "WARN: grype scan failed for ${DF} — skipping upload"
             FAIL_COUNT=$((FAIL_COUNT + 1))
             docker rmi "${IMAGE_TAG}" >/dev/null 2>&1 || true
