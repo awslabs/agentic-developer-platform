@@ -459,7 +459,15 @@ module "cognito" {
   # Issue #642: KMS encryption for DynamoDB tables
   kms_key_arn = aws_kms_key.dynamodb.arn
 
-  depends_on = [module.cloudfront]
+  # Issue #769: removed `depends_on = [module.cloudfront]`. The implicit
+  # dependency through callback_urls/logout_urls (which reference
+  # module.cloudfront.distribution_domain_name) already enforces ordering.
+  # The explicit depends_on caused all data sources inside this module to
+  # be deferred to apply-time per Terraform's documented module-depends_on
+  # behavior, which made data.aws_caller_identity.current.account_id
+  # `(known after apply)` at plan-time, which forced the domain attribute
+  # to be `(known after apply)`, which forced replacement of an already-
+  # existing AWS resource — yielding "Domain already exists" on every apply.
 }
 
 # =============================================================================
