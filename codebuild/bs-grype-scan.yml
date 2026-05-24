@@ -67,6 +67,13 @@ phases:
             continue
           fi
 
+          # Post-process: strip ignored CVEs from SARIF (grype ignore rules
+          # only suppress table/JSON output, not SARIF format)
+          python3 "${CODEBUILD_SRC_DIR}/codebuild/filter-sarif-ignores.py" \
+            --sarif "/tmp/grype-${SLUG}.sarif" \
+            --config "${CODEBUILD_SRC_DIR}/.grype.yaml" \
+            --output "/tmp/grype-${SLUG}.sarif"
+
           aws s3 cp "/tmp/grype-${SLUG}.sarif" "s3://${SECURITY_SCANS_BUCKET}/${KEY}" \
             --content-type application/sarif+json \
             --metadata "commit=${CODEBUILD_RESOLVED_SOURCE_VERSION:-unknown},dockerfile=${DF}"
