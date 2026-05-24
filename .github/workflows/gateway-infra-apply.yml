@@ -158,12 +158,17 @@ jobs:
 
       - name: Terraform Apply (second pass — ALB wired)
         working-directory: ${{ env.TF_WORKING_DIR }}
+        # Issue #769: Use single quotes around the -var arg for ALB_SG_IDS
+        # because its value is a JSON array literal containing double quotes
+        # (e.g. ["sg-abc","sg-def"]). Double-quoting the outer arg lets those
+        # inner double quotes terminate the shell string and break parsing,
+        # surfacing as `Variables not allowed in <value for var.alb_security_group_ids>`.
         run: |
           terraform apply \
             -var-file="../../../${{ env.VAR_FILE }}" \
             -var "internal_alb_arn=${{ steps.alb.outputs.ALB_ARN }}" \
             -var "internal_alb_dns=${{ steps.alb.outputs.ALB_DNS }}" \
-            -var "alb_security_group_ids=${{ steps.alb.outputs.ALB_SG_IDS }}" \
+            -var 'alb_security_group_ids=${{ steps.alb.outputs.ALB_SG_IDS }}' \
             -var "enable_vpc_origin=true" \
             -auto-approve
 
