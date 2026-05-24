@@ -86,6 +86,12 @@ class User(Base, TenantMixin):
     # Issue #446: shadow users are auto-provisioned from channel_tenant_map;
     # they can receive agent messages but cannot log into the ADP UI.
     is_shadow: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
+    # Issue #780: Bot identity discriminator — 'human' (default) or 'bot'.
+    user_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="human", server_default="human"
+    )
+    # Issue #780: Agent slug for bots (e.g. 'agent-developer'). NULL for humans.
+    bot_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), onupdate=utcnow)

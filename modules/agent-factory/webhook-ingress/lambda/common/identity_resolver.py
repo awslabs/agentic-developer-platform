@@ -43,6 +43,7 @@ class ResolvedIdentity:
     org_id: str
     user_id: str
     user_provisioning_mode: str  # "strict" | "auto_provision"
+    user_kind: str = "human"  # "human" | "bot"
 
 
 def _get_table():
@@ -93,6 +94,28 @@ def _emit_cross_tenant_metric() -> None:
         )
     except Exception as e:
         logger.warning("Failed to emit CrossTenantMismatch metric: %s", e)
+
+
+def _emit_bot_action_metric(bot_kind: str, org_id: str) -> None:
+    """Emit CloudWatch metric when a bot identity triggers an action."""
+    try:
+        cw = _get_cloudwatch()
+        cw.put_metric_data(
+            Namespace="ADP/IdentityResolver",
+            MetricData=[
+                {
+                    "MetricName": "BotActionTriggered",
+                    "Dimensions": [
+                        {"Name": "bot_kind", "Value": bot_kind},
+                        {"Name": "org_id", "Value": org_id},
+                    ],
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:
+        logger.warning("Failed to emit BotActionTriggered metric: %s", e)
 
 
 def _emit_identity_index_drift_metric() -> None:
@@ -260,12 +283,20 @@ def resolve(
             )
             _emit_cross_tenant_metric()
 
+        user_kind = user_item.get("user_kind", "human")
+
+        # Emit metric for bot-triggered actions (observability for agent-to-agent flows)
+        if user_kind == "bot":
+            bot_kind = user_item.get("bot_kind", "unknown")
+            _emit_bot_action_metric(bot_kind, org_id)
+
         return (
             ResolvedIdentity(
                 tenant_id=org_id,
                 org_id=org_id,
                 user_id=user_item["user_id"],
                 user_provisioning_mode=user_provisioning_mode,
+                user_kind=user_kind,
             ),
             "ok",
         )
