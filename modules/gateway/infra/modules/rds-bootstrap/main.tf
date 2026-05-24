@@ -188,7 +188,16 @@ resource "kubernetes_job" "grant_rds_iam" {
     }
   }
 
-  wait_for_completion = true
+  # Issue #769: changed from true to false. The job's purpose is to run
+  # `GRANT rds_iam TO bgadmin` once at first deploy, but it fails when
+  # the bgadmin user doesn't yet have rds_iam (chicken-and-egg: the job
+  # grants the privilege it needs to connect with). The grant has already
+  # been applied manually — re-running the job is idempotent (PostgreSQL
+  # GRANT on existing role is a no-op) but cannot block the apply on
+  # legitimately-failing PAM auth. With wait_for_completion=false, the
+  # apply proceeds; the job runs async and an operator inspects pod logs
+  # if a grant truly needs to re-apply (rare).
+  wait_for_completion = false
 
   timeouts {
     create = "15m"
