@@ -407,23 +407,35 @@ def main() -> int:
     # ADP_BEDROCK_VIA controls the Bedrock routing path:
     #   - "gateway" (default): route through platform gateway via sigv4-proxy sidecar
     #   - "direct": use pod IRSA to call Bedrock directly (fallback/rollback)
-    #   - "user": use customer's assumed credentials (operations persona only)
+    #   - "user": use customer's assumed credentials for both Bedrock + AWS calls
+    #     (legacy: operations persona on customer-billed Bedrock)
     #   - "platform": alias for "direct" (legacy compat)
     #
+    # When ADP_BEDROCK_VIA=gateway AND the persona has assumed a customer role,
+    # the two compose: Bedrock routes through the platform gateway (platform IRSA,
+    # platform billing), while the agent's shell `aws ...` commands use the
+    # customer's STS creds for deployment / inspection work in the customer
+    # account. The sigv4-proxy is started with platform IRSA (customer creds
+    # stripped) so it can authenticate to API Gateway's execute-api SigV4.
+    #
     # CRITICAL: We build a SEPARATE env dict for the child process. We do NOT
-    # mutate os.environ — the entrypoint's post-agent SQS delete (line ~386)
-    # needs os.environ to retain IRSA for platform-account access.
+    # mutate os.environ — the entrypoint's post-agent SQS delete needs
+    # os.environ to retain IRSA for platform-account access.
     agent_env = os.environ.copy()
     bedrock_via_raw = os.environ.get("ADP_BEDROCK_VIA")
     bedrock_via = (bedrock_via_raw or "gateway").strip().lower()
 
-    # Start sigv4-proxy subprocess for gateway mode
+    # Start sigv4-proxy subprocess for gateway mode.
+    # The proxy must sign with platform IRSA (which has execute-api:Invoke on
+    # the gateway), not the customer's STS creds. Build a scoped env that
+    # strips any customer creds inherited from os.environ.
     proxy_process: subprocess.Popen | None = None
 
     if bedrock_via == "gateway":
-        proxy_process = _start_sigv4_proxy(agent_env, tenant_id)
+        proxy_env = {k: v for k, v in os.environ.items()
+                     if k not in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")}
+        proxy_process = _start_sigv4_proxy(proxy_env, tenant_id)
         if proxy_process is None:
-            # Proxy failed to start — fall back to direct Bedrock
             logger.warning("sigv4-proxy failed to start; falling back to ADP_BEDROCK_VIA=direct")
             bedrock_via = "direct"
         else:
@@ -462,7 +474,18 @@ def main() -> int:
             sorted(PERSONAS_NEEDING_AWS),
         )
     elif bedrock_via == "gateway":
-        pass  # Already handled above
+        # Gateway-mode Bedrock already wired above. If a customer role was
+        # assumed (line 341-345 above), agent_env retains those AWS_* env vars
+        # AND retains pod IRSA env vars — the SDK's credential chain prefers the
+        # explicit env keys, so shell `aws ...` commands run as the customer.
+        # Strip pod IRSA env vars so they don't shadow customer creds for shell AWS.
+        if "AWS_ACCESS_KEY_ID" in agent_env:
+            for var in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"):
+                agent_env.pop(var, None)
+            logger.info(
+                "ADP_BEDROCK_VIA=gateway with customer role assumed — Bedrock via "
+                "platform gateway, customer AWS creds for shell commands"
+            )
     else:
         logger.info(
             "ADP_BEDROCK_VIA=%r (normalized: %s) — agent env retains pod IRSA",

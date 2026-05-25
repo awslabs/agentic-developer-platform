@@ -127,11 +127,19 @@ locals {
                       secretKeyRef:
                         name: vault-internal-api-key
                         key: VAULT_INTERNAL_API_KEY
-                  # operations persona assumes customer AWS role; agent env strips
-                  # pod IRSA so customer credentials drive AWS calls. See
-                  # PERSONAS_NEEDING_AWS in agent-worker-image/entrypoint.py.
+                  # Phase 3 cutover: route Bedrock through the platform gateway.
+                  # Bedrock calls go via sigv4-proxy → API GW /agent/* → gateway pod
+                  # → Bedrock with platform IRSA (platform billing, gateway-mediated
+                  # tenant isolation + budgets + audit). When the operations persona
+                  # also assumes a customer AWS role, the entrypoint composes both:
+                  # Bedrock via gateway, customer creds for shell `aws ...` commands.
+                  # See entrypoint.py:407-471 (ADP_BEDROCK_VIA composition logic).
                   - name: ADP_BEDROCK_VIA
-                    value: user
+                    value: gateway
+                  - name: SIGV4_PROXY_TARGET
+                    value: ${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}/agent
+                  - name: SIGV4_PROXY_PORT
+                    value: "9090"
                 resources:
                   requests:
                     cpu: "1"
