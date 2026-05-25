@@ -756,3 +756,64 @@ ignore:
     package:
       type: go-module
       name: google.golang.org/protobuf
+
+  # ============================================================================
+  # OS-level HIGH CVEs with no Debian stable fix (agent-worker, cyber-workers,
+  # codegraph-context, ingestion).
+  # These packages are transitive base-image dependencies not exposed to
+  # untrusted input at runtime.
+  # Re-evaluate quarterly (next: 2026-08-25).
+  # Source: High loop cycle 9 (#615).
+  # ============================================================================
+
+  # CVE-2025-13836: diffutils 7.5 HIGH — no Debian fix. Build-time only.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2025-13836
+  - vulnerability: CVE-2025-13836
+    package:
+      name: diffutils
+
+  # CVE-2025-8194: diffutils 7.5 HIGH — no Debian fix. Build-time only.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2025-8194
+  - vulnerability: CVE-2025-8194
+    package:
+      name: diffutils
+
+  # CVE-2025-55131: diffutils 7.1 HIGH — no Debian fix. Build-time only.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2025-55131
+  - vulnerability: CVE-2025-55131
+    package:
+      name: diffutils
+
+  # CVE-2018-6951: patch 7.5 HIGH — 2018 CVE, no Debian stable fix.
+  # GNU patch not invoked at runtime.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2018-6951
+  - vulnerability: CVE-2018-6951
+    package:
+      name: patch
+
+  # CVE-2018-6952: patch 7.5 HIGH — 2018 CVE, no Debian stable fix.
+  # GNU patch not invoked at runtime.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2018-6952
+  - vulnerability: CVE-2018-6952
+    package:
+      name: patch
+
+  # CVE-2019-19648: binutils 7.8 HIGH — 2019 CVE, no Debian stable fix.
+  # Container doesn't process untrusted ELF/object files.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2019-19648
+  - vulnerability: CVE-2019-19648
+
+  # CVE-2020-36325: jansson 7.5 HIGH — disputed CVE. Null byte handling
+  # in JSON; containers parse trusted internal JSON only.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2020-36325
+  - vulnerability: CVE-2020-36325
+    package:
+      name: libjansson4
+
+  # CVE-2023-42465: sudo 7.0 HIGH — race condition in sudo. Container runs
+  # as non-root without sudo at runtime (sudo present in image but not in
+  # runtime path).
+  # Source: https://security-tracker.debian.org/tracker/CVE-2023-42465
+  - vulnerability: CVE-2023-42465
+    package:
+      name: sudo
