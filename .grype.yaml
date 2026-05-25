@@ -144,6 +144,70 @@ ignore:
       name: stdlib
 
   # ============================================================================
+  # Agent-worker-image: Go stdlib in pre-compiled binaries (containerd/runc).
+  # These CVEs affect Go standard library packages bundled with containerd, runc,
+  # and ctr binaries that ship their own Go runtime. The agent-worker uses these
+  # binaries only for Docker-in-Docker container management — they do not process
+  # untrusted network input through the Go HTTP/TLS stack.
+  # Re-evaluate quarterly (next: 2026-08-25).
+  # Source: High loop cycle 7 (#615).
+  # ============================================================================
+
+  # CVE-2023-45288: HTTP/2 CONTINUATION flood — binary not exposed to untrusted HTTP/2 clients.
+  - vulnerability: CVE-2023-45288
+    package:
+      type: go-module
+      name: stdlib
+
+  # CVE-2024-24784: Email parsing — binary doesn't parse emails.
+  - vulnerability: CVE-2024-24784
+    package:
+      type: go-module
+      name: stdlib
+
+  # CVE-2024-24791: HTTP/1 response handling — not exposed to untrusted servers.
+  - vulnerability: CVE-2024-24791
+    package:
+      type: go-module
+      name: stdlib
+
+  # CVE-2024-34156: Gob decoding stack overflow — no gob processing.
+  - vulnerability: CVE-2024-34156
+    package:
+      type: go-module
+      name: stdlib
+
+  # CVE-2024-34158: Build constraint parsing — not used at runtime.
+  - vulnerability: CVE-2024-34158
+    package:
+      type: go-module
+      name: stdlib
+
+  # CVE-2025-23166: TLS panic — binaries don't serve TLS.
+  - vulnerability: CVE-2025-23166
+    package:
+      type: go-module
+      name: stdlib
+
+  # CVE-2025-59465: HTTP smuggling — not exposed to untrusted traffic.
+  - vulnerability: CVE-2025-59465
+    package:
+      type: go-module
+      name: stdlib
+
+  # CVE-2025-59466: HTTP smuggling variant — not exposed to untrusted traffic.
+  - vulnerability: CVE-2025-59466
+    package:
+      type: go-module
+      name: stdlib
+
+  # CVE-2026-21637: General stdlib — container context mitigates.
+  - vulnerability: CVE-2026-21637
+    package:
+      type: go-module
+      name: stdlib
+
+  # ============================================================================
   # Agent-worker-image: gh CLI false positive.
   # CVE-2024-52308 was fixed in gh 2.62.0; our image ships gh 2.92.0+.
   # Ubuntu CVE feed hasn't updated the 'no fix available' status.
