@@ -145,6 +145,19 @@ jobs:
             bedrockgateway=${REGISTRY}/adp-gateway:${{ github.sha }} \
             -n ${{ env.NAMESPACE }}
 
+          # EPIC #745 / Issue #765: ensure BG_TRUST_APIGW_HEADERS=true on the
+          # configmap so the gateway honors the X-Caller-Identity header that
+          # API Gateway injects via context.identity.userArn. Without this,
+          # /agent/{proxy+} returns "Authorization header required" because
+          # the IAM-auth code path is skipped (defaults to false). The
+          # configmap is owned by deploy-all.sh which sed-replaces the
+          # __TRUST_APIGW_HEADERS__ placeholder on initial setup; CI deploys
+          # don't re-apply the configmap, so we patch it idempotently here
+          # to prevent regressions on rebuilds.
+          kubectl patch configmap bedrockgateway-config \
+            -n ${{ env.NAMESPACE }} \
+            --type merge -p '{"data":{"BG_TRUST_APIGW_HEADERS":"true"}}'
+
           kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=300s
 
   deploy-frontend:
