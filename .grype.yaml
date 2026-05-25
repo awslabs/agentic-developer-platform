@@ -235,3 +235,46 @@ ignore:
   - vulnerability: CVE-2023-45924
     package:
       name: libglx0
+
+  # ============================================================================
+  # Agent-worker-image: fzf pre-compiled binary (Go 1.20.13).
+  # We install fzf from GitHub releases — the binary is compiled upstream with
+  # Go 1.20.13 and cannot be patched by our builds. Requires upstream fzf release
+  # with newer Go toolchain.
+  # Source: https://github.com/junegunn/fzf/releases
+  # ============================================================================
+
+  # CVE-2023-24531: Go stdlib cmd/go vulnerability in fzf binary.
+  - vulnerability: CVE-2023-24531
+    package:
+      type: go-module
+      name: stdlib
+
+  # CVE-2024-24790: Go stdlib net/netip vulnerability in fzf binary.
+  - vulnerability: CVE-2024-24790
+    package:
+      type: go-module
+      name: stdlib
+
+  # ============================================================================
+  # Platform-arc-runner: kaniko/executor and terraform pre-compiled binaries.
+  # GHSA-q9hv-hpm4-hj6x affects github.com/cloudflare/circl v1.6.1 bundled in
+  # upstream kaniko and terraform binaries. Cannot be patched by our builds.
+  # Source: https://github.com/advisories/GHSA-q9hv-hpm4-hj6x
+  # ============================================================================
+
+  - vulnerability: GHSA-q9hv-hpm4-hj6x
+    package:
+      type: go-module
+      name: github.com/cloudflare/circl
+
+  # ============================================================================
+  # Agent-worker-image / agent-mail: libsqlite3-0 (Debian bookworm).
+  # CVE-2025-7458 has no available patch in Debian bookworm (3.40.1-2+deb12u2).
+  # Tracked upstream; no fix available for this distribution version.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2025-7458
+  # ============================================================================
+
+  - vulnerability: CVE-2025-7458
+    package:
+      name: libsqlite3-0
