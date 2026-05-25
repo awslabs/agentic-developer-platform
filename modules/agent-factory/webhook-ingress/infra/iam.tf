@@ -96,6 +96,15 @@ resource "aws_iam_policy" "lambda_dynamodb" {
         Resource = "arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/adp-${var.environment}-user-identity-index"
       },
       {
+        Sid    = "CorrelationPointersReadWrite"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem"
+        ]
+        Resource = aws_dynamodb_table.correlation_pointers.arn
+      },
+      {
         Sid    = "DynamoDBKMSAccess"
         Effect = "Allow"
         Action = [
@@ -186,7 +195,7 @@ resource "aws_iam_role_policy_attachment" "lambda_secrets" {
 # the Lambda can only publish under its own namespace, not overwrite others.
 resource "aws_iam_policy" "lambda_cloudwatch_metrics" {
   name        = "${local.name_prefix}-webhook-lambda-cloudwatch-metrics"
-  description = "Allow webhook Lambda to emit custom CloudWatch metrics under ADP/IdentityResolver"
+  description = "Allow webhook Lambda to emit custom CloudWatch metrics under ADP/IdentityResolver and WebhookIngress"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -197,7 +206,7 @@ resource "aws_iam_policy" "lambda_cloudwatch_metrics" {
         Resource = "*"
         Condition = {
           StringEquals = {
-            "cloudwatch:namespace" = "ADP/IdentityResolver"
+            "cloudwatch:namespace" = ["ADP/IdentityResolver", "WebhookIngress"]
           }
         }
       }

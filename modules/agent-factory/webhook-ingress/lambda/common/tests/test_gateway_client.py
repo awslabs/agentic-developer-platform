@@ -184,3 +184,123 @@ class TestResolveUserByIdentity:
 
         assert result is None
         mock_urlopen.assert_not_called()
+
+
+class TestPostProvenance:
+    """Tests for post_provenance() — POST /internal/v1/provenance."""
+
+    def _call(self, **overrides):
+        from common import gateway_client
+
+        gateway_client._internal_api_key = None
+        defaults = {
+            "actor_user_id": "user-bot",
+            "triggered_by": "user-alice",
+            "root_human_id": "user-alice",
+            "is_human_rooted": True,
+            "action_kind": "issue_comment",
+            "source_event": {"issue": 783},
+            "correlation_id": "corr-abc",
+            "org_id": "test-org",
+        }
+        defaults.update(overrides)
+        return gateway_client.post_provenance(**defaults)
+
+    def test_returns_id_on_201(self, monkeypatch):
+        """Happy path: gateway returns 201 with provenance id."""
+        from common import gateway_client  # noqa: F811
+
+        gateway_client._internal_api_key = None
+
+        response_body = json.dumps({
+            "id": "prov-uuid-123",
+            "created_at": "2026-05-25T00:00:00Z",
+        }).encode("utf-8")
+
+        mock_resp = MagicMock()
+        mock_resp.status = 201
+        mock_resp.read.return_value = response_body
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = self._call()
+
+        assert result == "prov-uuid-123"
+
+    def test_returns_none_on_500(self, monkeypatch):
+        """Gateway 500 -> returns None, does not raise."""
+        import urllib.error
+
+        from common import gateway_client  # noqa: F811
+
+        gateway_client._internal_api_key = None
+
+        http_error = urllib.error.HTTPError(
+            url="http://gateway.internal:8080/internal/v1/provenance",
+            code=500,
+            msg="Internal Server Error",
+            hdrs={},
+            fp=None,
+        )
+
+        with patch("urllib.request.urlopen", side_effect=http_error):
+            result = self._call()
+
+        assert result is None
+
+    def test_returns_none_on_timeout(self, monkeypatch):
+        """Network timeout -> returns None, does not raise."""
+        from common import gateway_client  # noqa: F811
+
+        gateway_client._internal_api_key = None
+
+        with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+            result = self._call()
+
+        assert result is None
+
+    def test_returns_none_when_gateway_url_not_set(self, monkeypatch):
+        """No GATEWAY_API_URL -> returns None immediately."""
+        monkeypatch.setenv("GATEWAY_API_URL", "")
+        mods = [k for k in sys.modules if k.startswith("common.gateway_client")]
+        for m in mods:
+            del sys.modules[m]
+
+        from common import gateway_client  # noqa: F811
+
+        result = gateway_client.post_provenance(
+            actor_user_id="u1",
+            triggered_by=None,
+            root_human_id="u1",
+            is_human_rooted=True,
+            action_kind="test",
+            source_event={},
+            correlation_id="c1",
+            org_id="org1",
+        )
+        assert result is None
+
+    def test_uses_5s_timeout(self, monkeypatch):
+        """Verify post_provenance uses 5s timeout (not 10s)."""
+        from common import gateway_client  # noqa: F811
+
+        gateway_client._internal_api_key = None
+
+        response_body = json.dumps({"id": "x", "created_at": "t"}).encode("utf-8")
+        mock_resp = MagicMock()
+        mock_resp.status = 201
+        mock_resp.read.return_value = response_body
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        captured = {}
+
+        def mock_urlopen(req, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            return mock_resp
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            self._call()
+
+        assert captured["timeout"] == 5

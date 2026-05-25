@@ -32,18 +32,19 @@ resource "aws_lambda_function" "github_webhook" {
 
   environment {
     variables = {
-      ENVIRONMENT                    = var.environment
-      SUBMIT_QUEUE_URL               = aws_sqs_queue.agent_submit.url
-      IDENTITY_INDEX_TABLE           = var.identity_index_table_name
-      USER_IDENTITY_INDEX_TABLE      = "adp-${var.environment}-user-identity-index"
-      EVENTS_TABLE                   = aws_dynamodb_table.webhook_events.name
-      RATE_LIMITS_TABLE              = aws_dynamodb_table.rate_limits.name
-      WEBHOOK_SECRET_ARN             = aws_secretsmanager_secret.webhook_secret.arn
-      GATEWAY_API_URL                = var.gateway_api_url
-      USER_IDENTITY_INDEX_V2_WRITE   = "false"
-      USER_IDENTITY_INDEX_V2_READ    = "true"
-      INTERNAL_API_KEY_ARN           = var.internal_api_key_arn
-      RESOLVE_CANONICAL_VIA_GATEWAY  = "true"
+      ENVIRONMENT                   = var.environment
+      SUBMIT_QUEUE_URL              = aws_sqs_queue.agent_submit.url
+      IDENTITY_INDEX_TABLE          = var.identity_index_table_name
+      USER_IDENTITY_INDEX_TABLE     = "adp-${var.environment}-user-identity-index"
+      EVENTS_TABLE                  = aws_dynamodb_table.webhook_events.name
+      RATE_LIMITS_TABLE             = aws_dynamodb_table.rate_limits.name
+      WEBHOOK_SECRET_ARN            = aws_secretsmanager_secret.webhook_secret.arn
+      GATEWAY_API_URL               = var.gateway_api_url
+      USER_IDENTITY_INDEX_V2_WRITE  = "false"
+      USER_IDENTITY_INDEX_V2_READ   = "true"
+      INTERNAL_API_KEY_ARN          = var.internal_api_key_arn
+      RESOLVE_CANONICAL_VIA_GATEWAY = "true"
+      CORRELATION_POINTERS_TABLE    = aws_dynamodb_table.correlation_pointers.name
     }
   }
 

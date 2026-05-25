@@ -146,6 +146,86 @@ def resolve_user_by_identity(
         return None
 
 
+def post_provenance(
+    actor_user_id: str,
+    triggered_by: str | None,
+    root_human_id: str,
+    is_human_rooted: bool,
+    action_kind: str,
+    source_event: dict,
+    correlation_id: str,
+    org_id: str,
+) -> str | None:
+    """POST to gateway /internal/v1/provenance.
+
+    Returns provenance_id on success, None on failure.
+
+    Fail-soft: on gateway 5xx or timeout, log + emit metric, don't crash.
+    Uses 5s timeout (non-blocking to webhook flow).
+
+    # TODO: Once Phase 2-d ships and consumers rely on provenance rows,
+    # evaluate fail-hard or circuit-breaker for write failures.
+    """
+    if not GATEWAY_API_URL:
+        logger.warning("GATEWAY_API_URL not set — cannot post provenance")
+        return None
+
+    url = f"{GATEWAY_API_URL}/internal/v1/provenance"
+    body = {
+        "actor_user_id": actor_user_id,
+        "triggered_by": triggered_by,
+        "root_human_id": root_human_id,
+        "is_human_rooted": is_human_rooted,
+        "action_kind": action_kind,
+        "source_event": source_event,
+        "correlation_id": correlation_id,
+        "org_id": org_id,
+    }
+
+    api_key = _resolve_internal_api_key()
+    if not api_key:
+        logger.warning("Internal API key not available — cannot post provenance")
+        return None
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Internal-Api-Key": api_key,
+    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status == 201:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data.get("id")
+            logger.warning(
+                "post_provenance unexpected status %d for correlation=%s",
+                resp.status,
+                correlation_id,
+            )
+            return None
+    except urllib.error.HTTPError as e:
+        logger.error(
+            "post_provenance HTTP error %d for correlation=%s: %s",
+            e.code,
+            correlation_id,
+            e.reason,
+        )
+        return None
+    except Exception as e:
+        logger.error(
+            "post_provenance failed for correlation=%s: %s",
+            correlation_id,
+            e,
+        )
+        return None
+
+
 def auto_provision_user(
     org_id: str,
     github_id: int,
