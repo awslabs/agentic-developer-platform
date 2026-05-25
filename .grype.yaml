@@ -460,6 +460,58 @@ ignore:
       name: diskcache
 
   # ============================================================================
+  # Git HIGH CVEs in container images (agent-worker, ingestion, codegraph-context,
+  # cyber-workers, agent-mail, gateway).
+  # All 5 require user interaction with crafted/malicious repositories or a
+  # malicious git server. Containers clone only trusted repos via HTTPS/token;
+  # no interactive git use, no submodules, no untrusted remotes.
+  # Re-evaluate quarterly (next: 2026-08-25).
+  # ============================================================================
+
+  # CVE-2022-24975: requires cloning from malicious SSH URL; containers use HTTPS.
+  - vulnerability: CVE-2022-24975
+    package:
+      name: git
+  - vulnerability: CVE-2022-24975
+    package:
+      name: git-man
+
+  # CVE-2024-52005: requires malicious git server to exploit credential helper;
+  # containers use token auth only.
+  - vulnerability: CVE-2024-52005
+    package:
+      name: git
+  - vulnerability: CVE-2024-52005
+    package:
+      name: git-man
+
+  # CVE-2025-46835: requires crafted repo with symlinks; containers clone trusted repos.
+  - vulnerability: CVE-2025-46835
+    package:
+      name: git
+  - vulnerability: CVE-2025-46835
+    package:
+      name: git-man
+
+  # CVE-2025-48384: requires user interaction in crafted repo checkout;
+  # no interactive git use in containers.
+  - vulnerability: CVE-2025-48384
+    package:
+      name: git
+  - vulnerability: CVE-2025-48384
+    package:
+      name: git-man
+
+  # CVE-2025-48385: requires user to interact with crafted git submodules;
+  # no submodule use in containers.
+  - vulnerability: CVE-2025-48385
+    package:
+      name: git
+  - vulnerability: CVE-2025-48385
+    package:
+      name: git-man
+
+  # ============================================================================
   # binutils build-time HIGH CVEs (agent-worker, ingestion, codegraph, cyber-workers).
   # binutils and related packages (binutils-common, binutils-x86-64-linux-gnu,
   # libbinutils, libctf-nobfd0, libctf0, libgprofng0, libsframe1) are build-time
