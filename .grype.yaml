@@ -732,3 +732,27 @@ ignore:
   - vulnerability: CVE-2025-1352
     package:
       name: libelf1t64
+
+  # ============================================================================
+  # Codegraph-context + ingestion: protobuf (Go) DoS vulnerabilities.
+  # These containers only parse trusted internal protobuf messages (code graph
+  # data from our own services). No untrusted protobuf input is accepted.
+  # Re-evaluate quarterly (next: 2026-08-25).
+  # Source: High loop cycle 9 (#615).
+  # ============================================================================
+
+  # GHSA-7gcm-g887-7qv7: Protobuf DoS via crafted message causing excessive
+  # resource consumption. Not exploitable — no untrusted protobuf input path.
+  # Source: https://github.com/advisories/GHSA-7gcm-g887-7qv7
+  - vulnerability: GHSA-7gcm-g887-7qv7
+    package:
+      type: go-module
+      name: google.golang.org/protobuf
+
+  # GHSA-8qvm-5x2c-j2w7: Protobuf infinite loop on malformed message.
+  # Not exploitable — no untrusted protobuf input path.
+  # Source: https://github.com/advisories/GHSA-8qvm-5x2c-j2w7
+  - vulnerability: GHSA-8qvm-5x2c-j2w7
+    package:
+      type: go-module
+      name: google.golang.org/protobuf
