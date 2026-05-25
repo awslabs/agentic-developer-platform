@@ -15,6 +15,15 @@ data:
   AWS_REGION: "us-east-1"
   AGENT_DIR: "/app/agent"
   ANTHROPIC_MODEL: "global.anthropic.claude-sonnet-4-6"
+  # Gateway-routed Bedrock (Phase 3, issue #748). The entrypoint starts a
+  # local sigv4-proxy that re-signs requests for API Gateway. On proxy
+  # health-check failure, the entrypoint falls back to direct Bedrock.
+  # Kill switch: set ADP_BEDROCK_VIA=direct to bypass gateway entirely.
+  ADP_BEDROCK_VIA: "gateway"
+  SIGV4_PROXY_TARGET: "REPLACE_WITH_GATEWAY_APIGW_INVOKE_URL"
+  SIGV4_PROXY_PORT: "9090"
+  ANTHROPIC_BEDROCK_BASE_URL: "http://127.0.0.1:9090"
+  CLAUDE_CODE_USE_BEDROCK: "1"
 ---
 # KEDA TriggerAuthentication — tells KEDA to use the operator's own IRSA role
 # for SQS queue-depth polling. The operator SA is annotated with

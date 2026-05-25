@@ -514,22 +514,22 @@ class TestEntrypointMain:
         #  _handle_success: diff, status, log-check, no-changes-comment check+post,
         #  finalization: gh pr view for PR url.
         mock_run_cmd.side_effect = [
-            MagicMock(stdout="", returncode=0),                   # git clone
-            MagicMock(stdout="", returncode=0),                   # git config email
-            MagicMock(stdout="", returncode=0),                   # git config name
-            MagicMock(stdout="", returncode=0),                   # git checkout -b branch
-            MagicMock(stdout="", returncode=0),                   # git commit --allow-empty WIP
-            MagicMock(stdout="", returncode=0),                   # git push -u origin branch
-            MagicMock(stdout="abc1234def5678\n", returncode=0),   # git rev-parse HEAD (WIP sha)
-            MagicMock(stdout="", returncode=0),                   # gh issue edit --remove-label
-            MagicMock(stdout="", returncode=0),                   # gh issue view (started check)
-            MagicMock(stdout="", returncode=0),                   # gh issue comment (started)
-            MagicMock(stdout="", returncode=0),                   # git diff --stat (no changes)
-            MagicMock(stdout="", returncode=0),                   # git status --porcelain
-            MagicMock(stdout="", returncode=0),                   # git log origin/branch..HEAD
-            MagicMock(stdout="", returncode=0),                   # gh issue view (completed check)
-            MagicMock(stdout="", returncode=0),                   # gh issue comment (no changes)
-            MagicMock(stdout="", returncode=0),                   # gh pr view (PR url lookup)
+            MagicMock(stdout="", returncode=0),  # git clone
+            MagicMock(stdout="", returncode=0),  # git config email
+            MagicMock(stdout="", returncode=0),  # git config name
+            MagicMock(stdout="", returncode=0),  # git checkout -b branch
+            MagicMock(stdout="", returncode=0),  # git commit --allow-empty WIP
+            MagicMock(stdout="", returncode=0),  # git push -u origin branch
+            MagicMock(stdout="abc1234def5678\n", returncode=0),  # git rev-parse HEAD (WIP sha)
+            MagicMock(stdout="", returncode=0),  # gh issue edit --remove-label
+            MagicMock(stdout="", returncode=0),  # gh issue view (started check)
+            MagicMock(stdout="", returncode=0),  # gh issue comment (started)
+            MagicMock(stdout="", returncode=0),  # git diff --stat (no changes)
+            MagicMock(stdout="", returncode=0),  # git status --porcelain
+            MagicMock(stdout="", returncode=0),  # git log origin/branch..HEAD
+            MagicMock(stdout="", returncode=0),  # gh issue view (completed check)
+            MagicMock(stdout="", returncode=0),  # gh issue comment (no changes)
+            MagicMock(stdout="", returncode=0),  # gh pr view (PR url lookup)
         ]
 
         mock_create_cr.return_value = {
@@ -718,6 +718,7 @@ class TestStaleBranchHandling:
 
     def test_branch_exists_no_pr_resets_to_main(self):
         """ls-remote=0 + gh pr list returns empty → delete + fresh checkout."""
+
         def side_effect(*args, **kwargs):
             cmd = args[0] if args else kwargs.get("args", [])
             if cmd[0:2] == ["git", "ls-remote"]:
@@ -869,11 +870,13 @@ class TestGatewayCredentialClient:
         monkeypatch.setenv("VAULT_INTERNAL_API_KEY", "key-123")
 
         mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps({
-            "value": '{"role_arn": "arn:aws:iam::111:role/test"}',
-            "credential_type": "api_key",
-            "provenance_id": "prov-abc",
-        }).encode()
+        mock_resp.read.return_value = json.dumps(
+            {
+                "value": '{"role_arn": "arn:aws:iam::111:role/test"}',
+                "credential_type": "api_key",
+                "provenance_id": "prov-abc",
+            }
+        ).encode()
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = mock_resp
@@ -892,6 +895,7 @@ class TestGatewayCredentialClient:
     @patch("lib.gateway_credential_client.urlopen")
     def test_raw_read_http_error(self, mock_urlopen, monkeypatch):
         from urllib.error import HTTPError
+
         monkeypatch.setenv("VAULT_GATEWAY_URL", "http://gw:8080")
         monkeypatch.setenv("VAULT_INTERNAL_API_KEY", "key-123")
 
@@ -1199,7 +1203,9 @@ class TestBedrockViaFlag:
             }
             main()
 
-        agent_env = mock_subprocess_run.call_args.kwargs.get("env") or mock_subprocess_run.call_args[1].get("env")
+        agent_env = mock_subprocess_run.call_args.kwargs.get(
+            "env"
+        ) or mock_subprocess_run.call_args[1].get("env")
         assert "AWS_ROLE_ARN" in agent_env
 
     @patch("entrypoint._receive_one_message")
@@ -1267,7 +1273,9 @@ class TestBedrockViaFlag:
             }
             main()
 
-        agent_env = mock_subprocess_run.call_args.kwargs.get("env") or mock_subprocess_run.call_args[1].get("env")
+        agent_env = mock_subprocess_run.call_args.kwargs.get(
+            "env"
+        ) or mock_subprocess_run.call_args[1].get("env")
         # IRSA vars stripped from agent env
         assert "AWS_ROLE_ARN" not in agent_env
         assert "AWS_WEB_IDENTITY_TOKEN_FILE" not in agent_env
@@ -1398,7 +1406,9 @@ class TestBedrockViaFlag:
 
         main()
 
-        agent_env = mock_subprocess_run.call_args.kwargs.get("env") or mock_subprocess_run.call_args[1].get("env")
+        agent_env = mock_subprocess_run.call_args.kwargs.get(
+            "env"
+        ) or mock_subprocess_run.call_args[1].get("env")
         # IRSA vars should still be present — no strip because no user creds
         assert agent_env["AWS_ROLE_ARN"] == "arn:aws:iam::879318057152:role/irsa-role"
         assert agent_env["AWS_WEB_IDENTITY_TOKEN_FILE"] == "/var/run/secrets/token"
@@ -1467,7 +1477,9 @@ class TestBedrockViaFlag:
             }
             main()
 
-        agent_env = mock_subprocess_run.call_args.kwargs.get("env") or mock_subprocess_run.call_args[1].get("env")
+        agent_env = mock_subprocess_run.call_args.kwargs.get(
+            "env"
+        ) or mock_subprocess_run.call_args[1].get("env")
         assert "AWS_ROLE_ARN" not in agent_env
 
     @patch("entrypoint._receive_one_message")
@@ -1534,7 +1546,9 @@ class TestBedrockViaFlag:
             }
             main()
 
-        agent_env = mock_subprocess_run.call_args.kwargs.get("env") or mock_subprocess_run.call_args[1].get("env")
+        agent_env = mock_subprocess_run.call_args.kwargs.get(
+            "env"
+        ) or mock_subprocess_run.call_args[1].get("env")
         assert "AWS_ROLE_ARN" not in agent_env
 
     @patch("entrypoint._receive_one_message")
@@ -1601,7 +1615,9 @@ class TestBedrockViaFlag:
             }
             main()
 
-        agent_env = mock_subprocess_run.call_args.kwargs.get("env") or mock_subprocess_run.call_args[1].get("env")
+        agent_env = mock_subprocess_run.call_args.kwargs.get(
+            "env"
+        ) or mock_subprocess_run.call_args[1].get("env")
         # IRSA retained — garbage value means platform mode
         assert "AWS_ROLE_ARN" in agent_env
 
@@ -1657,13 +1673,11 @@ class TestBedrockViaFlag:
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
         import logging
+
         with caplog.at_level(logging.WARNING):
             main()
 
-        assert any(
-            "does not assume customer role" in record.message
-            for record in caplog.records
-        )
+        assert any("does not assume customer role" in record.message for record in caplog.records)
 
 
 class TestSanitizeForStsTag:
@@ -1676,8 +1690,10 @@ class TestSanitizeForStsTag:
     def test_replaces_hash(self):
         from entrypoint import _sanitize_for_sts_tag
 
-        assert _sanitize_for_sts_tag("iankouls-aws/ai-superlane-agent-test#8") == \
-            "iankouls-aws/ai-superlane-agent-test_8"
+        assert (
+            _sanitize_for_sts_tag("iankouls-aws/ai-superlane-agent-test#8")
+            == "iankouls-aws/ai-superlane-agent-test_8"
+        )
 
     def test_keeps_allowed_chars(self):
         from entrypoint import _sanitize_for_sts_tag
@@ -1702,3 +1718,213 @@ class TestSanitizeForStsTag:
 
         s = "msg-id-abcd1234"
         assert _sanitize_for_sts_tag(s) == s
+
+
+# --- Test: ADP_BEDROCK_VIA=gateway (Phase 3, issue #748) ---
+
+
+class TestBedrockViaGateway:
+    """Tests for the ADP_BEDROCK_VIA=gateway path (sigv4-proxy subprocess)."""
+
+    @patch("entrypoint._stop_sigv4_proxy")
+    @patch("entrypoint._start_sigv4_proxy")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_gateway_path_sets_bedrock_env(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_start_proxy,
+        mock_stop_proxy,
+        monkeypatch,
+        tmp_path,
+    ):
+        """With ADP_BEDROCK_VIA=gateway + proxy healthy, sets ANTHROPIC_BEDROCK_BASE_URL."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "gateway")
+        monkeypatch.setenv(
+            "SIGV4_PROXY_TARGET", "https://abc.execute-api.us-east-1.amazonaws.com/dev/agent"
+        )
+        monkeypatch.setenv("SIGV4_PROXY_PORT", "9090")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-gw1")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+        # Proxy starts successfully
+        mock_proxy_proc = MagicMock()
+        mock_start_proxy.return_value = mock_proxy_proc
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Verify subprocess.run was called with gateway env
+        call_kwargs = mock_subprocess_run.call_args
+        agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
+        assert agent_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+        assert agent_env["ANTHROPIC_BEDROCK_BASE_URL"] == "http://127.0.0.1:9090"
+        # Must NOT have ANTHROPIC_BASE_URL (that routes to the broken translator)
+        assert "ANTHROPIC_BASE_URL" not in agent_env
+
+        # Proxy was started and stopped
+        mock_start_proxy.assert_called_once()
+        mock_stop_proxy.assert_called_once_with(mock_proxy_proc)
+
+    @patch("entrypoint._stop_sigv4_proxy")
+    @patch("entrypoint._start_sigv4_proxy")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_direct_path_sets_claude_code_use_bedrock(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_start_proxy,
+        mock_stop_proxy,
+        monkeypatch,
+        tmp_path,
+    ):
+        """With ADP_BEDROCK_VIA=direct, sets only CLAUDE_CODE_USE_BEDROCK (no proxy)."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "direct")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-direct1")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Verify subprocess.run was called with direct env
+        call_kwargs = mock_subprocess_run.call_args
+        agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
+        assert agent_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+        # No proxy base URL in direct mode
+        assert "ANTHROPIC_BEDROCK_BASE_URL" not in agent_env
+        assert "ANTHROPIC_BASE_URL" not in agent_env
+
+        # Proxy NOT started
+        mock_start_proxy.assert_not_called()
+        mock_stop_proxy.assert_not_called()
+
+    @patch("entrypoint._stop_sigv4_proxy")
+    @patch("entrypoint._start_sigv4_proxy")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_gateway_fallback_on_proxy_failure(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_start_proxy,
+        mock_stop_proxy,
+        monkeypatch,
+        tmp_path,
+    ):
+        """When proxy fails to start, falls back to direct Bedrock."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "gateway")
+        monkeypatch.setenv(
+            "SIGV4_PROXY_TARGET", "https://abc.execute-api.us-east-1.amazonaws.com/dev/agent"
+        )
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-fb1")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+        # Proxy fails to start
+        mock_start_proxy.return_value = None
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Falls back to direct mode — no proxy base URL
+        call_kwargs = mock_subprocess_run.call_args
+        agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
+        assert agent_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+        assert "ANTHROPIC_BEDROCK_BASE_URL" not in agent_env
+        assert "ANTHROPIC_BASE_URL" not in agent_env
+
+        # Proxy was attempted but not stopped (it never started)
+        mock_start_proxy.assert_called_once()
+        mock_stop_proxy.assert_not_called()

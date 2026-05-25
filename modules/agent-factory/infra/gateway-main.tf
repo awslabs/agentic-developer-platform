@@ -438,6 +438,69 @@ resource "kubernetes_service_account" "gateway_agent" {
   }
 }
 
+# =============================================================================
+# Terraform-managed ConfigMap for the agent-gateway worker pods (Phase 3 #748)
+# =============================================================================
+# Replaces the static YAML ConfigMap in gateway/k8s/keda-scaledjob.yaml.
+# Values are derived from Terraform outputs / SSM so subsequent deploys
+# (new env, new account, API GW rebuild) automatically pick up the right URLs.
+# =============================================================================
+
+data "aws_ssm_parameter" "gateway_apigw_invoke_url" {
+  count = var.gateway_deployed ? 1 : 0
+  name  = "/adp/${var.environment}/gateway/apigw-invoke-url"
+}
+
+resource "kubernetes_config_map" "agent_gateway_config" {
+  metadata {
+    name      = "agent-gateway-config"
+    namespace = kubernetes_namespace.gateway_agents.metadata[0].name
+    labels = {
+      "app.kubernetes.io/name"       = "agent-gateway"
+      "app.kubernetes.io/part-of"    = "agent-gateway"
+      "app.kubernetes.io/managed-by" = "terraform"
+    }
+  }
+
+  data = {
+    INPUT_QUEUE_URL     = module.gateway_sqs.input_queue_url
+    RESPONSE_QUEUE_URL  = module.gateway_sqs.response_queue_url
+    SESSIONS_TABLE_NAME = module.gateway_sessions.table_name
+    AWS_REGION          = var.aws_region
+    AGENT_DIR           = "/app/agent"
+    ANTHROPIC_MODEL     = "global.anthropic.claude-opus-4-6-v1"
+    # Phase 3 gateway routing (issue #748)
+    ADP_BEDROCK_VIA            = "gateway"
+    SIGV4_PROXY_TARGET         = var.gateway_deployed ? "${data.aws_ssm_parameter.gateway_apigw_invoke_url[0].value}/agent" : ""
+    SIGV4_PROXY_PORT           = "9090"
+    ANTHROPIC_BEDROCK_BASE_URL = "http://127.0.0.1:9090"
+    CLAUDE_CODE_USE_BEDROCK    = "1"
+  }
+}
+
+# =============================================================================
+# Gateway Agent: execute-api:Invoke for sigv4-proxy → API Gateway (Phase 3)
+# =============================================================================
+# The worker pod's sigv4-proxy re-signs requests with service=execute-api.
+# This policy grants the pod's IRSA role permission to invoke the /agent/*
+# routes on the gateway's REST API Gateway.
+# =============================================================================
+
+resource "aws_iam_role_policy" "gateway_agent_execute_api" {
+  name = "execute-api-invoke"
+  role = aws_iam_role.gateway_agent.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "InvokeGatewayAgentRoutes"
+      Effect   = "Allow"
+      Action   = ["execute-api:Invoke"]
+      Resource = "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/*/agent/*"
+    }]
+  })
+}
+
 # --- Extend runner IAM with gateway permissions ---
 
 resource "aws_iam_role_policy" "runner_gateway_sqs" {

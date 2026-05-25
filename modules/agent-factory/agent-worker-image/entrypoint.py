@@ -239,9 +239,21 @@ def main() -> int:
         if remote_branch_exists:
             # Check whether an open PR exists for this branch
             open_pr_check = subprocess.run(
-                ["gh", "pr", "list", "--repo", repo,
-                 "--head", branch_name, "--state", "open",
-                 "--json", "number", "--jq", ".[0].number // empty"],
+                [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--repo",
+                    repo,
+                    "--head",
+                    branch_name,
+                    "--state",
+                    "open",
+                    "--json",
+                    "number",
+                    "--jq",
+                    ".[0].number // empty",
+                ],
                 cwd=WORK_DIR,
                 capture_output=True,
                 text=True,
@@ -277,8 +289,7 @@ def main() -> int:
             run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
 
         run_cmd(
-            ["git", "commit", "--allow-empty",
-             "-m", f"WIP: agent/{persona} starting #{issue}"],
+            ["git", "commit", "--allow-empty", "-m", f"WIP: agent/{persona} starting #{issue}"],
             cwd=WORK_DIR,
         )
         run_cmd(["git", "push", "-u", "origin", branch_name], cwd=WORK_DIR)
@@ -327,14 +338,15 @@ def main() -> int:
                 agent_id=persona,
                 task_id=task_id,
             )
-            os.environ.update({
-                "AWS_ACCESS_KEY_ID": sts_creds["access_key_id"],
-                "AWS_SECRET_ACCESS_KEY": sts_creds["secret_access_key"],
-                "AWS_SESSION_TOKEN": sts_creds["session_token"],
-            })
+            os.environ.update(
+                {
+                    "AWS_ACCESS_KEY_ID": sts_creds["access_key_id"],
+                    "AWS_SECRET_ACCESS_KEY": sts_creds["secret_access_key"],
+                    "AWS_SESSION_TOKEN": sts_creds["session_token"],
+                }
+            )
             logger.info(
-                "Assumed customer AWS role (user-scoped) via gateway "
-                "provenance_id=%s expires=%s",
+                "Assumed customer AWS role (user-scoped) via gateway provenance_id=%s expires=%s",
                 sts_creds.get("provenance_id"),
                 sts_creds.get("expiration"),
             )
@@ -352,11 +364,7 @@ def main() -> int:
 
     # Step 9: Post "started" comment (idempotent via message_id)
     started_marker = f"<!-- adp-run:{message_id} -->"
-    _live_link = (
-        f"\n\n**Live progress:** [View run ↗]({check_run_url})"
-        if check_run_url
-        else ""
-    )
+    _live_link = f"\n\n**Live progress:** [View run ↗]({check_run_url})" if check_run_url else ""
     started_body = (
         f"{started_marker}\n"
         f"🤖 **Agent `{persona}` started** working on this issue."
@@ -396,16 +404,47 @@ def main() -> int:
     _stage_personas_and_skills()
 
     # Step 10: Build scoped agent env and exec the agent.
-    # ADP_BEDROCK_VIA controls whether the agent's AWS calls route through
-    # the platform account (pod IRSA) or the user's connected account.
+    # ADP_BEDROCK_VIA controls the Bedrock routing path:
+    #   - "gateway" (default): route through platform gateway via sigv4-proxy sidecar
+    #   - "direct": use pod IRSA to call Bedrock directly (fallback/rollback)
+    #   - "user": use customer's assumed credentials (operations persona only)
+    #   - "platform": alias for "direct" (legacy compat)
+    #
     # CRITICAL: We build a SEPARATE env dict for the child process. We do NOT
     # mutate os.environ — the entrypoint's post-agent SQS delete (line ~386)
     # needs os.environ to retain IRSA for platform-account access.
     agent_env = os.environ.copy()
     bedrock_via_raw = os.environ.get("ADP_BEDROCK_VIA")
-    bedrock_via = (bedrock_via_raw or "platform").strip().lower()
+    bedrock_via = (bedrock_via_raw or "gateway").strip().lower()
 
-    if bedrock_via == "user" and "AWS_ACCESS_KEY_ID" in agent_env:
+    # Start sigv4-proxy subprocess for gateway mode
+    proxy_process: subprocess.Popen | None = None
+
+    if bedrock_via == "gateway":
+        proxy_process = _start_sigv4_proxy(agent_env, tenant_id)
+        if proxy_process is None:
+            # Proxy failed to start — fall back to direct Bedrock
+            logger.warning("sigv4-proxy failed to start; falling back to ADP_BEDROCK_VIA=direct")
+            bedrock_via = "direct"
+        else:
+            # Gateway mode: SDK talks to local proxy, proxy re-signs for API GW
+            agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
+            agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = "http://127.0.0.1:9090"
+            # Do NOT set ANTHROPIC_BASE_URL — that routes to the broken translator
+            agent_env.pop("ANTHROPIC_BASE_URL", None)
+            logger.info("ADP_BEDROCK_VIA=gateway — routing through sigv4-proxy → API GW")
+
+    if bedrock_via == "direct" or bedrock_via == "platform":
+        # Direct Bedrock via pod IRSA (fallback/rollback path)
+        agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
+        agent_env.pop("ANTHROPIC_BEDROCK_BASE_URL", None)
+        agent_env.pop("ANTHROPIC_BASE_URL", None)
+        logger.info(
+            "ADP_BEDROCK_VIA=%r (normalized: %s) — direct Bedrock via pod IRSA",
+            bedrock_via_raw,
+            bedrock_via,
+        )
+    elif bedrock_via == "user" and "AWS_ACCESS_KEY_ID" in agent_env:
         for var in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"):
             agent_env.pop(var, None)
         logger.info(
@@ -419,12 +458,16 @@ def main() -> int:
             "(not in PERSONAS_NEEDING_AWS=%s). Agent will use pod IRSA for all AWS "
             "calls including Bedrock. Either add this persona to PERSONAS_NEEDING_AWS "
             "or unset ADP_BEDROCK_VIA on the ScaledJob.",
-            persona, sorted(PERSONAS_NEEDING_AWS),
+            persona,
+            sorted(PERSONAS_NEEDING_AWS),
         )
+    elif bedrock_via == "gateway":
+        pass  # Already handled above
     else:
         logger.info(
             "ADP_BEDROCK_VIA=%r (normalized: %s) — agent env retains pod IRSA",
-            bedrock_via_raw, bedrock_via,
+            bedrock_via_raw,
+            bedrock_via,
         )
 
     logger.info("Execing agent-worker.js with persona=%s branch=%s", persona, branch_name)
@@ -434,11 +477,17 @@ def main() -> int:
         env=agent_env,
     )
 
+    # Terminate sigv4-proxy if it was started
+    if proxy_process is not None:
+        _stop_sigv4_proxy(proxy_process)
+
     # Step 11/12: Post-agent actions
     if result.returncode == 0:
         exit_code = _handle_success(repo, issue, branch_name, persona, message_id, check_run_url)
     else:
-        exit_code = _handle_failure(repo, issue, persona, message_id, result.returncode, check_run_url)
+        exit_code = _handle_failure(
+            repo, issue, persona, message_id, result.returncode, check_run_url
+        )
 
     # Finalize the Check Run (best-effort — must NOT affect pod exit code)
     if check_run_id is not None:
@@ -459,8 +508,7 @@ def main() -> int:
             pr_url: str | None = None
             try:
                 pr_result = run_cmd(
-                    ["gh", "pr", "view", branch_name, "-R", repo,
-                     "--json", "url", "--jq", ".url"],
+                    ["gh", "pr", "view", branch_name, "-R", repo, "--json", "url", "--jq", ".url"],
                     env={**os.environ},
                 )
                 pr_url = pr_result.stdout.strip() or None
@@ -517,14 +565,97 @@ def main() -> int:
     # code path (OOM, node eviction, unhandled exception before this line).
     try:
         _delete_message(queue_url, region, receipt_handle)
-        logger.info(
-            "SQS message acked and deleted (exit_code=%d)", exit_code
-        )
+        logger.info("SQS message acked and deleted (exit_code=%d)", exit_code)
     except Exception as exc:
         logger.error("Failed to delete SQS message: %s", exc)
         # Don't fail the pod — agent work already committed to GitHub
 
     return exit_code
+
+
+SIGV4_PROXY_SCRIPT = "/app/dist/sigv4-proxy.js"
+SIGV4_PROXY_HEALTH_TIMEOUT = 10  # seconds to wait for proxy health
+
+
+def _start_sigv4_proxy(env: dict, tenant_id: str) -> subprocess.Popen | None:
+    """Start the sigv4-proxy subprocess and wait for it to become healthy.
+
+    Returns the Popen object on success, None on failure.
+    The proxy listens on 127.0.0.1:SIGV4_PROXY_PORT and re-signs requests
+    for the gateway API Gateway using execute-api SigV4.
+    """
+    import time
+    import urllib.request
+    import urllib.error
+
+    proxy_target = env.get("SIGV4_PROXY_TARGET", "")
+    proxy_port = env.get("SIGV4_PROXY_PORT", "9090")
+
+    if not proxy_target:
+        logger.error("SIGV4_PROXY_TARGET not set; cannot start sigv4-proxy")
+        return None
+
+    if not Path(SIGV4_PROXY_SCRIPT).exists():
+        logger.error("sigv4-proxy script not found at %s", SIGV4_PROXY_SCRIPT)
+        return None
+
+    proxy_env = env.copy()
+    proxy_env["SIGV4_PROXY_TARGET"] = proxy_target
+    proxy_env["SIGV4_PROXY_PORT"] = proxy_port
+    proxy_env["TENANT_ID"] = tenant_id
+
+    try:
+        proc = subprocess.Popen(
+            ["node", SIGV4_PROXY_SCRIPT],
+            env=proxy_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    except Exception as exc:
+        logger.error("Failed to spawn sigv4-proxy: %s", exc)
+        return None
+
+    # Wait for health check
+    health_url = f"http://127.0.0.1:{proxy_port}/__health"
+    deadline = time.monotonic() + SIGV4_PROXY_HEALTH_TIMEOUT
+    while time.monotonic() < deadline:
+        # Check the process hasn't crashed
+        if proc.poll() is not None:
+            logger.error("sigv4-proxy exited prematurely (code=%d)", proc.returncode)
+            return None
+        try:
+            resp = urllib.request.urlopen(health_url, timeout=1)
+            if resp.status == 200:
+                logger.info(
+                    "[sigv4-proxy] healthy on port %s, target=%s",
+                    proxy_port,
+                    proxy_target,
+                )
+                return proc
+        except (urllib.error.URLError, OSError):
+            pass
+        time.sleep(0.3)
+
+    # Timeout — kill and return None
+    logger.error("sigv4-proxy health check timed out after %ds", SIGV4_PROXY_HEALTH_TIMEOUT)
+    proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    return None
+
+
+def _stop_sigv4_proxy(proc: subprocess.Popen) -> None:
+    """Gracefully stop the sigv4-proxy subprocess."""
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+    logger.info("sigv4-proxy stopped (exit=%s)", proc.returncode)
 
 
 def _fetch_assumed_aws_credentials(*, user_id: str, agent_id: str, task_id: str) -> dict:
@@ -640,7 +771,19 @@ def _handle_success(
         pr_already_exists = False
         try:
             existing_pr = run_cmd(
-                ["gh", "pr", "list", "--head", branch, "-R", repo, "--json", "number", "--jq", ".[0].number"],
+                [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--head",
+                    branch,
+                    "-R",
+                    repo,
+                    "--json",
+                    "number",
+                    "--jq",
+                    ".[0].number",
+                ],
                 env={**os.environ},
             )
             pr_already_exists = bool(existing_pr.stdout.strip())
@@ -744,11 +887,7 @@ def _post_comment(
       3. On success only: write DDB pointer + post provenance (fail-soft)
     """
     marker = f"<!-- adp-{status}:{message_id} -->"
-    run_details = (
-        f"\n\n**Run details:** [View run ↗]({check_run_url})"
-        if check_run_url
-        else ""
-    )
+    run_details = f"\n\n**Run details:** [View run ↗]({check_run_url})" if check_run_url else ""
     full_body = f"{marker}\n{body}{run_details}"
     # Step 1: Prepend correlation marker
     full_body = prepend_correlation_marker(full_body)
