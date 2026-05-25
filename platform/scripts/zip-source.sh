@@ -15,10 +15,15 @@ cd "$ROOT_DIR"
 INCLUDE_DIRS=(platform/ modules/ environments/ libs/)
 [ -d codebuild ] && INCLUDE_DIRS+=(codebuild/)
 
+# Include root-level config files needed by CodeBuild steps (e.g. grype scans).
+ROOT_CONFIGS=()
+[ -f .grype.yaml ] && ROOT_CONFIGS+=(.grype.yaml)
+
 # Keep package-lock.json files — `npm ci` needs them for reproducible
 # Docker builds (e.g. the TS agent image in modules/agent-factory/agent).
 zip -r "$OUTPUT" \
   "${INCLUDE_DIRS[@]}" \
+  "${ROOT_CONFIGS[@]}" \
   -x '*/node_modules/*' '*/.terraform/*' '*/coverage/*' '*/__pycache__/*' \
   '*.pyc' '*.tfstate*' '*/dist/*' '*/uv.lock' \
   > /dev/null 2>&1
