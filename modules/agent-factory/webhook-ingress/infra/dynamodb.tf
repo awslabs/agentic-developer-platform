@@ -113,3 +113,35 @@ resource "aws_dynamodb_table" "rate_limits" {
     kms_key_arn = aws_kms_key.dynamodb.arn
   }
 }
+
+# -----------------------------------------------------------------------------
+# Correlation Pointers
+# PK: channel_key (e.g. "github:repo=aws-e/adp,issue=775" or ".../pr=778")
+# Stores only the latest correlation pointer per channel (upsert via PutItem).
+# TTL = 7 days from last activity (Phase 2-c refreshes expires_at on each write).
+# Issue #784: Phase 2-a storage primitive for correlation propagation.
+# -----------------------------------------------------------------------------
+resource "aws_dynamodb_table" "correlation_pointers" {
+  name         = "${local.name_prefix}-correlation-pointers"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "channel_key"
+
+  attribute {
+    name = "channel_key"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
+  }
+}

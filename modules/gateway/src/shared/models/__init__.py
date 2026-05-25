@@ -14,6 +14,7 @@ from src.shared.models.organization import (
     Team,
     User,
 )
+from src.shared.models.provenance import ActionProvenance
 from src.shared.models.usage import (
     BedrockPoolAccount,
     ModelAlias,
@@ -31,6 +32,7 @@ from src.shared.models.vault import (
 )
 
 __all__ = [
+    "ActionProvenance",
     "Base",
     "TenantMixin",
     "new_uuid",
