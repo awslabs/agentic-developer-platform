@@ -189,3 +189,49 @@ ignore:
   - vulnerability: CVE-2025-55130
     package:
       name: nodejs
+
+  # ============================================================================
+  # Debian disputed / won't-fix CVEs (false positives across all images).
+  # These are long-standing issues marked as "disputed" or "won't fix" by
+  # Debian/Ubuntu security teams. No known exploits in container context.
+  # Re-evaluate quarterly (next: 2026-08-22).
+  # ============================================================================
+
+  # CVE-2005-2541: tar preserving setuid bits is documented behavior.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2005-2541
+  - vulnerability: CVE-2005-2541
+    package:
+      name: tar
+
+  # CVE-2019-1010022: theoretical PLT attack on glibc, disputed by maintainers.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2019-1010022
+  - vulnerability: CVE-2019-1010022
+    package:
+      name: libc-bin
+  - vulnerability: CVE-2019-1010022
+    package:
+      name: libc6
+  - vulnerability: CVE-2019-1010022
+    package:
+      name: libc-dev-bin
+  - vulnerability: CVE-2019-1010022
+    package:
+      name: libc6-dev
+
+  # CVE-2018-13410: zip test-code UAF, not reachable in binary package.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2018-13410
+  - vulnerability: CVE-2018-13410
+    package:
+      name: zip
+
+  # CVE-2023-45924: libglvnd uninitialized var, no security impact.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2023-45924
+  - vulnerability: CVE-2023-45924
+    package:
+      name: libgl1
+  - vulnerability: CVE-2023-45924
+    package:
+      name: libglvnd0
+  - vulnerability: CVE-2023-45924
+    package:
+      name: libglx0
