@@ -458,3 +458,44 @@ ignore:
     package:
       type: python
       name: diskcache
+
+  # ============================================================================
+  # binutils build-time HIGH CVEs (agent-worker, ingestion, codegraph, cyber-workers).
+  # binutils and related packages (binutils-common, binutils-x86-64-linux-gnu,
+  # libbinutils, libctf-nobfd0, libctf0, libgprofng0, libsframe1) are build-time
+  # dependencies used for compilation — never invoked at runtime in production
+  # containers.
+  # Re-evaluate quarterly (next: 2026-08-25).
+  # Source: High loop cycle 6 (#615).
+  # ============================================================================
+
+  - vulnerability: CVE-2017-13716
+    # 7.8 HIGH — requires crafted ELF input to ld; build-time only
+  - vulnerability: CVE-2024-53589
+    # 8.4 HIGH — heap overflow in objdump; build-time only
+  - vulnerability: CVE-2025-0840
+    # 7.8 HIGH — buffer overflow in disassembler; build-time only
+  - vulnerability: CVE-2025-11082
+    # 7.8 HIGH — build-time only
+  - vulnerability: CVE-2025-11083
+    # 7.8 HIGH — build-time only
+  - vulnerability: CVE-2025-1179
+    # 7.5 HIGH — build-time only
+  - vulnerability: CVE-2025-5244
+    # 7.8 HIGH — build-time only
+  - vulnerability: CVE-2025-5245
+    # 7.8 HIGH — build-time only
+  - vulnerability: CVE-2025-66862
+    # 7.5 HIGH — build-time only
+  - vulnerability: CVE-2025-66863
+    # 7.5 HIGH — build-time only
+  - vulnerability: CVE-2025-66864
+    # 7.5 HIGH — build-time only
+  - vulnerability: CVE-2025-66865
+    # 7.5 HIGH — build-time only
+  - vulnerability: CVE-2025-66866
+    # 7.5 HIGH — build-time only
+  - vulnerability: CVE-2025-7545
+    # 7.8 HIGH — build-time only
+  - vulnerability: CVE-2025-7546
+    # 7.8 HIGH — build-time only
