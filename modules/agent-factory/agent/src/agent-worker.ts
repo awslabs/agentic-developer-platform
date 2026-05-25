@@ -35,6 +35,10 @@ import {
 // Live status comment — edit-in-place progress on GitHub issues
 import { LiveStatusComment, createWorkerStages } from './github-comments';
 
+// Module-scope reference so the SDK loop in runAgent() can append per-turn
+// activity (tool calls) without needing the comment passed through every layer.
+let activeLiveComment: LiveStatusComment | null = null;
+
 // Correlation propagation — Phase 2-d (EPIC #779)
 import { prependCorrelationMarker } from './lib/correlationMarker';
 import { writePointer } from './lib/correlationStore';
@@ -1128,6 +1132,16 @@ Now, complete the assigned task.`;
                 content: assistantMsg.message.content as Array<{ name?: string; input?: Record<string, unknown>; text?: string }>,
               });
             }
+            // Stream tool_use to the live status comment so users watching the
+            // issue page see what the agent is currently doing.
+            if (activeLiveComment) {
+              for (const block of assistantMsg.message.content) {
+                if (block.type === 'tool_use' && typeof block.name === 'string') {
+                  const inputPreview = JSON.stringify(block.input ?? {}).slice(0, 80);
+                  activeLiveComment.appendActivity(`turn ${turnCount}  ${block.name}  ${inputPreview}`);
+                }
+              }
+            }
             break;
           }
 
@@ -1470,7 +1484,7 @@ async function main(): Promise<void> {
 
     // Initialize live status comment (edit-in-place progress)
     const token = process.env.GH_APP_TOKEN || process.env.GITHUB_TOKEN || GITHUB_TOKEN;
-    const liveComment = new LiveStatusComment(createWorkerStages(), {
+    activeLiveComment = new LiveStatusComment(createWorkerStages(), {
       owner: REPO_OWNER,
       repo: REPO_NAME,
       issueNumber: parseInt(ISSUE_NUMBER),
@@ -1479,14 +1493,14 @@ async function main(): Promise<void> {
     });
 
     try {
-      await liveComment.post();
-      log('INFO', `Live status comment posted: ${liveComment.getCommentId()}`);
+      await activeLiveComment.post();
+      log('INFO', `Live status comment posted: ${activeLiveComment.getCommentId()}`);
     } catch (err) {
       log('WARN', `Could not post live status comment: ${(err as Error).message}`);
     }
 
     // Stage 0: Setup — mark complete (we're past setup at this point)
-    liveComment.transition(0, 'complete', 'Environment ready');
+    activeLiveComment.transition(0, 'complete', 'Environment ready');
 
     // Post start notification to main issue
     await postToMainIssue(mainIssueNumber, `## @agent-${AGENT_TYPE} Started
@@ -1502,18 +1516,18 @@ Working on this task...`);
     // using the update-board-status action before the agent runs.
 
     // Stage 1: Analyze — starting agent execution
-    liveComment.transition(1, 'in_progress', 'Running agent');
+    activeLiveComment.transition(1, 'in_progress', 'Running agent');
 
     // Run the agent
     const result = await runAgent(issue, mainIssueNumber, beadsPrimeContext, commentsContext, memoryContext);
     agentResult = result || '';
 
     // Mark analyze through PR stages as complete (agent handles all internally)
-    liveComment.transition(1, 'complete');
-    liveComment.transition(2, 'complete');
-    liveComment.transition(3, 'complete');
-    liveComment.transition(4, 'complete');
-    liveComment.transition(5, 'complete');
+    activeLiveComment.transition(1, 'complete');
+    activeLiveComment.transition(2, 'complete');
+    activeLiveComment.transition(3, 'complete');
+    activeLiveComment.transition(4, 'complete');
+    activeLiveComment.transition(5, 'complete');
 
     // Complete task in Beads (if claimed)
     if (beadsAvailable && beadsTaskId) {
@@ -1530,8 +1544,8 @@ Working on this task...`);
     // when the PR is merged and the issue is closed.
 
     // Finalize live status comment with success summary
-    const runDuration = Date.now() - (liveComment.getStages()[0]?.startedAt || Date.now());
-    await liveComment.finalizeSuccess({
+    const runDuration = Date.now() - (activeLiveComment.getStages()[0]?.startedAt || Date.now());
+    await activeLiveComment.finalizeSuccess({
       durationMs: runDuration,
       details: result ? result.substring(0, 500) : undefined,
     }).catch(err => log('WARN', `Could not finalize live comment: ${(err as Error).message}`));

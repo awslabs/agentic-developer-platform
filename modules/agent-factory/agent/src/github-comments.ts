@@ -105,6 +105,9 @@ export class LiveStatusComment {
   private pendingUpdate: ReturnType<typeof setTimeout> | null = null;
   private runStartTime: number;
   private latestMessage = '';
+  private activityLog: string[] = [];
+  private static readonly MAX_ACTIVITY_LINES = 10;
+  private heartbeat: ReturnType<typeof setInterval> | null = null;
 
   constructor(stages: StageDefinition[], options: LiveStatusCommentOptions) {
     this.stages = stages.map(s => ({ ...s }));
@@ -114,6 +117,10 @@ export class LiveStatusComment {
       ...options,
     };
     this.runStartTime = Date.now();
+    this.heartbeat = setInterval(() => {
+      if (this.commentId) this.scheduleUpdate();
+    }, 30_000);
+    this.heartbeat.unref?.();
   }
 
   /** Returns the comment ID once posted (null before post()). */
@@ -145,6 +152,19 @@ export class LiveStatusComment {
   }
 
   /**
+   * Append a one-line activity entry (tool call, status note) to the rolling
+   * recent-activity log. Triggers a rate-limited comment update.
+   */
+  appendActivity(line: string): void {
+    const ts = new Date().toISOString().slice(11, 19);
+    this.activityLog.push(`${ts}  ${line}`);
+    if (this.activityLog.length > LiveStatusComment.MAX_ACTIVITY_LINES) {
+      this.activityLog.shift();
+    }
+    this.scheduleUpdate();
+  }
+
+  /**
    * Transition a stage to a new status. Triggers a rate-limited comment update.
    */
   transition(stageIndex: number, status: StageStatus, message?: string): void {
@@ -173,6 +193,7 @@ export class LiveStatusComment {
    */
   async finalizeSuccess(summary: SuccessSummary): Promise<void> {
     this.cancelPendingUpdate();
+    if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
     const lines: string[] = [
       '## Agent Complete',
       '',
@@ -206,6 +227,7 @@ export class LiveStatusComment {
    */
   async finalizeFailure(summary: FailureSummary): Promise<void> {
     this.cancelPendingUpdate();
+    if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
     const lines: string[] = [
       '## Agent Failed',
       '',
@@ -252,8 +274,9 @@ export class LiveStatusComment {
 
   private renderBody(): string {
     const now = Date.now();
+    const elapsed = formatElapsed(now - this.runStartTime);
     const lines: string[] = [
-      `## Agent running — last update ${relativeTime(now, now + 1)}`,
+      `## Agent running — ${elapsed} elapsed (updated ${new Date(now).toISOString().slice(11, 19)} UTC)`,
       '',
       '### Progress',
     ];
@@ -273,6 +296,12 @@ export class LiveStatusComment {
 
     if (this.latestMessage) {
       lines.push('', `Latest: ${this.latestMessage}`);
+    }
+
+    if (this.activityLog.length > 0) {
+      lines.push('', '### Recent activity', '```');
+      for (const entry of this.activityLog) lines.push(entry);
+      lines.push('```');
     }
 
     return lines.join('\n');
@@ -330,10 +359,11 @@ export class LiveStatusComment {
   }
 
   private async apiRequest(method: string, url: string, body?: Record<string, unknown>): Promise<Response> {
+    const token = process.env.GH_APP_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN || this.options.token;
     return fetch(url, {
       method,
       headers: {
-        'Authorization': `token ${this.options.token}`,
+        'Authorization': `token ${token}`,
         'Content-Type': 'application/json',
         'Accept': 'application/vnd.github+json',
       },
