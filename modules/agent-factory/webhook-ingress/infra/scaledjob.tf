@@ -115,6 +115,23 @@ locals {
                     value: adp-${var.environment}-url-analysis-evidence-v2-${local.account_id}
                   - name: ADP_GATEWAY_ENDPOINT
                     value: ${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}
+                  # Reconciled from live cluster drift (was kubectl-applied during
+                  # the tenant credential migration; now codified here so future
+                  # apply does not wipe these). See scripts/migrate-tenant-aws-creds-to-user.py.
+                  - name: ENABLE_USER_CREDENTIALS
+                    value: "1"
+                  - name: VAULT_GATEWAY_URL
+                    value: http://bedrockgateway.adp-gateway
+                  - name: VAULT_INTERNAL_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: vault-internal-api-key
+                        key: VAULT_INTERNAL_API_KEY
+                  # operations persona assumes customer AWS role; agent env strips
+                  # pod IRSA so customer credentials drive AWS calls. See
+                  # PERSONAS_NEEDING_AWS in agent-worker-image/entrypoint.py.
+                  - name: ADP_BEDROCK_VIA
+                    value: user
                 resources:
                   requests:
                     cpu: "1"
