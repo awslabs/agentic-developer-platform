@@ -237,6 +237,172 @@ ignore:
       name: libglx0
 
   # ============================================================================
+  # Debian base-OS disputed/unfixable HIGH CVEs (all 8 scanned images).
+  # These are HIGH-severity CVEs (7.0-8.8) in shared Debian base packages that
+  # are documented as disputed, won't-fix, or no-DSA by Debian security teams.
+  # Re-evaluate quarterly (next: 2026-08-25).
+  # ============================================================================
+
+  # CVE-2019-1010023: theoretical PLT attack on glibc, disputed by maintainers.
+  # Same class as CVE-2019-1010022 (already suppressed above).
+  # Source: https://security-tracker.debian.org/tracker/CVE-2019-1010023
+  - vulnerability: CVE-2019-1010023
+    package:
+      name: libc-bin
+  - vulnerability: CVE-2019-1010023
+    package:
+      name: libc6
+  - vulnerability: CVE-2019-1010023
+    package:
+      name: libc-dev-bin
+  - vulnerability: CVE-2019-1010023
+    package:
+      name: libc6-dev
+
+  # CVE-2026-0861: glibc vulnerability with no Debian patch available.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2026-0861
+  - vulnerability: CVE-2026-0861
+    package:
+      name: libc-bin
+  - vulnerability: CVE-2026-0861
+    package:
+      name: libc6
+  - vulnerability: CVE-2026-0861
+    package:
+      name: libc-dev-bin
+  - vulnerability: CVE-2026-0861
+    package:
+      name: libc6-dev
+
+  # CVE-2018-20796: glibc regex stack exhaustion, disputed - requires malicious
+  # regex input not present in our containers.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2018-20796
+  - vulnerability: CVE-2018-20796
+    package:
+      name: libc-bin
+  - vulnerability: CVE-2018-20796
+    package:
+      name: libc6
+  - vulnerability: CVE-2018-20796
+    package:
+      name: libc-dev-bin
+  - vulnerability: CVE-2018-20796
+    package:
+      name: libc6-dev
+
+  # CVE-2019-9192: glibc regex infinite loop, disputed - same class as
+  # CVE-2018-20796.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2019-9192
+  - vulnerability: CVE-2019-9192
+    package:
+      name: libc-bin
+  - vulnerability: CVE-2019-9192
+    package:
+      name: libc6
+  - vulnerability: CVE-2019-9192
+    package:
+      name: libc-dev-bin
+  - vulnerability: CVE-2019-9192
+    package:
+      name: libc6-dev
+
+  # CVE-2025-15281: glibc vulnerability, no Debian fix available.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2025-15281
+  - vulnerability: CVE-2025-15281
+    package:
+      name: libc-bin
+  - vulnerability: CVE-2025-15281
+    package:
+      name: libc6
+  - vulnerability: CVE-2025-15281
+    package:
+      name: libc-dev-bin
+  - vulnerability: CVE-2025-15281
+    package:
+      name: libc6-dev
+
+  # CVE-2026-0915: glibc vulnerability, no Debian fix available.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2026-0915
+  - vulnerability: CVE-2026-0915
+    package:
+      name: libc-bin
+  - vulnerability: CVE-2026-0915
+    package:
+      name: libc6
+  - vulnerability: CVE-2026-0915
+    package:
+      name: libc-dev-bin
+  - vulnerability: CVE-2026-0915
+    package:
+      name: libc6-dev
+
+  # CVE-2017-18018: coreutils chown race condition, disputed - requires local
+  # multi-user access not present in containers.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2017-18018
+  - vulnerability: CVE-2017-18018
+    package:
+      name: coreutils
+
+  # CVE-2015-3276: OpenLDAP incorrect certificate validation, disputed - applies
+  # only to slapd (server), not client library usage in our images.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2015-3276
+  - vulnerability: CVE-2015-3276
+    package:
+      name: libldap-2.5-0
+  - vulnerability: CVE-2015-3276
+    package:
+      name: libldap2
+
+  # CVE-2017-17740: OpenLDAP slapd DoS - only affects slapd server, not the
+  # client library our images use.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2017-17740
+  - vulnerability: CVE-2017-17740
+    package:
+      name: libldap-2.5-0
+  - vulnerability: CVE-2017-17740
+    package:
+      name: libldap2
+
+  # CVE-2018-5709: minor integer overflow in krb5 timestamp handling, no security
+  # impact. Won't-fix in Debian.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2018-5709
+  - vulnerability: CVE-2018-5709
+    package:
+      name: libgssapi-krb5-2
+  - vulnerability: CVE-2018-5709
+    package:
+      name: libk5crypto3
+  - vulnerability: CVE-2018-5709
+    package:
+      name: libkrb5-3
+  - vulnerability: CVE-2018-5709
+    package:
+      name: libkrb5support0
+
+  # CVE-2024-26461: krb5 memory leak in kadmin, only exploitable by authenticated
+  # kadmin users - not applicable in our deployment.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2024-26461
+  - vulnerability: CVE-2024-26461
+    package:
+      name: libgssapi-krb5-2
+  - vulnerability: CVE-2024-26461
+    package:
+      name: libk5crypto3
+  - vulnerability: CVE-2024-26461
+    package:
+      name: libkrb5-3
+  - vulnerability: CVE-2024-26461
+    package:
+      name: libkrb5support0
+
+  # CVE-2025-13151: libtasn1 vulnerability, no Debian fix available for current
+  # distribution version.
+  # Source: https://security-tracker.debian.org/tracker/CVE-2025-13151
+  - vulnerability: CVE-2025-13151
+    package:
+      name: libtasn1-6
+
+  # ============================================================================
   # Agent-worker-image: fzf pre-compiled binary (Go 1.20.13).
   # We install fzf from GitHub releases — the binary is compiled upstream with
   # Go 1.20.13 and cannot be patched by our builds. Requires upstream fzf release
