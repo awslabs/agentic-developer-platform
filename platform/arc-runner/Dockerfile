@@ -35,10 +35,12 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-reco
         apt-transport-https \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Node.js 22.x ────────────────────────────────────────────────────────────
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/* \
+# ── Node.js 22.x (pinned — bump to fix CVE-2026-21636) ────────────────────────
+ENV NODE_VERSION=22.22.3
+RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+        -o /tmp/node.tar.xz \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
+    && rm /tmp/node.tar.xz \
     && node --version && npm --version
 
 # ── Python 3.12 + pip (for CodeBuild log parsing, yaml checks, etc.) ────────
