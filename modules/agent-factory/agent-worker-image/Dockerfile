@@ -62,8 +62,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   ripgrep, jq (CLI tools the agent uses)
 #   unzip, sudo, procps (required by various downstream installs)
 #
-# fzf and fd-find are available in Debian bookworm with the same names;
-# vim-tiny is vim-tiny on Debian too. We just drop apt cache after install.
+# fzf is installed separately from GitHub releases (not apt) to avoid
+# Debian's Go 1.19 toolchain CVEs. fd-find and vim-tiny come from apt.
 RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
@@ -76,7 +76,6 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-reco
     gnupg \
     ripgrep \
     fd-find \
-    fzf \
     jq \
     vim-tiny \
     unzip \
@@ -85,9 +84,24 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-reco
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yq (YAML processor)
-RUN curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" \
+# Install yq (YAML processor). Pinned to avoid inheriting Go stdlib CVEs
+# from an unpredictable "latest" binary (Go 1.25+ clears all 6 C3 CVEs).
+ARG YQ_VERSION=4.53.2
+RUN curl -fsSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" \
     -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq
+
+# Install fzf from official tarball (not apt) to avoid inheriting
+# Debian bookworm's Go 1.19 toolchain CVEs (6 critical Go stdlib CVEs:
+# CVE-2023-24531, CVE-2023-24540, CVE-2023-29402, CVE-2023-29404,
+# CVE-2023-29405, CVE-2024-24790). The apt package is built with
+# golang-1.19; the official release is compiled with Go 1.23+.
+ARG FZF_VERSION=0.57.0
+RUN curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-linux_amd64.tar.gz" \
+      -o /tmp/fzf.tar.gz && \
+    tar xzf /tmp/fzf.tar.gz -C /usr/local/bin fzf && \
+    chmod +x /usr/local/bin/fzf && \
+    rm /tmp/fzf.tar.gz && \
+    fzf --version
 
 # Install Node.js 24 from NodeSource (works on Debian bookworm).
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
