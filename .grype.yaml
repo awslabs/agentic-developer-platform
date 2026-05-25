@@ -701,3 +701,34 @@ ignore:
   - vulnerability: CVE-2025-59375
     package:
       name: libexpat1
+
+  # CVE-2012-0039: Predictable random number generation in GLib. Ingestion uses
+  # Python's random/secrets modules, not GLib's RNG.
+  - vulnerability: CVE-2012-0039
+    package:
+      name: libglib2.0-0t64
+
+  # CVE-2014-8166: CUPS certificate validation bypass. Ingestion image never
+  # communicates with print servers.
+  - vulnerability: CVE-2014-8166
+    package:
+      name: libcups2t64
+
+  # CVE-2023-45931: Mesa shader compilation DoS. Ingestion image has no GPU
+  # rendering; mesa is a transitive dependency only.
+  - vulnerability: CVE-2023-45931
+    package:
+      name: libgbm1
+
+  # CVE-2023-5574: X.Org server use-after-free. xvfb is present for headless
+  # browser testing support but the ingestion pipeline does not run an X server
+  # exposed to untrusted clients.
+  - vulnerability: CVE-2023-5574
+    package:
+      name: xserver-common
+
+  # CVE-2025-1352: Crafted ELF file causes DoS. Ingestion pipeline does not
+  # parse untrusted ELF binaries.
+  - vulnerability: CVE-2025-1352
+    package:
+      name: libelf1t64
