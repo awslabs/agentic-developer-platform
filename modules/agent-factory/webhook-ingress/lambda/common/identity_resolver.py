@@ -44,6 +44,7 @@ class ResolvedIdentity:
     user_id: str
     user_provisioning_mode: str  # "strict" | "auto_provision"
     user_kind: str = "human"  # "human" | "bot"
+    bot_kind: str = ""  # e.g. "agent-developer", "" for humans
 
 
 def _get_table():
@@ -297,6 +298,7 @@ def resolve(
                 user_id=user_item["user_id"],
                 user_provisioning_mode=user_provisioning_mode,
                 user_kind=user_kind,
+                bot_kind=user_item.get("bot_kind", ""),
             ),
             "ok",
         )

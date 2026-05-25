@@ -16,7 +16,16 @@ class Actor:
     org_id: str = ""
     github_id: int = 0
     github_login: str = ""
-    is_bot: bool = False
+    is_bot: bool = False  # Deprecated: use correlation fields instead
+
+
+@dataclass
+class Correlation:
+    """Provenance chain context for agent-to-agent flows."""
+
+    correlation_id: str = ""
+    root_human_id: str = ""
+    is_human_rooted: bool = True
 
 
 @dataclass
@@ -50,6 +59,7 @@ class WebhookEnvelope:
     actor: Actor = field(default_factory=Actor)
     source_ref: SourceRef = field(default_factory=SourceRef)
     intent: Intent = field(default_factory=Intent)
+    correlation: Correlation = field(default_factory=Correlation)
     payload: dict[str, Any] = field(default_factory=dict)
     arrived_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -67,7 +77,7 @@ class WebhookEnvelope:
                 "org_id": self.actor.org_id,
                 "github_id": self.actor.github_id,
                 "github_login": self.actor.github_login,
-                "is_bot": self.actor.is_bot,
+                "is_bot": self.actor.is_bot,  # Deprecated
             },
             "source_ref": {
                 "installation_id": self.source_ref.installation_id,
@@ -80,6 +90,11 @@ class WebhookEnvelope:
                 "trigger": self.intent.trigger,
                 "label": self.intent.label,
                 "persona": self.intent.persona,
+            },
+            "correlation": {
+                "correlation_id": self.correlation.correlation_id,
+                "root_human_id": self.correlation.root_human_id,
+                "is_human_rooted": self.correlation.is_human_rooted,
             },
             "payload": self.payload,
             "arrived_at": self.arrived_at,

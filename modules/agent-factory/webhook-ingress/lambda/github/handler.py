@@ -16,6 +16,7 @@ import os
 from datetime import UTC, datetime
 import time
 import uuid
+from typing import Any
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -263,6 +264,62 @@ def _auto_provision_tenant_github_app_secret(tenant_id: str, installation_id: in
         _emit_metric("AutoRegister.SecretCreationFailed")
 
 
+_correlation_store_mod = None
+
+
+def _get_correlation_store():
+    global _correlation_store_mod
+    if _correlation_store_mod is None:
+        from common import correlation_store
+
+        _correlation_store_mod = correlation_store
+    return _correlation_store_mod
+
+
+def determine_correlation(
+    payload: dict, resolved_identity, channel_key: str
+) -> dict[str, Any]:
+    """Determine correlation context for this event (read-only).
+
+    For human senders: always starts a new chain (overrides any stale pointer).
+    For bot senders: tries to inherit from DDB pointer, then falls back to
+    starting a new bot-initiated chain.
+
+    Returns a dict with: correlation_id, root_human_id, triggered_by,
+    is_human_rooted, is_new_chain.
+    """
+    # Human senders ALWAYS start a new chain
+    if resolved_identity.user_kind == "human":
+        return {
+            "correlation_id": str(uuid.uuid4()),
+            "root_human_id": resolved_identity.user_id,
+            "triggered_by": None,
+            "is_human_rooted": True,
+            "is_new_chain": True,
+        }
+
+    # Bot sender: try to inherit from upstream DDB pointer
+    store = _get_correlation_store()
+    pointer = store.read_pointer(channel_key)
+    if pointer:
+        return {
+            "correlation_id": pointer["correlation_id"],
+            "root_human_id": pointer["root_human_id"],
+            "triggered_by": resolved_identity.user_id,
+            "is_human_rooted": pointer["is_human_rooted"],
+            "is_new_chain": False,
+        }
+
+    # No pointer found — bot-initiated chain (e.g. cron-like, CI-triggered)
+    return {
+        "correlation_id": str(uuid.uuid4()),
+        "root_human_id": resolved_identity.user_id,
+        "triggered_by": None,
+        "is_human_rooted": False,
+        "is_new_chain": True,
+    }
+
+
 _rate_limiter = None
 
 
@@ -492,13 +549,29 @@ def handler(event: dict, context) -> dict:
             429, {"error": "Rate limited", "retry_after": retry_after}, retry_after=retry_after
         )
 
-    # 9. Parse intent
+    # 9. Determine correlation context (read-only — no DDB writes here)
+    correlation_ctx = None
+    channel_key_str = ""
+    if event_type == "issue_comment":
+        issue_number = payload.get("issue", {}).get("number")
+        if issue_number and repo:
+            store = _get_correlation_store()
+            channel_key_str = store.channel_key("github", repo, "issue", issue_number)
+            correlation_ctx = determine_correlation(payload, resolved, channel_key_str)
+
+    # 10. Parse intent (with correlation context for chain-aware bot logic)
     from intent_parser import extract_intent
 
-    intent = extract_intent(event_type, payload)
+    intent = extract_intent(
+        event_type,
+        payload,
+        correlation_ctx=correlation_ctx,
+        resolved_identity=resolved,
+    )
 
     print(f"DBG handler:intent intent={intent!r}")
-    # 10. If no actionable intent → log + return 200 (no-op)
+    # 11. If no actionable intent → log + return 200 (no-op)
+    # IMPORTANT: Do NOT write pointer or provenance here — prevents channel poisoning
     if intent is None:
         _log_outcome(
             event_type=event_type,
@@ -512,7 +585,40 @@ def handler(event: dict, context) -> dict:
         )
         return _response(200, {"status": "no_op"})
 
-    # 11. Build envelope + publish to SQS
+    # 12. Intent is not None — write provenance + pointer (fail-soft) BEFORE SQS publish
+    if correlation_ctx and channel_key_str:
+        # Post provenance record (fail-soft)
+        try:
+            _get_gateway_client().post_provenance(
+                actor_user_id=resolved.user_id,
+                triggered_by=correlation_ctx.get("triggered_by"),
+                root_human_id=correlation_ctx["root_human_id"],
+                is_human_rooted=correlation_ctx["is_human_rooted"],
+                action_kind="webhook_trigger",
+                source_event={
+                    "event_type": event_type,
+                    "action": action,
+                    "repo": repo,
+                    "issue": payload.get("issue", {}).get("number"),
+                },
+                correlation_id=correlation_ctx["correlation_id"],
+                org_id=resolved.org_id,
+            )
+        except Exception as e:
+            logger.warning("post_provenance failed (fail-soft): %s", e)
+
+        # Write correlation pointer (fail-soft)
+        try:
+            _get_correlation_store().write_pointer(
+                key=channel_key_str,
+                correlation_id=correlation_ctx["correlation_id"],
+                root_human_id=correlation_ctx["root_human_id"],
+                is_human_rooted=correlation_ctx["is_human_rooted"],
+            )
+        except Exception as e:
+            logger.warning("write_pointer failed (fail-soft): %s", e)
+
+    # 13. Build envelope + publish to SQS
     envelope = {
         "version": "1.0",
         "channel": "github",
@@ -523,7 +629,7 @@ def handler(event: dict, context) -> dict:
             "org_id": resolved.org_id,
             "github_id": sender.get("id", 0),
             "github_login": sender.get("login", ""),
-            "is_bot": sender.get("type") == "Bot",
+            "is_bot": sender.get("type") == "Bot",  # Deprecated
         },
         "source_ref": {
             "installation_id": installation_id,
@@ -540,6 +646,11 @@ def handler(event: dict, context) -> dict:
             "trigger": intent.trigger,
             "label": intent.label,
             "persona": intent.persona,
+        },
+        "correlation": {
+            "correlation_id": correlation_ctx["correlation_id"] if correlation_ctx else "",
+            "root_human_id": correlation_ctx["root_human_id"] if correlation_ctx else "",
+            "is_human_rooted": correlation_ctx["is_human_rooted"] if correlation_ctx else True,
         },
         "payload": payload,
         "arrived_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -563,7 +674,7 @@ def handler(event: dict, context) -> dict:
         )
         return _response(500, {"error": "Failed to enqueue"})
 
-    # 12. Log event
+    # 14. Log event
     _log_outcome(
         event_type=event_type,
         action=action,
@@ -575,7 +686,7 @@ def handler(event: dict, context) -> dict:
         start_time=start_time,
     )
 
-    # 13. Return 202
+    # 15. Return 202
     return _response(202, {"status": "accepted", "message_id": message_id})
 
 

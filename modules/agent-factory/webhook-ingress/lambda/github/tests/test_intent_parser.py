@@ -1,8 +1,14 @@
-"""Tests for intent_parser.py."""
+"""Tests for intent_parser.py.
+
+Phase 2-c (#786): Tests cover chain-aware bot logic and regression guards
+for the split bot guard by event type.
+"""
 
 import json
 import sys
 from pathlib import Path
+from dataclasses import dataclass
+from unittest.mock import patch
 
 # Add parent directory to path so we can import intent_parser
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -18,6 +24,18 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 def load_fixture(name: str) -> dict:
     with open(FIXTURES_DIR / name) as f:
         return json.load(f)
+
+
+@dataclass
+class MockResolvedIdentity:
+    """Minimal mock of ResolvedIdentity for test purposes."""
+
+    tenant_id: str = "test-org"
+    org_id: str = "test-org"
+    user_id: str = "user-123"
+    user_provisioning_mode: str = "strict"
+    user_kind: str = "human"
+    bot_kind: str = ""
 
 
 # --- Issue labeled tests ---
@@ -157,9 +175,11 @@ class TestIssueCommentEvents:
         result = extract_intent("issue_comment", payload)
         assert result is None
 
-    def test_comment_by_bot_ignored(self):
+    def test_comment_by_bot_no_correlation_blocked(self):
+        """Bot comment with mention but no correlation context → blocked (safe default)."""
         payload = load_fixture("issue_comment_mention.json")
         payload["sender"] = {"login": "github-actions[bot]", "id": 777, "type": "Bot"}
+        # No correlation_ctx passed → safe default blocks
         result = extract_intent("issue_comment", payload)
         assert result is None
 
@@ -230,4 +250,233 @@ class TestEdgeCases:
             "installation": {"id": 123},
         }
         result = extract_intent("issue_comment", payload)
+        assert result is None
+
+
+# --- Phase 2-c: Chain-aware bot logic (Issue #786 test matrix) ---
+
+
+class TestChainAwareBotLogic:
+    """Test matrix from Issue #786 — all 10 cases for the chain-aware bot guard."""
+
+    def _bot_sender(self):
+        return {"login": "aws-e-adp-agent-ops[bot]", "id": 900, "type": "Bot"}
+
+    def _human_sender(self):
+        return {"login": "alice", "id": 100, "type": "User"}
+
+    def _bot_identity(self, bot_kind="operations"):
+        return MockResolvedIdentity(
+            user_kind="bot",
+            bot_kind=bot_kind,
+            user_id="bot-ops-123",
+        )
+
+    def _human_identity(self):
+        return MockResolvedIdentity(
+            user_kind="human",
+            bot_kind="",
+            user_id="user-alice-456",
+        )
+
+    def _new_chain_ctx(self):
+        return {
+            "correlation_id": "corr-new-001",
+            "root_human_id": "user-alice-456",
+            "triggered_by": None,
+            "is_human_rooted": True,
+            "is_new_chain": True,
+        }
+
+    def _active_chain_ctx(self):
+        return {
+            "correlation_id": "corr-active-002",
+            "root_human_id": "user-alice-456",
+            "triggered_by": "bot-ops-123",
+            "is_human_rooted": True,
+            "is_new_chain": False,
+        }
+
+    # 1. Human mentions bot → NEW chain → Intent
+    def test_human_mentions_bot_starts_chain(self):
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-developer please fix this"},
+            "issue": {"number": 55},
+            "sender": self._human_sender(),
+            "installation": {"id": 123},
+        }
+        ctx = self._new_chain_ctx()
+        identity = self._human_identity()
+        result = extract_intent(
+            "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
+        )
+        assert result is not None
+        assert result.persona == "developer"
+        assert result.trigger == "mentioned"
+
+    # 2. Human, no mention → None
+    def test_human_no_mention(self):
+        payload = {
+            "action": "created",
+            "comment": {"body": "Looks good to me, let's ship it."},
+            "issue": {"number": 55},
+            "sender": self._human_sender(),
+            "installation": {"id": 123},
+        }
+        ctx = self._new_chain_ctx()
+        identity = self._human_identity()
+        result = extract_intent(
+            "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
+        )
+        assert result is None
+
+    # 3. Human mentions bot, stale pointer exists → NEW chain (overrides pointer)
+    def test_human_starts_new_overrides_pointer(self):
+        """Human comment always starts a new chain even if a pointer exists."""
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-developer implement this"},
+            "issue": {"number": 55},
+            "sender": self._human_sender(),
+            "installation": {"id": 123},
+        }
+        # Even with an "active" chain ctx, human sender always creates intent
+        # (because determine_correlation for humans always returns is_new_chain=True)
+        # Here we test that the intent parser itself doesn't block humans
+        ctx = self._new_chain_ctx()  # Human always gets new chain from determine_correlation
+        identity = self._human_identity()
+        result = extract_intent(
+            "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
+        )
+        assert result is not None
+        assert result.persona == "developer"
+
+    # 4. Bot mentions another bot, NO pointer → NEW chain → Intent
+    @patch("intent_parser._emit_metric")
+    def test_bot_starts_new_subchain(self, mock_metric):
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-developer please implement this fix"},
+            "issue": {"number": 55},
+            "sender": self._bot_sender(),
+            "installation": {"id": 123},
+        }
+        ctx = self._new_chain_ctx()
+        identity = self._bot_identity(bot_kind="operations")
+        result = extract_intent(
+            "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
+        )
+        assert result is not None
+        assert result.persona == "developer"
+        assert result.trigger == "mentioned"
+        # Verify BotToBotTrigger metric emitted
+        mock_metric.assert_called_with(
+            "BotToBotTrigger",
+            {"source_bot": "operations", "target_persona": "developer"},
+        )
+
+    # 5. Bot mentions another bot, pointer EXISTS → blocked (continuation)
+    @patch("intent_parser._emit_metric")
+    def test_bot_in_active_chain_blocked(self, mock_metric):
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-developer please implement this fix"},
+            "issue": {"number": 55},
+            "sender": self._bot_sender(),
+            "installation": {"id": 123},
+        }
+        ctx = self._active_chain_ctx()  # is_new_chain = False
+        identity = self._bot_identity(bot_kind="operations")
+        result = extract_intent(
+            "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
+        )
+        assert result is None
+        # Verify BotChainContinuationBlocked metric emitted
+        mock_metric.assert_called_with(
+            "BotChainContinuationBlocked",
+            {"persona": "developer"},
+        )
+
+    # 6. Bot self-mention → blocked
+    def test_bot_self_mention_blocked(self):
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-operations let me think about this more"},
+            "issue": {"number": 55},
+            "sender": self._bot_sender(),
+            "installation": {"id": 123},
+        }
+        ctx = self._new_chain_ctx()
+        # Bot kind matches the persona it's mentioning
+        identity = self._bot_identity(bot_kind="operations")
+        result = extract_intent(
+            "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
+        )
+        assert result is None
+
+    # 7. Bot, no mention → None
+    def test_bot_no_mention(self):
+        payload = {
+            "action": "created",
+            "comment": {"body": "PR Ready for Review — all checks passing."},
+            "issue": {"number": 55},
+            "sender": self._bot_sender(),
+            "installation": {"id": 123},
+        }
+        ctx = self._new_chain_ctx()
+        identity = self._bot_identity(bot_kind="operations")
+        result = extract_intent(
+            "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
+        )
+        assert result is None
+
+    # 8. REGRESSION GUARD: Bot applies label → still blocked (top-level guard preserved)
+    def test_bot_label_event_still_blocked(self):
+        """Bot-applied labels must STILL be blocked by the top-level guard."""
+        payload = {
+            "action": "labeled",
+            "label": {"name": "developer"},
+            "issue": {"number": 1},
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "github-actions[bot]", "id": 777, "type": "Bot"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issues", payload)
+        assert result is None
+
+    # 9. REGRESSION GUARD: Bot opens PR → still blocked (top-level guard preserved)
+    def test_bot_pr_event_still_blocked(self):
+        """Bot-opened PRs (e.g. Dependabot) must STILL be blocked."""
+        payload = {
+            "action": "opened",
+            "pull_request": {"number": 42, "head": {"sha": "abc123"}},
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "dependabot[bot]", "id": 777, "type": "Bot"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("pull_request", payload)
+        assert result is None
+
+    # 10. REGRESSION GUARD: Bot no-op does NOT poison channel
+    def test_bot_noop_does_not_poison_channel(self):
+        """A bot comment with no mention returns None — handler must NOT write pointer.
+
+        This test verifies intent is None, which means the handler's
+        order-of-operations logic (pointer write AFTER intent parse) will
+        not write a pointer for this event.
+        """
+        payload = {
+            "action": "created",
+            "comment": {"body": "Build succeeded. No issues found."},
+            "issue": {"number": 55},
+            "sender": self._bot_sender(),
+            "installation": {"id": 123},
+        }
+        ctx = self._new_chain_ctx()
+        identity = self._bot_identity(bot_kind="operations")
+        result = extract_intent(
+            "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
+        )
+        # No mention in body → None. Handler will NOT write pointer.
         assert result is None
