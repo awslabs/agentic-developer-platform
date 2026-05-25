@@ -650,3 +650,54 @@ ignore:
     # 7.8 HIGH — NSS vulnerability; image uses Python ssl, not NSS
     package:
       name: libnss3
+
+  # ============================================================================
+  # Multi-image OS library HIGH CVEs (agent-worker, agent-mail, and others).
+  # These are container base-image dependencies not exposed to untrusted input
+  # in their respective workloads.
+  # Re-evaluate quarterly (next: 2026-08-25).
+  # Source: High loop cycle 8 (#615).
+  # ============================================================================
+
+  # CVE-2018-6829: Theoretical side-channel attack on Elgamal encryption.
+  # Neither container performs Elgamal operations.
+  - vulnerability: CVE-2018-6829
+    package:
+      name: libgcrypt20
+
+  # CVE-2023-2953: Null pointer deref in ldap_ber_free.
+  # Neither container uses OpenLDAP client libraries at runtime.
+  - vulnerability: CVE-2023-2953
+    package:
+      name: libldap-2.5-0
+
+  # CVE-2023-31486: HTTP::Tiny no TLS cert verification.
+  # Perl is build-time only; not invoked at runtime for network ops.
+  - vulnerability: CVE-2023-31486
+    package:
+      name: perl
+  - vulnerability: CVE-2023-31486
+    package:
+      name: libperl5.36
+
+  # CVE-2024-28757: XML entity expansion DoS.
+  # These containers do not parse untrusted XML via expat.
+  - vulnerability: CVE-2024-28757
+    package:
+      name: libexpat1
+
+  # CVE-2025-0725: Content-encoding buffer overflow in curl.
+  # Curl used only for internal health checks against trusted endpoints.
+  - vulnerability: CVE-2025-0725
+    package:
+      name: curl
+  - vulnerability: CVE-2025-0725
+    package:
+      name: libcurl4
+
+  # CVE-2025-59375: Expat XML parsing vulnerability.
+  # No untrusted XML parsing in any of these containers.
+  # Affects: agent-worker, agent-mail, codegraph-context, ingestion, gateway, cyber-workers.
+  - vulnerability: CVE-2025-59375
+    package:
+      name: libexpat1
