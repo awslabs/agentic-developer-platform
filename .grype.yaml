@@ -819,10 +819,10 @@ ignore:
       name: sudo
 
   # ============================================================================
-  # Agent-mail: dpkg 8.2 HIGH — no Debian stable fix available.
-  # CVE-2025-6297 affects dpkg in Debian bookworm. No patched version exists
-  # for this distribution. Container does not accept untrusted .deb inputs;
-  # dpkg is only present as a base-image package manager component.
+  # CVE-2025-6297 (8.2 HIGH) — dpkg in Debian base image. Affects both
+  # agent-mail and agent-worker-image. No fix available in Debian stable.
+  # Containers do not accept untrusted .deb inputs; dpkg is only used as a
+  # base-image package manager component during image build.
   # Re-evaluate quarterly (next: 2026-08-25).
   # Source: https://security-tracker.debian.org/tracker/CVE-2025-6297
   # ============================================================================

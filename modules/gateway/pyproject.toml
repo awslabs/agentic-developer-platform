@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Multi-tenant SaaS proxy for Amazon Bedrock"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi==0.115.6",
+    "fastapi==0.115.14",
     "uvicorn==0.34.0",
     "sqlalchemy[asyncio]==2.0.46",
     "asyncpg==0.30.0",
