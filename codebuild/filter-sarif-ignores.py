@@ -54,7 +54,9 @@ def filter_sarif(sarif_path: str, ignore_cves: set[str]) -> dict:
     for run in sarif.get("runs", []):
         original_results = run.get("results", [])
         run["results"] = [
-            r for r in original_results if r.get("ruleId") not in ignore_cves
+            r
+            for r in original_results
+            if not any(r.get("ruleId", "").startswith(cve) for cve in ignore_cves)
         ]
 
     return sarif
