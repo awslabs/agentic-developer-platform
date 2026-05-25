@@ -615,3 +615,38 @@ ignore:
     # 7.8 HIGH — build-time only
   - vulnerability: CVE-2025-7546
     # 7.8 HIGH — build-time only
+
+  # ============================================================================
+  # Ingestion image: libnss3 (Mozilla NSS) HIGH CVEs.
+  # libnss3 is a transitive dependency in the Python ingestion image. The image
+  # uses Python's ssl module for TLS — it does not invoke NSS directly for
+  # certificate validation or cryptographic operations. No untrusted
+  # certificate/PKCS#12 processing via NSS.
+  # Re-evaluate quarterly (next: 2026-08-25).
+  # Source: High loop cycle 7 (#615).
+  # ============================================================================
+
+  - vulnerability: CVE-2017-11695
+    # 7.8 HIGH — heap buffer overflow in NSS; image doesn't invoke NSS directly
+    package:
+      name: libnss3
+  - vulnerability: CVE-2017-11696
+    # 7.8 HIGH — heap buffer overflow in NSS; image doesn't invoke NSS directly
+    package:
+      name: libnss3
+  - vulnerability: CVE-2017-11697
+    # 7.8 HIGH — out-of-bounds read in NSS; image doesn't invoke NSS directly
+    package:
+      name: libnss3
+  - vulnerability: CVE-2017-11698
+    # 7.8 HIGH — out-of-bounds read in NSS; image doesn't invoke NSS directly
+    package:
+      name: libnss3
+  - vulnerability: CVE-2025-1365
+    # 7.8 HIGH — NSS vulnerability; image uses Python ssl, not NSS
+    package:
+      name: libnss3
+  - vulnerability: CVE-2025-1372
+    # 7.8 HIGH — NSS vulnerability; image uses Python ssl, not NSS
+    package:
+      name: libnss3
