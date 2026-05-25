@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
 from src.admin.config import Permission
+from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 from src.usage.config import AggregationInterval
@@ -20,23 +21,6 @@ from src.usage.schemas import (
 from src.usage.service import UsageService
 
 router = APIRouter(prefix="/usage", tags=["usage"])
-
-
-# Dependency to get current user context
-async def get_current_user() -> TokenContext:
-    """Get the current authenticated user context.
-
-    Note: In production, this would be populated by auth middleware.
-    """
-    return TokenContext(
-        user_id="system",
-        org_id="system",
-        team_id="system",
-        department_id="system",
-        account_type="service",
-        is_admin=True,
-        expires_at=datetime.now(),
-    )
 
 
 async def get_usage_service(db: Annotated[AsyncSession, Depends(get_db)]) -> UsageService:

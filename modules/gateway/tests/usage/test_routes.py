@@ -9,9 +9,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.admin.access_control import AccessControl
+from src.auth.dependencies import get_current_user
 from src.shared.schemas.auth import TokenContext
 from src.usage.config import AggregationInterval
-from src.usage.routes import get_access_control, get_current_user, get_usage_service, router
+from src.usage.routes import get_access_control, get_usage_service, router
 from src.usage.schemas import (
     UsageByModelResponse,
     UsageByOrganizationResponse,
