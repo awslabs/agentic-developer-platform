@@ -817,3 +817,16 @@ ignore:
   - vulnerability: CVE-2023-42465
     package:
       name: sudo
+
+  # ============================================================================
+  # Agent-mail: dpkg 8.2 HIGH — no Debian stable fix available.
+  # CVE-2025-6297 affects dpkg in Debian bookworm. No patched version exists
+  # for this distribution. Container does not accept untrusted .deb inputs;
+  # dpkg is only present as a base-image package manager component.
+  # Re-evaluate quarterly (next: 2026-08-25).
+  # Source: https://security-tracker.debian.org/tracker/CVE-2025-6297
+  # ============================================================================
+
+  - vulnerability: CVE-2025-6297
+    package:
+      name: dpkg

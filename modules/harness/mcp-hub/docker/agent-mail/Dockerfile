@@ -25,6 +25,11 @@ WORKDIR /app
 RUN git clone --depth 1 https://github.com/Dicklesworthstone/mcp_agent_mail.git . && \
     uv pip install --system -e .
 
+# Apply security constraints to bump vulnerable transitive deps
+# (authlib >=1.6.0 for GHSA-9ggr/GHSA-pq5p, fastmcp >=2.14.0 for GHSA-rcfx)
+COPY constraints.txt /tmp/constraints.txt
+RUN uv pip install --system -r /tmp/constraints.txt && rm /tmp/constraints.txt
+
 # Create data directory with correct ownership
 RUN mkdir -p /data && chown 10001:10001 /data
 
