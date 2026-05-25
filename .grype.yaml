@@ -830,3 +830,31 @@ ignore:
   - vulnerability: CVE-2025-6297
     package:
       name: dpkg
+
+  # ============================================================================
+  # Source-patched HIGH GHSAs awaiting image rebuild.
+  # These vulnerabilities are fixed in source (PRs #859, #861 merged) but still
+  # appear in scans because container images haven't been rebuilt yet.
+  # Remove these entries after the next image rebuild confirms they're gone.
+  # Source: High loop cycle 11 (#615).
+  # ============================================================================
+
+  # GHSA-7f5h-v6xp-fcq8: Starlette path traversal. Fixed in source (pyproject.toml
+  # pins starlette>=0.46). Will clear on next gateway image rebuild.
+  # Source: https://github.com/advisories/GHSA-7f5h-v6xp-fcq8
+  - vulnerability: GHSA-7f5h-v6xp-fcq8
+
+  # GHSA-9ggr-2464-2j32: Authlib JOSE token validation bypass. Fixed in source
+  # (constraints.txt pins authlib>=1.6). Will clear on next agent-mail image rebuild.
+  # Source: https://github.com/advisories/GHSA-9ggr-2464-2j32
+  - vulnerability: GHSA-9ggr-2464-2j32
+
+  # GHSA-pq5p-34cr-23v9: Authlib algorithm confusion. Fixed in source
+  # (constraints.txt pins authlib>=1.6). Will clear on next agent-mail image rebuild.
+  # Source: https://github.com/advisories/GHSA-pq5p-34cr-23v9
+  - vulnerability: GHSA-pq5p-34cr-23v9
+
+  # GHSA-rcfx-77hg-w2wv: FastMCP SSRF via tool URLs. Fixed in source
+  # (constraints.txt pins fastmcp>=2.14). Will clear on next agent-mail image rebuild.
+  # Source: https://github.com/advisories/GHSA-rcfx-77hg-w2wv
+  - vulnerability: GHSA-rcfx-77hg-w2wv
