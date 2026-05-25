@@ -26,8 +26,11 @@ from pathlib import Path
 import boto3
 
 from lib.check_run import create_check_run, update_check_run
+from lib.correlation_marker import prepend_correlation_marker
+from lib.correlation_store import write_pointer
 from lib.gateway_credential_client import GatewayCredentialClient, GatewayCredentialError
 from lib.github_token import mint_installation_token
+from lib.provenance_client import post_provenance
 from lib.vault_client import VaultClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -124,13 +127,26 @@ def main() -> int:
     message_id = envelope.get("message_id", "")
     actor = envelope.get("actor", {})
 
+    # Read correlation context from SQS envelope (Phase 2-c adds these fields)
+    correlation_id = envelope.get("correlation_id", "")
+    root_human_id = envelope.get("root_human_id", "")
+    is_human_rooted = envelope.get("is_human_rooted", False)
+
+    # Expose correlation context as env vars for the Node agent runtime
+    if correlation_id:
+        os.environ["ADP_CORRELATION_ID"] = correlation_id
+    if root_human_id:
+        os.environ["ADP_ROOT_HUMAN_ID"] = root_human_id
+    os.environ["ADP_IS_HUMAN_ROOTED"] = "true" if is_human_rooted else "false"
+
     repo_owner, repo_name = repo.split("/", 1)
     logger.info(
-        "Processing: tenant=%s persona=%s repo=%s issue=#%s",
+        "Processing: tenant=%s persona=%s repo=%s issue=#%s correlation=%s",
         tenant_id,
         persona,
         repo,
         issue,
+        correlation_id or "(none)",
     )
 
     # Step 2: Fetch GitHub App credentials from vault
@@ -347,6 +363,8 @@ def main() -> int:
         f"{_live_link}\n\n"
         f"_Run ID: `{message_id}`_"
     )
+    # Prepend correlation marker (Phase 2-d)
+    started_body = prepend_correlation_marker(started_body)
     try:
         # Check for existing comment with this marker (idempotency)
         existing = run_cmd(
@@ -369,6 +387,8 @@ def main() -> int:
                 ["gh", "issue", "comment", str(issue), "--body", started_body, "-R", repo],
                 env={**os.environ},
             )
+            # On success: write pointer + provenance (fail-soft)
+            _write_outbound_correlation(repo, f"issue:{issue}", "comment_post")
     except subprocess.CalledProcessError:
         logger.warning("Failed to post started comment (non-fatal)")
 
@@ -628,6 +648,8 @@ def _handle_success(
             pass
 
         if not pr_already_exists:
+            pr_body = f"Automated work by agent `{persona}` for #{issue}.\n\nRun ID: `{message_id}`"
+            pr_body = prepend_correlation_marker(pr_body)
             run_cmd(
                 [
                     "gh",
@@ -636,7 +658,7 @@ def _handle_success(
                     "--title",
                     f"[{persona}] Agent work for #{issue}",
                     "--body",
-                    f"Automated work by agent `{persona}` for #{issue}.\n\nRun ID: `{message_id}`",
+                    pr_body,
                     "--head",
                     branch,
                     "-R",
@@ -644,6 +666,8 @@ def _handle_success(
                 ],
                 env={**os.environ},
             )
+            # On success: write pointer + provenance for the PR (fail-soft)
+            _write_outbound_correlation(repo, f"pr:{branch}", "pr_create")
         _post_comment(
             repo,
             issue,
@@ -667,10 +691,58 @@ def _handle_failure(
     return exit_code
 
 
+def _write_outbound_correlation(repo: str, channel_suffix: str, action_kind: str) -> None:
+    """Write DDB pointer + provenance after a successful outbound GitHub action.
+
+    Fail-soft: logs warnings but never raises. Called only after the GitHub API
+    call succeeded (Phase 2-d order of operations).
+    """
+    corr = os.environ.get("ADP_CORRELATION_ID", "")
+    root = os.environ.get("ADP_ROOT_HUMAN_ID", "")
+    rooted = os.environ.get("ADP_IS_HUMAN_ROOTED", "false") == "true"
+
+    if not corr or not root:
+        return  # No correlation context — skip silently
+
+    channel_key = f"github:{repo}:{channel_suffix}"
+
+    # DDB pointer write (fail-soft)
+    try:
+        write_pointer(
+            channel_key=channel_key,
+            correlation_id=corr,
+            root_human_id=root,
+            is_human_rooted=rooted,
+        )
+    except Exception as exc:
+        logger.warning("Outbound correlation pointer write failed (non-fatal): %s", exc)
+
+    # Provenance POST (fail-soft)
+    try:
+        user_id = os.environ.get("ADP_USER_ID", "")
+        post_provenance(
+            actor_user_id=user_id,
+            triggered_by=None,
+            root_human_id=root,
+            is_human_rooted=rooted,
+            action_kind=action_kind,
+            source_event="worker:entrypoint",
+            correlation_id=corr,
+        )
+    except Exception as exc:
+        logger.warning("Outbound provenance post failed (non-fatal): %s", exc)
+
+
 def _post_comment(
     repo: str, issue: int, message_id: str, status: str, body: str, check_run_url: str = ""
 ) -> None:
-    """Post an idempotent comment (checks for existing marker)."""
+    """Post an idempotent comment (checks for existing marker).
+
+    Order of operations (Phase 2-d):
+      1. Prepend correlation marker (no I/O)
+      2. Post to GitHub via gh CLI
+      3. On success only: write DDB pointer + post provenance (fail-soft)
+    """
     marker = f"<!-- adp-{status}:{message_id} -->"
     run_details = (
         f"\n\n**Run details:** [View run ↗]({check_run_url})"
@@ -678,6 +750,8 @@ def _post_comment(
         else ""
     )
     full_body = f"{marker}\n{body}{run_details}"
+    # Step 1: Prepend correlation marker
+    full_body = prepend_correlation_marker(full_body)
     try:
         existing = run_cmd(
             [
@@ -695,10 +769,13 @@ def _post_comment(
             env={**os.environ},
         )
         if not existing.stdout.strip():
+            # Step 2: GitHub API call
             run_cmd(
                 ["gh", "issue", "comment", str(issue), "--body", full_body, "-R", repo],
                 env={**os.environ},
             )
+            # Step 3: On success — write pointer + provenance (fail-soft)
+            _write_outbound_correlation(repo, f"issue:{issue}", "comment_post")
     except subprocess.CalledProcessError:
         logger.warning("Failed to post %s comment", status)
 

@@ -35,6 +35,11 @@ import {
 // Live status comment — edit-in-place progress on GitHub issues
 import { LiveStatusComment, createWorkerStages } from './github-comments';
 
+// Correlation propagation — Phase 2-d (EPIC #779)
+import { prependCorrelationMarker } from './lib/correlationMarker';
+import { writePointer } from './lib/correlationStore';
+import { postProvenance } from './lib/provenanceClient';
+
 // Check Run Streamer — per-turn live streaming to GitHub Check Run output
 import { CheckRunStreamer } from './components/checkRunStreamer';
 
@@ -418,12 +423,16 @@ function findMainIssue(issueBody: string): number | null {
 async function postToMainIssue(mainIssueNumber: number | null, body: string): Promise<void> {
   const targetIssue = mainIssueNumber || parseInt(ISSUE_NUMBER);
   log('INFO', `Posting update to issue #${targetIssue}...`);
+  // Phase 2-d: prepend correlation marker before posting
+  const markedBody = prependCorrelationMarker(body);
   const tmpFile = `/tmp/comment-${Date.now()}.md`;
-  fs.writeFileSync(tmpFile, body);
+  fs.writeFileSync(tmpFile, markedBody);
   try {
     // Refresh token before posting
     await refreshAppToken();
     await gh(`issue comment ${targetIssue} --body-file "${tmpFile}"`);
+    // Phase 2-d: On success — write pointer + provenance (fail-soft)
+    writeOutboundCorrelation(`issue:${targetIssue}`, 'comment_post');
   } catch (err) {
     log('WARN', `GitHub post failed, saving to S3 fallback: ${(err as Error).message}`);
     try {
@@ -433,7 +442,7 @@ async function postToMainIssue(mainIssueNumber: number | null, body: string): Pr
       await s3.send(new PutObjectCommand({
         Bucket: process.env.AGENT_FALLBACK_BUCKET || 'adp-agent-state',
         Key: key,
-        Body: body,
+        Body: markedBody,
         ContentType: 'text/markdown',
       }));
       log('INFO', `Comment saved to s3://${process.env.AGENT_FALLBACK_BUCKET || 'adp-agent-state'}/${key}`);
@@ -444,6 +453,38 @@ async function postToMainIssue(mainIssueNumber: number | null, body: string): Pr
   } finally {
     try { fs.unlinkSync(tmpFile); } catch {}
   }
+}
+
+/**
+ * Write DDB pointer + provenance after a successful outbound GitHub action.
+ * Fail-soft: logs warnings but never throws. (Phase 2-d)
+ */
+function writeOutboundCorrelation(channelSuffix: string, actionKind: string): void {
+  const correlationId = process.env.ADP_CORRELATION_ID || '';
+  const rootHumanId = process.env.ADP_ROOT_HUMAN_ID || '';
+  const isHumanRooted = process.env.ADP_IS_HUMAN_ROOTED === 'true';
+
+  if (!correlationId || !rootHumanId) return;
+
+  const repo = `${REPO_OWNER}/${REPO_NAME}`;
+  const channelKey = `github:${repo}:${channelSuffix}`;
+
+  // Fire-and-forget — don't await, don't block the agent
+  writePointer(channelKey, correlationId, rootHumanId, isHumanRooted).catch(err => {
+    log('WARN', `Correlation pointer write failed (non-fatal): ${(err as Error).message}`);
+  });
+
+  postProvenance({
+    actorUserId: process.env.ADP_USER_ID || '',
+    triggeredBy: null,
+    rootHumanId,
+    isHumanRooted,
+    actionKind,
+    sourceEvent: 'worker:agent-runtime',
+    correlationId,
+  }).catch(err => {
+    log('WARN', `Provenance post failed (non-fatal): ${(err as Error).message}`);
+  });
 }
 
 async function postComment(body: string): Promise<void> {

@@ -204,6 +204,25 @@ resource "aws_iam_role_policy" "agent_scaledjob_agentcore_browser" {
 # hits AccessDenied and falls back to inline base64 (PR #502's resilience
 # path), meaning no evidence ever lands in S3.
 
+# --- DynamoDB: write correlation pointers (Phase 2-d, EPIC #779) ---
+
+resource "aws_iam_role_policy" "agent_scaledjob_dynamodb_correlation" {
+  name = "dynamodb-correlation-pointers"
+  role = aws_iam_role.agent_scaledjob.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "CorrelationPointerWrite"
+      Effect = "Allow"
+      Action = [
+        "dynamodb:PutItem"
+      ]
+      Resource = "arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/adp-${var.environment}-correlation-pointers"
+    }]
+  })
+}
+
 resource "aws_iam_role_policy" "agent_scaledjob_url_analysis_evidence" {
   name = "url-analysis-evidence-s3"
   role = aws_iam_role.agent_scaledjob.id
