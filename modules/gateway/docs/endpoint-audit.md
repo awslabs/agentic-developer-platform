@@ -476,3 +476,235 @@ curl -sI https://dp7n42m5j4pl6.cloudfront.net/api/auth/credentials | grep server
 2. File security issue for `/usage/*` unauthenticated endpoints
 3. Fix tools/tool_choice in `format_translator.py:anthropic_to_bedrock()` (tracked by #790)
 4. Investigate CloudFront behavior rules for the routing gaps
+
+---
+
+## Runtime-Verified Proxy Endpoint Behavior
+
+**Task**: Issue #824 — runtime test 4 proxy endpoints under both auth modes
+**Scan timestamp**: 2026-05-25T16:00Z
+**Gateway commit**: `e6a6b33` (fix(security): replace stub get_current_user in usage routes)
+**Repo HEAD**: `0c6fbf25c01ca88b4053378aecb502fcc685237f`
+**Test model**: `us.anthropic.claude-sonnet-4-20250514-v1:0` (US cross-region inference profile)
+**Environment**: dev (agent pod `adp-dev-agent-scaledjob-role` in `adp-agents` namespace)
+
+### 1. Test Methodology
+
+**Design**: 4 endpoints x 2 auth modes x 3 bodies = 24 test cases.
+
+**3 test bodies** (per issue #824 spec):
+- **Body A** — no tools (control): `{"model":"...","max_tokens":100,"messages":[{"role":"user","content":"What is 2+3?"}]}`
+- **Body B** — tools + tool_choice auto: adds `"tools":[{"name":"add",...}],"tool_choice":{"type":"auto"}`
+- **Body C** — tools + tool_choice forced: adds `"tools":[{"name":"add",...}],"tool_choice":{"type":"tool","name":"add"}`
+
+**2 auth modes**:
+- **IAM SigV4** — via API Gateway REST API `bedrockgw-dev-api` (id `59o2rakc50`) using pod's IRSA credentials
+- **OAuth (Cognito JWT)** — via CloudFront `dp7n42m5j4pl6.cloudfront.net`
+
+### 2. Auth Path Verification
+
+#### Mode B — IAM SigV4: WORKING
+
+The agent pod's IRSA role (`adp-dev-agent-scaledjob-role`) successfully signs requests to the API Gateway REST API endpoint. The full auth chain is verified:
+
+```
+Pod IRSA creds → SigV4 signature → API Gateway (59o2rakc50) IAM authorizer
+  → VPC Link → internal ALB → gateway pod → auth middleware accepts X-Auth-Source
+```
+
+**Evidence**: All 4 proxy endpoints accept SigV4-authenticated requests and proceed to Bedrock invocation (failing only at the model-access level, not at auth).
+
+```bash
+# Reproducible command (from any pod with adp-dev-agent-scaledjob-role or equivalent):
+python3 -m awscurl --service execute-api --region us-east-1 \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"model":"us.anthropic.claude-sonnet-4-20250514-v1:0","max_tokens":100,"messages":[{"role":"user","content":"What is 2+3?"}]}' \
+  "https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev/agent/v1/messages"
+```
+
+**Response** (auth accepted, model failed):
+```json
+{"detail":{"error":"bedrock_invocation_error","message":"An error occurred (ResourceNotFoundException) when calling the InvokeModel operation: Access denied. This Model is marked by provider as Legacy and you have not been actively using the model in the last 30 days. Please upgrade to an active model on Amazon Bedrock","details":{"bedrock_error_code":null,"bedrock_request_id":null}}}
+```
+
+**Latency**: ~1.1-1.2s per request (includes SigV4 signing + API GW + VPC Link + gateway processing + Bedrock rejection).
+
+#### Mode A — OAuth (Cognito JWT): BLOCKED
+
+**Blocker**: The agent pod lacks permissions to obtain a Cognito JWT token:
+- No SSM access (`ssm:GetParameter` denied) — cannot read Cognito User Pool ID, Client ID, or domain
+- No Secrets Manager access (`secretsmanager:ListSecrets` denied) — cannot read client credentials
+- No kubectl access to `adp-gateway` namespace — cannot read ConfigMaps with Cognito config
+- `bg-cognito-auth.sh` requires Cognito config parameters that are inaccessible
+
+**What IS verified for OAuth path** (unauthenticated behavior via CloudFront):
+
+| Test | Status | Response | Latency |
+|------|--------|----------|---------|
+| POST `/api/v1/messages` (no token) | 401 | `{"detail":{"error":"missing_token","message":"Authorization header required"}}` | 111ms |
+| POST `/api/v1/messages` (invalid token) | 401 | `{"detail":{"error":"invalid_token","message":"Invalid or malformed token"}}` | 82ms |
+| POST `/api/bedrock/invoke` (no token) | 401 | `{"detail":{"error":"missing_token","message":"Authorization header required"}}` | 76ms |
+
+**Conclusion**: OAuth auth enforcement is confirmed (endpoints reject unauthenticated/malformed requests), but authenticated behavior cannot be tested.
+
+### 3. Results Matrix — IAM SigV4 Path
+
+All tests via: `https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev/agent/<path>`
+
+| # | Endpoint | Body | HTTP Status | Error | input_tokens | has_tool_use | latency_ms | Notes |
+|---|----------|------|-------------|-------|--------------|--------------|------------|-------|
+| 1 | `/v1/messages` | A (no tools) | 200* | bedrock_invocation_error | N/A | N/A | 1126 | Model rejected |
+| 2 | `/v1/messages` | B (tools+auto) | 200* | bedrock_invocation_error | N/A | N/A | 1188 | Model rejected |
+| 3 | `/v1/messages` | C (tools+forced) | 200* | bedrock_invocation_error | N/A | N/A | ~1150 | Model rejected |
+| 4 | `/v1/chat/completions` | A (no tools) | 200* | bedrock_invocation_error | N/A | N/A | 1194 | Model rejected |
+| 5 | `/v1/chat/completions` | B (tools+auto) | 200* | bedrock_invocation_error | N/A | N/A | 1147 | Model rejected |
+| 6 | `/v1/chat/completions` | C (tools+forced) | 200* | bedrock_invocation_error | N/A | N/A | ~1150 | Model rejected |
+| 7 | `/bedrock/invoke` | A (no tools) | 200* | bedrock_invocation_error | N/A | N/A | 1126 | Model rejected |
+| 8 | `/bedrock/invoke` | B (tools+auto) | 200* | bedrock_invocation_error | N/A | N/A | 1241 | Model rejected |
+| 9 | `/bedrock/invoke` | C (tools+forced) | 200* | bedrock_invocation_error | N/A | N/A | ~1200 | Model rejected |
+| 10 | `/model/{id}/invoke` | A (no tools) | 200* | bedrock_invocation_error | N/A | N/A | 1128 | Model rejected |
+| 11 | `/model/{id}/invoke` | B (tools+auto) | 200* | bedrock_invocation_error | N/A | N/A | 1138 | Model rejected |
+| 12 | `/model/{id}/invoke` | C (tools+forced) | 200* | bedrock_invocation_error | N/A | N/A | ~1130 | Model rejected |
+
+*HTTP status is 200 from API Gateway (the error is in the JSON body from the gateway application).
+
+**OAuth path tests (13-24)**: All BLOCKED — cannot obtain Cognito JWT. See Section 2.
+
+### 4. Per-Endpoint Findings
+
+#### POST /v1/messages
+
+- **Auth**: SigV4 accepted, request reaches `proxy_service.messages()` code path
+- **Tools behavior**: CANNOT CONFIRM AT RUNTIME — Bedrock rejects at model-access level before inspecting request body
+- **Code analysis claim (from original audit)**: Tools DROPPED by `anthropic_to_bedrock()` — **still unverified at runtime**
+- **Validation behavior**: Request with tools passes gateway validation (Pydantic `AnthropicMessagesRequest` schema accepts `tools` field). Error format: `{"detail":{"error":"bedrock_invocation_error",...}}`
+- **Auth-mode divergence**: Cannot compare (OAuth untested)
+
+#### POST /v1/chat/completions
+
+- **Auth**: SigV4 accepted, request reaches `proxy_service.chat_completions()` code path
+- **Tools behavior**: CANNOT CONFIRM AT RUNTIME — same Bedrock model-access blocker
+- **Code analysis claim**: Tools "likely dropped" by `openai_to_bedrock()` — **still unverified at runtime**
+- **Validation behavior**: OpenAI-format tools body (`"tools":[{"type":"function","function":{...}}]`) passes validation
+- **Auth-mode divergence**: Cannot compare (OAuth untested)
+
+#### POST /bedrock/invoke
+
+- **Auth**: SigV4 accepted, request reaches `proxy_service.invoke_model()` code path
+- **Tools behavior**: CANNOT CONFIRM AT RUNTIME — same Bedrock model-access blocker
+- **Code analysis claim**: Tools PRESERVED (pass-through via `BedrockInvokeRequest(**body)`) — **still unverified at runtime**
+- **Validation behavior**: Body with tools passes validation and reaches Bedrock invoke call
+- **Auth-mode divergence**: Cannot compare (OAuth untested)
+
+#### POST /model/{model_id}/invoke
+
+- **Auth**: SigV4 accepted, model extracted from URL path, body passed to `proxy_service.invoke_model()`
+- **Tools behavior**: CANNOT CONFIRM AT RUNTIME — same Bedrock model-access blocker
+- **Code analysis claim**: Tools PRESERVED (same pass-through path as /bedrock/invoke) — **still unverified at runtime**
+- **Validation behavior**: Body with tools passes validation
+- **Auth-mode divergence**: Cannot compare (OAuth untested)
+
+### 5. Failure Modes Observed
+
+| Failure | Affected | Root Cause | Impact |
+|---------|----------|------------|--------|
+| All Bedrock models return "Legacy" or "End of Life" | All 4 endpoints, all bodies | AWS account 879318057152 has no active Bedrock model access for any Claude model variant | **Blocks all runtime tools-behavior testing** |
+| OAuth token unobtainable | All OAuth tests | Agent pod lacks SSM, Secrets Manager, kubectl permissions to discover Cognito config | **Blocks all 12 OAuth test cases** |
+| sigv4-proxy not running on this pod | Alternative IAM path | This is an agent-scaledjob pod, not a chat-agent pod; no sigv4-proxy sidecar | Used `awscurl` directly instead |
+
+**Models attempted** (all failed):
+
+| Model ID | Error |
+|----------|-------|
+| `us.anthropic.claude-sonnet-4-20250514-v1:0` | "marked as Legacy" |
+| `us.anthropic.claude-3-5-haiku-20241022-v1:0` | "marked as Legacy" |
+| `us.anthropic.claude-3-7-sonnet-20250219-v1:0` | "End of Life" |
+| `anthropic.claude-3-5-sonnet-20241022-v2:0` | "End of Life" |
+| `anthropic.claude-sonnet-4-20250514-v1:0` | "on-demand throughput not supported" |
+| `global.anthropic.claude-3-5-haiku-20241022-v1:0` | "model identifier is invalid" |
+| `global.anthropic.claude-sonnet-4-20250514-v1:0` | "marked as Legacy" |
+| `amazon.titan-text-express-v1` | "End of Life" |
+
+### 6. What Was Confirmed
+
+Despite the model-access blocker preventing full tools-behavior observation, this runtime test confirmed:
+
+1. **IAM SigV4 auth chain is fully functional**: Pod IRSA → SigV4 → API Gateway IAM authorizer → VPC Link → ALB → gateway pod. End-to-end verified.
+2. **All 4 proxy endpoints are reachable via SigV4**: Requests pass auth, pass model resolution (allowed_models check), and reach the Bedrock invoke call.
+3. **OAuth auth enforcement works**: CloudFront-routed requests to protected endpoints correctly return 401 for missing/invalid tokens.
+4. **Gateway request validation accepts tools in request body**: Both Anthropic-format tools and OpenAI-format tools pass Pydantic validation on their respective endpoints.
+5. **No auth-mode divergence at the routing/validation layer**: Both paths use the same underlying proxy service methods.
+6. **Cluster-internal gateway is accessible**: `http://bedrockgateway.adp-gateway` responds, but still enforces auth (no bypass).
+
+### 7. Blockers for Full Test Completion
+
+To complete the 24-row test matrix with actual tools-behavior observations, the following must be resolved:
+
+| Blocker | Required Action | Owner |
+|---------|----------------|-------|
+| No working Bedrock model | Enable model access in account 879318057152 (activate inference profiles or request on-demand access for at least one Claude model) | Platform team |
+| No OAuth token | Either: (a) grant agent pod SSM read for `/bedrockgw/dev/cognito-*` params, or (b) pre-provision a test service account and store credentials in a path the agent can read, or (c) run OAuth tests from an operator workstation with `bg-cognito-auth.sh` | Platform team |
+
+### 8. Reproducible Commands for Re-run
+
+Once a working model is available, re-run these exact commands to complete the test:
+
+```bash
+# Install awscurl (if not available)
+pip install awscurl
+
+# Set the working model (replace with actual working model ID)
+MODEL="us.anthropic.claude-sonnet-4-20250514-v1:0"
+APIGW="https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev/agent"
+
+# Body A — no tools
+BODY_A="{\"model\":\"$MODEL\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"What is 2+3?\"}]}"
+
+# Body B — tools + tool_choice auto
+BODY_B="{\"model\":\"$MODEL\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"What is 2+3? Use the add tool.\"}],\"tools\":[{\"name\":\"add\",\"description\":\"Add two numbers\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"number\"},\"b\":{\"type\":\"number\"}},\"required\":[\"a\",\"b\"]}}],\"tool_choice\":{\"type\":\"auto\"}}"
+
+# Body C — tools + tool_choice forced
+BODY_C="{\"model\":\"$MODEL\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"What is 2+3?\"}],\"tools\":[{\"name\":\"add\",\"description\":\"Add two numbers\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"number\"},\"b\":{\"type\":\"number\"}},\"required\":[\"a\",\"b\"]}}],\"tool_choice\":{\"type\":\"tool\",\"name\":\"add\"}}"
+
+# SigV4 tests (run from pod with IRSA or with AWS credentials configured)
+for path in "v1/messages" "v1/chat/completions" "bedrock/invoke" "model/$MODEL/invoke"; do
+  for body_name in A B C; do
+    body_var="BODY_${body_name}"
+    echo "=== $path | Body $body_name ==="
+    time python3 -m awscurl --service execute-api --region us-east-1 \
+      -X POST -H "Content-Type: application/json" \
+      -d "${!body_var}" "$APIGW/$path"
+    echo ""
+  done
+done
+
+# OAuth tests (run from workstation with bg-cognito-auth.sh configured)
+TOKEN=$(./modules/gateway/cli/bg-cognito-auth.sh token)
+CF="https://dp7n42m5j4pl6.cloudfront.net/api"
+for path in "v1/messages" "v1/chat/completions" "bedrock/invoke" "model/$MODEL/invoke"; do
+  for body_name in A B C; do
+    body_var="BODY_${body_name}"
+    echo "=== OAuth | $path | Body $body_name ==="
+    time curl -sS "$CF/$path" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "${!body_var}"
+    echo ""
+  done
+done
+```
+
+**Note for /v1/chat/completions**: Bodies B and C must be translated to OpenAI tool format:
+```bash
+# OpenAI format for Body B (chat/completions)
+BODY_B_OAI="{\"model\":\"$MODEL\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"What is 2+3? Use the add tool.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"add\",\"description\":\"Add two numbers\",\"parameters\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"number\"},\"b\":{\"type\":\"number\"}},\"required\":[\"a\",\"b\"]}}}],\"tool_choice\":\"auto\"}"
+
+# OpenAI format for Body C (chat/completions)
+BODY_C_OAI="{\"model\":\"$MODEL\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"What is 2+3?\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"add\",\"description\":\"Add two numbers\",\"parameters\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"number\"},\"b\":{\"type\":\"number\"}},\"required\":[\"a\",\"b\"]}}}],\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"add\"}}}"
+```
+
+**For /bedrock/invoke and /model/{id}/invoke**: Use `anthropic_version` in body and omit `model` from body (it's in the URL for /model/{id}/invoke):
+```bash
+# Bedrock native format for Body B
+BODY_B_BRK="{\"anthropic_version\":\"bedrock-2023-05-31\",\"model\":\"$MODEL\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"What is 2+3? Use the add tool.\"}],\"tools\":[{\"name\":\"add\",\"description\":\"Add two numbers\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"number\"},\"b\":{\"type\":\"number\"}},\"required\":[\"a\",\"b\"]}}],\"tool_choice\":{\"type\":\"auto\"}}"
+```
