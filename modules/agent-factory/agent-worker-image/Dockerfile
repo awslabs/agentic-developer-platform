@@ -63,7 +63,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   unzip, sudo, procps (required by various downstream installs)
 #
 # fzf is installed separately from GitHub releases (not apt) to avoid
-# Debian's Go 1.19 toolchain CVEs. fd-find and vim-tiny come from apt.
+# Debian's Go 1.19 toolchain CVEs. fd-find comes from apt.
 RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
@@ -77,7 +77,6 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-reco
     ripgrep \
     fd-find \
     jq \
-    vim-tiny \
     unzip \
     zip \
     sudo \
