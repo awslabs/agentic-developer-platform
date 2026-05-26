@@ -310,3 +310,160 @@ Sub-issues below are sized for ≤ 1 day of implementation work each. Ordered by
 | `Project` always = `adp` | Single top-level group. Module-level slicing via `Module` tag. | Keep fragmented Project values (rejected: breaks Cost Explorer aggregation) |
 | PascalCase for tag keys | AWS convention, matches existing tags, compatible with Cost Explorer filters | snake_case (rejected: inconsistent with AWS service-generated tags) |
 | SNS per severity for routing | Simple, native, supports multiple subscribers (Slack, PagerDuty, Lambda) | EventBridge (more flexible but over-engineered for alarm routing) |
+
+---
+
+## 7. Logs, Metrics, and Traces — How
+
+### 7.1 Logs
+
+**One-line definition**: Structured JSON records emitted by every compute unit, shipped to CloudWatch Logs for search and alerting.
+
+**Producers** — where they originate
+
+| Source | Mechanism | Destination | Format |
+|--------|-----------|-------------|--------|
+| Gateway pods | stdout (structured JSON via `src/shared/logging.py`) | `/aws/containerinsights/adp-dev-eks-cluster/application` | JSON line (`timestamp`, `level`, `module`, `request_id`, `org_id`) |
+| Agent worker pods | stdout (entrypoint logs) | `/aws/containerinsights/adp-dev-eks-cluster/application` | JSON line (same cluster, filtered by pod label) |
+| Webhook-ingress Lambdas | Lambda runtime → CW Logs | `/aws/lambda/adp-dev-webhook-*` | JSON line (Python `logging` + JSON formatter) |
+| Gateway Lambdas (authorizer, auth-broker, budget) | Lambda runtime → CW Logs | `/aws/lambda/bedrockgw-dev-*` | JSON line |
+| API Gateway access logs (gateway) | API GW stage config | `/aws/apigateway/bedrockgw-dev-*` | JSON (request context fields) |
+| API Gateway access logs (webhook-ingress) | API GW stage config | `/aws/apigateway/adp-dev-webhook-*` | JSON |
+| EKS control plane | EKS native | `/aws/eks/adp-dev-eks-cluster` | AWS-managed |
+| CloudFront access logs | S3 delivery | S3 bucket (not CW Logs) | W3C extended log |
+
+**Transport / collection**
+
+| Component | Role | Configured in |
+|-----------|------|---------------|
+| CloudWatch Observability addon (Fluent Bit) | Tails container stdout, ships to CW Logs | `platform/infra/modules/eks/main.tf` (addon gated by `enable_container_insights`) |
+| Lambda runtime | Auto-ships to log group matching function name | Implicit (AWS-managed) |
+| API Gateway stage | Writes access logs to configured log group ARN | `modules/gateway/infra/modules/api-gateway/main.tf`, `modules/agent-factory/webhook-ingress/infra/api-gateway.tf` |
+
+**Retention**
+
+| Log group pattern | Retention | Rationale |
+|-------------------|-----------|-----------|
+| `/aws/containerinsights/…/application` | 30d | High volume; older logs rarely queried |
+| `/aws/lambda/bedrockgw-dev-*` | 30d | Matches RDS log group retention |
+| `/aws/lambda/adp-dev-webhook-*` | 14d | Lower-value debugging logs |
+| `/aws/apigateway/*` | 14d (webhook-ingress), 30d (gateway) | Access logs; useful for incident replay |
+| `/aws/eks/adp-dev-eks-cluster` | 30d | Control-plane audit trail |
+| CloudFront S3 logs | S3 lifecycle 90d | Compliance / forensic use only |
+
+Retention is set per-group in Terraform (`retention_in_days` on the `aws_cloudwatch_log_group` resource). No group should use "never expire" — always set an explicit value.
+
+**Querying**
+
+| Pattern | Tool | Example |
+|---------|------|---------|
+| Single request across pod + Lambda | Logs Insights (multi-group) | `filter request_id = "abc-123"` across container-insights + Lambda groups |
+| Error spike diagnosis | Logs Insights | `filter level = "ERROR" \| stats count(*) by module \| sort count desc` |
+| Per-tenant request history | Logs Insights | `filter org_id = "tenant-slug" \| fields @timestamp, module, message` |
+| CloudFront origin errors | S3 Select or Athena | Query access-log S3 bucket for `sc-status >= 500` |
+
+**What every implementer must do**
+
+1. Emit structured JSON to stdout (pods) or use Python `logging` with `pythonjsonlogger` (Lambdas). Never write to files inside the container.
+2. Include `request_id` in every log line — use `src/shared/logging.set_request_context()` for gateway code or pass as a field for new services.
+3. Create an explicit `aws_cloudwatch_log_group` in Terraform with `retention_in_days` set (30d default, 14d for high-volume low-value). Never rely on auto-created groups (they default to never-expire).
+4. For new Lambdas, add a `depends_on` from the Lambda resource to its log group so Terraform creates the group before first invocation.
+5. If adding a new EKS workload, no extra config needed — the CloudWatch Observability addon auto-collects stdout from all pods in the cluster.
+
+### 7.2 Metrics
+
+**One-line definition**: Numeric time-series data points emitted to CloudWatch Metrics for dashboards, alarms, and SLO tracking.
+
+**Producers** — where they originate
+
+| Source | Mechanism | Namespace | Key metrics |
+|--------|-----------|-----------|-------------|
+| Gateway pods | CloudWatch EMF via stdout (`src/shared/metrics.py`) | `BedrockGateway` | RequestLatencyMs, TokensIn/Out, CostUSD, ErrorCount, PoolHealthy |
+| AWS native (ALB, RDS, SQS, Lambda, CloudFront) | Auto-published by AWS | `AWS/<Service>` | Standard per-service metrics |
+| Container Insights | CloudWatch Observability addon | `ContainerInsights` | pod_cpu_utilization, pod_memory_utilization, pod_network_rx/tx |
+| Webhook-ingress Lambda | CloudWatch EMF via stdout | `ADP/WebhookIngress` | Custom: `RateLimited`, delivery latency |
+| Metric filters (log-derived) | CW Logs metric filter | `ADP/Custom` | Derived counts from log patterns (e.g., 5xx count from access logs) |
+
+**Transport / collection**
+
+| Component | Role | Configured in |
+|-----------|------|---------------|
+| CloudWatch agent (in-cluster) | Scrapes EMF from stdout, publishes to CW Metrics | EKS addon (`platform/infra/modules/eks/`) |
+| Lambda runtime | Auto-detects EMF JSON blocks in stdout, publishes to CW Metrics | Implicit (AWS-managed) |
+| Metric filters | CW Logs evaluates filter pattern, increments metric on match | Terraform `aws_cloudwatch_metric_filter` |
+
+**Dimensions (required on every custom metric)**
+
+| Dimension | Source | Why |
+|-----------|--------|-----|
+| `Environment` | `BG_ENVIRONMENT` env var / Terraform `var.environment` | Slice dev vs prod |
+| `Module` | Hardcoded per service (e.g., `gateway`, `agent-factory`) | Cost + ownership attribution |
+| `Tenant` | `org_id` from request context (where applicable) | Per-tenant SLO measurement (§3.5) |
+
+**Canonical emission method**: **CloudWatch EMF via stdout**. Do NOT call `PutMetricData` from application code (rate-limited, adds latency). Use metric filters only for signals that can't be emitted at the source (e.g., counting patterns in API Gateway access logs).
+
+**Querying**
+
+| Pattern | Tool | Example |
+|---------|------|---------|
+| Real-time dashboard | CloudWatch Metrics console / Grafana | Widget: `BedrockGateway` → `RequestLatencyMs` by `Tenant` |
+| SLO breach detection | CloudWatch Alarm on metric | Alarm on p95 > threshold |
+| Ad-hoc investigation | Metrics Insights | `SELECT AVG(RequestLatencyMs) FROM BedrockGateway GROUP BY Tenant WHERE Environment = 'dev'` |
+
+**What every implementer must do**
+
+1. Use `src/shared/metrics.py` (or replicate its EMF pattern) — emit metrics as JSON to stdout with the `_aws` EMF envelope. Never call `PutMetricData` directly.
+2. Always include `Environment` and `Module` dimensions. Add `Tenant` if the metric is request-scoped.
+3. Use the `BedrockGateway` namespace for gateway services; use `ADP/<ModuleName>` for other modules (e.g., `ADP/AgentFactory`).
+4. For log-derived metrics (metric filters), define the `aws_cloudwatch_metric_filter` in the same Terraform module that owns the log group.
+5. Register every new custom metric in the relevant CloudWatch dashboard Terraform (`modules/gateway/infra/modules/cloudwatch-dashboard/` or equivalent).
+
+### 7.3 Traces
+
+**One-line definition**: Request-scoped timing spans that show the full call path across service boundaries, rendered in AWS X-Ray.
+
+**Current state**
+
+| Aspect | Status |
+|--------|--------|
+| X-Ray IAM permissions | Provisioned but gated (`enable_xray_tracing = false` in `platform/infra/main.tf:122`) |
+| SDK integration | EXISTS — `modules/gateway/src/shared/tracing.py` uses OpenTelemetry SDK with X-Ray ID generator + OTLP exporter. Gated by `OTEL_ENABLED` env var (currently `false`). |
+| OTel Collector sidecar | Not deployed (no K8s manifest for collector pod) |
+| End-to-end trace propagation | Not wired (no trace header forwarding through CloudFront → ALB → pod → Bedrock) |
+
+**Target state (this quarter: request-id correlation only; full tracing deferred)**
+
+Distributed tracing is **not in scope this quarter**. The SDK exists but enabling it requires deploying an OTel Collector sidecar and wiring trace-context headers end-to-end. Current priority is log-based correlation via `request_id`.
+
+**Today-state: request-id correlation**
+
+| Hop | How request_id propagates |
+|-----|---------------------------|
+| Client → CloudFront | Client sends `X-Request-Id` header (or CloudFront generates one) |
+| CloudFront → ALB → Pod | Header forwarded unchanged |
+| Pod (FastAPI) | Middleware extracts `X-Request-Id`, stores in contextvar, emits on every log line |
+| Pod → Bedrock | `request_id` logged on outbound call (no trace header to Bedrock) |
+| Webhook → Lambda → SQS → Runner | Webhook event ID serves as correlation key across the async boundary |
+
+**Querying (today)**
+
+| Pattern | Tool | Example |
+|---------|------|---------|
+| Trace a single request | Logs Insights | `filter request_id = "..." \| sort @timestamp` across pod + Lambda groups |
+| Trace webhook → agent | Logs Insights | `filter event_id = "..." ` in webhook Lambda + agent worker logs |
+
+**Future-state (post-quarter, tracked separately)**
+
+When enabled, tracing will use:
+- **SDK**: OpenTelemetry Python SDK with `AwsXRayIdGenerator` + `AwsXRayPropagator` (already coded in `src/shared/tracing.py`)
+- **Collector**: OTel Collector sidecar (OTLP gRPC → X-Ray)
+- **Propagation**: `X-Amzn-Trace-Id` header through CloudFront → ALB → pod
+- **Visualization**: AWS X-Ray console + X-Ray groups for per-service filtering
+
+**What every implementer must do**
+
+1. Always propagate `request_id` — extract from `X-Request-Id` header in any new HTTP service, store in log context, and emit on every log line.
+2. For async boundaries (SQS, EventBridge), include the correlation ID (`request_id` or `event_id`) as a message attribute so downstream consumers can log it.
+3. Do NOT add OpenTelemetry instrumentation or enable `OTEL_ENABLED=true` without coordinating with platform team — the collector sidecar must be deployed first.
+4. If writing a new Lambda, log the incoming `request_id` (from API Gateway context or SQS message attribute) in the first log line of every invocation.
+5. When full tracing is enabled (future), use `src/shared/tracing.get_tracer(__name__)` to create spans — the no-op fallback ensures zero impact while tracing is disabled.
