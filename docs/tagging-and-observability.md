@@ -313,6 +313,252 @@ Sub-issues below are sized for ≤ 1 day of implementation work each. Ordered by
 
 ---
 
+## 6. Per-Module Reference
+
+### 6.1 platform
+
+**Purpose**: Shared VPC, EKS cluster, ECR repositories, and base IAM roles.
+**Owner**: `platform-team`  |  **Cost Center**: `platform-ops`  |  **Code path**: `platform/infra/`
+
+#### Tags applied to every resource
+| Tag | Value |
+|---|---|
+| Project | adp |
+| Environment | var.environment |
+| Module | platform |
+| ManagedBy | terraform |
+| Owner | platform-team |
+| CostCenter | platform-ops |
+
+#### Dashboards
+| Name | Status | Key widgets |
+|---|---|---|
+| adp-dev-platform | planned (#880) | EKS node count, API server latency, VPC flow rejects, pod pending count |
+
+#### Alarms
+| Alarm | Metric | Threshold | Action | Status |
+|---|---|---|---|---|
+| adp-dev-eks-nodes-low | EKS node count | < expected for 10m | Page | planned (#880) |
+| adp-dev-eks-pods-pending | Pending pods | > 5 for 10m | Page | planned (#880) |
+
+#### SLO
+| SLO | Target | Measurement | Status |
+|---|---|---|---|
+| EKS API availability | 99.9% | API server 5xx / total requests | planned |
+
+#### Log groups
+| Log group | Retention | Subscribed (sink) |
+|---|---|---|
+| /aws/eks/adp-dev-eks-cluster | 30 days | none |
+| /aws/containerinsights/adp-dev-eks-cluster/application | default | Dashboard queries |
+
+### 6.2 gateway
+
+**Purpose**: Multi-tenant Bedrock proxy — FastAPI backend, RDS, Redis, Cognito, CloudFront, Lambdas.
+**Owner**: `gateway-team`  |  **Cost Center**: `engineering`  |  **Code path**: `modules/gateway/infra/`
+
+#### Tags applied to every resource
+| Tag | Value |
+|---|---|
+| Project | adp |
+| Environment | var.environment |
+| Module | gateway |
+| ManagedBy | terraform |
+| Owner | gateway-team |
+| CostCenter | engineering |
+
+Component overrides:
+
+| Resource group | Component value |
+|---|---|
+| RDS instance + subnet group | rds |
+| ElastiCache cluster | redis |
+| Cognito user pool | cognito |
+| CloudFront distribution | cdn |
+| Lambda functions | lambda |
+
+#### Dashboards
+| Name | Status | Key widgets |
+|---|---|---|
+| bedrockgw-dev-latency | exists | CloudFront origin latency, ALB response time, Bedrock timings, pod CPU/memory |
+| adp-dev-gateway | planned (#888) | RDS/Redis health, Lambda errors, 5xx rate, p95 latency |
+
+#### Alarms
+| Alarm | Metric | Threshold | Action | Status |
+|---|---|---|---|---|
+| bedrockgw-dev-redis-cpu-utilization | ElastiCache CPUUtilization | > 80% 2 periods | SNS | exists |
+| bedrockgw-dev-redis-memory-utilization | ElastiCache DatabaseMemoryUsagePercentage | > 90% 2 periods | SNS | exists |
+| adp-dev-gateway-5xx | ALB HTTPCode_Target_5XX_Count | > 5/min for 5m | Page | planned (#888) |
+| adp-dev-rds-cpu | RDS CPUUtilization | > 80% for 10m | Slack | planned (#890) |
+| adp-dev-rds-storage | RDS FreeStorageSpace | < 5 GB | Page | planned (#890) |
+| adp-dev-rds-connections | RDS DatabaseConnections | > 80% max for 10m | Slack | planned (#890) |
+| adp-dev-lambda-authorizer-errors | Lambda Errors | > 5/min for 5m | Slack | planned (#891) |
+| adp-dev-lambda-auth-broker-errors | Lambda Errors | > 3/min for 5m | Slack | planned (#891) |
+| adp-dev-lambda-budget-errors | Lambda Errors | > 0 consecutive 2 | Issue | planned (#891) |
+| adp-dev-cloudfront-5xx | CloudFront 5xxErrorRate | > 1% for 5m | Page | planned (#888) |
+
+#### SLO
+| SLO | Target | Measurement | Status |
+|---|---|---|---|
+| Availability (5xx rate) | < 0.1% | CloudFront 5xx / total requests | planned (#888) |
+| Latency p95 | < 30s | ALB TargetResponseTime p95 | planned (#888) |
+
+#### Log groups
+| Log group | Retention | Subscribed (sink) |
+|---|---|---|
+| /aws/containerinsights/adp-dev-eks-cluster/application (gateway pods) | default | Dashboard queries |
+| /aws/lambda/bedrockgw-dev-budget-* | default | none |
+| /aws/lambda/bedrockgw-dev-github-auth-broker | default | none |
+| /aws/lambda/bedrockgw-dev-lambda-authorizer | default | none |
+| /aws/apigateway/bedrockgw-dev-* | default | none |
+
+### 6.3 agent-factory
+
+**Purpose**: Autonomous code agents — ARC runners, KEDA ScaledJobs, SQS task queues, agent worker image.
+**Owner**: `agent-team`  |  **Cost Center**: `engineering`  |  **Code path**: `modules/agent-factory/infra/`
+
+#### Tags applied to every resource
+| Tag | Value |
+|---|---|
+| Project | adp |
+| Environment | var.environment |
+| Module | agent-factory |
+| ManagedBy | terraform |
+| Owner | agent-team |
+| CostCenter | engineering |
+
+#### Dashboards
+| Name | Status | Key widgets |
+|---|---|---|
+| adp-dev-agent-factory | planned (#893) | SQS depth, job completion rate, runner utilization, KEDA scaling events |
+
+#### Alarms
+| Alarm | Metric | Threshold | Action | Status |
+|---|---|---|---|---|
+| adp-dev-agent-gateway-dlq-alarm | SQS ApproximateNumberOfMessagesVisible (DLQ) | > 0 | None | exists (action not wired) |
+| adp-dev-sqs-age-oldest | SQS ApproximateAgeOfOldestMessage | > 900s (15m) | Slack + Issue | planned (#895) |
+| adp-dev-agent-failure-rate | Custom (jobs failed / total) | > 20% in 1h | Issue | planned (#893) |
+
+#### SLO
+| SLO | Target | Measurement | Status |
+|---|---|---|---|
+| Task completion rate | > 95% within 10min | Messages processed vs DLQ | planned (#893) |
+
+#### Log groups
+| Log group | Retention | Subscribed (sink) |
+|---|---|---|
+| /aws/containerinsights/adp-dev-eks-cluster/application (runner pods) | default | none |
+
+### 6.4 webhook-ingress
+
+**Purpose**: Webhook receiver — Lambda, API Gateway, DynamoDB identity index, WAF, SQS dispatch.
+**Owner**: `agent-team`  |  **Cost Center**: `engineering`  |  **Code path**: `modules/agent-factory/webhook-ingress/infra/`
+
+#### Tags applied to every resource
+| Tag | Value |
+|---|---|
+| Project | adp |
+| Environment | var.environment |
+| Module | webhook-ingress |
+| ManagedBy | terraform |
+| Owner | agent-team |
+| CostCenter | engineering |
+
+#### Dashboards
+| Name | Status | Key widgets |
+|---|---|---|
+| adp-dev-agent-factory | planned (#893) | Lambda invocations, error rate, SQS dispatch depth (shared with agent-factory) |
+
+#### Alarms
+| Alarm | Metric | Threshold | Action | Status |
+|---|---|---|---|---|
+| adp-dev-webhook-rate-limit-high | Custom RateLimited | > 10/min | None | exists (action not wired) |
+| adp-dev-webhook-lambda-errors | Lambda Errors | > 10/min for 5m | Slack | planned (#896) |
+| adp-dev-webhook-delivery-latency | Custom (timestamp diff) | > 60s | Slack | planned (#896) |
+
+#### SLO
+| SLO | Target | Measurement | Status |
+|---|---|---|---|
+| Webhook-to-agent delivery latency | < 60s | Timestamp diff: webhook receipt to runner start | planned (#896) |
+
+#### Log groups
+| Log group | Retention | Subscribed (sink) |
+|---|---|---|
+| /aws/lambda/adp-dev-webhook-* | default | planned: CloudWatch Agent → GitHub issue (#900) |
+
+### 6.5 agent-context
+
+**Purpose**: Code Intelligence Platform — Neptune graph, OpenSearch semantic search, ingestion pipeline.
+**Owner**: `agent-team`  |  **Cost Center**: `engineering`  |  **Code path**: `modules/agent-context/terraform/`
+
+#### Tags applied to every resource
+| Tag | Value |
+|---|---|
+| Project | adp |
+| Environment | var.environment |
+| Module | agent-context |
+| ManagedBy | terraform |
+| Owner | agent-team |
+| CostCenter | engineering |
+
+#### Dashboards
+| Name | Status | Key widgets |
+|---|---|---|
+| adp-dev-agent-context | planned (#897) | Neptune CPU + queries/sec, OpenSearch indexing rate + search latency, SQS ingestion depth |
+
+#### Alarms
+| Alarm | Metric | Threshold | Action | Status |
+|---|---|---|---|---|
+| adp-dev-neptune-cpu | Neptune CPUUtilization | > 80% for 10m | Slack | planned (#897) |
+| adp-dev-opensearch-latency | OpenSearch SearchLatency p99 | > 5s for 5m | Slack | planned (#897) |
+
+#### SLO
+| SLO | Target | Measurement | Status |
+|---|---|---|---|
+| Search latency p99 | < 5s | OpenSearch SearchLatency p99 | planned (#897) |
+
+#### Log groups
+| Log group | Retention | Subscribed (sink) |
+|---|---|---|
+| /aws/neptune/adp-dev-* | 30 days | none |
+| /aws/opensearch/adp-dev-* | 30 days | none |
+
+### 6.6 domain-apps/cyber
+
+**Purpose**: Cyber-analysis workers — malware detonation (CAPE), URL analysis, evidence storage.
+**Owner**: `agent-team`  |  **Cost Center**: `engineering`  |  **Code path**: `modules/domain-apps/cyber/infra/`
+
+#### Tags applied to every resource
+| Tag | Value |
+|---|---|
+| Project | adp |
+| Environment | var.environment |
+| Module | domain-apps/cyber |
+| ManagedBy | terraform |
+| Owner | agent-team |
+| CostCenter | engineering |
+
+#### Dashboards
+| Name | Status | Key widgets |
+|---|---|---|
+| adp-dev-cyber | planned (#901) | SQS analysis queue depth, worker pod count, CAPE submission rate, evidence bucket size |
+
+#### Alarms
+| Alarm | Metric | Threshold | Action | Status |
+|---|---|---|---|---|
+| adp-dev-cyber-dlq | SQS ApproximateNumberOfMessagesVisible (DLQ) | > 0 | Slack | planned (#901) |
+| adp-dev-cyber-queue-age | SQS ApproximateAgeOfOldestMessage | > 900s (15m) | Slack | planned (#901) |
+
+#### SLO
+| SLO | Target | Measurement | Status |
+|---|---|---|---|
+| Analysis completion rate | > 90% within 15min | Messages processed vs DLQ | planned (#901) |
+
+#### Log groups
+| Log group | Retention | Subscribed (sink) |
+|---|---|---|
+| /aws/containerinsights/adp-dev-eks-cluster/application (cyber-worker pods) | default | none |
+
 ## 7. Logs, Metrics, and Traces — How
 
 ### 7.1 Logs
