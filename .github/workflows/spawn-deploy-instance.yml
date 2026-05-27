@@ -1,0 +1,210 @@
+name: Spawn Deploy Instance
+
+# Clones the canonical ADP deployment templates (#684 EPIC + 10 phase issues + #906 runbook)
+# into a fresh per-deploy issue set under a new parent. The parent becomes the
+# orchestrator agent's surface for that specific deployment; phase clones are the
+# sub-agent surfaces. Templates stay pristine.
+#
+# Usage:
+#   gh workflow run spawn-deploy-instance.yml \
+#     -f env=dev \
+#     -f account_id=879318057152 \
+#     -f customer_label=internal \
+#     -f tag_orchestrator=false
+#
+# Outputs (workflow summary):
+#   - Parent issue number + URL
+#   - 11 child issue numbers (10 phases + 1 runbook)
+#   - Optional comment on the parent tagging @agent-operations as orchestrator
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Environment name (dev / staging / prod)"
+        required: true
+        default: "dev"
+      account_id:
+        description: "Target AWS account ID (12 digits)"
+        required: true
+      customer_label:
+        description: "Short customer identifier (e.g. internal, acme, embark2). Used in issue titles."
+        required: true
+        default: "internal"
+      tag_orchestrator:
+        description: "Post @agent-operations comment on parent to start orchestrator? (true/false)"
+        required: false
+        default: "false"
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  spawn:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate inputs
+        env:
+          ENV: ${{ inputs.env }}
+          ACCT: ${{ inputs.account_id }}
+        run: |
+          if [[ ! "$ENV" =~ ^(dev|staging|prod)$ ]]; then
+            echo "::error::env must be dev, staging, or prod"; exit 1
+          fi
+          if [[ ! "$ACCT" =~ ^[0-9]{12}$ ]]; then
+            echo "::error::account_id must be 12 digits"; exit 1
+          fi
+
+      - name: Spawn parent + child issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ENV: ${{ inputs.env }}
+          ACCT: ${{ inputs.account_id }}
+          CUSTOMER: ${{ inputs.customer_label }}
+          TAG_ORCH: ${{ inputs.tag_orchestrator }}
+        run: |
+          set -e
+          DATE=$(date -u +%Y-%m-%d)
+          STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+
+          # ---- Templates to clone ----
+          # Format: <template-issue> <short-name>
+          TEMPLATES=(
+            "718:phase-0-github-apps"
+            "685:phase-1-bootstrap"
+            "686:phase-2-preflight"
+            "687:phase-3-platform-infra"
+            "688:phase-4-gateway-infra"
+            "689:phase-5-gateway-backend"
+            "690:phase-6-gateway-frontend"
+            "691:phase-7-webhook-ingress"
+            "692:phase-8-agent-delivery"
+            "693:phase-9-smoke-test"
+            "906:runbook"
+          )
+
+          # ---- 1. Create the parent (deploy-instance) ----
+          PARENT_TITLE="deploy-instance: ${CUSTOMER} ${ENV} ${ACCT} ${DATE}"
+          PARENT_BODY=$(cat <<EOF
+          ## Deploy instance
+
+          | Field | Value |
+          |---|---|
+          | Customer | \`${CUSTOMER}\` |
+          | Environment | \`${ENV}\` |
+          | AWS Account | \`${ACCT}\` |
+          | Spawned at (UTC) | \`${STAMP}\` |
+          | Spawn workflow run | https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} |
+
+          ## Orchestration model
+
+          - This issue is the **orchestrator agent's surface**. \`@agent-operations\` reads its own comments here to track which phase is current, what passed/failed, and what's next.
+          - Each phase has its own child issue (cloned from the canonical template). Sub-agents execute one phase per pod and post verdicts on the child.
+          - Verdicts on a child trigger an issue_comment webhook → orchestrator wakes up here, decides next move.
+          - Templates (#684 EPIC, #685–#693, #718, #906) are NEVER edited during a deploy. All deploy-specific state lives on this parent + the per-phase children below.
+
+          ## Phase children
+
+          (Filled in below as they get spawned. Verdicts post on the child; the orchestrator summarizes here.)
+
+          ## Stop conditions
+
+          - All 10 phases PASS → success summary + close.
+          - Any phase FAIL after 1 retry → halt. Wait for human \`@orchestrator continue\` or \`@orchestrator skip-phase\`.
+          - Wall clock > 4h → TIMEOUT, post status, halt.
+          - Same phase fails 2 cycles in a row → STUCK, halt.
+
+          ## References
+
+          - EPIC: #684
+          - Runbook template: #906
+          - Phase templates: #685–#693, #718
+          - This deploy's phase children: see list below (populated by spawn workflow)
+          EOF
+          )
+
+          PARENT_NUM=$(gh issue create \
+            --title "$PARENT_TITLE" \
+            --body "$PARENT_BODY" \
+            -R "$GITHUB_REPOSITORY" \
+            | grep -oE '[0-9]+$')
+          echo "PARENT_NUM=$PARENT_NUM" >> "$GITHUB_OUTPUT"
+          echo "Parent: #${PARENT_NUM}"
+
+          # ---- 2. Clone each template as a child ----
+          PARENT_NODE=$(gh api repos/${GITHUB_REPOSITORY}/issues/${PARENT_NUM} --jq '.node_id')
+          CHILD_LIST=""
+
+          for entry in "${TEMPLATES[@]}"; do
+            tmpl="${entry%%:*}"
+            slug="${entry##*:}"
+
+            TITLE=$(gh issue view "$tmpl" -R "$GITHUB_REPOSITORY" --json title --jq '.title')
+            BODY=$(gh issue view "$tmpl" -R "$GITHUB_REPOSITORY" --json body --jq '.body')
+
+            CHILD_TITLE="[deploy ${CUSTOMER}/${ENV}/${DATE}] ${TITLE}"
+            CHILD_BODY=$(cat <<EOF
+          > **Deploy instance child** of #${PARENT_NUM} — ${CUSTOMER} / ${ENV} / ${ACCT} / ${DATE}
+          > Cloned from template #${tmpl} on ${STAMP}. Edits to this issue are scoped to this deploy.
+
+          ---
+
+          ${BODY}
+          EOF
+          )
+
+            CHILD_NUM=$(gh issue create \
+              --title "$CHILD_TITLE" \
+              --body "$CHILD_BODY" \
+              -R "$GITHUB_REPOSITORY" \
+              | grep -oE '[0-9]+$')
+
+            # Link as sub-issue of the deploy-instance parent
+            CHILD_NODE=$(gh api repos/${GITHUB_REPOSITORY}/issues/${CHILD_NUM} --jq '.node_id')
+            gh api graphql -f query='
+              mutation($p:ID!,$c:ID!){
+                addSubIssue(input:{issueId:$p,subIssueId:$c}){subIssue{number}}
+              }' -F p="$PARENT_NODE" -F c="$CHILD_NODE" >/dev/null
+
+            echo "  ✓ ${slug} → #${CHILD_NUM} (cloned from #${tmpl})"
+            CHILD_LIST+="| ${slug} | #${CHILD_NUM} | template #${tmpl} |"$'\n'
+          done
+
+          # ---- 3. Update the parent body with the child list ----
+          UPDATED_PARENT=$(gh issue view "$PARENT_NUM" -R "$GITHUB_REPOSITORY" --json body --jq '.body')
+          UPDATED_PARENT="${UPDATED_PARENT}
+
+          ## Children spawned
+
+          | Slug | Issue | Cloned from |
+          |---|---|---|
+          ${CHILD_LIST}"
+          gh issue edit "$PARENT_NUM" --body "$UPDATED_PARENT" -R "$GITHUB_REPOSITORY"
+
+          # ---- 4. Optionally tag the orchestrator agent ----
+          if [ "$TAG_ORCH" = "true" ]; then
+            gh issue comment "$PARENT_NUM" -R "$GITHUB_REPOSITORY" --body \
+              "@agent-operations please orchestrate this deploy.
+
+          You are the **orchestrator** for this deploy-instance. Read the runbook (#906) and walk through each phase child below. For each phase:
+
+          1. Post \`Phase N starting\` on this parent issue.
+          2. Comment on the phase child issue with the trigger command from the runbook.
+          3. A sub-agent will execute the phase and post a verdict comment on the child.
+          4. When the verdict appears, this comment fires a webhook back to you. Read the verdict, post a summary on this parent, then start the next phase.
+          5. On any FAIL, halt and post a summary. Wait for human \`@orchestrator continue\` or \`@orchestrator skip-phase\`.
+
+          Stop conditions are documented in this issue's body."
+          fi
+
+          # ---- 5. Workflow summary ----
+          {
+            echo "## Spawn complete"
+            echo ""
+            echo "- **Parent**: #${PARENT_NUM} — \`${PARENT_TITLE}\`"
+            echo "- **Children**:"
+            echo "${CHILD_LIST}"
+            echo ""
+            echo "Orchestrator tagged: \`${TAG_ORCH}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
