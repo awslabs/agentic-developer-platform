@@ -717,7 +717,7 @@ def _fetch_assumed_aws_credentials(*, user_id: str, agent_id: str, task_id: str)
         agent_id=agent_id,
         task_id=task_id,
         service="aws",
-        label="default",
+        label=None,
         purpose="entrypoint: assume customer AWS role",
     )
 

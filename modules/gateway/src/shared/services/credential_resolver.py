@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.vault import UserCredential
@@ -222,6 +222,30 @@ class CredentialResolver:
                 UserCredential.team_id.is_(None),
                 UserCredential.domain_app_id.is_(None),
             )
+
+        # When multiple rows match, pick most-recently-verified (verified rows
+        # beat unverified; among verified, latest verified_at wins; created_at
+        # as final tie-break). Done in Python because scopes is a portable JSON
+        # column — no Postgres-specific JSONB operators available.
+        if label is None:
+            stmt = stmt.order_by(desc(UserCredential.created_at))
+            result = await self._session.execute(stmt)
+            rows = list(result.scalars().all())
+            if not rows:
+                return None
+            if len(rows) == 1:
+                return rows[0]
+
+            def _rank(c: UserCredential) -> tuple:
+                status = (c.scopes or {}).get("status")
+                verified_at = (c.scopes or {}).get("verified_at") or ""
+                return (
+                    1 if status == "verified" else 0,
+                    verified_at,
+                    c.created_at.isoformat() if c.created_at else "",
+                )
+
+            return max(rows, key=_rank)
 
         stmt = stmt.limit(1)
         result = await self._session.execute(stmt)

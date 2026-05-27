@@ -992,7 +992,7 @@ class TestFetchAssumedAwsCredentials:
         assert call_kwargs["agent_id"] == "operations"
         assert call_kwargs["task_id"] == "t1"
         assert call_kwargs["service"] == "aws"
-        assert call_kwargs["label"] == "default"
+        assert call_kwargs["label"] is None
 
 
 # --- Test: sts_assume user_id tag ---

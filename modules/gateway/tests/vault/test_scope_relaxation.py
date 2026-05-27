@@ -399,6 +399,83 @@ class TestCredentialResolver:
         )
         assert cred.id == "c-user"
 
+    @pytest.mark.asyncio
+    async def test_label_none_picks_most_recently_verified(self, db_session: AsyncSession, user: User):
+        """When label is None and a user has multiple aws_role credentials,
+        return the most-recently-verified one. Verified beats unverified;
+        among verified, latest verified_at wins."""
+        # Older verified
+        old = UserCredential(
+            id="c-old",
+            org_id="org-res",
+            user_id="u-res-1",
+            service="aws",
+            credential_type="aws_role",
+            label="account-a",
+            secret_arn="arn:a",
+            scopes={"status": "verified", "verified_at": "2026-01-01T00:00:00+00:00"},
+        )
+        # Newer verified — should win
+        new = UserCredential(
+            id="c-new",
+            org_id="org-res",
+            user_id="u-res-1",
+            service="aws",
+            credential_type="aws_role",
+            label="account-b",
+            secret_arn="arn:b",
+            scopes={"status": "verified", "verified_at": "2026-05-01T00:00:00+00:00"},
+        )
+        # Pending — must be ignored in favour of any verified row
+        pending = UserCredential(
+            id="c-pending",
+            org_id="org-res",
+            user_id="u-res-1",
+            service="aws",
+            credential_type="aws_role",
+            label="account-c",
+            secret_arn="arn:c",
+            scopes={"status": "pending"},
+        )
+        db_session.add_all([old, new, pending])
+        await db_session.flush()
+
+        resolver = CredentialResolver(db_session)
+        cred = await resolver.resolve(
+            org_id="org-res",
+            service="aws",
+            label=None,
+            user_id="u-res-1",
+            team_id="team-res",
+        )
+        assert cred.id == "c-new"
+
+    @pytest.mark.asyncio
+    async def test_label_none_falls_back_to_unverified_when_no_verified(self, db_session: AsyncSession, user: User):
+        """If only pending rows exist, return one of them (newest created_at wins)."""
+        only_pending = UserCredential(
+            id="c-only-pending",
+            org_id="org-res",
+            user_id="u-res-1",
+            service="aws",
+            credential_type="aws_role",
+            label="account-x",
+            secret_arn="arn:x",
+            scopes={"status": "pending"},
+        )
+        db_session.add(only_pending)
+        await db_session.flush()
+
+        resolver = CredentialResolver(db_session)
+        cred = await resolver.resolve(
+            org_id="org-res",
+            service="aws",
+            label=None,
+            user_id="u-res-1",
+            team_id="team-res",
+        )
+        assert cred.id == "c-only-pending"
+
 
 # ---------------------------------------------------------------------------
 # SecretsManagerHelper namespace tests
