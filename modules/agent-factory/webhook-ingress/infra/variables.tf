@@ -23,7 +23,7 @@ variable "tags" {
 variable "sqs_visibility_timeout" {
   description = "SQS visibility timeout in seconds. Should match pod activeDeadlineSeconds so a killed pod's message becomes visible for retry promptly. Too long = stuck-message pain when pods die; too short = live pods racing re-delivery."
   type        = number
-  default     = 1800 # 30 min — matches pod activeDeadlineSeconds (see scaledjob.tf).
+  default     = 5400 # 90 min — matches pod activeDeadlineSeconds (see scaledjob.tf). Bumped from 1800 to give long-running orchestrator pods (e.g. deploy-instance #946) headroom before self-handoff.
 }
 
 variable "sqs_max_receive_count" {
@@ -115,7 +115,7 @@ variable "agent_image" {
 variable "agent_pod_deadline_seconds" {
   description = "Max runtime for an agent pod before Kubernetes kills it. MUST match sqs_visibility_timeout so a killed pod releases its SQS message for retry at the same instant."
   type        = number
-  default     = 1800 # 30 min — matches sqs_visibility_timeout
+  default     = 5400 # 90 min — matches sqs_visibility_timeout. Bumped from 1800 to give long-running orchestrator pods headroom; orchestrators self-handoff at ~85 min.
 }
 
 # Issue #575: the gateway's API Gateway invoke URL is resolved at apply time
