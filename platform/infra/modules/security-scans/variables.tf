@@ -3,12 +3,6 @@ variable "environment" {
   type        = string
 }
 
-variable "account_id" {
-  description = "AWS account ID to append to bucket name for global uniqueness"
-  type        = string
-  default     = ""
-}
-
 variable "security_scan_glacier_days" {
   description = "Days before transitioning SARIF files to Glacier"
   type        = number

@@ -151,6 +151,34 @@ module "eks" {
 }
 
 # -----------------------------------------------------------------------------
+# EKS-managed cluster SG → RDS / Redis ingress
+# -----------------------------------------------------------------------------
+# EKS Auto Mode attaches its own managed cluster SG (cluster.resourcesVpcConfig.
+# clusterSecurityGroupId) to every node, not the custom aws_security_group.eks
+# in modules/networking. Without these rules, gateway pods can't reach RDS or
+# Redis. Declared here (not in modules/networking) because the EKS module must
+# exist first so we can read its cluster_security_group_id output.
+resource "aws_security_group_rule" "rds_from_eks_cluster" {
+  type                     = "ingress"
+  description              = "PostgreSQL from EKS-managed cluster SG"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  security_group_id        = module.networking.rds_security_group_id
+  source_security_group_id = module.eks.cluster_security_group_id
+}
+
+resource "aws_security_group_rule" "redis_from_eks_cluster" {
+  type                     = "ingress"
+  description              = "Redis from EKS-managed cluster SG"
+  from_port                = 6379
+  to_port                  = 6379
+  protocol                 = "tcp"
+  security_group_id        = module.networking.redis_security_group_id
+  source_security_group_id = module.eks.cluster_security_group_id
+}
+
+# -----------------------------------------------------------------------------
 # ECR Repositories
 # -----------------------------------------------------------------------------
 module "ecr" {
@@ -182,5 +210,4 @@ module "security_scans" {
   source = "./modules/security-scans"
 
   environment = var.environment
-  account_id  = data.aws_caller_identity.current.account_id
 }

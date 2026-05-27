@@ -5,12 +5,15 @@
 # Replaces broken GitHub Code Scanning uploads (GHAS not enabled).
 # =============================================================================
 
-locals {
-  bucket_suffix = var.account_id != "" ? "-${var.account_id}" : ""
-}
-
 resource "aws_s3_bucket" "security_scans" {
-  bucket = "adp-${var.environment}-security-scans${local.bucket_suffix}"
+  # The account-ID suffix from PR #715 was never applied — bucket existed pre-PR
+  # as `adp-<env>-security-scans` and S3 buckets cannot be renamed in place.
+  # Every Platform Infra Apply since #715 has planned a destroy+recreate that
+  # fails (BucketNotEmpty), causing partial damage to the bucket's protection
+  # rules. Pin to the actual existing name; account-ID isolation is sufficient
+  # to avoid global-namespace collisions because each account has only one
+  # adp-<env>-security-scans bucket.
+  bucket = "adp-${var.environment}-security-scans"
 }
 
 resource "aws_s3_bucket_versioning" "security_scans" {
