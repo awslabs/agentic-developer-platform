@@ -223,6 +223,34 @@ resource "aws_iam_role_policy" "agent_scaledjob_dynamodb_correlation" {
   })
 }
 
+# --- Preflight: read-only checks for deploy pipeline (Issue #960) ---
+
+resource "aws_iam_role_policy" "agent_scaledjob_preflight" {
+  name = "preflight-readonly"
+  role = aws_iam_role.agent_scaledjob.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "PreflightReadOnly"
+      Effect = "Allow"
+      Action = [
+        "s3:ListAllMyBuckets",
+        "dynamodb:ListTables",
+        "eks:ListClusters",
+        "ecr:DescribeRepositories",
+        "iam:GetUser",
+        "iam:ListRoles",
+        "codebuild:ListProjects",
+        "bedrock:ListFoundationModels",
+        "secretsmanager:ListSecrets",
+        "cognito-idp:ListUserPools",
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
 resource "aws_iam_role_policy" "agent_scaledjob_url_analysis_evidence" {
   name = "url-analysis-evidence-s3"
   role = aws_iam_role.agent_scaledjob.id
