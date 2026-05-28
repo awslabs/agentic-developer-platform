@@ -25,8 +25,6 @@ concurrency:
 env:
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
-  ACCOUNT_ID: "879318057152"
-  STATE_BUCKET: adp-terraform-state-879318057152
   FUNCTION_NAME: bedrockgw-dev-github-auth-broker
   LAMBDA_SRC_DIR: modules/gateway/lambda/github-auth-broker
 
@@ -38,6 +36,9 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
 
       - name: Setup Python
         uses: actions/setup-python@v5

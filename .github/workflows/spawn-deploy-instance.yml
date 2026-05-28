@@ -8,7 +8,7 @@ name: Spawn Deploy Instance
 # Usage:
 #   gh workflow run spawn-deploy-instance.yml \
 #     -f env=dev \
-#     -f account_id=879318057152 \
+#     -f account_id=<your-12-digit-aws-account-id> \
 #     -f customer_label=internal \
 #     -f tag_orchestrator=false
 #

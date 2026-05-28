@@ -31,8 +31,6 @@ concurrency:
 env:
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
-  ACCOUNT_ID: "879318057152"
-  STATE_BUCKET: adp-terraform-state-879318057152
   ASSETS_BUCKET: adp-dev-cape-assets
   CAPE_HOST_ID: i-04f5473548c751cd3
   TF_DIR: modules/domain-apps/cyber/image-builder
@@ -47,6 +45,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
 
       # ── 0. Install CLI tools on ARC runner ─────────────────────────────
       - name: Install AWS CLI + Terraform
@@ -77,16 +78,16 @@ jobs:
           echo "Cleaning stale failure markers..."
           aws s3 rm "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/" \
             --recursive --exclude "*" --include "BUILD_FAILED_*" \
-            --region "${{ env.AWS_REGION }}" || true
+            --region "${AWS_REGION}" || true
 
           aws s3 sync modules/domain-apps/cyber/image-builder/windows/packer/ \
-            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/packer/" --region "${{ env.AWS_REGION }}"
+            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/packer/" --region "${AWS_REGION}"
           aws s3 sync modules/domain-apps/cyber/image-builder/windows/answer_files/ \
-            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/answer_files/" --region "${{ env.AWS_REGION }}"
+            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/answer_files/" --region "${AWS_REGION}"
           aws s3 sync modules/domain-apps/cyber/image-builder/windows/scripts/ \
-            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/scripts/" --region "${{ env.AWS_REGION }}"
+            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/scripts/" --region "${AWS_REGION}"
           aws s3 cp modules/domain-apps/cyber/image-builder/windows/build-pipeline.sh \
-            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/build-pipeline.sh" --region "${{ env.AWS_REGION }}"
+            "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/build-pipeline.sh" --region "${AWS_REGION}"
           echo "Build inputs staged to S3."
 
       # ── 2. Spin up build host ──────────────────────────────────────────
@@ -95,16 +96,16 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform init \
-            -backend-config="bucket=${{ env.STATE_BUCKET }}" \
-            -backend-config="key=${{ env.ENVIRONMENT }}/cyber/image-builder/terraform.tfstate" \
-            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="key=${ENVIRONMENT}/cyber/image-builder/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
             -backend-config="encrypt=true" \
             -backend-config="dynamodb_table=adp-terraform-locks" \
             -input=false
 
           terraform apply -auto-approve -lock-timeout=120s \
             -var="build_host_enabled=true" \
-            -var="account_id=${{ env.ACCOUNT_ID }}" \
+            -var="account_id=${ACCOUNT_ID}" \
             -var="idle_period_seconds=21600"
 
       # ── 3. Poll S3 for build output ────────────────────────────────────
@@ -123,9 +124,9 @@ jobs:
           # Wait up to 96 minutes (384 iterations * 15s)
           for i in $(seq 1 384); do
             # Check for success (qcow2 exists)
-            if aws s3 ls "$TARGET" --region "${{ env.AWS_REGION }}" 2>/dev/null | grep -q "qcow2"; then
+            if aws s3 ls "$TARGET" --region "${AWS_REGION}" 2>/dev/null | grep -q "qcow2"; then
               SIZE=$(aws s3api head-object --bucket "${{ env.ASSETS_BUCKET }}" \
-                --key "win11-cape-${BUILD_DATE}.qcow2" --region "${{ env.AWS_REGION }}" \
+                --key "win11-cape-${BUILD_DATE}.qcow2" --region "${AWS_REGION}" \
                 --query 'ContentLength' --output text 2>/dev/null || echo "0")
               echo "Build complete! qcow2 size: $SIZE bytes"
               if (( SIZE > 1000000000 )); then
@@ -136,9 +137,9 @@ jobs:
             fi
 
             # Check for failure marker
-            if aws s3 ls "$FAIL_MARKER" --region "${{ env.AWS_REGION }}" 2>/dev/null | grep -q "BUILD_FAILED"; then
+            if aws s3 ls "$FAIL_MARKER" --region "${AWS_REGION}" 2>/dev/null | grep -q "BUILD_FAILED"; then
               echo "ERROR: Build failed on the build host."
-              aws s3 cp "$FAIL_MARKER" - --region "${{ env.AWS_REGION }}" 2>/dev/null || true
+              aws s3 cp "$FAIL_MARKER" - --region "${AWS_REGION}" 2>/dev/null || true
               exit 1
             fi
 
@@ -149,7 +150,7 @@ jobs:
           done
 
           # Final check
-          if ! aws s3 ls "$TARGET" --region "${{ env.AWS_REGION }}" 2>/dev/null | grep -q "qcow2"; then
+          if ! aws s3 ls "$TARGET" --region "${AWS_REGION}" 2>/dev/null | grep -q "qcow2"; then
             echo "ERROR: Build timed out after 96 minutes. No qcow2 in S3."
             exit 1
           fi
@@ -161,7 +162,7 @@ jobs:
 
           # Check dated image exists and size
           SIZE=$(aws s3api head-object --bucket "${{ env.ASSETS_BUCKET }}" \
-            --key "win11-cape-${BUILD_DATE}.qcow2" --region "${{ env.AWS_REGION }}" \
+            --key "win11-cape-${BUILD_DATE}.qcow2" --region "${AWS_REGION}" \
             --query 'ContentLength' --output text)
           echo "Dated qcow2 size: $SIZE bytes"
 
@@ -172,7 +173,7 @@ jobs:
 
           # Check latest pointer
           aws s3 ls "s3://${{ env.ASSETS_BUCKET }}/win11-cape-latest.qcow2" \
-            --region "${{ env.AWS_REGION }}" || echo "WARNING: Latest pointer not updated"
+            --region "${AWS_REGION}" || echo "WARNING: Latest pointer not updated"
 
           echo "Build artifact verified in S3."
 
@@ -182,14 +183,14 @@ jobs:
           BUILD_DATE=$(date -u +%Y-%m-%d)
           aws s3 cp modules/domain-apps/cyber/image-builder/windows/register-cape-vm.sh \
             "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/register-cape-vm.sh" \
-            --region "${{ env.AWS_REGION }}"
+            --region "${AWS_REGION}"
 
           REG_CMD_ID=$(aws ssm send-command \
             --instance-ids "${{ env.CAPE_HOST_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"aws s3 cp s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/register-cape-vm.sh /tmp/register-cape-vm.sh --region ${{ env.AWS_REGION }} && chmod +x /tmp/register-cape-vm.sh && sudo bash /tmp/register-cape-vm.sh ${BUILD_DATE}\"]" \
+            --parameters "commands=[\"aws s3 cp s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/register-cape-vm.sh /tmp/register-cape-vm.sh --region ${AWS_REGION} && chmod +x /tmp/register-cape-vm.sh && sudo bash /tmp/register-cape-vm.sh ${BUILD_DATE}\"]" \
             --timeout-seconds 600 \
-            --region "${{ env.AWS_REGION }}" \
+            --region "${AWS_REGION}" \
             --query 'Command.CommandId' --output text)
           echo "Registration command: $REG_CMD_ID"
 
@@ -197,7 +198,7 @@ jobs:
             STATUS=$(aws ssm get-command-invocation \
               --command-id "$REG_CMD_ID" \
               --instance-id "${{ env.CAPE_HOST_ID }}" \
-              --region "${{ env.AWS_REGION }}" \
+              --region "${AWS_REGION}" \
               --query 'Status' --output text 2>/dev/null || echo "Pending")
             case "$STATUS" in
               Success) echo "Registration complete"; break ;;
@@ -206,7 +207,7 @@ jobs:
                 aws ssm get-command-invocation \
                   --command-id "$REG_CMD_ID" \
                   --instance-id "${{ env.CAPE_HOST_ID }}" \
-                  --region "${{ env.AWS_REGION }}" \
+                  --region "${AWS_REGION}" \
                   --query 'StandardErrorContent' --output text || true
                 exit 1
                 ;;
@@ -220,15 +221,15 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform init \
-            -backend-config="bucket=${{ env.STATE_BUCKET }}" \
-            -backend-config="key=${{ env.ENVIRONMENT }}/cyber/image-builder/terraform.tfstate" \
-            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="key=${ENVIRONMENT}/cyber/image-builder/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
             -backend-config="encrypt=true" \
             -backend-config="dynamodb_table=adp-terraform-locks" \
             -input=false
           terraform apply -auto-approve -lock-timeout=120s \
             -var="build_host_enabled=false" \
-            -var="account_id=${{ env.ACCOUNT_ID }}" \
+            -var="account_id=${ACCOUNT_ID}" \
             -var="idle_period_seconds=21600"
 
       # ── 7. Summary ─────────────────────────────────────────────────────

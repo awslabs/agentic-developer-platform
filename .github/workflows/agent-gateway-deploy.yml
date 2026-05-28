@@ -23,9 +23,6 @@ env:
   ENVIRONMENT: dev
   NAMESPACE: adp-gateway-agents
   EKS_CLUSTER: adp-dev-eks-cluster
-  ACCOUNT_ID: "879318057152"
-  STATE_BUCKET: adp-terraform-state-879318057152
-
 jobs:
   # Detect which paths changed so we skip the unrelated job when possible.
   # workflow_dispatch forces everything on.
@@ -62,6 +59,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -131,19 +131,19 @@ jobs:
 #     - name: Package source and upload to S3
 #       run: |
 #         bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
-#         aws s3 cp /tmp/adp-source.zip "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip"
+#         aws s3 cp /tmp/adp-source.zip "s3://${STATE_BUCKET}/codebuild/adp-source.zip"
 #         rm -f /tmp/adp-source.zip
 #     - name: Build worker image via CodeBuild
 #       run: |
-#         REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+#         REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 #         BUILD_ID=$(aws codebuild start-build \
-#           --project-name adp-${{ env.ENVIRONMENT }}-agent-gateway \
+#           --project-name adp-${ENVIRONMENT}-agent-gateway \
 #           --environment-variables-override \
-#             "name=AWS_REGION,value=${{ env.AWS_REGION }}" \
-#             "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}" \
-#             "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" \
+#             "name=AWS_REGION,value=${AWS_REGION}" \
+#             "name=ENVIRONMENT,value=${ENVIRONMENT}" \
+#             "name=ACCOUNT_ID,value=${ACCOUNT_ID}" \
 #             "name=REGISTRY,value=${REGISTRY}" \
-#             "name=STATE_BUCKET,value=${{ env.STATE_BUCKET }}" \
+#             "name=STATE_BUCKET,value=${STATE_BUCKET}" \
 #             "name=EKS_CLUSTER,value=${{ env.EKS_CLUSTER }}" \
 #             "name=IMAGE_TAG,value=${{ github.sha }}" \
 #           --query 'build.id' --output text)
@@ -165,12 +165,12 @@ jobs:
 #         echo "IMAGE_TAG=${{ github.sha }}" >> "$GITHUB_ENV"
 #     - name: Update ScaledJob manifest with new image tag
 #       run: |
-#         REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+#         REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 #         AGENT_IMAGE="${REGISTRY}/adp-agent-gateway:${{ github.sha }}"
-#         aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+#         aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${AWS_REGION}
 #         cd modules/agent-factory/infra
 #         terraform init \
-#           -backend-config="../../../environments/${{ env.ENVIRONMENT }}/modules/agent-factory-backend.tfvars" \
+#           -backend-config="../../../environments/${ENVIRONMENT}/modules/agent-factory-backend.tfvars" \
 #           -input=false -reconfigure 2>/dev/null || true
 #         INPUT_QUEUE_URL=$(terraform output -raw gateway_input_queue_url 2>/dev/null || echo "PENDING")
 #         RESPONSE_QUEUE_URL=$(terraform output -raw gateway_response_queue_url 2>/dev/null || echo "PENDING")

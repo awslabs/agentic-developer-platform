@@ -19,8 +19,6 @@ on:
 env:
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
-  ACCOUNT_ID: "879318057152"
-  STATE_BUCKET: adp-terraform-state-879318057152
   ECR_REPO: adp-cyber-worker
   CODEBUILD_PROJECT: adp-dev-cyber-worker
 
@@ -33,6 +31,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
 
       # ── 0. Install CLI tools on ARC runner ─────────────────────────────
       - name: Install zip + AWS CLI
@@ -55,14 +56,14 @@ jobs:
         run: |
           bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
           aws s3 cp /tmp/adp-source.zip \
-            "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip" \
-            --region "${{ env.AWS_REGION }}"
+            "s3://${STATE_BUCKET}/codebuild/adp-source.zip" \
+            --region "${AWS_REGION}"
           rm -f /tmp/adp-source.zip
 
       # ── 2. Ensure CodeBuild project exists ─────────────────────────────
       - name: Ensure CodeBuild project
         run: |
-          CB_ROLE_NAME="adp-${{ env.ENVIRONMENT }}-codebuild-role"
+          CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
           SERVICE_ROLE_ARN=$(aws iam get-role \
             --role-name "$CB_ROLE_NAME" \
             --query 'Role.Arn' --output text 2>/dev/null || echo "")
@@ -71,16 +72,16 @@ jobs:
             exit 1
           fi
 
-          SOURCE_LOC="${{ env.STATE_BUCKET }}/codebuild/adp-source.zip"
+          SOURCE_LOC="${STATE_BUCKET}/codebuild/adp-source.zip"
           EXISTS=$(aws codebuild batch-get-projects \
             --names "${{ env.CODEBUILD_PROJECT }}" \
-            --region "${{ env.AWS_REGION }}" \
+            --region "${AWS_REGION}" \
             --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
 
           CMD="create-project"
           [ "$EXISTS" -gt 0 ] && CMD="update-project"
 
-          aws codebuild $CMD --region "${{ env.AWS_REGION }}" \
+          aws codebuild $CMD --region "${AWS_REGION}" \
             --name "${{ env.CODEBUILD_PROJECT }}" \
             --source "{\"type\":\"S3\",\"location\":\"$SOURCE_LOC\",\"buildspec\":\"codebuild/bs-cyber-worker.yml\"}" \
             --artifacts '{"type":"NO_ARTIFACTS"}' \
@@ -96,16 +97,16 @@ jobs:
       - name: Build image via CodeBuild
         id: build
         run: |
-          REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           IMAGE_TAG="${{ github.sha }}"
 
           BUILD_ID=$(aws codebuild start-build \
-            --region "${{ env.AWS_REGION }}" \
+            --region "${AWS_REGION}" \
             --project-name "${{ env.CODEBUILD_PROJECT }}" \
             --environment-variables-override \
-              "name=AWS_REGION,value=${{ env.AWS_REGION }}" \
-              "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}" \
-              "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" \
+              "name=AWS_REGION,value=${AWS_REGION}" \
+              "name=ENVIRONMENT,value=${ENVIRONMENT}" \
+              "name=ACCOUNT_ID,value=${ACCOUNT_ID}" \
               "name=REGISTRY,value=${REGISTRY}" \
               "name=IMAGE_TAG,value=${IMAGE_TAG}" \
             --query 'build.id' --output text)
@@ -117,7 +118,7 @@ jobs:
           PHASE=""
           while true; do
             RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
-              --region "${{ env.AWS_REGION }}" \
+              --region "${AWS_REGION}" \
               --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
             STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
             CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
@@ -126,7 +127,7 @@ jobs:
               SUCCEEDED) echo "Build succeeded"; break ;;
               FAILED|FAULT|STOPPED|TIMED_OUT)
                 LOG_LINK=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
-                  --region "${{ env.AWS_REGION }}" \
+                  --region "${AWS_REGION}" \
                   --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
                 echo "Build failed ($STATUS). Logs: $LOG_LINK" >&2
                 exit 1
@@ -143,7 +144,7 @@ jobs:
           ASSETS_BUCKET="adp-dev-cape-assets"
 
           # Log in to ECR to pull the image
-          aws ecr get-login-password --region "${{ env.AWS_REGION }}" | \
+          aws ecr get-login-password --region "${AWS_REGION}" | \
             docker login --username AWS --password-stdin "${{ steps.build.outputs.registry }}" 2>/dev/null || true
 
           # Extract manifest from built image
@@ -155,12 +156,12 @@ jobs:
           # Publish to immutable location (keyed by image tag — never overwritten)
           aws s3 cp /tmp/worker-manifest.json \
             "s3://${ASSETS_BUCKET}/worker-manifests/by-tag/${IMAGE_TAG}.json" \
-            --region "${{ env.AWS_REGION }}"
+            --region "${AWS_REGION}"
 
           # Publish to "latest" pointer
           aws s3 cp /tmp/worker-manifest.json \
             "s3://${ASSETS_BUCKET}/worker-manifests/latest.json" \
-            --region "${{ env.AWS_REGION }}"
+            --region "${AWS_REGION}"
 
           echo "Manifest published for tag: ${IMAGE_TAG}"
 
@@ -173,7 +174,7 @@ jobs:
             --value "${IMAGE_TAG}" \
             --type String \
             --overwrite \
-            --region "${{ env.AWS_REGION }}"
+            --region "${AWS_REGION}"
           echo "SSM parameter /adp/dev/cyber/worker-image-tag updated to: ${IMAGE_TAG}"
 
       - name: Summary

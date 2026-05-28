@@ -1,0 +1,62 @@
+name: Load deployment config
+description: |
+  Loads ADP deployment values from config/deployment.yml (or runtime fallbacks)
+  and exports them to $GITHUB_ENV so subsequent steps can reference them as
+  $ACCOUNT_ID, $AWS_REGION, $ENVIRONMENT, $STATE_BUCKET, $GITHUB_ORG.
+
+  When config/deployment.yml is absent, values are derived at runtime
+  (aws sts get-caller-identity, etc.) — preserving today's behavior for
+  workflows that don't ship a config file.
+
+outputs:
+  account_id:
+    description: Resolved AWS account ID
+    value: ${{ steps.load.outputs.account_id }}
+  state_bucket:
+    description: Terraform state bucket name (adp-terraform-state-<account>)
+    value: ${{ steps.load.outputs.state_bucket }}
+  region:
+    description: AWS region
+    value: ${{ steps.load.outputs.region }}
+  environment:
+    description: Deployment environment (dev/staging/prod)
+    value: ${{ steps.load.outputs.environment }}
+  github_org:
+    description: GitHub org owning the repo
+    value: ${{ steps.load.outputs.github_org }}
+  customer_account_id:
+    description: Customer-linked AWS account (empty when not in cross-account mode)
+    value: ${{ steps.load.outputs.customer_account_id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Load deployment config
+      id: load
+      shell: bash
+      run: |
+        set -e
+        # shellcheck source=/dev/null
+        source "${GITHUB_WORKSPACE}/platform/scripts/load-deploy-config.sh"
+
+        # Export to job-level env for downstream steps
+        {
+          echo "ACCOUNT_ID=${ADP_ACCOUNT_ID}"
+          echo "AWS_REGION=${ADP_REGION}"
+          echo "ENVIRONMENT=${ADP_ENVIRONMENT}"
+          echo "STATE_BUCKET=${ADP_STATE_BUCKET}"
+          echo "GITHUB_ORG=${ADP_GITHUB_ORG}"
+          echo "CUSTOMER_ACCOUNT_ID=${ADP_CUSTOMER_ACCOUNT_ID:-}"
+        } >> "$GITHUB_ENV"
+
+        # Surface as step outputs too
+        {
+          echo "account_id=${ADP_ACCOUNT_ID}"
+          echo "state_bucket=${ADP_STATE_BUCKET}"
+          echo "region=${ADP_REGION}"
+          echo "environment=${ADP_ENVIRONMENT}"
+          echo "github_org=${ADP_GITHUB_ORG}"
+          echo "customer_account_id=${ADP_CUSTOMER_ACCOUNT_ID:-}"
+        } >> "$GITHUB_OUTPUT"
+
+        echo "Resolved: account=${ADP_ACCOUNT_ID} region=${ADP_REGION} env=${ADP_ENVIRONMENT} bucket=${ADP_STATE_BUCKET}"

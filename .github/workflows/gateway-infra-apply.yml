@@ -32,6 +32,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+
       - name: Install required CLI tools
         run: |
           set -e
@@ -57,7 +60,11 @@ jobs:
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
+        run: |
+          terraform init \
+            -backend-config="../../../${{ env.BACKEND_CONFIG }}" \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -input=false -reconfigure
 
       - name: State fixups (import drift, clean stale jobs)
         working-directory: ${{ env.TF_WORKING_DIR }}

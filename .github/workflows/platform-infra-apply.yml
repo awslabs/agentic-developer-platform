@@ -36,6 +36,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+
       # Bootstrap CLI tools (no-op once custom runner image rolls out everywhere)
       - name: Install required CLI tools
         run: |
@@ -80,7 +83,11 @@ jobs:
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -backend-config="../../${{ env.BACKEND_CONFIG }}" -input=false
+        run: |
+          terraform init \
+            -backend-config="../../${{ env.BACKEND_CONFIG }}" \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -input=false -reconfigure
 
       # Plan first to check for destroys (destroy-safety gate)
       - name: Terraform Plan (destroy-safety check)

@@ -30,9 +30,6 @@ on:
 env:
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
-  ACCOUNT_ID: "879318057152"
-  STATE_BUCKET: adp-terraform-state-879318057152
-
 concurrency:
   group: agent-context-images-${{ github.ref }}
   cancel-in-progress: false
@@ -90,22 +87,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+
       - name: Package source and upload to S3
         run: |
           bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
           aws s3 cp /tmp/adp-source.zip \
-            "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip" \
-            --region "${{ env.AWS_REGION }}"
+            "s3://${STATE_BUCKET}/codebuild/adp-source.zip" \
+            --region "${AWS_REGION}"
           rm -f /tmp/adp-source.zip
 
       - name: Trigger CodeBuild and wait
         id: build
         run: |
-          PROJECT_NAME="adp-${{ env.ENVIRONMENT }}-agent-context-${{ matrix.image }}-build"
+          PROJECT_NAME="adp-${ENVIRONMENT}-agent-context-${{ matrix.image }}-build"
           IMAGE_TAG="${{ github.sha }}"
 
           BUILD_ID=$(aws codebuild start-build \
-            --region "${{ env.AWS_REGION }}" \
+            --region "${AWS_REGION}" \
             --project-name "$PROJECT_NAME" \
             --environment-variables-override \
               "name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT" \
@@ -115,7 +115,7 @@ jobs:
 
           PHASE=""
           while true; do
-            RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${{ env.AWS_REGION }}" \
+            RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${AWS_REGION}" \
               --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
             STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
             CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
@@ -123,7 +123,7 @@ jobs:
             case "$STATUS" in
               SUCCEEDED) echo "Build succeeded"; break ;;
               FAILED|FAULT|STOPPED|TIMED_OUT)
-                LOG=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${{ env.AWS_REGION }}" \
+                LOG=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${AWS_REGION}" \
                   --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
                 echo "Build failed ($STATUS). Logs: $LOG" >&2
                 exit 1
@@ -135,6 +135,6 @@ jobs:
       - name: Summary
         run: |
           echo "## Agent Context Image Built: ${{ matrix.image }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Project**: adp-${{ env.ENVIRONMENT }}-agent-context-${{ matrix.image }}-build" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Project**: adp-${ENVIRONMENT}-agent-context-${{ matrix.image }}-build" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tag**: ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **CodeBuild**: ${{ steps.build.outputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"

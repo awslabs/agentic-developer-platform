@@ -27,8 +27,6 @@ on:
 env:
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
-  ACCOUNT_ID: "879318057152"
-  STATE_BUCKET: adp-terraform-state-879318057152
   CODEBUILD_PROJECT: adp-dev-agent-runtime
 
 jobs:
@@ -40,6 +38,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
 
       - name: Install zip + AWS CLI (bootstrap)
         run: |
@@ -60,15 +61,15 @@ jobs:
         run: |
           bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
           aws s3 cp /tmp/adp-source.zip \
-            "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip" \
-            --region "${{ env.AWS_REGION }}"
+            "s3://${STATE_BUCKET}/codebuild/adp-source.zip" \
+            --region "${AWS_REGION}"
           rm -f /tmp/adp-source.zip
 
       - name: Verify CodeBuild project exists
         run: |
           EXISTS=$(aws codebuild batch-get-projects \
             --names "${{ env.CODEBUILD_PROJECT }}" \
-            --region "${{ env.AWS_REGION }}" \
+            --region "${AWS_REGION}" \
             --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
           if [ "$EXISTS" -eq 0 ]; then
             echo "CodeBuild project ${{ env.CODEBUILD_PROJECT }} does not exist." >&2
@@ -79,14 +80,14 @@ jobs:
       - name: Build image via CodeBuild
         id: build
         run: |
-          REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           IMAGE_TAG="${{ github.sha }}"
           BUILD_ID=$(aws codebuild start-build \
-            --region "${{ env.AWS_REGION }}" \
+            --region "${AWS_REGION}" \
             --project-name "${{ env.CODEBUILD_PROJECT }}" \
             --environment-variables-override \
-              "name=AWS_REGION,value=${{ env.AWS_REGION }}" \
-              "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" \
+              "name=AWS_REGION,value=${AWS_REGION}" \
+              "name=ACCOUNT_ID,value=${ACCOUNT_ID}" \
               "name=REGISTRY,value=${REGISTRY}" \
               "name=IMAGE_TAG,value=${IMAGE_TAG}" \
             --query 'build.id' --output text)
@@ -96,14 +97,14 @@ jobs:
 
           PHASE=""
           while true; do
-            RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${{ env.AWS_REGION }}" --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
+            RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${AWS_REGION}" --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
             STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
             CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
             [ "$CUR_PHASE" != "$PHASE" ] && [ -n "$CUR_PHASE" ] && echo "Phase: $CUR_PHASE" && PHASE="$CUR_PHASE"
             case "$STATUS" in
               SUCCEEDED) echo "Build succeeded"; break ;;
               FAILED|FAULT|STOPPED|TIMED_OUT)
-                LOG=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${{ env.AWS_REGION }}" --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
+                LOG=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${AWS_REGION}" --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
                 echo "Build failed ($STATUS). Logs: $LOG" >&2
                 exit 1
                 ;;

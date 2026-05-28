@@ -18,9 +18,6 @@ env:
   ENVIRONMENT: dev
   NAMESPACE: adp-gateway
   EKS_CLUSTER: adp-dev-eks-cluster
-  ACCOUNT_ID: "879318057152"
-  STATE_BUCKET: adp-terraform-state-879318057152
-
 jobs:
   # Detect which parts of the gateway changed so we can skip the unrelated
   # build/deploy job on frontend-only or backend-only pushes. workflow_dispatch
@@ -75,23 +72,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+
       - name: Package source and upload to S3
         run: |
           bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
-          aws s3 cp /tmp/adp-source.zip "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip"
+          aws s3 cp /tmp/adp-source.zip "s3://${STATE_BUCKET}/codebuild/adp-source.zip"
           rm -f /tmp/adp-source.zip
 
       - name: Trigger image build in CodeBuild
         run: |
-          REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           BUILD_ID=$(aws codebuild start-build \
-            --project-name adp-${{ env.ENVIRONMENT }}-gateway-build \
+            --project-name adp-${ENVIRONMENT}-gateway-build \
             --environment-variables-override \
-              "name=AWS_REGION,value=${{ env.AWS_REGION }}" \
-              "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}" \
-              "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" \
+              "name=AWS_REGION,value=${AWS_REGION}" \
+              "name=ENVIRONMENT,value=${ENVIRONMENT}" \
+              "name=ACCOUNT_ID,value=${ACCOUNT_ID}" \
               "name=REGISTRY,value=${REGISTRY}" \
-              "name=STATE_BUCKET,value=${{ env.STATE_BUCKET }}" \
+              "name=STATE_BUCKET,value=${STATE_BUCKET}" \
               "name=EKS_CLUSTER,value=${{ env.EKS_CLUSTER }}" \
               "name=IMAGE_TAG,value=${{ github.sha }}" \
             --query 'build.id' --output text)
@@ -118,7 +118,7 @@ jobs:
         # URLs. Idempotent — copy-over on every deploy picks up template edits.
         run: |
           BUCKET=$(aws ssm get-parameter \
-            --name "/adp/${{ env.ENVIRONMENT }}/gateway/frontend-bucket" \
+            --name "/adp/${ENVIRONMENT}/gateway/frontend-bucket" \
             --query "Parameter.Value" --output text)
           aws s3 cp \
             modules/gateway/src/auth/cfn_templates/aws_role_v1.yaml \
@@ -127,8 +127,8 @@ jobs:
 
       - name: Roll out new image
         run: |
-          REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${AWS_REGION}
 
           # Apply the deployment manifest FIRST so changes to probes, env,
           # resource limits, volume mounts, etc. actually propagate.
@@ -175,6 +175,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -210,7 +213,7 @@ jobs:
       - name: Deploy to S3 and invalidate CloudFront
         run: |
           BUCKET=$(aws ssm get-parameter \
-            --name "/adp/${{ env.ENVIRONMENT }}/gateway/frontend-bucket" \
+            --name "/adp/${ENVIRONMENT}/gateway/frontend-bucket" \
             --query "Parameter.Value" --output text)
           cd modules/gateway/frontend
           # Exclude cfn-templates/ so it isn't wiped by --delete (populated by
@@ -218,7 +221,7 @@ jobs:
           aws s3 sync dist/ "s3://${BUCKET}/" --delete --exclude "cfn-templates/*"
 
           DIST_ID=$(aws ssm get-parameter \
-            --name "/adp/${{ env.ENVIRONMENT }}/gateway/cloudfront-id" \
+            --name "/adp/${ENVIRONMENT}/gateway/cloudfront-id" \
             --query "Parameter.Value" --output text 2>/dev/null) || true
           if [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ]; then
             aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"

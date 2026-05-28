@@ -34,8 +34,6 @@ env:
   ENVIRONMENT: dev
   NAMESPACE: adp-gateway-agents
   EKS_CLUSTER: adp-dev-eks-cluster
-  ACCOUNT_ID: "879318057152"
-  STATE_BUCKET: adp-terraform-state-879318057152
   ECR_REPO: adp-agent-gateway
   CODEBUILD_PROJECT: adp-dev-chat-agent
 
@@ -49,6 +47,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
 
       # ── 0. Ensure required CLI tools are on the ARC runner ──────────────
       # The ARC runner image pinned at 2.333.1 ships a bare Ubuntu — no zip,
@@ -93,15 +94,15 @@ jobs:
         run: |
           bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
           aws s3 cp /tmp/adp-source.zip \
-            "s3://${{ env.STATE_BUCKET }}/codebuild/adp-source.zip" \
-            --region "${{ env.AWS_REGION }}"
+            "s3://${STATE_BUCKET}/codebuild/adp-source.zip" \
+            --region "${AWS_REGION}"
           rm -f /tmp/adp-source.zip
 
       # ── 2. Ensure CodeBuild project exists and is pointed at the right buildspec
       - name: Ensure CodeBuild project
         run: |
           # Role name matches platform/scripts/deploy-all.sh (CB_ROLE_NAME).
-          CB_ROLE_NAME="adp-${{ env.ENVIRONMENT }}-codebuild-role"
+          CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
           SERVICE_ROLE_ARN=$(aws iam get-role \
             --role-name "$CB_ROLE_NAME" \
             --query 'Role.Arn' --output text 2>/dev/null || echo "")
@@ -110,16 +111,16 @@ jobs:
             exit 1
           fi
 
-          SOURCE_LOC="${{ env.STATE_BUCKET }}/codebuild/adp-source.zip"
+          SOURCE_LOC="${STATE_BUCKET}/codebuild/adp-source.zip"
           EXISTS=$(aws codebuild batch-get-projects \
             --names "${{ env.CODEBUILD_PROJECT }}" \
-            --region "${{ env.AWS_REGION }}" \
+            --region "${AWS_REGION}" \
             --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
 
           CMD="create-project"
           [ "$EXISTS" -gt 0 ] && CMD="update-project"
 
-          aws codebuild $CMD --region "${{ env.AWS_REGION }}" \
+          aws codebuild $CMD --region "${AWS_REGION}" \
             --name "${{ env.CODEBUILD_PROJECT }}" \
             --source "{\"type\":\"S3\",\"location\":\"$SOURCE_LOC\",\"buildspec\":\"codebuild/bs-chat-agent.yml\"}" \
             --artifacts '{"type":"NO_ARTIFACTS"}' \
@@ -135,16 +136,16 @@ jobs:
       - name: Build image via CodeBuild
         id: build
         run: |
-          REGISTRY="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           IMAGE_TAG="${{ github.sha }}"
 
           BUILD_ID=$(aws codebuild start-build \
-            --region "${{ env.AWS_REGION }}" \
+            --region "${AWS_REGION}" \
             --project-name "${{ env.CODEBUILD_PROJECT }}" \
             --environment-variables-override \
-              "name=AWS_REGION,value=${{ env.AWS_REGION }}" \
-              "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}" \
-              "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" \
+              "name=AWS_REGION,value=${AWS_REGION}" \
+              "name=ENVIRONMENT,value=${ENVIRONMENT}" \
+              "name=ACCOUNT_ID,value=${ACCOUNT_ID}" \
               "name=REGISTRY,value=${REGISTRY}" \
               "name=IMAGE_TAG,value=${IMAGE_TAG}" \
             --query 'build.id' --output text)
@@ -156,7 +157,7 @@ jobs:
           PHASE=""
           while true; do
             RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
-              --region "${{ env.AWS_REGION }}" \
+              --region "${AWS_REGION}" \
               --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
             STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
             CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
@@ -165,7 +166,7 @@ jobs:
               SUCCEEDED) echo "Build succeeded"; break ;;
               FAILED|FAULT|STOPPED|TIMED_OUT)
                 LOG_LINK=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
-                  --region "${{ env.AWS_REGION }}" \
+                  --region "${AWS_REGION}" \
                   --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
                 echo "Build failed ($STATUS). Logs: $LOG_LINK" >&2
                 exit 1
@@ -186,9 +187,9 @@ jobs:
 
           aws eks update-kubeconfig \
             --name "${{ env.EKS_CLUSTER }}" \
-            --region "${{ env.AWS_REGION }}"
+            --region "${AWS_REGION}"
 
-          export ENVIRONMENT="${{ env.ENVIRONMENT }}"
+          export ENVIRONMENT="${ENVIRONMENT}"
           export NAMESPACE="${{ env.NAMESPACE }}"
 
           # deploy-chat-scaledjob.sh reads Terraform outputs from

@@ -14,13 +14,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AWS_REGION: us-east-1
-  ENVIRONMENT: dev
+  # ACCOUNT_ID, AWS_REGION, ENVIRONMENT, STATE_BUCKET are populated at the
+  # start of each job by the load-deploy-config composite action — values
+  # come from config/deployment.yml (or runtime fallback). See:
+  # .github/actions/load-deploy-config/action.yml
   MODULE_NAME: webhook-ingress
   TF_WORKING_DIR: modules/agent-factory/webhook-ingress/infra
   BACKEND_CONFIG: environments/dev/modules/webhook-ingress-backend.tfvars
-  ACCOUNT_ID: "879318057152"
-  STATE_BUCKET: adp-terraform-state-879318057152
 
 jobs:
   changes:
@@ -62,6 +62,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -78,10 +81,10 @@ jobs:
         run: |
           for zip in dist/*.zip; do
             BASENAME=$(basename "$zip")
-            aws s3 cp "$zip" "s3://${{ env.STATE_BUCKET }}/lambda-artifacts/webhook-ingress/${BASENAME}" \
+            aws s3 cp "$zip" "s3://${STATE_BUCKET}/lambda-artifacts/webhook-ingress/${BASENAME}" \
               --metadata "commit=${{ github.sha }}"
           done
-          echo "Uploaded Lambda artifacts to s3://${{ env.STATE_BUCKET }}/lambda-artifacts/webhook-ingress/"
+          echo "Uploaded Lambda artifacts to s3://${STATE_BUCKET}/lambda-artifacts/webhook-ingress/"
 
   deploy-infra:
     name: Terraform Apply
@@ -95,6 +98,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
 
       - name: Install required CLI tools
         run: |
@@ -121,7 +127,11 @@ jobs:
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -backend-config="../../../../${{ env.BACKEND_CONFIG }}" -input=false
+        run: |
+          terraform init \
+            -backend-config="../../../../${{ env.BACKEND_CONFIG }}" \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -input=false -reconfigure
 
       - name: Migrate stale kubernetes_manifest entries out of state
         # KEDA resources moved from `kubernetes_manifest` to `null_resource +
@@ -171,12 +181,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+
       - name: Update Lambda functions
         run: |
           set -e
           # List Lambda artifacts uploaded by the package job in S3
-          ARTIFACTS=$(aws s3 ls "s3://${{ env.STATE_BUCKET }}/lambda-artifacts/webhook-ingress/" \
-            --region "${{ env.AWS_REGION }}" | awk '{print $4}' | grep '\.zip$' || true)
+          ARTIFACTS=$(aws s3 ls "s3://${STATE_BUCKET}/lambda-artifacts/webhook-ingress/" \
+            --region "${AWS_REGION}" | awk '{print $4}' | grep '\.zip$' || true)
           if [ -z "$ARTIFACTS" ]; then
             echo "No Lambda artifacts found in S3. Skipping update."
             exit 0
@@ -189,13 +202,13 @@ jobs:
           # fail loudly, not pretend success.
           for zip_name in $ARTIFACTS; do
             BASENAME=$(basename "$zip_name" .zip)
-            FUNCTION_NAME="adp-${{ env.ENVIRONMENT }}-${BASENAME}-webhook"
+            FUNCTION_NAME="adp-${ENVIRONMENT}-${BASENAME}-webhook"
             echo "Updating function: ${FUNCTION_NAME}"
             aws lambda update-function-code \
               --function-name "${FUNCTION_NAME}" \
-              --s3-bucket "${{ env.STATE_BUCKET }}" \
+              --s3-bucket "${STATE_BUCKET}" \
               --s3-key "lambda-artifacts/webhook-ingress/${BASENAME}.zip" \
-              --region "${{ env.AWS_REGION }}" \
+              --region "${AWS_REGION}" \
               --publish
           done
 
@@ -208,6 +221,9 @@ jobs:
       (needs.update-code.result == 'success' || needs.deploy-infra.result == 'success')
     steps:
       - uses: actions/checkout@v4
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -227,19 +243,19 @@ jobs:
         id: ssm
         run: |
           ENDPOINT=$(aws ssm get-parameter \
-            --name "/adp/${{ env.ENVIRONMENT }}/webhook-ingress/endpoint" \
-            --query "Parameter.Value" --output text --region "${{ env.AWS_REGION }}")
+            --name "/adp/${ENVIRONMENT}/webhook-ingress/endpoint" \
+            --query "Parameter.Value" --output text --region "${AWS_REGION}")
           QUEUE_URL=$(aws ssm get-parameter \
-            --name "/adp/${{ env.ENVIRONMENT }}/webhook-ingress/sqs-queue-url" \
-            --query "Parameter.Value" --output text --region "${{ env.AWS_REGION }}")
+            --name "/adp/${ENVIRONMENT}/webhook-ingress/sqs-queue-url" \
+            --query "Parameter.Value" --output text --region "${AWS_REGION}")
           SECRET_ARN=$(aws ssm get-parameter \
-            --name "/adp/${{ env.ENVIRONMENT }}/webhook-ingress/webhook-secret-arn" \
-            --query "Parameter.Value" --output text --region "${{ env.AWS_REGION }}")
+            --name "/adp/${ENVIRONMENT}/webhook-ingress/webhook-secret-arn" \
+            --query "Parameter.Value" --output text --region "${AWS_REGION}")
           SECRET_VALUE=$(aws secretsmanager get-secret-value \
-            --secret-id "$SECRET_ARN" --query "SecretString" --output text --region "${{ env.AWS_REGION }}")
+            --secret-id "$SECRET_ARN" --query "SecretString" --output text --region "${AWS_REGION}")
           EVENTS_TABLE=$(aws ssm get-parameter \
-            --name "/adp/${{ env.ENVIRONMENT }}/webhook-ingress/webhook-events-table" \
-            --query "Parameter.Value" --output text --region "${{ env.AWS_REGION }}")
+            --name "/adp/${ENVIRONMENT}/webhook-ingress/webhook-events-table" \
+            --query "Parameter.Value" --output text --region "${AWS_REGION}")
           echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
           echo "queue_url=$QUEUE_URL" >> "$GITHUB_OUTPUT"
           echo "events_table=$EVENTS_TABLE" >> "$GITHUB_OUTPUT"
@@ -251,7 +267,6 @@ jobs:
         working-directory: modules/agent-factory/webhook-ingress
         env:
           TEST_ENV: dev
-          AWS_REGION: ${{ env.AWS_REGION }}
           WEBHOOK_ENDPOINT: ${{ steps.ssm.outputs.endpoint }}
           WEBHOOK_SECRET: ${{ steps.ssm.outputs.secret }}
           WEBHOOK_SQS_QUEUE_URL: ${{ steps.ssm.outputs.queue_url }}
