@@ -31,15 +31,46 @@ environment: dev
 # Leave empty to derive from the git remote URL at runtime.
 github_org: ""
 
-# Optional: cross-account deploy
-# ------------------------------
-# When set, ADP-managed workflows assume into this customer account via the
-# gateway's /internal/v1/credential-assume-role endpoint, then deploy ADP
-# into the customer's account. The platform account (above) still hosts the
-# orchestrator + runners; this block tells them where to point the deploy.
+# =============================================================================
+# Optional: customer_account — gateway-mediated cross-account assume
+# =============================================================================
+# When to use:
 #
-# Leave commented out for self-managed / single-account deploys.
+#   ✅ ADP-managed track ONLY: scripts / workflows run inside ADP's platform
+#      pods (in-cluster), the operator is a vaulted ADP user, and the
+#      deploy target is the user's linked AWS account. The pod has no direct
+#      creds for the customer account, so the helper calls the gateway's
+#      /internal/v1/credential-assume-role endpoint to get them.
+#
+#   ❌ DO NOT use for self-managed / self-hosted deploys. If you're running
+#      from your laptop, your own CI runner, or anywhere with direct AWS
+#      creds for the target account, just set `account_id` (top-level) to
+#      that account. No gateway hop needed; your existing creds work.
+#
+# Decision matrix:
+#
+#   I'm running from...           | What to set
+#   ──────────────────────────────┼─────────────────────────────────────
+#   My laptop (`aws configure`)   | account_id (top level) only
+#   My company's GitHub Actions   | account_id (top level) only
+#   ADP's platform pod (orchestr.)| customer_account block (this section)
+#
+# Prerequisites for the ADP-managed track (one-time, manual today):
+#   1. Customer links an AWS account in the ADP dashboard ("Connect AWS
+#      account" flow). Creates `ADP-Agent-<label>` role in their account
+#      with ReadOnlyAccess + a trust policy on the gateway IRSA principal.
+#   2. Customer manually attaches `AdministratorAccess` (or equivalent) to
+#      that role in IAM console — needed for terraform deploy steps.
+#      Scoping the permissions tighter is a future hardening step.
+#
+# Failure mode if mis-set: if you set this block from outside the ADP
+# cluster, the helper logs `::error:: gateway unreachable` (DNS won't
+# resolve in-cluster service from outside) and continues with your existing
+# AWS creds. Non-fatal but noisy — fix by removing this block and using
+# top-level account_id instead.
 #
 # customer_account:
 #   account_id: "403685770643"      # the linked customer account to deploy ADP into
 #   aws_label: Dep-testing          # which vaulted credential label the gateway resolves
+#   user_id: "650f093f-ecd9-4ce1-a5a9-368e02c449cf"  # your Postgres users.id from the ADP dashboard
+#   gateway_url: "http://bedrockgateway.adp-gateway"  # in-cluster default; override only for non-EKS runners

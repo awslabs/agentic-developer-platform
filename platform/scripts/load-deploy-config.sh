@@ -141,14 +141,55 @@ fi
 # -----------------------------------------------------------------------------
 ADP_CUSTOMER_ACCOUNT_ID=$(_ldc_resolve ADP_CUSTOMER_ACCOUNT_ID customer_account.account_id "")
 ADP_CUSTOMER_AWS_LABEL=$(_ldc_resolve ADP_CUSTOMER_AWS_LABEL customer_account.aws_label "")
+ADP_CUSTOMER_USER_ID=$(_ldc_resolve ADP_CUSTOMER_USER_ID customer_account.user_id "")
+ADP_GATEWAY_URL=$(_ldc_resolve ADP_GATEWAY_URL customer_account.gateway_url "echo http://bedrockgateway.adp-gateway")
 
 if [ -n "$ADP_CUSTOMER_ACCOUNT_ID" ]; then
   export ADP_CUSTOMER_ACCOUNT_ID
   export ADP_CUSTOMER_AWS_LABEL
+  export ADP_CUSTOMER_USER_ID
+  export ADP_GATEWAY_URL
   export ADP_DEPLOY_TARGET_ACCOUNT="$ADP_CUSTOMER_ACCOUNT_ID"
+
+  # Assume the customer-linked role via the gateway.
+  #
+  # IMPORTANT: this branch is intended for the ADP-managed track only —
+  # scripts/workflows running inside ADP's platform pod that have no direct
+  # creds for the customer's account. If you're a self-hosted operator
+  # running from a laptop or your own CI with direct AWS creds, the
+  # gateway is unreachable (in-cluster service DNS) and this call will
+  # error. In that case, remove the customer_account block from
+  # config/deployment.yml and set account_id (top-level) directly.
+  # See config/deployment.yml.example for the decision matrix.
+  #
+  # Non-fatal if the assume fails — the caller's existing creds remain in
+  # place. Downstream commands will then either succeed (operator has
+  # correct creds for customer_account.account_id locally) or hit
+  # AccessDenied (operator is in platform pod context but gateway broken).
+  # Either failure is more diagnosable than silent platform-account writes.
+  if [ -z "${ADP_SKIP_CROSS_ACCOUNT_ASSUME:-}" ]; then
+    _LDC_ASSUME_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/assume-customer-creds.py"
+    if [ -x "$_LDC_ASSUME_SCRIPT" ]; then
+      _LDC_ASSUME_OUTPUT=$("$_LDC_ASSUME_SCRIPT" 2>&1 >/tmp/.ldc-creds.$$) || {
+        echo "WARN: cross-account assume failed; keeping existing AWS creds." >&2
+        echo "  If you're running from a laptop or non-ADP CI, remove the" >&2
+        echo "  customer_account block from config/deployment.yml and set" >&2
+        echo "  account_id (top-level) directly. See deployment.yml.example." >&2
+        echo "$_LDC_ASSUME_OUTPUT" >&2
+      }
+      if [ -s /tmp/.ldc-creds.$$ ]; then
+        # shellcheck disable=SC1090
+        . /tmp/.ldc-creds.$$
+        # Diagnostic on stderr (the python script also prints to stderr; this is here
+        # so the helper's caller can see it even when sourced from a workflow step)
+        echo "$_LDC_ASSUME_OUTPUT" >&2
+      fi
+      rm -f /tmp/.ldc-creds.$$
+    fi
+  fi
 else
   export ADP_DEPLOY_TARGET_ACCOUNT="$ADP_ACCOUNT_ID"
 fi
 
-unset _LDC_REPO_ROOT _LDC_CONFIG_FILE
+unset _LDC_REPO_ROOT _LDC_CONFIG_FILE _LDC_ASSUME_SCRIPT _LDC_ASSUME_OUTPUT
 unset -f _ldc_read_field _ldc_resolve

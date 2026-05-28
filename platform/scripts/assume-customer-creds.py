@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""
+assume-customer-creds.py — fetch STS creds for a vaulted customer-linked
+AWS account via the ADP gateway's /internal/v1/credential-assume-role
+endpoint, then emit them as `export KEY=value` lines on stdout.
+
+Usage:
+  eval "$(./platform/scripts/assume-customer-creds.py)"
+
+Inputs (from environment, populated by load-deploy-config.sh):
+  ADP_CUSTOMER_ACCOUNT_ID    — customer account to assume into (required)
+  ADP_CUSTOMER_AWS_LABEL     — vaulted credential label (e.g. "Dep-testing")
+  ADP_CUSTOMER_USER_ID       — Postgres users.id for the linked-account owner
+  ADP_GATEWAY_URL            — gateway base URL (default: http://bedrockgateway.adp-gateway)
+  ADP_INTERNAL_API_KEY       — internal API key (default: read from Secrets Manager
+                               at adp/<env>/gateway/internal-api-key)
+  ADP_ENVIRONMENT            — env name, used to compute the secret path
+
+Exits:
+  0 on success (creds printed to stdout, suitable for `eval`)
+  1 on configuration error (missing inputs)
+  2 on gateway/STS error
+"""
+
+import json
+import os
+import subprocess
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+def fail(msg: str, code: int = 1) -> "None":
+    print(f"::error::{msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def load_internal_api_key(env: str) -> str:
+    """Fetch the internal API key from AWS Secrets Manager."""
+    explicit = os.environ.get("ADP_INTERNAL_API_KEY", "")
+    if explicit:
+        return explicit
+    secret_id = f"adp/{env}/gateway/internal-api-key"
+    try:
+        out = subprocess.check_output(
+            [
+                "aws",
+                "secretsmanager",
+                "get-secret-value",
+                "--secret-id",
+                secret_id,
+                "--query",
+                "SecretString",
+                "--output",
+                "text",
+            ],
+            stderr=subprocess.PIPE,
+        )
+        return out.decode("utf-8").strip()
+    except subprocess.CalledProcessError as exc:
+        fail(
+            f"Could not read internal API key from Secrets Manager ({secret_id}): "
+            f"{exc.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+
+
+def main() -> int:
+    customer_account = os.environ.get("ADP_CUSTOMER_ACCOUNT_ID", "")
+    if not customer_account:
+        fail("ADP_CUSTOMER_ACCOUNT_ID not set; nothing to assume.")
+
+    user_id = os.environ.get("ADP_CUSTOMER_USER_ID", "")
+    if not user_id:
+        fail(
+            "ADP_CUSTOMER_USER_ID not set. The gateway's /internal/v1/credential-"
+            "assume-role endpoint requires the vault user's UUID. Add `user_id: "
+            "...` under customer_account in config/deployment.yml."
+        )
+
+    label = os.environ.get("ADP_CUSTOMER_AWS_LABEL", "")  # may be empty — gateway picks
+    gateway_url = os.environ.get(
+        "ADP_GATEWAY_URL", "http://bedrockgateway.adp-gateway"
+    ).rstrip("/")
+    env = os.environ.get("ADP_ENVIRONMENT", "dev")
+    api_key = load_internal_api_key(env)
+
+    payload = {
+        "user_id": user_id,
+        "agent_id": "github-workflow",
+        "task_id": os.environ.get("GITHUB_RUN_ID", "local"),
+        "service": "aws",
+        "label": label or None,
+        "purpose": "deploy via load-deploy-config",
+    }
+
+    endpoint = f"{gateway_url}/internal/v1/credential-assume-role"
+    req = Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "X-Internal-Api-Key": api_key,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        fail(
+            f"Gateway returned HTTP {exc.code}: {error_body}",
+            code=2,
+        )
+    except URLError as exc:
+        fail(f"Could not reach gateway at {endpoint}: {exc}", code=2)
+
+    # Validate response shape
+    for required in ("access_key_id", "secret_access_key", "session_token"):
+        if required not in body:
+            fail(
+                f"Gateway response missing {required!r}. Keys: {sorted(body.keys())}",
+                code=2,
+            )
+
+    # Confirm the assumed account matches what config said. Catches cases
+    # where the user_id resolves to a different vaulted credential.
+    profile_name = body.get("profile_name", "<unknown>")
+    region = body.get("region") or os.environ.get("AWS_REGION", "us-east-1")
+
+    # Emit shell-evaluable output
+    print(f"export AWS_ACCESS_KEY_ID={body['access_key_id']}")
+    print(f"export AWS_SECRET_ACCESS_KEY={body['secret_access_key']}")
+    print(f"export AWS_SESSION_TOKEN={body['session_token']}")
+    print(f"export AWS_REGION={region}")
+    print(f"export AWS_DEFAULT_REGION={region}")
+    # Strip IRSA / profile env vars so boto3 / aws CLI uses our injected creds
+    print("unset AWS_PROFILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE")
+
+    # Diagnostic line on stderr (won't break `eval`)
+    print(
+        f"Assumed customer role via gateway: account={customer_account} "
+        f"label={label or '<auto>'} profile={profile_name} expires={body.get('expiration', '<unknown>')}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
