@@ -6,19 +6,25 @@
 
 set -e
 
-AWS_REGION="${AWS_REGION:-us-east-1}"
-ENVIRONMENT="${ENVIRONMENT:-dev}"
+# Load deployment config — populates ADP_ACCOUNT_ID, ADP_REGION,
+# ADP_ENVIRONMENT, ADP_STATE_BUCKET, etc. Falls back to runtime defaults
+# when config/deployment.yml is absent (preserves pre-config behavior).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=load-deploy-config.sh
+source "${SCRIPT_DIR}/load-deploy-config.sh"
+
+# Map config-helper outputs onto this script's local variable names.
+AWS_REGION="$ADP_REGION"
+ENVIRONMENT="$ADP_ENVIRONMENT"
+ACCOUNT_ID="$ADP_ACCOUNT_ID"
+BUCKET_NAME="$ADP_STATE_BUCKET"
 
 echo "Bootstrapping ADP Platform..."
 echo "Region: $AWS_REGION"
 echo "Environment: $ENVIRONMENT"
-
-# Get AWS Account ID
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 echo "AWS Account: $ACCOUNT_ID"
 
 # Create Terraform state bucket
-BUCKET_NAME="adp-terraform-state-${ACCOUNT_ID}"
 echo "Creating S3 bucket: $BUCKET_NAME"
 
 if ! aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then

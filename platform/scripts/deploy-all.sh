@@ -20,8 +20,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-AWS_REGION="${AWS_REGION:-us-east-1}"
-ENVIRONMENT="${ENVIRONMENT:-dev}"
+# Load deployment config — populates ADP_ACCOUNT_ID, ADP_REGION,
+# ADP_ENVIRONMENT, ADP_GITHUB_ORG, etc. Falls back to runtime defaults
+# (aws sts get-caller-identity, AWS_REGION env, etc.) when no config
+# file is present, so existing self-managed deploys keep working.
+# shellcheck source=load-deploy-config.sh
+source "${SCRIPT_DIR}/load-deploy-config.sh"
+
+AWS_REGION="$ADP_REGION"
+ENVIRONMENT="$ADP_ENVIRONMENT"
 GATEWAY_ONLY=false
 AGENT_FACTORY_ONLY=false
 AGENT_CONTEXT_ONLY=false
@@ -81,6 +88,13 @@ fi
 
 command -v aws >/dev/null 2>&1 || fail "aws CLI not found"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) || fail "AWS CLI not configured"
+
+# When config/deployment.yml pins a specific account_id, fail-fast if the
+# operator's creds resolve elsewhere — mirrors preflight's safety check.
+if [ -f "$ROOT_DIR/config/deployment.yml" ] && [ -n "$ADP_ACCOUNT_ID" ] && [ "$ADP_ACCOUNT_ID" != "$ACCOUNT_ID" ]; then
+  fail "config/deployment.yml says account_id=$ADP_ACCOUNT_ID but caller resolves to $ACCOUNT_ID. Either fix config/deployment.yml or switch AWS_PROFILE."
+fi
+
 ok "AWS Account: $ACCOUNT_ID | Region: $AWS_REGION | Env: $ENVIRONMENT"
 
 # ---------------------------------------------------------------------------
@@ -681,7 +695,7 @@ EOF
 environment      = "${ENVIRONMENT}"
 aws_region       = "${AWS_REGION}"
 account_id       = "${ACCOUNT_ID}"
-github_org       = "aws-e"
+github_org       = "${ADP_GITHUB_ORG:-aws-e}"
 runner_namespace = "arc-runners"
 EOF
   terraform init -backend-config="$BACKEND_FILE" -input=false

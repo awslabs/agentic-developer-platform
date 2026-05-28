@@ -30,6 +30,12 @@ warn() { echo -e "  ${YELLOW}⚠${NC} $1"; WARN=$((WARN+1)); }
 fail() { echo -e "  ${RED}✗${NC} $1"; FAIL=$((FAIL+1)); }
 section() { echo -e "\n${BLUE}── $1 ──${NC}"; }
 
+# Load deployment config — populates ADP_ACCOUNT_ID (expected target account)
+# and friends. Used below to detect operator-vs-config mismatches.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=load-deploy-config.sh
+source "${SCRIPT_DIR}/load-deploy-config.sh"
+
 echo ""
 echo "ADP Preflight Check"
 echo "==================="
@@ -130,6 +136,18 @@ else
   echo ""
   echo -e "Results: ${GREEN}$PASS passed${NC}, ${YELLOW}$WARN warnings${NC}, ${RED}$FAIL failed${NC}"
   exit 1
+fi
+
+# Config-vs-identity match — only checked when config/deployment.yml is
+# present and pinned to a specific account_id. If the file is absent, the
+# helper falls back to the caller's identity, so by definition they match.
+_CONFIG_FILE_PATH="$(cd "$SCRIPT_DIR/../.." && pwd)/config/deployment.yml"
+if [ -f "$_CONFIG_FILE_PATH" ] && [ -n "$ADP_ACCOUNT_ID" ]; then
+  if [ "$ADP_ACCOUNT_ID" = "$ACCOUNT_ID" ]; then
+    pass "config/deployment.yml account_id matches caller identity"
+  else
+    fail "config/deployment.yml says account_id=$ADP_ACCOUNT_ID but caller is $ACCOUNT_ID. Either fix config or switch AWS_PROFILE."
+  fi
 fi
 
 # Region
