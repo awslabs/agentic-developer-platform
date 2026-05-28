@@ -1,0 +1,45 @@
+# ADP deployment configuration
+# ============================
+#
+# Single source of truth for an ADP deployment's target. Read by the deploy
+# scripts (platform/scripts/*.sh) and the GitHub Actions workflows
+# (.github/workflows/*.yml) via platform/scripts/load-deploy-config.sh.
+#
+# Setup
+# -----
+# Copy this file to `config/deployment.yml` (gitignored) and fill in your
+# values. `setup-org.sh` will create it for you from a fresh clone.
+#
+# Backwards compatibility
+# -----------------------
+# All fields are optional. When `config/deployment.yml` is missing or a
+# field is empty, the helper script falls back to runtime-derived defaults
+# (e.g. `account_id` becomes `aws sts get-caller-identity` Account). This
+# means existing deploys keep working without any config file present.
+
+# AWS account that owns the ADP platform (the runner / EKS / ECR live here).
+# Leave empty to derive from `aws sts get-caller-identity` at runtime.
+account_id: ""
+
+# AWS region. Leave empty to use $AWS_REGION env or aws configure default.
+region: us-east-1
+
+# Deployment environment. Used in resource names like `adp-${environment}-eks-cluster`.
+environment: dev
+
+# GitHub org that owns the repo. Used by setup-org.sh and create-github-apps.sh.
+# Leave empty to derive from the git remote URL at runtime.
+github_org: ""
+
+# Optional: cross-account deploy
+# ------------------------------
+# When set, ADP-managed workflows assume into this customer account via the
+# gateway's /internal/v1/credential-assume-role endpoint, then deploy ADP
+# into the customer's account. The platform account (above) still hosts the
+# orchestrator + runners; this block tells them where to point the deploy.
+#
+# Leave commented out for self-managed / single-account deploys.
+#
+# customer_account:
+#   account_id: "403685770643"      # the linked customer account to deploy ADP into
+#   aws_label: Dep-testing          # which vaulted credential label the gateway resolves
