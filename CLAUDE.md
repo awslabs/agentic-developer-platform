@@ -242,13 +242,17 @@ Run the preflight check to validate the environment **after bootstrap** (it insp
 ./platform/scripts/preflight-check.sh
 ```
 
-**If preflight fails:**
-- Missing CLI tools → Tell the user which tools to install and provide the install links. Wait for them to confirm.
-- AWS credentials invalid → Ask the user to run `aws configure` or set `AWS_REGION`. Wait for confirmation.
-- Missing IAM permissions → Tell the user which permissions are missing. They may need to contact their AWS admin.
+The script runs ~27 checks across CLI tools, AWS credentials, IAM permissions, existing infra, and tfvars substitution. The exit code is non-zero only if there are FAILs (warnings don't fail the run).
 
-**If preflight passes with warnings:**
-- Report the warnings to the user but proceed. Warnings are non-blocking.
+**FAILs (must fix):**
+- Missing CLI tools (aws, terraform, node ≥ 22) → Tell the user exactly what to install and provide install links. Wait for them to confirm.
+- AWS credentials invalid → Ask the user to run `aws configure` or set `AWS_REGION`. Wait for confirmation.
+- Missing required IAM perms (s3, dynamodb, eks, ecr) → Tell the user. They typically need a more permissive role.
+
+**WARNs (don't block, but interpret):**
+- Missing iam:Get*, codebuild:ListProjects, bedrock:ListFoundationModels, secretsmanager:ListSecrets, cognito-idp:ListUserPools → these are **predictive**: the corresponding service-using phase later (3-8) will fail. Flag the warning to the user with which phase will be affected, but proceed past Phase 2.
+- "EKS cluster not found" / "ECR adp-gateway not found" → expected before Phase 3.
+- "backend.tfvars still has ACCOUNT_ID placeholder" → Phase 1 didn't run cleanly; re-run bootstrap before continuing.
 
 **Once preflight passes**, inform the user: "Environment validated. Starting deployment. This will take approximately 30-45 minutes. I'll keep you updated at each step."
 

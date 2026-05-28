@@ -164,7 +164,25 @@ Validates your environment **after bootstrap**. Preflight checks the state bucke
 ./platform/scripts/preflight-check.sh
 ```
 
-Checks: AWS CLI, Terraform, kubectl, Node.js, Docker, AWS credentials, IAM permissions (S3, DynamoDB, EKS, ECR, RDS, ElastiCache, Cognito, CloudFront, Secrets Manager, IAM, CodeBuild), Terraform state bucket reachability, lock table status.
+**What's checked** (verified against `platform/scripts/preflight-check.sh`):
+
+| Section | Check | Outcome on fail |
+|---|---|---|
+| CLI tools | aws, terraform, node ≥ 22 | FAIL — must fix to proceed |
+| | docker (daemon running), gh | WARN — agent uses CodeBuild fallback / GitHub features optional |
+| AWS configuration | `aws sts get-caller-identity` succeeds | FAIL |
+| | `AWS_REGION` set (env or `aws configure`) | FAIL |
+| AWS permissions | s3, dynamodb, eks, ecr | FAIL — these are needed by Phase 1 + Phase 3 |
+| | iam, codebuild, bedrock, secrets-manager, cognito | WARN — needed by Phases 3-8; fix before continuing past Phase 3 |
+| Existing infra | state bucket + lock table from Phase 1 | WARN if missing — Phase 1 didn't complete |
+| | EKS cluster, ECR `adp-gateway` | WARN if missing — these get created by Phase 3 |
+| Environment config | `environments/dev/backend.tfvars` substituted | WARN if `ACCOUNT_ID` placeholder still present |
+| | `environments/dev/modules/gateway.tfvars` exists | WARN |
+| | kubeconfig path writable | WARN |
+
+**Note:** RDS, ElastiCache, CloudFront, CloudWatch Logs, Lambda, API Gateway permissions are **not** explicitly checked here. They're exercised by later phases — if your role lacks them, Phase 4–8 will fail. If you're deploying with admin-level credentials, no concern. If your role is scoped, validate those permissions out-of-band before continuing.
+
+If preflight fails (any FAIL line), fix and re-run. Warnings are reported and the script continues.
 
 ### Phase 3: Deploy
 

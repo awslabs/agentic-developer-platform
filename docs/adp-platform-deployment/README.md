@@ -27,7 +27,7 @@ Single source of truth for where each phase stands across both tracks. Updated a
 | # | Phase | Self-managed | ADP-managed | Code PR(s) | Doc PR(s) |
 |---|---|---|---|---|---|
 | 1 | Bootstrap (state bucket + lock table) | 🟡 Code ready | 🟡 Code ready | [#967](https://github.com/aws-e/adp/pull/967) | [#970](https://github.com/aws-e/adp/pull/970) |
-| 2 | Preflight | ⬜ Not yet audited | 🟠 Doc updated | — | [#970](https://github.com/aws-e/adp/pull/970) |
+| 2 | Preflight | 🟠 Doc updated, code unchanged | 🟠 Doc updated, code unchanged | — | [#970](https://github.com/aws-e/adp/pull/970), [#972](https://github.com/aws-e/adp/pull/972) |
 | 3 | Platform infra (VPC + EKS + ECR + IAM + CodeBuild) | ⬜ Not yet audited | ❌ Blocked on [#966](https://github.com/aws-e/adp/issues/966) (workflow account-awareness) | — | — |
 | 4 | Gateway infra (RDS + Cognito + ElastiCache + CloudFront + API GW + KMS) | ⬜ Not yet audited | ❌ Blocked on [#966](https://github.com/aws-e/adp/issues/966) | — | — |
 | 5 | Gateway backend (FastAPI on EKS + ALB) | ⬜ Not yet audited | ❌ Blocked on [#966](https://github.com/aws-e/adp/issues/966) | — | — |

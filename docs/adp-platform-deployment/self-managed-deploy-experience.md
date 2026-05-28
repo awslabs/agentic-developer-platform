@@ -77,17 +77,22 @@ The script also rewrites `environments/dev/backend.tfvars` (and per-module backe
 
 The agent runs `./platform/scripts/preflight-check.sh` to verify your environment **after bootstrap**:
 
-- All required CLI tools are installed and work
-- AWS credentials are valid and resolve to the account you confirmed
-- Your identity has the minimum IAM permissions needed (S3, DynamoDB, EKS, ECR, RDS, ElastiCache, Cognito, CloudFront, Secrets Manager, IAM, CodeBuild)
-- The Terraform state bucket and lock table from Phase 1 are reachable
+- All required CLI tools are installed and work (aws, terraform, node ≥ 22 must succeed; docker + gh are warn-only).
+- AWS credentials are valid and resolve to the account you confirmed.
+- Your identity has the **minimum** IAM permissions needed for the next steps:
+  - **Required (FAIL on missing):** s3:ListAllMyBuckets, dynamodb:ListTables, eks:ListClusters, ecr:DescribeRepositories.
+  - **Recommended (WARN on missing — needed by Phases 3-8):** iam:Get*, codebuild:ListProjects, bedrock:ListFoundationModels, secretsmanager:ListSecrets, cognito-idp:ListUserPools.
+- The Terraform state bucket and lock table from Phase 1 are reachable.
+- Your `environments/dev/backend.tfvars` was substituted by bootstrap (no `ACCOUNT_ID` placeholder remains).
 
-**What you'll see:** a list of checks with ✓ / ✗ / ⚠ markers. Warnings are non-blocking — the agent will report them and continue.
+**What you'll see:** a list of checks with ✓ / ✗ / ⚠ markers, ending with `Results: N passed, M warnings, K failed`. The agent will read those numbers, report any warnings to you, and continue if `K = 0`.
+
+**What's NOT explicitly checked but you should validate yourself if your role is scoped:** RDS, ElastiCache, CloudFront, CloudWatch Logs, Lambda, and API Gateway permissions. These are exercised by Phases 4–8. If you're using an admin-level role, no concern.
 
 **What could fail:**
-- Missing `terraform` / `node` / `kubectl` → the agent tells you exactly what to install and waits.
-- Wrong AWS profile → the agent stops and asks you to fix `aws configure` or `AWS_PROFILE`.
-- Missing IAM permissions → the agent lists what it needs. Typically means you're not admin on the target account.
+- Missing `terraform` / `node` / `aws` → the agent tells you exactly what to install and waits.
+- Wrong AWS profile / expired creds → the agent stops and asks you to fix `aws configure` or `AWS_PROFILE`.
+- Missing required IAM permissions → the agent lists what's missing. Typically means you're not admin on the target account.
 - State bucket / lock table not reachable → Phase 1 didn't complete; re-run bootstrap before re-running preflight.
 
 ---

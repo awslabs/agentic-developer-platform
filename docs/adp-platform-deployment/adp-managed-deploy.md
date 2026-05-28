@@ -88,12 +88,28 @@ When the orchestrator dispatches Phase 2:
 
 - Sub-agent pod spins up with your assumed-role STS creds (same mechanism as Phase 1).
 - Runs `./platform/scripts/preflight-check.sh`.
-- The script does ~22 checks: AWS credentials valid, region set, IAM permissions on S3 / DynamoDB / EKS / ECR / RDS / ElastiCache / Cognito / CloudFront / Secrets Manager / IAM / CodeBuild, plus **state-bucket reachability** and **lock-table status** (which depend on Phase 1 having succeeded).
+
+The script runs **27 checks** across these sections (verified against `platform/scripts/preflight-check.sh`):
+
+| Section | What's checked | Outcome on miss |
+|---|---|---|
+| CLI tools — deploy | aws, terraform, node ≥ 22 | FAIL |
+| | docker daemon | WARN (CodeBuild fallback) |
+| CLI tools — post-deploy | gh CLI | WARN |
+| AWS configuration | `sts:GetCallerIdentity`, region | FAIL |
+| AWS permissions (required) | s3, dynamodb, eks, ecr | FAIL — needed by Phase 1 + 3 |
+| AWS permissions (recommended) | iam, codebuild, bedrock, secretsmanager, cognito | WARN — needed by Phases 3–8 |
+| Existing infra | state bucket + lock table from Phase 1 | WARN if missing — Phase 1 didn't complete |
+| | EKS cluster, ECR `adp-gateway` | WARN — created by Phase 3 |
+| Environment config | `backend.tfvars` substituted (no `ACCOUNT_ID` placeholder), gateway tfvars present, kubeconfig writable | WARN |
+
 - Posts `## VERDICT: PASS` if 0 failures, or `## VERDICT: FAIL` with the list of missing permissions if any.
 
-Some checks emit warnings rather than failures — e.g. "EKS cluster not yet created" is expected before Phase 3.
+**Critical for ADP-managed track:** the script runs against **your linked-role's** permissions, not ADP's platform role. If your role is missing any of the recommended-section permissions, **Phase 2 will pass with warnings** but the corresponding later phase will fail. Read the warnings carefully; they predict where Phases 3–8 will block.
 
-**No verification needed in your account post-Phase-2** — the script's exit code IS the verification. If Phase 1 PASSed and Phase 2 FAILed with permission errors, your linked role is missing some IAM grants. Update your role's permissions (re-run the CFN template or modify the role policy directly) and re-trigger Phase 2.
+**Permissions NOT explicitly checked here** (but exercised later): RDS, ElastiCache, CloudFront, CloudWatch Logs, Lambda, API Gateway. If your linked role doesn't have them, Phases 4–8 will fail with `AccessDenied`. If your role is admin-level, no concern.
+
+**No verification needed in your account post-Phase 2** — the script's exit code IS the verification. If Phase 1 PASSed and Phase 2 FAILed with permission errors, your linked role is missing some IAM grants. Update your role's permissions (re-run the CFN template or modify the role policy directly) and re-trigger Phase 2.
 
 ## Validation per phase
 
