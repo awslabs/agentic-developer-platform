@@ -3,6 +3,11 @@ variable "environment" {
   type        = string
 }
 
+variable "account_id" {
+  description = "AWS account ID — used to make the S3 bucket name globally unique"
+  type        = string
+}
+
 variable "security_scan_glacier_days" {
   description = "Days before transitioning SARIF files to Glacier"
   type        = number

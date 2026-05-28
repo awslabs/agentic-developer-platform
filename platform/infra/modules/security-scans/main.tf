@@ -6,14 +6,12 @@
 # =============================================================================
 
 resource "aws_s3_bucket" "security_scans" {
-  # The account-ID suffix from PR #715 was never applied — bucket existed pre-PR
-  # as `adp-<env>-security-scans` and S3 buckets cannot be renamed in place.
-  # Every Platform Infra Apply since #715 has planned a destroy+recreate that
-  # fails (BucketNotEmpty), causing partial damage to the bucket's protection
-  # rules. Pin to the actual existing name; account-ID isolation is sufficient
-  # to avoid global-namespace collisions because each account has only one
-  # adp-<env>-security-scans bucket.
-  bucket = "adp-${var.environment}-security-scans"
+  # Account-ID suffix ensures global uniqueness across AWS accounts.
+  # Migration note (issue #982): the platform account's legacy bare-named bucket
+  # (adp-dev-security-scans) must be deleted or emptied before applying this
+  # change there — S3 buckets cannot be renamed in place. New/cross-account
+  # deploys get the suffixed name on first apply with no migration needed.
+  bucket = "adp-${var.environment}-security-scans-${var.account_id}"
 }
 
 resource "aws_s3_bucket_versioning" "security_scans" {
