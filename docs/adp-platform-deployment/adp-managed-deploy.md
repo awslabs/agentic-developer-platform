@@ -18,7 +18,9 @@ If you don't have an ADP account, or you don't want to give ADP cross-account ro
 
 - An ADP dashboard account.
 - An AWS account linked in the dashboard with a verified `aws_role` credential. The role's `MaxSessionDuration` should be ≥ 3600s (longer is better — single phases can exceed an hour).
-- The label of your linked credential (e.g. `Dep-testing`). You can confirm via the dashboard's Settings → AWS Access page.
+- The label of your linked credential (e.g. `Dep-testing`). Confirm via the dashboard's Settings → AWS Access page.
+- Your **ADP user_id** (Postgres `users.id` UUID — not the email or Cognito sub). Find it on the same page, or query the gateway DB. Required by the gateway's `/internal/v1/credential-assume-role` endpoint to identify which vaulted credential to resolve.
+- **Manually attach `AdministratorAccess`** (or equivalent) to your `ADP-Agent-<label>` role in IAM console. The CFN template that created your role attached only `ReadOnlyAccess`, which is too narrow for terraform deploy steps. Scoping the permissions tighter (`adp-*` prefix only) is a future hardening step — for now, admin-equivalent is required.
 
 ## How it works (high level)
 
@@ -47,15 +49,15 @@ Same dependency order as the [self-managed deploy](./self-managed-deploy.md), bu
 
 | # | Phase | Status | Template | Notes |
 |---|-------|--------|----------|-------|
-| 1 | Bootstrap (state bucket + lock table) | code ready (PR #967) | #685 | Pod auto-assumes customer creds at startup; `bootstrap.sh` creates `adp-terraform-state-<customer>` in your account and rewrites `environments/dev/backend.tfvars` in pod's working dir. |
+| 1 | Bootstrap (state bucket + lock table) | code ready ([#967](https://github.com/aws-e/adp/pull/967)) | #685 | Pod auto-assumes customer creds at startup; `bootstrap.sh` creates `adp-terraform-state-<customer>` in your account and rewrites `environments/dev/backend.tfvars` in pod's working dir. |
 | 2 | Preflight | code ready (no changes needed) | #686 | `preflight-check.sh` already derives `ACCOUNT_ID` from `aws sts get-caller-identity`, so it inspects your account directly. |
-| 3 | Platform infra (VPC + EKS + ECR + IAM + CodeBuild) | _blocked — workflow runs in platform account, not yours_ | #687 | The `platform-infra-apply.yml` workflow today uses platform IRSA + platform state. Needs a per-workflow customer-account role + STS chain-assume step. Tracked in [#966](https://github.com/aws-e/adp/issues/966). |
-| 4 | Gateway infra (RDS + Cognito + ElastiCache + CloudFront + API GW + KMS) | _pending Phase 3_ | #688 | Same workflow-side refactor as Phase 3. |
-| 5 | Gateway backend (FastAPI on EKS + ALB) | _pending Phase 3_ | #689 | |
-| 6 | Gateway frontend (S3 + CloudFront SPA) | _pending Phase 3_ | #690 | |
-| 7 | Webhook ingress (API GW + Lambda + SQS + DynamoDB) | _pending Phase 3_ | #691 | |
-| 8 | Agent delivery (KEDA + ARC + WebSocket API + chat infra) | _pending Phase 3_ | #692 | |
-| 9 | Smoke test | _pending all earlier phases_ | #693 | |
+| 3 | Platform infra (VPC + EKS + ECR + IAM + CodeBuild) | code ready (Stage A–D: [#973](https://github.com/aws-e/adp/pull/973)–[#976](https://github.com/aws-e/adp/pull/976)) | #687 | `platform-infra-apply.yml` now reads the `customer_account` block from `config/deployment.yml` via the load-deploy-config composite action. The orchestrator commits a config file with your `account_id` + `user_id` + `aws_label` to the deploy-instance branch before triggering the workflow. The Load step calls the gateway, gets STS creds, and the `terraform init` step uses `-backend-config="bucket=$STATE_BUCKET"` so state lands in your account's bucket. |
+| 4 | Gateway infra (RDS + Cognito + ElastiCache + CloudFront + API GW + KMS) | code ready (same Stage A–D) | #688 | Same workflow-side mechanism. |
+| 5 | Gateway backend (FastAPI on EKS + ALB) | code ready (same Stage A–D) | #689 | |
+| 6 | Gateway frontend (S3 + CloudFront SPA) | code ready (same Stage A–D) | #690 | |
+| 7 | Webhook ingress (API GW + Lambda + SQS + DynamoDB) | code ready (same Stage A–D) | #691 | |
+| 8 | Agent delivery (KEDA + ARC + WebSocket API + chat infra) | code ready (same Stage A–D) | #692 | |
+| 9 | Smoke test | _pending end-to-end verification_ | #693 | |
 
 ## What to expect: Phase 1 (Bootstrap)
 
@@ -110,6 +112,42 @@ The script runs **27 checks** across these sections (verified against `platform/
 **Permissions NOT explicitly checked here** (but exercised later): RDS, ElastiCache, CloudFront, CloudWatch Logs, Lambda, API Gateway. If your linked role doesn't have them, Phases 4–8 will fail with `AccessDenied`. If your role is admin-level, no concern.
 
 **No verification needed in your account post-Phase 2** — the script's exit code IS the verification. If Phase 1 PASSed and Phase 2 FAILed with permission errors, your linked role is missing some IAM grants. Update your role's permissions (re-run the CFN template or modify the role policy directly) and re-trigger Phase 2.
+
+## What to expect: Phases 3–8 (terraform-driven workflows)
+
+Phases 3 through 8 each delegate to a CI workflow (`platform-infra-apply.yml`, `gateway-infra-apply.yml`, `gateway-deploy.yml`, etc.). The orchestrator commits a `config/deployment.yml` to the deploy-instance branch before triggering the workflow:
+
+```yaml
+# config/deployment.yml — committed to the deploy-instance branch
+account_id: "879318057152"          # the platform account where the runner lives
+region: us-east-1
+environment: dev
+github_org: aws-e
+
+customer_account:
+  account_id: "403685770643"        # YOUR linked account — terraform deploys land here
+  aws_label: Dep-testing            # YOUR vaulted credential label
+  user_id: "650f093f-..."           # YOUR Postgres users.id
+```
+
+When the workflow runs:
+
+1. The runner (in ADP's platform account) checks out the deploy-instance branch — gets the committed `config/deployment.yml`.
+2. The `Load deployment config` composite action sources `platform/scripts/load-deploy-config.sh`. The helper sees `customer_account.account_id` is set and invokes `assume-customer-creds.py`.
+3. `assume-customer-creds.py` calls the gateway at `http://bedrockgateway.adp-gateway/internal/v1/credential-assume-role` with your `user_id` + `aws_label`. The gateway resolves your vaulted role, performs `sts:AssumeRole` server-side, returns short-lived STS creds (1-hour by default).
+4. Helper exports those creds to `$GITHUB_ENV`. Subsequent `terraform`, `aws`, `kubectl` steps in the same job use them, landing operations on **your** account.
+5. The `terraform init` step also passes `-backend-config="bucket=$STATE_BUCKET"`, so state goes to `adp-terraform-state-<your-account-id>` (created in Phase 1).
+
+You can confirm your account is the deploy target by tailing CloudTrail in your AWS account during the workflow run — you should see `AssumeRole` from the gateway IRSA principal, then a flurry of `CreateVpc`, `CreateCluster`, etc. signed by the resulting session principal.
+
+**Failure modes specific to this path**:
+
+| Failure | Symptom | Fix |
+|---|---|---|
+| Vault role lacks admin perms | terraform fails with `AccessDenied: not authorized to perform iam:CreateRole` | Manually attach `AdministratorAccess` to your `ADP-Agent-<label>` role in IAM console (per Prerequisites above). |
+| Vault role's `MaxSessionDuration` too short | Long-running terraform applies hit `ExpiredToken` partway through | Edit the role and set `MaxSessionDuration: 12h` (max). Re-trigger the phase. |
+| Wrong `user_id` in deploy-instance config | Gateway returns `credential_not_found` | The orchestrator constructs the config from your dashboard profile; if it picks the wrong user_id, fix in the deploy-instance issue body and re-trigger. |
+| Gateway down | Workflow's Load step warns `gateway unreachable`, falls through to platform IRSA, terraform tries to deploy to platform account | Ops issue — check `kubectl get pods -n adp-gateway`. Halt the deploy until gateway is healthy. |
 
 ## Validation per phase
 

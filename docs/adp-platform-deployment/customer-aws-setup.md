@@ -54,6 +54,20 @@ The stack deploys in under 60 seconds.
 3. ADP will attempt a read-only API call to confirm the role is assumable
 4. Once verified, agents can use your AWS account in subsequent runs
 
+## Step 4 (deploy-test only): expand role permissions for full ADP deploy
+
+If you plan to use the **ADP-managed deploy track** to deploy ADP itself into your linked account (not just have agents inspect or modify isolated resources), the default `ReadOnlyAccess` is too narrow — terraform's deploy steps need IAM, EKS, RDS, CloudFront, etc. write permissions.
+
+**Today (manual)**:
+1. Open IAM console → Roles → find `ADP-Agent-<your-label>`.
+2. Click **Add permissions** → **Attach policies**.
+3. Attach `AdministratorAccess` (AWS-managed policy).
+4. Save.
+
+This is a temporary requirement. A future PR will extend the CFN template with a `--tier deploy` option that grants scoped permissions on `adp-*` and `bedrockgw-*` resources only, eliminating the need for admin-equivalent access. Tracked in the ADP Platform Roadmap.
+
+**Find your `user_id`**: the ADP-managed deploy needs your ADP `users.id` UUID (not your email or Cognito sub). It's shown on Settings → AWS Access alongside your ExternalId. Save it — you'll paste it into `config/deployment.yml` for deploy-instance issues.
+
 ## Changing Permissions
 
 - **Upgrade/downgrade tier**: Delete the existing stack, deploy the new tier's template

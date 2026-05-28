@@ -264,30 +264,39 @@ The script runs ~27 checks across CLI tools, AWS credentials, IAM permissions, e
 
 **Tell the user:** "Deploying shared platform infrastructure (VPC, EKS, ECR). This takes about 15 minutes."
 
-**Execute:**
+**Execute (self-managed, runs locally):**
 ```bash
-# Detect operator's public IP and restrict EKS API endpoint to it (portable — works for any cloner).
-# Respect an already-exported value if the caller set one.
+# Load deployment config — populates ADP_ACCOUNT_ID, ADP_REGION etc. from
+# config/deployment.yml (or runtime fallback). Account derives from
+# `aws sts get-caller-identity` if no config file is present.
+source platform/scripts/load-deploy-config.sh
+
+# Detect operator's public IP and restrict EKS API endpoint to it.
 if [ -z "${TF_VAR_eks_public_access_cidrs:-}" ]; then
   MY_IP=$(curl -fsS --max-time 5 https://checkip.amazonaws.com | tr -d '[:space:]')
   export TF_VAR_eks_public_access_cidrs="[\"${MY_IP}/32\"]"
 fi
 
 cd platform/infra
-terraform init -backend-config=../../environments/dev/backend.tfvars -input=false
+terraform init \
+  -backend-config=../../environments/dev/backend.tfvars \
+  -backend-config="bucket=${ADP_STATE_BUCKET}" \
+  -input=false -reconfigure
 terraform apply -var-file=../../environments/dev/platform.tfvars -auto-approve
 ```
 
+**Execute (ADP-managed, agent triggers the workflow):** the orchestrator on a deploy-instance issue dispatches `platform-infra-apply.yml` via `gh workflow run`, after committing a `config/deployment.yml` with the customer's `account_id` + `user_id` + `aws_label` to the deploy-instance branch. The workflow's `Load deployment config` step reads that file, calls the gateway, and uses the resulting STS creds for terraform.
+
 **Verify:**
 ```bash
-aws eks describe-cluster --name adp-dev-eks --query 'cluster.{status:status,version:version}' --output table
+aws eks describe-cluster --name adp-${ADP_ENVIRONMENT}-eks-cluster --query 'cluster.{status:status,version:version}' --output table
 ```
 
 Expected: status `ACTIVE`.
 
 Then configure kubectl and wait for nodes:
 ```bash
-aws eks update-kubeconfig --name adp-dev-eks --region us-east-1
+aws eks update-kubeconfig --name adp-${ADP_ENVIRONMENT}-eks-cluster --region "${ADP_REGION}"
 kubectl get nodes
 ```
 

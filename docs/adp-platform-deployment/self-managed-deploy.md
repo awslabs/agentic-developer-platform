@@ -31,7 +31,7 @@ cd adp
 aws configure  # or export AWS_PROFILE=<your-profile>
 gh auth login
 
-# 2. Configure for your org
+# 2. Configure for your org (creates config/deployment.yml from your AWS + GH context)
 ./platform/scripts/setup-org.sh <YOUR_GITHUB_ORG> adp
 
 # 3. Create GitHub Apps (opens browser 3 times — interactive)
@@ -42,6 +42,21 @@ gh auth login
 ```
 
 That's it. The script handles bootstrap, infrastructure, image builds, K8s deployment, frontend, and ALB wiring.
+
+### Deployment config
+
+Step 2 above creates `config/deployment.yml` (gitignored) with values auto-detected from `aws sts get-caller-identity`, your `AWS_REGION`, and the `<YOUR_GITHUB_ORG>` argument. Every script and workflow in the repo reads this file via `platform/scripts/load-deploy-config.sh` to find the target account / region / environment / GitHub org. Edit the file directly if you need to change targets later — there's no `account_id` to hand-edit in any script or workflow.
+
+Schema (full reference in `config/deployment.yml.example`):
+
+```yaml
+account_id: "111122223333"      # your AWS account
+region: us-east-1
+environment: dev
+github_org: your-org
+```
+
+**Note**: the `customer_account` block in the example file is for the **ADP-managed** track only (where ADP's platform pods deploy into a customer-linked account on the customer's behalf). Self-managed deploys should leave it commented out.
 
 ## What Gets Deployed
 

@@ -28,13 +28,15 @@ Single source of truth for where each phase stands across both tracks. Updated a
 |---|---|---|---|---|---|
 | 1 | Bootstrap (state bucket + lock table) | 🟡 Code ready | 🟡 Code ready | [#967](https://github.com/aws-e/adp/pull/967) | [#970](https://github.com/aws-e/adp/pull/970) |
 | 2 | Preflight | 🟠 Doc updated, code unchanged | 🟠 Doc updated, code unchanged | — | [#970](https://github.com/aws-e/adp/pull/970), [#972](https://github.com/aws-e/adp/pull/972) |
-| 3 | Platform infra (VPC + EKS + ECR + IAM + CodeBuild) | ⬜ Not yet audited | ❌ Blocked on [#966](https://github.com/aws-e/adp/issues/966) (workflow account-awareness) | — | — |
-| 4 | Gateway infra (RDS + Cognito + ElastiCache + CloudFront + API GW + KMS) | ⬜ Not yet audited | ❌ Blocked on [#966](https://github.com/aws-e/adp/issues/966) | — | — |
-| 5 | Gateway backend (FastAPI on EKS + ALB) | ⬜ Not yet audited | ❌ Blocked on [#966](https://github.com/aws-e/adp/issues/966) | — | — |
-| 6 | Gateway frontend (S3 + CloudFront SPA) | ⬜ Not yet audited | ❌ Blocked on [#966](https://github.com/aws-e/adp/issues/966) | — | — |
-| 7 | Webhook ingress (API GW + Lambda + SQS + DynamoDB) | ⬜ Not yet audited | ❌ Blocked on [#966](https://github.com/aws-e/adp/issues/966) | — | — |
-| 8 | Agent delivery (KEDA + ARC + WebSocket API + chat infra) | ⬜ Not yet audited | ❌ Blocked on [#966](https://github.com/aws-e/adp/issues/966) | — | — |
-| 9 | Smoke test | ⬜ Not yet audited | ❌ Blocked on all earlier phases | — | — |
+| 3 | Platform infra (VPC + EKS + ECR + IAM + CodeBuild) | 🟡 Code ready | 🟡 Code ready | [#973](https://github.com/aws-e/adp/pull/973), [#974](https://github.com/aws-e/adp/pull/974), [#975](https://github.com/aws-e/adp/pull/975), [#976](https://github.com/aws-e/adp/pull/976) | _this PR_ |
+| 4 | Gateway infra (RDS + Cognito + ElastiCache + CloudFront + API GW + KMS) | 🟡 Code ready | 🟡 Code ready | (same Stage A–D) | _this PR_ |
+| 5 | Gateway backend (FastAPI on EKS + ALB) | 🟡 Code ready | 🟡 Code ready | (same Stage A–D) | _this PR_ |
+| 6 | Gateway frontend (S3 + CloudFront SPA) | 🟡 Code ready | 🟡 Code ready | (same Stage A–D) | _this PR_ |
+| 7 | Webhook ingress (API GW + Lambda + SQS + DynamoDB) | 🟡 Code ready | 🟡 Code ready | (same Stage A–D) | _this PR_ |
+| 8 | Agent delivery (KEDA + ARC + WebSocket API + chat infra) | 🟡 Code ready | 🟡 Code ready | (same Stage A–D) | _this PR_ |
+| 9 | Smoke test | ⬜ Not yet audited | ⬜ Not yet audited | — | — |
+
+Stage A–D ([#973](https://github.com/aws-e/adp/pull/973) [#974](https://github.com/aws-e/adp/pull/974) [#975](https://github.com/aws-e/adp/pull/975) [#976](https://github.com/aws-e/adp/pull/976)) introduced `config/deployment.yml` + the `load-deploy-config` helper / composite action and refactored 15 workflows to consume it. With those merged, the workflow path no longer hardcodes the platform account, which **unblocks every later phase for both tracks**. End-to-end verification (a real deploy from a fresh checkout into a customer-linked account) is the path from 🟡 → ✅.
 
 Definition of done for **each** phase:
 

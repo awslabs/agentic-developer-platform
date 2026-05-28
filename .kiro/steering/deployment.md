@@ -263,29 +263,38 @@ The script runs ~27 checks across CLI tools, AWS credentials, IAM permissions, e
 
 **Tell the user:** "Deploying shared platform infrastructure (VPC, EKS, ECR). This takes about 15 minutes."
 
-**Execute:**
+**Execute (self-managed, runs locally):**
 ```bash
+# Load deployment config — populates ADP_ACCOUNT_ID, ADP_REGION etc. from
+# config/deployment.yml (or runtime fallback).
+source platform/scripts/load-deploy-config.sh
+
 cd platform/infra
-terraform init -backend-config=../../environments/dev/backend.tfvars -input=false
+terraform init \
+  -backend-config=../../environments/dev/backend.tfvars \
+  -backend-config="bucket=${ADP_STATE_BUCKET}" \
+  -input=false -reconfigure
 terraform apply -var-file=../../environments/dev/platform.tfvars -auto-approve
 ```
 
+**Execute (ADP-managed, agent triggers the workflow):** the orchestrator dispatches `platform-infra-apply.yml` via `gh workflow run`, after committing a `config/deployment.yml` with the customer's `account_id` + `user_id` + `aws_label` to the deploy-instance branch. The workflow's `Load deployment config` step reads that file, calls the gateway, and uses the STS creds for terraform.
+
 **Verify:**
 ```bash
-aws eks describe-cluster --name adp-dev-eks --query 'cluster.{status:status,version:version}' --output table
+aws eks describe-cluster --name adp-${ADP_ENVIRONMENT}-eks-cluster --query 'cluster.{status:status,version:version}' --output table
 ```
 
 Expected: status `ACTIVE`.
 
 Then configure kubectl and wait for nodes:
 ```bash
-aws eks update-kubeconfig --name adp-dev-eks --region us-east-1
+aws eks update-kubeconfig --name adp-${ADP_ENVIRONMENT}-eks-cluster --region "${ADP_REGION}"
 kubectl get nodes
 ```
 
 If no nodes yet, wait — EKS Auto Mode takes 3-5 minutes to provision. Check every 30 seconds.
 
-**Tell the user:** "Platform deployed. EKS cluster adp-dev-eks is active with N nodes."
+**Tell the user:** "Platform deployed. EKS cluster adp-${ADP_ENVIRONMENT}-eks-cluster is active with N nodes."
 
 ---
 

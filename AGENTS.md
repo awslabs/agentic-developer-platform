@@ -259,6 +259,8 @@ Once passing, mark `preflight` phase `complete`.
 
 **What:** Hand off to `deploy-all.sh`. It orchestrates platform → agent-factory → agent-gateway → gateway infra (two-pass ALB wiring) → gateway backend image build → k8s rollout → frontend build + upload. One command.
 
+The script sources `platform/scripts/load-deploy-config.sh` at startup, so it picks up `config/deployment.yml` if present (created by `setup-org.sh` in Phase 0). When the config file is absent it falls back to runtime values from `aws sts get-caller-identity`.
+
 ```bash
 ./platform/scripts/deploy-all.sh
 ```
