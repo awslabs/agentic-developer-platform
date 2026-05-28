@@ -1,12 +1,50 @@
 name: Load deployment config
 description: |
-  Loads ADP deployment values from config/deployment.yml (or runtime fallbacks)
-  and exports them to $GITHUB_ENV so subsequent steps can reference them as
-  $ACCOUNT_ID, $AWS_REGION, $ENVIRONMENT, $STATE_BUCKET, $GITHUB_ORG.
+  Loads ADP deployment values and exports them to $GITHUB_ENV so subsequent
+  steps can reference them as $ACCOUNT_ID, $AWS_REGION, $ENVIRONMENT,
+  $STATE_BUCKET, $GITHUB_ORG (+ optional $CUSTOMER_ACCOUNT_ID).
 
-  When config/deployment.yml is absent, values are derived at runtime
-  (aws sts get-caller-identity, etc.) — preserving today's behavior for
-  workflows that don't ship a config file.
+  Resolution order per field:
+    1. Action input (this file's `with:` block, if set by the calling
+       workflow). Lets the workflow_dispatch inputs flow through without
+       requiring a config file at all.
+    2. config/deployment.yml on the checked-out ref.
+    3. Runtime fallback (aws sts get-caller-identity for account_id,
+       AWS_REGION env, etc.).
+
+  This means a workflow_dispatch with explicit -f account_id=... overrides
+  whatever's on the ref or in env, which is the cleanest way for an
+  orchestrator to target a specific customer account.
+
+inputs:
+  account_id:
+    description: Target AWS account ID (12 digits). Overrides config file.
+    required: false
+    default: ''
+  region:
+    description: AWS region. Overrides config file.
+    required: false
+    default: ''
+  environment:
+    description: Deployment environment (dev/staging/prod). Overrides config file.
+    required: false
+    default: ''
+  github_org:
+    description: GitHub org owning the repo. Overrides config file.
+    required: false
+    default: ''
+  customer_account_id:
+    description: Customer-linked AWS account to deploy into (cross-account mode). Overrides config file.
+    required: false
+    default: ''
+  customer_aws_label:
+    description: Vaulted credential label for the customer account.
+    required: false
+    default: ''
+  customer_user_id:
+    description: ADP users.id UUID for the linked-account owner. Required when customer_account_id is set.
+    required: false
+    default: ''
 
 outputs:
   account_id:
@@ -34,8 +72,30 @@ runs:
     - name: Load deployment config
       id: load
       shell: bash
+      env:
+        # Prime ADP_* env vars from action inputs. The helper script's
+        # resolution order honors existing env vars first, so anything
+        # set here takes precedence over config/deployment.yml. Empty
+        # inputs leave the env var unset so the helper falls through to
+        # the config file or runtime defaults.
+        ADP_ACCOUNT_ID: ${{ inputs.account_id }}
+        ADP_REGION: ${{ inputs.region }}
+        ADP_ENVIRONMENT: ${{ inputs.environment }}
+        ADP_GITHUB_ORG: ${{ inputs.github_org }}
+        ADP_CUSTOMER_ACCOUNT_ID: ${{ inputs.customer_account_id }}
+        ADP_CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label }}
+        ADP_CUSTOMER_USER_ID: ${{ inputs.customer_user_id }}
       run: |
         set -e
+        # Strip empty values so the helper's "existing env var wins" logic
+        # falls through to the next resolution layer when an input was omitted.
+        for var in ADP_ACCOUNT_ID ADP_REGION ADP_ENVIRONMENT ADP_GITHUB_ORG \
+                   ADP_CUSTOMER_ACCOUNT_ID ADP_CUSTOMER_AWS_LABEL ADP_CUSTOMER_USER_ID; do
+          if [ -z "${!var}" ]; then
+            unset "$var"
+          fi
+        done
+
         # shellcheck source=/dev/null
         source "${GITHUB_WORKSPACE}/platform/scripts/load-deploy-config.sh"
 
@@ -49,6 +109,16 @@ runs:
           echo "CUSTOMER_ACCOUNT_ID=${ADP_CUSTOMER_ACCOUNT_ID:-}"
         } >> "$GITHUB_ENV"
 
+        # Cross-account assume already populated AWS_* into env (via the
+        # helper) — surface them to subsequent steps too.
+        if [ -n "${ADP_CUSTOMER_ACCOUNT_ID:-}" ] && [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
+          {
+            echo "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}"
+            echo "AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}"
+            echo "AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}"
+          } >> "$GITHUB_ENV"
+        fi
+
         # Surface as step outputs too
         {
           echo "account_id=${ADP_ACCOUNT_ID}"
@@ -60,3 +130,6 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
         echo "Resolved: account=${ADP_ACCOUNT_ID} region=${ADP_REGION} env=${ADP_ENVIRONMENT} bucket=${ADP_STATE_BUCKET}"
+        if [ -n "${ADP_CUSTOMER_ACCOUNT_ID:-}" ]; then
+          echo "Cross-account: deploying into customer account ${ADP_CUSTOMER_ACCOUNT_ID} (label=${ADP_CUSTOMER_AWS_LABEL:-<auto>})"
+        fi
