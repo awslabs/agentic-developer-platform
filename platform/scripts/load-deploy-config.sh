@@ -151,6 +151,11 @@ if [ -n "$ADP_CUSTOMER_ACCOUNT_ID" ]; then
   export ADP_GATEWAY_URL
   export ADP_DEPLOY_TARGET_ACCOUNT="$ADP_CUSTOMER_ACCOUNT_ID"
 
+  # In cross-account mode, Terraform state lives in the CUSTOMER's bucket,
+  # not the platform's. The customer's bootstrap phase created this bucket
+  # in their account, and the assumed credentials have access to it.
+  export ADP_STATE_BUCKET="adp-terraform-state-${ADP_CUSTOMER_ACCOUNT_ID}"
+
   # Assume the customer-linked role via the gateway.
   #
   # IMPORTANT: this branch is intended for the ADP-managed track only —
