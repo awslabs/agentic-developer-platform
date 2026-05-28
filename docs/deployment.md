@@ -329,6 +329,7 @@ Common cause: Docker Hub rate limit on `python:3.12-slim`. The Dockerfile should
 
 - "bucket does not exist" → run `./platform/scripts/bootstrap.sh` first
 - "ACCOUNT_ID" placeholder in tfvars → bootstrap.sh should have replaced it; run it again
+- "AccessDenied on adp-terraform-state-XXXXXXXXXXXX" where XXXXXXXXXXXX is **not** your current account → your local checkout still has another account's id baked into `environments/dev/backend.tfvars` (or per-module backend file). `bootstrap.sh` rewrites these files to match `aws sts get-caller-identity`, so re-running it fixes the file in-place. Never commit the rewrite back to the repo — each operator/agent gets their own substituted copy.
 
 ## File Reference
 

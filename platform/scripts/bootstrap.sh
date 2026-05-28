@@ -49,8 +49,16 @@ else
 fi
 
 # Update backend config with account ID
+# Rewrites both the legacy ACCOUNT_ID placeholder AND any prior account id
+# baked into adp-terraform-state-* bucket names. This makes bootstrap.sh
+# safe to re-run in any account: pulls in the value from `aws sts get-
+# caller-identity` and rewrites tfvars so subsequent `terraform init` lands
+# on the right state bucket.
 echo "Updating backend configuration..."
-find environments/ -name "*.tfvars" -exec sed -i "s/ACCOUNT_ID/${ACCOUNT_ID}/g" {} \;
+find environments/ -name "*.tfvars" -exec sed -i \
+    -e "s/ACCOUNT_ID/${ACCOUNT_ID}/g" \
+    -e "s/adp-terraform-state-[0-9]\{12\}/adp-terraform-state-${ACCOUNT_ID}/g" \
+    {} \;
 
 echo ""
 echo "Bootstrap complete!"
