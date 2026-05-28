@@ -10,7 +10,7 @@ State key: `dev/platform/terraform.tfstate`
 | Resource | AWS Service | Validation Command | Expected |
 |----------|------------|-------------------|----------|
 | VPC + subnets | VPC | `aws ec2 describe-vpcs --filters "Name=tag:Project,Values=adp" --query 'Vpcs[].{Id:VpcId,State:State}'` | State: available |
-| EKS cluster | EKS | `aws eks describe-cluster --name adp-dev-eks --query 'cluster.status'` | ACTIVE |
+| EKS cluster | EKS | `aws eks describe-cluster --name adp-dev-eks-cluster --query 'cluster.status'` | ACTIVE |
 | EKS nodes | EC2 (Auto Mode) | `kubectl get nodes` | ≥1 node Ready |
 | ECR repos | ECR | `aws ecr describe-repositories --query 'repositories[?starts_with(repositoryName,\`adp-\`)].repositoryName'` | adp-gateway, adp-agent-runtime |
 | IAM roles | IAM | `aws iam list-roles --query 'Roles[?starts_with(RoleName,\`adp-dev\`)].RoleName'` | cluster role, node role |
@@ -78,7 +78,7 @@ State key: `dev/modules/agent-factory/terraform.tfstate`
 | Secrets (GitHub App) | Secrets Manager | `aws secretsmanager list-secrets --filter Key=name,Values=adp/gh-app --query 'SecretList[].Name'` | 6 secrets (3 IDs + 3 keys) |
 | Beads DynamoDB | DynamoDB | `aws dynamodb describe-table --table-name adp-dev-agent-beads-manifest --query 'Table.TableStatus'` | ACTIVE |
 | Beads S3 bucket | S3 | `aws s3 ls \| grep adp-dev-agent-beads-state` | Bucket listed |
-| EKS access entry | EKS | `aws eks list-access-entries --cluster-name adp-dev-eks \| grep runner` | Entry listed |
+| EKS access entry | EKS | `aws eks list-access-entries --cluster-name adp-dev-eks-cluster \| grep runner` | Entry listed |
 
 ### Agent Factory — ARC Runners (EKS)
 
@@ -136,7 +136,7 @@ The deploy-all.sh script and the agent both read/write this file to track progre
     "verification":      {"status": "pending"}
   },
   "outputs": {
-    "eks_cluster": "adp-dev-eks",
+    "eks_cluster": "adp-dev-eks-cluster",
     "cloudfront_domain": "d1234.cloudfront.net",
     "cognito_user_pool_id": "us-east-1_abc123",
     "ecr_registry": "123456789012.dkr.ecr.us-east-1.amazonaws.com",

@@ -24,8 +24,8 @@ Maintain `.adp-deploy-state.json` in the repo root. Create it at the start, upda
   "modules": [],
   "phases": {
     "org_setup":        {"status": "pending"},
-    "preflight":        {"status": "pending"},
     "bootstrap":        {"status": "pending"},
+    "preflight":        {"status": "pending"},
     "platform_infra":   {"status": "pending"},
     "gateway_infra":    {"status": "pending"},
     "gateway_backend":  {"status": "pending"},
@@ -79,8 +79,8 @@ I'll handle the entire deployment for you. There are 10 phases, and only the fir
 **Phase 0 — GitHub Setup (~10 min, needs you)**
 I'll ask for your GitHub org name, repo name, and which modules you want. Then I'll open your browser 3 times to create GitHub Apps — you just click approve each time. This is the only part that needs you.
 
-**Phases 1-2 — Preflight + Bootstrap (~2 min, automated)**
-I'll check your tools and AWS permissions, then create the Terraform state backend (S3 bucket + DynamoDB table).
+**Phases 1-2 — Bootstrap + Preflight (~2 min, automated)**
+I'll create the Terraform state backend (S3 bucket + DynamoDB table) in the account your AWS credentials resolve to, then run preflight checks (CLI tooling, IAM permissions, state-bucket reachability).
 
 **Phase 3 — Shared Platform (~15 min, automated)**
 I'll deploy the VPC, EKS cluster, ECR repos, and IAM roles via CodeBuild. This is the longest step — I'll poll the build and keep you updated.
@@ -197,9 +197,45 @@ aws secretsmanager list-secrets --filter Key=name,Values=adp/gh-app --query 'Sec
 
 ---
 
-### Phase 1: Preflight (Automated)
+### Phase 1: Bootstrap Terraform State Backend
 
-Run the preflight check to validate the environment:
+**What:** Creates an S3 bucket and DynamoDB table for Terraform state storage in **the account `aws sts get-caller-identity` resolves to**. Bootstrap is Phase 1 because it's the only phase where we can fail-fast with no infra at risk — every subsequent phase reads from the state bucket this phase creates.
+
+**Execute:**
+```bash
+export AWS_REGION=us-east-1
+export ENVIRONMENT=dev
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
+echo "Will bootstrap into account: $ACCOUNT_ID"
+```
+
+Check if already bootstrapped:
+```bash
+aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null && echo "EXISTS" || echo "MISSING"
+```
+
+If MISSING, run:
+```bash
+./platform/scripts/bootstrap.sh
+```
+
+The script also rewrites `environments/dev/backend.tfvars` (and per-module backend files) in your working dir to point at the current account's bucket. **Do not commit this rewrite** — every operator/agent gets a fresh substitution from a clean checkout.
+
+**Verify:**
+```bash
+aws s3api head-bucket --bucket "$STATE_BUCKET"  # exits 0 on success
+aws dynamodb describe-table --table-name adp-terraform-locks --query 'Table.TableStatus' --output text  # ACTIVE
+grep "$ACCOUNT_ID" environments/dev/backend.tfvars  # bucket line should contain your account id
+```
+
+**Tell the user:** "Terraform state backend ready in account $ACCOUNT_ID. S3 bucket: $STATE_BUCKET."
+
+---
+
+### Phase 2: Preflight (Automated)
+
+Run the preflight check to validate the environment **after bootstrap** (it inspects the state bucket and lock table to confirm they're reachable):
 
 ```bash
 ./platform/scripts/preflight-check.sh
@@ -214,40 +250,6 @@ Run the preflight check to validate the environment:
 - Report the warnings to the user but proceed. Warnings are non-blocking.
 
 **Once preflight passes**, inform the user: "Environment validated. Starting deployment. This will take approximately 30-45 minutes. I'll keep you updated at each step."
-
----
-
-### Phase 2: Bootstrap Terraform State Backend
-
-**What:** Creates an S3 bucket and DynamoDB table for Terraform state storage.
-
-**Execute:**
-```bash
-export AWS_REGION=us-east-1
-export ENVIRONMENT=dev
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
-```
-
-Check if already bootstrapped:
-```bash
-aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null && echo "EXISTS" || echo "MISSING"
-```
-
-If MISSING, run:
-```bash
-./platform/scripts/bootstrap.sh
-```
-
-**Verify:**
-```bash
-aws s3 ls | grep adp-terraform-state
-aws dynamodb describe-table --table-name adp-terraform-locks --query 'Table.TableStatus' --output text
-```
-
-Expected: bucket listed, table status `ACTIVE`.
-
-**Tell the user:** "Terraform state backend ready. S3 bucket: adp-terraform-state-XXXX."
 
 ---
 

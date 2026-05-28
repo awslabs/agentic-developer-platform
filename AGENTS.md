@@ -31,8 +31,8 @@ Maintain `.adp-deploy-state.json` in the repo root. Create it at the start, upda
   "modules": [],
   "phases": {
     "github_setup":     {"status": "pending"},
-    "preflight":        {"status": "pending"},
     "bootstrap":        {"status": "pending"},
+    "preflight":        {"status": "pending"},
     "deploy_all":       {"status": "pending"},
     "verification":     {"status": "pending"}
   },
@@ -81,11 +81,11 @@ I'll handle the entire deployment for you. Only **Phase 0** needs your attention
 **Phase 0 — GitHub Setup (~10 min, needs you)**
 I'll ask for your GitHub org name, repo name, AWS profile, and which modules you want. Then I'll open your browser 3 times to create GitHub Apps — you just click approve each time. This is the only part that needs you.
 
-**Phase 1 — Preflight (~1 min, automated)**
-I'll check your tools (aws, terraform, kubectl, node, gh) and AWS permissions.
+**Phase 1 — Bootstrap (~1 min, automated)**
+Creates the Terraform state backend (S3 bucket + DynamoDB lock table) in the account your AWS credentials resolve to. Runs first because every later phase reads from this state bucket.
 
-**Phase 2 — Bootstrap (~1 min, automated)**
-Creates the Terraform state backend: S3 bucket + DynamoDB lock table.
+**Phase 2 — Preflight (~1 min, automated)**
+I'll check your tools (aws, terraform, kubectl, node, gh), AWS permissions, and that the bootstrap state bucket + lock table from Phase 1 are reachable.
 
 **Phase 3 — Full Deploy (~30 min, automated)**
 I'll run `deploy-all.sh` which orchestrates every module:
@@ -202,9 +202,38 @@ Mark `github_setup` phase `complete` in state file.
 
 ---
 
-### Phase 1: Preflight (Automated)
+### Phase 1: Bootstrap Terraform State Backend
 
-Run the preflight check to validate the environment:
+**What:** Creates `adp-terraform-state-<account_id>` S3 bucket and `adp-terraform-locks` DynamoDB table **in the account `aws sts get-caller-identity` resolves to**. The four per-module Terraform states live in this one bucket under keys like `dev/platform/terraform.tfstate`. Bootstrap runs first because every subsequent phase reads/writes to this state bucket.
+
+```bash
+export AWS_REGION=us-east-1
+export ENVIRONMENT=dev
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
+echo "Bootstrapping into account: $ACCOUNT_ID"
+
+# Idempotent — run it always; the script no-ops if bucket + table exist
+./platform/scripts/bootstrap.sh
+```
+
+The script also rewrites `environments/dev/backend.tfvars` (and per-module backend files) in your working dir to point at the current account's bucket. Do not commit this rewrite — every operator/agent gets a fresh substitution from a clean checkout.
+
+**Verify:**
+```bash
+aws s3api head-bucket --bucket "$STATE_BUCKET"  # exits 0 on success
+aws dynamodb describe-table --table-name adp-terraform-locks --query 'Table.TableStatus' --output text  # ACTIVE
+grep "$ACCOUNT_ID" environments/dev/backend.tfvars  # bucket line should contain your account id
+```
+Expected: bucket exists, table status `ACTIVE`, tfvars contain caller's account id.
+
+Mark `bootstrap` phase `complete`.
+
+---
+
+### Phase 2: Preflight (Automated)
+
+Run the preflight check to validate the environment **after bootstrap** — preflight inspects the state bucket and lock table to confirm they're reachable, on top of CLI / IAM / region checks.
 
 ```bash
 ./platform/scripts/preflight-check.sh
@@ -218,31 +247,6 @@ Run the preflight check to validate the environment:
 **If preflight passes with warnings** → report the warnings, proceed. Warnings are non-blocking.
 
 Once passing, mark `preflight` phase `complete`.
-
----
-
-### Phase 2: Bootstrap Terraform State Backend
-
-**What:** Creates `adp-terraform-state-<account_id>` S3 bucket and `adp-terraform-locks` DynamoDB table. The four per-module Terraform states live in this one bucket under keys like `dev/platform/terraform.tfstate`.
-
-```bash
-export AWS_REGION=us-east-1
-export ENVIRONMENT=dev
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
-
-# Idempotent — run it always; the script no-ops if bucket + table exist
-./platform/scripts/bootstrap.sh
-```
-
-**Verify:**
-```bash
-aws s3 ls | grep adp-terraform-state
-aws dynamodb describe-table --table-name adp-terraform-locks --query 'Table.TableStatus' --output text
-```
-Expected: bucket listed, table status `ACTIVE`.
-
-Mark `bootstrap` phase `complete`.
 
 ---
 

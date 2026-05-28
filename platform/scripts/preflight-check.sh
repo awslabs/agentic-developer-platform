@@ -227,7 +227,7 @@ else
   warn "Terraform lock table not found: $LOCK_TABLE (will be created by bootstrap)"
 fi
 
-EKS_CLUSTER="adp-${ENVIRONMENT:-dev}-eks"
+EKS_CLUSTER="adp-${ENVIRONMENT:-dev}-eks-cluster"
 if aws eks describe-cluster --name "$EKS_CLUSTER" --region "${AWS_REGION:-us-east-1}" &>/dev/null; then
   EKS_STATUS=$(aws eks describe-cluster --name "$EKS_CLUSTER" --region "${AWS_REGION:-us-east-1}" --query 'cluster.status' --output text)
   pass "EKS cluster exists: $EKS_CLUSTER ($EKS_STATUS)"

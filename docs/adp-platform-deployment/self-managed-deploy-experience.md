@@ -58,14 +58,29 @@ The credentials land in AWS Secrets Manager at `adp/<org>/gh-app-<role>-id` and 
 
 ---
 
-### Phase 1 — Preflight (~1 min, automated)
+### Phase 1 — Bootstrap Terraform State (~1 min, automated)
 
-The agent runs `./platform/scripts/preflight-check.sh` to verify your environment:
+Creates two AWS resources **in the account your credentials resolve to**, that every subsequent step depends on:
+
+- **S3 bucket** `adp-terraform-state-<your-account-id>` — stores the Terraform state for all four modules under keys like `dev/platform/terraform.tfstate`. Versioned, encrypted (AES256), public access blocked.
+- **DynamoDB table** `adp-terraform-locks` — coordinates concurrent runs so two `terraform apply` operations can't clobber each other.
+
+The script also rewrites `environments/dev/backend.tfvars` (and per-module backend files) in your local checkout to point at your account's bucket. **Don't commit that rewrite** — every operator/agent gets a fresh substitution at bootstrap time.
+
+**What you'll see:** "Terraform state backend ready in account XXXX. S3 bucket: adp-terraform-state-XXXX." No interactive prompts.
+
+**Idempotent** — safe to re-run if something failed later; the script no-ops if both resources already exist.
+
+---
+
+### Phase 2 — Preflight (~1 min, automated)
+
+The agent runs `./platform/scripts/preflight-check.sh` to verify your environment **after bootstrap**:
 
 - All required CLI tools are installed and work
 - AWS credentials are valid and resolve to the account you confirmed
-- Your identity has the minimum IAM permissions needed
-- The Terraform state backend location is reachable
+- Your identity has the minimum IAM permissions needed (S3, DynamoDB, EKS, ECR, RDS, ElastiCache, Cognito, CloudFront, Secrets Manager, IAM, CodeBuild)
+- The Terraform state bucket and lock table from Phase 1 are reachable
 
 **What you'll see:** a list of checks with ✓ / ✗ / ⚠ markers. Warnings are non-blocking — the agent will report them and continue.
 
@@ -73,19 +88,7 @@ The agent runs `./platform/scripts/preflight-check.sh` to verify your environmen
 - Missing `terraform` / `node` / `kubectl` → the agent tells you exactly what to install and waits.
 - Wrong AWS profile → the agent stops and asks you to fix `aws configure` or `AWS_PROFILE`.
 - Missing IAM permissions → the agent lists what it needs. Typically means you're not admin on the target account.
-
----
-
-### Phase 2 — Bootstrap Terraform State (~1 min, automated)
-
-Creates two AWS resources that every subsequent step depends on:
-
-- **S3 bucket** `adp-terraform-state-<your-account-id>` — stores the Terraform state for all four modules under keys like `dev/platform/terraform.tfstate`.
-- **DynamoDB table** `adp-terraform-locks` — coordinates concurrent runs so two apply operations can't clobber each other.
-
-**What you'll see:** "Terraform state backend ready. S3 bucket: adp-terraform-state-XXXX." No interactive prompts.
-
-**Idempotent** — safe to re-run if something failed later; the script no-ops if both resources already exist.
+- State bucket / lock table not reachable → Phase 1 didn't complete; re-run bootstrap before re-running preflight.
 
 ---
 

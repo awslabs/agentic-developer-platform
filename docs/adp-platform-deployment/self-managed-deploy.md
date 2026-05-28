@@ -132,19 +132,9 @@ Three apps are created (`<org>-adp-agent-dev`, `-pm`, `-ops`). Each one:
 
 The script auto-detects the `.pem` in `~/Downloads` and stores credentials in Secrets Manager at `adp/<org>/gh-app-{dev,pm,ops}-{id,key}`.
 
-### Phase 1: Preflight
+### Phase 1: Bootstrap
 
-Validates your environment. Runs automatically as part of `deploy-all.sh`, or standalone:
-
-```bash
-./platform/scripts/preflight-check.sh
-```
-
-Checks: AWS CLI, Terraform, kubectl, Node.js, Docker, AWS credentials, IAM permissions.
-
-### Phase 2: Bootstrap
-
-Creates the Terraform state backend. Also runs automatically, or standalone:
+Creates the Terraform state backend in **the account `aws sts get-caller-identity` resolves to**. This phase is first because every later phase reads from the state bucket it creates. Runs as part of `deploy-all.sh`, or standalone:
 
 ```bash
 export AWS_REGION=us-east-1
@@ -156,11 +146,25 @@ Creates:
 - S3 bucket: `adp-terraform-state-<account-id>` (versioned, encrypted, public access blocked)
 - DynamoDB table: `adp-terraform-locks` (PAY_PER_REQUEST)
 
+The script also rewrites `environments/dev/backend.tfvars` (and the per-module backend files in `environments/dev/modules/*-backend.tfvars`) in your working dir to point at the current account's bucket. **Do not commit this rewrite** — it's a per-operator local substitution, and committing it would lock the repo to one specific account.
+
 Verify:
 ```bash
-aws s3 ls | grep adp-terraform-state
-aws dynamodb describe-table --table-name adp-terraform-locks --query 'Table.TableStatus'
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+aws s3api head-bucket --bucket "adp-terraform-state-${ACCOUNT_ID}"  # exits 0 on success
+aws dynamodb describe-table --table-name adp-terraform-locks --query 'Table.TableStatus' --output text  # ACTIVE
+grep "$ACCOUNT_ID" environments/dev/backend.tfvars  # bucket line should contain your account id
 ```
+
+### Phase 2: Preflight
+
+Validates your environment **after bootstrap**. Preflight checks the state bucket + lock table are reachable, on top of CLI tooling, AWS credentials, and IAM-permission checks. Runs as part of `deploy-all.sh`, or standalone:
+
+```bash
+./platform/scripts/preflight-check.sh
+```
+
+Checks: AWS CLI, Terraform, kubectl, Node.js, Docker, AWS credentials, IAM permissions (S3, DynamoDB, EKS, ECR, RDS, ElastiCache, Cognito, CloudFront, Secrets Manager, IAM, CodeBuild), Terraform state bucket reachability, lock table status.
 
 ### Phase 3: Deploy
 

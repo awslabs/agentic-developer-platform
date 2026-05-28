@@ -43,21 +43,57 @@ The agent pod has STS credentials for **your** account in env at startup (auto-a
 
 ## Deploy phases
 
-This is the same dependency order as the [self-managed deploy](./self-managed-deploy.md), but each phase runs inside an ADP agent pod instead of on your laptop.
+Same dependency order as the [self-managed deploy](./self-managed-deploy.md), but each phase runs inside an ADP agent pod whose STS env is your linked-account's assumed role. Status moves from "pending" → "code ready, awaiting end-to-end verification" → "verified" as each phase is run successfully against a real customer account.
 
-| # | Phase | Status | Issue template |
-|---|-------|--------|----------------|
-| 1 | Bootstrap (state bucket + lock table) | _pending_ | #685 |
-| 2 | Preflight | _pending_ | #686 |
-| 3 | Platform infra (VPC + EKS + ECR + IAM + CodeBuild) | _pending_ | #687 |
-| 4 | Gateway infra (RDS + Cognito + ElastiCache + CloudFront + API GW + KMS) | _pending_ | #688 |
-| 5 | Gateway backend (FastAPI on EKS + ALB) | _pending_ | #689 |
-| 6 | Gateway frontend (S3 + CloudFront SPA) | _pending_ | #690 |
-| 7 | Webhook ingress (API GW + Lambda + SQS + DynamoDB) | _pending_ | #691 |
-| 8 | Agent delivery (KEDA + ARC + WebSocket API + chat infra) | _pending_ | #692 |
-| 9 | Smoke test | _pending_ | #693 |
+| # | Phase | Status | Template | Notes |
+|---|-------|--------|----------|-------|
+| 1 | Bootstrap (state bucket + lock table) | code ready (PR #967) | #685 | Pod auto-assumes customer creds at startup; `bootstrap.sh` creates `adp-terraform-state-<customer>` in your account and rewrites `environments/dev/backend.tfvars` in pod's working dir. |
+| 2 | Preflight | code ready (no changes needed) | #686 | `preflight-check.sh` already derives `ACCOUNT_ID` from `aws sts get-caller-identity`, so it inspects your account directly. |
+| 3 | Platform infra (VPC + EKS + ECR + IAM + CodeBuild) | _blocked — workflow runs in platform account, not yours_ | #687 | The `platform-infra-apply.yml` workflow today uses platform IRSA + platform state. Needs a per-workflow customer-account role + STS chain-assume step. Tracked in [#966](https://github.com/aws-e/adp/issues/966). |
+| 4 | Gateway infra (RDS + Cognito + ElastiCache + CloudFront + API GW + KMS) | _pending Phase 3_ | #688 | Same workflow-side refactor as Phase 3. |
+| 5 | Gateway backend (FastAPI on EKS + ALB) | _pending Phase 3_ | #689 | |
+| 6 | Gateway frontend (S3 + CloudFront SPA) | _pending Phase 3_ | #690 | |
+| 7 | Webhook ingress (API GW + Lambda + SQS + DynamoDB) | _pending Phase 3_ | #691 | |
+| 8 | Agent delivery (KEDA + ARC + WebSocket API + chat infra) | _pending Phase 3_ | #692 | |
+| 9 | Smoke test | _pending all earlier phases_ | #693 | |
 
-(Status flips from "pending" → "verified" only after a real deploy-instance has run the phase end-to-end against a customer account.)
+## What to expect: Phase 1 (Bootstrap)
+
+When the orchestrator dispatches Phase 1:
+
+- A sub-agent pod spins up with your assumed-role STS creds in env. (You can confirm this in CloudTrail: a `sts:AssumeRole` call to your `ADP-Agent-<label>` role from ADP's gateway role.)
+- The pod runs `aws sts get-caller-identity` as a fail-fast check. If it returns the wrong account (e.g. ADP's platform account because auto-assume failed), the phase posts `## VERDICT: FAIL` and exits without touching anything.
+- It runs `./platform/scripts/bootstrap.sh`. This creates two resources **in your account**:
+  - `s3://adp-terraform-state-<your-account-id>` — versioned, encrypted (AES256), public access blocked.
+  - DynamoDB table `adp-terraform-locks` — PAY_PER_REQUEST, partition key `LockID`.
+- The script also rewrites `environments/dev/backend.tfvars` in the pod's working dir to point at your bucket. (The rewrite is local to the pod and never committed back to the repo.)
+- Sub-agent posts `## VERDICT: PASS` on the phase child issue.
+
+**Verify in your account** (after Phase 1 PASSes):
+
+```bash
+# In your AWS account, with your own credentials:
+aws s3api head-bucket --bucket "adp-terraform-state-$(aws sts get-caller-identity --query Account --output text)"
+# exits 0
+
+aws dynamodb describe-table --table-name adp-terraform-locks --query 'Table.TableStatus' --output text
+# ACTIVE
+```
+
+If either fails, the orchestrator's PASS verdict was wrong — open an issue with the deploy-instance number.
+
+## What to expect: Phase 2 (Preflight)
+
+When the orchestrator dispatches Phase 2:
+
+- Sub-agent pod spins up with your assumed-role STS creds (same mechanism as Phase 1).
+- Runs `./platform/scripts/preflight-check.sh`.
+- The script does ~22 checks: AWS credentials valid, region set, IAM permissions on S3 / DynamoDB / EKS / ECR / RDS / ElastiCache / Cognito / CloudFront / Secrets Manager / IAM / CodeBuild, plus **state-bucket reachability** and **lock-table status** (which depend on Phase 1 having succeeded).
+- Posts `## VERDICT: PASS` if 0 failures, or `## VERDICT: FAIL` with the list of missing permissions if any.
+
+Some checks emit warnings rather than failures — e.g. "EKS cluster not yet created" is expected before Phase 3.
+
+**No verification needed in your account post-Phase-2** — the script's exit code IS the verification. If Phase 1 PASSed and Phase 2 FAILed with permission errors, your linked role is missing some IAM grants. Update your role's permissions (re-run the CFN template or modify the role policy directly) and re-trigger Phase 2.
 
 ## Validation per phase
 
