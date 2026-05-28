@@ -50,7 +50,7 @@ On startup, if this file exists:
 
 ## Resource Map
 
-Read `docs/deployment-manifest.md` for the complete mapping of every resource to its AWS service, module, and validation command. Use it to validate each phase after completion.
+Read `docs/adp-platform-deployment/deployment-manifest.md` for the complete mapping of every resource to its AWS service, module, and validation command. Use it to validate each phase after completion.
 
 ## What This Repo Contains
 

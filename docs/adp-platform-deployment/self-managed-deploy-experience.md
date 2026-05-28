@@ -2,7 +2,7 @@
 
 This is a human-facing walkthrough of deploying ADP from a fresh clone. It describes what you'll see, what you're expected to do, and what could go wrong at each stage. Read this before you start — **there is one phase (GitHub Apps) that can't be automated and needs ~10 minutes of your attention.**
 
-For the exact commands and machine-readable phase definitions, see [`AGENTS.md`](../AGENTS.md) (the agent instructions) and [`deployment-manifest.md`](./deployment-manifest.md) (per-resource validation).
+For the exact commands and machine-readable phase definitions, see [`AGENTS.md`](../../AGENTS.md) (the agent instructions) and [`deployment-manifest.md`](./deployment-manifest.md) (per-resource validation).
 
 ## Before You Start
 
@@ -187,4 +187,4 @@ An honest inventory of caveats as of 2026-04-21:
 - `/health` returns 200 but `/admin/organizations` returns 500 → the RDS bootstrap Job failed. `kubectl logs -n adp-gateway -l app=bedrockgw-dev-rds-bootstrap`, read the log, re-run the job.
 - Terraform wants to destroy+recreate the Cognito domain → the Cognito domain uses an account-id suffix for global uniqueness. Make sure you're on post-#52 code.
 
-More detailed runbooks: [`AGENTS.md`](../AGENTS.md) Troubleshooting section.
+More detailed runbooks: [`AGENTS.md`](../../AGENTS.md) Troubleshooting section.

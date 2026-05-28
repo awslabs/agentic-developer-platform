@@ -346,4 +346,4 @@ Common cause: Docker Hub rate limit on `python:3.12-slim`. The Dockerfile should
 | `platform/scripts/delete-ingress-and-wait.sh` | Clean up ALB before destroy |
 | `platform/scripts/force-delete-secrets.sh` | Force-delete Secrets Manager entries |
 | `environments/dev/` | Environment-specific Terraform variables |
-| `docs/deployment-manifest.md` | Complete resource → validation command mapping |
+| `docs/adp-platform-deployment/deployment-manifest.md` | Complete resource → validation command mapping |

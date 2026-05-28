@@ -230,14 +230,14 @@ Each sub-issue below should be filed by agent-pm with:
     - `adp:github_issue` (URL)
     - `adp:actor` (GitHub login of the user who triggered the run)
   - Exports `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` into the agent's environment
-- Documentation for customers: `docs/customer-aws-setup.md` — 3-step install flow with "Launch Stack" URL per tier
+- Documentation for customers: `docs/adp-platform-deployment/customer-aws-setup.md` — 3-step install flow with "Launch Stack" URL per tier
 
 **Files:**
 - new `modules/agent-factory/agent-worker-image/aws/readonly.cfn.yaml`
 - new `modules/agent-factory/agent-worker-image/aws/scoped-write.cfn.yaml`
 - new `modules/agent-factory/agent-worker-image/aws/full-admin.cfn.yaml`
 - new `modules/agent-factory/agent-worker-image/lib/sts_assume.py` (implementation lives with entrypoint in B-2)
-- new `docs/customer-aws-setup.md`
+- new `docs/adp-platform-deployment/customer-aws-setup.md`
 - Terraform: S3 bucket `adp-public-cfn` for hosting the templates; CloudFront distribution for stable URLs (optional but best practice)
 
 **Design ref:** `docs/hosted-platform-design.md` §Customer AWS role access
