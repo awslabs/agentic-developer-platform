@@ -6,9 +6,30 @@ on:
   # explicitly via Actions → Gateway Infra Apply → Run workflow. See
   # platform-infra-apply.yml for the full rationale.
   workflow_dispatch:
+    inputs:
+      account_id:
+        description: 'Target AWS account (12 digits). Empty = use platform IRSA / config file.'
+        required: false
+        default: ''
+      customer_account_id:
+        description: 'Customer-linked AWS account to deploy into (cross-account mode). Triggers gateway-call assume.'
+        required: false
+        default: ''
+      customer_aws_label:
+        description: 'Vaulted credential label (when customer_account_id is set).'
+        required: false
+        default: ''
+      customer_user_id:
+        description: 'ADP users.id UUID (when customer_account_id is set).'
+        required: false
+        default: ''
+      environment:
+        description: 'Deployment environment (dev/staging/prod).'
+        required: false
+        default: 'dev'
 
 concurrency:
-  group: tf-apply-gateway
+  group: tf-apply-gateway-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
   cancel-in-progress: false
 
 env:
@@ -34,6 +55,12 @@ jobs:
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
+        with:
+          account_id: ${{ inputs.account_id }}
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
 
       - name: Install required CLI tools
         run: |
