@@ -16,6 +16,31 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      account_id:
+        description: 'Target AWS account (12 digits). Empty = use platform IRSA / config file.'
+        required: false
+        default: ''
+      customer_account_id:
+        description: 'Customer-linked AWS account to deploy into (cross-account mode).'
+        required: false
+        default: ''
+      customer_aws_label:
+        description: 'Vaulted credential label.'
+        required: false
+        default: ''
+      customer_user_id:
+        description: 'ADP users.id UUID.'
+        required: false
+        default: ''
+      environment:
+        description: 'Deployment environment.'
+        required: false
+        default: 'dev'
+
+concurrency:
+  group: arc-runner-build-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
+  cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-1
@@ -34,6 +59,12 @@ jobs:
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
+        with:
+          account_id: ${{ inputs.account_id }}
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
 
       # Bootstrap tools until the new runner image ships everywhere.
       - name: Install zip + AWS CLI (bootstrap)
@@ -86,14 +117,15 @@ jobs:
       - name: Build image via CodeBuild
         id: build
         run: |
-          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
+          REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           IMAGE_TAG="${{ github.sha }}"
           BUILD_ID=$(aws codebuild start-build \
             --region "${AWS_REGION}" \
             --project-name "${{ env.CODEBUILD_PROJECT }}" \
             --environment-variables-override \
               "name=AWS_REGION,value=${AWS_REGION}" \
-              "name=ACCOUNT_ID,value=${ACCOUNT_ID}" \
+              "name=ACCOUNT_ID,value=${EFFECTIVE_ACCOUNT}" \
               "name=REGISTRY,value=${REGISTRY}" \
               "name=IMAGE_TAG,value=${IMAGE_TAG}" \
             --query 'build.id' --output text)
