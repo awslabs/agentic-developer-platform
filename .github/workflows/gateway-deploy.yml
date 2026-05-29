@@ -153,54 +153,134 @@ jobs:
             "s3://${BUCKET}/cfn-templates/aws_role_v1.yaml" \
             --content-type application/x-yaml
 
+      # =====================================================================
+      # Issue #1008: First-deploy support — ensure namespace, configmap,
+      # secret, serviceaccount, and supporting manifests exist before the
+      # deployment is applied. On subsequent deploys these are idempotent
+      # no-ops (kubectl apply is safe to re-run).
+      # =====================================================================
+
+      - name: Ensure namespace and render K8s prerequisites
+        run: |
+          EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${AWS_REGION}
+
+          # --- Namespace ---
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+          # --- Helper: read SSM param with fallback ---
+          get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
+
+          # --- Gather values from SSM (published by gateway-infra-apply) ---
+          DB_HOST=$(get_ssm "/adp/${ENVIRONMENT}/gateway/rds-host" "localhost")
+          DB_NAME=$(get_ssm "/adp/${ENVIRONMENT}/gateway/rds-database-name" "bedrockgateway")
+          DB_USER="bgadmin"
+          REDIS_HOST=$(get_ssm "/adp/${ENVIRONMENT}/gateway/redis-host" "localhost")
+          REDIS_PORT=$(get_ssm "/adp/${ENVIRONMENT}/gateway/redis-port" "6379")
+          COGNITO_USER_POOL_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id")
+          COGNITO_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-client-id")
+          COGNITO_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-domain")
+          CF_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cloudfront-domain")
+          AGENT_REGISTRY_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/agent-registry-table")
+          CHAT_LOGS_BUCKET=$(get_ssm "/adp/${ENVIRONMENT}/gateway/chat-logs-bucket")
+          FRONTEND_BUCKET=$(get_ssm "/adp/${ENVIRONMENT}/gateway/frontend-bucket")
+
+          # Gateway IRSA role ARN — deterministic name from platform EKS module
+          GATEWAY_ROLE_ARN=$(aws iam get-role \
+            --role-name "adp-${ENVIRONMENT}-role-gateway-service" \
+            --query 'Role.Arn' --output text 2>/dev/null || echo "")
+
+          # --- Render and apply ConfigMap (Section 1) ---
+          sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
+              -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
+              -e "s|__DB_HOST__|${DB_HOST}|g" \
+              -e "s|__DB_USER__|${DB_USER}|g" \
+              -e "s|__DB_NAME__|${DB_NAME}|g" \
+              -e "s|__REDIS_HOST__|${REDIS_HOST}|g" \
+              -e "s|__REDIS_PORT__|${REDIS_PORT}|g" \
+              -e "s|__COGNITO_USER_POOL_ID__|${COGNITO_USER_POOL_ID}|g" \
+              -e "s|__COGNITO_CLIENT_ID__|${COGNITO_CLIENT_ID}|g" \
+              -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \
+              -e "s|__CORS_ALLOWED_ORIGINS__|https://${CF_DOMAIN},http://localhost:5173|g" \
+              -e "s|__GATEWAY_BASE_URL__|https://${CF_DOMAIN}|g" \
+              -e "s|__CFN_TEMPLATE_BUCKET__|${FRONTEND_BUCKET}|g" \
+              -e "s|__GATEWAY_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
+              -e "s|__CHAT_LOGGING_ENABLED__|${CHAT_LOGS_BUCKET:+true}${CHAT_LOGS_BUCKET:-false}|g" \
+              -e "s|__CHAT_LOGGING_BUCKET__|${CHAT_LOGS_BUCKET}|g" \
+              -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|basic|g" \
+              -e "s|__TRUST_APIGW_HEADERS__|true|g" \
+              -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
+              modules/gateway/k8s/configmap.yaml | kubectl apply -f -
+
+          # --- Create K8s Secret from Secrets Manager (Section 2) ---
+          # Generate the token secret in Secrets Manager if it doesn't exist yet.
+          SM_SECRET_NAME="adp/${ENVIRONMENT}/gateway/token-secret-key"
+          TOKEN_SECRET=$(aws secretsmanager get-secret-value \
+            --secret-id "$SM_SECRET_NAME" \
+            --query SecretString --output text 2>/dev/null || echo "")
+          if [ -z "$TOKEN_SECRET" ] || [ "$TOKEN_SECRET" = "None" ]; then
+            TOKEN_SECRET=$(openssl rand -hex 32)
+            aws secretsmanager create-secret \
+              --name "$SM_SECRET_NAME" \
+              --secret-string "$TOKEN_SECRET" \
+              --description "JWT token signing key for Bedrock Gateway" \
+              --region "${AWS_REGION}" 2>/dev/null || \
+            aws secretsmanager put-secret-value \
+              --secret-id "$SM_SECRET_NAME" \
+              --secret-string "$TOKEN_SECRET" \
+              --region "${AWS_REGION}"
+          fi
+          kubectl create secret generic bedrockgateway-secrets \
+            --from-literal=token-secret-key="$TOKEN_SECRET" \
+            -n ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+          # --- Render and apply ServiceAccount (Section 3) ---
+          sed -e "s|__GATEWAY_IRSA_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
+              modules/gateway/k8s/serviceaccount.yaml | kubectl apply -f -
+
+          # --- Apply remaining K8s manifests (service, ingress, pdb, etc.) ---
+          for f in modules/gateway/k8s/*.yaml; do
+            case "$(basename "$f")" in
+              configmap.yaml|serviceaccount.yaml|deployment.yaml|targetgroupbinding.yaml) continue ;;
+              *) kubectl apply -f "$f" -n ${{ env.NAMESPACE }} ;;
+            esac
+          done
+
       - name: Roll out new image
         run: |
           EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
           REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${AWS_REGION}
 
-          # Apply the deployment manifest FIRST so changes to probes, env,
+          # Apply the deployment manifest so changes to probes, env,
           # resource limits, volume mounts, etc. actually propagate.
-          # Previously this step only ran `kubectl set image`, which updates
-          # the image tag in-place but silently drops every other manifest
-          # change — we hit this during #465 rollout when raised probe
-          # delays didn't take effect until a manual `kubectl patch`.
           kubectl apply -f modules/gateway/k8s/deployment.yaml -n ${{ env.NAMESPACE }}
 
-          # Then stamp the image tag for this build. `set image` is still
-          # needed because the manifest has a generic `adp-gateway:latest`
+          # Stamp the image tag for this build. The manifest has a generic
           # placeholder; this line pins to the commit SHA for audit.
           kubectl set image deployment/bedrockgateway \
             bedrockgateway=${REGISTRY}/adp-gateway:${{ github.sha }} \
             -n ${{ env.NAMESPACE }}
 
-          # EPIC #745 / Issue #765: ensure BG_TRUST_APIGW_HEADERS=true on the
-          # configmap so the gateway honors the X-Caller-Identity header that
-          # API Gateway injects via context.identity.userArn. Without this,
-          # /agent/{proxy+} returns "Authorization header required" because
-          # the IAM-auth code path is skipped (defaults to false). The
-          # configmap is owned by deploy-all.sh which sed-replaces the
-          # __TRUST_APIGW_HEADERS__ placeholder on initial setup; CI deploys
-          # don't re-apply the configmap, so we patch it idempotently here
-          # to prevent regressions on rebuilds.
-          kubectl patch configmap bedrockgateway-config \
-            -n ${{ env.NAMESPACE }} \
-            --type merge -p '{"data":{"BG_TRUST_APIGW_HEADERS":"true"}}'
-
-          # EPIC #1013 / Issue #1014: Wire chat-logging env vars from SSM.
-          # If the SSM param exists (chat logging enabled in infra), set both
-          # BG_CHAT_LOGGING_ENABLED and BG_CHAT_LOGGING_BUCKET on the ConfigMap.
-          # If missing, the pod keeps its default (chat_logging_enabled=false).
-          CHAT_LOGS_BUCKET=$(aws ssm get-parameter \
-            --name "/adp/${ENVIRONMENT}/gateway/chat-logs-bucket" \
-            --query Parameter.Value --output text 2>/dev/null) || true
-          if [ -n "$CHAT_LOGS_BUCKET" ] && [ "$CHAT_LOGS_BUCKET" != "None" ]; then
-            kubectl patch configmap bedrockgateway-config \
-              -n ${{ env.NAMESPACE }} \
-              --type merge -p "{\"data\":{\"BG_CHAT_LOGGING_ENABLED\":\"true\",\"BG_CHAT_LOGGING_BUCKET\":\"${CHAT_LOGS_BUCKET}\"}}"
-          fi
-
           kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=300s
+
+      - name: Wire ALB to CloudFront (Section 6 — first deploy)
+        # On first deploy, the Ingress manifest creates an internal ALB.
+        # Discover it and cache to SSM so a subsequent gateway-infra-apply
+        # (or the next deploy) can wire it as a CloudFront VPC origin.
+        # Non-blocking: if the ALB isn't ready yet, skip gracefully.
+        run: |
+          # Check if ALB is already wired
+          CACHED=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/gateway/internal-alb-arn" \
+            --query Parameter.Value --output text 2>/dev/null || echo "")
+          if [ -n "$CACHED" ] && [ "$CACHED" != "pending" ] && [ "$CACHED" != "None" ]; then
+            echo "ALB already wired (${CACHED}). Skipping discovery."
+            exit 0
+          fi
+          # Run discovery with a short timeout (2 min instead of 10)
+          # If it fails, that's OK — gateway-infra-apply will handle it.
+          timeout 120 bash platform/scripts/wire-gateway-alb.sh || \
+            echo "::warning::ALB not yet active. Run gateway-infra-apply to complete CloudFront wiring."
 
   deploy-frontend:
     name: Build and Deploy Frontend

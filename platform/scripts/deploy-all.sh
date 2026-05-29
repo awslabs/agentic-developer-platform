@@ -581,6 +581,26 @@ else
   GATEWAY_ROLE_ARN=$(aws iam get-role --role-name "adp-${ENVIRONMENT}-role-gateway-service" --query 'Role.Arn' --output text 2>/dev/null || echo "")
   cd "$ROOT_DIR/modules/gateway"
   kubectl create namespace adp-gateway --dry-run=client -o yaml | kubectl apply -f -
+  # Issue #1008: Create bedrockgateway-secrets K8s Secret from Secrets Manager
+  SM_SECRET_NAME="adp/${ENVIRONMENT}/gateway/token-secret-key"
+  TOKEN_SECRET=$(aws secretsmanager get-secret-value \
+    --secret-id "$SM_SECRET_NAME" \
+    --query SecretString --output text 2>/dev/null || echo "")
+  if [ -z "$TOKEN_SECRET" ] || [ "$TOKEN_SECRET" = "None" ]; then
+    TOKEN_SECRET=$(openssl rand -hex 32)
+    aws secretsmanager create-secret \
+      --name "$SM_SECRET_NAME" \
+      --secret-string "$TOKEN_SECRET" \
+      --description "JWT token signing key for Bedrock Gateway" \
+      --region "${AWS_REGION}" 2>/dev/null || \
+    aws secretsmanager put-secret-value \
+      --secret-id "$SM_SECRET_NAME" \
+      --secret-string "$TOKEN_SECRET" \
+      --region "${AWS_REGION}"
+  fi
+  kubectl create secret generic bedrockgateway-secrets \
+    --from-literal=token-secret-key="$TOKEN_SECRET" \
+    -n adp-gateway --dry-run=client -o yaml | kubectl apply -f -
   sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
       -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
       -e "s|__DB_HOST__|${DB_HOST}|g" \
@@ -601,9 +621,12 @@ else
       -e "s|__TRUST_APIGW_HEADERS__|true|g" \
       -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
       k8s/configmap.yaml | kubectl apply -f -
+  # Render serviceaccount with the correct IRSA role ARN (Issue #1008)
+  sed -e "s|__GATEWAY_IRSA_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
+      k8s/serviceaccount.yaml | kubectl apply -f -
   for f in k8s/*.yaml; do
     case "$(basename "$f")" in
-      configmap.yaml|targetgroupbinding.yaml) continue ;;
+      configmap.yaml|serviceaccount.yaml|targetgroupbinding.yaml) continue ;;
       *) kubectl apply -f "$f" -n adp-gateway ;;
     esac
   done

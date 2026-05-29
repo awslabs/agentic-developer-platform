@@ -960,6 +960,53 @@ resource "aws_ssm_parameter" "chat_logs_bucket" {
 }
 
 # =============================================================================
+# RDS + Redis SSM Parameters (Issue #1008)
+# =============================================================================
+# Publish RDS and Redis connection details so the gateway-deploy workflow can
+# render the ConfigMap without running terraform output.
+# =============================================================================
+
+resource "aws_ssm_parameter" "rds_host" {
+  name        = "/adp/${var.environment}/gateway/rds-host"
+  description = "RDS instance hostname (without port) for gateway ConfigMap"
+  type        = "String"
+  value       = module.rds.db_instance_address
+
+  tags = local.common_tags
+}
+
+resource "aws_ssm_parameter" "rds_database_name" {
+  name        = "/adp/${var.environment}/gateway/rds-database-name"
+  description = "RDS database name for gateway ConfigMap"
+  type        = "String"
+  value       = module.rds.db_instance_name
+
+  tags = local.common_tags
+}
+
+resource "aws_ssm_parameter" "redis_host" {
+  count = var.enable_redis ? 1 : 0
+
+  name        = "/adp/${var.environment}/gateway/redis-host"
+  description = "ElastiCache Redis endpoint for gateway ConfigMap"
+  type        = "String"
+  value       = module.redis[0].primary_endpoint_address
+
+  tags = local.common_tags
+}
+
+resource "aws_ssm_parameter" "redis_port" {
+  count = var.enable_redis ? 1 : 0
+
+  name        = "/adp/${var.environment}/gateway/redis-port"
+  description = "ElastiCache Redis port for gateway ConfigMap"
+  type        = "String"
+  value       = tostring(module.redis[0].port)
+
+  tags = local.common_tags
+}
+
+# =============================================================================
 # GitHub Auth Broker Lambda (Issue #520)
 # =============================================================================
 # Lambda-based broker that converts GitHub OAuth flow into Cognito sessions.
