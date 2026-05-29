@@ -144,7 +144,7 @@ resource "aws_iam_role_policy" "ingest_s3_uploads" {
 # discards synchronous Lambda returns; async post-back is the only delivery
 # path. Scoped to the WS API execution ARN only — not account-wide.
 resource "aws_iam_role_policy" "ingest_apigw_manage_connections" {
-  count = var.ws_execution_arn != "" ? 1 : 0
+  count = var.enable_ws_policies ? 1 : 0
   name  = "apigw-manage-connections"
   role  = aws_iam_role.ingest.id
 
@@ -302,7 +302,7 @@ resource "aws_iam_role_policy" "response_dynamodb" {
 resource "aws_iam_role_policy" "response_apigw" {
   # Only create when a WS API has been wired through — otherwise the resource ARN
   # is empty and AWS rejects the policy as malformed.
-  count = var.ws_execution_arn != "" ? 1 : 0
+  count = var.enable_ws_policies ? 1 : 0
   name  = "apigw"
   role  = aws_iam_role.response.id
 

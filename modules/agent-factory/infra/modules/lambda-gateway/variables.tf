@@ -57,6 +57,12 @@ variable "ws_execution_arn" {
   default = ""
 }
 
+variable "enable_ws_policies" {
+  description = "Whether to create IAM policies for WebSocket API ManageConnections. Set to true when a WS API is being created in the same apply — avoids count depending on a computed ARN."
+  type        = bool
+  default     = false
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

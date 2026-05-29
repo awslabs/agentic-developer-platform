@@ -58,6 +58,7 @@ module "gateway_lambda" {
   ws_api_endpoint       = module.gateway_apigw.stage_invoke_url
   ws_api_id             = module.gateway_apigw.api_id
   ws_execution_arn      = module.gateway_apigw.execution_arn
+  enable_ws_policies    = true
   tags                  = { Component = "agent-gateway" }
 }
 
