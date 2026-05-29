@@ -26,8 +26,15 @@ import json
 import os
 import subprocess
 import sys
+import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+# Retry configuration — tuneable via environment variables.
+MAX_RETRIES = int(os.environ.get("ADP_ASSUME_MAX_RETRIES", "3"))
+BACKOFF_BASE_SECONDS = float(os.environ.get("ADP_ASSUME_BACKOFF_BASE", "1.0"))
+# HTTP status codes that are safe to retry (server-side transient errors).
+RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
 
 
 def fail(msg: str, code: int = 1) -> "None":
@@ -62,6 +69,65 @@ def load_internal_api_key(env: str) -> str:
             f"Could not read internal API key from Secrets Manager ({secret_id}): "
             f"{exc.stderr.decode('utf-8', errors='replace').strip()}"
         )
+
+
+def _request_with_retry(endpoint: str, req: "Request") -> dict:
+    """Send the HTTP request with retries and exponential backoff.
+
+    Retries on transient server errors (5xx) and connection failures.
+    Non-retryable errors (4xx, malformed response) fail immediately.
+    """
+    last_exc: Exception | None = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            with urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            if exc.code in RETRYABLE_STATUS_CODES and attempt < MAX_RETRIES:
+                wait = BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+                print(
+                    f"Gateway returned HTTP {exc.code} (attempt {attempt}/{MAX_RETRIES}), "
+                    f"retrying in {wait:.1f}s...",
+                    file=sys.stderr,
+                )
+                time.sleep(wait)
+                last_exc = exc
+                # Rebuild the request — urllib consumes the body on send
+                req = Request(
+                    req.full_url,
+                    data=req.data,
+                    headers=dict(req.headers),
+                    method=req.get_method(),
+                )
+                continue
+            # Non-retryable HTTP error or final attempt exhausted
+            fail(
+                f"Gateway returned HTTP {exc.code}: {error_body}",
+                code=2,
+            )
+        except (URLError, TimeoutError, OSError) as exc:
+            if attempt < MAX_RETRIES:
+                wait = BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+                print(
+                    f"Connection error (attempt {attempt}/{MAX_RETRIES}): {exc}, "
+                    f"retrying in {wait:.1f}s...",
+                    file=sys.stderr,
+                )
+                time.sleep(wait)
+                last_exc = exc
+                req = Request(
+                    req.full_url,
+                    data=req.data,
+                    headers=dict(req.headers),
+                    method=req.get_method(),
+                )
+                continue
+            fail(f"Could not reach gateway at {endpoint}: {exc}", code=2)
+
+    # Should not reach here, but guard against it
+    fail(f"All {MAX_RETRIES} attempts failed. Last error: {last_exc}", code=2)
 
 
 def main() -> int:
@@ -104,17 +170,7 @@ def main() -> int:
         method="POST",
     )
 
-    try:
-        with urlopen(req, timeout=30) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except HTTPError as exc:
-        error_body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        fail(
-            f"Gateway returned HTTP {exc.code}: {error_body}",
-            code=2,
-        )
-    except URLError as exc:
-        fail(f"Could not reach gateway at {endpoint}: {exc}", code=2)
+    body = _request_with_retry(endpoint, req)
 
     # Validate response shape
     for required in ("access_key_id", "secret_access_key", "session_token"):

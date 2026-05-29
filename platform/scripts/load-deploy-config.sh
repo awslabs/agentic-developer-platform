@@ -176,10 +176,17 @@ if [ -n "$ADP_CUSTOMER_ACCOUNT_ID" ]; then
     _LDC_ASSUME_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/assume-customer-creds.py"
     if [ -x "$_LDC_ASSUME_SCRIPT" ]; then
       _LDC_ASSUME_OUTPUT=$("$_LDC_ASSUME_SCRIPT" 2>&1 >/tmp/.ldc-creds.$$) || {
+        if [ "${ADP_CROSS_ACCOUNT_HARD_FAIL:-false}" = "true" ]; then
+          echo "ERROR: cross-account assume failed and ADP_CROSS_ACCOUNT_HARD_FAIL=true." >&2
+          echo "$_LDC_ASSUME_OUTPUT" >&2
+          rm -f /tmp/.ldc-creds.$$
+          return 1
+        fi
         echo "WARN: cross-account assume failed; keeping existing AWS creds." >&2
         echo "  If you're running from a laptop or non-ADP CI, remove the" >&2
         echo "  customer_account block from config/deployment.yml and set" >&2
         echo "  account_id (top-level) directly. See deployment.yml.example." >&2
+        echo "  Set ADP_CROSS_ACCOUNT_HARD_FAIL=true to make this a fatal error." >&2
         echo "$_LDC_ASSUME_OUTPUT" >&2
       }
       if [ -s /tmp/.ldc-creds.$$ ]; then
