@@ -550,16 +550,30 @@ async def get_platform_dashboard(
             accounts=[],
         )
 
-    # TODO: Implement actual dashboard metrics when usage service is available
+    # Issue #1003: Wire dashboard tiles to usage_logs aggregates
+    try:
+        metrics = await service.get_platform_metrics_24h()
+        top_orgs = await service.get_top_organizations_24h(limit=5)
+    except Exception:
+        metrics = {
+            "total_organizations": 0,
+            "total_requests_24h": 0,
+            "total_tokens_24h": 0,
+            "total_cost_24h": 0,
+            "active_users_24h": 0,
+            "error_rate_24h": 0.0,
+        }
+        top_orgs = []
+
     return PlatformDashboardResponse(
-        total_organizations=0,
-        total_requests_24h=0,
-        total_tokens_24h=0,
-        total_cost_24h=0,
-        active_users_24h=0,
-        error_rate_24h=0.0,
+        total_organizations=metrics["total_organizations"],
+        total_requests_24h=metrics["total_requests_24h"],
+        total_tokens_24h=metrics["total_tokens_24h"],
+        total_cost_24h=metrics["total_cost_24h"],
+        active_users_24h=metrics["active_users_24h"],
+        error_rate_24h=metrics["error_rate_24h"],
         pool_status=pool_status,
-        top_organizations=[],
+        top_organizations=top_orgs,
     )
 
 
@@ -580,18 +594,33 @@ async def get_org_dashboard(
     except Exception:
         org_name = org_id
 
-    # TODO: Implement actual dashboard metrics when usage service is available
+    # Issue #1003: Wire dashboard tiles to usage_logs aggregates
+    try:
+        metrics = await service.get_org_metrics_24h(org_id)
+        top_departments = await service.get_top_departments_24h(org_id, limit=5)
+        top_models = await service.get_top_models_24h(org_id, limit=5)
+    except Exception:
+        metrics = {
+            "total_requests_24h": 0,
+            "total_tokens_24h": 0,
+            "total_cost_24h": 0,
+            "active_users_24h": 0,
+            "error_rate_24h": 0.0,
+        }
+        top_departments = []
+        top_models = []
+
     return OrgDashboardResponse(
         org_id=org_id,
         org_name=org_name,
-        total_requests_24h=0,
-        total_tokens_24h=0,
-        total_cost_24h=0,
-        active_users_24h=0,
-        error_rate_24h=0.0,
+        total_requests_24h=metrics["total_requests_24h"],
+        total_tokens_24h=metrics["total_tokens_24h"],
+        total_cost_24h=metrics["total_cost_24h"],
+        active_users_24h=metrics["active_users_24h"],
+        error_rate_24h=metrics["error_rate_24h"],
         budget_status={},
-        top_departments=[],
-        top_models=[],
+        top_departments=top_departments,
+        top_models=top_models,
     )
 
 

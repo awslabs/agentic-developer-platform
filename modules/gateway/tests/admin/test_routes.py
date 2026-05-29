@@ -334,12 +334,28 @@ class TestDashboardEndpoints:
                 accounts=[],
             )
         )
+        mock_admin_service.get_platform_metrics_24h = AsyncMock(
+            return_value={
+                "total_organizations": 3,
+                "total_requests_24h": 100,
+                "total_tokens_24h": 5000,
+                "total_cost_24h": 1.50,
+                "active_users_24h": 10,
+                "error_rate_24h": 2.5,
+            }
+        )
+        mock_admin_service.get_top_organizations_24h = AsyncMock(return_value=[{"org_id": "org-1", "name": "Org 1", "request_count": 50}])
 
         response = client.get("/admin/dashboard/platform")
 
         assert response.status_code == 200
         data = response.json()
         assert "pool_status" in data
+        assert data["total_requests_24h"] == 100
+        assert data["total_tokens_24h"] == 5000
+        assert data["active_users_24h"] == 10
+        assert data["total_organizations"] == 3
+        assert len(data["top_organizations"]) == 1
 
     def test_get_org_dashboard(self, client, mock_admin_service):
         """Test GET /admin/dashboard/org/{org_id}."""
@@ -353,12 +369,27 @@ class TestDashboardEndpoints:
                 created_at=datetime.now(UTC),
             )
         )
+        mock_admin_service.get_org_metrics_24h = AsyncMock(
+            return_value={
+                "total_requests_24h": 50,
+                "total_tokens_24h": 2000,
+                "total_cost_24h": 0.75,
+                "active_users_24h": 5,
+                "error_rate_24h": 1.0,
+            }
+        )
+        mock_admin_service.get_top_departments_24h = AsyncMock(return_value=[{"department_id": "dept-1", "request_count": 30}])
+        mock_admin_service.get_top_models_24h = AsyncMock(return_value=[{"model": "claude-3-sonnet", "request_count": 40}])
 
         response = client.get("/admin/dashboard/org/org-1")
 
         assert response.status_code == 200
         data = response.json()
         assert data["org_id"] == "org-1"
+        assert data["total_requests_24h"] == 50
+        assert data["active_users_24h"] == 5
+        assert len(data["top_departments"]) == 1
+        assert len(data["top_models"]) == 1
 
 
 class TestBudgetListCreateDeleteEndpoints:

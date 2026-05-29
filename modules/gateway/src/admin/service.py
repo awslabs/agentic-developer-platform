@@ -1,7 +1,7 @@
 """Admin service for organization CRUD, pool management, and configuration."""
 
 import logging
-from datetime import timedelta
+from datetime import UTC, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1883,6 +1883,217 @@ class AdminService:
         await self.db.delete(config)
         await self.db.commit()
         return True
+
+    # =============================================================================
+    # Dashboard Metrics (Issue #1003)
+    # =============================================================================
+
+    async def get_platform_metrics_24h(self) -> dict:
+        """
+        Get platform-wide dashboard metrics for the last 24 hours.
+
+        Returns aggregate counts from usage_logs: total requests, tokens, cost,
+        active users, error rate, and active organizations.
+        """
+        from datetime import datetime
+
+        from sqlalchemy import case, func
+
+        from src.shared.models.usage import UsageLog
+
+        cutoff = datetime.now(UTC) - timedelta(hours=24)
+
+        query = select(
+            func.count(UsageLog.id).label("total_requests"),
+            func.coalesce(func.sum(UsageLog.input_tokens + UsageLog.output_tokens), 0).label("total_tokens"),
+            func.coalesce(func.sum(UsageLog.cost_usd), 0).label("total_cost"),
+            func.count(func.distinct(UsageLog.user_id)).label("active_users"),
+            func.count(func.distinct(UsageLog.org_id)).label("total_organizations"),
+            (func.count(case((UsageLog.status_code >= 500, 1))) * 100.0 / func.coalesce(func.nullif(func.count(UsageLog.id), 0), 1)).label(
+                "error_rate"
+            ),
+        ).where(UsageLog.timestamp >= cutoff)
+
+        result = await self.db.execute(query)
+        row = result.one()
+
+        return {
+            "total_requests_24h": row.total_requests or 0,
+            "total_tokens_24h": row.total_tokens or 0,
+            "total_cost_24h": row.total_cost or 0,
+            "active_users_24h": row.active_users or 0,
+            "total_organizations": row.total_organizations or 0,
+            "error_rate_24h": float(row.error_rate or 0.0),
+        }
+
+    async def get_org_metrics_24h(self, org_id: str) -> dict:
+        """
+        Get per-org dashboard metrics for the last 24 hours.
+
+        Same shape as platform metrics but scoped to a single org.
+        """
+        from datetime import datetime
+
+        from sqlalchemy import case, func
+
+        from src.shared.models.usage import UsageLog
+
+        cutoff = datetime.now(UTC) - timedelta(hours=24)
+
+        query = select(
+            func.count(UsageLog.id).label("total_requests"),
+            func.coalesce(func.sum(UsageLog.input_tokens + UsageLog.output_tokens), 0).label("total_tokens"),
+            func.coalesce(func.sum(UsageLog.cost_usd), 0).label("total_cost"),
+            func.count(func.distinct(UsageLog.user_id)).label("active_users"),
+            (func.count(case((UsageLog.status_code >= 500, 1))) * 100.0 / func.coalesce(func.nullif(func.count(UsageLog.id), 0), 1)).label(
+                "error_rate"
+            ),
+        ).where(
+            UsageLog.timestamp >= cutoff,
+            UsageLog.org_id == org_id,
+        )
+
+        result = await self.db.execute(query)
+        row = result.one()
+
+        return {
+            "total_requests_24h": row.total_requests or 0,
+            "total_tokens_24h": row.total_tokens or 0,
+            "total_cost_24h": row.total_cost or 0,
+            "active_users_24h": row.active_users or 0,
+            "error_rate_24h": float(row.error_rate or 0.0),
+        }
+
+    async def get_top_organizations_24h(self, limit: int = 5) -> list[dict]:
+        """
+        Get top organizations by request count in the last 24 hours.
+        """
+        from datetime import datetime
+
+        from sqlalchemy import func
+
+        from src.shared.models.usage import UsageLog
+
+        cutoff = datetime.now(UTC) - timedelta(hours=24)
+
+        query = (
+            select(
+                UsageLog.org_id,
+                func.count(UsageLog.id).label("request_count"),
+                func.coalesce(func.sum(UsageLog.input_tokens + UsageLog.output_tokens), 0).label("total_tokens"),
+                func.coalesce(func.sum(UsageLog.cost_usd), 0).label("total_cost"),
+            )
+            .where(UsageLog.timestamp >= cutoff)
+            .group_by(UsageLog.org_id)
+            .order_by(func.count(UsageLog.id).desc())
+            .limit(limit)
+        )
+
+        result = await self.db.execute(query)
+        rows = result.all()
+
+        top_orgs = []
+        for row in rows:
+            # Try to get org name from the organizations table
+            org_name = row.org_id
+            try:
+                org = await self.get_organization(row.org_id)
+                org_name = org.name
+            except Exception:
+                pass
+            top_orgs.append(
+                {
+                    "org_id": row.org_id,
+                    "name": org_name,
+                    "request_count": row.request_count,
+                    "total_tokens": row.total_tokens or 0,
+                    "total_cost": float(row.total_cost or 0),
+                }
+            )
+
+        return top_orgs
+
+    async def get_top_departments_24h(self, org_id: str, limit: int = 5) -> list[dict]:
+        """
+        Get top departments by request count for an org in the last 24 hours.
+        """
+        from datetime import datetime
+
+        from sqlalchemy import func
+
+        from src.shared.models.usage import UsageLog
+
+        cutoff = datetime.now(UTC) - timedelta(hours=24)
+
+        query = (
+            select(
+                UsageLog.department_id,
+                func.count(UsageLog.id).label("request_count"),
+                func.coalesce(func.sum(UsageLog.input_tokens + UsageLog.output_tokens), 0).label("total_tokens"),
+                func.coalesce(func.sum(UsageLog.cost_usd), 0).label("total_cost"),
+            )
+            .where(
+                UsageLog.timestamp >= cutoff,
+                UsageLog.org_id == org_id,
+            )
+            .group_by(UsageLog.department_id)
+            .order_by(func.count(UsageLog.id).desc())
+            .limit(limit)
+        )
+
+        result = await self.db.execute(query)
+        rows = result.all()
+
+        return [
+            {
+                "department_id": row.department_id,
+                "request_count": row.request_count,
+                "total_tokens": row.total_tokens or 0,
+                "total_cost": float(row.total_cost or 0),
+            }
+            for row in rows
+        ]
+
+    async def get_top_models_24h(self, org_id: str, limit: int = 5) -> list[dict]:
+        """
+        Get top models by request count for an org in the last 24 hours.
+        """
+        from datetime import datetime
+
+        from sqlalchemy import func
+
+        from src.shared.models.usage import UsageLog
+
+        cutoff = datetime.now(UTC) - timedelta(hours=24)
+
+        query = (
+            select(
+                UsageLog.model,
+                func.count(UsageLog.id).label("request_count"),
+                func.coalesce(func.sum(UsageLog.input_tokens + UsageLog.output_tokens), 0).label("total_tokens"),
+                func.coalesce(func.sum(UsageLog.cost_usd), 0).label("total_cost"),
+            )
+            .where(
+                UsageLog.timestamp >= cutoff,
+                UsageLog.org_id == org_id,
+            )
+            .group_by(UsageLog.model)
+            .order_by(func.count(UsageLog.id).desc())
+            .limit(limit)
+        )
+
+        result = await self.db.execute(query)
+        rows = result.all()
+
+        return [
+            {
+                "model": row.model,
+                "request_count": row.request_count,
+                "total_tokens": row.total_tokens or 0,
+                "total_cost": float(row.total_cost or 0),
+            }
+            for row in rows
+        ]
 
     # =============================================================================
     # Usage Timeseries (Issue #179)
