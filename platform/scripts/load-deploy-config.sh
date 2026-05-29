@@ -167,27 +167,25 @@ if [ -n "$ADP_CUSTOMER_ACCOUNT_ID" ]; then
   # config/deployment.yml and set account_id (top-level) directly.
   # See config/deployment.yml.example for the decision matrix.
   #
-  # Non-fatal if the assume fails — the caller's existing creds remain in
-  # place. Downstream commands will then either succeed (operator has
-  # correct creds for customer_account.account_id locally) or hit
-  # AccessDenied (operator is in platform pod context but gateway broken).
-  # Either failure is more diagnosable than silent platform-account writes.
+  # FATAL if the assume fails — falling back to platform creds would silently
+  # deploy to the wrong account. If you're a self-hosted operator, remove the
+  # customer_account block from config/deployment.yml and set account_id
+  # (top-level) directly. See config/deployment.yml.example.
   if [ -z "${ADP_SKIP_CROSS_ACCOUNT_ASSUME:-}" ]; then
     _LDC_ASSUME_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/assume-customer-creds.py"
     if [ -x "$_LDC_ASSUME_SCRIPT" ]; then
       _LDC_ASSUME_OUTPUT=$("$_LDC_ASSUME_SCRIPT" 2>&1 >/tmp/.ldc-creds.$$) || {
-        if [ "${ADP_CROSS_ACCOUNT_HARD_FAIL:-false}" = "true" ]; then
-          echo "ERROR: cross-account assume failed and ADP_CROSS_ACCOUNT_HARD_FAIL=true." >&2
-          echo "$_LDC_ASSUME_OUTPUT" >&2
-          rm -f /tmp/.ldc-creds.$$
-          return 1
-        fi
-        echo "WARN: cross-account assume failed; keeping existing AWS creds." >&2
+        # Cross-account assume failed. In ADP-managed mode (ADP_CUSTOMER_ACCOUNT_ID
+        # is set), this MUST be fatal — falling back to platform creds would silently
+        # deploy to the wrong account. See issue #1031 for the cascade this caused.
+        echo "ERROR: cross-account assume to ${ADP_CUSTOMER_ACCOUNT_ID} failed." >&2
+        echo "$_LDC_ASSUME_OUTPUT" >&2
+        echo "  Refusing to fall back to platform creds — would deploy to the wrong account." >&2
         echo "  If you're running from a laptop or non-ADP CI, remove the" >&2
         echo "  customer_account block from config/deployment.yml and set" >&2
         echo "  account_id (top-level) directly. See deployment.yml.example." >&2
-        echo "  Set ADP_CROSS_ACCOUNT_HARD_FAIL=true to make this a fatal error." >&2
-        echo "$_LDC_ASSUME_OUTPUT" >&2
+        rm -f /tmp/.ldc-creds.$$
+        return 1
       }
       if [ -s /tmp/.ldc-creds.$$ ]; then
         # shellcheck disable=SC1090

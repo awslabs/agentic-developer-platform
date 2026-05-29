@@ -172,11 +172,11 @@ jobs:
           get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
 
           # --- Gather values from SSM (published by gateway-infra-apply) ---
-          DB_HOST=$(get_ssm "/adp/${ENVIRONMENT}/gateway/rds-host" "localhost")
-          DB_NAME=$(get_ssm "/adp/${ENVIRONMENT}/gateway/rds-database-name" "bedrockgateway")
+          DB_HOST=$(get_ssm "/adp/${ENVIRONMENT}/gateway/rds-host")
+          DB_NAME=$(get_ssm "/adp/${ENVIRONMENT}/gateway/rds-database-name")
           DB_USER="bgadmin"
-          REDIS_HOST=$(get_ssm "/adp/${ENVIRONMENT}/gateway/redis-host" "localhost")
-          REDIS_PORT=$(get_ssm "/adp/${ENVIRONMENT}/gateway/redis-port" "6379")
+          REDIS_HOST=$(get_ssm "/adp/${ENVIRONMENT}/gateway/redis-host")
+          REDIS_PORT=$(get_ssm "/adp/${ENVIRONMENT}/gateway/redis-port")
           COGNITO_USER_POOL_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id")
           COGNITO_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-client-id")
           COGNITO_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-domain")
@@ -184,6 +184,18 @@ jobs:
           AGENT_REGISTRY_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/agent-registry-table")
           CHAT_LOGS_BUCKET=$(get_ssm "/adp/${ENVIRONMENT}/gateway/chat-logs-bucket")
           FRONTEND_BUCKET=$(get_ssm "/adp/${ENVIRONMENT}/gateway/frontend-bucket")
+
+          # Fail-fast on missing required SSM params — don't silently render a broken ConfigMap.
+          # If any of these are empty, gateway-infra-apply hasn't been run yet.
+          for var_name in DB_HOST DB_NAME REDIS_HOST COGNITO_USER_POOL_ID COGNITO_CLIENT_ID COGNITO_DOMAIN CF_DOMAIN; do
+            if [ -z "${!var_name}" ]; then
+              echo "::error::Required SSM param resolves to empty for ${var_name}." >&2
+              echo "::error::Run gateway-infra-apply.yml first so it publishes the missing params." >&2
+              exit 1
+            fi
+          done
+          # REDIS_PORT and ENVIRONMENT have safe defaults; fail-fast not required for those.
+          [ -z "$REDIS_PORT" ] && REDIS_PORT="6379"
 
           # Gateway IRSA role ARN — deterministic name from platform EKS module
           GATEWAY_ROLE_ARN=$(aws iam get-role \
