@@ -187,6 +187,19 @@ jobs:
             -n ${{ env.NAMESPACE }} \
             --type merge -p '{"data":{"BG_TRUST_APIGW_HEADERS":"true"}}'
 
+          # EPIC #1013 / Issue #1014: Wire chat-logging env vars from SSM.
+          # If the SSM param exists (chat logging enabled in infra), set both
+          # BG_CHAT_LOGGING_ENABLED and BG_CHAT_LOGGING_BUCKET on the ConfigMap.
+          # If missing, the pod keeps its default (chat_logging_enabled=false).
+          CHAT_LOGS_BUCKET=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/gateway/chat-logs-bucket" \
+            --query Parameter.Value --output text 2>/dev/null) || true
+          if [ -n "$CHAT_LOGS_BUCKET" ] && [ "$CHAT_LOGS_BUCKET" != "None" ]; then
+            kubectl patch configmap bedrockgateway-config \
+              -n ${{ env.NAMESPACE }} \
+              --type merge -p "{\"data\":{\"BG_CHAT_LOGGING_ENABLED\":\"true\",\"BG_CHAT_LOGGING_BUCKET\":\"${CHAT_LOGS_BUCKET}\"}}"
+          fi
+
           kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=300s
 
   deploy-frontend:

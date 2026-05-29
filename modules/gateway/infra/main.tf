@@ -941,6 +941,25 @@ resource "aws_ssm_parameter" "github_auth_broker_url" {
 }
 
 # =============================================================================
+# Chat-Logging SSM Parameter (Issue #1014 / EPIC #1013)
+# =============================================================================
+# Publish the chat-logs bucket name so the gateway-deploy workflow can inject
+# BG_CHAT_LOGGING_BUCKET into the pod's ConfigMap without a terraform-output
+# dependency. Only created when chat logging is enabled.
+# =============================================================================
+
+resource "aws_ssm_parameter" "chat_logs_bucket" {
+  count = var.enable_chat_logging ? 1 : 0
+
+  name        = "/adp/${var.environment}/gateway/chat-logs-bucket"
+  description = "S3 bucket name for chat-log archive (read by gateway pod's chat_logging service + cost-tracking Lambdas)"
+  type        = "String"
+  value       = module.s3_chat_logs[0].bucket_name
+
+  tags = local.common_tags
+}
+
+# =============================================================================
 # GitHub Auth Broker Lambda (Issue #520)
 # =============================================================================
 # Lambda-based broker that converts GitHub OAuth flow into Cognito sessions.
