@@ -87,7 +87,11 @@ jobs:
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
+        run: |
+          terraform init \
+            -backend-config="../../../${{ env.BACKEND_CONFIG }}" \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -input=false -reconfigure
 
       - name: Terraform Plan (destroy-safety check)
         id: plan
