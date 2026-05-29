@@ -651,6 +651,9 @@ module "budget_lambda" {
   db_username           = var.rds_username
   rds_resource_id       = module.rds.db_instance_resource_id
 
+  # S3 bucket containing pre-built Lambda layer artifacts (Issue #1038)
+  lambda_artifact_bucket = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+
   depends_on = [module.s3_chat_logs, module.rds]
 }
 

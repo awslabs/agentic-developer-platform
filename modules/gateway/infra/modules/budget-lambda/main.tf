@@ -98,43 +98,33 @@ data "archive_file" "pricing_refresh" {
 }
 
 # =============================================================================
-# Lambda Layer for psycopg2
+# Lambda Layer for psycopg2 (S3-sourced — Issue #1038)
 # =============================================================================
-# Builds psycopg2-binary into a Lambda Layer. The build script auto-detects
-# the platform: on Linux x86_64 (CI runners) it uses pip directly; on
-# macOS/ARM it uses a container runtime (finch/docker).
+# The layer zip is built by CodeBuild (adp-dev-psycopg2-layer project) and
+# uploaded to S3. Terraform references it via data source — no Docker daemon
+# required at apply time.
 # =============================================================================
 
-resource "null_resource" "psycopg2_layer_build" {
-  # Always rebuild — the python/ directory doesn't persist between CI runs
-  triggers = {
-    always_run = timestamp()
-  }
-
-  provisioner "local-exec" {
-    command     = "bash build.sh"
-    working_dir = "${path.root}/../lambda/layers/psycopg2"
-  }
-}
-
-data "archive_file" "psycopg2_layer" {
-  type        = "zip"
-  source_dir  = "${path.root}/../lambda/layers/psycopg2"
-  output_path = "${path.module}/psycopg2_layer.zip"
-  excludes    = ["build.sh"]
-
-  depends_on = [null_resource.psycopg2_layer_build]
+data "aws_s3_object" "psycopg2_layer" {
+  bucket = var.lambda_artifact_bucket
+  key    = "lambda-layers/psycopg2-py312.zip"
 }
 
 resource "aws_lambda_layer_version" "psycopg2" {
   layer_name          = "${var.name_prefix}-psycopg2-py312"
   description         = "psycopg2-binary 2.9.9 for Python 3.12 (x86_64)"
-  filename            = data.archive_file.psycopg2_layer.output_path
-  source_code_hash    = data.archive_file.psycopg2_layer.output_base64sha256
+  s3_bucket           = var.lambda_artifact_bucket
+  s3_key              = "lambda-layers/psycopg2-py312.zip"
+  source_code_hash    = data.aws_s3_object.psycopg2_layer.etag
   compatible_runtimes = ["python3.12"]
+
+  compatible_architectures = ["x86_64"]
 
   lifecycle {
     create_before_destroy = true
+    # Layer content is managed by CodeBuild workflow; don't replace on etag drift
+    # during plan if the zip hasn't actually changed semantically.
+    ignore_changes = [source_code_hash]
   }
 }
 

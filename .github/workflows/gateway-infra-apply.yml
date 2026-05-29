@@ -117,6 +117,22 @@ jobs:
             aws s3 cp pyjwt-py313.zip "s3://$STATE_BUCKET/$ARTIFACT_KEY" --region "$AWS_REGION"
           fi
 
+      - name: Ensure psycopg2 Lambda layer artifact exists in state bucket
+        working-directory: modules/gateway/lambda/layers/psycopg2
+        run: |
+          set -e
+          ARTIFACT_KEY="lambda-layers/psycopg2-py312.zip"
+          if aws s3api head-object --bucket "$STATE_BUCKET" --key "$ARTIFACT_KEY" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "psycopg2 layer already in s3://$STATE_BUCKET/$ARTIFACT_KEY — skipping build."
+          else
+            echo "psycopg2 layer missing — building inline via CodeBuild."
+            gh workflow run psycopg2-layer-build.yml --ref "${{ github.ref_name }}"
+            sleep 5
+            RUN=$(gh run list --workflow=psycopg2-layer-build.yml --limit=1 --json databaseId --jq '.[0].databaseId')
+            echo "Waiting for psycopg2-layer-build run $RUN..."
+            gh run watch "$RUN" --exit-status
+          fi
+
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |

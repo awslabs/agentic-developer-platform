@@ -1,0 +1,123 @@
+name: psycopg2 Layer Build
+
+# Builds the psycopg2 Lambda layer via CodeBuild and uploads to S3.
+# Gateway Infra Terraform references the artifact at:
+#   s3://adp-terraform-state-<ACCOUNT_ID>/lambda-layers/psycopg2-py312.zip
+
+on:
+  push:
+    paths:
+      - 'modules/gateway/lambda/layers/psycopg2/**'
+      - 'codebuild/bs-psycopg2-layer.yml'
+      - '.github/workflows/psycopg2-layer-build.yml'
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+  CODEBUILD_PROJECT: adp-dev-psycopg2-layer
+
+jobs:
+  build:
+    name: Build psycopg2 Lambda Layer
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+
+      - name: Install zip + AWS CLI (bootstrap)
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          aws --version
+
+      - name: Package source and upload to S3
+        run: |
+          bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
+          aws s3 cp /tmp/adp-source.zip \
+            "s3://${STATE_BUCKET}/codebuild/adp-source.zip" \
+            --region "${AWS_REGION}"
+          rm -f /tmp/adp-source.zip
+
+      - name: Ensure CodeBuild project
+        run: |
+          CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
+          SERVICE_ROLE_ARN=$(aws iam get-role --role-name "$CB_ROLE_NAME" --query 'Role.Arn' --output text 2>/dev/null || echo "")
+          if [ -z "$SERVICE_ROLE_ARN" ]; then
+            echo "${CB_ROLE_NAME} missing — run platform/scripts/deploy-all.sh once to create it." >&2
+            exit 1
+          fi
+          SOURCE_LOC="${STATE_BUCKET}/codebuild/adp-source.zip"
+          EXISTS=$(aws codebuild batch-get-projects --names "${{ env.CODEBUILD_PROJECT }}" --region "${AWS_REGION}" --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
+          CMD="create-project"
+          [ "$EXISTS" -gt 0 ] && CMD="update-project"
+          aws codebuild $CMD --region "${AWS_REGION}" \
+            --name "${{ env.CODEBUILD_PROJECT }}" \
+            --source "{\"type\":\"S3\",\"location\":\"$SOURCE_LOC\",\"buildspec\":\"codebuild/bs-psycopg2-layer.yml\"}" \
+            --artifacts '{"type":"NO_ARTIFACTS"}' \
+            --environment '{
+              "type":"LINUX_CONTAINER",
+              "image":"aws/codebuild/amazonlinux2-x86_64-standard:5.0",
+              "computeType":"BUILD_GENERAL1_MEDIUM",
+              "privilegedMode":true
+            }' \
+            --service-role "$SERVICE_ROLE_ARN" > /dev/null
+
+      - name: Build layer via CodeBuild
+        id: build
+        run: |
+          BUILD_ID=$(aws codebuild start-build \
+            --region "${AWS_REGION}" \
+            --project-name "${{ env.CODEBUILD_PROJECT }}" \
+            --environment-variables-override \
+              "name=AWS_REGION,value=${AWS_REGION}" \
+              "name=ACCOUNT_ID,value=${ACCOUNT_ID}" \
+              "name=STATE_BUCKET,value=${STATE_BUCKET}" \
+            --query 'build.id' --output text)
+          echo "Started CodeBuild: $BUILD_ID"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+
+          PHASE=""
+          while true; do
+            RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${AWS_REGION}" --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
+            STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
+            CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
+            [ "$CUR_PHASE" != "$PHASE" ] && [ -n "$CUR_PHASE" ] && echo "Phase: $CUR_PHASE" && PHASE="$CUR_PHASE"
+            case "$STATUS" in
+              SUCCEEDED) echo "Build succeeded"; break ;;
+              FAILED|FAULT|STOPPED|TIMED_OUT)
+                LOG=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${AWS_REGION}" --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
+                echo "Build failed ($STATUS). Logs: $LOG" >&2
+                exit 1
+                ;;
+              *) sleep 15 ;;
+            esac
+          done
+
+      - name: Verify artifact exists
+        run: |
+          aws s3 ls "s3://${STATE_BUCKET}/lambda-layers/psycopg2-py312.zip" --region "${AWS_REGION}"
+
+      - name: Summary
+        run: |
+          echo "## psycopg2 Lambda Layer Built" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Artifact**: s3://${STATE_BUCKET}/lambda-layers/psycopg2-py312.zip" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **CodeBuild**: ${{ steps.build.outputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Gateway Infra Apply can now reference this layer from S3." >> "$GITHUB_STEP_SUMMARY"

@@ -73,6 +73,11 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "lambda_artifact_bucket" {
+  description = "S3 bucket containing the pre-built psycopg2 layer zip (uploaded by CodeBuild)"
+  type        = string
+}
+
 # Optional: RDS resource ID for IAM auth policy
 variable "rds_resource_id" {
   description = "RDS instance resource ID (dbi-xxx format) for IAM auth. If empty, uses wildcard."

@@ -1,0 +1,34 @@
+version: 0.2
+
+# CodeBuild buildspec for the psycopg2 Lambda layer.
+#
+# Builds psycopg2-binary for Python 3.12 (x86_64) inside the official Lambda
+# runtime image, then zips and uploads the layer artifact to S3. Gateway Infra
+# Terraform references the zip via `aws_s3_object` data source.
+#
+# Env vars injected by the caller:
+#   AWS_REGION, ACCOUNT_ID, STATE_BUCKET
+
+phases:
+  pre_build:
+    commands:
+      - STATE_BUCKET="${STATE_BUCKET:-adp-terraform-state-${ACCOUNT_ID}}"
+      - LAYER_KEY="lambda-layers/psycopg2-py312.zip"
+      - echo "Will upload layer to s3://${STATE_BUCKET}/${LAYER_KEY}"
+
+  build:
+    commands:
+      - cd modules/gateway/lambda/layers/psycopg2
+      - bash build.sh docker
+      # Zip the python/ directory into Lambda layer format
+      - cd "${CODEBUILD_SRC_DIR}/modules/gateway/lambda/layers/psycopg2"
+      - zip -r /tmp/psycopg2-py312.zip python/
+
+  post_build:
+    commands:
+      # Quote every command — CodeBuild's YAML parser misreads unquoted shell
+      # substitutions like $(...) as YAML flow scalars and rejects the whole
+      # file with "value of the key tag might be empty".
+      - 'aws s3 cp /tmp/psycopg2-py312.zip "s3://${STATE_BUCKET}/${LAYER_KEY}" --region "${AWS_REGION}"'
+      - 'echo "Uploaded layer artifact to s3://${STATE_BUCKET}/${LAYER_KEY}"'
+      - 'HASH=$(sha256sum /tmp/psycopg2-py312.zip | cut -d" " -f1) && echo "SHA256: ${HASH}"'
