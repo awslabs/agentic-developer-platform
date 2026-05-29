@@ -110,13 +110,14 @@ jobs:
 
       - name: Trigger image build in CodeBuild
         run: |
-          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
+          REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           BUILD_ID=$(aws codebuild start-build \
             --project-name adp-${ENVIRONMENT}-gateway-build \
             --environment-variables-override \
               "name=AWS_REGION,value=${AWS_REGION}" \
               "name=ENVIRONMENT,value=${ENVIRONMENT}" \
-              "name=ACCOUNT_ID,value=${ACCOUNT_ID}" \
+              "name=ACCOUNT_ID,value=${EFFECTIVE_ACCOUNT}" \
               "name=REGISTRY,value=${REGISTRY}" \
               "name=STATE_BUCKET,value=${STATE_BUCKET}" \
               "name=EKS_CLUSTER,value=${{ env.EKS_CLUSTER }}" \
@@ -154,7 +155,8 @@ jobs:
 
       - name: Roll out new image
         run: |
-          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
+          REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${AWS_REGION}
 
           # Apply the deployment manifest FIRST so changes to probes, env,
