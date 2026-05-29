@@ -217,7 +217,7 @@ jobs:
               -e "s|__GATEWAY_BASE_URL__|https://${CF_DOMAIN}|g" \
               -e "s|__CFN_TEMPLATE_BUCKET__|${FRONTEND_BUCKET}|g" \
               -e "s|__GATEWAY_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
-              -e "s|__CHAT_LOGGING_ENABLED__|${CHAT_LOGS_BUCKET:+true}${CHAT_LOGS_BUCKET:-false}|g" \
+              -e "s|__CHAT_LOGGING_ENABLED__|$([ -n "$CHAT_LOGS_BUCKET" ] && echo true || echo false)|g" \
               -e "s|__CHAT_LOGGING_BUCKET__|${CHAT_LOGS_BUCKET}|g" \
               -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|basic|g" \
               -e "s|__TRUST_APIGW_HEADERS__|true|g" \
