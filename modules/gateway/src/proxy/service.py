@@ -24,11 +24,13 @@ from src.proxy.schemas import (
     OpenAIChatCompletionResponse,
 )
 from src.proxy.stream_handler import StreamHandler
+from src.shared.database import get_session_factory
 from src.shared.interfaces.pool import IPoolService
 from src.shared.interfaces.proxy import IProxyService
 from src.shared.logging import get_logger
 from src.shared.metrics import emit_error_count, emit_request_metrics
 from src.shared.schemas.auth import TokenContext
+from src.usage.service import UsageService
 
 logger = get_logger(__name__)
 
@@ -118,6 +120,17 @@ class ProxyService(IProxyService):
                 success=True,
             )
 
+            # Issue #992: Write usage_logs row for admin dashboard visibility
+            await self._log_usage(
+                context=context,
+                model=model,
+                input_tokens=tokens_in,
+                output_tokens=tokens_out,
+                cost_usd=cost_usd,
+                latency_ms=int(latency_ms),
+                status_code=200,
+            )
+
             logger.info(
                 "Proxy invoke completed",
                 extra={
@@ -141,6 +154,17 @@ class ProxyService(IProxyService):
                 org_id=context.org_id,
                 model=model,
                 error_type=error_type,
+            )
+
+            # Issue #992: Write usage_logs row for failed requests
+            await self._log_usage(
+                context=context,
+                model=model,
+                input_tokens=0,
+                output_tokens=0,
+                cost_usd=0.0,
+                latency_ms=int(latency_ms),
+                status_code=500,
             )
 
             logger.error(
@@ -287,6 +311,43 @@ class ProxyService(IProxyService):
             return self._stream_bedrock_response(bedrock_request, bedrock_model_id)
         else:
             return await self._invoke_bedrock_response(bedrock_request, bedrock_model_id)
+
+    # =========================================================================
+    # Usage Logging (Issue #992)
+    # =========================================================================
+
+    async def _log_usage(
+        self,
+        context: TokenContext,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cost_usd: float,
+        latency_ms: int,
+        status_code: int,
+    ) -> None:
+        """Write a row to usage_logs for admin dashboard visibility.
+
+        Failures are swallowed to avoid impacting the proxy hot path.
+        """
+        try:
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                usage_service = UsageService(session)
+                await usage_service.log_request(
+                    context=context,
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_usd=cost_usd,
+                    latency_ms=latency_ms,
+                    status_code=status_code,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Failed to write usage_logs row",
+                extra={"error": str(exc), "model": model},
+            )
 
     # =========================================================================
     # Internal Methods

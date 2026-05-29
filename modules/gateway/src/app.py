@@ -7,6 +7,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from src.admin.middleware import create_request_logging_middleware
+
 # Issue #143: TokenContextMiddleware sets request.state.token_context for enforcement middleware
 from src.auth.middleware import TokenContextMiddleware
 
@@ -134,6 +136,10 @@ def create_app() -> FastAPI:
 
     # Add logging middleware (should be first to capture all requests)
     app.add_middleware(LoggingMiddleware)
+
+    # Issue #992: Add request logging middleware to record requests in request_logs table
+    # for the admin dashboard. Runs after LoggingMiddleware (i.e., sees the response status).
+    app.add_middleware(create_request_logging_middleware())
 
     # Issue #131: Add enforcement middleware
     # Middleware order is important - they execute in reverse order of addition:
