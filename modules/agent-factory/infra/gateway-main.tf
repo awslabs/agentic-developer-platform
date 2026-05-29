@@ -39,7 +39,6 @@ module "gateway_lambda" {
   name_prefix         = local.name_prefix
   environment         = var.environment
   aws_region          = var.aws_region
-  account_id          = var.account_id
   github_org          = var.github_org
   ingest_source_dir   = "${path.module}/../gateway/lambdas/ingest"
   response_source_dir = "${path.module}/../gateway/lambdas/response"
@@ -68,7 +67,7 @@ data "terraform_remote_state" "gateway" {
   count   = var.gateway_deployed ? 1 : 0
   backend = "s3"
   config = {
-    bucket = "adp-terraform-state-${var.account_id}"
+    bucket = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
     key    = "${var.environment}/modules/gateway/terraform.tfstate"
     region = var.aws_region
   }

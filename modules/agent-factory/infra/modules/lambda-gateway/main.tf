@@ -1,3 +1,5 @@
+data "aws_caller_identity" "current" {}
+
 data "archive_file" "ingest" {
   type        = "zip"
   source_dir  = var.ingest_source_dir
@@ -35,7 +37,7 @@ resource "aws_lambda_function" "ingest" {
       # upload-complete responses. API Gateway WebSocket discards synchronous
       # Lambda returns; the ingest Lambda must push responses back via
       # apigatewaymanagementapi.post_to_connection, which needs this URL.
-      WS_API_ENDPOINT      = var.ws_api_endpoint
+      WS_API_ENDPOINT = var.ws_api_endpoint
     }
   }
 
@@ -170,7 +172,7 @@ resource "aws_iam_role_policy" "ingest_gh_app_secrets" {
     Statement = [{
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue"]
-      Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:adp/${var.github_org}/gh-app-*"
+      Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:adp/${var.github_org}/gh-app-*"
     }]
   })
 }

@@ -67,11 +67,6 @@ variable "github_org" {
   type        = string
 }
 
-variable "account_id" {
-  description = "AWS account ID (for constructing secret ARNs)."
-  type        = string
-}
-
 variable "artifacts_bucket_arn" {
   description = "ARN of the S3 bucket for chat artifacts (presigned URL signing)."
   type        = string

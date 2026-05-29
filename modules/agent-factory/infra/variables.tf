@@ -10,11 +10,6 @@ variable "environment" {
   default     = "dev"
 }
 
-variable "account_id" {
-  description = "AWS account ID (used for remote state bucket name)"
-  type        = string
-}
-
 variable "github_org" {
   description = "GitHub organization name for runner registration"
   type        = string
@@ -44,9 +39,21 @@ variable "github_app_dev_installation_id" {
 }
 
 variable "runner_image" {
-  description = "Container image for ARC runner pods. Built by .github/workflows/arc-runner-build.yml; points at the adp-arc-runner ECR repo. Leave empty to use the chart default (bare actions-runner image)."
+  description = "Container image for ARC runner pods (full URI override). When set, takes precedence over runner_image_repo/runner_image_tag. Leave empty to construct dynamically from caller identity + runner_image_repo + runner_image_tag."
   type        = string
   default     = ""
+}
+
+variable "runner_image_repo" {
+  description = "ECR repository name for the ARC runner image. Used when runner_image is empty to construct the full URI from the deploying account's ECR."
+  type        = string
+  default     = "adp-arc-runner"
+}
+
+variable "runner_image_tag" {
+  description = "Tag for the ARC runner image. Used when runner_image is empty."
+  type        = string
+  default     = "latest"
 }
 
 variable "enable_public_cfn_bucket" {

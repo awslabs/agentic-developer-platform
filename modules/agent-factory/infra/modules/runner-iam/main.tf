@@ -5,6 +5,8 @@
 # Uses the shared EKS OIDC provider instead of creating a new one.
 # =============================================================================
 
+data "aws_caller_identity" "current" {}
+
 # Permissions boundary
 resource "aws_iam_policy" "runner_boundary" {
   name        = "${var.name_prefix}-runner-boundary"
@@ -87,7 +89,7 @@ resource "aws_iam_policy" "runner_boundary" {
           "iam:ListPolicyVersions",
           "iam:GetPolicyVersion"
         ]
-        Resource = "arn:aws:iam::${var.account_id}:policy/${var.name_prefix}-runner-boundary"
+        Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:policy/${var.name_prefix}-runner-boundary"
       },
       {
         Sid      = "ExecuteApi"
@@ -183,7 +185,7 @@ resource "aws_iam_role_policy" "runner_permissions" {
         ]
         Resource = [
           "arn:aws:bedrock:*::foundation-model/anthropic.*",
-          "arn:aws:bedrock:*:${var.account_id}:inference-profile/*"
+          "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*"
         ]
       },
       {
@@ -193,7 +195,7 @@ resource "aws_iam_role_policy" "runner_permissions" {
           "secretsmanager:GetSecretValue",
           "secretsmanager:DescribeSecret"
         ]
-        Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:adp/*"
+        Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:adp/*"
       },
       {
         Sid    = "KMSAccess"
@@ -238,7 +240,7 @@ resource "aws_iam_role_policy" "runner_permissions" {
         Sid      = "ExecuteApiInvokeGateway"
         Effect   = "Allow"
         Action   = ["execute-api:Invoke"]
-        Resource = "arn:aws:execute-api:${var.aws_region}:${var.account_id}:*/*/*/agent/*"
+        Resource = "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/*/agent/*"
       }
     ]
   })

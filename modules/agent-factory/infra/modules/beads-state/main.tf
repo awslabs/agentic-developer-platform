@@ -2,6 +2,8 @@
 # Beads State — DynamoDB + S3 for agent issue tracking
 # =============================================================================
 
+data "aws_caller_identity" "current" {}
+
 resource "aws_dynamodb_table" "beads_manifest" {
   name         = "${var.name_prefix}-beads-manifest"
   billing_mode = "PAY_PER_REQUEST"
@@ -29,7 +31,7 @@ resource "aws_dynamodb_table" "beads_manifest" {
 }
 
 resource "aws_s3_bucket" "beads_state" {
-  bucket = "${var.name_prefix}-beads-state-${var.account_id}"
+  bucket = "${var.name_prefix}-beads-state-${data.aws_caller_identity.current.account_id}"
 
   tags = {
     Component = "agent-factory"

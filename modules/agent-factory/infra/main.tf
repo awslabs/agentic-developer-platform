@@ -51,7 +51,7 @@ provider "aws" {
 data "terraform_remote_state" "platform" {
   backend = "s3"
   config = {
-    bucket = "adp-terraform-state-${var.account_id}"
+    bucket = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
     key    = "${var.environment}/platform/terraform.tfstate"
     region = var.aws_region
   }
@@ -71,6 +71,10 @@ locals {
   private_subnets   = data.terraform_remote_state.platform.outputs.private_subnet_ids
 
   name_prefix = "adp-${var.environment}-agent"
+
+  # Dynamic runner image: constructed from caller identity so cross-account
+  # deploys pull from the customer's own ECR (not the platform account's).
+  runner_image = var.runner_image != "" ? var.runner_image : "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/${var.runner_image_repo}:${var.runner_image_tag}"
 }
 
 # =============================================================================
@@ -112,7 +116,6 @@ module "runner_iam" {
   name_prefix       = local.name_prefix
   oidc_provider_arn = local.oidc_provider_arn
   oidc_issuer       = local.oidc_issuer
-  account_id        = data.aws_caller_identity.current.account_id
   aws_region        = var.aws_region
   runner_namespace  = var.runner_namespace
 
@@ -140,7 +143,6 @@ module "beads_state" {
 
   environment = var.environment
   name_prefix = local.name_prefix
-  account_id  = data.aws_caller_identity.current.account_id
   kms_key_arn = aws_kms_key.dynamodb.arn
 }
 
@@ -168,7 +170,7 @@ module "arc_runner" {
 
   # Custom ADP runner image with CLI tools pre-baked (aws, kubectl, terraform,
   # helm, gh, docker, kaniko). Empty string = chart default.
-  runner_image = var.runner_image
+  runner_image = local.runner_image
 
   depends_on = [module.runner_iam]
 }
