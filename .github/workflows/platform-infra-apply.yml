@@ -30,6 +30,10 @@ on:
         description: 'Deployment environment (dev/staging/prod).'
         required: false
         default: 'dev'
+      confirm_destructive_apply:
+        description: 'Set to "yes" to authorize an apply that destroys resources. Required when terraform plan includes any destroys.'
+        required: false
+        default: 'no'
 
 concurrency:
   group: tf-apply-platform-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
@@ -132,35 +136,51 @@ jobs:
             exit 1
           fi
 
-      - name: Destroy-safety label gate
+      - name: Destroy-safety gate
         if: steps.plan.outputs.detailed_exitcode == '2'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          # Check if plan includes any destroys
-          DESTROYS=$(grep -c 'will be destroyed' /tmp/plan-output.txt || echo "0")
-          if [ "$DESTROYS" -gt 0 ]; then
-            echo "Plan includes $DESTROYS resource(s) to destroy."
-            # Find the PR that introduced this merge commit
-            COMMIT_SHA="${{ github.sha }}"
-            PR_NUMBER=$(gh pr list --state merged --search "$COMMIT_SHA" --json number --jq '.[0].number // empty' 2>/dev/null || echo "")
-            if [ -z "$PR_NUMBER" ]; then
-              echo "::error::This apply would destroy $DESTROYS resource(s) but no associated PR was found. Cannot verify destructive-apply-approved label. Re-run via workflow_dispatch after adding the label to the source PR."
-              exit 1
+          DESTROYS=$(grep -c 'will be destroyed' /tmp/plan-output.txt 2>/dev/null) || DESTROYS=0
+          if [ "$DESTROYS" -le 0 ]; then
+            echo "No destroys in plan. Proceeding."
+            exit 0
+          fi
+
+          echo "Plan includes $DESTROYS resource(s) to destroy."
+          echo ""
+          echo "Resources to be destroyed:"
+          grep 'will be destroyed' /tmp/plan-output.txt || true
+          echo ""
+
+          # workflow_dispatch: require explicit operator confirmation.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ inputs.confirm_destructive_apply }}" = "yes" ]; then
+              echo "Operator-confirmed destructive apply (confirm_destructive_apply=yes). Proceeding."
+              exit 0
             fi
-            echo "Associated PR: #$PR_NUMBER"
-            HAS_LABEL=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' 2>/dev/null | grep -c 'destructive-apply-approved' || echo "0")
-            if [ "$HAS_LABEL" -eq 0 ]; then
-              echo "::error::This apply would destroy $DESTROYS resource(s). The PR #$PR_NUMBER does NOT have the 'destructive-apply-approved' label. Add the label to PR #$PR_NUMBER and re-run this workflow."
-              echo ""
-              echo "Resources to be destroyed:"
-              grep 'will be destroyed' /tmp/plan-output.txt || true
-              exit 1
-            fi
+            echo "::error::This workflow_dispatch run schedules $DESTROYS destroy(s)."
+            echo "::error::Re-run with confirm_destructive_apply=yes to authorize. Or fix the underlying drift first."
+            exit 1
+          fi
+
+          # push / other events: require destructive-apply-approved label on the merged PR.
+          COMMIT_SHA="${{ github.sha }}"
+          PR_NUMBER=$(gh pr list --state merged --search "$COMMIT_SHA" --json number --jq '.[0].number // empty' 2>/dev/null || echo "")
+          if [ -z "$PR_NUMBER" ]; then
+            echo "::error::This apply would destroy $DESTROYS resource(s) but no associated merged PR was found for SHA $COMMIT_SHA. Cannot verify destructive-apply-approved label."
+            exit 1
+          fi
+          echo "Associated PR: #$PR_NUMBER"
+
+          LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+          if echo "$LABELS" | grep -qx 'destructive-apply-approved'; then
             echo "PR #$PR_NUMBER has 'destructive-apply-approved' label. Proceeding."
           else
-            echo "No destroys in plan. Proceeding."
+            echo "::error::This apply would destroy $DESTROYS resource(s). PR #$PR_NUMBER does NOT have the 'destructive-apply-approved' label."
+            echo "::error::Add the label to PR #$PR_NUMBER and re-run, or trigger manually with confirm_destructive_apply=yes."
+            exit 1
           fi
 
       - name: Terraform Apply

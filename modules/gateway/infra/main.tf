@@ -370,6 +370,7 @@ module "s3_chat_logs" {
 
   environment     = var.environment
   name_prefix     = local.name_prefix
+  account_id      = data.aws_caller_identity.current.account_id
   common_tags     = local.common_tags
   kms_key_arn     = var.chat_logging_kms_key_arn
   log_bucket_name = "" # Optional: set to access log bucket if needed

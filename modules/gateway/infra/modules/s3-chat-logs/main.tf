@@ -9,11 +9,15 @@
 # =============================================================================
 
 # S3 Bucket
+# Account-suffixed (mirror of PR #983 for security-scans bucket): S3 bucket names are
+# globally unique. Without the account suffix, deploys on multiple accounts collide
+# with 409 BucketAlreadyExists. PR #1019 enabled chat logging on the platform account
+# and the bare name was already taken by another AWS user, blocking the apply.
 resource "aws_s3_bucket" "chat_logs" {
-  bucket = "${var.name_prefix}-chat-logs"
+  bucket = "${var.name_prefix}-chat-logs-${var.account_id}"
 
   tags = merge(var.common_tags, {
-    Name    = "${var.name_prefix}-chat-logs"
+    Name    = "${var.name_prefix}-chat-logs-${var.account_id}"
     Service = "s3"
     Purpose = "chat-logs"
   })

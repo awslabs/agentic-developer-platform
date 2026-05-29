@@ -3,16 +3,34 @@
 # SSM, and writes them to $GITHUB_OUTPUT / $GITHUB_ENV for downstream steps.
 # Idempotent: no-op if the ALB is already registered in SSM and still exists.
 #
-# Usage: bash platform/scripts/wire-gateway-alb.sh
+# Usage:
+#   bash platform/scripts/wire-gateway-alb.sh             # poll for up to 10 min (default)
+#   bash platform/scripts/wire-gateway-alb.sh --no-wait   # return empty values immediately if ALB not found
+#
+# The --no-wait mode is for the pre-plan invocation in gateway-infra-apply.yml.
+# On a fresh deploy the ALB doesn't exist yet; the script returns empty ARN/DNS
+# and terraform plan skips the VPC origin. On subsequent deploys the SSM cache
+# hits and the script returns the real ARN, so the plan keeps the VPC origin.
+# The default (wait) mode is for gateway-deploy.yml, where the EKS Ingress
+# controller is expected to materialize the ALB shortly after pod rollout.
+#
 # Reads: AWS_REGION, ENVIRONMENT
 # Writes (stdout):    ALB_ARN, ALB_DNS, ALB_SG_IDS
 # Writes (SSM):       /adp/<env>/gateway/internal-alb-{arn,dns,security-group-ids}
 # Writes (GitHub):    $GITHUB_OUTPUT entries when run in Actions
 #
 # Exit:
-#   0 on success (ALB found and cached)
-#   1 if ALB not found after 10 min
+#   0 on success (ALB found, OR --no-wait + ALB not found yet — empty outputs)
+#   1 if ALB not found after 10 min in wait-mode
 set -euo pipefail
+
+NO_WAIT=false
+for arg in "$@"; do
+  case "$arg" in
+    --no-wait) NO_WAIT=true ;;
+    *) echo "Unknown arg: $arg" >&2; exit 2 ;;
+  esac
+done
 
 AWS_REGION="${AWS_REGION:-us-east-1}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
@@ -66,8 +84,30 @@ fi
 
 # ---------------------------------------------------------------------------
 # Step 2: If no cache hit, poll for the Ingress-managed ALB (up to 10 min)
+# In --no-wait mode, do a single discovery attempt and return empty if not found.
 # ---------------------------------------------------------------------------
 if [ -z "$ALB_ARN" ]; then
+  if [ "$NO_WAIT" = true ]; then
+    # Single discovery attempt; the post-deploy invocation will retry with full polling.
+    ALB_ARN=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
+      --query 'LoadBalancers[?Scheme==`internal`].LoadBalancerArn' \
+      --output text 2>/dev/null | head -1 || true)
+    if [ -z "$ALB_ARN" ] || [ "$ALB_ARN" = "None" ]; then
+      ALB_ARN=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
+        --query 'LoadBalancers[?contains(LoadBalancerName,`bedrockgw`) || contains(LoadBalancerName,`k8s-bedrockgw`)].LoadBalancerArn' \
+        --output text 2>/dev/null | head -1 || true)
+    fi
+    if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
+      ALB_DNS=$(aws elbv2 describe-load-balancers \
+        --load-balancer-arns "$ALB_ARN" --region "$AWS_REGION" \
+        --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "")
+      echo "[--no-wait] ALB found: $ALB_DNS"
+    else
+      ALB_ARN=""
+      ALB_DNS=""
+      echo "[--no-wait] ALB not found yet — returning empty values (fresh deploy / pre-plan)."
+    fi
+  else
   echo "Waiting for EKS Ingress ALB to be provisioned..."
   for i in $(seq 1 40); do
     # Look for internal ALBs
@@ -115,6 +155,7 @@ if [ -z "$ALB_ARN" ]; then
     --value "$ALB_DNS" --type String --overwrite \
     --region "$AWS_REGION" > /dev/null
   echo "ALB ARN/DNS cached in SSM"
+  fi  # end !NO_WAIT
 fi
 
 # ---------------------------------------------------------------------------

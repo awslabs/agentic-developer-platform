@@ -12,6 +12,11 @@ variable "name_prefix" {
   type        = string
 }
 
+variable "account_id" {
+  description = "AWS account ID. Used to suffix the bucket name to avoid global S3 namespace collisions across accounts."
+  type        = string
+}
+
 variable "common_tags" {
   description = "Common tags to apply to all resources"
   type        = map(string)
