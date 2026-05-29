@@ -120,17 +120,6 @@ class ProxyService(IProxyService):
                 success=True,
             )
 
-            # Issue #992: Write usage_logs row for admin dashboard visibility
-            await self._log_usage(
-                context=context,
-                model=model,
-                input_tokens=tokens_in,
-                output_tokens=tokens_out,
-                cost_usd=cost_usd,
-                latency_ms=int(latency_ms),
-                status_code=200,
-            )
-
             logger.info(
                 "Proxy invoke completed",
                 extra={
@@ -154,17 +143,6 @@ class ProxyService(IProxyService):
                 org_id=context.org_id,
                 model=model,
                 error_type=error_type,
-            )
-
-            # Issue #992: Write usage_logs row for failed requests
-            await self._log_usage(
-                context=context,
-                model=model,
-                input_tokens=0,
-                output_tokens=0,
-                cost_usd=0.0,
-                latency_ms=int(latency_ms),
-                status_code=500,
             )
 
             logger.error(
@@ -193,10 +171,13 @@ class ProxyService(IProxyService):
             SSE formatted response chunks
         """
         api_format = request.get("api_format", "bedrock")
+        model = request.get("model", "")
+        start_time = time.time()
+        usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+        status_code = 200
 
         try:
             # Resolve model and check access
-            model = request.get("model", "")
             bedrock_model_id = self._model_resolver.resolve_model(model)
             self._model_resolver.check_model_access(bedrock_model_id, context)
 
@@ -212,11 +193,24 @@ class ProxyService(IProxyService):
 
             # Convert stream to target format
             async for chunk in self._stream_handler.create_sse_response(bedrock_stream, api_format, model, response_id):
+                self._extract_usage_from_sse_chunk(chunk, usage)
                 yield chunk
 
         except Exception as e:
+            status_code = 500
             logger.error(f"Error in proxy invoke_stream: {e}")
             raise
+        finally:
+            latency_ms = (time.time() - start_time) * 1000
+            await self._log_usage(
+                context=context,
+                model=model,
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"],
+                cost_usd=0.0,
+                latency_ms=int(latency_ms),
+                status_code=status_code,
+            )
 
     # =========================================================================
     # API Format-Specific Methods
@@ -248,9 +242,9 @@ class ProxyService(IProxyService):
         bedrock_request = self._translator.openai_to_bedrock(request, bedrock_model_id)
 
         if request.stream:
-            return self._stream_openai_response(bedrock_request, bedrock_model_id, request.model)
+            return self._stream_openai_response(bedrock_request, bedrock_model_id, request.model, context)
         else:
-            return await self._invoke_openai_response(bedrock_request, bedrock_model_id, request.model)
+            return await self._invoke_openai_response(bedrock_request, bedrock_model_id, request.model, context)
 
     async def messages(
         self,
@@ -278,9 +272,9 @@ class ProxyService(IProxyService):
         bedrock_request = self._translator.anthropic_to_bedrock(request, anthropic_version, anthropic_beta)
 
         if request.stream:
-            return self._stream_anthropic_response(bedrock_request, bedrock_model_id, request.model)
+            return self._stream_anthropic_response(bedrock_request, bedrock_model_id, request.model, context)
         else:
-            return await self._invoke_anthropic_response(bedrock_request, bedrock_model_id, request.model)
+            return await self._invoke_anthropic_response(bedrock_request, bedrock_model_id, request.model, context)
 
     async def invoke_model(
         self,
@@ -308,9 +302,9 @@ class ProxyService(IProxyService):
         bedrock_request = BedrockInvokeRequest(**body)
 
         if stream:
-            return self._stream_bedrock_response(bedrock_request, bedrock_model_id)
+            return self._stream_bedrock_response(bedrock_request, bedrock_model_id, context)
         else:
-            return await self._invoke_bedrock_response(bedrock_request, bedrock_model_id)
+            return await self._invoke_bedrock_response(bedrock_request, bedrock_model_id, context)
 
     # =========================================================================
     # Usage Logging (Issue #992)
@@ -521,6 +515,7 @@ class ProxyService(IProxyService):
         bedrock_request: BedrockInvokeRequest,
         bedrock_model_id: str,
         model: str,
+        context: TokenContext,
     ) -> OpenAIChatCompletionResponse:
         """Invoke Bedrock and return OpenAI format response.
 
@@ -528,19 +523,42 @@ class ProxyService(IProxyService):
             bedrock_request: Bedrock request
             bedrock_model_id: Bedrock model ID
             model: Original model name
+            context: Authentication context for usage logging
 
         Returns:
             OpenAI format response
         """
-        client = await self._pool_service.get_client()
-        bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request)
-        return self._translator.bedrock_to_openai(bedrock_response, model)
+        start_time = time.time()
+        tokens_in = 0
+        tokens_out = 0
+        status_code = 200
+        try:
+            client = await self._pool_service.get_client()
+            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request)
+            tokens_in = getattr(bedrock_response, "input_tokens", 0) or 0
+            tokens_out = getattr(bedrock_response, "output_tokens", 0) or 0
+            return self._translator.bedrock_to_openai(bedrock_response, model)
+        except Exception:
+            status_code = 500
+            raise
+        finally:
+            latency_ms = (time.time() - start_time) * 1000
+            await self._log_usage(
+                context=context,
+                model=model,
+                input_tokens=tokens_in,
+                output_tokens=tokens_out,
+                cost_usd=0.0,
+                latency_ms=int(latency_ms),
+                status_code=status_code,
+            )
 
     async def _stream_openai_response(
         self,
         bedrock_request: BedrockInvokeRequest,
         bedrock_model_id: str,
         model: str,
+        context: TokenContext,
     ) -> AsyncIterator[bytes]:
         """Stream OpenAI format response.
 
@@ -548,23 +566,45 @@ class ProxyService(IProxyService):
             bedrock_request: Bedrock request
             bedrock_model_id: Bedrock model ID
             model: Original model name
+            context: Authentication context for usage logging
 
         Yields:
             SSE formatted chunks
         """
-        client = await self._pool_service.get_client()
-        response_id = str(uuid.uuid4())
+        start_time = time.time()
+        usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+        status_code = 200
+        try:
+            client = await self._pool_service.get_client()
+            response_id = str(uuid.uuid4())
 
-        bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request)
+            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request)
 
-        async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "openai", model, response_id):
-            yield chunk
+            async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "openai", model, response_id):
+                # Extract usage from streaming chunks for logging
+                self._extract_usage_from_sse_chunk(chunk, usage)
+                yield chunk
+        except Exception:
+            status_code = 500
+            raise
+        finally:
+            latency_ms = (time.time() - start_time) * 1000
+            await self._log_usage(
+                context=context,
+                model=model,
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"],
+                cost_usd=0.0,
+                latency_ms=int(latency_ms),
+                status_code=status_code,
+            )
 
     async def _invoke_anthropic_response(
         self,
         bedrock_request: BedrockInvokeRequest,
         bedrock_model_id: str,
         model: str,
+        context: TokenContext,
     ) -> AnthropicMessagesResponse:
         """Invoke Bedrock and return Anthropic format response.
 
@@ -572,19 +612,42 @@ class ProxyService(IProxyService):
             bedrock_request: Bedrock request
             bedrock_model_id: Bedrock model ID
             model: Original model name
+            context: Authentication context for usage logging
 
         Returns:
             Anthropic format response
         """
-        client = await self._pool_service.get_client()
-        bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request)
-        return self._translator.bedrock_to_anthropic(bedrock_response, model)
+        start_time = time.time()
+        tokens_in = 0
+        tokens_out = 0
+        status_code = 200
+        try:
+            client = await self._pool_service.get_client()
+            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request)
+            tokens_in = getattr(bedrock_response, "input_tokens", 0) or 0
+            tokens_out = getattr(bedrock_response, "output_tokens", 0) or 0
+            return self._translator.bedrock_to_anthropic(bedrock_response, model)
+        except Exception:
+            status_code = 500
+            raise
+        finally:
+            latency_ms = (time.time() - start_time) * 1000
+            await self._log_usage(
+                context=context,
+                model=model,
+                input_tokens=tokens_in,
+                output_tokens=tokens_out,
+                cost_usd=0.0,
+                latency_ms=int(latency_ms),
+                status_code=status_code,
+            )
 
     async def _stream_anthropic_response(
         self,
         bedrock_request: BedrockInvokeRequest,
         bedrock_model_id: str,
         model: str,
+        context: TokenContext,
     ) -> AsyncIterator[bytes]:
         """Stream Anthropic format response.
 
@@ -592,57 +655,155 @@ class ProxyService(IProxyService):
             bedrock_request: Bedrock request
             bedrock_model_id: Bedrock model ID
             model: Original model name
+            context: Authentication context for usage logging
 
         Yields:
             SSE formatted chunks
         """
-        client = await self._pool_service.get_client()
-        response_id = str(uuid.uuid4())
+        start_time = time.time()
+        usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+        status_code = 200
+        try:
+            client = await self._pool_service.get_client()
+            response_id = str(uuid.uuid4())
 
-        bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request)
+            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request)
 
-        async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "anthropic", model, response_id):
-            yield chunk
+            async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "anthropic", model, response_id):
+                self._extract_usage_from_sse_chunk(chunk, usage)
+                yield chunk
+        except Exception:
+            status_code = 500
+            raise
+        finally:
+            latency_ms = (time.time() - start_time) * 1000
+            await self._log_usage(
+                context=context,
+                model=model,
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"],
+                cost_usd=0.0,
+                latency_ms=int(latency_ms),
+                status_code=status_code,
+            )
 
     async def _invoke_bedrock_response(
         self,
         bedrock_request: BedrockInvokeRequest,
         bedrock_model_id: str,
+        context: TokenContext,
     ) -> dict[str, Any]:
         """Invoke Bedrock and return raw response.
 
         Args:
             bedrock_request: Bedrock request
             bedrock_model_id: Bedrock model ID
+            context: Authentication context for usage logging
 
         Returns:
             Bedrock response dictionary
         """
-        client = await self._pool_service.get_client()
-        bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request)
-        return bedrock_response.model_dump()
+        start_time = time.time()
+        tokens_in = 0
+        tokens_out = 0
+        status_code = 200
+        try:
+            client = await self._pool_service.get_client()
+            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request)
+            tokens_in = getattr(bedrock_response, "input_tokens", 0) or 0
+            tokens_out = getattr(bedrock_response, "output_tokens", 0) or 0
+            return bedrock_response.model_dump()
+        except Exception:
+            status_code = 500
+            raise
+        finally:
+            latency_ms = (time.time() - start_time) * 1000
+            await self._log_usage(
+                context=context,
+                model=bedrock_model_id,
+                input_tokens=tokens_in,
+                output_tokens=tokens_out,
+                cost_usd=0.0,
+                latency_ms=int(latency_ms),
+                status_code=status_code,
+            )
 
     async def _stream_bedrock_response(
         self,
         bedrock_request: BedrockInvokeRequest,
         bedrock_model_id: str,
+        context: TokenContext,
     ) -> AsyncIterator[bytes]:
         """Stream Bedrock format response.
 
         Args:
             bedrock_request: Bedrock request
             bedrock_model_id: Bedrock model ID
+            context: Authentication context for usage logging
 
         Yields:
             SSE formatted chunks
         """
-        client = await self._pool_service.get_client()
-        response_id = str(uuid.uuid4())
+        start_time = time.time()
+        usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+        status_code = 200
+        try:
+            client = await self._pool_service.get_client()
+            response_id = str(uuid.uuid4())
 
-        bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request)
+            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request)
 
-        async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "bedrock", bedrock_model_id, response_id):
-            yield chunk
+            async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "bedrock", bedrock_model_id, response_id):
+                self._extract_usage_from_sse_chunk(chunk, usage)
+                yield chunk
+        except Exception:
+            status_code = 500
+            raise
+        finally:
+            latency_ms = (time.time() - start_time) * 1000
+            await self._log_usage(
+                context=context,
+                model=bedrock_model_id,
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"],
+                cost_usd=0.0,
+                latency_ms=int(latency_ms),
+                status_code=status_code,
+            )
+
+    # =========================================================================
+    # Streaming Usage Extraction
+    # =========================================================================
+
+    def _extract_usage_from_sse_chunk(self, chunk: bytes, usage: dict[str, int]) -> None:
+        """Extract token usage from an SSE chunk and accumulate into usage dict.
+
+        Parses the SSE data payload looking for Anthropic/Bedrock usage fields
+        (message_start → input_tokens, message_delta → output_tokens).
+        Failures are silently ignored to avoid disrupting the stream.
+
+        Args:
+            chunk: Raw SSE bytes (e.g. b'event: ...\\ndata: {...}\\n\\n')
+            usage: Mutable dict to accumulate input_tokens / output_tokens
+        """
+        try:
+            chunk_str = chunk.decode("utf-8", errors="ignore")
+            # Find JSON data payload in SSE chunk
+            for line in chunk_str.split("\n"):
+                if line.startswith("data: ") and line[6:7] == "{":
+                    data = json.loads(line[6:])
+                    # message_start carries input_tokens
+                    if data.get("type") == "message_start":
+                        msg_usage = data.get("message", {}).get("usage", {})
+                        if msg_usage.get("input_tokens"):
+                            usage["input_tokens"] = msg_usage["input_tokens"]
+                    # message_delta carries output_tokens
+                    elif data.get("type") == "message_delta":
+                        delta_usage = data.get("usage", {})
+                        if delta_usage.get("output_tokens"):
+                            usage["output_tokens"] = delta_usage["output_tokens"]
+        except Exception:
+            pass  # Never disrupt the stream for usage extraction
 
     # =========================================================================
     # Utility Methods
