@@ -21,11 +21,6 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
-variable "account_id" {
-  type        = string
-  description = "AWS account ID (used to construct the remote state bucket name)"
-}
-
 variable "cost_center" {
   type        = string
   description = "Cost center for billing allocation"

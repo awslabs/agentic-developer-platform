@@ -29,17 +29,17 @@ provider "aws" {
 # deployed via platform/infra/. This avoids duplicating networking and compute.
 # =============================================================================
 
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
 data "terraform_remote_state" "platform" {
   backend = "s3"
   config = {
-    bucket = "adp-terraform-state-${var.account_id}"
+    bucket = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
     key    = "${var.environment}/platform/terraform.tfstate"
     region = var.aws_region
   }
 }
-
-data "aws_caller_identity" "current" {}
-data "aws_region" "current" {}
 
 # Local values for resource naming and platform lookups
 locals {
@@ -724,7 +724,7 @@ module "lambda_authorizer" {
   aws_region  = var.aws_region
 
   # S3 bucket containing pre-built Lambda layer artifacts (Issue #408)
-  lambda_artifact_bucket = "adp-terraform-state-${var.account_id}"
+  lambda_artifact_bucket = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
 
   # Cognito Configuration
   cognito_user_pool_id = module.cognito.cognito_user_pool_id
@@ -922,7 +922,7 @@ module "github_auth_broker" {
   allowlist_mode          = var.github_auth_allowlist_mode
   allowed_orgs            = var.github_auth_allowed_orgs
   github_token_secret_arn = var.github_auth_token_secret_arn
-  lambda_artifact_bucket  = "adp-terraform-state-${var.account_id}"
+  lambda_artifact_bucket  = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
 
   # Issue #525: Route broker through API Gateway instead of a public Function URL
   rest_api_id            = module.api_gateway[0].api_gateway_id

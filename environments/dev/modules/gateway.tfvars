@@ -1,8 +1,6 @@
 environment = "dev"
 aws_region  = "us-east-1"
 
-account_id = "879318057152"
-
 # Cost center
 cost_center = "engineering"
 
