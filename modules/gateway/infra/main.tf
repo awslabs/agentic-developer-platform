@@ -891,6 +891,51 @@ resource "aws_ssm_parameter" "identity_index_table" {
 # using a `moved` block. The AWS table name stays unchanged.
 
 # =============================================================================
+# Cognito SSM Parameters (Issue #1007)
+# =============================================================================
+# Publish Cognito identifiers to SSM so the frontend build workflow can resolve
+# them at deploy time instead of hardcoding platform-account values.
+# =============================================================================
+
+resource "aws_ssm_parameter" "cognito_user_pool_id" {
+  name        = "/adp/${var.environment}/gateway/cognito-user-pool-id"
+  description = "Cognito User Pool ID for frontend auth"
+  type        = "String"
+  value       = module.cognito.cognito_user_pool_id
+
+  tags = local.common_tags
+}
+
+resource "aws_ssm_parameter" "cognito_client_id" {
+  name        = "/adp/${var.environment}/gateway/cognito-client-id"
+  description = "Cognito User Pool Client ID for frontend auth"
+  type        = "String"
+  value       = module.cognito.cognito_user_pool_client_id
+
+  tags = local.common_tags
+}
+
+resource "aws_ssm_parameter" "cognito_domain" {
+  name        = "/adp/${var.environment}/gateway/cognito-domain"
+  description = "Cognito hosted-UI domain prefix"
+  type        = "String"
+  value       = module.cognito.cognito_domain
+
+  tags = local.common_tags
+}
+
+resource "aws_ssm_parameter" "github_auth_broker_url" {
+  count = var.enable_github_auth_broker ? 1 : 0
+
+  name        = "/adp/${var.environment}/gateway/github-auth-broker-url"
+  description = "GitHub auth broker API Gateway invoke URL"
+  type        = "String"
+  value       = module.api_gateway[0].api_gateway_invoke_url
+
+  tags = local.common_tags
+}
+
+# =============================================================================
 # GitHub Auth Broker Lambda (Issue #520)
 # =============================================================================
 # Lambda-based broker that converts GitHub OAuth flow into Cognito sessions.

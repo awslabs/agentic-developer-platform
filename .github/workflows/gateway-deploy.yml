@@ -219,27 +219,41 @@ jobs:
           node-version: '22'
 
 
+      - name: Resolve VITE_* env from SSM
+        id: vite_env
+        run: |
+          set -e
+          get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo ""; }
+
+          POOL_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id")
+          CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-client-id")
+          DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-domain")
+          BROKER=$(get_ssm "/adp/${ENVIRONMENT}/gateway/github-auth-broker-url")
+          WS_URL=$(get_ssm "/adp/${ENVIRONMENT}/gateway/agent-ws-url")
+
+          # Fail-fast: if any required value missing, the build will silently produce a broken bundle.
+          for var_name in POOL_ID CLIENT_ID DOMAIN; do
+            if [ -z "${!var_name}" ]; then
+              echo "::error::Required SSM param for $var_name is empty. Verify gateway-infra-apply ran cleanly." >&2
+              exit 1
+            fi
+          done
+
+          echo "VITE_COGNITO_USER_POOL_ID=$POOL_ID" >> "$GITHUB_OUTPUT"
+          echo "VITE_COGNITO_CLIENT_ID=$CLIENT_ID" >> "$GITHUB_OUTPUT"
+          echo "VITE_COGNITO_DOMAIN=$DOMAIN" >> "$GITHUB_OUTPUT"
+          echo "VITE_GITHUB_AUTH_BROKER_URL=${BROKER}/auth/github" >> "$GITHUB_OUTPUT"
+          echo "VITE_AGENT_WS_URL=$WS_URL" >> "$GITHUB_OUTPUT"
+
       - name: Build frontend
-        # Vite inlines these at build time. Without them, the SPA falls back
-        # to stale literals in src/config/cognito.ts and shows "Authentication
-        # not configured". These values map to the bedrockgw-dev-users pool
-        # (see modules/gateway/infra/modules/cognito/) and the admin UI client.
-        # TODO: publish these as SSM parameters from the cognito terraform
-        # module and read them here, so pool rotation doesn't require a
-        # workflow edit.
         env:
           VITE_API_URL: /api
-          VITE_AGENT_WS_URL: wss://8ea7pg40b7.execute-api.us-east-1.amazonaws.com/v1
-          VITE_COGNITO_USER_POOL_ID: us-east-1_JEhv9xSGG
-          VITE_COGNITO_CLIENT_ID: 6cg7ba3hb4v41vbhm0cg8pl17j
-          VITE_COGNITO_DOMAIN: bedrockgw-dev-auth-18057152
           VITE_COGNITO_REGION: us-east-1
-          # Issue #525: Broker behind API Gateway. Same-domain routing via
-          # CloudFront is not yet wired (CloudFront only has /api/* → ALB,
-          # no behavior for /auth/* → broker). Until that's added (tracked
-          # as a follow-up), point the frontend directly at the broker API
-          # Gateway invoke URL. Full-page redirect flow, no CORS impact.
-          VITE_GITHUB_AUTH_BROKER_URL: https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev/auth/github
+          VITE_COGNITO_USER_POOL_ID: ${{ steps.vite_env.outputs.VITE_COGNITO_USER_POOL_ID }}
+          VITE_COGNITO_CLIENT_ID: ${{ steps.vite_env.outputs.VITE_COGNITO_CLIENT_ID }}
+          VITE_COGNITO_DOMAIN: ${{ steps.vite_env.outputs.VITE_COGNITO_DOMAIN }}
+          VITE_GITHUB_AUTH_BROKER_URL: ${{ steps.vite_env.outputs.VITE_GITHUB_AUTH_BROKER_URL }}
+          VITE_AGENT_WS_URL: ${{ steps.vite_env.outputs.VITE_AGENT_WS_URL }}
         run: |
           cd modules/gateway/frontend
           npm ci

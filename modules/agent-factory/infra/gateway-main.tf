@@ -250,6 +250,22 @@ resource "helm_release" "keda" {
   ]
 }
 
+# =============================================================================
+# WebSocket endpoint SSM Parameter (Issue #1007)
+# =============================================================================
+# Publish the WebSocket API Gateway endpoint to SSM so the frontend build
+# workflow can resolve it at deploy time for cross-account deploys.
+# =============================================================================
+
+resource "aws_ssm_parameter" "gateway_ws_endpoint" {
+  name        = "/adp/${var.environment}/gateway/agent-ws-url"
+  description = "WebSocket API Gateway endpoint for agent streaming"
+  type        = "String"
+  value       = module.gateway_apigw.stage_invoke_url
+
+  tags = { Component = "agent-gateway" }
+}
+
 # --- Extend runner IAM with gateway permissions ---
 
 # =============================================================================
