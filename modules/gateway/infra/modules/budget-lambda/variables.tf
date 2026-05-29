@@ -108,7 +108,7 @@ variable "pricing_refresh_timeout" {
 variable "pricing_refresh_schedule" {
   description = "EventBridge schedule expression for pricing refresh"
   type        = string
-  default     = "cron(0 6 * * ? *)"  # Daily at 6 AM UTC
+  default     = "cron(0 6 * * ? *)" # Daily at 6 AM UTC
 }
 
 variable "log_retention_days" {

@@ -140,7 +140,7 @@ resource "aws_api_gateway_rest_api" "main" {
         "x-amazon-apigateway-authtype" = "awsSigv4"
       }
     }
-    paths = {
+    paths = merge({
       # Root path - NONE auth (humans)
       "/" = {
         x-amazon-apigateway-any-method = {
@@ -190,7 +190,7 @@ resource "aws_api_gateway_rest_api" "main" {
       # Issue #260: Agent root path - AWS_IAM auth (agents)
       "/agent" = {
         x-amazon-apigateway-any-method = {
-          security = [{ sigv4 = [] }]
+          security                   = [{ sigv4 = [] }]
           "x-amazon-apigateway-auth" = { type = "AWS_IAM" }
           x-amazon-apigateway-integration = {
             type                 = "http_proxy"
@@ -211,7 +211,7 @@ resource "aws_api_gateway_rest_api" "main" {
       # Issue #260: Agent proxy path - AWS_IAM auth (agents)
       "/agent/{proxy+}" = {
         x-amazon-apigateway-any-method = {
-          security = [{ sigv4 = [] }]
+          security                   = [{ sigv4 = [] }]
           "x-amazon-apigateway-auth" = { type = "AWS_IAM" }
           parameters = [
             {
@@ -239,8 +239,34 @@ resource "aws_api_gateway_rest_api" "main" {
           }
         }
       }
-    }
-  }) : jsonencode({
+      },
+      # Issue #1011: GitHub Auth Broker route — Lambda proxy integration
+      # Only included when broker_lambda_invoke_arn is provided.
+      var.broker_lambda_invoke_arn != "" ? {
+        "/auth/github/{proxy+}" = {
+          x-amazon-apigateway-any-method = {
+            "x-amazon-apigateway-auth" = { type = "NONE" }
+            parameters = [
+              {
+                name     = "proxy"
+                in       = "path"
+                required = true
+                type     = "string"
+              }
+            ]
+            x-amazon-apigateway-integration = {
+              type                = "aws_proxy"
+              httpMethod          = "POST"
+              uri                 = var.broker_lambda_invoke_arn
+              passthroughBehavior = "when_no_match"
+              contentHandling     = "CONVERT_TO_TEXT"
+              timeoutInMillis     = 29000
+            }
+          }
+        }
+      } : {}
+    )
+    }) : jsonencode({
     swagger = "2.0"
     info = {
       title   = "${var.name_prefix}-api"
@@ -398,4 +424,19 @@ resource "aws_iam_role_policy_attachment" "api_gateway_cloudwatch" {
 resource "aws_api_gateway_account" "main" {
   cloudwatch_role_arn = aws_iam_role.api_gateway_cloudwatch.arn
   depends_on          = [aws_iam_role_policy_attachment.api_gateway_cloudwatch]
+}
+
+# =============================================================================
+# GitHub Auth Broker Lambda Permission (Issue #1011)
+# =============================================================================
+# Allows API Gateway to invoke the broker Lambda for /auth/github/* routes.
+
+resource "aws_lambda_permission" "broker_api_gateway" {
+  count = var.broker_lambda_invoke_arn != "" ? 1 : 0
+
+  statement_id  = "AllowAPIGatewayInvokeBroker"
+  action        = "lambda:InvokeFunction"
+  function_name = var.broker_lambda_function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
 }

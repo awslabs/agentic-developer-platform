@@ -139,3 +139,19 @@ variable "enable_xray_tracing" {
   type        = bool
   default     = true
 }
+
+# =============================================================================
+# GitHub Auth Broker Integration (Issue #1011)
+# =============================================================================
+
+variable "broker_lambda_invoke_arn" {
+  description = "Invoke ARN of the GitHub auth broker Lambda. When set, adds /auth/github/{proxy+} route to the OpenAPI body."
+  type        = string
+  default     = ""
+}
+
+variable "broker_lambda_function_name" {
+  description = "Function name of the GitHub auth broker Lambda (for aws_lambda_permission)."
+  type        = string
+  default     = ""
+}

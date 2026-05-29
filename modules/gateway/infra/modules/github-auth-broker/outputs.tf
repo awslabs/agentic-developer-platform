@@ -1,6 +1,6 @@
 # =============================================================================
 # GitHub Auth Broker — Outputs
-# Issue #520, Issue #525
+# Issue #520, Issue #525, Issue #1011
 # =============================================================================
 
 output "function_name" {
@@ -13,12 +13,12 @@ output "function_arn" {
   value       = aws_lambda_function.broker.arn
 }
 
+output "invoke_arn" {
+  description = "Invoke ARN of the GitHub auth broker Lambda (for API Gateway integration)"
+  value       = aws_lambda_function.broker.invoke_arn
+}
+
 output "role_arn" {
   description = "IAM role ARN for the broker Lambda"
   value       = aws_iam_role.broker.arn
-}
-
-output "api_resource_id" {
-  description = "API Gateway resource ID for /auth/github/{proxy+}"
-  value       = aws_api_gateway_resource.auth_github_proxy.id
 }

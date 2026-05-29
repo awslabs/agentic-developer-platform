@@ -700,6 +700,10 @@ module "api_gateway" {
   # Logging
   log_retention_days = var.api_gateway_log_retention_days
 
+  # Issue #1011: GitHub Auth Broker route in OpenAPI body
+  broker_lambda_invoke_arn    = var.enable_github_auth_broker ? module.github_auth_broker[0].invoke_arn : ""
+  broker_lambda_function_name = var.enable_github_auth_broker ? module.github_auth_broker[0].function_name : ""
+
   depends_on = [module.cognito]
 }
 
@@ -930,7 +934,8 @@ resource "aws_ssm_parameter" "github_auth_broker_url" {
   name        = "/adp/${var.environment}/gateway/github-auth-broker-url"
   description = "GitHub auth broker API Gateway invoke URL"
   type        = "String"
-  value       = module.api_gateway[0].api_gateway_invoke_url
+  # Issue #1011: Append /auth/github so the frontend can construct /start and /callback
+  value = "${module.api_gateway[0].api_gateway_invoke_url}/auth/github"
 
   tags = local.common_tags
 }
@@ -969,12 +974,10 @@ module "github_auth_broker" {
   github_token_secret_arn = var.github_auth_token_secret_arn
   lambda_artifact_bucket  = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
 
-  # Issue #525: Route broker through API Gateway instead of a public Function URL
-  rest_api_id            = module.api_gateway[0].api_gateway_id
-  rest_api_execution_arn = module.api_gateway[0].api_gateway_execution_arn
-  root_resource_id       = module.api_gateway[0].api_gateway_root_resource_id
+  # Issue #1011: API Gateway route is now defined in the api-gateway module's
+  # OpenAPI body. The broker module only creates the Lambda + IAM.
 
-  depends_on = [module.cognito, module.cloudfront, module.api_gateway]
+  depends_on = [module.cognito, module.cloudfront]
 }
 
 # IAM policy for Gateway IRSA role to access identity-index table

@@ -162,56 +162,11 @@ data "archive_file" "placeholder" {
   }
 }
 
-# --- API Gateway Integration (Issue #525) ---
-# Route: /api/auth/github/{proxy+} → Lambda (AWS_PROXY)
-# Replaces the previously-deleted public Function URL.
-
-resource "aws_api_gateway_resource" "auth" {
-  rest_api_id = var.rest_api_id
-  parent_id   = var.root_resource_id
-  path_part   = "auth"
-}
-
-resource "aws_api_gateway_resource" "auth_github" {
-  rest_api_id = var.rest_api_id
-  parent_id   = aws_api_gateway_resource.auth.id
-  path_part   = "github"
-}
-
-resource "aws_api_gateway_resource" "auth_github_proxy" {
-  rest_api_id = var.rest_api_id
-  parent_id   = aws_api_gateway_resource.auth_github.id
-  path_part   = "{proxy+}"
-}
-
-resource "aws_api_gateway_method" "auth_github_proxy_any" {
-  rest_api_id   = var.rest_api_id
-  resource_id   = aws_api_gateway_resource.auth_github_proxy.id
-  http_method   = "ANY"
-  authorization = "NONE"
-
-  request_parameters = {
-    "method.request.path.proxy" = true
-  }
-}
-
-resource "aws_api_gateway_integration" "auth_github_proxy" {
-  rest_api_id             = var.rest_api_id
-  resource_id             = aws_api_gateway_resource.auth_github_proxy.id
-  http_method             = aws_api_gateway_method.auth_github_proxy_any.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = aws_lambda_function.broker.invoke_arn
-}
-
-# Permission for API Gateway to invoke the broker Lambda
-resource "aws_lambda_permission" "api_gateway_invoke_broker" {
-  statement_id  = "AllowAPIGatewayInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.broker.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${var.rest_api_execution_arn}/*/*"
-}
+# --- API Gateway Integration (Issue #525, Issue #1011) ---
+# The /auth/github/{proxy+} route is now defined in the api-gateway module's
+# OpenAPI body (Issue #1011). Previously, imperative aws_api_gateway_resource
+# blocks here were overwritten by the body attribute on each apply.
+# The Lambda permission is also managed by the api-gateway module.
 
 # --- CloudWatch Log Group ---
 

@@ -72,19 +72,6 @@ variable "lambda_artifact_bucket" {
   type        = string
 }
 
-# --- API Gateway variables (Issue #525) ---
-
-variable "rest_api_id" {
-  description = "ID of the API Gateway REST API to attach routes to"
-  type        = string
-}
-
-variable "rest_api_execution_arn" {
-  description = "Execution ARN of the API Gateway REST API (for Lambda permission source_arn)"
-  type        = string
-}
-
-variable "root_resource_id" {
-  description = "Root resource ID of the API Gateway REST API"
-  type        = string
-}
+# --- API Gateway variables (Issue #525, removed in Issue #1011) ---
+# The route is now defined in the api-gateway module's OpenAPI body.
+# The broker module only needs to expose its invoke_arn as an output.
