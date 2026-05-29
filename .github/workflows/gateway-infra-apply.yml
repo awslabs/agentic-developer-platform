@@ -179,30 +179,32 @@ jobs:
       - name: Terraform Plan (destroy-safety check)
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
+        # Pass ALB values via TF_VAR_* env (terraform parses these as HCL natively,
+        # avoiding the bash quoting trap where ${{ ... }} interpolation collapses the
+        # inner double quotes in alb_security_group_ids = ["sg-x","sg-y"]).
+        env:
+          TF_VAR_internal_alb_arn: ${{ steps.alb_pre.outputs.ALB_ARN }}
+          TF_VAR_internal_alb_dns: ${{ steps.alb_pre.outputs.ALB_DNS }}
+          TF_VAR_alb_security_group_ids: ${{ steps.alb_pre.outputs.ALB_SG_IDS }}
+          TF_VAR_enable_vpc_origin: ${{ steps.alb_pre.outputs.ALB_ARN != '' && 'true' || 'false' }}
         run: |
           set -e
           set -o pipefail
           EXIT_CODE=0
-          ALB_ARN="${{ steps.alb_pre.outputs.ALB_ARN }}"
-          ALB_DNS="${{ steps.alb_pre.outputs.ALB_DNS }}"
-          ALB_SG_IDS="${{ steps.alb_pre.outputs.ALB_SG_IDS }}"
 
-          # If the ALB exists (subsequent run), pass real values + enable VPC origin so
-          # the plan keeps the existing CloudFront VPC origin in state. If it doesn't
-          # exist yet (fresh deploy), pass defaults so plan skips creating the VPC
-          # origin (it'll be created by the post-deploy run after Phase 5/6 lands).
-          PLAN_VARS=()
-          if [ -n "$ALB_ARN" ]; then
-            PLAN_VARS+=( -var "internal_alb_arn=$ALB_ARN" )
-            PLAN_VARS+=( -var "internal_alb_dns=$ALB_DNS" )
-            PLAN_VARS+=( -var "alb_security_group_ids=$ALB_SG_IDS" )
-            PLAN_VARS+=( -var "enable_vpc_origin=true" )
+          if [ -n "${TF_VAR_internal_alb_arn:-}" ]; then
             echo "ALB resolved — plan/apply will keep CloudFront VPC origin."
+            echo "  ALB ARN: $TF_VAR_internal_alb_arn"
+            echo "  ALB DNS: $TF_VAR_internal_alb_dns"
+            echo "  ALB SG IDs: $TF_VAR_alb_security_group_ids"
           else
+            # Unset the related vars so terraform falls back to module defaults
+            # (enable_vpc_origin=false, internal_alb_arn="", count=0 — VPC origin not created).
+            unset TF_VAR_internal_alb_arn TF_VAR_internal_alb_dns TF_VAR_alb_security_group_ids TF_VAR_enable_vpc_origin
             echo "ALB not found (fresh deploy) — plan/apply will defer VPC origin creation."
           fi
 
-          terraform plan -var-file="../../../${{ env.VAR_FILE }}" "${PLAN_VARS[@]}" \
+          terraform plan -var-file="../../../${{ env.VAR_FILE }}" \
             -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
           echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           if [ "$EXIT_CODE" -eq 1 ]; then
