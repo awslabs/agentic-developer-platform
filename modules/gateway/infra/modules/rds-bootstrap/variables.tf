@@ -12,7 +12,7 @@ variable "name_prefix" {
 variable "namespace" {
   type        = string
   description = "Kubernetes namespace for the bootstrap Job"
-  default     = "adp-gateway"
+  default     = "bedrockgw"
 }
 
 variable "aws_region" {

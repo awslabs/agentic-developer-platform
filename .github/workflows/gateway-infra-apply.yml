@@ -85,6 +85,34 @@ jobs:
           aws --version
           terraform version | head -1
 
+      - name: Pre-create OAuth stub secret (idempotent)
+        run: |
+          SECRET_ID="adp/${{ env.TF_VAR_environment || 'dev' }}/cognito/github-oauth-credentials"
+          if aws secretsmanager describe-secret --secret-id "$SECRET_ID" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "OAuth stub secret already exists — skipping create."
+          else
+            echo "Creating OAuth stub secret with placeholder values."
+            aws secretsmanager create-secret \
+              --name "$SECRET_ID" \
+              --region "$AWS_REGION" \
+              --secret-string '{"client_id":"PLACEHOLDER","client_secret":"PLACEHOLDER"}' \
+              --description "GitHub OAuth credentials stub (replace with real values when wiring github_auth_broker)"
+          fi
+
+      - name: Ensure PyJWT Lambda layer artifact exists in state bucket
+        working-directory: modules/gateway/lambda/layers/pyjwt
+        run: |
+          set -e
+          ARTIFACT_KEY="lambda-layers/pyjwt-py313.zip"
+          if aws s3api head-object --bucket "$STATE_BUCKET" --key "$ARTIFACT_KEY" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "PyJWT layer already in s3://$STATE_BUCKET/$ARTIFACT_KEY — skipping build."
+          else
+            echo "PyJWT layer missing — building inline."
+            chmod +x build.sh
+            ./build.sh
+            aws s3 cp pyjwt-py313.zip "s3://$STATE_BUCKET/$ARTIFACT_KEY" --region "$AWS_REGION"
+          fi
+
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
@@ -122,16 +150,18 @@ jobs:
             chmod +x kubectl && sudo mv kubectl /usr/local/bin/
           fi
           aws eks update-kubeconfig --name adp-dev-eks --region us-east-1 2>/dev/null || true
-          # Find and delete any stuck rds-bootstrap jobs
-          STALE_JOBS=$(kubectl get jobs -n adp-gateway -l app=bedrockgw-dev-rds-bootstrap -o name 2>/dev/null || echo "")
-          if [ -n "$STALE_JOBS" ]; then
-            echo "Deleting stale RDS bootstrap job(s): $STALE_JOBS"
-            kubectl delete $STALE_JOBS -n adp-gateway --force --grace-period=0 2>/dev/null || true
-            # Also remove from Terraform state so it gets cleanly recreated
-            terraform state rm 'module.rds_bootstrap.kubernetes_job.grant_rds_iam' 2>/dev/null || true
-          else
-            echo "No stale RDS bootstrap jobs found."
-          fi
+          # Find and delete any stuck rds-bootstrap jobs (namespace: bedrockgw,
+          # previously adp-gateway — check both for migration period)
+          for NS in bedrockgw adp-gateway; do
+            STALE_JOBS=$(kubectl get jobs -n "$NS" -l app=bedrockgw-dev-rds-bootstrap -o name 2>/dev/null || echo "")
+            if [ -n "$STALE_JOBS" ]; then
+              echo "Deleting stale RDS bootstrap job(s) in $NS: $STALE_JOBS"
+              kubectl delete $STALE_JOBS -n "$NS" --force --grace-period=0 2>/dev/null || true
+              # Also remove from Terraform state so it gets cleanly recreated
+              terraform state rm 'module.rds_bootstrap.kubernetes_job.grant_rds_iam' 2>/dev/null || true
+            fi
+          done
+          echo "Stale RDS bootstrap job check complete."
 
       - name: Terraform Plan (destroy-safety check)
         id: plan

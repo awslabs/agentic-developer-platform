@@ -600,7 +600,7 @@ module "rds_bootstrap" {
   source = "./modules/rds-bootstrap"
 
   name_prefix            = local.name_prefix
-  namespace              = "adp-gateway"
+  namespace              = "bedrockgw"
   aws_region             = var.aws_region
   db_host                = module.rds.db_instance_address
   db_name                = var.rds_db_name
