@@ -310,7 +310,7 @@ variable "vpc_origin_keepalive_timeout" {
 variable "enable_chat_logging" {
   type        = bool
   description = "Enable async chat logging to S3 with PII scrubbing"
-  default     = false
+  default     = true
 }
 
 variable "chat_logging_scrub_level" {

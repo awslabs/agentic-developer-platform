@@ -25,3 +25,8 @@ create_test_users = true
 # Secrets Manager at adp/dev/cognito/github-oauth-credentials
 # (pre-provisioned out-of-band).
 enable_github_auth_broker = true
+
+# Issue #1013: Enable chat logging pipeline (cost-tracking EPIC).
+# Provisions S3 chat-log bucket, usage_tracker + pricing_refresh Lambdas,
+# EventBridge schedule, and S3→Lambda event notification.
+enable_chat_logging = true
