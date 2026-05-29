@@ -29,4 +29,9 @@ enable_github_auth_broker = true
 # Issue #1013: Enable chat logging pipeline (cost-tracking EPIC).
 # Provisions S3 chat-log bucket, usage_tracker + pricing_refresh Lambdas,
 # EventBridge schedule, and S3→Lambda event notification.
-enable_chat_logging = true
+#
+# TEMPORARILY DISABLED (#1038): the budget_lambda module's psycopg2 layer
+# build runs `docker` via local-exec, but the ARC runner pod doesn't have
+# Docker available, so terraform apply fails. Re-enable once #1038 ships
+# the CodeBuild-based layer build (mirroring pyjwt-layer-build.yml).
+enable_chat_logging = false
