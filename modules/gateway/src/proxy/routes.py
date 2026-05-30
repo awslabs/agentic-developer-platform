@@ -319,7 +319,7 @@ async def create_message(
 
         if request.stream:
             # Return streaming response with logging wrapper
-            stream = await proxy_service.messages(request, context, anthropic_version, beta_features)
+            stream = await proxy_service.messages(request, context, anthropic_version, beta_features, request_id=request_id)
             chat_logger = get_chat_logging_service()
 
             wrapped_stream = create_streaming_logging_wrapper(
@@ -349,7 +349,7 @@ async def create_message(
             )
         else:
             # Return regular response with logging
-            response = await proxy_service.messages(request, context, anthropic_version, beta_features)
+            response = await proxy_service.messages(request, context, anthropic_version, beta_features, request_id=request_id)
             latency_ms = (time.monotonic() - t0) * 1000
 
             # Fire-and-forget logging
@@ -554,7 +554,7 @@ async def invoke_model_by_path(
 
         # Issue #144: Time bedrock invocation
         with timings.time_segment("bedrock"):
-            response = await proxy_service.invoke_model(model_id, body, context, stream=False)
+            response = await proxy_service.invoke_model(model_id, body, context, stream=False, request_id=request_id)
         bedrock_ms = timings.get("bedrock")
 
         logger.info(
@@ -626,7 +626,7 @@ async def invoke_model_stream_by_path(
 
         # Issue #144: Time to get the stream object (includes model resolution)
         with timings.time_segment("bedrock_ttfb"):
-            stream = await proxy_service.invoke_model(model_id, body, context, stream=True)
+            stream = await proxy_service.invoke_model(model_id, body, context, stream=True, request_id=request_id)
         chat_logger = get_chat_logging_service()
 
         # Issue #143: Use shared streaming logging wrapper

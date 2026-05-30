@@ -296,3 +296,118 @@ class TestChatLogParsing:
         result = parse_chat_log(chat_log)
         assert result is not None
         assert result["team_id"] is None
+
+    def test_parse_chat_log_extracts_request_id(self):
+        """Issue #1074: Test that request_id is extracted from chat log."""
+        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
+        sys.path.insert(0, str(handler_path))
+
+        from handler import parse_chat_log
+
+        chat_log = {
+            "request_id": "abc-123-def",
+            "org_id": "acme",
+            "user_id": "user-123",
+            "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "response": {
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                }
+            },
+        }
+
+        result = parse_chat_log(chat_log)
+        assert result is not None
+        assert result["request_id"] == "abc-123-def"
+
+    def test_parse_chat_log_missing_request_id_returns_none(self):
+        """Issue #1074: request_id is optional, returns None if absent."""
+        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
+        sys.path.insert(0, str(handler_path))
+
+        from handler import parse_chat_log
+
+        chat_log = {
+            "org_id": "acme",
+            "user_id": "user-123",
+            "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "response": {
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                }
+            },
+        }
+
+        result = parse_chat_log(chat_log)
+        assert result is not None
+        assert result["request_id"] is None
+
+
+@pytest.mark.skipif(
+    not _has_psycopg2(),
+    reason="psycopg2 not installed (Lambda-only dependency)",
+)
+class TestBridgeCostToUsageLogs:
+    """Issue #1074: Tests for the bridge_cost_to_usage_logs function."""
+
+    def test_bridge_updates_row(self):
+        """Test that bridge updates usage_logs when request_id matches."""
+        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
+        sys.path.insert(0, str(handler_path))
+
+        from unittest.mock import MagicMock
+
+        from handler import bridge_cost_to_usage_logs
+
+        # Mock connection and cursor
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = 1
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.0105"))
+
+        assert result is True
+        mock_cursor.execute.assert_called_once()
+        sql_call = mock_cursor.execute.call_args
+        assert "UPDATE usage_logs" in sql_call[0][0]
+        assert sql_call[0][1] == (0.0105, "req-123")
+
+    def test_bridge_no_matching_row(self):
+        """Test that bridge returns False when no matching row found."""
+        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
+        sys.path.insert(0, str(handler_path))
+
+        from unittest.mock import MagicMock
+
+        from handler import bridge_cost_to_usage_logs
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = 0
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = bridge_cost_to_usage_logs(mock_conn, "nonexistent-req", Decimal("0.01"))
+
+        assert result is False
+
+    def test_bridge_handles_exception(self):
+        """Test that bridge handles exceptions gracefully."""
+        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
+        sys.path.insert(0, str(handler_path))
+
+        from unittest.mock import MagicMock
+
+        from handler import bridge_cost_to_usage_logs
+
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(side_effect=Exception("DB connection lost"))
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.01"))
+
+        assert result is False

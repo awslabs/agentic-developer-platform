@@ -4,6 +4,7 @@ Handles all proxy requests across OpenAI, Anthropic, and Bedrock API formats.
 """
 
 import asyncio
+import contextvars
 import json
 import time
 import uuid
@@ -33,6 +34,10 @@ from src.shared.schemas.auth import TokenContext
 from src.usage.service import UsageService
 
 logger = get_logger(__name__)
+
+# Issue #1074: Context variable for request_id so internal methods can
+# propagate it to usage_logs without threading through every signature.
+_current_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("_current_request_id", default=None)
 
 
 class ProxyService(IProxyService):
@@ -252,6 +257,7 @@ class ProxyService(IProxyService):
         context: TokenContext,
         anthropic_version: str | None = None,
         anthropic_beta: list[str] | None = None,
+        request_id: str | None = None,
     ) -> AnthropicMessagesResponse | AsyncIterator[bytes]:
         """Handle Anthropic Messages format (US-4.2).
 
@@ -260,10 +266,15 @@ class ProxyService(IProxyService):
             context: Authentication context
             anthropic_version: Version header value
             anthropic_beta: Beta features to enable
+            request_id: Optional request ID for usage_logs correlation (Issue #1074)
 
         Returns:
             Anthropic format response or SSE stream
         """
+        # Issue #1074: Set request_id in contextvar for _log_usage to pick up
+        if request_id:
+            _current_request_id.set(request_id)
+
         # Resolve model
         bedrock_model_id = self._model_resolver.resolve_model(request.model)
         self._model_resolver.check_model_access(bedrock_model_id, context)
@@ -282,6 +293,7 @@ class ProxyService(IProxyService):
         body: dict[str, Any],
         context: TokenContext,
         stream: bool = False,
+        request_id: str | None = None,
     ) -> dict[str, Any] | AsyncIterator[bytes]:
         """Handle Bedrock InvokeModel pass-through (US-4.3).
 
@@ -290,10 +302,15 @@ class ProxyService(IProxyService):
             body: Request body to pass through
             context: Authentication context
             stream: Whether to use streaming
+            request_id: Optional request ID for usage_logs correlation (Issue #1074)
 
         Returns:
             Bedrock response or SSE stream
         """
+        # Issue #1074: Set request_id in contextvar for _log_usage to pick up
+        if request_id:
+            _current_request_id.set(request_id)
+
         # Resolve model (in case it's an alias)
         bedrock_model_id = self._model_resolver.resolve_model(model_id)
         self._model_resolver.check_model_access(bedrock_model_id, context)
@@ -319,11 +336,20 @@ class ProxyService(IProxyService):
         cost_usd: float,
         latency_ms: int,
         status_code: int,
+        request_id: str | None = None,
     ) -> None:
         """Write a row to usage_logs for admin dashboard visibility.
 
+        Issue #1074: Now includes request_id (from contextvar or explicit param)
+        so the budget-usage-tracker Lambda can bridge calculated cost back to
+        usage_logs.cost_usd.
+
         Failures are swallowed to avoid impacting the proxy hot path.
         """
+        # Issue #1074: Use contextvar if no explicit request_id provided
+        if request_id is None:
+            request_id = _current_request_id.get()
+
         try:
             session_factory = get_session_factory()
             async with session_factory() as session:
@@ -336,6 +362,7 @@ class ProxyService(IProxyService):
                     cost_usd=cost_usd,
                     latency_ms=latency_ms,
                     status_code=status_code,
+                    request_id=request_id,
                 )
         except Exception as exc:
             logger.warning(

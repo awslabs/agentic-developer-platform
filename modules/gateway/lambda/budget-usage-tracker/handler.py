@@ -200,6 +200,8 @@ def parse_chat_log(chat_log: dict[str, Any]) -> dict[str, Any] | None:
         "input_tokens": int(input_tokens),
         "output_tokens": int(output_tokens),
         "timestamp": timestamp,
+        # Issue #1016: request_id for bridging cost back to usage_logs
+        "request_id": chat_log.get("request_id"),
         # Issue #249: Agent-specific fields
         "account_type": chat_log.get("account_type"),  # "service" for agents
         "agent_id": chat_log.get("agent_id"),  # Agent UUID if IAM-authenticated
@@ -261,6 +263,43 @@ def upsert_budget_usage(
         )
 
 
+def bridge_cost_to_usage_logs(conn, request_id: str, cost: Decimal) -> bool:
+    """
+    Bridge calculated cost back to the usage_logs table.
+
+    Issue #1074: Updates usage_logs.cost_usd for the matching request_id so
+    the admin dashboard cost tile (which reads SUM(usage_logs.cost_usd)) shows
+    real numbers.
+
+    Args:
+        conn: Database connection
+        request_id: The request ID linking the chat log to usage_logs
+        cost: Calculated cost in USD
+
+    Returns:
+        True if a row was updated, False otherwise
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE usage_logs
+                SET cost_usd = %s
+                WHERE request_id = %s AND cost_usd = 0
+                """,
+                (float(cost), request_id),
+            )
+            updated = cur.rowcount > 0
+            if updated:
+                logger.info(f"Bridged cost_usd=${cost} to usage_logs for request_id={request_id}")
+            else:
+                logger.debug(f"No usage_logs row found for request_id={request_id} (or already populated)")
+            return updated
+    except Exception as e:
+        logger.warning(f"Failed to bridge cost to usage_logs: {e}")
+        return False
+
+
 def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, Any]):
     """
     Process a single chat log and record usage.
@@ -268,6 +307,9 @@ def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, An
     Issue #249: Added agent-level usage tracking. When a chat log has
     account_type="service" and agent_id is present, usage is also recorded
     to the agent entity (entity_type="agent").
+
+    Issue #1074: Bridges calculated cost back to usage_logs.cost_usd so
+    the admin dashboard cost tile shows real spend.
 
     Args:
         conn: Database connection
@@ -286,6 +328,7 @@ def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, An
     input_tokens = parsed["input_tokens"]
     output_tokens = parsed["output_tokens"]
     timestamp = parsed["timestamp"]
+    request_id = parsed.get("request_id")
 
     # Issue #249: Agent-specific fields
     account_type = parsed.get("account_type")
@@ -299,6 +342,10 @@ def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, An
     total_tokens = input_tokens + output_tokens
 
     logger.info(f"Processing: model={model_id}, resolved={resolved_model_id}, input={input_tokens}, output={output_tokens}, cost=${cost}")
+
+    # Issue #1074: Bridge cost to usage_logs for dashboard visibility
+    if request_id and cost > 0:
+        bridge_cost_to_usage_logs(conn, request_id, cost)
 
     # Get period starts
     periods = get_period_starts(timestamp)
