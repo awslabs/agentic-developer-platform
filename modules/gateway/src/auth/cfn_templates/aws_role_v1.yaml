@@ -10,6 +10,9 @@ Parameters:
   GatewayRolePrincipal:
     Type: String
     Description: ARN of ADP's gateway pod IRSA role
+  GatewayAccountId:
+    Type: String
+    Description: AWS account ID that hosts the ADP platform (gateway role's home account)
   UserSessionTag:
     Type: String
     Description: ADP user ID, used as a session tag
@@ -21,25 +24,33 @@ Resources:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
-          # AssumeRole is guarded by both ExternalId (confused-deputy) and
-          # the session tag value.  TagSession is a separate statement
-          # because sts:ExternalId is not a valid condition key for that
-          # action — leaving it here makes StringEquals fail and the whole
-          # assume attempt return AccessDenied.
+          # Trust the platform ACCOUNT root but restrict to the specific gateway
+          # role via aws:PrincipalArn condition. This pattern survives role
+          # recreation (terraform replace / destroy+create) because AWS does not
+          # resolve account-level principals to internal IDs — it only resolves
+          # role/user ARNs. When the gateway role is recreated with the same
+          # name, the condition still matches without needing to update this
+          # trust policy.
+          #
+          # AssumeRole is further guarded by ExternalId (confused-deputy) and
+          # the session tag value.  TagSession is a separate statement because
+          # sts:ExternalId is not a valid condition key for that action.
           - Effect: Allow
             Principal:
-              AWS: !Ref GatewayRolePrincipal
+              AWS: !Sub "arn:aws:iam::${GatewayAccountId}:root"
             Action: sts:AssumeRole
             Condition:
               StringEquals:
                 sts:ExternalId: !Ref ExternalId
+                "aws:PrincipalArn": !Ref GatewayRolePrincipal
                 "aws:RequestTag/adp:user_id": !Ref UserSessionTag
           - Effect: Allow
             Principal:
-              AWS: !Ref GatewayRolePrincipal
+              AWS: !Sub "arn:aws:iam::${GatewayAccountId}:root"
             Action: sts:TagSession
             Condition:
               StringEquals:
+                "aws:PrincipalArn": !Ref GatewayRolePrincipal
                 "aws:RequestTag/adp:user_id": !Ref UserSessionTag
       Description: !Sub "ADP delegated role for ${Nickname} - managed by user"
       ManagedPolicyArns:

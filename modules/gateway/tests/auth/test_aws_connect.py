@@ -262,6 +262,7 @@ class TestConnectStart:
         # session tag), not the Cognito sub — see handler comment.
         assert f"param_UserSessionTag={ALICE_DB_ID}" in url
         assert "param_GatewayRolePrincipal=" in url
+        assert "param_GatewayAccountId=" in url
 
     def test_launch_url_under_browser_limit(self, alice_client):
         """URL must be under 8000 chars to fit in browser URL bars."""

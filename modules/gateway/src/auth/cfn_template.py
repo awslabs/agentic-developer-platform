@@ -44,6 +44,23 @@ def get_gateway_role_arn() -> str:
     )
 
 
+def get_gateway_account_id() -> str:
+    """Return the AWS account ID that hosts the ADP platform (gateway role's home).
+
+    Extracted from ADP_GATEWAY_ROLE_ARN (format: arn:aws:iam::ACCOUNT:role/NAME).
+    Falls back to ADP_GATEWAY_ACCOUNT_ID env var or "000000000000" for local dev.
+    """
+    explicit = os.environ.get("ADP_GATEWAY_ACCOUNT_ID", "")
+    if explicit:
+        return explicit
+    # Parse from role ARN: arn:aws:iam::ACCOUNT_ID:role/...
+    role_arn = get_gateway_role_arn()
+    parts = role_arn.split(":")
+    if len(parts) >= 5 and parts[4]:
+        return parts[4]
+    return "000000000000"
+
+
 def build_template_url(credential_id: str) -> str:  # credential_id kept for call-site compat / logging
     """Generate a pre-signed S3 URL the AWS Console can fetch the template from.
 
@@ -81,6 +98,7 @@ def build_launch_url(
 ) -> str:
     """Build a CloudFormation Quick-Create URL pointing at the pre-signed template."""
     gateway_role_arn = get_gateway_role_arn()
+    gateway_account_id = get_gateway_account_id()
 
     # Sanitize nickname for stack name (alphanumeric + hyphens only)
     stack_nickname = "".join(c if c.isalnum() or c == "-" else "-" for c in nickname)
@@ -93,6 +111,7 @@ def build_launch_url(
         "param_Nickname": nickname,
         "param_ExternalId": external_id,
         "param_GatewayRolePrincipal": gateway_role_arn,
+        "param_GatewayAccountId": gateway_account_id,
         "param_UserSessionTag": user_id,
     }
 
