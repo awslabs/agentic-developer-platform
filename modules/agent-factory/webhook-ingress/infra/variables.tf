@@ -61,9 +61,9 @@ variable "lambda_timeout" {
 }
 
 variable "lambda_artifact_bucket" {
-  description = "S3 bucket where the Package Lambda Code CI job uploads zipped Lambda artifacts. Terraform reads the zip from here on apply; the Update Lambda Function Code job is the authoritative code publisher on each deploy."
+  description = "S3 bucket where the Package Lambda Code CI job uploads zipped Lambda artifacts. Terraform reads the zip from here on apply; the Update Lambda Function Code job is the authoritative code publisher on each deploy. Set via TF_VAR_lambda_artifact_bucket in the workflow."
   type        = string
-  default     = "adp-terraform-state-879318057152"
+  default     = ""
 }
 
 variable "identity_index_table_name" {
@@ -106,7 +106,7 @@ variable "eks_cluster_name" {
 variable "agent_image" {
   description = "Container image for the agent worker (ECR URI with tag). Built by .github/workflows/agent-worker-image.yml via CodeBuild → ECR repo adp-agent-runtime."
   type        = string
-  default     = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest"
+  default     = ""
 }
 
 variable "agent_pod_deadline_seconds" {

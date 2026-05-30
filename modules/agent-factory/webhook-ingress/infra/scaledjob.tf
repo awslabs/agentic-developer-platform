@@ -105,7 +105,7 @@ locals {
             restartPolicy: Never
             containers:
               - name: agent-worker
-                image: ${var.agent_image}
+                image: ${local.agent_image}
                 env:
                   - name: AWS_REGION
                     value: ${var.aws_region}

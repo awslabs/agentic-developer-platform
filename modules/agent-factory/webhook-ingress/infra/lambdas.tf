@@ -13,7 +13,7 @@
 # =============================================================================
 
 data "aws_s3_object" "github_lambda_zip" {
-  bucket = var.lambda_artifact_bucket
+  bucket = local.lambda_artifact_bucket
   key    = "lambda-artifacts/webhook-ingress/github.zip"
 }
 
@@ -22,7 +22,7 @@ resource "aws_lambda_function" "github_webhook" {
   description   = "GitHub webhook ingress - validates and queues events"
   role          = aws_iam_role.lambda_execution.arn
 
-  s3_bucket        = var.lambda_artifact_bucket
+  s3_bucket        = local.lambda_artifact_bucket
   s3_key           = "lambda-artifacts/webhook-ingress/github.zip"
   source_code_hash = data.aws_s3_object.github_lambda_zip.etag
   handler          = "handler.handler"

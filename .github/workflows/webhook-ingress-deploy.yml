@@ -193,6 +193,8 @@ jobs:
 
       - name: Terraform Apply
         working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_lambda_artifact_bucket: ${{ env.STATE_BUCKET }}
         run: terraform apply -var-file="terraform.tfvars" -auto-approve
 
       - name: Summary
