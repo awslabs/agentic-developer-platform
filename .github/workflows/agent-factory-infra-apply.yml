@@ -85,6 +85,31 @@ jobs:
           aws --version
           terraform version | head -1
 
+      - name: Pre-create stub GitHub App secrets (idempotent)
+        run: |
+          set -e
+          GITHUB_ORG="${GITHUB_ORG:-aws-e}"
+          for role in dev pm ops; do
+            for kind in id key; do
+              SECRET_NAME="adp/${GITHUB_ORG}/gh-app-${role}-${kind}"
+              if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+                echo "✓ ${SECRET_NAME} exists"
+              else
+                if [ "$kind" = "id" ]; then
+                  VALUE="999999"
+                else
+                  VALUE="-----BEGIN RSA PRIVATE KEY-----
+          PLACEHOLDER
+          -----END RSA PRIVATE KEY-----"
+                fi
+                aws secretsmanager create-secret \
+                  --name "$SECRET_NAME" --region "$AWS_REGION" \
+                  --secret-string "$VALUE" >/dev/null
+                echo "✓ Created stub: ${SECRET_NAME}"
+              fi
+            done
+          done
+
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
