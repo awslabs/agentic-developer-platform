@@ -33,6 +33,7 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-reco
         software-properties-common \
         sudo \
         apt-transport-https \
+        xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Node.js 22.x (pinned — bump to fix CVE-2026-21636) ────────────────────────
