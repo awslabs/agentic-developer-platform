@@ -45,6 +45,14 @@ provider "kubernetes" {
   token                  = data.aws_eks_cluster_auth.main.token
 }
 
+provider "helm" {
+  kubernetes {
+    host                   = data.aws_eks_cluster.main.endpoint
+    cluster_ca_certificate = base64decode(data.aws_eks_cluster.main.certificate_authority[0].data)
+    token                  = data.aws_eks_cluster_auth.main.token
+  }
+}
+
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
@@ -70,9 +78,8 @@ locals {
   oidc_provider_arn = "arn:aws:iam::${local.account_id}:oidc-provider/${replace(local.oidc_issuer, "https://", "")}"
 }
 
-data "aws_iam_role" "keda_operator" {
-  name = var.keda_operator_role_name
-}
+# KEDA operator role is now owned by this module (keda.tf).
+# Phase 8 references it via data source by name.
 
 # Issue #575: the gateway's API Gateway invoke URL, published to SSM by
 # modules/gateway/infra/. Nullable because the param may not exist in a

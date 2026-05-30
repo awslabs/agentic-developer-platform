@@ -93,7 +93,7 @@ module "gateway_apigw" {
   tags                            = { Component = "agent-gateway" }
 }
 
-# --- KEDA ---
+# --- Gateway Agents Namespace ---
 
 resource "kubernetes_namespace" "gateway_agents" {
   metadata {
@@ -107,45 +107,41 @@ resource "kubernetes_namespace" "gateway_agents" {
 }
 
 # =============================================================================
-# KEDA Operator IAM Role (IRSA) — for SQS queue polling
+# KEDA CRD Assertion — Phase 7 (webhook-ingress) owns KEDA installation
 # =============================================================================
-# The KEDA operator needs to call sqs:GetQueueAttributes to check queue depth
-# and decide whether to scale worker pods. Without this role, KEDA falls back
-# to EC2 IMDS which doesn't exist on EKS Auto Mode, causing KEDAScalerFailed.
+# KEDA is installed by Phase 7 (modules/agent-factory/webhook-ingress/infra/).
+# This data source asserts the CRD exists at plan time — if Phase 7 hasn't run,
+# terraform plan fails with a clear error instead of a cryptic apply failure.
 #
-# This is a separate, least-privilege role — it only gets SQS read access,
-# not the full Bedrock/DDB/Secrets permissions the worker pods need.
+# Issue: #1052 — moved KEDA ownership from Phase 8 to Phase 7.
 # =============================================================================
 
-resource "aws_iam_role" "keda_operator" {
-  name = "adp-${var.environment}-keda-operator-role"
+data "kubernetes_resource" "keda_crd" {
+  api_version = "apiextensions.k8s.io/v1"
+  kind        = "CustomResourceDefinition"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Federated = local.oidc_provider_arn
-      }
-      Action = "sts:AssumeRoleWithWebIdentity"
-      Condition = {
-        StringEquals = {
-          "${replace(local.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:keda:keda-operator"
-          "${replace(local.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
-        }
-      }
-    }]
-  })
-
-  tags = {
-    Name      = "adp-${var.environment}-keda-operator-role"
-    Component = "keda"
+  metadata {
+    name = "scaledjobs.keda.sh"
   }
 }
 
-resource "aws_iam_role_policy" "keda_operator_sqs" {
-  name = "sqs-scaler-read"
-  role = aws_iam_role.keda_operator.id
+# =============================================================================
+# KEDA Operator IAM Role — discovered from Phase 7 (read-only reference)
+# =============================================================================
+# The role is owned by Phase 7's keda.tf. Phase 8 references it to:
+#   1. Allow chain-assume in gateway_agent trust policy
+#   2. Attach SQS read policy for Phase 8's gateway queues
+# =============================================================================
+
+data "aws_iam_role" "keda_operator" {
+  name = "adp-${var.environment}-keda-operator-role"
+}
+
+# Grant KEDA operator SQS read access to Phase 8's gateway queues so it can
+# poll queue depth for the chat-agent ScaledJob.
+resource "aws_iam_role_policy" "keda_operator_gateway_sqs" {
+  name = "gateway-sqs-scaler-read"
+  role = data.aws_iam_role.keda_operator.name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -163,11 +159,6 @@ resource "aws_iam_role_policy" "keda_operator_sqs" {
         ]
       },
       {
-        # KEDA's aws-eks identity provider chain-assumes the workload pod's
-        # IRSA role when checking queue depth. Allow this AssumeRole so the
-        # scaler can authenticate. The actual SQS call uses the chained role's
-        # credentials, so the gateway-agent role also needs GetQueueAttributes
-        # (it already has it via gateway_agent_sqs policy).
         Sid      = "AssumeWorkloadRole"
         Effect   = "Allow"
         Action   = "sts:AssumeRole"
@@ -175,79 +166,8 @@ resource "aws_iam_role_policy" "keda_operator_sqs" {
       }
     ]
   })
-}
 
-resource "helm_release" "keda" {
-  name             = "keda"
-  repository       = "https://kedacore.github.io/charts"
-  chart            = "keda"
-  namespace        = "keda"
-  version          = "2.16.0"
-  create_namespace = true
-  wait             = true
-  timeout          = 600
-
-  set {
-    name  = "serviceAccount.create"
-    value = "true"
-  }
-
-  set {
-    name  = "serviceAccount.name"
-    value = "keda-operator"
-  }
-
-  # IRSA annotation so KEDA can authenticate to SQS for queue-depth polling.
-  # Managed via Helm values so the annotation survives Helm reconciliation.
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = aws_iam_role.keda_operator.arn
-  }
-
-  set {
-    name  = "metricsServer.enabled"
-    value = "true"
-  }
-
-  set {
-    name  = "resources.operator.requests.cpu"
-    value = "100m"
-  }
-
-  set {
-    name  = "resources.operator.requests.memory"
-    value = "128Mi"
-  }
-
-  set {
-    name  = "resources.operator.limits.cpu"
-    value = "500m"
-  }
-
-  set {
-    name  = "resources.operator.limits.memory"
-    value = "512Mi"
-  }
-
-  # Prevent EKS Auto Mode's Karpenter from evicting the KEDA operator /
-  # metrics-apiserver / admission-webhook pods during node consolidation.
-  # Without this, the scaler can disappear at arbitrary times, breaking the
-  # 1-second SQS polling and leaving messages stuck until a new operator
-  # schedules.
-  #
-  # `values = [yamlencode(...)]` is used instead of `set {}` because the helm
-  # provider v2.x's `set` coerces the string "true" into a YAML bool, which
-  # fails Kubernetes annotation validation (annotations must be strings). The
-  # yamlencode path preserves the quoted-string typing.
-  values = [
-    yamlencode({
-      podAnnotations = {
-        keda           = { "karpenter.sh/do-not-disrupt" = "true" }
-        metricsAdapter = { "karpenter.sh/do-not-disrupt" = "true" }
-        webhooks       = { "karpenter.sh/do-not-disrupt" = "true" }
-      }
-    })
-  ]
+  depends_on = [data.kubernetes_resource.keda_crd]
 }
 
 # =============================================================================
@@ -305,9 +225,10 @@ resource "aws_iam_role" "gateway_agent" {
         # KEDA operator chain-assumes this role for SQS queue-depth polling.
         # KEDA's aws-eks identity provider authenticates as the operator SA first,
         # then assumes the workload role to make the SQS GetQueueAttributes call.
+        # Role is owned by Phase 7 (webhook-ingress/infra/keda.tf), referenced here.
         Effect = "Allow"
         Principal = {
-          AWS = aws_iam_role.keda_operator.arn
+          AWS = data.aws_iam_role.keda_operator.arn
         }
         Action = "sts:AssumeRole"
       }

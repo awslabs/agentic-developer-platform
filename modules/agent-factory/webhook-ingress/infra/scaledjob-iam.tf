@@ -34,7 +34,7 @@ resource "aws_iam_role" "agent_scaledjob" {
         # KEDA operator chain-assumes this role for SQS queue-depth polling
         Effect = "Allow"
         Principal = {
-          AWS = data.aws_iam_role.keda_operator.arn
+          AWS = aws_iam_role.keda_operator.arn
         }
         Action = "sts:AssumeRole"
       }

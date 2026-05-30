@@ -153,3 +153,17 @@ output "agent_scaledjob_sa_name" {
   description = "Service account name for the agent ScaledJob pods"
   value       = kubernetes_service_account.agent_scaledjob_sa.metadata[0].name
 }
+
+# -----------------------------------------------------------------------------
+# KEDA outputs (owned by this module as of #1052)
+# -----------------------------------------------------------------------------
+
+output "keda_operator_role_arn" {
+  description = "IAM role ARN for the KEDA operator (IRSA, SQS read-only)"
+  value       = aws_iam_role.keda_operator.arn
+}
+
+output "keda_operator_role_name" {
+  description = "IAM role name for the KEDA operator"
+  value       = aws_iam_role.keda_operator.name
+}

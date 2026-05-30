@@ -29,13 +29,13 @@ output "gateway_agent_role_name" {
 }
 
 output "keda_operator_role_arn" {
-  description = "IAM role ARN for the KEDA operator (IRSA, SQS read-only)"
-  value       = aws_iam_role.keda_operator.arn
+  description = "IAM role ARN for the KEDA operator (owned by Phase 7, referenced here)"
+  value       = data.aws_iam_role.keda_operator.arn
 }
 
 output "keda_operator_role_name" {
-  description = "IAM role name for the KEDA operator"
-  value       = aws_iam_role.keda_operator.name
+  description = "IAM role name for the KEDA operator (owned by Phase 7)"
+  value       = data.aws_iam_role.keda_operator.name
 }
 
 output "public_cfn_bucket" {

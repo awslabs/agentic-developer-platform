@@ -100,11 +100,8 @@ variable "eks_cluster_name" {
   default     = "adp-dev-eks-cluster"
 }
 
-variable "keda_operator_role_name" {
-  description = "Name of the KEDA operator IAM role (discovered as `data.aws_iam_role`). Override if the KEDA Helm release used a non-standard role name."
-  type        = string
-  default     = "adp-dev-keda-operator-role"
-}
+# keda_operator_role_name removed — KEDA operator role is now owned by this
+# module (keda.tf) rather than discovered via data source. See issue #1052.
 
 variable "agent_image" {
   description = "Container image for the agent worker (ECR URI with tag). Built by .github/workflows/agent-worker-image.yml via CodeBuild → ECR repo adp-agent-runtime."

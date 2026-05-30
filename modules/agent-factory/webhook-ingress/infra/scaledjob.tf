@@ -191,9 +191,11 @@ EOF
   }
 
   # RBAC must exist before kubectl apply runs as the runner SA.
+  # KEDA CRDs must be installed (helm_release.keda) before applying CRs.
   depends_on = [
     kubernetes_service_account.agent_scaledjob_sa,
     kubernetes_role_binding.runner_keda_manage,
+    helm_release.keda,
   ]
 }
 
@@ -223,8 +225,10 @@ EOF
   }
 
   # RBAC must exist before kubectl apply runs as the runner SA.
+  # KEDA CRDs must be installed (helm_release.keda) before applying CRs.
   depends_on = [
     null_resource.keda_trigger_auth,
     kubernetes_role_binding.runner_keda_manage,
+    helm_release.keda,
   ]
 }
