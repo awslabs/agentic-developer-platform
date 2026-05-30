@@ -11,6 +11,11 @@
 # Usage:
 #   ./platform/scripts/migrate-keda-ownership.sh [--dry-run]
 #
+# Verification:
+#   On an already-migrated account, --dry-run should be a clean no-op:
+#     ./platform/scripts/migrate-keda-ownership.sh --dry-run
+#   Expected output: "No KEDA resources found in source state."
+#
 # Prerequisites:
 #   - AWS credentials configured (same account where KEDA is deployed)
 #   - terraform CLI available
@@ -79,7 +84,7 @@ RESOURCES_TO_MOVE=(
 
 FOUND_RESOURCES=()
 for res in "${RESOURCES_TO_MOVE[@]}"; do
-  if terraform state list 2>/dev/null | grep -qx "${res}"; then
+  if terraform state show "${res}" >/dev/null 2>&1; then
     FOUND_RESOURCES+=("${res}")
     echo "  FOUND: ${res}"
   else
