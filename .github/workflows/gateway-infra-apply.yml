@@ -286,7 +286,39 @@ jobs:
         # gateway-deploy.yml's wire-gateway-alb.sh step will populate the ALB SSM
         # entries after Phase 5 deploys the gateway pod; subsequent gateway-infra-apply
         # runs will pick them up from the SSM cache and create the VPC origin.
-        run: terraform apply tfplan
+        #
+        # Tee the output so the next step can detect whether the CloudFront distribution
+        # changed and trigger an edge cache invalidation. Without invalidation, /api/*
+        # changes (e.g. enabling the VPC origin behavior) sit behind hours-old cached
+        # SPA HTML responses at the edge POPs — see deploy-instance #1062.
+        run: terraform apply tfplan 2>&1 | tee /tmp/tf-apply-output.txt
+
+      - name: Invalidate CloudFront /api/* on distribution change
+        if: steps.apply.outcome == 'success'
+        # When terraform modifies the CloudFront distribution (e.g. flips
+        # enable_vpc_origin from false to true on a fresh-account deploy),
+        # CloudFront's edge POPs keep serving cached responses from before the
+        # change for hours. /api/* requests fall through to S3's SPA fallback
+        # (200 text/html) until the cache TTL expires, masking the fix.
+        # First 1,000 invalidation paths/month are free.
+        run: |
+          if ! grep -qE 'module\.cloudfront\.aws_cloudfront_distribution\.frontend: (Modifications|Creation) complete' /tmp/tf-apply-output.txt; then
+            echo "CloudFront distribution unchanged — skipping invalidation."
+            exit 0
+          fi
+          DIST_ID=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT:-dev}/gateway/cloudfront-id" \
+            --query Parameter.Value --output text 2>/dev/null || echo "")
+          if [ -z "$DIST_ID" ] || [ "$DIST_ID" = "None" ]; then
+            echo "::warning::No SSM cloudfront-id — skipping invalidation."
+            exit 0
+          fi
+          echo "Invalidating /api/* on distribution $DIST_ID"
+          aws cloudfront create-invalidation \
+            --distribution-id "$DIST_ID" \
+            --paths "/api/*" \
+            --query 'Invalidation.{Id:Id,Status:Status}' \
+            --output table
 
       - name: Summary
         if: always()
