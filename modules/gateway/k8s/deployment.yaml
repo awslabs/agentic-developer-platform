@@ -72,6 +72,17 @@ spec:
                   name: bedrockgateway-secrets
                   key: token-secret-key
                   optional: true  # Optional for local dev; required in production
+            # Shared secret used by platform-pod scripts (assume-customer-creds.py
+            # via load-deploy-config.sh) to authenticate /internal/v1/* calls.
+            # TEMPORARY — auth_deps.py:43 prefers IRSA via API GW (X-Caller-Identity);
+            # this fallback path is what unblocks the Phase 1 apply of EPIC #1107
+            # and gets removed in Phase 3 (#1110) once both clients use SigV4.
+            - name: BG_INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bedrockgateway-secrets
+                  key: internal-api-key
+                  optional: true
             # Issue #144: Tracing configuration
             # X-Ray tracing via CloudWatch Observability addon's OTLP receiver
             - name: BG_OTEL_ENABLED
