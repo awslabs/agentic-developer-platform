@@ -289,16 +289,6 @@ resource "aws_cloudfront_distribution" "frontend" {
 
   # Wait for OAC to be created before distribution
   depends_on = [aws_cloudfront_origin_access_control.frontend]
-
-  # The API origin (ALB/VPC Origin) and /api/* cache behavior are managed
-  # dynamically by the backend-deploy workflow because the Ingress ALB is
-  # created by EKS, not Terraform. Ignore changes to prevent drift.
-  lifecycle {
-    ignore_changes = [
-      origin,
-      ordered_cache_behavior,
-    ]
-  }
 }
 
 # Data source for AWS managed CachingOptimized cache policy
