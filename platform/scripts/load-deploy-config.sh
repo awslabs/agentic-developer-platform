@@ -151,6 +151,29 @@ if [ -n "$ADP_CUSTOMER_ACCOUNT_ID" ]; then
   export ADP_GATEWAY_URL
   export ADP_DEPLOY_TARGET_ACCOUNT="$ADP_CUSTOMER_ACCOUNT_ID"
 
+  # Resolve the platform-account API Gateway invoke URL BEFORE the assume
+  # swaps creds — once we hold customer-account creds, this SSM read would
+  # hit the customer's SSM (wrong account). assume-customer-creds.py uses
+  # this to SigV4-sign /internal/v1/credential-assume-role against the
+  # platform's API GW (per EPIC #1107 Phase 2).
+  #
+  # FAIL FAST if missing: per EPIC #1107 the SigV4 path is now the only
+  # supported auth. Falling back to shared-secret would mask IAM
+  # misconfiguration and silently use a deprecated path.
+  if [ -z "${ADP_GATEWAY_API_URL:-}" ]; then
+    ADP_GATEWAY_API_URL=$(aws ssm get-parameter \
+      --name "/adp/${ADP_ENVIRONMENT}/gateway/apigw-invoke-url" \
+      --query Parameter.Value --output text 2>/dev/null || echo "")
+    if [ -z "$ADP_GATEWAY_API_URL" ]; then
+      echo "ERROR: SSM /adp/${ADP_ENVIRONMENT}/gateway/apigw-invoke-url is empty." >&2
+      echo "  This SSM param is published by gateway-infra terraform; if missing," >&2
+      echo "  re-apply gateway-infra against the platform account, OR override" >&2
+      echo "  ADP_GATEWAY_API_URL in env. See EPIC #1107." >&2
+      return 1
+    fi
+    export ADP_GATEWAY_API_URL
+  fi
+
   # In cross-account mode, Terraform state lives in the CUSTOMER's bucket,
   # not the platform's. The customer's bootstrap phase created this bucket
   # in their account, and the assumed credentials have access to it.
