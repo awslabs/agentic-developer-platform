@@ -115,11 +115,11 @@ variable "internal_alb_dns" {
 
 variable "vpc_origin_read_timeout" {
   type        = number
-  description = "Origin read timeout in seconds for VPC Origin (max 180). Set to 180 for SSE streaming support."
-  default     = 180
+  description = "Origin read timeout in seconds for VPC Origin. CloudFront caps this at 60s for VPC origins (custom origins allow up to 180s, but VPC origins are stricter — confirmed live: AWS rejects values >60 with InvalidOriginReadTimeout)."
+  default     = 60
   validation {
-    condition     = var.vpc_origin_read_timeout >= 1 && var.vpc_origin_read_timeout <= 180
-    error_message = "VPC Origin read timeout must be between 1 and 180 seconds."
+    condition     = var.vpc_origin_read_timeout >= 1 && var.vpc_origin_read_timeout <= 60
+    error_message = "VPC Origin read timeout must be between 1 and 60 seconds (AWS API limit)."
   }
 }
 

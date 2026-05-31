@@ -293,8 +293,8 @@ variable "alb_security_group_ids" {
 
 variable "vpc_origin_read_timeout" {
   type        = number
-  description = "Origin read timeout in seconds for API requests (applies to both custom origin and VPC origin). Set to 180 for SSE streaming support."
-  default     = 180
+  description = "Origin read timeout in seconds for VPC Origin. CloudFront caps this at 60s for VPC origins (custom origins allow up to 180s)."
+  default     = 60
 }
 
 variable "vpc_origin_keepalive_timeout" {
