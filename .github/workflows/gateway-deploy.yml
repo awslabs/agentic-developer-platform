@@ -276,6 +276,7 @@ jobs:
           kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=300s
 
       - name: Wire ALB to CloudFront (Section 6 — first deploy)
+        id: wire_alb
         # On first deploy, the Ingress manifest creates an internal ALB.
         # Discover it and cache to SSM so a subsequent gateway-infra-apply
         # (or the next deploy) can wire it as a CloudFront VPC origin.
@@ -287,12 +288,35 @@ jobs:
             --query Parameter.Value --output text 2>/dev/null || echo "")
           if [ -n "$CACHED" ] && [ "$CACHED" != "pending" ] && [ "$CACHED" != "None" ]; then
             echo "ALB already wired (${CACHED}). Skipping discovery."
+            echo "newly_wired=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Run discovery with a short timeout (2 min instead of 10)
           # If it fails, that's OK — gateway-infra-apply will handle it.
-          timeout 120 bash platform/scripts/wire-gateway-alb.sh || \
-            echo "::warning::ALB not yet active. Run gateway-infra-apply to complete CloudFront wiring."
+          if timeout 120 bash platform/scripts/wire-gateway-alb.sh; then
+            echo "newly_wired=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::ALB not yet active. gateway-infra-apply will discover it on next run."
+            echo "newly_wired=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger gateway-infra re-apply (flip enable_vpc_origin=true)
+        if: success() && steps.wire_alb.outputs.newly_wired == 'true'
+        run: |
+          # ALB was just wired this run; gateway-infra needs a re-apply so
+          # CloudFront picks up the ALB ARN from SSM and creates the /api/*
+          # ordered_cache_behavior (enable_vpc_origin flips from false to true).
+          gh workflow run gateway-infra-apply.yml \
+            --field customer_account_id="${CUSTOMER_ACCOUNT_ID}" \
+            --field customer_aws_label="${CUSTOMER_AWS_LABEL}" \
+            --field customer_user_id="${CUSTOMER_USER_ID}" \
+            --field environment="${ENVIRONMENT}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CUSTOMER_ACCOUNT_ID: ${{ inputs.customer_account_id }}
+          CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label }}
+          CUSTOMER_USER_ID: ${{ inputs.customer_user_id }}
+          ENVIRONMENT: ${{ inputs.environment || 'dev' }}
 
   deploy-frontend:
     name: Build and Deploy Frontend
