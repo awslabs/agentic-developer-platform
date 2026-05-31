@@ -709,7 +709,8 @@ def _fetch_assumed_aws_credentials(*, user_id: str, agent_id: str, task_id: str)
     if not gw_client.is_configured:
         raise GatewayCredentialError(
             "Gateway credential client not configured. "
-            "Set VAULT_GATEWAY_URL and VAULT_INTERNAL_API_KEY."
+            "Set ADP_GATEWAY_ENDPOINT (preferred, uses IRSA/SigV4) "
+            "or VAULT_GATEWAY_URL + VAULT_INTERNAL_API_KEY (legacy)."
         )
 
     return gw_client.assume_role(

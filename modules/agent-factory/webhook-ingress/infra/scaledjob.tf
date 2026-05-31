@@ -120,13 +120,6 @@ locals {
                   # apply does not wipe these). See scripts/migrate-tenant-aws-creds-to-user.py.
                   - name: ENABLE_USER_CREDENTIALS
                     value: "1"
-                  - name: VAULT_GATEWAY_URL
-                    value: http://bedrockgateway.adp-gateway
-                  - name: VAULT_INTERNAL_API_KEY
-                    valueFrom:
-                      secretKeyRef:
-                        name: vault-internal-api-key
-                        key: VAULT_INTERNAL_API_KEY
                   # Phase 3 cutover: route Bedrock through the platform gateway.
                   # Bedrock calls go via sigv4-proxy → API GW /agent/* → gateway pod
                   # → Bedrock with platform IRSA (platform billing, gateway-mediated
