@@ -107,6 +107,12 @@ variable "internal_alb_arn" {
   default     = ""
 }
 
+variable "internal_alb_dns" {
+  type        = string
+  description = "DNS hostname of the internal ALB. Used as `domain_name` for the VPC origin (must not contain colons — see PR #1090)."
+  default     = ""
+}
+
 variable "vpc_origin_read_timeout" {
   type        = number
   description = "Origin read timeout in seconds for VPC Origin (max 180). Set to 180 for SSE streaming support."

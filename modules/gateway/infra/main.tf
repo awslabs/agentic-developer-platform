@@ -512,6 +512,7 @@ module "cloudfront" {
   # after the Ingress ALB is created by EKS
   enable_vpc_origin            = var.enable_vpc_origin
   internal_alb_arn             = var.internal_alb_arn
+  internal_alb_dns             = var.internal_alb_dns
   vpc_origin_read_timeout      = var.vpc_origin_read_timeout
   vpc_origin_keepalive_timeout = var.vpc_origin_keepalive_timeout
 }

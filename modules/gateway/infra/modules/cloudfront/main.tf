@@ -175,13 +175,13 @@ resource "aws_cloudfront_distribution" "frontend" {
 
   # VPC Origin for API backend (internal ALB - VPC Origin)
   # This is used when the ALB is internal and CloudFront connects via VPC Origin
-  # NOTE: VPC Origins are referenced by their ARN in the domain_name field
-  # and configured with vpc_origin_config block
+  # NOTE: domain_name must be the ALB DNS name (NOT the VPC origin ARN — the
+  # CloudFront API rejects ARN-shaped strings here with "origin name cannot
+  # contain a colon"). The actual VPC routing is enforced by vpc_origin_config.
   dynamic "origin" {
     for_each = local.use_vpc_origin ? [1] : []
     content {
-      # For VPC Origin, domain_name is the VPC Origin ARN
-      domain_name = aws_cloudfront_vpc_origin.api[0].arn
+      domain_name = var.internal_alb_dns
       origin_id   = local.vpc_origin_id
 
       # VPC Origin specific configuration
