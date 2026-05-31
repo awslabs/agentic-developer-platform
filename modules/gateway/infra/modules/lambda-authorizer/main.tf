@@ -160,6 +160,67 @@ resource "aws_dynamodb_table_item" "test_agent" {
   }
 }
 
+# Issue #1108: Seed deploy-runner entry for platform SigV4 calls to /internal/*
+resource "aws_dynamodb_table_item" "deploy_runner" {
+  table_name = aws_dynamodb_table.agent_registry.name
+  hash_key   = aws_dynamodb_table.agent_registry.hash_key
+
+  item = jsonencode({
+    agent_id = {
+      S = "00000000-0000-0000-0000-000000000002"
+    }
+    role_arn = {
+      S = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/adp-${var.environment}-agent-runner-role"
+    }
+    agent_name = {
+      S = "deploy-runner"
+    }
+    org_id = {
+      S = "platform"
+    }
+    team_id = {
+      S = "platform"
+    }
+    owner = {
+      S = "system"
+    }
+    scope = {
+      S = "platform"
+    }
+    budget_config_id = {
+      S = ""
+    }
+    allowed_models = {
+      SS = ["claude-sonnet"]
+    }
+    status = {
+      S = "active"
+    }
+    description = {
+      S = "Platform deploy runner — calls /internal/v1/credential-assume-role on customer-deploy workflows"
+    }
+    image_uri = {
+      S = ""
+    }
+    code_repo = {
+      S = ""
+    }
+    workflow_name = {
+      S = ""
+    }
+    created_at = {
+      S = timestamp()
+    }
+    updated_at = {
+      S = timestamp()
+    }
+  })
+
+  lifecycle {
+    ignore_changes = [item]
+  }
+}
+
 # =============================================================================
 # Lambda Layer for PyJWT (S3-sourced — Issue #408)
 # =============================================================================

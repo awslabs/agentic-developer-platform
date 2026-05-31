@@ -239,6 +239,37 @@ resource "aws_api_gateway_rest_api" "main" {
           }
         }
       }
+      # Issue #1108: Internal platform route — AWS_IAM auth (deploy-runner)
+      "/internal/{proxy+}" = {
+        x-amazon-apigateway-any-method = {
+          security                   = [{ sigv4 = [] }]
+          "x-amazon-apigateway-auth" = { type = "AWS_IAM" }
+          parameters = [
+            {
+              name     = "proxy"
+              in       = "path"
+              required = true
+              type     = "string"
+            }
+          ]
+          x-amazon-apigateway-integration = {
+            type                 = "http_proxy"
+            httpMethod           = "ANY"
+            uri                  = "http://${var.internal_alb_dns}/{proxy}"
+            timeoutInMillis      = var.integration_timeout_ms
+            responseTransferMode = "STREAM"
+            passthroughBehavior  = "when_no_match"
+            connectionType       = "VPC_LINK"
+            connectionId         = aws_apigatewayv2_vpc_link.main.id
+            integrationTarget    = var.internal_alb_arn
+            requestParameters = {
+              "integration.request.path.proxy"               = "method.request.path.proxy"
+              "integration.request.header.X-Caller-Identity" = "context.identity.userArn"
+            }
+            cacheKeyParameters = ["method.request.path.proxy"]
+          }
+        }
+      }
       },
       # Issue #1011: GitHub Auth Broker route — Lambda proxy integration
       # Only included when broker_lambda_invoke_arn is provided.

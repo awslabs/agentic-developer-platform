@@ -237,10 +237,13 @@ resource "aws_iam_role_policy" "runner_permissions" {
         Resource = "*"
       },
       {
-        Sid      = "ExecuteApiInvokeGateway"
-        Effect   = "Allow"
-        Action   = ["execute-api:Invoke"]
-        Resource = "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/*/agent/*"
+        Sid    = "ExecuteApiInvokeGateway"
+        Effect = "Allow"
+        Action = ["execute-api:Invoke"]
+        Resource = [
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/*/agent/*",
+          "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*/*/*/internal/*"
+        ]
       }
     ]
   })
