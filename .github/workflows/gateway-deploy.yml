@@ -371,7 +371,11 @@ jobs:
           echo "VITE_COGNITO_USER_POOL_ID=$POOL_ID" >> "$GITHUB_OUTPUT"
           echo "VITE_COGNITO_CLIENT_ID=$CLIENT_ID" >> "$GITHUB_OUTPUT"
           echo "VITE_COGNITO_DOMAIN=$DOMAIN" >> "$GITHUB_OUTPUT"
-          echo "VITE_GITHUB_AUTH_BROKER_URL=${BROKER}/auth/github" >> "$GITHUB_OUTPUT"
+          # Terraform already appends /auth/github to the SSM value (per #1011) so the
+          # broker URL stored in SSM is .../dev/auth/github. The frontend (auth.ts)
+          # then appends /start. Don't append /auth/github here — that produces
+          # the doubled path .../auth/github/auth/github/start, breaking login.
+          echo "VITE_GITHUB_AUTH_BROKER_URL=${BROKER}" >> "$GITHUB_OUTPUT"
           echo "VITE_AGENT_WS_URL=$WS_URL" >> "$GITHUB_OUTPUT"
 
       - name: Build frontend
