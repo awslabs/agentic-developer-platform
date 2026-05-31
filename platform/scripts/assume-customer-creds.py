@@ -12,6 +12,8 @@ Inputs (from environment, populated by load-deploy-config.sh):
   ADP_CUSTOMER_AWS_LABEL     — vaulted credential label (e.g. "Dep-testing")
   ADP_CUSTOMER_USER_ID       — Postgres users.id for the linked-account owner
   ADP_GATEWAY_URL            — gateway base URL (default: http://bedrockgateway.adp-gateway)
+  ADP_GATEWAY_API_URL        — API Gateway invoke URL for SigV4 path (preferred;
+                               when set, uses IRSA credentials instead of shared secret)
   ADP_INTERNAL_API_KEY       — internal API key (default: read from Secrets Manager
                                at adp/<env>/gateway/internal-api-key)
   ADP_ENVIRONMENT            — env name, used to compute the secret path
@@ -130,6 +132,56 @@ def _request_with_retry(endpoint: str, req: "Request") -> dict:
     fail(f"All {MAX_RETRIES} attempts failed. Last error: {last_exc}", code=2)
 
 
+def _sigv4_post(url: str, body: dict) -> dict:
+    """Make a SigV4-signed POST request to API Gateway.
+
+    Uses the pod's IRSA credentials (available via boto3's credential chain).
+    Mirrors the implementation in adp_cred/client.py:_sigv4_request.
+    """
+    try:
+        import botocore.auth
+        import botocore.awsrequest
+        import botocore.session
+    except ImportError:
+        fail("botocore is required for SigV4 auth. Install boto3.", code=2)
+
+    session = botocore.session.get_session()
+    credentials = session.get_credentials()
+    if credentials is None:
+        fail(
+            "No AWS credentials available for SigV4 signing. "
+            "Ensure IRSA is configured or AWS credentials are present.",
+            code=2,
+        )
+    credentials = credentials.get_frozen_credentials()
+
+    headers = {"Content-Type": "application/json"}
+    data = json.dumps(body).encode()
+
+    aws_request = botocore.awsrequest.AWSRequest(
+        method="POST",
+        url=url,
+        headers=headers,
+        data=data,
+    )
+
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    signer = botocore.auth.SigV4Auth(credentials, "execute-api", region)
+    signer.add_auth(aws_request)
+
+    # Debug: log the auth header prefix to confirm SigV4 is active
+    auth_header = dict(aws_request.headers).get("Authorization", "")
+    print(
+        f"SigV4 auth header prefix: {auth_header[:40]}...",
+        file=sys.stderr,
+    )
+
+    # Convert to urllib Request and send with retry
+    signed_headers = dict(aws_request.headers)
+    req = Request(url, data=data, headers=signed_headers, method="POST")
+    return _request_with_retry(url, req)
+
+
 def main() -> int:
     customer_account = os.environ.get("ADP_CUSTOMER_ACCOUNT_ID", "")
     if not customer_account:
@@ -144,11 +196,7 @@ def main() -> int:
         )
 
     label = os.environ.get("ADP_CUSTOMER_AWS_LABEL", "")  # may be empty — gateway picks
-    gateway_url = os.environ.get(
-        "ADP_GATEWAY_URL", "http://bedrockgateway.adp-gateway"
-    ).rstrip("/")
     env = os.environ.get("ADP_ENVIRONMENT", "dev")
-    api_key = load_internal_api_key(env)
 
     payload = {
         "user_id": user_id,
@@ -159,18 +207,28 @@ def main() -> int:
         "purpose": "deploy via load-deploy-config",
     }
 
-    endpoint = f"{gateway_url}/internal/v1/credential-assume-role"
-    req = Request(
-        endpoint,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "X-Internal-Api-Key": api_key,
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-
-    body = _request_with_retry(endpoint, req)
+    api_gw_url = os.environ.get("ADP_GATEWAY_API_URL", "").rstrip("/")
+    if api_gw_url:
+        # New path: SigV4 via API Gateway (preferred — see EPIC #1107)
+        endpoint = f"{api_gw_url}/internal/v1/credential-assume-role"
+        body = _sigv4_post(endpoint, payload)
+    else:
+        # Legacy fallback: shared-secret to in-cluster URL (kept until #1107 Phase 3)
+        gateway_url = os.environ.get(
+            "ADP_GATEWAY_URL", "http://bedrockgateway.adp-gateway"
+        ).rstrip("/")
+        api_key = load_internal_api_key(env)
+        endpoint = f"{gateway_url}/internal/v1/credential-assume-role"
+        req = Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "X-Internal-Api-Key": api_key,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        body = _request_with_retry(endpoint, req)
 
     # Validate response shape
     for required in ("access_key_id", "secret_access_key", "session_token"):
