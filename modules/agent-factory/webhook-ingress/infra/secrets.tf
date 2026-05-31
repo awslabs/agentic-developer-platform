@@ -54,3 +54,41 @@ resource "aws_secretsmanager_secret_version" "github_app_key" {
     ignore_changes = [secret_string]
   }
 }
+
+# =============================================================================
+# K8s Secret — vault-internal-api-key (consumed by KEDA-spawned agent pods)
+# =============================================================================
+# Shared secret between the gateway pod (validates inbound /internal/v1/* calls)
+# and the KEDA-spawned agent pods (sources it as VAULT_INTERNAL_API_KEY env).
+# Without this secret, the ScaledJob spec is invalid and agent pods don't spawn —
+# the failure mode flagged on deploy-instance #1062.
+#
+# The Secrets Manager value is created + populated by gateway-deploy.yml during
+# Phase 5 (alongside token-secret-key), so by the time this Phase 7 terraform
+# runs the value already exists. We read it via a data source so the K8s Secret
+# rotates automatically when the operator rotates the gateway-side secret.
+data "aws_secretsmanager_secret" "internal_api_key" {
+  name = "adp/${var.environment}/gateway/internal-api-key"
+}
+
+data "aws_secretsmanager_secret_version" "internal_api_key" {
+  secret_id = data.aws_secretsmanager_secret.internal_api_key.id
+}
+
+resource "kubernetes_secret" "vault_internal_api_key" {
+  metadata {
+    name      = "vault-internal-api-key"
+    namespace = kubernetes_namespace.adp_agents.metadata[0].name
+
+    labels = {
+      "app.kubernetes.io/managed-by" = "terraform"
+      "app.kubernetes.io/part-of"    = "adp-agent-factory"
+    }
+  }
+
+  type = "Opaque"
+
+  data = {
+    VAULT_INTERNAL_API_KEY = data.aws_secretsmanager_secret_version.internal_api_key.secret_string
+  }
+}

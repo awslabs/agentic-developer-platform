@@ -72,6 +72,17 @@ spec:
                   name: bedrockgateway-secrets
                   key: token-secret-key
                   optional: true  # Optional for local dev; required in production
+            # Shared secret with KEDA-spawned agent pods. Validates inbound
+            # /internal/v1/credential-assume-role calls from agents. Created by
+            # gateway-deploy.yml from AWS Secrets Manager; the same value seeds
+            # the vault-internal-api-key K8s secret in the adp-agents namespace
+            # via webhook-ingress terraform.
+            - name: BG_INTERNAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bedrockgateway-secrets
+                  key: internal-api-key
+                  optional: true
             # Issue #144: Tracing configuration
             # X-Ray tracing via CloudWatch Observability addon's OTLP receiver
             - name: BG_OTEL_ENABLED
