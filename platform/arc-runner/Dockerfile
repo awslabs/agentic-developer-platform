@@ -53,6 +53,14 @@ RUN apt-get update \
     && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12 - --break-system-packages \
     && python3 --version && pip3 --version
 
+# ── boto3 (required by assume-customer-creds.py for SigV4 signing — EPIC #1107)
+# botocore.auth.SigV4Auth signs the platform-pod's call to
+# /internal/v1/credential-assume-role on the platform API Gateway. Without this,
+# every cross-account deploy fails at Load deployment config with
+# "botocore is required for SigV4 auth. Install boto3."
+RUN pip3 install --no-cache-dir --break-system-packages boto3==1.35.99 \
+    && python3 -c "import boto3, botocore.auth; print(f'boto3={boto3.__version__} botocore={botocore.__version__}')"
+
 # ── AWS CLI v2 ──────────────────────────────────────────────────────────────
 RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip \
     && unzip -q /tmp/awscli.zip -d /tmp \
