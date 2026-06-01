@@ -24,15 +24,24 @@ fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
 if [ -z "$GITHUB_ORG" ]; then
   echo "Usage: $0 <github-org> [extra-repo1 extra-repo2 ...]"
   echo ""
-  echo "Creates 3 GitHub Apps for ADP Agent Factory:"
-  echo "  adp-agent-dev  (developer + architect)"
-  echo "  adp-agent-pm   (project manager)"
-  echo "  adp-agent-ops  (reviewer + operations)"
+  echo "Creates 3 GitHub Apps + 1 GitHub OAuth App for ADP:"
+  echo "  GitHub Apps (server-to-server auth for agents):"
+  echo "    adp-agent-dev  (developer + architect)"
+  echo "    adp-agent-pm   (project manager)"
+  echo "    adp-agent-ops  (reviewer + operations)"
+  echo "  GitHub OAuth App (user login on the SPA):"
+  echo "    adp-<org>     (used by the auth broker — adp/<env>/cognito/github-oauth-credentials)"
   echo ""
-  echo "Opens browser for each app. You click 'Create', then 'Generate a private key'."
-  echo "The script finds the downloaded .pem and stores it in Secrets Manager."
+  echo "Opens browser for each. You click 'Create' / 'Register', paste IDs back,"
+  echo "the script finds the downloaded .pem (for GitHub Apps) and stores everything"
+  echo "in AWS Secrets Manager."
   exit 1
 fi
+
+# Optional environment for the OAuth App secret path (default dev).
+# OAuth App is per-environment because callback URL differs (dev/staging/prod
+# each have their own API Gateway invoke URL).
+ADP_ENV="${ADP_ENV:-dev}"
 
 command -v aws &>/dev/null || fail "AWS CLI not installed"
 
@@ -232,6 +241,102 @@ for i in 0 1 2; do
   ok "App $APP_NAME complete (ID: $APP_ID)"
 done
 
+# =============================================================================
+# Step 4 — GitHub OAuth App (for SPA login via the auth broker)
+# =============================================================================
+# A GitHub OAuth App is a *separate* primitive from a GitHub App:
+#   - GitHub App     → server-to-server (agents reading/writing repos)
+#   - OAuth App      → user-driven login flow on the SPA
+#
+# The auth broker Lambda (modules/gateway/lambda/github-auth-broker) reads
+# the OAuth client_id + client_secret from:
+#   adp/${ADP_ENV}/cognito/github-oauth-credentials
+#
+# Without this, login to the ADP UI fails with "client_id parameter is invalid"
+# because gateway-infra-apply.yml seeds the secret with PLACEHOLDER values.
+
+echo ""
+echo -e "${BLUE}━━━ App 4/4: ${GITHUB_ORG}-adp-oauth (GitHub OAuth App for SPA login) ━━━${NC}"
+echo ""
+
+# Check if already configured (non-placeholder values).
+OAUTH_SECRET_ID="adp/${ADP_ENV}/cognito/github-oauth-credentials"
+EXISTING_OAUTH=$(aws secretsmanager get-secret-value --secret-id "$OAUTH_SECRET_ID" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+EXISTING_CLIENT_ID=$(echo "$EXISTING_OAUTH" | python3 -c 'import sys, json; d=json.load(sys.stdin); print(d.get("client_id",""))' 2>/dev/null || echo "")
+
+if [ -n "$EXISTING_CLIENT_ID" ] && [ "$EXISTING_CLIENT_ID" != "PLACEHOLDER" ]; then
+  ok "OAuth App already configured (client_id=${EXISTING_CLIENT_ID})"
+else
+  # Resolve the API Gateway invoke URL from SSM so we know the callback URL.
+  APIGW_URL=$(aws ssm get-parameter --name "/adp/${ADP_ENV}/gateway/apigw-invoke-url" --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+
+  if [ -z "$APIGW_URL" ]; then
+    warn "SSM /adp/${ADP_ENV}/gateway/apigw-invoke-url is empty."
+    warn "Run gateway-infra-apply.yml against this account first, then re-run this script."
+    warn "Skipping OAuth App creation for now."
+  else
+    CALLBACK_URL="${APIGW_URL}/auth/github/callback"
+    HOMEPAGE_URL=$(aws ssm get-parameter --name "/adp/${ADP_ENV}/gateway/cloudfront-domain" --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null | sed 's|^|https://|' || echo "")
+    [ -z "$HOMEPAGE_URL" ] || [ "$HOMEPAGE_URL" = "https://" ] && HOMEPAGE_URL="$CALLBACK_URL"
+
+    # Pre-fill the OAuth App registration form with name + URLs.
+    OAUTH_APP_NAME="${GITHUB_ORG}-adp-oauth"
+    OAUTH_URL="https://github.com/organizations/${GITHUB_ORG}/settings/applications/new"
+    OAUTH_URL="${OAUTH_URL}?oauth_application[name]=${OAUTH_APP_NAME}"
+    OAUTH_URL="${OAUTH_URL}&oauth_application[url]=${HOMEPAGE_URL}"
+    OAUTH_URL="${OAUTH_URL}&oauth_application[callback_url]=${CALLBACK_URL}"
+
+    echo "  Opening browser to register $OAUTH_APP_NAME..."
+    echo ""
+    echo "  In the browser:"
+    echo "    1. Click 'Register application'"
+    echo "    2. On the next page, copy the 'Client ID' shown"
+    echo "    3. Click 'Generate a new client secret', copy the value (only shown once)"
+    echo ""
+    echo "  Pre-filled values:"
+    echo "    Application name:           $OAUTH_APP_NAME"
+    echo "    Homepage URL:               $HOMEPAGE_URL"
+    echo "    Authorization callback URL: $CALLBACK_URL"
+    echo ""
+
+    open_url "$OAUTH_URL"
+
+    echo -n "  Enter the OAuth Client ID: "
+    read -r OAUTH_CLIENT_ID
+    [ -z "$OAUTH_CLIENT_ID" ] && fail "No Client ID provided"
+
+    # Read secret without echoing
+    echo -n "  Enter the OAuth Client Secret (input hidden): "
+    stty -echo
+    read -r OAUTH_CLIENT_SECRET
+    stty echo
+    echo ""
+    [ -z "$OAUTH_CLIENT_SECRET" ] && fail "No Client Secret provided"
+
+    # Store as JSON, format the broker reads.
+    OAUTH_JSON=$(python3 -c 'import json,sys; print(json.dumps({"client_id":sys.argv[1],"client_secret":sys.argv[2]}))' "$OAUTH_CLIENT_ID" "$OAUTH_CLIENT_SECRET")
+    store_secret "$OAUTH_SECRET_ID" "$OAUTH_JSON"
+    ok "Stored OAuth credentials in $OAUTH_SECRET_ID"
+
+    # Force the broker Lambda to drop its cached secret on next cold start.
+    # The handler caches _github_client_secret module-level. Bumping an env
+    # var triggers a new execution context.
+    BROKER_FN="bedrockgw-${ADP_ENV}-github-auth-broker"
+    if aws lambda get-function --function-name "$BROKER_FN" --region "$AWS_REGION" >/dev/null 2>&1; then
+      CURRENT_ENV=$(aws lambda get-function-configuration --function-name "$BROKER_FN" --region "$AWS_REGION" --query 'Environment.Variables' --output json 2>/dev/null || echo "{}")
+      NEW_ENV=$(echo "$CURRENT_ENV" | python3 -c 'import json,sys,time; e=json.load(sys.stdin) or {}; e["OAUTH_SECRET_REFRESH_AT"]=str(int(time.time())); print(json.dumps({"Variables":e}))')
+      aws lambda update-function-configuration \
+        --function-name "$BROKER_FN" \
+        --environment "$NEW_ENV" \
+        --region "$AWS_REGION" >/dev/null 2>&1 \
+        && ok "Forced broker Lambda cold-start so it picks up the new secret" \
+        || warn "Could not bump broker env (next natural cold start within ~15 min will pick up the secret)"
+    else
+      warn "Broker Lambda $BROKER_FN not deployed yet; the secret will be picked up on first cold start"
+    fi
+  fi
+fi
+
 # Summary
 echo ""
 echo "========================================="
@@ -270,15 +375,26 @@ for i in 0 1 2; do
 done
 
 echo ""
+echo "OAuth App:"
+OAUTH_CHECK=$(aws secretsmanager get-secret-value --secret-id "adp/${ADP_ENV}/cognito/github-oauth-credentials" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+OAUTH_CID=$(echo "$OAUTH_CHECK" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("client_id",""))' 2>/dev/null || echo "")
+if [ -n "$OAUTH_CID" ] && [ "$OAUTH_CID" != "PLACEHOLDER" ]; then
+  ok "adp/${ADP_ENV}/cognito/github-oauth-credentials: client_id=$OAUTH_CID"
+else
+  warn "adp/${ADP_ENV}/cognito/github-oauth-credentials: PLACEHOLDER or missing — login will not work"
+  ALL_GOOD=false
+fi
+
+echo ""
 if [ "$ALL_GOOD" = true ]; then
   echo -e "${GREEN}=========================================${NC}"
-  echo -e "${GREEN}All GitHub Apps created and installed${NC}"
+  echo -e "${GREEN}All GitHub Apps + OAuth App configured${NC}"
   echo -e "${GREEN}=========================================${NC}"
   echo ""
   echo "Next: ./platform/scripts/deploy-all.sh"
 else
   echo -e "${RED}=========================================${NC}"
-  echo -e "${RED}Some apps are missing or not installed${NC}"
+  echo -e "${RED}Some apps are missing or not configured${NC}"
   echo -e "${RED}=========================================${NC}"
   echo ""
   echo "Re-run this script to fix: $0 $GITHUB_ORG"
