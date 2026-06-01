@@ -255,7 +255,11 @@ resource "aws_api_gateway_rest_api" "main" {
           x-amazon-apigateway-integration = {
             type                 = "http_proxy"
             httpMethod           = "ANY"
-            uri                  = "http://${var.internal_alb_dns}/{proxy}"
+            # Preserve the /internal prefix when forwarding to the gateway pod.
+            # The Bedrock /agent proxy strips its prefix because the pod serves
+            # Bedrock requests at root paths; but the /internal/v1/* routes are
+            # registered with the prefix included, so 404s without it.
+            uri                  = "http://${var.internal_alb_dns}/internal/{proxy}"
             timeoutInMillis      = var.integration_timeout_ms
             responseTransferMode = "STREAM"
             passthroughBehavior  = "when_no_match"
