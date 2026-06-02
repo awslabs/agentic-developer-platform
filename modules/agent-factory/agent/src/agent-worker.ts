@@ -1121,7 +1121,7 @@ Now, complete the assigned task.`;
         switch (message.type) {
           case 'assistant': {
             turnCount++;
-            const assistantMsg = message as { type: string; message: { content: Array<Record<string, unknown>> } };
+            const assistantMsg = message as unknown as { type: string; message: { content: Array<Record<string, unknown>> } };
             const turnText = logMessage(assistantMsg, turnCount);
             fullResponse += turnText;
             lastTurnText = turnText;

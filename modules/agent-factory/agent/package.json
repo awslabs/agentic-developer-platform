@@ -11,7 +11,7 @@
     "test:coverage": "jest --coverage"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.76",
+    "@anthropic-ai/claude-agent-sdk": "0.2.141",
     "@aws-sdk/client-bedrock-runtime": "^3.750.0",
     "@aws-sdk/client-cloudwatch-logs": "^3.750.0",
     "@aws-sdk/client-dynamodb": "^3.750.0",

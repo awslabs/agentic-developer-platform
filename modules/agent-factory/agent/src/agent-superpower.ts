@@ -600,7 +600,7 @@ After posting, report back with a summary.`;
       case 'assistant': {
         turnCount++;
         designOutput += logMessage(
-          message as { type: string; message: { content: Array<Record<string, unknown>> } },
+          message as unknown as { type: string; message: { content: Array<Record<string, unknown>> } },
           turnCount
         );
         break;
@@ -807,7 +807,7 @@ Remember: ALL files must be created inside ${projectFolder}/`;
         case 'assistant': {
           turnCount++;
           implementationOutput += logMessage(
-            message as { type: string; message: { content: Array<Record<string, unknown>> } },
+            message as unknown as { type: string; message: { content: Array<Record<string, unknown>> } },
             turnCount
           );
           break;

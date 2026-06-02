@@ -141,7 +141,13 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
             t.name,
             t.description,
             agentToolSchema(t),
-            async (args: unknown): Promise<AgentToolResult> => {
+            // SDK ≥ 0.2.111 widened the tool callback signature: args is now
+            // a record-shaped object and the return type must include a
+            // string index signature. Our AgentToolResult is structurally
+            // compatible at runtime (content + isError); a `never`-cast on
+            // the function avoids dragging the SDK's generic Parameters into
+            // call sites and the runtime behavior is unchanged.
+            (async (args: unknown): Promise<AgentToolResult> => {
               const typedArgs = (args ?? {}) as Record<string, unknown>;
               try {
                 return await t.handler(typedArgs);
@@ -151,7 +157,7 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
                   isError: true,
                 };
               }
-            },
+            }) as never,
           ),
         ),
       })

@@ -211,7 +211,7 @@ async function runQuery(prompt: string, maxTurns: number = 200): Promise<string>
         case 'assistant': {
           turnCount++;
           fullResponse += logMessage(
-            message as { type: string; message: { content: Array<Record<string, unknown>> } },
+            message as unknown as { type: string; message: { content: Array<Record<string, unknown>> } },
             turnCount
           );
           break;
