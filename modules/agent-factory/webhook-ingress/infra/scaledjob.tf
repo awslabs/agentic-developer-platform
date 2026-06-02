@@ -133,6 +133,12 @@ locals {
                     value: ${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}/agent
                   - name: SIGV4_PROXY_PORT
                     value: "9090"
+                  # Override the agent worker's default Bedrock model. Goes
+                  # through the gateway via ADP_BEDROCK_VIA=gateway above; the
+                  # gateway forwards on the URL path /model/<id>/invoke and the
+                  # ModelResolver permits us.anthropic.claude-* by default.
+                  - name: ANTHROPIC_MODEL
+                    value: us.anthropic.claude-opus-4-8
                 resources:
                   requests:
                     cpu: "1"
