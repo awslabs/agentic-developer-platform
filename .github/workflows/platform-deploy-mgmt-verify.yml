@@ -1,0 +1,105 @@
+name: Platform Deploy Mgmt — Verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: 'Phase to verify: 1-9 or "all"'
+        required: true
+      customer_account_id:
+        description: 'Customer AWS account ID to verify'
+        required: true
+      customer_aws_label:
+        description: 'Vaulted credential label for the customer account'
+        required: true
+      customer_user_id:
+        description: 'ADP users.id UUID for the linked-account owner'
+        required: true
+      environment:
+        description: 'Deployment environment (dev/staging/prod)'
+        required: false
+        default: 'dev'
+      deploy_id:
+        description: 'Deployment ID for DDB row linkage (optional)'
+        required: false
+        default: ''
+      mode:
+        description: 'Verification mode: deploy|monitor|upgrade-pre|upgrade-post'
+        required: false
+        default: 'deploy'
+
+concurrency:
+  group: verify-${{ inputs.customer_account_id }}-${{ inputs.phase }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  verify:
+    name: Phase Verification
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+          environment: ${{ inputs.environment }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r modules/platform-deploy-mgmt/requirements.txt
+
+      - name: Phase 1 verification
+        if: inputs.phase == '1' || inputs.phase == 'all'
+        working-directory: modules/platform-deploy-mgmt
+        run: python -m platform_deploy_mgmt.checks.runner --phase=1
+        env:
+          MODE: ${{ inputs.mode }}
+          DEPLOY_ID: ${{ inputs.deploy_id }}
+          PYTHONPATH: ${{ github.workspace }}/modules/platform-deploy-mgmt
+
+      # Phase 2-9 stubs — filled in by sub-issues B, C, D, E, F, G
+      - name: Phase 2 verification
+        if: false  # implemented in sub-issue B
+        run: echo "stub — Phase 2 not yet implemented"
+
+      - name: Phase 3 verification
+        if: false  # implemented in sub-issue B
+        run: echo "stub — Phase 3 not yet implemented"
+
+      - name: Phase 4 verification
+        if: false  # implemented in sub-issue C
+        run: echo "stub — Phase 4 not yet implemented"
+
+      - name: Phase 5 verification
+        if: false  # implemented in sub-issue C
+        run: echo "stub — Phase 5 not yet implemented"
+
+      - name: Phase 6 verification
+        if: false  # implemented in sub-issue C
+        run: echo "stub — Phase 6 not yet implemented"
+
+      - name: Phase 7 verification
+        if: false  # implemented in sub-issue D
+        run: echo "stub — Phase 7 not yet implemented"
+
+      - name: Phase 8 verification
+        if: false  # implemented in sub-issue D
+        run: echo "stub — Phase 8 not yet implemented"
+
+      - name: Phase 9 verification
+        if: false  # implemented in sub-issue D
+        run: echo "stub — Phase 9 not yet implemented"

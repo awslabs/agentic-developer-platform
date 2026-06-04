@@ -1,0 +1,103 @@
+name: Platform Deploy Mgmt — Infra Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment (dev/staging/prod)'
+        required: false
+        default: 'dev'
+      confirm_destructive_apply:
+        description: 'Set to "yes" to authorize an apply that destroys resources.'
+        required: false
+        default: 'no'
+
+concurrency:
+  group: tf-apply-platform-deploy-mgmt
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  TF_VAR_environment: dev
+  MODULE_NAME: platform-deploy-mgmt
+  TF_WORKING_DIR: modules/platform-deploy-mgmt/infra
+  BACKEND_CONFIG: environments/dev/modules/platform-deploy-mgmt-backend.tfvars
+
+jobs:
+  apply:
+    name: Terraform Apply
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          environment: ${{ inputs.environment }}
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          terraform version | head -1
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform init \
+            -backend-config="../../../${{ env.BACKEND_CONFIG }}" \
+            -input=false -reconfigure
+
+      - name: Terraform Plan (destroy-safety check)
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -e
+          set -o pipefail
+          EXIT_CODE=0
+          terraform plan -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
+          echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          if [ "$EXIT_CODE" -eq 1 ]; then
+            echo "::error::Terraform plan failed."
+            exit 1
+          fi
+
+      - name: Destroy-safety gate
+        if: steps.plan.outputs.detailed_exitcode == '2'
+        run: |
+          set -e
+          DESTROYS=$(grep -c 'will be destroyed' /tmp/plan-output.txt 2>/dev/null) || DESTROYS=0
+          if [ "$DESTROYS" -le 0 ]; then
+            echo "No destroys in plan. Proceeding."
+            exit 0
+          fi
+          echo "Plan includes $DESTROYS resource(s) to destroy."
+          grep 'will be destroyed' /tmp/plan-output.txt || true
+          if [ "${{ inputs.confirm_destructive_apply }}" = "yes" ]; then
+            echo "Operator-confirmed destructive apply. Proceeding."
+            exit 0
+          fi
+          echo "::error::Re-run with confirm_destructive_apply=yes to authorize."
+          exit 1
+
+      - name: Terraform Apply
+        id: apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply tfplan
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Terraform Apply -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status**: ${{ steps.apply.outcome == 'success' && 'applied' || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Working dir**: ${{ env.TF_WORKING_DIR }}" >> "$GITHUB_STEP_SUMMARY"

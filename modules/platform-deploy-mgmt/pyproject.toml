@@ -1,0 +1,26 @@
+[project]
+name = "platform-deploy-mgmt"
+version = "0.1.0"
+description = "ADP deterministic phase-verification framework"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.28.0",
+    "botocore>=1.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "moto[s3,dynamodb]>=4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
