@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     # credential files for agent tmpfs writes.  Must be set in production.
     vault_materialization_bucket: str = ""
 
+    # Issue #1158: Host allowlist for /internal/v1/proxy-request (SSRF mitigation).
+    # Comma-separated list of allowed target hosts. Supports exact match and
+    # wildcard prefix (e.g. "*.atlassian.net"). Empty = deny-all (fail-closed).
+    vault_proxy_host_allowlist: str = ""
+    # When True, only https:// URLs are accepted by the proxy-request endpoint.
+    vault_proxy_require_https: bool = True
+
     # Issue #466: Well-known UUID for the adp-default free-tier tenant.
     # Every environment uses the same UUID so seed scripts and code agree.
     adp_default_org_id: str = "00000000-0000-4000-a000-000000000001"

@@ -203,6 +203,9 @@ jobs:
             --query 'Role.Arn' --output text 2>/dev/null || echo "")
 
           # --- Render and apply ConfigMap (Section 1) ---
+          # Issue #1158: Read proxy host allowlist from SSM (or default for dev)
+          VAULT_PROXY_HOST_ALLOWLIST=$(get_ssm "/adp/${ENVIRONMENT}/gateway/vault-proxy-host-allowlist" "api.github.com,api.openai.com,api.anthropic.com,*.atlassian.net,api.stripe.com,slack.com")
+
           sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
               -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
               -e "s|__DB_HOST__|${DB_HOST}|g" \
@@ -222,6 +225,7 @@ jobs:
               -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|basic|g" \
               -e "s|__TRUST_APIGW_HEADERS__|true|g" \
               -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
+              -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
               modules/gateway/k8s/configmap.yaml | kubectl apply -f -
 
           # --- Create K8s Secret from Secrets Manager (Section 2) ---

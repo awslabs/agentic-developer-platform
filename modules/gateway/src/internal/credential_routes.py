@@ -24,9 +24,12 @@ and updates UserCredential.last_used_at.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
+import socket
 import uuid
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -36,7 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.credential_injector import FILE_CREDENTIAL_TYPES, inject_credential
-from src.shared.config import get_settings
+from src.shared.config import Settings, get_settings
 from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
 from src.shared.models.organization import User
@@ -238,6 +241,87 @@ def _check_agent_scope(x_agent_scopes: str | None, required: str) -> None:
         )
 
 
+def _validate_proxy_url(url: str, settings: Settings) -> None:
+    """Validate the target URL for proxy-request against the host allowlist.
+
+    Raises HTTPException(400) or HTTPException(403) on rejection.
+    Issue #1158: SSRF + credential exfiltration mitigation.
+    """
+    parsed = urlparse(url)
+
+    # 1. Scheme check — HTTPS only when vault_proxy_require_https=True
+    if settings.vault_proxy_require_https and parsed.scheme != "https":
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_url", "message": "Only https:// URLs are allowed"},
+        )
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_url", "message": "Invalid URL scheme"},
+        )
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_url", "message": "URL has no hostname"},
+        )
+
+    # 2. Reject embedded credentials in URL
+    if parsed.username or parsed.password:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_url", "message": "URLs with embedded credentials are not allowed"},
+        )
+
+    # 3. Resolve hostname; reject private/loopback/link-local/reserved IPs (anti-SSRF)
+    try:
+        for info in socket.getaddrinfo(hostname, None):
+            addr = ipaddress.ip_address(info[4][0])
+            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "invalid_url",
+                        "message": "URLs targeting private/internal addresses are not allowed",
+                    },
+                )
+    except socket.gaierror:
+        # DNS resolution failure — let httpx surface it as a request error downstream
+        pass
+
+    # 4. FAIL-CLOSED allowlist check
+    allowlist_raw = settings.vault_proxy_host_allowlist
+    if not allowlist_raw:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "proxy_host_denied",
+                "message": "No proxy host allowlist configured; all proxy requests denied",
+            },
+        )
+
+    allowed_hosts = {h.strip().lower() for h in allowlist_raw.split(",") if h.strip()}
+    hostname_lower = hostname.lower()
+
+    for allowed_host in allowed_hosts:
+        if allowed_host.startswith("*."):
+            # Suffix match: *.example.com matches sub.example.com and example.com
+            suffix = allowed_host[1:]  # ".example.com"
+            if hostname_lower.endswith(suffix) or hostname_lower == allowed_host[2:]:
+                return
+        else:
+            if hostname_lower == allowed_host:
+                return
+
+    # No match — reject
+    raise HTTPException(
+        status_code=403,
+        detail={"error": "proxy_host_denied", "message": f"Host {hostname!r} is not in the proxy allowlist"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Endpoint: GET /internal/v1/user-credentials
 # ---------------------------------------------------------------------------
@@ -310,6 +394,41 @@ async def proxy_request(
     _: None = Depends(verify_internal_or_irsa),
 ) -> ProxyResponse:
     provenance_id = str(uuid.uuid4())
+    settings = get_settings()
+
+    # Issue #1158: Validate target URL before resolving credentials or making requests.
+    try:
+        _validate_proxy_url(body.url, settings)
+    except HTTPException as exc:
+        # Audit-log rejected attempts for forensic visibility.
+        logger.warning(
+            "Proxy request DENIED provenance_id=%s url=%s reason=%s",
+            provenance_id,
+            body.url,
+            exc.detail.get("error") if isinstance(exc.detail, dict) else str(exc.detail),
+        )
+        # Best-effort audit log — resolve user if possible for org_id context.
+        try:
+            user = await _get_user_context(body.user_id, db, calling_endpoint="proxy-request")
+            await _write_audit(
+                db,
+                event_type="vault_proxy_request_denied",
+                org_id=user.org_id,
+                actor_id=body.agent_id,
+                details={
+                    "provenance_id": provenance_id,
+                    "user_id": body.user_id,
+                    "agent_id": body.agent_id,
+                    "task_id": body.task_id,
+                    "service": body.service,
+                    "url": body.url,
+                    "reason": exc.detail.get("error") if isinstance(exc.detail, dict) else str(exc.detail),
+                },
+            )
+            await db.commit()
+        except Exception:
+            pass  # Don't let audit-log failures mask the security rejection.
+        raise
 
     user = await _get_user_context(body.user_id, db, calling_endpoint="proxy-request")
     # Issue #700: use canonical user's id and org_id for credential resolution.

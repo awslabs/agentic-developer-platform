@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -145,12 +146,20 @@ def _make_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
-def _settings_mock(*, raw_read_enabled: bool = False, bucket: str = "test-bucket") -> MagicMock:
+def _settings_mock(
+    *,
+    raw_read_enabled: bool = False,
+    bucket: str = "test-bucket",
+    proxy_host_allowlist: str = "api.github.com,api.openai.com,*.atlassian.net,api.stripe.com,slack.com,jira.example.com,bad.host.invalid",
+    proxy_require_https: bool = True,
+) -> MagicMock:
     s = MagicMock()
     s.internal_api_key = _VALID_KEY
     s.vault_raw_read_enabled = raw_read_enabled
     s.vault_materialization_bucket = bucket
     s.aws_region = "us-east-1"
+    s.vault_proxy_host_allowlist = proxy_host_allowlist
+    s.vault_proxy_require_https = proxy_require_https
     return s
 
 
@@ -279,12 +288,23 @@ class TestListUserCredentials:
 # ---------------------------------------------------------------------------
 
 
+def _fake_getaddrinfo_public(host, port, *args, **kwargs):
+    """Return a fake public IP for any hostname (avoids real DNS in tests)."""
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+
+def _fake_getaddrinfo_private(host, port, *args, **kwargs):
+    """Return a private IP (simulates SSRF to internal address)."""
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0))]
+
+
 class TestProxyRequest:
     def _mock_sm(self, secret_value: str) -> MagicMock:
         sm = MagicMock()
         sm.get_secret.return_value = secret_value
         return sm
 
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
     @patch("src.internal.credential_routes.get_settings")
     def test_bearer_injection_and_successful_upstream(self, mock_settings, db: AsyncSession):
         mock_settings.return_value = _settings_mock()
@@ -331,6 +351,7 @@ class TestProxyRequest:
         assert "provenance_id" in body
         assert body["body"] == '{"id": 42}'
 
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
     @patch("src.internal.credential_routes.get_settings")
     def test_api_key_injected_into_forwarded_headers(self, mock_settings, db: AsyncSession):
         mock_settings.return_value = _settings_mock()
@@ -379,6 +400,7 @@ class TestProxyRequest:
         assert resp.status_code == 200
         assert captured_headers.get("Authorization") == "ApiKey sk-openai-key"
 
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
     @patch("src.internal.credential_routes.get_settings")
     def test_basic_auth_injection(self, mock_settings, db: AsyncSession):
         mock_settings.return_value = _settings_mock()
@@ -432,6 +454,7 @@ class TestProxyRequest:
         expected = "Basic " + base64.b64encode(b"user:p4ssw0rd").decode()
         assert captured_headers.get("Authorization") == expected
 
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
     @patch("src.internal.credential_routes.get_settings")
     def test_last_used_at_updated(self, mock_settings, db: AsyncSession):
         mock_settings.return_value = _settings_mock()
@@ -484,6 +507,7 @@ class TestProxyRequest:
 
         asyncio.get_event_loop().run_until_complete(_check())
 
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
     @patch("src.internal.credential_routes.get_settings")
     def test_audit_log_written(self, mock_settings, db: AsyncSession):
         mock_settings.return_value = _settings_mock()
@@ -543,6 +567,7 @@ class TestProxyRequest:
 
         asyncio.get_event_loop().run_until_complete(_check())
 
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
     @patch("src.internal.credential_routes.get_settings")
     def test_upstream_network_error_returns_502(self, mock_settings, db: AsyncSession):
         mock_settings.return_value = _settings_mock()
@@ -587,6 +612,267 @@ class TestProxyRequest:
         assert resp.status_code == 502
         detail = resp.json()["detail"]
         assert detail["error"] == "upstream_error"
+
+
+# ---------------------------------------------------------------------------
+# POST /internal/v1/proxy-request — Host Allowlist Validation (Issue #1158)
+# ---------------------------------------------------------------------------
+
+
+class TestProxyRequestAllowlist:
+    """Tests for the SSRF host allowlist on /internal/v1/proxy-request."""
+
+    def _mock_sm(self, secret_value: str) -> MagicMock:
+        sm = MagicMock()
+        sm.get_secret.return_value = secret_value
+        return sm
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_allowed_host_passes(self, mock_settings, db: AsyncSession):
+        """Request to an allowlisted host succeeds (positive test)."""
+        mock_settings.return_value = _settings_mock(proxy_host_allowlist="api.github.com")
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-pass", service="github", credential_type="bearer"))
+        mock_sm = self._mock_sm("tok")
+
+        r = MagicMock()
+        r.status_code = 200
+        r.headers = {}
+        r.text = "{}"
+
+        with (
+            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client.request = AsyncMock(return_value=r)
+            mock_client_cls.return_value = mock_client
+
+            client = _make_app(db, mock_sm=mock_sm)
+            resp = client.post(
+                "/internal/v1/proxy-request",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "agent-001",
+                    "task_id": "task-al-pass",
+                    "service": "github",
+                    "method": "GET",
+                    "url": "https://api.github.com/user",
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+
+        assert resp.status_code == 200
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_denied_host_returns_403(self, mock_settings, db: AsyncSession):
+        """Request to a non-allowlisted host is rejected with 403."""
+        mock_settings.return_value = _settings_mock(proxy_host_allowlist="api.github.com")
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-deny", service="evil", credential_type="bearer"))
+
+        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+            client = _make_app(db)
+            resp = client.post(
+                "/internal/v1/proxy-request",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "agent-001",
+                    "task_id": "task-al-deny",
+                    "service": "evil",
+                    "method": "GET",
+                    "url": "https://attacker.example.com/exfil",
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+
+        assert resp.status_code == 403
+        detail = resp.json()["detail"]
+        assert detail["error"] == "proxy_host_denied"
+        assert "attacker.example.com" in detail["message"]
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_private)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_private_ip_returns_400(self, mock_settings, db: AsyncSession):
+        """Request resolving to a private/link-local IP is rejected (anti-SSRF)."""
+        mock_settings.return_value = _settings_mock(proxy_host_allowlist="metadata.internal")
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-priv", service="aws", credential_type="bearer"))
+
+        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+            client = _make_app(db)
+            resp = client.post(
+                "/internal/v1/proxy-request",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "agent-001",
+                    "task_id": "task-al-priv",
+                    "service": "aws",
+                    "method": "GET",
+                    "url": "https://metadata.internal/latest/meta-data/",
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail["error"] == "invalid_url"
+        assert "private" in detail["message"].lower()
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_http_url_rejected_when_https_required(self, mock_settings, db: AsyncSession):
+        """HTTP URL is rejected when vault_proxy_require_https=True."""
+        mock_settings.return_value = _settings_mock(proxy_host_allowlist="api.github.com", proxy_require_https=True)
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-http", service="github", credential_type="bearer"))
+
+        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+            client = _make_app(db)
+            resp = client.post(
+                "/internal/v1/proxy-request",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "agent-001",
+                    "task_id": "task-al-http",
+                    "service": "github",
+                    "method": "GET",
+                    "url": "http://api.github.com/user",
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail["error"] == "invalid_url"
+        assert "https" in detail["message"].lower()
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_empty_allowlist_returns_403_fail_closed(self, mock_settings, db: AsyncSession):
+        """Empty allowlist means ALL proxy-requests are denied (fail-closed)."""
+        mock_settings.return_value = _settings_mock(proxy_host_allowlist="")
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-empty", service="github", credential_type="bearer"))
+
+        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+            client = _make_app(db)
+            resp = client.post(
+                "/internal/v1/proxy-request",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "agent-001",
+                    "task_id": "task-al-empty",
+                    "service": "github",
+                    "method": "GET",
+                    "url": "https://api.github.com/user",
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+
+        assert resp.status_code == 403
+        detail = resp.json()["detail"]
+        assert detail["error"] == "proxy_host_denied"
+        assert "no proxy host allowlist" in detail["message"].lower()
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_embedded_credentials_in_url_rejected(self, mock_settings, db: AsyncSession):
+        """URL with embedded user:pass is rejected."""
+        mock_settings.return_value = _settings_mock(proxy_host_allowlist="api.github.com")
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-creds", service="github", credential_type="bearer"))
+
+        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+            client = _make_app(db)
+            resp = client.post(
+                "/internal/v1/proxy-request",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "agent-001",
+                    "task_id": "task-al-creds",
+                    "service": "github",
+                    "method": "GET",
+                    "url": "https://user:pass@api.github.com/user",
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail["error"] == "invalid_url"
+        assert "embedded credentials" in detail["message"].lower()
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_wildcard_suffix_match_positive(self, mock_settings, db: AsyncSession):
+        """Wildcard *.atlassian.net matches sub.atlassian.net."""
+        mock_settings.return_value = _settings_mock(proxy_host_allowlist="*.atlassian.net")
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-wild-pos", service="jira", credential_type="bearer"))
+        mock_sm = self._mock_sm("tok")
+
+        r = MagicMock()
+        r.status_code = 200
+        r.headers = {}
+        r.text = "{}"
+
+        with (
+            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
+            patch("httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client.request = AsyncMock(return_value=r)
+            mock_client_cls.return_value = mock_client
+
+            client = _make_app(db, mock_sm=mock_sm)
+            resp = client.post(
+                "/internal/v1/proxy-request",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "agent-001",
+                    "task_id": "task-al-wild-pos",
+                    "service": "jira",
+                    "method": "GET",
+                    "url": "https://myorg.atlassian.net/rest/api/2/issue/PROJ-1",
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+
+        assert resp.status_code == 200
+
+    @patch("src.internal.credential_routes.socket.getaddrinfo", _fake_getaddrinfo_public)
+    @patch("src.internal.credential_routes.get_settings")
+    def test_wildcard_suffix_match_negative(self, mock_settings, db: AsyncSession):
+        """Wildcard *.atlassian.net does NOT match evil-atlassian.net."""
+        mock_settings.return_value = _settings_mock(proxy_host_allowlist="*.atlassian.net")
+
+        asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-wild-neg", service="jira", credential_type="bearer"))
+
+        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+            client = _make_app(db)
+            resp = client.post(
+                "/internal/v1/proxy-request",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "agent-001",
+                    "task_id": "task-al-wild-neg",
+                    "service": "jira",
+                    "method": "GET",
+                    "url": "https://evil-atlassian.net/exfil",
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+
+        assert resp.status_code == 403
+        detail = resp.json()["detail"]
+        assert detail["error"] == "proxy_host_denied"
 
 
 # ---------------------------------------------------------------------------

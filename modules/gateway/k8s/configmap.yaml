@@ -78,6 +78,16 @@ data:
   # AWS Secrets Manager to Kubernetes Secrets automatically.
   # =============================================================================
 
+  # =============================================================================
+  # Issue #1158: Vault Proxy Request Host Allowlist (SSRF mitigation)
+  # =============================================================================
+  # Comma-separated list of allowed target hosts for /internal/v1/proxy-request.
+  # Supports exact-match ("api.github.com") and wildcard-prefix ("*.atlassian.net").
+  # FAIL-CLOSED: if empty, ALL proxy-requests are denied (403).
+  # =============================================================================
+  BG_VAULT_PROXY_HOST_ALLOWLIST: "__VAULT_PROXY_HOST_ALLOWLIST__"
+  BG_VAULT_PROXY_REQUIRE_HTTPS: "true"
+
   # Logging Configuration
   BG_LOG_LEVEL: "INFO"
 
