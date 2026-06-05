@@ -8,6 +8,7 @@
  */
 /// <reference types="node" />
 import { resilientQuery } from './utils/resilientQuery';
+import { wrapUntrusted } from './utils/trust-boundary';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { refreshGitHubToken, saveToS3Fallback } from './utils/ghPost';
 import { LiveStatusComment, createSkillAgentStages } from './github-comments';
@@ -337,13 +338,13 @@ async function main(): Promise<void> {
 
 ## Issue #${ISSUE_NUMBER}: ${issue.title}
 
-${issue.body}
+${wrapUntrusted(issue.body)}
 ${commentsContext ? `
 ## Existing Discussion / Comments
 
 The following comments have been posted on this issue. Read them carefully - they may contain important context, decisions, research, or approvals from previous agents or users.
 
-${commentsContext}
+${wrapUntrusted(commentsContext)}
 
 ---
 ` : ''}
@@ -440,13 +441,13 @@ IMPORTANT: Actually read the skill files and codebase during planning. Use Read,
 
 ## Issue #${ISSUE_NUMBER}: ${issue.title}
 
-${issue.body}
+${wrapUntrusted(issue.body)}
 ${commentsContext ? `
 ## Discussion Context
 
 Previous comments on this issue (may contain research, decisions, or approvals):
 
-${commentsContext}
+${wrapUntrusted(commentsContext)}
 
 ---
 ` : ''}

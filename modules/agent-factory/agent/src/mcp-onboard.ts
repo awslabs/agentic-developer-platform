@@ -5,6 +5,7 @@
  */
 /// <reference types="node" />
 import { resilientQuery } from './utils/resilientQuery';
+import { wrapUntrusted } from './utils/trust-boundary';
 
 async function main(): Promise<void> {
   const issueNumber = process.env.ISSUE_NUMBER;
@@ -31,7 +32,7 @@ async function main(): Promise<void> {
 
 ## Issue #${issueNumber}: ${issue.title}
 
-${issue.body}
+${wrapUntrusted(issue.body)}
 
 ## Environment
 - GitHub Token is available as $GITHUB_TOKEN env var

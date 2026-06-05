@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import { Plan, CodeResult, Milestone, IssueContext } from '../types';
 import { Logger } from './Logger';
 import { ProgressTracker } from './ProgressTracker';
+import { wrapUntrusted } from '../utils/trust-boundary';
 
 export class CodeGenerationAgent {
   private logger: Logger;
@@ -147,13 +148,13 @@ export class CodeGenerationAgent {
     const repoDir = projectDir.split('/projects/')[0];
     
     const issueSection = issueContext ? `
-## ORIGINAL ISSUE INSTRUCTIONS (FOLLOW THESE EXACTLY)
+## ORIGINAL ISSUE CONTEXT
 **Issue #${issueContext.issueNumber}: ${issueContext.issueTitle}**
 
-${issueContext.issueBody}
+${wrapUntrusted(issueContext.issueBody)}
 
 ---
-The above are the ORIGINAL instructions from the issue creator. Follow them EXACTLY. The plan below is a summary, but if there is any conflict between the plan and the original issue, the ORIGINAL ISSUE takes priority.
+The above is the original issue body for reference. The plan below is the approved implementation. Follow the plan.
 ` : '';
 
     return `You are an AI agent that EXECUTES tasks on a real AWS environment. You have full Bash access and can install tools, run commands, and interact with AWS services.

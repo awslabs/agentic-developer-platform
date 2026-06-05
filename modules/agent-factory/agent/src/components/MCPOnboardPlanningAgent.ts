@@ -1,6 +1,7 @@
 import { IssueContext, Plan, PlanStep } from '../types';
 import { Logger } from './Logger';
 import { resilientQuery } from '../utils/resilientQuery';
+import { wrapUntrusted } from '../utils/trust-boundary';
 
 /**
  * Planning agent for MCP server onboarding.
@@ -89,7 +90,7 @@ export class MCPOnboardPlanningAgent {
 **Title:** ${issueContext.issueTitle}
 
 **Description:**
-${issueContext.issueBody}
+${wrapUntrusted(issueContext.issueBody)}
 
 ## Instructions
 Read the skill file at .claude/skills/onboard-mcp-server/SKILL.md — it contains the complete workflow you must follow.

@@ -152,6 +152,7 @@ export function getMonitoringConfig(): MonitoringConfig {
 import * as fs from 'fs';
 import * as path from 'path';
 import { resilientQuery } from './utils/resilientQuery';
+import { wrapUntrusted } from './utils/trust-boundary';
 import {
   gatherReassessmentContext,
   ReassessmentContext,
@@ -1839,7 +1840,7 @@ async function getAIDecision(
 ## Parent Issue (The Goal)
 **#${context.parentIssue.number}**: ${context.parentIssue.title}
 
-${context.parentIssue.body.substring(0, 2000)}
+${wrapUntrusted(context.parentIssue.body.substring(0, 2000))}
 
 ## Just Completed
 @agent-${completedAgent.agentType} finished work on issue #${completedAgent.issueNumber}
@@ -1995,7 +1996,7 @@ export async function analyzeStatusWithAI(
     const prompt = `You are @agent-pm monitoring issue #${context.parentIssue.number}: "${context.parentIssue.title}"
 
 ## Reassessment Analysis Summary
-${reassessContext.analysis}
+${wrapUntrusted(JSON.stringify(reassessContext.analysis))}
 
 ## Status Discrepancies Detected
 ${reassessContext.statusDiscrepancies.length > 0
@@ -2149,7 +2150,7 @@ export async function handleQueryPM(
     const prompt = `You are @agent-pm responding to a human's question about issue #${context.parentIssue.number}: "${context.parentIssue.title}"
 
 ## Human's Query
-${query}
+${wrapUntrusted(query)}
 
 ## Current Project State
 ${reassessContext.analysis}
@@ -2243,7 +2244,7 @@ export async function executeUserInstruction(
     const prompt = `You are @agent-pm, an AI project manager. The user has given you an instruction to execute.
 
 ## User Instruction
-${instruction}
+${wrapUntrusted(instruction)}
 
 ## Parent Issue (Goal)
 **#${context.parentIssue.number}**: ${context.parentIssue.title}

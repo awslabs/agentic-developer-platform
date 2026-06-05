@@ -12,6 +12,7 @@
  */
 
 import { resilientQuery } from './utils/resilientQuery';
+import { wrapUntrusted } from './utils/trust-boundary';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1187,7 +1188,7 @@ You guide humans through the AI-Driven Development Life Cycle (AIDLC) while mana
 ## The Issue
 **Issue #${issue.number}: ${issue.title}**
 
-${issue.body}
+${wrapUntrusted(issue.body)}
 
 ---
 
@@ -1483,7 +1484,7 @@ ${state.conversationContext}
 
 ### Issue #${issue.number}: ${issue.title}
 
-${issue.body}
+${wrapUntrusted(issue.body)}
 
 ---
 
@@ -2412,7 +2413,7 @@ async function assessTaskDepth(issue: Issue): Promise<DepthAssessment> {
 ## Task
 **Issue #${issue.number}: ${issue.title}**
 
-${issue.body}
+${wrapUntrusted(issue.body)}
 
 ## Your Job
 Quickly assess this task (use 3-5 tool calls max) to determine:
@@ -2531,7 +2532,7 @@ async function executeQuickTask(issue: Issue, assessment: DepthAssessment): Prom
 ## Task
 **Issue #${issue.number}: ${issue.title}**
 
-${issue.body}
+${wrapUntrusted(issue.body)}
 
 ## Assessment
 - **Depth**: ${assessment.depth}

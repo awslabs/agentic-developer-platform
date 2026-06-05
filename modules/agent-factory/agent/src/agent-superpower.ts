@@ -13,6 +13,7 @@
  */
 
 import { resilientQuery } from './utils/resilientQuery';
+import { wrapUntrusted } from './utils/trust-boundary';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -522,7 +523,7 @@ Process this GitHub issue using the brainstorming skill.
 
 ### Issue #${issue.number}: ${issue.title}
 
-${issue.body}
+${wrapUntrusted(issue.body)}
 ${guidanceSection}
 ${previousContextSection}
 ---
@@ -693,7 +694,7 @@ The brainstorming phase is complete and the design has been approved.
 
 ### Issue #${issue.number}: ${issue.title}
 
-${issue.body}
+${wrapUntrusted(issue.body)}
 
 ### Approved Design Summary
 ${design.substring(0, 2000)}...

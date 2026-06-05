@@ -13,6 +13,7 @@
  */
 
 import { resilientQuery } from './utils/resilientQuery';
+import { wrapUntrusted } from './utils/trust-boundary';
 import { initTokenManager, getToken, getTokenStatus } from './token-refresh';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import * as fs from 'fs';
@@ -661,7 +662,7 @@ Process this GitHub issue and complete the assigned work.
 
 ### Issue #${issue.number}: ${issue.title}
 
-${issue.body}
+${wrapUntrusted(issue.body)}
 ${memoryCtx ? `
 ---
 
@@ -673,7 +674,7 @@ ${memoryCtx}
 
 The following comments have been posted on this issue. Read them carefully - they may contain important context, decisions, research, or approvals from previous agents or users.
 
-${commentsContext}
+${wrapUntrusted(commentsContext)}
 ` : ''}
 ---
 
