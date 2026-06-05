@@ -1,0 +1,32 @@
+title = "ADP gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures with synthetic credentials — all values are AWS-published examples or obviously mock"
+paths = [
+  '''modules/gateway/tests/auth/test_auth_routes\.py''',
+  '''modules/gateway/tests/auth/test_acceptance_criteria\.py''',
+  '''modules/gateway/tests/auth/test_auth_integration\.py''',
+  '''modules/gateway/tests/auth/test_auth_service\.py''',
+  '''modules/gateway/tests/auth/test_sts_client\.py''',
+  '''modules/gateway/tests/auth/test_internal_credential_routes\.py''',
+  '''modules/gateway/tests/cli/conftest\.py''',
+  '''modules/gateway/tests/pool/conftest\.py''',
+  '''modules/gateway/tests/pool/test_sts_client\.py''',
+  '''modules/gateway/tests/pool/test_integration\.py''',
+  '''modules/gateway/tests/integration/test_chat_logging\.py''',
+  '''modules/gateway/tests/integration/test_auth_proxy_flow\.py''',
+  '''modules/gateway/tests/chat_logging/test_scrubber\.py''',
+  '''modules/gateway/tests/e2e/conftest\.py''',
+  '''modules/gateway/tests/e2e/test_authentication_stories\.py''',
+  '''modules/gateway/lambda/api-authorizer/test_handler\.py''',
+  '''modules/agent-factory/tests/README\.md''',
+  '''modules/gateway/frontend/tests/e2e/test_budget_ratelimit_smoke\.py''',
+  '''data/security/2026-06-05-class-A-gitleaks-allowlist-audit\.md''',
+]
+regexes = [
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''AKIAEXAMPLE[A-Z0-9]+''',
+]
