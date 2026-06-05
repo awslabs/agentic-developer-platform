@@ -6,6 +6,8 @@ useDefault = true
 [allowlist]
 description = "Test fixtures with synthetic credentials — all values are AWS-published examples or obviously mock"
 paths = [
+  # Beads credential key — synthetic fixture; beads is not actively consumed by any runtime path
+  '''modules/agent-factory/beads/\.beads-credential-key''',
   '''modules/gateway/tests/auth/test_auth_routes\.py''',
   '''modules/gateway/tests/auth/test_acceptance_criteria\.py''',
   '''modules/gateway/tests/auth/test_auth_integration\.py''',

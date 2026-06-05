@@ -5,6 +5,7 @@ dolt-access.lock
 # Runtime files
 bd.sock
 bd.sock.startlock
+.beads-credential-key
 sync-state.json
 last-touched
 .exclusive-lock
