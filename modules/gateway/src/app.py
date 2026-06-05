@@ -119,10 +119,10 @@ def create_app() -> FastAPI:
             logger.warning("OpenTelemetry/X-Ray tracing failed to initialize")
 
     # Configure CORS middleware
-    # Read allowed origins from environment variable, fallback to CloudFront and localhost
+    # Read allowed origins from environment variable (set via ConfigMap from SSM in production)
     cors_origins_str = os.environ.get(
         "CORS_ALLOWED_ORIGINS",
-        "https://dp7n42m5j4pl6.cloudfront.net,http://localhost:5173",
+        "http://localhost:5173",
     )
     cors_origins = [origin.strip() for origin in cors_origins_str.split(",") if origin.strip()]
 

@@ -8,7 +8,7 @@ env:
   TF_WORKING_DIR: modules/gateway/infra
   BACKEND_CONFIG: environments/dev/modules/gateway-backend.tfvars
   VAR_FILE: environments/dev/modules/gateway.tfvars
-  POOL_ID: us-east-1_JEhv9xSGG
+  ENVIRONMENT: dev
 
 jobs:
   fix:
@@ -55,6 +55,12 @@ jobs:
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
+
+      - name: Resolve Cognito pool ID from SSM
+        run: |
+          POOL_ID=$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id" --query Parameter.Value --output text --region "$AWS_REGION")
+          echo "POOL_ID=$POOL_ID" >> "$GITHUB_ENV"
+          echo "Cognito Pool ID: $POOL_ID"
 
       - name: Resolve secret ARNs
         id: arns

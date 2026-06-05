@@ -6,6 +6,29 @@
 # =============================================================================
 
 # ---------------------------------------------------------------------------
+# Resolve ADP platform networking from remote state.
+# Variables serve as overrides; remote state is the default source of truth.
+# ---------------------------------------------------------------------------
+locals {
+  # Use variable override if set, otherwise resolve from platform remote state
+  peering_vpc_id = coalesce(
+    var.adp_vpc_id,
+    try(data.terraform_remote_state.platform.outputs.vpc_id, "")
+  )
+  peering_vpc_cidr = coalesce(
+    var.adp_vpc_cidr != "10.0.0.0/16" ? var.adp_vpc_cidr : "",
+    try(data.terraform_remote_state.platform.outputs.vpc_cidr_block, "10.0.0.0/16")
+  )
+  peering_route_table_ids = length(var.adp_private_route_table_ids) > 0 ? var.adp_private_route_table_ids : try(
+    data.terraform_remote_state.platform.outputs.private_route_table_ids, []
+  )
+  peering_eks_sg_id = coalesce(
+    var.adp_eks_security_group_id,
+    try(data.terraform_remote_state.platform.outputs.eks_security_group_id, "")
+  )
+}
+
+# ---------------------------------------------------------------------------
 # Secrets Manager — CAPE API token
 # ---------------------------------------------------------------------------
 
@@ -82,7 +105,7 @@ resource "aws_security_group" "cape_alb" {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = var.adp_vpc_id != "" ? [var.adp_vpc_cidr] : []
+    cidr_blocks = local.peering_vpc_id != "" ? [local.peering_vpc_cidr] : []
   }
 
   egress {
@@ -167,9 +190,9 @@ resource "aws_lb_listener" "cape_https" {
 # ---------------------------------------------------------------------------
 
 resource "aws_vpc_peering_connection" "adp_to_threat_research" {
-  count = var.adp_vpc_id != "" ? 1 : 0
+  count = local.peering_vpc_id != "" ? 1 : 0
 
-  vpc_id      = var.adp_vpc_id
+  vpc_id      = local.peering_vpc_id
   peer_vpc_id = aws_vpc.threat_research.id
   auto_accept = true # Same account
 
@@ -182,9 +205,9 @@ resource "aws_vpc_peering_connection" "adp_to_threat_research" {
 # Route from ADP VPC private subnets -> Threat Research VPC (CAPE ALB)
 # Only the private subnet CIDR where the ALB lives, not the full VPC.
 resource "aws_route" "adp_to_threat_research" {
-  count = var.adp_vpc_id != "" ? length(var.adp_private_route_table_ids) : 0
+  count = local.peering_vpc_id != "" ? length(local.peering_route_table_ids) : 0
 
-  route_table_id            = var.adp_private_route_table_ids[count.index]
+  route_table_id            = local.peering_route_table_ids[count.index]
   destination_cidr_block    = var.vpc_cidr
   vpc_peering_connection_id = aws_vpc_peering_connection.adp_to_threat_research[0].id
 }
@@ -198,9 +221,9 @@ resource "aws_route" "adp_to_threat_research" {
 #   - The sandbox subnet route table has NO routes (completely isolated)
 # Only the ALB (in the private subnets) uses this route for response packets.
 resource "aws_route" "threat_research_to_adp" {
-  count = var.adp_vpc_id != "" ? 1 : 0
+  count = local.peering_vpc_id != "" ? 1 : 0
 
   route_table_id            = aws_route_table.private.id
-  destination_cidr_block    = var.adp_vpc_cidr
+  destination_cidr_block    = local.peering_vpc_cidr
   vpc_peering_connection_id = aws_vpc_peering_connection.adp_to_threat_research[0].id
 }

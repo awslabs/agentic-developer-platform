@@ -14,6 +14,20 @@ data "aws_caller_identity" "current" {}
 
 data "aws_region" "current" {}
 
+# ---------------------------------------------------------------------------
+# Remote state: ADP platform (VPC, EKS, networking outputs)
+# Used by peering.tf to resolve ADP VPC ID, route tables, and security groups
+# without hardcoding live infrastructure IDs in tfvars.
+# ---------------------------------------------------------------------------
+data "terraform_remote_state" "platform" {
+  backend = "s3"
+  config = {
+    bucket = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+    key    = "${var.environment}/platform/terraform.tfstate"
+    region = var.aws_region
+  }
+}
+
 locals {
   name_prefix = "adp-${var.environment}-cyber"
 

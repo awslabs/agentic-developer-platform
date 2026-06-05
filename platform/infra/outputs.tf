@@ -58,6 +58,16 @@ output "ecr_repository_urls" {
 # Security Group outputs (used by gateway and other downstream modules)
 # ---------------------------------------------------------------------------
 
+output "vpc_cidr_block" {
+  description = "CIDR block of the platform VPC"
+  value       = module.networking.vpc_cidr_block
+}
+
+output "private_route_table_ids" {
+  description = "Private route table IDs in the platform VPC"
+  value       = module.networking.private_route_table_ids
+}
+
 output "eks_cluster_security_group_id" {
   description = "EKS Auto Mode cluster security group ID (auto-created by AWS)"
   value       = module.eks.cluster_security_group_id
