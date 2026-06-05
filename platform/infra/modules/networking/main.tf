@@ -320,3 +320,124 @@ resource "aws_vpc_endpoint" "ecr_api" {
     Name = "${var.name_prefix}-vpce-ecr-api"
   })
 }
+
+# ---------------------------------------------------------------------------
+# VPC Endpoints — Security Group for Interface Endpoints
+# ---------------------------------------------------------------------------
+# Dedicated SG allowing HTTPS inbound from EKS nodes/pods only.
+# Issue: #1160 (sec/H5 — restrict runner egress to VPC endpoints)
+resource "aws_security_group" "vpc_endpoints" {
+  name        = "${var.name_prefix}-sg-vpce"
+  description = "Security group for VPC interface endpoints — allows HTTPS from EKS"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "HTTPS from EKS nodes and pods"
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.eks.id]
+  }
+
+  tags = merge(var.common_tags, {
+    Name    = "${var.name_prefix}-sg-vpce"
+    Service = "vpc-endpoints"
+  })
+}
+
+# ---------------------------------------------------------------------------
+# VPC Endpoints (Interface) — AWS services used by agent runner pods
+# ---------------------------------------------------------------------------
+# These endpoints allow runner pods to reach AWS services via private IPs
+# within the VPC CIDR, enabling NetworkPolicy CIDR-based egress restriction.
+# Issue: #1160 (sec/H5)
+
+resource "aws_vpc_endpoint" "sts" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${var.aws_region}.sts"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = merge(var.common_tags, {
+    Name = "${var.name_prefix}-vpce-sts"
+  })
+}
+
+resource "aws_vpc_endpoint" "secretsmanager" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${var.aws_region}.secretsmanager"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = merge(var.common_tags, {
+    Name = "${var.name_prefix}-vpce-secretsmanager"
+  })
+}
+
+resource "aws_vpc_endpoint" "bedrock_runtime" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${var.aws_region}.bedrock-runtime"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = merge(var.common_tags, {
+    Name = "${var.name_prefix}-vpce-bedrock-runtime"
+  })
+}
+
+resource "aws_vpc_endpoint" "sqs" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${var.aws_region}.sqs"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = merge(var.common_tags, {
+    Name = "${var.name_prefix}-vpce-sqs"
+  })
+}
+
+resource "aws_vpc_endpoint" "execute_api" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${var.aws_region}.execute-api"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = merge(var.common_tags, {
+    Name = "${var.name_prefix}-vpce-execute-api"
+  })
+}
+
+# ---------------------------------------------------------------------------
+# VPC Endpoint (Gateway) — DynamoDB
+# ---------------------------------------------------------------------------
+# Gateway endpoints are free and route via route tables (no SG needed).
+# Used by agent pods for correlation-pointer writes.
+# Issue: #1160 (sec/H5)
+
+resource "aws_vpc_endpoint" "dynamodb" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.dynamodb"
+  vpc_endpoint_type = "Gateway"
+
+  route_table_ids = aws_route_table.private[*].id
+
+  tags = merge(var.common_tags, {
+    Name = "${var.name_prefix}-vpce-dynamodb"
+  })
+}
+
+# NOTE: bedrock-agentcore VPC endpoint is not yet available in all regions.
+# When it becomes available, add it here following the same pattern as
+# bedrock_runtime above. Until then, bedrock-agentcore traffic routes via NAT
+# gateway and will need an explicit CIDR allowlist in the NetworkPolicy (PR 2).
+# Tracked as follow-up in #1160.

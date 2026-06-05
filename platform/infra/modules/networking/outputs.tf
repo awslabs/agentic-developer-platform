@@ -84,3 +84,44 @@ output "availability_zones" {
   description = "List of availability zones used"
   value       = data.aws_availability_zones.available.names[*]
 }
+
+# VPC Endpoint Outputs
+output "vpc_endpoint_sg_id" {
+  description = "Security Group ID for VPC interface endpoints"
+  value       = aws_security_group.vpc_endpoints.id
+}
+
+output "vpc_endpoint_s3_id" {
+  description = "ID of the S3 Gateway VPC endpoint"
+  value       = aws_vpc_endpoint.s3.id
+}
+
+output "vpc_endpoint_dynamodb_id" {
+  description = "ID of the DynamoDB Gateway VPC endpoint"
+  value       = aws_vpc_endpoint.dynamodb.id
+}
+
+output "vpc_endpoint_sts_id" {
+  description = "ID of the STS Interface VPC endpoint"
+  value       = aws_vpc_endpoint.sts.id
+}
+
+output "vpc_endpoint_secretsmanager_id" {
+  description = "ID of the SecretsManager Interface VPC endpoint"
+  value       = aws_vpc_endpoint.secretsmanager.id
+}
+
+output "vpc_endpoint_bedrock_runtime_id" {
+  description = "ID of the Bedrock Runtime Interface VPC endpoint"
+  value       = aws_vpc_endpoint.bedrock_runtime.id
+}
+
+output "vpc_endpoint_sqs_id" {
+  description = "ID of the SQS Interface VPC endpoint"
+  value       = aws_vpc_endpoint.sqs.id
+}
+
+output "vpc_endpoint_execute_api_id" {
+  description = "ID of the Execute API Interface VPC endpoint"
+  value       = aws_vpc_endpoint.execute_api.id
+}
