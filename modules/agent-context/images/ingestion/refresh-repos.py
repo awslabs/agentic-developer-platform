@@ -695,6 +695,7 @@ def backfill_deepwiki_wikis(repo_state: dict[str, Any]) -> int:
 
         # Small delay between wiki generations to avoid rate limits
         if wikis_generated < MAX_WIKIS_PER_RUN:
+            # nosemgrep: arbitrary-sleep — rate-limit pacing for DeepWiki API
             time.sleep(5)
 
     log.info(

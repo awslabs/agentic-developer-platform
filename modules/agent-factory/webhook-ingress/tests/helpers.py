@@ -86,6 +86,7 @@ def poll_sqs(
         if messages:
             return messages
 
+        # nosemgrep: arbitrary-sleep — polling interval in deadline-bounded loop
         time.sleep(interval)
 
     return messages

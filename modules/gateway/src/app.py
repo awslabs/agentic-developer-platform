@@ -164,6 +164,7 @@ def create_app() -> FastAPI:
 
     # Error handler for BedrockGatewayError
     @app.exception_handler(BedrockGatewayError)
+    # nosemgrep: useless-inner-function — registered via @app.exception_handler decorator
     async def gateway_error_handler(request: Request, exc: BedrockGatewayError):
         logger.warning(
             "BedrockGatewayError occurred",
@@ -184,11 +185,11 @@ def create_app() -> FastAPI:
 
     # Health endpoints
     @app.get("/health")
-    async def health():
+    async def health():  # nosemgrep: useless-inner-function — registered via @app.get decorator
         return {"status": "healthy"}
 
     @app.get("/ready")
-    async def ready():
+    async def ready():  # nosemgrep: useless-inner-function — registered via @app.get decorator
         return {"status": "ready"}
 
     # Auto-discover and register routers from unit modules

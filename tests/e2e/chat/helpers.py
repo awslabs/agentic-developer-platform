@@ -287,6 +287,7 @@ def poll_ingest_route(
                     return match.group(1)
         except Exception:
             pass
+        # nosemgrep: arbitrary-sleep — polling interval in deadline-bounded loop
         time.sleep(3)
 
     return None
@@ -325,6 +326,7 @@ def poll_ingest_route_for_message(
                         return match.group(1)
         except Exception:
             pass
+        # nosemgrep: arbitrary-sleep — polling interval in deadline-bounded loop
         time.sleep(3)
 
     return None
