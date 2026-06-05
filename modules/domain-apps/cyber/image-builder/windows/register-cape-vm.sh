@@ -77,7 +77,7 @@ cat > "${DOMAIN_XML_DIR}/${VM_NAME}.xml" << DOMXML
       <target dev='vda' bus='virtio'/>
     </disk>
     <interface type='network'>
-      <source network='default'/>
+      <source network='sandbox'/>
       <model type='virtio'/>
     </interface>
     <graphics type='vnc' port='-1' autoport='yes'/>
@@ -165,10 +165,10 @@ if ! grep -q "${VM_NAME}" "$KVM_CONF" 2>/dev/null; then
 [${VM_NAME}]
 label = Windows 11 CAPE (${BUILD_DATE})
 platform = windows
-ip = ${VM_IP:-192.168.122.0}
+ip = ${VM_IP:-192.168.100.0}
 snapshot = clean
-interface = virbr0
-resultserver_ip = 192.168.122.1
+interface = virbr-sandbox
+resultserver_ip = 192.168.100.1
 resultserver_port = 2042
 tags = win11,x64,windows
 CONF
