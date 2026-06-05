@@ -55,9 +55,9 @@ module "gateway_lambda" {
   artifacts_bucket_name = aws_s3_bucket.chat_artifacts.id
   artifacts_table_arn   = aws_dynamodb_table.chat_artifacts.arn
   artifacts_table_name  = aws_dynamodb_table.chat_artifacts.name
-  ws_api_endpoint       = module.gateway_apigw.stage_invoke_url
-  ws_api_id             = module.gateway_apigw.api_id
-  ws_execution_arn      = module.gateway_apigw.execution_arn
+  ws_api_endpoint       = var.gateway_deployed ? module.gateway_apigw[0].stage_invoke_url : ""
+  ws_api_id             = var.gateway_deployed ? module.gateway_apigw[0].api_id : ""
+  ws_execution_arn      = var.gateway_deployed ? module.gateway_apigw[0].execution_arn : ""
   enable_ws_policies    = true
   tags                  = { Component = "agent-gateway" }
 }
@@ -80,9 +80,23 @@ locals {
   authorizer_function_name = var.gateway_deployed ? try(data.terraform_remote_state.gateway[0].outputs.lambda_authorizer_name, "") : ""
 }
 
+# Fail-closed: when gateway_deployed=true, the authorizer outputs MUST be
+# populated. If they're empty, gateway-infra-apply hasn't run with
+# enable_api_gateway=true. This check produces a clear error instead of
+# silently deploying an unauthenticated WebSocket.
+check "authorizer_available_when_gateway_deployed" {
+  assert {
+    condition     = !var.gateway_deployed || (local.authorizer_invoke_arn != "" && local.authorizer_function_name != "")
+    error_message = "gateway_deployed=true but the gateway module's authorizer outputs are empty. Ensure gateway-infra-apply has been run with enable_api_gateway=true before applying agent-factory."
+  }
+}
+
 # --- WebSocket API Gateway ---
+# Only deployed when gateway_deployed=true — a WebSocket API without an
+# authorizer is worse than no WebSocket API (sec/H6).
 
 module "gateway_apigw" {
+  count  = var.gateway_deployed ? 1 : 0
   source = "./modules/api-gateway-ws"
 
   name_prefix                     = local.name_prefix
@@ -178,10 +192,12 @@ resource "aws_iam_role_policy" "keda_operator_gateway_sqs" {
 # =============================================================================
 
 resource "aws_ssm_parameter" "gateway_ws_endpoint" {
+  count = var.gateway_deployed ? 1 : 0
+
   name        = "/adp/${var.environment}/gateway/agent-ws-url"
   description = "WebSocket API Gateway endpoint for agent streaming"
   type        = "String"
-  value       = module.gateway_apigw.stage_invoke_url
+  value       = module.gateway_apigw[0].stage_invoke_url
 
   tags = { Component = "agent-gateway" }
 }

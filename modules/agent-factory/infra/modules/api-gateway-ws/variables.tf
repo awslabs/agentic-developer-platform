@@ -16,15 +16,23 @@ variable "ingest_lambda_name" {
 }
 
 variable "authorizer_lambda_invoke_arn" {
-  description = "Invoke ARN of the existing gateway Lambda authorizer. Empty = no auth."
+  description = "Invoke ARN of the existing gateway Lambda authorizer. REQUIRED — WebSocket connections must be authenticated."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = var.authorizer_lambda_invoke_arn != ""
+    error_message = "authorizer_lambda_invoke_arn must not be empty. The WebSocket $connect route requires a Lambda authorizer. Deploy the gateway module first (gateway-infra-apply) to provision the authorizer."
+  }
 }
 
 variable "authorizer_lambda_function_name" {
-  description = "Function name of the gateway Lambda authorizer (for aws_lambda_permission). Required when authorizer_lambda_invoke_arn is set."
+  description = "Function name of the gateway Lambda authorizer. REQUIRED — WebSocket connections must be authenticated."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = var.authorizer_lambda_function_name != ""
+    error_message = "authorizer_lambda_function_name must not be empty. Both authorizer variables are required for WebSocket $connect authentication."
+  }
 }
 
 variable "tags" {

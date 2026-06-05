@@ -1,6 +1,6 @@
 output "gateway_ws_endpoint" {
   description = "WebSocket API Gateway endpoint"
-  value       = module.gateway_apigw.stage_invoke_url
+  value       = var.gateway_deployed ? module.gateway_apigw[0].stage_invoke_url : ""
 }
 
 output "gateway_input_queue_url" {

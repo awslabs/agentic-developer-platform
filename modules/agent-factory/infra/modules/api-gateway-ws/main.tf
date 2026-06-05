@@ -12,20 +12,18 @@ resource "aws_apigatewayv2_integration" "ingest" {
   integration_method = "POST"
 }
 
-# $connect — with authorizer from gateway module (if available)
+# $connect — always requires CUSTOM authorizer (fail-closed by construction)
 resource "aws_apigatewayv2_route" "connect" {
   api_id    = aws_apigatewayv2_api.ws.id
   route_key = "$connect"
   target    = "integrations/${aws_apigatewayv2_integration.ingest.id}"
 
-  authorization_type = var.authorizer_lambda_invoke_arn != "" && var.authorizer_lambda_function_name != "" ? "CUSTOM" : "NONE"
-  authorizer_id      = var.authorizer_lambda_invoke_arn != "" && var.authorizer_lambda_function_name != "" ? aws_apigatewayv2_authorizer.gateway[0].id : null
+  authorization_type = "CUSTOM"
+  authorizer_id      = aws_apigatewayv2_authorizer.gateway.id
 }
 
 # Reuse the gateway module's existing Lambda authorizer
 resource "aws_apigatewayv2_authorizer" "gateway" {
-  count = var.authorizer_lambda_invoke_arn != "" && var.authorizer_lambda_function_name != "" ? 1 : 0
-
   api_id           = aws_apigatewayv2_api.ws.id
   authorizer_type  = "REQUEST"
   authorizer_uri   = var.authorizer_lambda_invoke_arn
@@ -36,8 +34,6 @@ resource "aws_apigatewayv2_authorizer" "gateway" {
 
 # Allow this WebSocket API to invoke the gateway's authorizer Lambda
 resource "aws_lambda_permission" "authorizer_invoke" {
-  count = var.authorizer_lambda_invoke_arn != "" && var.authorizer_lambda_function_name != "" ? 1 : 0
-
   statement_id  = "AllowAgentGatewayWSInvoke"
   action        = "lambda:InvokeFunction"
   function_name = var.authorizer_lambda_function_name
