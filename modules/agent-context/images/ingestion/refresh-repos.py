@@ -27,6 +27,28 @@ from typing import Any
 
 import requests
 
+# ---------------------------------------------------------------------------
+# Input validators — guard subprocess args against flag-injection
+# ---------------------------------------------------------------------------
+
+_REPO_NAME_RE = re.compile(r"^[a-zA-Z0-9._/-]+$")  # owner/name pattern
+_URL_RE = re.compile(r"^https://[a-zA-Z0-9.-]+(/[a-zA-Z0-9._~!$&'()*+,;=:@%/-]*)?$")
+
+
+def _safe_repo(repo: str) -> str:
+    """Validate repo name before passing to subprocess."""
+    if repo.startswith("-") or not _REPO_NAME_RE.match(repo):
+        raise ValueError(f"refusing to ingest repo with suspicious name: {repo!r}")
+    return repo
+
+
+def _safe_url(url: str) -> str:
+    """Validate URL before passing to subprocess."""
+    if not _URL_RE.match(url):
+        raise ValueError(f"refusing URL: {url!r}")
+    return url
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -48,9 +70,7 @@ ACCOUNTS_FILE = os.getenv("ACCOUNTS_FILE", "/config/accounts.txt")
 
 # SQS publisher mode: when SQS_QUEUE_URL is set, delegate to publish-ingestion.py
 SQS_QUEUE_URL = os.getenv("SQS_QUEUE_URL", "")
-DEEPWIKI_URL = os.getenv(
-    "DEEPWIKI_URL", "http://deepwiki.agent-context.svc.cluster.local:8001"
-)
+DEEPWIKI_URL = os.getenv("DEEPWIKI_URL", "http://deepwiki.agent-context.svc.cluster.local:8001")
 DEEPWIKI_SIGNIFICANT_THRESHOLD = 10  # Re-run DeepWiki if >N files changed
 MAX_WIKIS_PER_RUN = int(os.getenv("MAX_WIKIS_PER_RUN", "15"))  # Cap wiki generation per CronJob run
 
@@ -156,7 +176,8 @@ def git_diff_names(clone_path: str, old_sha: str, new_sha: str) -> list[str]:
     try:
         result = subprocess.run(
             ["git", "-C", clone_path, "diff", "--name-only", old_sha, new_sha],
-            capture_output=True, timeout=30,
+            capture_output=True,
+            timeout=30,
         )
         if result.returncode == 0:
             return [f for f in result.stdout.decode().strip().split("\n") if f]
@@ -171,7 +192,8 @@ def git_diff_stat(clone_path: str, old_sha: str, new_sha: str) -> str:
     try:
         result = subprocess.run(
             ["git", "-C", clone_path, "diff", "--stat", old_sha, new_sha],
-            capture_output=True, timeout=30,
+            capture_output=True,
+            timeout=30,
         )
         if result.returncode == 0:
             return result.stdout.decode()[:3000]
@@ -209,9 +231,7 @@ def fetch_existing_wiki(org_repo: str) -> str | None:
         return None
 
 
-def incremental_wiki_update(
-    repo: str, old_sha: str, new_sha: str
-) -> bool:
+def incremental_wiki_update(repo: str, old_sha: str, new_sha: str) -> bool:
     """Update an existing wiki based on what changed, instead of full regeneration.
 
     Returns True if the wiki was updated successfully.
@@ -249,7 +269,7 @@ def incremental_wiki_update(
 The following files changed (diff from {old_sha[:8]} to {new_sha[:8]}):
 {diff_summary}
 
-Changed files: {', '.join(changed_files[:20])}
+Changed files: {", ".join(changed_files[:20])}
 {"(and " + str(len(changed_files) - 20) + " more files)" if len(changed_files) > 20 else ""}
 
 Here is the current wiki:
@@ -271,7 +291,9 @@ Return the complete updated wiki markdown."""
 
     # 4. Upload updated wiki
     if upload_wiki_to_openviking(updated_wiki, repo):
-        log.info("Incremental wiki update successful for %s (%d changed files)", repo, len(changed_files))
+        log.info(
+            "Incremental wiki update successful for %s (%d changed files)", repo, len(changed_files)
+        )
         return True
     return False
 
@@ -309,7 +331,7 @@ Discover topics from the content. If this repo introduces a new concept, create 
 
     try:
         # Extract JSON array from response
-        match = re.search(r'\[.*\]', result, re.DOTALL)
+        match = re.search(r"\[.*\]", result, re.DOTALL)
         if match:
             tags = json.loads(match.group())
             if isinstance(tags, list) and all(isinstance(t, str) for t in tags):
@@ -371,7 +393,7 @@ def refresh_repo(repo: str, state: dict[str, Any], force: bool = False) -> bool:
                 sys.executable,
                 "/app/ingest-repo.py",
                 "--repo",
-                repo,
+                _safe_repo(repo),
                 "--ov-url",
                 OV_URL,
                 "--ov-key",
@@ -394,12 +416,19 @@ def refresh_repo(repo: str, state: dict[str, Any], force: bool = False) -> bool:
     wiki_updated = False
 
     if has_existing_wiki and prev_sha:
-        log.info("Attempting incremental wiki update for %s (diff %s..%s)", repo, prev_sha[:8], current_sha[:8])
+        log.info(
+            "Attempting incremental wiki update for %s (diff %s..%s)",
+            repo,
+            prev_sha[:8],
+            current_sha[:8],
+        )
         wiki_updated = incremental_wiki_update(repo, prev_sha, current_sha)
         if wiki_updated:
             log.info("Incremental wiki update succeeded for %s", repo)
         else:
-            log.info("Incremental wiki update failed for %s — wiki will be regenerated on backfill", repo)
+            log.info(
+                "Incremental wiki update failed for %s — wiki will be regenerated on backfill", repo
+            )
 
     # --- Topic tagging via LLM ---
     topics = tag_repo_with_topics(repo, state)
@@ -409,9 +438,9 @@ def refresh_repo(repo: str, state: dict[str, Any], force: bool = False) -> bool:
         "last_sha": current_sha,
         "last_ingested": datetime.now(timezone.utc).isoformat(),
         "code_index_sha": current_sha,
-        "deepwiki_sha": current_sha if wiki_updated else (
-            current_sha if not prev_sha else prev_state.get("deepwiki_sha")
-        ),
+        "deepwiki_sha": current_sha
+        if wiki_updated
+        else (current_sha if not prev_sha else prev_state.get("deepwiki_sha")),
         "topics": topics,
         "topics_sha": current_sha if topics else prev_state.get("topics_sha"),
     }
@@ -472,7 +501,7 @@ def refresh_url(url: str, state: dict[str, Any], force: bool = False) -> bool:
                 sys.executable,
                 "/app/ingest-url.py",
                 "--url",
-                url,
+                _safe_url(url),
                 "--ov-url",
                 OV_URL,
                 "--ov-key",
@@ -503,7 +532,12 @@ def refresh_url(url: str, state: dict[str, Any], force: bool = False) -> bool:
 
     # Get current ETag/Last-Modified for state tracking
     try:
-        resp = requests.head(url, timeout=15, headers={"User-Agent": "AgentContext-Crawler/1.0"}, allow_redirects=True)
+        resp = requests.head(
+            url,
+            timeout=15,
+            headers={"User-Agent": "AgentContext-Crawler/1.0"},
+            allow_redirects=True,
+        )
         etag = resp.headers.get("ETag", "")
         last_modified = resp.headers.get("Last-Modified", "")
     except Exception:
@@ -560,7 +594,9 @@ def deepwiki_generate(org_repo: str) -> str | None:
                 return "\n".join(wiki_parts)
             return data.get("content", data.get("wiki", ""))
         else:
-            log.warning("DeepWiki returned HTTP %d for %s: %s", resp.status_code, org_repo, resp.text[:200])
+            log.warning(
+                "DeepWiki returned HTTP %d for %s: %s", resp.status_code, org_repo, resp.text[:200]
+            )
             return None
     except requests.Timeout:
         log.warning("DeepWiki timed out for %s", org_repo)
@@ -627,9 +663,7 @@ def backfill_deepwiki_wikis(repo_state: dict[str, Any]) -> int:
     Returns the number of wikis generated.
     """
     repos_needing_wiki = [
-        repo
-        for repo, state in repo_state.items()
-        if not state.get("deepwiki_sha")
+        repo for repo, state in repo_state.items() if not state.get("deepwiki_sha")
     ]
 
     if not repos_needing_wiki:
@@ -644,7 +678,9 @@ def backfill_deepwiki_wikis(repo_state: dict[str, Any]) -> int:
 
     wikis_generated = 0
     for repo in repos_needing_wiki[:MAX_WIKIS_PER_RUN]:
-        log.info("Generating DeepWiki wiki for %s (%d/%d)", repo, wikis_generated + 1, MAX_WIKIS_PER_RUN)
+        log.info(
+            "Generating DeepWiki wiki for %s (%d/%d)", repo, wikis_generated + 1, MAX_WIKIS_PER_RUN
+        )
         wiki = deepwiki_generate(repo)
         if wiki:
             uploaded = upload_wiki_to_openviking(wiki, repo)
@@ -682,9 +718,11 @@ def run_publisher(force: bool = False, triggered_by: str = "daily_refresh") -> d
     """
     log.info("SQS mode: delegating to publish-ingestion.py (triggered_by=%s)", triggered_by)
     cmd = [
-        sys.executable, "/app/publish-ingestion.py",
+        sys.executable,
+        "/app/publish-ingestion.py",
         "--all",
-        "--triggered-by", triggered_by,
+        "--triggered-by",
+        triggered_by,
     ]
     if force:
         cmd.append("--force")
