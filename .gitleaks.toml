@@ -25,6 +25,7 @@ paths = [
   '''modules/agent-factory/tests/README\.md''',
   '''modules/gateway/frontend/tests/e2e/test_budget_ratelimit_smoke\.py''',
   '''data/security/2026-06-05-class-A-gitleaks-allowlist-audit\.md''',
+  '''docs/bedrock-agentore-dg\.md''',
 ]
 regexes = [
   '''AKIAIOSFODNN7EXAMPLE''',

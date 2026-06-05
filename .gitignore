@@ -43,6 +43,8 @@ tfplan
 htmlcov/
 .pytest_cache/
 coverage.xml
+modules/gateway/frontend/coverage/
+modules/gateway/frontend/playwright-report/
 
 # Environment
 .env
