@@ -30,15 +30,13 @@ def _reset_module(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     # Force re-import to reset cached table
     mods_to_remove = [
-        k for k in sys.modules
-        if k.startswith("common.correlation_store")
+        k for k in sys.modules if k.startswith("common.correlation_store")
     ]
     for mod in mods_to_remove:
         del sys.modules[mod]
     yield
     mods_to_remove = [
-        k for k in sys.modules
-        if k.startswith("common.correlation_store")
+        k for k in sys.modules if k.startswith("common.correlation_store")
     ]
     for mod in mods_to_remove:
         del sys.modules[mod]
@@ -198,16 +196,19 @@ class TestWritePointer:
 
         mock_table = MagicMock()
         mock_table.put_item.side_effect = ClientError(
-            {"Error": {
-                "Code": "ProvisionedThroughputExceededException",
-                "Message": "throttled",
-            }},
+            {
+                "Error": {
+                    "Code": "ProvisionedThroughputExceededException",
+                    "Message": "throttled",
+                }
+            },
             "PutItem",
         )
 
-        with patch("boto3.resource") as mock_resource, patch.object(
-            correlation_store, "_emit_write_failed_metric"
-        ) as mock_metric:
+        with (
+            patch("boto3.resource") as mock_resource,
+            patch.object(correlation_store, "_emit_write_failed_metric") as mock_metric,
+        ):
             mock_resource.return_value.Table.return_value = mock_table
             # Should NOT raise
             correlation_store.write_pointer("key1", "corr-1", "user-1", True)

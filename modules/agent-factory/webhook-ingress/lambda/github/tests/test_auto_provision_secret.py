@@ -42,10 +42,14 @@ class TestAutoProvisionTenantSecret:
         # Mock reading platform secrets
         sm_client.get_secret_value.side_effect = [
             {"SecretString": "123456"},  # app_id
-            {"SecretString": "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----"},  # key
+            {
+                "SecretString": "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----"
+            },  # key
         ]
         # Mock create_secret success
-        sm_client.create_secret.return_value = {"ARN": "arn:aws:secretsmanager:us-east-1:123:secret:adp/dev/tenants/testorg/github-app-AbCdEf"}
+        sm_client.create_secret.return_value = {
+            "ARN": "arn:aws:secretsmanager:us-east-1:123:secret:adp/dev/tenants/testorg/github-app-AbCdEf"
+        }
 
         _auto_provision_tenant_github_app_secret("testorg", 12345)
 
@@ -156,6 +160,7 @@ class TestAutoProvisionTenantSecret:
 
         with patch.dict("sys.modules", {"boto3": MagicMock()}) as _:
             import boto3
+
             mock_client = MagicMock()
             boto3.client = MagicMock(return_value=mock_client)
             # Reset again after patching

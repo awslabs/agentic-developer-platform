@@ -54,7 +54,7 @@ def _resolve_admin_token() -> str:
 
 
 def _resolve_internal_api_key() -> str:
-    """Resolve the internal API key from Secrets Manager (cached for Lambda lifetime)."""
+    """Resolve the internal API key from Secrets Manager (cached for Lambda lifetime)."""  # noqa: E501
     global _internal_api_key
     if _internal_api_key is not None:
         return _internal_api_key
@@ -75,9 +75,7 @@ def _resolve_internal_api_key() -> str:
     return _internal_api_key
 
 
-def resolve_user_by_identity(
-    provider: str, provider_user_id: str
-) -> dict | None:
+def resolve_user_by_identity(provider: str, provider_user_id: str) -> dict | None:
     """Call POST /internal/v1/resolve-user to resolve canonical user via Postgres.
 
     Returns dict with keys {user_id, org_id, team_id, is_shadow} on success,
@@ -95,7 +93,9 @@ def resolve_user_by_identity(
 
     api_key = _resolve_internal_api_key()
     if not api_key:
-        logger.warning("Internal API key not available — cannot resolve user via gateway")
+        logger.warning(
+            "Internal API key not available — cannot resolve user via gateway"
+        )
         return None
 
     headers = {
@@ -129,7 +129,7 @@ def resolve_user_by_identity(
             )
             return None
         logger.error(
-            "resolve_user_by_identity HTTP error %d for provider=%s provider_user_id=%s: %s",
+            "resolve_user_by_identity HTTP error %d for provider=%s provider_user_id=%s: %s",  # noqa: E501
             e.code,
             provider,
             provider_user_id,
@@ -301,7 +301,5 @@ def auto_provision_user(
         )
         return False
     except Exception as e:
-        logger.error(
-            "Auto-provision failed for github_login=%s: %s", github_login, e
-        )
+        logger.error("Auto-provision failed for github_login=%s: %s", github_login, e)
         return False

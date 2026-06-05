@@ -124,9 +124,7 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
         )
         return org_login
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Failed to auto-register installation_id=%d: %s", installation_id, exc
-        )
+        logger.warning("Failed to auto-register installation_id=%d: %s", installation_id, exc)
         return None
 
 
@@ -147,9 +145,7 @@ def _get_metrics():
     if _metrics_mod is None:
         from common.metrics import WebhookMetrics
 
-        _metrics_mod = WebhookMetrics(
-            region=os.environ.get("AWS_REGION", "us-east-1")
-        )
+        _metrics_mod = WebhookMetrics(region=os.environ.get("AWS_REGION", "us-east-1"))
     return _metrics_mod
 
 
@@ -209,16 +205,14 @@ def _auto_provision_tenant_github_app_secret(tenant_id: str, installation_id: in
 
     try:
         # Read platform App credentials (same Terraform module owns these)
-        app_id_resp = sm.get_secret_value(
-            SecretId=f"adp/{env}/github-app/adp-agent-platform-id"
+        app_id_resp = sm.get_secret_value(SecretId=f"adp/{env}/github-app/adp-agent-platform-id")
+        app_key_resp = sm.get_secret_value(SecretId=f"adp/{env}/github-app/adp-agent-platform-key")
+        payload = json.dumps(
+            {
+                "app_id": app_id_resp["SecretString"],
+                "private_key": app_key_resp["SecretString"],
+            }
         )
-        app_key_resp = sm.get_secret_value(
-            SecretId=f"adp/{env}/github-app/adp-agent-platform-key"
-        )
-        payload = json.dumps({
-            "app_id": app_id_resp["SecretString"],
-            "private_key": app_key_resp["SecretString"],
-        })
     except Exception as exc:  # noqa: BLE001
         logger.error(
             "Auto-provision: failed to read platform App secrets for tenant=%s — %s",
@@ -276,9 +270,7 @@ def _get_correlation_store():
     return _correlation_store_mod
 
 
-def determine_correlation(
-    payload: dict, resolved_identity, channel_key: str
-) -> dict[str, Any]:
+def determine_correlation(payload: dict, resolved_identity, channel_key: str) -> dict[str, Any]:
     """Determine correlation context for this event (read-only).
 
     For human senders: always starts a new chain (overrides any stale pointer).
@@ -327,14 +319,37 @@ def _get_rate_limiter():
     """Return a cached RateLimiter bound to the configured table."""
     global _rate_limiter
     if _rate_limiter is None:
-        from common.rate_limit import RateLimiter
+        from common.rate_limit import (
+            DEFAULT_LIMIT_PER_HOUR,
+            DEFAULT_LIMIT_PER_WINDOW,
+            RateLimiter,
+        )
 
         rate_limits_table = os.environ.get("RATE_LIMITS_TABLE", "")
         if not rate_limits_table:
             logger.error("RATE_LIMITS_TABLE env var is not set")
+
+        # Env-tunable limits (per-window = 5min bucket, per-hour = 12 buckets).
+        # Defaults preserve prior behavior; raise via Lambda env to clear backlogs
+        # without redeploying code. Invalid values fall back to defaults.
+        try:
+            limit_per_window = int(
+                os.environ.get("RATE_LIMIT_PER_WINDOW") or DEFAULT_LIMIT_PER_WINDOW
+            )
+        except ValueError:
+            logger.warning("RATE_LIMIT_PER_WINDOW is not an int; using default")
+            limit_per_window = DEFAULT_LIMIT_PER_WINDOW
+        try:
+            limit_per_hour = int(os.environ.get("RATE_LIMIT_PER_HOUR") or DEFAULT_LIMIT_PER_HOUR)
+        except ValueError:
+            logger.warning("RATE_LIMIT_PER_HOUR is not an int; using default")
+            limit_per_hour = DEFAULT_LIMIT_PER_HOUR
+
         _rate_limiter = RateLimiter(
             table_name=rate_limits_table,
             region=os.environ.get("AWS_REGION", "us-east-1"),
+            limit_per_window=limit_per_window,
+            limit_per_hour=limit_per_hour,
         )
     return _rate_limiter
 
@@ -383,12 +398,16 @@ def handler(event: dict, context) -> dict:
     else:
         body_bytes = raw_body.encode("utf-8") if isinstance(raw_body, str) else raw_body
 
-    print(f"DBG handler:headers x-github-event={headers.get('x-github-event','')!r} x-github-delivery={headers.get('x-github-delivery','')!r} content-type={headers.get('content-type','')!r} body_len={len(body_bytes)}")
+    print(
+        f"DBG handler:headers x-github-event={headers.get('x-github-event', '')!r} x-github-delivery={headers.get('x-github-delivery', '')!r} content-type={headers.get('content-type', '')!r} body_len={len(body_bytes)}"
+    )
 
     # 2. Verify HMAC signature
     signature_header = headers.get("x-hub-signature-256", "")
     webhook_secret = _resolve_webhook_secret()
-    print(f"DBG handler:sig sig_header_len={len(signature_header)} secret_len={len(webhook_secret)}")
+    print(
+        f"DBG handler:sig sig_header_len={len(signature_header)} secret_len={len(webhook_secret)}"
+    )
     if not _get_signature().verify_github_signature(body_bytes, signature_header, webhook_secret):
         print("DBG handler:sig FAIL invalid_signature")
         _log_outcome(
@@ -441,12 +460,12 @@ def handler(event: dict, context) -> dict:
     repo = payload.get("repository", {}).get("full_name", "")
     sender = payload.get("sender", {})
     sender_id = sender.get("id", 0)
-    print(f"DBG handler:identity install_id={installation_id} repo={repo!r} sender_id={sender_id} sender_login={sender.get('login','')!r}")
+    print(
+        f"DBG handler:identity install_id={installation_id} repo={repo!r} sender_id={sender_id} sender_login={sender.get('login', '')!r}"
+    )
 
     # 5. Resolve identity (tenant + sender) via identity-index
-    resolved, outcome_reason = _get_identity_resolver().resolve(
-        installation_id, sender_id
-    )
+    resolved, outcome_reason = _get_identity_resolver().resolve(installation_id, sender_id)
     print(f"DBG handler:resolved resolved={resolved is not None} outcome_reason={outcome_reason!r}")
 
     # 5a. Self-heal unknown installation: if the webhook tells us the repo's
@@ -457,11 +476,7 @@ def handler(event: dict, context) -> dict:
     if resolved is None and outcome_reason == "unknown_installation" and installation_id:
         repo_obj = payload.get("repository", {}) or {}
         org_obj = payload.get("organization") or {}
-        org_login = (
-            org_obj.get("login")
-            or (repo_obj.get("owner") or {}).get("login")
-            or ""
-        )
+        org_login = org_obj.get("login") or (repo_obj.get("owner") or {}).get("login") or ""
         if org_login:
             registered_org = _auto_register_installation(installation_id, org_login)
             if registered_org:
@@ -485,10 +500,7 @@ def handler(event: dict, context) -> dict:
             }
         )
         tenant_item = tenant_resp.get("Item")
-        if (
-            tenant_item
-            and tenant_item.get("user_provisioning_mode") == "auto_provision"
-        ):
+        if tenant_item and tenant_item.get("user_provisioning_mode") == "auto_provision":
             # Attempt auto-provision via Gateway admin API
             org_id = tenant_item["org_id"]
             provisioned = _get_gateway_client().auto_provision_user(
@@ -498,9 +510,7 @@ def handler(event: dict, context) -> dict:
             )
             if provisioned:
                 # Retry resolution after provisioning
-                resolved, outcome_reason = _resolver.resolve(
-                    installation_id, sender_id
-                )
+                resolved, outcome_reason = _resolver.resolve(installation_id, sender_id)
 
     # 7. If identity resolution failed → 403 Forbidden
     if resolved is None:
@@ -521,9 +531,7 @@ def handler(event: dict, context) -> dict:
             _get_metrics().flush()
         except Exception:
             pass  # Best-effort — never block the response
-        return _response(
-            403, {"error": "unknown_identity", "outcome": outcome_reason}
-        )
+        return _response(403, {"error": "unknown_identity", "outcome": outcome_reason})
 
     tenant_id = resolved.tenant_id
 
@@ -656,7 +664,9 @@ def handler(event: dict, context) -> dict:
         "arrived_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     envelope["message_id"] = str(uuid.uuid4())
-    print(f"DBG handler:publish_attempt message_id={envelope['message_id']} persona={intent.persona}")
+    print(
+        f"DBG handler:publish_attempt message_id={envelope['message_id']} persona={intent.persona}"
+    )
 
     message_id = _get_sqs_publisher().publish_envelope(envelope)
     print(f"DBG handler:publish_result sqs_message_id={message_id!r}")

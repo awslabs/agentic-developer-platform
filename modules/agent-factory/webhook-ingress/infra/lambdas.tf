@@ -38,6 +38,8 @@ resource "aws_lambda_function" "github_webhook" {
       USER_IDENTITY_INDEX_TABLE     = "adp-${var.environment}-user-identity-index"
       EVENTS_TABLE                  = aws_dynamodb_table.webhook_events.name
       RATE_LIMITS_TABLE             = aws_dynamodb_table.rate_limits.name
+      RATE_LIMIT_PER_WINDOW         = tostring(var.rate_limit_per_window)
+      RATE_LIMIT_PER_HOUR           = tostring(var.rate_limit_per_hour)
       WEBHOOK_SECRET_ARN            = aws_secretsmanager_secret.webhook_secret.arn
       GATEWAY_API_URL               = var.gateway_api_url
       USER_IDENTITY_INDEX_V2_WRITE  = "false"

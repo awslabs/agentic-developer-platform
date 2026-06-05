@@ -28,15 +28,19 @@ def _reset_module(monkeypatch):
 
     # Clear module caches
     mods_to_clear = [
-        k for k in sys.modules
-        if k.startswith("common.identity_resolver") or k.startswith("common.gateway_client")
+        k
+        for k in sys.modules
+        if k.startswith("common.identity_resolver")
+        or k.startswith("common.gateway_client")
     ]
     for mod in mods_to_clear:
         del sys.modules[mod]
     yield
     mods_to_clear = [
-        k for k in sys.modules
-        if k.startswith("common.identity_resolver") or k.startswith("common.gateway_client")
+        k
+        for k in sys.modules
+        if k.startswith("common.identity_resolver")
+        or k.startswith("common.gateway_client")
     ]
     for mod in mods_to_clear:
         del sys.modules[mod]
@@ -87,7 +91,7 @@ def _mock_ddb_get_item(items_by_table):
     def make_table(table_name):
         mock_table = MagicMock()
 
-        def get_item(Key=None):
+        def get_item(Key=None):  # noqa: N803  # boto3 DDB API uses uppercase Key
             table_items = items_by_table.get(table_name, {})
             # Build lookup key from the Key dict values
             key_str = "|".join(str(v) for v in Key.values())
@@ -139,7 +143,7 @@ class TestResolveUsesV2WhenFlagOn:
 
 
 class TestResolveFallsBackToPostgresWhenV2Misses:
-    """Test 2: v2 returns nothing -> Lambda calls /resolve-user and uses Postgres result."""
+    """Test 2: v2 returns nothing -> Lambda calls /resolve-user and uses Postgres result."""  # noqa: E501
 
     def test_resolve_falls_back_to_postgres_when_v2_misses(self, monkeypatch):
         from common import identity_resolver
@@ -169,7 +173,7 @@ class TestResolveFallsBackToPostgresWhenV2Misses:
 
 
 class TestResolveTrustsPostgresOnDrift:
-    """Test 3: v2 returns user A, Postgres returns user B -> uses B, emits drift metric."""
+    """Test 3: v2 returns user A, Postgres returns user B -> uses B, emits drift metric."""  # noqa: E501
 
     def test_resolve_trusts_postgres_on_drift(self, monkeypatch):
         from common import identity_resolver
@@ -202,7 +206,9 @@ class TestResolveTrustsPostgresOnDrift:
                     return_value=PG_RESULT_CANONICAL,
                 ):
                     identity_resolver._cloudwatch = None
-                    result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+                    result, reason = identity_resolver.resolve(
+                        INSTALLATION_ID, SENDER_ID
+                    )
 
         assert reason == "ok"
         assert result is not None
@@ -250,7 +256,7 @@ class TestKillSwitchDisablesGatewayCall:
 
 
 class TestLegacyKillSwitchStillWorks:
-    """Test 5: With USER_IDENTITY_INDEX_V2_READ=false, behaves as today (legacy path)."""
+    """Test 5: With USER_IDENTITY_INDEX_V2_READ=false, behaves as today (legacy path)."""  # noqa: E501
 
     def test_legacy_kill_switch_still_works(self, monkeypatch):
         monkeypatch.setenv("USER_IDENTITY_INDEX_V2_READ", "false")
@@ -319,7 +325,9 @@ class TestInternalApiKeyLoadedOnce:
     """Test 7: INTERNAL_API_KEY_ARN is fetched on first call and cached."""
 
     def test_internal_api_key_loaded_once(self, monkeypatch):
-        monkeypatch.setenv("INTERNAL_API_KEY_ARN", "arn:aws:secretsmanager:us-east-1:123:secret:key")
+        monkeypatch.setenv(
+            "INTERNAL_API_KEY_ARN", "arn:aws:secretsmanager:us-east-1:123:secret:key"
+        )
         monkeypatch.setenv("BG_INTERNAL_API_KEY", "")
         mods = [k for k in sys.modules if k.startswith("common.gateway_client")]
         for m in mods:
@@ -343,7 +351,7 @@ class TestInternalApiKeyLoadedOnce:
 
 
 class TestPostgres404TreatedAsNoMatch:
-    """Test 8: When /resolve-user returns 404, Lambda treats it as not-found not error."""
+    """Test 8: When /resolve-user returns 404, Lambda treats it as not-found not error."""  # noqa: E501
 
     def test_postgres_404_treated_as_no_match(self, monkeypatch):
         from common import identity_resolver

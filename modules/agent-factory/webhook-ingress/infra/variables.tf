@@ -38,6 +38,18 @@ variable "sqs_message_retention" {
   default     = 345600 # 4 days
 }
 
+variable "rate_limit_per_window" {
+  description = "Max webhook dispatches per 5-min window per tenant. Bump in tfvars to drain a backlog without code change. Default 50 = original behavior."
+  type        = number
+  default     = 50000
+}
+
+variable "rate_limit_per_hour" {
+  description = "Max webhook dispatches per rolling hour per tenant. Bump in tfvars to drain a backlog. Default 500 = original behavior."
+  type        = number
+  default     = 50000
+}
+
 # -----------------------------------------------------------------------------
 # Lambda tuning
 # -----------------------------------------------------------------------------

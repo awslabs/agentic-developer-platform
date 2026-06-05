@@ -79,7 +79,9 @@ def publish_envelope(envelope: dict) -> str | None:
         msg_id = resp.get("MessageId", "")
         logger.info(
             "Published envelope tenant=%s sqs_message_id=%s run_id=%s",
-            tenant_id, msg_id, envelope.get("message_id", ""),
+            tenant_id,
+            msg_id,
+            envelope.get("message_id", ""),
         )
         return msg_id
     except Exception as e:

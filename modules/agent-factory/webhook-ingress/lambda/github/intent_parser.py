@@ -229,9 +229,7 @@ def _emit_metric(metric_name: str, dimensions: dict[str, str]) -> None:
             MetricData=[
                 {
                     "MetricName": metric_name,
-                    "Dimensions": [
-                        {"Name": k, "Value": v} for k, v in dimensions.items()
-                    ],
+                    "Dimensions": [{"Name": k, "Value": v} for k, v in dimensions.items()],
                     "Value": 1,
                     "Unit": "Count",
                 }

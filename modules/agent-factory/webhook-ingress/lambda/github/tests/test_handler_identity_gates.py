@@ -67,9 +67,7 @@ class TestUnknownInstallation:
     @patch("handler._get_events_log")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
-    def test_unknown_installation_no_org_login_returns_403(
-        self, mock_sig, mock_resolver, mock_log
-    ):
+    def test_unknown_installation_no_org_login_returns_403(self, mock_sig, mock_resolver, mock_log):
         """If the webhook has no org/owner login to derive tenant from, 403."""
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (None, "unknown_installation")
@@ -143,9 +141,7 @@ class TestUnknownUser:
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
-    def test_unknown_user_returns_403(
-        self, mock_sig, mock_resolver, mock_gw_client, mock_log
-    ):
+    def test_unknown_user_returns_403(self, mock_sig, mock_resolver, mock_gw_client, mock_log):
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (None, "unknown_user")
         # Simulate _get_table for auto-provision check — strict mode
@@ -181,9 +177,7 @@ class TestCrossTenantIdentity:
     @patch("handler._get_events_log")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
-    def test_cross_tenant_outcome_from_resolver_still_403s(
-        self, mock_sig, mock_resolver, mock_log
-    ):
+    def test_cross_tenant_outcome_from_resolver_still_403s(self, mock_sig, mock_resolver, mock_log):
         # This keeps the handler-level contract intact: if something upstream
         # ever decides to hard-block cross-tenant again, the handler will 403.
         mock_sig.return_value.verify_github_signature.return_value = True

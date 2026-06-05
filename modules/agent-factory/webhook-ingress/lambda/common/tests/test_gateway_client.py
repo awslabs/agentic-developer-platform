@@ -37,12 +37,14 @@ class TestResolveUserByIdentity:
 
         gateway_client._internal_api_key = None  # reset cache
 
-        response_body = json.dumps({
-            "user_id": "650f093f-ecd9-4ce1-a5a9-368e02c449cf",
-            "org_id": "pranavsharma1000",
-            "team_id": "team-1",
-            "is_shadow": False,
-        }).encode("utf-8")
+        response_body = json.dumps(
+            {
+                "user_id": "650f093f-ecd9-4ce1-a5a9-368e02c449cf",
+                "org_id": "pranavsharma1000",
+                "team_id": "team-1",
+                "is_shadow": False,
+            }
+        ).encode("utf-8")
 
         mock_resp = MagicMock()
         mock_resp.status = 200
@@ -105,8 +107,10 @@ class TestResolveUserByIdentity:
         assert result is None
 
     def test_internal_api_key_loaded_once(self, monkeypatch):
-        """INTERNAL_API_KEY_ARN is fetched on first call and cached for Lambda lifetime."""
-        monkeypatch.setenv("INTERNAL_API_KEY_ARN", "arn:aws:secretsmanager:us-east-1:123:secret:key")
+        """INTERNAL_API_KEY_ARN is fetched on first call and cached for Lambda lifetime."""  # noqa: E501
+        monkeypatch.setenv(
+            "INTERNAL_API_KEY_ARN", "arn:aws:secretsmanager:us-east-1:123:secret:key"
+        )
         monkeypatch.setenv("BG_INTERNAL_API_KEY", "")
         mods = [k for k in sys.modules if k.startswith("common.gateway_client")]
         for m in mods:
@@ -134,12 +138,14 @@ class TestResolveUserByIdentity:
 
         gateway_client._internal_api_key = None
 
-        response_body = json.dumps({
-            "user_id": "abc",
-            "org_id": "org1",
-            "team_id": "",
-            "is_shadow": True,
-        }).encode("utf-8")
+        response_body = json.dumps(
+            {
+                "user_id": "abc",
+                "org_id": "org1",
+                "team_id": "",
+                "is_shadow": True,
+            }
+        ).encode("utf-8")
 
         mock_resp = MagicMock()
         mock_resp.status = 200
@@ -159,7 +165,10 @@ class TestResolveUserByIdentity:
         with patch("urllib.request.urlopen", side_effect=mock_urlopen):
             gateway_client.resolve_user_by_identity("github", "20402445")
 
-        assert captured_req["url"] == "http://gateway.internal:8080/internal/v1/resolve-user"
+        assert (
+            captured_req["url"]
+            == "http://gateway.internal:8080/internal/v1/resolve-user"
+        )
         assert captured_req["method"] == "POST"
         assert captured_req["headers"]["X-internal-api-key"] == "test-internal-key"
         assert captured_req["body"] == {
@@ -212,10 +221,12 @@ class TestPostProvenance:
 
         gateway_client._internal_api_key = None
 
-        response_body = json.dumps({
-            "id": "prov-uuid-123",
-            "created_at": "2026-05-25T00:00:00Z",
-        }).encode("utf-8")
+        response_body = json.dumps(
+            {
+                "id": "prov-uuid-123",
+                "created_at": "2026-05-25T00:00:00Z",
+            }
+        ).encode("utf-8")
 
         mock_resp = MagicMock()
         mock_resp.status = 201

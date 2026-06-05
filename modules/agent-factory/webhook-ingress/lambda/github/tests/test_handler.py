@@ -135,9 +135,7 @@ class TestRateLimiting:
     @patch("handler._get_signature")
     def test_rate_limited_returns_429(self, mock_sig, mock_resolver, mock_rate, mock_log):
         mock_sig.return_value.verify_github_signature.return_value = True
-        mock_resolver.return_value.resolve.return_value = (
-            _mock_resolved_identity(), "ok"
-        )
+        mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result(
             allowed=False, retry_after=45
         )
@@ -169,9 +167,7 @@ class TestIntentParsing:
         self, mock_sig, mock_resolver, mock_rate, mock_log
     ):
         mock_sig.return_value.verify_github_signature.return_value = True
-        mock_resolver.return_value.resolve.return_value = (
-            _mock_resolved_identity(), "ok"
-        )
+        mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_log.return_value.log_event = MagicMock()
 
@@ -204,7 +200,8 @@ class TestSuccessfulPublish:
     ):
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (
-            _mock_resolved_identity("acme", "u_jane"), "ok"
+            _mock_resolved_identity("acme", "u_jane"),
+            "ok",
         )
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value.publish_envelope.return_value = "msg-id-123"
@@ -256,7 +253,8 @@ class TestSuccessfulPublish:
     ):
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (
-            _mock_resolved_identity("acme", "u_bob"), "ok"
+            _mock_resolved_identity("acme", "u_bob"),
+            "ok",
         )
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value.publish_envelope.return_value = "msg-id-456"
@@ -290,9 +288,7 @@ class TestSuccessfulPublish:
         self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log
     ):
         mock_sig.return_value.verify_github_signature.return_value = True
-        mock_resolver.return_value.resolve.return_value = (
-            _mock_resolved_identity(), "ok"
-        )
+        mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value.publish_envelope.return_value = None  # failure
         mock_log.return_value.log_event = MagicMock()
@@ -390,9 +386,7 @@ class TestMessageIdOnEnvelope:
         import uuid as uuid_mod
 
         mock_sig.return_value.verify_github_signature.return_value = True
-        mock_resolver.return_value.resolve.return_value = (
-            _mock_resolved_identity(), "ok"
-        )
+        mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value.publish_envelope.return_value = "msg-id-100"
         mock_log.return_value.log_event = MagicMock()
@@ -426,9 +420,7 @@ class TestMessageIdOnEnvelope:
     ):
         """Two consecutive dispatches produce different message_id UUIDs."""
         mock_sig.return_value.verify_github_signature.return_value = True
-        mock_resolver.return_value.resolve.return_value = (
-            _mock_resolved_identity(), "ok"
-        )
+        mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value.publish_envelope.return_value = "msg-id-200"
         mock_log.return_value.log_event = MagicMock()
@@ -454,6 +446,7 @@ class TestMessageIdOnEnvelope:
         assert id_1 != id_2
         # Both should be valid UUID4 strings
         import uuid as uuid_mod
+
         uuid_mod.UUID(id_1, version=4)
         uuid_mod.UUID(id_2, version=4)
 
@@ -469,9 +462,7 @@ class TestBase64Body:
         import base64
 
         mock_sig.return_value.verify_github_signature.return_value = True
-        mock_resolver.return_value.resolve.return_value = (
-            _mock_resolved_identity(), "ok"
-        )
+        mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
         mock_sqs.return_value.publish_envelope.return_value = "msg-id-789"
         mock_log.return_value.log_event = MagicMock()

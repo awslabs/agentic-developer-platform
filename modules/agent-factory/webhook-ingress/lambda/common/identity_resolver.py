@@ -150,7 +150,7 @@ def _resolve_user_from_new_table(sender_id: int) -> dict | None:
         return resp.get("Item")
     except Exception as e:
         logger.warning(
-            "user-identity-index read failed for sender_id=%d: %s (falling back to old table)",
+            "user-identity-index read failed for sender_id=%d: %s (falling back to old table)",  # noqa: E501
             sender_id,
             e,
         )
@@ -254,9 +254,7 @@ def resolve(
             # keep using the DDB result (fail-open, same as today).
 
         if not user_item:
-            logger.info(
-                "Unknown sender_id=%d — no identity-index entry", sender_id
-            )
+            logger.info("Unknown sender_id=%d — no identity-index entry", sender_id)
             return None, "unknown_user"
 
         # Step 3: Cross-tenant membership
