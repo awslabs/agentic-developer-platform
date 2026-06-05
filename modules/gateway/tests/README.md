@@ -98,7 +98,7 @@ The IAM principal used in live mode should be registered in the gateway's agent 
 
 # Option B: Assume the role explicitly
 aws sts assume-role \
-  --role-arn arn:aws:iam::879318057152:role/adp-dev-agent-runner-role \
+  --role-arn arn:aws:iam::<platform-account-id>:role/adp-dev-agent-runner-role \
   --role-session-name e2e-test \
   --output json
 

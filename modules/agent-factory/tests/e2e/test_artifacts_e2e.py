@@ -16,6 +16,7 @@ Or directly:
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 
 import boto3
@@ -26,7 +27,7 @@ from .conftest import scan_artifacts_for_cleanup, wait_for
 pytestmark = [pytest.mark.live_only, pytest.mark.costs_money]
 
 ARTIFACTS_TABLE = "adp-dev-chat-artifacts"
-ARTIFACTS_BUCKET = "adp-dev-chat-artifacts-879318057152"
+ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET", "adp-dev-chat-artifacts")
 
 # Regex for artifact IDs (art_<12 hex chars>)
 ART_ID_RE = re.compile(r"art_[0-9a-f]{12}")

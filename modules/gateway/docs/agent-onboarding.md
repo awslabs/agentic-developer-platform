@@ -17,7 +17,7 @@ The onboarding process does the following automatically:
 Before running the onboarding workflow you need:
 
 - An AWS IAM role your agent will assume (one role per agent — roles cannot be shared)
-- The role must exist in the same AWS account as the gateway (`605440105851`)
+- The role must exist in the same AWS account as the gateway (`<gateway-account-id>`)
 - Your GitHub username
 - An org ID and optionally a team ID (ask your platform admin if unsure)
 
@@ -162,7 +162,7 @@ The agent name or role ARN is already registered. If you're re-running onboardin
 The runner's IAM role doesn't have permission to call the gateway's `/agent` path. Contact your platform admin.
 
 **Workflow fails at "Attach Gateway Invoke Policy" with an error**
-This usually means the role is in a different AWS account. Cross-account roles are supported but the policy attachment must be done manually — ask your platform admin to attach `arn:aws:iam::605440105851:policy/bedrockgw-agent-gateway-invoke` to your role, or add an equivalent inline policy.
+This usually means the role is in a different AWS account. Cross-account roles are supported but the policy attachment must be done manually — ask your platform admin to attach `arn:aws:iam::<gateway-account-id>:policy/bedrockgw-agent-gateway-invoke` to your role, or add an equivalent inline policy.
 
 **Agent doesn't pick up issues after merging the PR**
 - Check the label name matches exactly (case-sensitive)
@@ -176,7 +176,7 @@ The IRSA trust policy wasn't updated after onboarding. Add the trust policy snip
 
 ```
 agent_name:         my-deployer
-role_arn:           arn:aws:iam::605440105851:role/my-deployer-role
+role_arn:           arn:aws:iam::<gateway-account-id>:role/my-deployer-role
 org_id:             acme
 team_id:            platform
 owner:              jsmith

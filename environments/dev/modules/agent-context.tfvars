@@ -1,5 +1,5 @@
 environment    = "dev"
-account_id     = "879318057152"
+account_id     = "ACCOUNT_ID"
 aws_region     = "us-east-1"
 
 # GraphRAG: Neptune Serverless + OpenSearch Serverless.

@@ -25,7 +25,7 @@ Runs against a deployed EKS cluster. Requires kubectl access and env vars:
 ```bash
 TEST_ENV=dev \
 NAMESPACE=agent-context \
-KUBE_CONTEXT=arn:aws:eks:us-east-1:879318057152:cluster/adp-dev-eks-cluster \
+KUBE_CONTEXT=arn:aws:eks:us-east-1:<platform-account-id>:cluster/adp-dev-eks-cluster \
 OPENVIKING_URL=http://openviking.agent-context.svc.cluster.local:1933 \
 MCP_URL=http://context-mcp.agent-context.svc.cluster.local:5100 \
 OV_API_KEY=$(aws secretsmanager get-secret-value --secret-id adp/aws-e/openviking-root-key --query SecretString --output text) \

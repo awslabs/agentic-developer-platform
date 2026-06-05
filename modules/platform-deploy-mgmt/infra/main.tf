@@ -2,7 +2,7 @@
 # Platform Deploy Management Infrastructure
 # =============================================================================
 # Evidence storage (S3), deployment status tracking (DynamoDB), and IRSA role
-# for the verification workflow. Lives in the platform account (879318057152).
+# for the verification workflow. Lives in the platform account.
 # =============================================================================
 
 terraform {

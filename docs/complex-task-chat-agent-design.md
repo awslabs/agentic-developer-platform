@@ -1026,7 +1026,7 @@ One image, one tag, dispatched by env var — this is what lets the GH agent and
 
 ### 10.6 Build/publish pipeline
 
-Add a new CodeBuild project or a new target in the existing `bs-agent-gateway` buildspec that builds the TS image from `modules/agent-factory/agent/Dockerfile` and pushes to `adp-agent-gateway:<sha>`. Reuse the existing `s3://adp-terraform-state-879318057152/codebuild/adp-source.zip` pattern — no new S3 bucket.
+Add a new CodeBuild project or a new target in the existing `bs-agent-gateway` buildspec that builds the TS image from `modules/agent-factory/agent/Dockerfile` and pushes to `adp-agent-gateway:<sha>`. Reuse the existing `s3://adp-terraform-state-<platform-account-id>/codebuild/adp-source.zip` pattern — no new S3 bucket.
 
 ---
 

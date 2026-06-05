@@ -1,6 +1,6 @@
 {
   "environment": "dev",
-  "account_id": "879318057152",
+  "account_id": "ACCOUNT_ID",
   "github_org": "aws-e",
   "github_repo": "adp",
   "aws_profile": "embark2",

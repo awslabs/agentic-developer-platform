@@ -1,4 +1,4 @@
-bucket         = "adp-terraform-state-879318057152"
+bucket         = "adp-terraform-state-ACCOUNT_ID"
 key            = "dev/modules/cyber-sandbox/terraform.tfstate"
 region         = "us-east-1"
 encrypt        = true

@@ -45,11 +45,29 @@ jobs:
           aws eks update-kubeconfig --region "${{ env.AWS_REGION }}" --name "${{ env.EKS_CLUSTER }}"
           kubectl cluster-info
 
+      - name: Resolve deployment variables
+        id: vars
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGION="${{ env.AWS_REGION }}"
+          echo "account_id=${ACCOUNT_ID}" >> "$GITHUB_OUTPUT"
+          echo "ecr_image=${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/adp-cyber-worker:latest" >> "$GITHUB_OUTPUT"
+          echo "triage_tasks_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-triage-tasks.fifo" >> "$GITHUB_OUTPUT"
+          echo "triage_responses_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-triage-responses.fifo" >> "$GITHUB_OUTPUT"
+          echo "static_tasks_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-static-tasks.fifo" >> "$GITHUB_OUTPUT"
+          echo "static_responses_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-static-responses.fifo" >> "$GITHUB_OUTPUT"
+
       - name: Apply cyber-workers manifests
         run: |
           for f in modules/domain-apps/cyber/k8s/*.yaml; do
             echo "=== Applying $f ==="
-            kubectl apply -f "$f"
+            sed \
+              -e "s|REPLACE_WITH_CYBER_WORKER_IMAGE|${{ steps.vars.outputs.ecr_image }}|g" \
+              -e "s|REPLACE_WITH_TRIAGE_TASKS_QUEUE_URL|${{ steps.vars.outputs.triage_tasks_queue }}|g" \
+              -e "s|REPLACE_WITH_TRIAGE_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.triage_responses_queue }}|g" \
+              -e "s|REPLACE_WITH_STATIC_TASKS_QUEUE_URL|${{ steps.vars.outputs.static_tasks_queue }}|g" \
+              -e "s|REPLACE_WITH_STATIC_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.static_responses_queue }}|g" \
+              "$f" | kubectl apply -f -
           done
 
       - name: Summary

@@ -19,6 +19,6 @@ alb_arn_suffix = "app/k8s-bedrockg-bedrockg-96a0136fc5/a04d4e1ab78a9b6c"
 
 You can find this value from the ALB ARN:
 ```bash
-# Full ARN: arn:aws:elasticloadbalancing:us-east-1:605440105851:loadbalancer/app/k8s-bedrockg-bedrockg-96a0136fc5/a04d4e1ab78a9b6c
+# Full ARN: arn:aws:elasticloadbalancing:us-east-1:<gateway-account-id>:loadbalancer/app/k8s-bedrockg-bedrockg-96a0136fc5/a04d4e1ab78a9b6c
 # Suffix:   app/k8s-bedrockg-bedrockg-96a0136fc5/a04d4e1ab78a9b6c
 ```

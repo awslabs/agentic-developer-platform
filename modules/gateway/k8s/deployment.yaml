@@ -21,7 +21,7 @@ spec:
       serviceAccountName: gateway-service
       containers:
         - name: bedrockgateway
-          image: 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:latest
+          image: REPLACE_WITH_GATEWAY_IMAGE
           ports:
             - containerPort: 8080
               protocol: TCP

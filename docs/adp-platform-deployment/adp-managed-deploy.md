@@ -34,7 +34,7 @@ If you don't have an ADP account, or you don't want to give ADP cross-account ro
                                                         │  │ (role from vault)│
 ┌──────────────────────────┐                            │  │                 │
 │  ADP platform account    │                            │  │                 │
-│  (879318057152)          │  2. agent pod auto-assumes │  │                 │
+│  (<platform-account-id>) │  2. agent pod auto-assumes │  │                 │
 │                          │ ─────────────────────────► │  ▼                 │
 │  agent-scaledjob runs    │                            │  Resources         │
 │  orchestrator + workers  │                            │  appear here       │
@@ -119,7 +119,7 @@ Phases 3 through 8 each delegate to a CI workflow (`platform-infra-apply.yml`, `
 
 ```yaml
 # config/deployment.yml — committed to the deploy-instance branch
-account_id: "879318057152"          # the platform account where the runner lives
+account_id: "<platform-account-id>"  # the platform account where the runner lives
 region: us-east-1
 environment: dev
 github_org: aws-e

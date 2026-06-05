@@ -1098,7 +1098,7 @@ class TestBedrockViaFlag:
 
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
         monkeypatch.delenv("ADP_BEDROCK_VIA", raising=False)
 
@@ -1136,7 +1136,7 @@ class TestBedrockViaFlag:
         # Agent subprocess should have been called with env containing IRSA vars
         call_kwargs = mock_subprocess_run.call_args
         agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
-        assert agent_env["AWS_ROLE_ARN"] == "arn:aws:iam::879318057152:role/irsa-role"
+        assert agent_env["AWS_ROLE_ARN"] == "arn:aws:iam::123456789012:role/irsa-role"
         assert agent_env["AWS_WEB_IDENTITY_TOKEN_FILE"] == "/var/run/secrets/token"
 
     @patch("entrypoint._receive_one_message")
@@ -1168,7 +1168,7 @@ class TestBedrockViaFlag:
 
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
         monkeypatch.setenv("ADP_BEDROCK_VIA", "platform")
 
@@ -1237,7 +1237,7 @@ class TestBedrockViaFlag:
 
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
         monkeypatch.setenv("AWS_PROFILE", "default")
         monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
@@ -1314,7 +1314,7 @@ class TestBedrockViaFlag:
 
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
         monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
 
@@ -1350,7 +1350,7 @@ class TestBedrockViaFlag:
             main()
 
         # os.environ MUST still have IRSA (for post-agent SQS delete)
-        assert os.environ.get("AWS_ROLE_ARN") == "arn:aws:iam::879318057152:role/irsa-role"
+        assert os.environ.get("AWS_ROLE_ARN") == "arn:aws:iam::123456789012:role/irsa-role"
         assert os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE") == "/var/run/secrets/token"
 
     @patch("entrypoint._receive_one_message")
@@ -1383,7 +1383,7 @@ class TestBedrockViaFlag:
         # developer persona does NOT trigger assume-role
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
         monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
         monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
@@ -1410,7 +1410,7 @@ class TestBedrockViaFlag:
             "env"
         ) or mock_subprocess_run.call_args[1].get("env")
         # IRSA vars should still be present — no strip because no user creds
-        assert agent_env["AWS_ROLE_ARN"] == "arn:aws:iam::879318057152:role/irsa-role"
+        assert agent_env["AWS_ROLE_ARN"] == "arn:aws:iam::123456789012:role/irsa-role"
         assert agent_env["AWS_WEB_IDENTITY_TOKEN_FILE"] == "/var/run/secrets/token"
 
     @patch("entrypoint._receive_one_message")
@@ -1442,7 +1442,7 @@ class TestBedrockViaFlag:
 
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
         monkeypatch.setenv("ADP_BEDROCK_VIA", "USER")
 
@@ -1511,7 +1511,7 @@ class TestBedrockViaFlag:
 
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
         monkeypatch.setenv("ADP_BEDROCK_VIA", " user ")
 
@@ -1580,7 +1580,7 @@ class TestBedrockViaFlag:
 
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
         monkeypatch.setenv("ADP_BEDROCK_VIA", "foobar")
 
@@ -1651,7 +1651,7 @@ class TestBedrockViaFlag:
 
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/irsa-role")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
         monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
         monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)

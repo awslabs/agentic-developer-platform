@@ -112,7 +112,7 @@ Cross-referenced all AKIA keys against [AWS documentation example keys](https://
 - **Verdict**: SAFE - truncated/partial token for unit testing Bearer extraction logic
 
 ### modules/agent-factory/tests/README.md
-- **Findings**: 0 matches on credential patterns; contains Cognito pool IDs and AWS account ID `879318057152`
+- **Findings**: 0 matches on credential patterns; contains Cognito pool IDs and AWS account ID `<platform-account-id>`
 - **Lines**: various (infrastructure identifiers, not credentials)
 - **Verdict**: SAFE - infrastructure identifiers (user pool IDs, client IDs, account IDs are not secrets)
 

@@ -9,6 +9,8 @@ inputs:
   s3-bucket:
     description: 'S3 bucket for Dolt data chunks'
     required: false
+    # NOTE: This is the actual existing bucket name. Migration to a dynamic
+    # name (removing the hardcoded account suffix) is tracked separately.
     default: 'adp-beads-state-193832579677'
   s3-region:
     description: 'AWS region for DynamoDB and S3'

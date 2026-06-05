@@ -45,16 +45,16 @@ spec:
         restartPolicy: Never
         containers:
           - name: cyber-triage
-            image: 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-cyber-worker:latest
+            image: REPLACE_WITH_CYBER_WORKER_IMAGE
             env:
               - name: WORKER_ROLE
                 value: "triage"
               - name: AWS_REGION
                 value: "us-east-1"
               - name: INPUT_QUEUE_URL
-                value: "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-cyber-triage-tasks.fifo"
+                value: "REPLACE_WITH_TRIAGE_TASKS_QUEUE_URL"
               - name: RESPONSE_QUEUE_URL
-                value: "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-cyber-triage-responses.fifo"
+                value: "REPLACE_WITH_TRIAGE_RESPONSES_QUEUE_URL"
               - name: RESULTS_TABLE
                 value: "adp-dev-cyber-analysis-results"
             resources:
@@ -76,7 +76,7 @@ spec:
       authenticationRef:
         name: cyber-triage-aws-auth
       metadata:
-        queueURL: "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-cyber-triage-tasks.fifo"
+        queueURL: "REPLACE_WITH_TRIAGE_TASKS_QUEUE_URL"
         queueLength: "1"
         awsRegion: "us-east-1"
 ---

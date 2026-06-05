@@ -34,9 +34,9 @@ COGNITO_CLIENT_ID=6cg7ba3hb4v41vbhm0cg8pl17j \
 COGNITO_AGENT_CLIENT_ID=378cm2jdj3rjt2os4cthub7267 \
 TEST_USER_EMAIL=adp-test@example.com \
 TEST_USER_PASSWORD=... \
-KUBE_CONTEXT=arn:aws:eks:us-east-1:879318057152:cluster/adp-dev-eks-cluster \
-TASKS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-agent-gateway-tasks \
-RESPONSES_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-agent-gateway-responses \
+KUBE_CONTEXT=arn:aws:eks:us-east-1:<platform-account-id>:cluster/adp-dev-eks-cluster \
+TASKS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/<platform-account-id>/adp-dev-agent-gateway-tasks \
+RESPONSES_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/<platform-account-id>/adp-dev-agent-gateway-responses \
 SESSIONS_TABLE=adp-dev-agent-gateway-sessions \
 uv run pytest tests/ -v -m "live or not live_only"
 ```

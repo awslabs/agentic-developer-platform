@@ -608,7 +608,7 @@ All tests via: `https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev/agent
 
 | Failure | Affected | Root Cause | Impact |
 |---------|----------|------------|--------|
-| All Bedrock models return "Legacy" or "End of Life" | All 4 endpoints, all bodies | AWS account 879318057152 has no active Bedrock model access for any Claude model variant | **Blocks all runtime tools-behavior testing** |
+| All Bedrock models return "Legacy" or "End of Life" | All 4 endpoints, all bodies | AWS account has no active Bedrock model access for any Claude model variant | **Blocks all runtime tools-behavior testing** |
 | OAuth token unobtainable | All OAuth tests | Agent pod lacks SSM, Secrets Manager, kubectl permissions to discover Cognito config | **Blocks all 12 OAuth test cases** |
 | sigv4-proxy not running on this pod | Alternative IAM path | This is an agent-scaledjob pod, not a chat-agent pod; no sigv4-proxy sidecar | Used `awscurl` directly instead |
 
@@ -642,7 +642,7 @@ To complete the 24-row test matrix with actual tools-behavior observations, the 
 
 | Blocker | Required Action | Owner |
 |---------|----------------|-------|
-| No working Bedrock model | Enable model access in account 879318057152 (activate inference profiles or request on-demand access for at least one Claude model) | Platform team |
+| No working Bedrock model | Enable model access in the platform account (activate inference profiles or request on-demand access for at least one Claude model) | Platform team |
 | No OAuth token | Either: (a) grant agent pod SSM read for `/bedrockgw/dev/cognito-*` params, or (b) pre-provision a test service account and store credentials in a path the agent can read, or (c) run OAuth tests from an operator workstation with `bg-cognito-auth.sh` | Platform team |
 
 ### 8. Reproducible Commands for Re-run

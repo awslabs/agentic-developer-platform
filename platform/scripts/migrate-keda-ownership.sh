@@ -22,7 +22,7 @@
 #   - Both modules already initialized (terraform init has been run)
 #
 # Affected accounts (as of 2026-05-30):
-#   - Platform: 879318057152
+#   - Platform: <platform-account-id>
 #   - Customer: 403685770643
 # =============================================================================
 set -euo pipefail

@@ -87,7 +87,7 @@ echo "============================================"
 echo "ECR setup complete!"
 echo "============================================"
 echo ""
-echo "Registry: $(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo '605440105851').dkr.ecr.${REGION}.amazonaws.com"
+echo "Registry: $(aws sts get-caller-identity --query Account --output text).dkr.ecr.${REGION}.amazonaws.com"
 echo ""
 for REPO in "${REPOS[@]}"; do
   echo "  ${REPO}"

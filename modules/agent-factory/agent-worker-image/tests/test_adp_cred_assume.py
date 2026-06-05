@@ -210,7 +210,7 @@ class TestCmdAssumeExec:
         """IRSA env vars and AWS_PROFILE are removed from the exec env."""
         monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path / p.lstrip("~/")))
         # Simulate pod IRSA env vars.
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::879318057152:role/pod-role")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/pod-role")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
         monkeypatch.setenv("AWS_PROFILE", "stale-profile")
 

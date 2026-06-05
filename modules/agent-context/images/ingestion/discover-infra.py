@@ -6,7 +6,7 @@ from indexed repos, and uploads resource inventory to OpenViking.
 
 Usage:
   python discover-infra.py --accounts-file /config/accounts.txt
-  python discover-infra.py --account 605440105851 --role AgentContextReadOnly --regions us-east-1
+  python discover-infra.py --account <target-account-id> --role AgentContextReadOnly --regions us-east-1
 """
 
 from __future__ import annotations

@@ -11,7 +11,7 @@
 #   - envsubst available
 #
 # Usage:
-#   export ECR_REGISTRY="605440105851.dkr.ecr.us-east-1.amazonaws.com"
+#   export ECR_REGISTRY="<account-id>.dkr.ecr.us-east-1.amazonaws.com"
 #   ./scripts/deploy-agent-mail.sh [--build] [--skip-ingress]
 #
 # Options:
@@ -30,7 +30,7 @@ MANIFESTS_DIR="k8s/agent-mail"
 DOCKERFILE_PATH="docker/agent-mail/Dockerfile"
 IMAGE_NAME="mcp-agent-mail"
 
-ECR_REGISTRY="${ECR_REGISTRY:-605440105851.dkr.ecr.us-east-1.amazonaws.com}"
+ECR_REGISTRY="${ECR_REGISTRY:-$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com}"
 IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD 2>/dev/null || echo 'latest')}"
 
 # --- Parse arguments ---

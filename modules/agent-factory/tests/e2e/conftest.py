@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import time
 from typing import Any, Callable
 
@@ -113,7 +114,7 @@ def scan_artifacts_for_cleanup(session_id: str, cleanup_tracker) -> list[dict]:
         # Also track S3 objects if s3Key is present
         s3_key = item.get("s3Key")
         if s3_key:
-            cleanup_tracker.track_s3("adp-dev-chat-artifacts-879318057152", s3_key)
+            cleanup_tracker.track_s3(os.environ.get("ARTIFACTS_BUCKET", "adp-dev-chat-artifacts"), s3_key)
     return items
 
 

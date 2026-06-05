@@ -1,6 +1,6 @@
 environment = "dev"
 aws_region  = "us-east-1"
-account_id  = "879318057152"
+account_id  = "ACCOUNT_ID"
 
 # VPC peering — resolved automatically from platform remote state.
 # Override variables below only if you need to peer with a non-standard VPC.

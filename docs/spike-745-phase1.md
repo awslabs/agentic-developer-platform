@@ -265,9 +265,9 @@ aws dynamodb get-item --table-name "$TABLE" \
 
 # 3. Verify runner role has execute-api:Invoke
 aws iam simulate-principal-policy \
-  --policy-source-arn "arn:aws:iam::879318057152:role/adp-dev-agent-scaledjob-role" \
+  --policy-source-arn "arn:aws:iam::<platform-account-id>:role/adp-dev-agent-scaledjob-role" \
   --action-names "execute-api:Invoke" \
-  --resource-arns "arn:aws:execute-api:us-east-1:879318057152:*/*/ANY/agent/*" \
+  --resource-arns "arn:aws:execute-api:us-east-1:<platform-account-id>:*/*/ANY/agent/*" \
   --query 'EvaluationResults[0].EvalDecision'
 ```
 

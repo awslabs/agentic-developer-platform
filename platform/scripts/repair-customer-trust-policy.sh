@@ -20,7 +20,7 @@
 #   ./platform/scripts/repair-customer-trust-policy.sh ADP-Agent-Dep-testing
 #
 #   # With specific gateway role ARN (if different from default):
-#   GATEWAY_ROLE_ARN=arn:aws:iam::879318057152:role/adp-dev-role-gateway-service \
+#   GATEWAY_ROLE_ARN=arn:aws:iam::<platform-account-id>:role/adp-dev-role-gateway-service \
 #     ./platform/scripts/repair-customer-trust-policy.sh ADP-Agent-Dep-testing
 #
 # Prerequisites:

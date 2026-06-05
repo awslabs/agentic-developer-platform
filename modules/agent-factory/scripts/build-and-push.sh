@@ -2,7 +2,7 @@
 set -e
 
 # Configuration
-ECR_REGISTRY="${ECR_REGISTRY:-605440105851.dkr.ecr.us-east-1.amazonaws.com}"
+ECR_REGISTRY="${ECR_REGISTRY:-$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com}"
 IMAGE_NAME="mcp-agent-mail"
 REGION="us-east-1"
 DOCKERFILE_PATH="docker/agent-mail/Dockerfile"

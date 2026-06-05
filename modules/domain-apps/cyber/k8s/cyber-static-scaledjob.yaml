@@ -79,7 +79,7 @@ spec:
                 memory: "256Mi"
         containers:
           - name: cyber-static
-            image: 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-cyber-worker:latest
+            image: REPLACE_WITH_CYBER_WORKER_IMAGE
             env:
               - name: WORKER_ROLE
                 value: "static"
@@ -88,9 +88,9 @@ spec:
               - name: YARA_RULES_DIR
                 value: "/rules"
               - name: INPUT_QUEUE_URL
-                value: "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-cyber-static-tasks.fifo"
+                value: "REPLACE_WITH_STATIC_TASKS_QUEUE_URL"
               - name: RESPONSE_QUEUE_URL
-                value: "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-cyber-static-responses.fifo"
+                value: "REPLACE_WITH_STATIC_RESPONSES_QUEUE_URL"
               - name: RESULTS_TABLE
                 value: "adp-dev-cyber-analysis-results"
             volumeMounts:
@@ -119,7 +119,7 @@ spec:
       authenticationRef:
         name: cyber-static-aws-auth
       metadata:
-        queueURL: "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-cyber-static-tasks.fifo"
+        queueURL: "REPLACE_WITH_STATIC_TASKS_QUEUE_URL"
         queueLength: "1"
         awsRegion: "us-east-1"
 ---
