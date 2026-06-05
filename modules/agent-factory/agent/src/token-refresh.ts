@@ -36,39 +36,6 @@ export interface TokenInfo {
 let currentToken: TokenInfo | null = null;
 let config: TokenManagerConfig | null = null;
 
-// ============================================================================
-// Git Remote URL Update
-// ============================================================================
-
-/**
- * Update the git remote URL with a fresh token so that git push/pull
- * operations use the new credentials instead of the stale token embedded
- * at clone time.
- */
-export function updateGitRemoteToken(token: string, options?: { owner?: string; repo?: string; workDir?: string }): void {
-  const owner = options?.owner || config?.owner || process.env.REPO_OWNER;
-  const repo = options?.repo || config?.repo || process.env.REPO_NAME;
-  const workDir = options?.workDir || config?.workDir || process.env.WORK_DIR;
-
-  if (!owner || !repo || !workDir) {
-    // Can't update git remote without knowing the repo and work directory
-    return;
-  }
-
-  try {
-    const url = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
-    execSync(`git remote set-url origin ${url}`, {
-      cwd: workDir,
-      stdio: 'ignore',
-      timeout: 10000,
-    });
-    console.log('[TokenManager] Git remote URL updated with fresh token');
-  } catch (err) {
-    // Non-fatal: git remote update failure shouldn't break the token refresh flow
-    console.warn(`[TokenManager] Failed to update git remote URL: ${(err as Error).message}`);
-  }
-}
-
 /**
  * Initialize the token manager with GitHub App credentials
  */
@@ -195,13 +162,12 @@ export async function getToken(): Promise<string> {
   if (needsRefresh()) {
     currentToken = await generateNewToken();
 
-    // Update environment variables so child processes use new token
+    // Update environment variables so child processes use new token.
+    // GIT_ASKPASS reads $GITHUB_TOKEN at each git network call, so
+    // updating the env var is sufficient — no disk persistence needed.
     process.env.GH_TOKEN = currentToken.token;
     process.env.GITHUB_TOKEN = currentToken.token;
     process.env.GH_APP_TOKEN = currentToken.token;
-
-    // Update git remote URL so git push/pull use the fresh token
-    updateGitRemoteToken(currentToken.token);
   }
 
   return currentToken!.token;
@@ -219,9 +185,6 @@ export async function forceRefresh(): Promise<string> {
   process.env.GH_TOKEN = currentToken.token;
   process.env.GITHUB_TOKEN = currentToken.token;
   process.env.GH_APP_TOKEN = currentToken.token;
-
-  // Update git remote URL so git push/pull use the fresh token
-  updateGitRemoteToken(currentToken.token);
 
   return currentToken.token;
 }

@@ -29,8 +29,8 @@ export class GitHubClient {
   }
 
   async cloneRepo(workDir: string): Promise<void> {
-    const token = await this.tokenManager.getToken();
-    const url = `https://x-access-token:${token}@github.com/${this.owner}/${this.repo}.git`;
+    // Username-only URL — GIT_ASKPASS provides the password from $GITHUB_TOKEN
+    const url = `https://x-access-token@github.com/${this.owner}/${this.repo}.git`;
     execSync(`git clone ${url} ${workDir}`, { stdio: 'pipe' });
     this.logger.info('Repository cloned', { component: 'GitHubClient' });
   }
@@ -126,19 +126,10 @@ export class GitHubClient {
       throw new Error(`Git commit failed: ${stderr || stdout || error.message}`);
     }
     
-    // Refresh git remote URL with a fresh token before pushing (defense-in-depth)
-    // This ensures the embedded token in the remote URL is current even if the
-    // original clone token has expired during a long-running agent task.
-    try {
-      const freshToken = await this.tokenManager.getToken();
-      const url = `https://x-access-token:${freshToken}@github.com/${this.owner}/${this.repo}.git`;
-      execSync(`git remote set-url origin ${url}`, { cwd: workDir, stdio: 'pipe' });
-    } catch (urlErr) {
-      this.logger.warn('Could not refresh git remote URL before push', {
-        component: 'GitHubClient',
-        error: (urlErr as Error).message,
-      });
-    }
+    // Ensure token is refreshed before push — GIT_ASKPASS reads $GITHUB_TOKEN
+    // from the environment at each git network call, so we just need the env
+    // var to be current. tokenManager.getToken() handles the refresh.
+    await this.tokenManager.getToken();
 
     // Push changes
     try {

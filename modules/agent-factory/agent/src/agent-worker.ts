@@ -351,13 +351,9 @@ async function refreshAppToken(): Promise<void> {
       process.env.GH_TOKEN = tokenData.token;
       process.env.GITHUB_TOKEN = tokenData.token;
       process.env.GH_APP_TOKEN = tokenData.token;
-      // Also update git remote URL so git push uses the fresh token
-      try {
-        const { execSync } = await import('child_process');
-        const repo = process.env.TARGET_REPO || `${process.env.REPO_OWNER}/${process.env.REPO_NAME}`;
-        execSync(`git remote set-url origin "https://x-access-token:${tokenData.token}@github.com/${repo}.git"`, { stdio: 'pipe', cwd: process.env.WORK_DIR || process.cwd() });
-      } catch { /* git remote update is best-effort */ }
-      log('INFO', 'Refreshed GitHub App token for gh CLI + git remote');
+      // GIT_ASKPASS reads $GITHUB_TOKEN at each git network call — no disk
+      // persistence needed; updating the env var is sufficient.
+      log('INFO', 'Refreshed GitHub App token for gh CLI');
     }
   } catch (err) {
     log('WARN', `Token refresh failed: ${(err as Error).message}`);

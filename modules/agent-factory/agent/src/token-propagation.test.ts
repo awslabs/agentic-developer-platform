@@ -1,13 +1,16 @@
 /**
- * Unit tests for token propagation to environment variables and git remote URL.
+ * Unit tests for token propagation to environment variables.
  *
  * Verifies that when tokens are refreshed (issue #320), the new token is
- * propagated to:
- * 1. process.env.GH_TOKEN, GITHUB_TOKEN, GH_APP_TOKEN
- * 2. The git remote URL via `git remote set-url origin`
+ * propagated to process.env.GH_TOKEN, GITHUB_TOKEN, GH_APP_TOKEN.
+ *
+ * After sec/H9 (#1164): tokens are NO LONGER written to disk via
+ * `git remote set-url`. Instead, GIT_ASKPASS reads $GITHUB_TOKEN from the
+ * environment at each git network call. This test verifies:
+ * 1. Environment variables are updated on refresh
+ * 2. No `git remote set-url` is called (no disk persistence)
+ * 3. GIT_ASKPASS is expected to be set in the environment
  */
-
-import { execSync } from 'child_process';
 
 // Mock child_process before importing the module under test
 jest.mock('child_process', () => ({
@@ -33,13 +36,13 @@ import {
   getToken,
   forceRefresh,
   setToken,
-  updateGitRemoteToken,
   needsRefresh,
 } from './token-refresh';
 
+import { execSync } from 'child_process';
 const mockedExecSync = execSync as jest.MockedFunction<typeof execSync>;
 
-describe('token-propagation (issue #320)', () => {
+describe('token-propagation (issue #320, hardened by #1164)', () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
@@ -51,6 +54,8 @@ describe('token-propagation (issue #320)', () => {
     process.env.REPO_OWNER = 'test-org';
     process.env.REPO_NAME = 'test-repo';
     process.env.WORK_DIR = '/tmp/workspace';
+    process.env.GIT_ASKPASS = '/usr/local/bin/git-askpass-helper';
+    process.env.GIT_TERMINAL_PROMPT = '0';
   });
 
   afterEach(() => {
@@ -58,87 +63,13 @@ describe('token-propagation (issue #320)', () => {
     process.env = { ...originalEnv };
   });
 
-  describe('updateGitRemoteToken', () => {
-    it('should run git remote set-url with the correct URL', () => {
-      updateGitRemoteToken('ghs_new_token_abc', {
-        owner: 'my-org',
-        repo: 'my-repo',
-        workDir: '/work/dir',
-      });
-
-      expect(mockedExecSync).toHaveBeenCalledWith(
-        'git remote set-url origin https://x-access-token:ghs_new_token_abc@github.com/my-org/my-repo.git',
-        expect.objectContaining({
-          cwd: '/work/dir',
-          stdio: 'ignore',
-          timeout: 10000,
-        }),
-      );
+  describe('GIT_ASKPASS environment', () => {
+    it('should have GIT_ASKPASS set to the helper script path', () => {
+      expect(process.env.GIT_ASKPASS).toBe('/usr/local/bin/git-askpass-helper');
     });
 
-    it('should fall back to env vars when options not provided', () => {
-      initTokenManager({
-        appId: '12345',
-        privateKey: 'fake-key',
-        owner: 'env-org',
-        repo: 'env-repo',
-        workDir: '/env/workspace',
-      });
-
-      updateGitRemoteToken('ghs_token_xyz');
-
-      expect(mockedExecSync).toHaveBeenCalledWith(
-        expect.stringContaining('https://x-access-token:ghs_token_xyz@github.com/env-org/env-repo.git'),
-        expect.objectContaining({ cwd: '/env/workspace' }),
-      );
-    });
-
-    it('should fall back to process.env when config has no repo/workDir', () => {
-      initTokenManager({
-        appId: '12345',
-        privateKey: 'fake-key',
-        owner: 'config-org',
-      });
-
-      // process.env.REPO_NAME and WORK_DIR are set in beforeEach
-      updateGitRemoteToken('ghs_fallback_token');
-
-      expect(mockedExecSync).toHaveBeenCalledWith(
-        expect.stringContaining('https://x-access-token:ghs_fallback_token@github.com/config-org/test-repo.git'),
-        expect.objectContaining({ cwd: '/tmp/workspace' }),
-      );
-    });
-
-    it('should not throw if git remote set-url fails', () => {
-      mockedExecSync.mockImplementation(() => {
-        throw new Error('fatal: not a git repository');
-      });
-
-      // Should not throw
-      expect(() => {
-        updateGitRemoteToken('ghs_token', {
-          owner: 'org',
-          repo: 'repo',
-          workDir: '/dir',
-        });
-      }).not.toThrow();
-    });
-
-    it('should skip if owner/repo/workDir are missing', () => {
-      delete process.env.REPO_OWNER;
-      delete process.env.REPO_NAME;
-      delete process.env.WORK_DIR;
-
-      // Re-init without repo/workDir
-      initTokenManager({
-        appId: '12345',
-        privateKey: 'fake-key',
-        owner: '',
-      });
-
-      updateGitRemoteToken('ghs_token');
-
-      expect(mockedExecSync).not.toHaveBeenCalled();
+    it('should have GIT_TERMINAL_PROMPT=0 to prevent interactive prompts', () => {
+      expect(process.env.GIT_TERMINAL_PROMPT).toBe('0');
     });
   });
 
@@ -164,7 +95,7 @@ describe('token-propagation (issue #320)', () => {
       expect(process.env.GH_APP_TOKEN).toBe('ghs_refreshed_test_token_123');
     });
 
-    it('should call updateGitRemoteToken after refresh', async () => {
+    it('should NOT call git remote set-url after refresh (sec/H9 fix)', async () => {
       initTokenManager({
         appId: '12345',
         privateKey: 'fake-key',
@@ -177,16 +108,33 @@ describe('token-propagation (issue #320)', () => {
       setToken('old_token', -1000);
       await getToken();
 
-      // Should have called git remote set-url
-      expect(mockedExecSync).toHaveBeenCalledWith(
-        expect.stringContaining('git remote set-url origin'),
-        expect.any(Object),
-      );
+      // No execSync calls — token propagation is env-only via GIT_ASKPASS
+      expect(mockedExecSync).not.toHaveBeenCalled();
+    });
+
+    it('should propagate token to spawned processes via env inheritance', async () => {
+      initTokenManager({
+        appId: '12345',
+        privateKey: 'fake-key',
+        installationId: '67890',
+        owner: 'test-org',
+        repo: 'test-repo',
+        workDir: '/tmp/workspace',
+      });
+
+      setToken('old_token', -1000);
+      await getToken();
+
+      // After refresh, process.env.GITHUB_TOKEN is updated. Child processes
+      // spawned via child_process.spawn/exec inherit process.env by default,
+      // so GIT_ASKPASS (which reads $GITHUB_TOKEN) will pick up the fresh value.
+      expect(process.env.GITHUB_TOKEN).toBe('ghs_refreshed_test_token_123');
+      expect(process.env.GIT_ASKPASS).toBe('/usr/local/bin/git-askpass-helper');
     });
   });
 
   describe('forceRefresh - env var propagation', () => {
-    it('should update all env vars and git remote on force refresh', async () => {
+    it('should update all env vars on force refresh without disk writes', async () => {
       initTokenManager({
         appId: '12345',
         privateKey: 'fake-key',
@@ -205,19 +153,16 @@ describe('token-propagation (issue #320)', () => {
       expect(process.env.GITHUB_TOKEN).toBe('ghs_refreshed_test_token_123');
       expect(process.env.GH_APP_TOKEN).toBe('ghs_refreshed_test_token_123');
 
-      // Git remote should also be updated
-      expect(mockedExecSync).toHaveBeenCalledWith(
-        expect.stringContaining('git remote set-url origin'),
-        expect.any(Object),
-      );
+      // No git remote set-url calls (sec/H9 fix — no disk persistence)
+      expect(mockedExecSync).not.toHaveBeenCalled();
     });
   });
 
-  describe('setToken does not trigger git remote update', () => {
-    it('should not update git remote when setToken is called (no refresh)', () => {
+  describe('setToken does not trigger any disk writes', () => {
+    it('should not call execSync when setToken is called', () => {
       setToken('initial_token', 60 * 60 * 1000);
 
-      // setToken only sets the in-memory token, no git remote update
+      // setToken only sets the in-memory token, no disk writes
       expect(mockedExecSync).not.toHaveBeenCalled();
     });
   });

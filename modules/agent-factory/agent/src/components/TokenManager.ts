@@ -1,5 +1,4 @@
 import * as jwt from 'jsonwebtoken';
-import { execSync } from 'child_process';
 import { ConfigLoader } from './ConfigLoader';
 import { Logger } from './Logger';
 import { GitHubAppCredentials } from '../types';
@@ -72,13 +71,12 @@ export class TokenManager {
     const data = await response.json() as { token: string; expires_at: string };
     this.installationToken = data.token;
     this.tokenExpiry = new Date(data.expires_at);
-    // Update environment so gh CLI and child processes use the fresh token
+    // Update environment so gh CLI and child processes use the fresh token.
+    // GIT_ASKPASS reads $GITHUB_TOKEN at each git network call, so updating
+    // the env var is sufficient — no disk persistence needed.
     process.env.GH_TOKEN = data.token;
     process.env.GITHUB_TOKEN = data.token;
     process.env.GH_APP_TOKEN = data.token;
-
-    // Update git remote URL so git push/pull use the fresh token
-    this.updateGitRemoteUrl(data.token);
 
     this.logger.debug('Token refreshed', { component: 'TokenManager', expiry: data.expires_at });
   }
@@ -96,36 +94,6 @@ export class TokenManager {
     if (this.refreshTimer) {
       clearInterval(this.refreshTimer);
       this.refreshTimer = null;
-    }
-  }
-
-  /**
-   * Update the git remote URL with a fresh token so git push/pull
-   * operations use new credentials instead of the stale clone-time token.
-   */
-  private updateGitRemoteUrl(token: string): void {
-    const owner = process.env.REPO_OWNER;
-    const repo = process.env.REPO_NAME;
-    const workDir = process.env.WORK_DIR;
-
-    if (!owner || !repo || !workDir) {
-      return;
-    }
-
-    try {
-      const url = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
-      execSync(`git remote set-url origin ${url}`, {
-        cwd: workDir,
-        stdio: 'ignore',
-        timeout: 10000,
-      });
-      this.logger.debug('Git remote URL updated with fresh token', { component: 'TokenManager' });
-    } catch (err) {
-      // Non-fatal: don't let git remote update failure break token refresh
-      this.logger.warn('Failed to update git remote URL', {
-        component: 'TokenManager',
-        error: (err as Error).message,
-      });
     }
   }
 

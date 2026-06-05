@@ -176,9 +176,11 @@ RUN groupadd -g 1001 agent && \
     mkdir -p /app /work && \
     chown -R agent:agent /app /work
 
-# Configure git credential helper for GitHub token auth
-RUN git config --system credential.helper 'store' && \
-    git config --system --add safe.directory '*'
+# GIT_ASKPASS reads $GITHUB_TOKEN at every git network call — zero disk persistence,
+# transparent token refresh when the env var rotates. See token-refresh.ts.
+RUN printf '#!/bin/sh\necho "${GITHUB_TOKEN}"\n' > /usr/local/bin/git-askpass-helper && \
+    chmod +x /usr/local/bin/git-askpass-helper && \
+    git config --system --add safe.directory /work/repo
 
 # Copy pre-built agent runtime from builder stage
 COPY --from=builder --chown=agent:agent /build/dist/ /app/dist/

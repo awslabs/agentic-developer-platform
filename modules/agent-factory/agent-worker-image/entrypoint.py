@@ -162,6 +162,8 @@ def main() -> int:
     env_vars = {
         "GITHUB_TOKEN": token,
         "GH_TOKEN": token,
+        "GIT_ASKPASS": "/usr/local/bin/git-askpass-helper",
+        "GIT_TERMINAL_PROMPT": "0",
         "AGENT_TYPE": persona,
         "ISSUE_NUMBER": str(issue),
         "REPO_OWNER": repo_owner,
@@ -188,7 +190,8 @@ def main() -> int:
     os.environ.update(env_vars)
 
     # Step 5: Clone customer repo
-    clone_url = f"https://x-access-token:{token}@github.com/{repo}"
+    # Username-only URL — GIT_ASKPASS provides the password from $GITHUB_TOKEN
+    clone_url = f"https://x-access-token@github.com/{repo}"
     WORK_DIR.parent.mkdir(parents=True, exist_ok=True)
     if WORK_DIR.exists():
         shutil.rmtree(WORK_DIR)
