@@ -332,6 +332,9 @@ class TokenManager:
         Extract claims from JWT token without signature verification.
         Useful for debugging and logging purposes only.
 
+        WARNING: Do NOT use the output for authorization decisions.
+        The verified auth path is validate_token() which checks HMAC signature.
+
         Args:
             token: JWT token
 
@@ -339,6 +342,9 @@ class TokenManager:
             Optional[dict]: Token claims or None if parsing fails
         """
         try:
+            # nosemgrep: unverified-jwt-decode — debug/logging helper only;
+            # never used for authz decisions. Verified decode happens in
+            # validate_token() (line 166) with self.secret_key signature check.
             return jwt.decode(token, options={"verify_signature": False})
         except Exception:
             return None

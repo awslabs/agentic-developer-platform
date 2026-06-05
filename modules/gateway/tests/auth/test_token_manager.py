@@ -293,3 +293,72 @@ class TestTokenManager:
         result = token_manager.extract_claims_without_verification("invalid-token")
 
         assert result is None
+
+
+# =============================================================================
+# Issue #1147: Regression test — tampered signature rejected
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestTamperedSignatureRejection:
+    """Regression tests ensuring tampered-signature JWTs are rejected.
+
+    Issue #1147: Confirms that the verified decode path (validate_token)
+    rejects tokens with invalid signatures, proving that the unverified
+    decode helper (extract_claims_without_verification) is not on the auth path.
+    """
+
+    @pytest.mark.asyncio
+    async def test_tampered_signature_rejected_by_validate_token(self, db_session):
+        """Test that validate_token rejects a JWT signed with the wrong key.
+
+        This is the critical security assertion: a forged token with a valid
+        structure but wrong HMAC signature must be rejected before any claims
+        are trusted for authorization decisions.
+        """
+        token_manager = TokenManager("correct-secret")
+
+        # Create a token signed with a different secret (simulates attacker forgery)
+        forged_claims = {
+            "sub": "attacker-controlled-sub",
+            "org_id": "attacker-org",
+            "team_id": "attacker-team",
+            "department_id": "attacker-dept",
+            "account_type": "human",
+            "is_admin": True,
+            "exp": int((datetime.now(UTC) + timedelta(hours=1)).timestamp()),
+            "iat": int(datetime.now(UTC).timestamp()),
+            "jti": "forged-token-id",
+        }
+        forged_token = jwt.encode(forged_claims, "wrong-secret", algorithm="HS256")
+
+        # validate_token must reject this — signature verification will fail
+        with pytest.raises(TokenValidationError) as exc_info:
+            await token_manager.validate_token(forged_token, db_session)
+
+        assert "Invalid token" in str(exc_info.value)
+
+    def test_unverified_extract_parses_forged_token(self):
+        """Verify that extract_claims_without_verification DOES parse forged tokens.
+
+        This proves the unverified helper is NOT a security gate — it will
+        happily return claims from any well-formed JWT regardless of signature.
+        The security boundary is validate_token(), not this helper.
+        """
+        token_manager = TokenManager("correct-secret")
+
+        forged_claims = {
+            "sub": "attacker-controlled-sub",
+            "org_id": "attacker-org",
+            "is_admin": True,
+            "exp": int((datetime.now(UTC) + timedelta(hours=1)).timestamp()),
+        }
+        forged_token = jwt.encode(forged_claims, "wrong-secret", algorithm="HS256")
+
+        # The unverified helper returns claims (expected and safe because
+        # its output is never used for authorization)
+        result = token_manager.extract_claims_without_verification(forged_token)
+        assert result is not None
+        assert result["sub"] == "attacker-controlled-sub"
+        assert result["is_admin"] is True

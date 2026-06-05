@@ -443,3 +443,60 @@ class TestMiddlewareHelperFunctions:
         context = _cognito_claims_to_context(claims)
 
         assert context.is_admin is True
+
+
+# =============================================================================
+# Issue #1147: Regression test — tampered signature rejected
+# =============================================================================
+
+
+class TestTamperedSignatureRejection:
+    """Regression tests ensuring tampered-signature JWTs are rejected.
+
+    Issue #1147: Confirms that the verified decode path (validate_token)
+    rejects tokens with invalid signatures, proving that the unverified
+    decode helper (decode_without_verification) is not on the auth path.
+    """
+
+    def test_tampered_signature_rejected_by_validate_token(self, validator):
+        """Test that validate_token rejects a JWT with a tampered signature.
+
+        This is the critical security assertion: even if decode_without_verification
+        would happily parse the token, validate_token must reject it because the
+        signature doesn't match the JWKS key.
+        """
+        # Create a token signed with an arbitrary key (simulates attacker forgery)
+        forged_payload = {
+            "sub": "attacker-controlled-sub",
+            "iss": validator.issuer,
+            "client_id": "forged-client",
+            "token_use": "access",
+            "exp": int(time.time()) + 3600,
+            "iat": int(time.time()),
+        }
+        forged_token = jwt.encode(forged_payload, "attacker-secret", algorithm="HS256")
+
+        # validate_token must reject this — the JWKS lookup will fail to find
+        # a matching key, or signature verification will fail
+        with pytest.raises(jwt.InvalidTokenError):
+            validator.validate_token(forged_token)
+
+    def test_unverified_decode_parses_forged_token(self, validator):
+        """Verify that decode_without_verification DOES parse forged tokens.
+
+        This proves the unverified helper is NOT a security gate — it will
+        happily return claims from any well-formed JWT regardless of signature.
+        The security boundary is validate_token(), not this helper.
+        """
+        forged_payload = {
+            "sub": "attacker-controlled-sub",
+            "iss": validator.issuer,
+            "exp": int(time.time()) + 3600,
+        }
+        forged_token = jwt.encode(forged_payload, "attacker-secret", algorithm="HS256")
+
+        # The unverified helper returns claims (this is expected and safe
+        # because its output is never used for authorization)
+        result = validator.decode_without_verification(forged_token)
+        assert result is not None
+        assert result["sub"] == "attacker-controlled-sub"

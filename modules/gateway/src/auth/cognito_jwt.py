@@ -217,6 +217,9 @@ class CognitoJWTValidator:
         """
         Decode token without verification (for debugging/logging only).
 
+        WARNING: Do NOT use the output for authorization decisions.
+        The verified auth path is validate_token() which uses JWKS signature verification.
+
         Args:
             token: JWT token string
 
@@ -224,6 +227,9 @@ class CognitoJWTValidator:
             Token payload or None if decoding fails
         """
         try:
+            # nosemgrep: unverified-jwt-decode — debug/logging helper only;
+            # never used for authz decisions. Verified decode happens in
+            # validate_token() (line 145) via PyJWKClient JWKS signature check.
             return jwt.decode(token, options={"verify_signature": False})
         except Exception:
             return None
