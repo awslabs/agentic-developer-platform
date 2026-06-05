@@ -14,7 +14,8 @@
  * - Max 8 levels of nesting
  */
 
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
+import * as fs from 'fs';
 
 // ============================================================================
 // Types
@@ -45,11 +46,80 @@ export interface AddSubIssueResult {
 }
 
 // ============================================================================
+// Input Validation (defense-in-depth against injection)
+// ============================================================================
+
+/** Maximum length for issue titles (GitHub's own limit) */
+const MAX_TITLE_LENGTH = 256;
+/** Maximum length for issue bodies (GitHub's own limit is ~65536) */
+const MAX_BODY_LENGTH = 65536;
+/** Allowed characters in GitHub labels */
+const LABEL_CHARSET_RE = /^[a-zA-Z0-9: _\/.,-]+$/;
+
+/**
+ * Validate and sanitize an issue title for safe use in gh CLI argv.
+ * Throws on invalid input rather than silently fixing — callers should
+ * handle the error and report it rather than executing with bad data.
+ */
+export function validateIssueTitle(title: string): string {
+  if (!title || title.trim().length === 0) {
+    throw new Error('Issue title must not be empty');
+  }
+  if (title.length > MAX_TITLE_LENGTH) {
+    throw new Error(`Issue title exceeds ${MAX_TITLE_LENGTH} characters (got ${title.length})`);
+  }
+  if (title.startsWith('-')) {
+    throw new Error('Issue title must not start with a dash (prevents gh flag injection)');
+  }
+  if (title.includes('\0')) {
+    throw new Error('Issue title must not contain null bytes');
+  }
+  return title;
+}
+
+/**
+ * Validate an issue body for safe use with --body-file.
+ */
+export function validateIssueBody(body: string): string {
+  if (body.length > MAX_BODY_LENGTH) {
+    throw new Error(`Issue body exceeds ${MAX_BODY_LENGTH} characters (got ${body.length})`);
+  }
+  if (body.includes('\0')) {
+    throw new Error('Issue body must not contain null bytes');
+  }
+  return body;
+}
+
+/**
+ * Validate a label for safe use in gh CLI argv.
+ */
+export function validateLabel(label: string): string {
+  if (!label || label.trim().length === 0) {
+    throw new Error('Label must not be empty');
+  }
+  if (label.startsWith('-')) {
+    throw new Error(`Label must not start with a dash: ${label}`);
+  }
+  if (!LABEL_CHARSET_RE.test(label)) {
+    throw new Error(`Label contains invalid characters: ${label}`);
+  }
+  return label;
+}
+
+// ============================================================================
 // Configuration
 // ============================================================================
 
 let execCommand: (cmd: string) => Promise<string> = async (cmd) => {
   return execSync(cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).trim();
+};
+
+/**
+ * Safe command execution using execFileSync (no shell interpretation).
+ * Used for commands where arguments may contain LLM-influenced content.
+ */
+let execFileCommand: (file: string, args: string[]) => Promise<string> = async (file, args) => {
+  return execFileSync(file, args, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).trim();
 };
 
 let logger: (level: string, msg: string, meta?: Record<string, unknown>) => void = (level, msg) => {
@@ -58,9 +128,11 @@ let logger: (level: string, msg: string, meta?: Record<string, unknown>) => void
 
 export function configureSubIssues(config: {
   execCommand?: (cmd: string) => Promise<string>;
+  execFileCommand?: (file: string, args: string[]) => Promise<string>;
   logger?: (level: string, msg: string, meta?: Record<string, unknown>) => void;
 }): void {
   if (config.execCommand) execCommand = config.execCommand;
+  if (config.execFileCommand) execFileCommand = config.execFileCommand;
   if (config.logger) logger = config.logger;
 }
 
@@ -224,7 +296,12 @@ export async function getSubIssues(
 }
 
 /**
- * Create a new issue and immediately add it as a sub-issue
+ * Create a new issue and immediately add it as a sub-issue.
+ *
+ * SECURITY: Uses execFileSync with argv array (no shell) to prevent command
+ * injection from LLM-influenced title/body strings. Body is written to a temp
+ * file and passed via --body-file to avoid any shell interpretation.
+ * See: #1162, #1149, #615/H7.
  */
 export async function createSubIssue(
   owner: string,
@@ -234,11 +311,32 @@ export async function createSubIssue(
   body: string,
   labels: string[] = []
 ): Promise<{ issueNumber: number; success: boolean; error?: string }> {
+  // Validate all inputs before execution (defense-in-depth)
+  const validatedTitle = validateIssueTitle(title);
+  const validatedBody = validateIssueBody(body);
+  const validatedLabels = labels.map(validateLabel);
+
+  // Write body to temp file to eliminate any possibility of shell interpretation.
+  // Mirrors the safe pattern in utils/ghPost.ts.
+  const tmpFile = `/tmp/sub-issue-body-${Date.now()}-${Math.random().toString(36).slice(2)}.md`;
+
   try {
-    // Create the issue first
-    const labelArgs = labels.length > 0 ? `--label "${labels.join(',')}"` : '';
-    const createCmd = `gh issue create --repo ${owner}/${repo} --title "${title.replace(/"/g, '\\"')}" --body "${body.replace(/"/g, '\\"')}" ${labelArgs}`;
-    const createResult = await execCommand(createCmd);
+    fs.writeFileSync(tmpFile, validatedBody);
+
+    // Build argv array — no shell, no string interpolation, no injection.
+    const args = [
+      'issue', 'create',
+      '--repo', `${owner}/${repo}`,
+      '--title', validatedTitle,
+      '--body-file', tmpFile,
+    ];
+    for (const label of validatedLabels) {
+      args.push('--label', label);
+    }
+
+    // execFileCommand uses execFileSync (no shell) — title/body are passed as
+    // literal argv entries, never interpreted by /bin/sh.
+    const createResult = await execFileCommand('gh', args);
 
     // Extract issue number from URL
     const match = createResult.match(/\/issues\/(\d+)/);
@@ -262,6 +360,8 @@ export async function createSubIssue(
   } catch (error) {
     logger('ERROR', `Failed to create sub-issue: ${(error as Error).message}`);
     return { issueNumber: 0, success: false, error: (error as Error).message };
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch { /* temp file cleanup is best-effort */ }
   }
 }
 
