@@ -199,14 +199,19 @@ else
 fi
 
 # CodeBuild
-if aws codebuild list-projects --region "${AWS_REGION:-us-east-1}" --max-results 1 &>/dev/null; then
+# NOTE: `codebuild list-projects` does not accept --max-results; passing it
+# makes the CLI exit non-zero on a usage error, which masquerades as a missing
+# permission. Use the bare call so a failure reflects a real perm/region issue.
+if aws codebuild list-projects --region "${AWS_REGION:-us-east-1}" &>/dev/null; then
   pass "CodeBuild: ListProjects OK"
 else
   warn "CodeBuild: cannot list projects (needed for default AWS deploy)"
 fi
 
 # Bedrock (for gateway proxy)
-if aws bedrock list-foundation-models --region "${AWS_REGION:-us-east-1}" --max-results 1 &>/dev/null; then
+# NOTE: `bedrock list-foundation-models` does not accept --max-results either;
+# bound the output with --query instead so a failure reflects a real issue.
+if aws bedrock list-foundation-models --region "${AWS_REGION:-us-east-1}" --query 'modelSummaries[0].modelId' &>/dev/null; then
   pass "Bedrock: ListFoundationModels OK"
 else
   warn "Bedrock: cannot list models (gateway needs bedrock:InvokeModel at runtime)"

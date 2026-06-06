@@ -328,7 +328,7 @@ resource "aws_vpc_endpoint" "ecr_api" {
 # Issue: #1160 (sec/H5 — restrict runner egress to VPC endpoints)
 resource "aws_security_group" "vpc_endpoints" {
   name        = "${var.name_prefix}-sg-vpce"
-  description = "Security group for VPC interface endpoints — allows HTTPS from EKS"
+  description = "Security group for VPC interface endpoints - allows HTTPS from EKS"
   vpc_id      = aws_vpc.main.id
 
   ingress {

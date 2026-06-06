@@ -61,7 +61,15 @@ fi
 # caller-identity` and rewrites tfvars so subsequent `terraform init` lands
 # on the right state bucket.
 echo "Updating backend configuration..."
-find environments/ -name "*.tfvars" -exec sed -i \
+# BSD/macOS sed requires a (possibly empty) backup suffix arg for -i, and
+# rejects GNU's `-i -e ...` form. Detect and use the right invocation so this
+# works on both Linux runners and macOS laptops.
+if sed --version >/dev/null 2>&1; then
+    SED_INPLACE=(sed -i)        # GNU sed
+else
+    SED_INPLACE=(sed -i '')     # BSD/macOS sed
+fi
+find environments/ -name "*.tfvars" -exec "${SED_INPLACE[@]}" \
     -e "s/ACCOUNT_ID/${ACCOUNT_ID}/g" \
     -e "s/adp-terraform-state-[0-9]\{12\}/adp-terraform-state-${ACCOUNT_ID}/g" \
     {} \;
