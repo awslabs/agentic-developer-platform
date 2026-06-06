@@ -132,9 +132,12 @@ def get_engine() -> AsyncEngine:
 
                 engine_kwargs["poolclass"] = NullPool
 
-                ssl_ctx = ssl.create_default_context()
-                ssl_ctx.check_hostname = False
-                ssl_ctx.verify_mode = ssl.CERT_NONE
+                ssl_ctx = ssl.create_default_context()  # loads system CAs (/etc/ssl/certs)
+                if not settings.rds_tls_verify:
+                    logger.warning("RDS TLS verification disabled (BG_RDS_TLS_VERIFY=false). MITM risk!")
+                    ssl_ctx.check_hostname = False
+                    ssl_ctx.verify_mode = ssl.CERT_NONE
+                # else: default context already has CERT_REQUIRED + check_hostname=True
                 engine_kwargs["connect_args"] = {"ssl": ssl_ctx}
             else:
                 engine_kwargs["pool_size"] = 20

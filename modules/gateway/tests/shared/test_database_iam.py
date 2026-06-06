@@ -5,9 +5,11 @@ These tests verify:
 2. Database URL construction with IAM tokens
 3. Fallback to standard DATABASE_URL when IAM auth is disabled
 4. SQLite mode continues to work (no IAM auth applied)
+5. RDS TLS verification is enabled by default (issue #1157)
 """
 
 import os
+import ssl
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -335,3 +337,122 @@ class TestEnvironmentVariableIntegration:
         # By default, IAM auth should be disabled
         assert settings.rds_iam_auth is False
         assert settings.rds_host == ""
+
+
+class TestRdsTlsVerification:
+    """Tests for RDS TLS verification (issue #1157).
+
+    Verifies that the SSL context used for RDS connections has proper
+    certificate verification enabled by default, and can be disabled
+    via the BG_RDS_TLS_VERIFY environment variable as an emergency escape hatch.
+    """
+
+    @pytest.fixture(autouse=True)
+    def reset_engine_and_env(self):
+        """Reset engine and clean env vars before/after each test."""
+        from src.shared.database import reset_engine
+
+        reset_engine()
+        original = os.environ.get("BG_RDS_TLS_VERIFY")
+        os.environ.pop("BG_RDS_TLS_VERIFY", None)
+        yield
+        reset_engine()
+        if original is not None:
+            os.environ["BG_RDS_TLS_VERIFY"] = original
+        else:
+            os.environ.pop("BG_RDS_TLS_VERIFY", None)
+
+    def _get_ssl_context_from_engine(self, rds_tls_verify_value: str | None = None) -> ssl.SSLContext:
+        """Helper: create an engine with IAM auth and capture the SSL context passed to it."""
+        from src.shared.database import get_engine, reset_engine
+
+        reset_engine()
+
+        if rds_tls_verify_value is not None:
+            os.environ["BG_RDS_TLS_VERIFY"] = rds_tls_verify_value
+        else:
+            os.environ.pop("BG_RDS_TLS_VERIFY", None)
+
+        mock_settings = MagicMock()
+        mock_settings.rds_iam_auth = True
+        mock_settings.rds_host = "test-db.us-east-1.rds.amazonaws.com"
+        mock_settings.rds_port = 5432
+        mock_settings.rds_username = "bgadmin"
+        mock_settings.rds_dbname = "bedrockgateway"
+        mock_settings.aws_region = "us-east-1"
+        mock_settings.rds_tls_verify = rds_tls_verify_value is None or rds_tls_verify_value.lower() != "false"
+
+        mock_client = MagicMock()
+        mock_client.generate_db_auth_token.return_value = "mock-token"
+
+        captured_kwargs = {}
+
+        original_create = __import__("sqlalchemy.ext.asyncio", fromlist=["create_async_engine"]).create_async_engine
+
+        def capture_create_async_engine(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return original_create(*args, **kwargs)
+
+        with patch("boto3.client", return_value=mock_client):
+            with patch("src.shared.database.get_settings", return_value=mock_settings):
+                with patch(
+                    "src.shared.database.create_async_engine",
+                    side_effect=capture_create_async_engine,
+                ):
+                    get_engine()
+
+        connect_args = captured_kwargs.get("connect_args", {})
+        return connect_args.get("ssl")
+
+    def test_tls_verification_enabled_by_default(self):
+        """When BG_RDS_TLS_VERIFY is unset, SSL context has CERT_REQUIRED and check_hostname=True."""
+        ssl_ctx = self._get_ssl_context_from_engine(None)
+        assert ssl_ctx is not None
+        assert ssl_ctx.verify_mode == ssl.CERT_REQUIRED
+        assert ssl_ctx.check_hostname is True
+
+    def test_tls_verification_enabled_when_explicitly_true(self):
+        """When BG_RDS_TLS_VERIFY=true, SSL context has CERT_REQUIRED and check_hostname=True."""
+        ssl_ctx = self._get_ssl_context_from_engine("true")
+        assert ssl_ctx is not None
+        assert ssl_ctx.verify_mode == ssl.CERT_REQUIRED
+        assert ssl_ctx.check_hostname is True
+
+    def test_tls_verification_disabled_when_false(self):
+        """When BG_RDS_TLS_VERIFY=false, SSL context has CERT_NONE and check_hostname=False."""
+        ssl_ctx = self._get_ssl_context_from_engine("false")
+        assert ssl_ctx is not None
+        assert ssl_ctx.verify_mode == ssl.CERT_NONE
+        assert ssl_ctx.check_hostname is False
+
+    def test_tls_verification_disabled_case_insensitive(self):
+        """When BG_RDS_TLS_VERIFY=False (capital F), SSL context disables verification."""
+        ssl_ctx = self._get_ssl_context_from_engine("False")
+        assert ssl_ctx is not None
+        assert ssl_ctx.verify_mode == ssl.CERT_NONE
+        assert ssl_ctx.check_hostname is False
+
+    def test_tls_disabled_emits_warning(self):
+        """When TLS verification is disabled, a warning is logged."""
+        from src.shared.database import get_engine, reset_engine
+
+        reset_engine()
+        os.environ["BG_RDS_TLS_VERIFY"] = "false"
+
+        mock_settings = MagicMock()
+        mock_settings.rds_iam_auth = True
+        mock_settings.rds_host = "test-db.us-east-1.rds.amazonaws.com"
+        mock_settings.rds_port = 5432
+        mock_settings.rds_username = "bgadmin"
+        mock_settings.rds_dbname = "bedrockgateway"
+        mock_settings.aws_region = "us-east-1"
+        mock_settings.rds_tls_verify = False
+
+        mock_client = MagicMock()
+        mock_client.generate_db_auth_token.return_value = "mock-token"
+
+        with patch("boto3.client", return_value=mock_client):
+            with patch("src.shared.database.get_settings", return_value=mock_settings):
+                with patch("src.shared.database.logger") as mock_logger:
+                    get_engine()
+                    mock_logger.warning.assert_called_once_with("RDS TLS verification disabled (BG_RDS_TLS_VERIFY=false). MITM risk!")

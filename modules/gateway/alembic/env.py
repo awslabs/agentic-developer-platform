@@ -99,9 +99,11 @@ async def run_async_migrations() -> None:
     if rds_iam_auth:
         import ssl
 
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
+        ssl_ctx = ssl.create_default_context()  # loads system CAs
+        rds_tls_verify = os.getenv("BG_RDS_TLS_VERIFY", "true").lower() != "false"
+        if not rds_tls_verify:
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
         connect_args["ssl"] = ssl_ctx
 
     connectable = async_engine_from_config(
