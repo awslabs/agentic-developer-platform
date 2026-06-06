@@ -7,7 +7,7 @@
  */
 
 import { createAppAuth } from '@octokit/auth-app';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 // ============================================================================
 // Types
@@ -219,22 +219,39 @@ export function getTokenStatus(): { valid: boolean; expiresIn: number; needsRefr
 }
 
 /**
- * Wrapper for execSync that refreshes token if needed
+ * Execute a command with a fresh GitHub App token in the environment.
+ *
+ * SECURITY: Uses execFileSync with an argv array (no shell interpretation).
+ * Arguments are passed directly to the process — shell metacharacters in args
+ * are treated as literal text, preventing command injection.
+ * See: #1149, #1163, #615/H8.
+ *
+ * @param file - The executable to run (e.g., "gh", "git")
+ * @param args - Argument array passed directly to the process (no shell)
+ * @param opts - Optional cwd and env overrides
  */
-export async function execWithFreshToken(command: string): Promise<string> {
+export async function execWithFreshToken(
+  file: string,
+  args: readonly string[],
+  opts?: { cwd?: string; env?: NodeJS.ProcessEnv }
+): Promise<string> {
   // Ensure we have a fresh token
   await getToken();
 
+  const execOpts = {
+    encoding: 'utf-8' as const,
+    maxBuffer: 10 * 1024 * 1024,
+    cwd: opts?.cwd,
+    env: {
+      ...process.env,
+      ...opts?.env,
+      GH_TOKEN: currentToken?.token,
+      GITHUB_TOKEN: currentToken?.token,
+    },
+  };
+
   try {
-    return execSync(command, {
-      encoding: 'utf-8',
-      maxBuffer: 10 * 1024 * 1024,
-      env: {
-        ...process.env,
-        GH_TOKEN: currentToken?.token,
-        GITHUB_TOKEN: currentToken?.token,
-      },
-    }).trim();
+    return execFileSync(file, [...args], execOpts).trim();
   } catch (error) {
     const err = error as { message?: string; stderr?: string };
 
@@ -243,11 +260,11 @@ export async function execWithFreshToken(command: string): Promise<string> {
       console.log('[TokenManager] Got 401, forcing token refresh and retrying...');
       await forceRefresh();
 
-      return execSync(command, {
-        encoding: 'utf-8',
-        maxBuffer: 10 * 1024 * 1024,
+      return execFileSync(file, [...args], {
+        ...execOpts,
         env: {
           ...process.env,
+          ...opts?.env,
           GH_TOKEN: currentToken?.token,
           GITHUB_TOKEN: currentToken?.token,
         },

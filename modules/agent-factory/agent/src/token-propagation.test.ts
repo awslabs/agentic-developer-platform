@@ -14,7 +14,7 @@
 
 // Mock child_process before importing the module under test
 jest.mock('child_process', () => ({
-  execSync: jest.fn(),
+  execFileSync: jest.fn(),
 }));
 
 // Mock @octokit/auth-app
@@ -39,8 +39,8 @@ import {
   needsRefresh,
 } from './token-refresh';
 
-import { execSync } from 'child_process';
-const mockedExecSync = execSync as jest.MockedFunction<typeof execSync>;
+import { execFileSync } from 'child_process';
+const mockedExecFileSync = execFileSync as jest.MockedFunction<typeof execFileSync>;
 
 describe('token-propagation (issue #320, hardened by #1164)', () => {
   const originalEnv = { ...process.env };
@@ -109,7 +109,7 @@ describe('token-propagation (issue #320, hardened by #1164)', () => {
       await getToken();
 
       // No execSync calls — token propagation is env-only via GIT_ASKPASS
-      expect(mockedExecSync).not.toHaveBeenCalled();
+      expect(mockedExecFileSync).not.toHaveBeenCalled();
     });
 
     it('should propagate token to spawned processes via env inheritance', async () => {
@@ -154,7 +154,7 @@ describe('token-propagation (issue #320, hardened by #1164)', () => {
       expect(process.env.GH_APP_TOKEN).toBe('ghs_refreshed_test_token_123');
 
       // No git remote set-url calls (sec/H9 fix — no disk persistence)
-      expect(mockedExecSync).not.toHaveBeenCalled();
+      expect(mockedExecFileSync).not.toHaveBeenCalled();
     });
   });
 
@@ -163,7 +163,7 @@ describe('token-propagation (issue #320, hardened by #1164)', () => {
       setToken('initial_token', 60 * 60 * 1000);
 
       // setToken only sets the in-memory token, no disk writes
-      expect(mockedExecSync).not.toHaveBeenCalled();
+      expect(mockedExecFileSync).not.toHaveBeenCalled();
     });
   });
 
@@ -187,7 +187,7 @@ describe('token-propagation (issue #320, hardened by #1164)', () => {
       // Should return the existing token without refreshing
       expect(token).toBe('still_valid_token');
       expect(process.env.GH_TOKEN).toBe('should_not_change');
-      expect(mockedExecSync).not.toHaveBeenCalled();
+      expect(mockedExecFileSync).not.toHaveBeenCalled();
     });
   });
 });
