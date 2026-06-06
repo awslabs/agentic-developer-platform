@@ -189,13 +189,22 @@ resource "aws_eks_access_entry" "runner" {
   }
 }
 
-resource "aws_eks_access_policy_association" "runner_admin" {
+# =============================================================================
+# Namespace-scoped EKS access (Issue #1204 — replaces cluster-admin)
+# =============================================================================
+# Replaced AmazonEKSClusterAdminPolicy with AmazonEKSEditPolicy scoped to
+# specific namespaces. Fine-grained K8s RBAC is enforced via kubernetes_role
+# resources in runner-rbac.tf.
+# =============================================================================
+
+resource "aws_eks_access_policy_association" "runner_edit" {
   cluster_name  = local.cluster_name
   principal_arn = module.runner_iam.runner_role_arn
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
 
   access_scope {
-    type = "cluster"
+    type       = "namespace"
+    namespaces = ["adp-gateway", "adp-gateway-agents", "adp-agents", "arc-systems", "arc-runners", "agent-context", "keda"]
   }
 
   depends_on = [aws_eks_access_entry.runner]

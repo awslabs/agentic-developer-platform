@@ -1,13 +1,23 @@
 # =============================================================================
-# Agent ScaledJob IAM Role (IRSA)
+# Agent ScaledJob IAM Role (IRSA) — Issue #1204 (synthesis #1200 Section 2)
 # =============================================================================
-# Permissions for the hosted agent worker pods:
+# Scoped permissions for the hosted agent worker pods. Replaces the prior
+# multi-inline-policy approach with a single consolidated inline policy
+# matching the audit synthesis output.
+#
+# Permissions:
 #   - SQS: receive + delete messages from agent-submit.fifo
 #   - Bedrock: invoke models for agent reasoning
+#   - Bedrock AgentCore: ephemeral browser sessions (url-analysis skill)
 #   - Secrets Manager: read GitHub App keys, tenant credentials
 #   - STS: assume customer AWS roles for operations-persona tasks
+#   - Execute API: invoke internal gateway endpoints via SigV4
+#   - DynamoDB: write correlation pointers
+#   - CloudWatch Logs: agent execution logging
+#   - S3: beads state + url-analysis evidence
+#   - Preflight: read-only checks (multiple services)
 #
-# Issue: #346
+# Issue: #346, #1204
 # =============================================================================
 
 resource "aws_iam_role" "agent_scaledjob" {
@@ -47,224 +57,148 @@ resource "aws_iam_role" "agent_scaledjob" {
   }
 }
 
-# --- SQS: receive + delete from submit queue ---
+# =============================================================================
+# Consolidated agent-worker policy (synthesis #1200 Section 2)
+# =============================================================================
+# Size: ~2.2 KB — well within the inline policy limit.
+# =============================================================================
 
-resource "aws_iam_role_policy" "agent_scaledjob_sqs" {
-  name = "sqs-consume"
+resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
+  name = "agent-worker-scoped-permissions"
   role = aws_iam_role.agent_scaledjob.id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid    = "ConsumeSubmitQueue"
-      Effect = "Allow"
-      Action = [
-        "sqs:ReceiveMessage",
-        "sqs:DeleteMessage",
-        "sqs:GetQueueAttributes"
-      ]
-      Resource = aws_sqs_queue.agent_submit.arn
-    }]
-  })
-}
-
-# --- Bedrock: invoke models ---
-
-resource "aws_iam_role_policy" "agent_scaledjob_bedrock" {
-  name = "bedrock-invoke"
-  role = aws_iam_role.agent_scaledjob.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid    = "BedrockInvoke"
-      Effect = "Allow"
-      Action = [
-        "bedrock:InvokeModel",
-        "bedrock:InvokeModelWithResponseStream"
-      ]
-      Resource = [
-        "arn:aws:bedrock:*::foundation-model/*",
-        "arn:aws:bedrock:*:${local.account_id}:inference-profile/*"
-      ]
-    }]
-  })
-}
-
-# --- Secrets Manager: read GitHub App keys + tenant secrets ---
-
-resource "aws_iam_role_policy" "agent_scaledjob_secrets" {
-  name = "secrets-read"
-  role = aws_iam_role.agent_scaledjob.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid    = "SecretsRead"
-      Effect = "Allow"
-      Action = [
-        "secretsmanager:GetSecretValue",
-        "secretsmanager:DescribeSecret"
-      ]
-      Resource = "arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:adp/*"
-    }]
-  })
-}
-
-# --- STS: assume customer AWS roles for operations persona ---
-
-resource "aws_iam_role_policy" "agent_scaledjob_sts" {
-  name = "sts-assume-role"
-  role = aws_iam_role.agent_scaledjob.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid      = "AssumeCustomerRoles"
-      Effect   = "Allow"
-      Action   = ["sts:AssumeRole", "sts:GetCallerIdentity"]
-      Resource = "*"
-      Condition = {
-        StringEquals = {
-          "sts:ExternalId" = "${local.name_prefix}-hosted-agent"
+    Statement = [
+      {
+        Sid    = "BedrockModelInvoke"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = [
+          "arn:aws:bedrock:*:*:inference-profile/*",
+          "arn:aws:bedrock:*::foundation-model/*"
+        ]
+      },
+      {
+        # Region restriction prevents a misconfigured skill from spinning up
+        # browser sessions in other regions (cost + audit containment).
+        Sid    = "BedrockAgentCoreBrowser"
+        Effect = "Allow"
+        Action = [
+          "bedrock-agentcore:ConnectBrowserAutomationStream",
+          "bedrock-agentcore:GetBrowserSession",
+          "bedrock-agentcore:InvokeBrowser",
+          "bedrock-agentcore:ListBrowserSessions",
+          "bedrock-agentcore:StartBrowserSession",
+          "bedrock-agentcore:StopBrowserSession",
+          "bedrock-agentcore:UpdateBrowserStream"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion" = var.aws_region
+          }
+        }
+      },
+      {
+        Sid    = "DynamoDBTableMgmt"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem"
+        ]
+        Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-correlation-pointers"
+      },
+      {
+        Sid    = "ExecuteAPIInvoke"
+        Effect = "Allow"
+        Action = [
+          "execute-api:Invoke"
+        ]
+        Resource = "arn:aws:execute-api:us-east-1:*:*/*/*/agent/*"
+      },
+      {
+        Sid    = "CloudWatchLogGroups"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:DescribeLogGroups",
+          "logs:PutLogEvents"
+        ]
+        Resource = [
+          "arn:aws:logs:us-east-1:*:log-group:/github-ccsdk-agent/logs",
+          "arn:aws:logs:us-east-1:*:log-group:/github-ccsdk-agent/logs:*"
+        ]
+      },
+      {
+        Sid    = "Multiple"
+        Effect = "Allow"
+        Action = [
+          "bedrock:ListFoundationModels",
+          "codebuild:ListProjects",
+          "cognito-idp:ListUserPools",
+          "dynamodb:ListTables",
+          "ecr:DescribeRepositories",
+          "eks:ListClusters",
+          "iam:GetUser",
+          "iam:ListRoles",
+          "s3:ListAllMyBuckets",
+          "secretsmanager:ListSecrets"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "S3Combined"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject"
+        ]
+        Resource = [
+          "arn:aws:s3:::adp-*-agent-beads-state-*/*",
+          "arn:aws:s3:::adp-*-url-analysis-evidence-v2-*/*"
+        ]
+      },
+      {
+        Sid    = "SecretsManagerOps"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = "arn:aws:secretsmanager:us-east-1:*:secret:adp/*"
+      },
+      {
+        Sid    = "SQSQueueMgmt"
+        Effect = "Allow"
+        Action = [
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:ReceiveMessage"
+        ]
+        Resource = "arn:aws:sqs:us-east-1:*:adp-*-agent-submit.fifo"
+      },
+      {
+        # ExternalId condition prevents a compromised pod from assuming arbitrary
+        # cross-account roles. Customer-vault roles must be configured to require
+        # this ExternalId; without the condition, the agent could assume any role
+        # that trusts the agent-worker principal in any account.
+        Sid    = "STSIdentityAndAssume"
+        Effect = "Allow"
+        Action = [
+          "sts:AssumeRole",
+          "sts:GetCallerIdentity"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "sts:ExternalId" = "${local.name_prefix}-hosted-agent"
+          }
         }
       }
-    }]
-  })
-}
-
-# --- API Gateway: invoke internal endpoints via SigV4 (Issue #575) ---
-
-resource "aws_iam_role_policy" "agent_scaledjob_apigw_internal" {
-  name = "apigw-invoke-internal"
-  role = aws_iam_role.agent_scaledjob.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid      = "InvokeGatewayInternalApi"
-      Effect   = "Allow"
-      Action   = "execute-api:Invoke"
-      Resource = "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/*/agent/*"
-    }]
-  })
-}
-
-# ---------------------------------------------------------------------------
-# AgentCore Browser — for the url-analysis skill (EPIC #224 / #484)
-# ---------------------------------------------------------------------------
-# The hosted webhook agent image bundles cyber's url-analysis skill (via
-# stage-personas.sh), so the developer/ops persona can run it directly
-# without delegating to a cyber worker pod. Grant ephemeral browser-session
-# permissions on the same role.
-#
-# Scoped to the current region via aws:RequestedRegion to prevent a
-# misconfigured skill from spinning up sessions elsewhere (cost + audit
-# containment).
-
-resource "aws_iam_role_policy" "agent_scaledjob_agentcore_browser" {
-  name = "agentcore-browser-access"
-  role = aws_iam_role.agent_scaledjob.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid    = "AgentCoreBrowserSessions"
-      Effect = "Allow"
-      Action = [
-        "bedrock-agentcore:StartBrowserSession",
-        "bedrock-agentcore:InvokeBrowser",
-        "bedrock-agentcore:StopBrowserSession",
-        "bedrock-agentcore:GetBrowserSession",
-        "bedrock-agentcore:ListBrowserSessions",
-        # Required for Playwright-over-CDP (skill's preferred path —
-        # gives DOM/network/form access that InvokeBrowser lacks).
-        # Without this the CDP WebSocket returns 403 "User is not
-        # authorized to access automation stream".
-        "bedrock-agentcore:ConnectBrowserAutomationStream",
-        "bedrock-agentcore:UpdateBrowserStream",
-      ]
-      Resource = "*"
-      Condition = {
-        StringEquals = {
-          "aws:RequestedRegion" = var.aws_region
-        }
-      }
-    }]
-  })
-}
-
-# ---------------------------------------------------------------------------
-# url-analysis evidence bucket — identity-side grant
-# ---------------------------------------------------------------------------
-# The bucket (owned by the cyber module) has a resource-based policy that
-# allows this role to PutObject/GetObject. S3 also requires an identity-
-# based grant for same-account principals — a bucket policy alone is not
-# sufficient. Without this, the skill's evidence_store.upload_screenshot()
-# hits AccessDenied and falls back to inline base64 (PR #502's resilience
-# path), meaning no evidence ever lands in S3.
-
-# --- DynamoDB: write correlation pointers (Phase 2-d, EPIC #779) ---
-
-resource "aws_iam_role_policy" "agent_scaledjob_dynamodb_correlation" {
-  name = "dynamodb-correlation-pointers"
-  role = aws_iam_role.agent_scaledjob.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid    = "CorrelationPointerWrite"
-      Effect = "Allow"
-      Action = [
-        "dynamodb:PutItem"
-      ]
-      Resource = "arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/adp-${var.environment}-correlation-pointers"
-    }]
-  })
-}
-
-# --- Preflight: read-only checks for deploy pipeline (Issue #960) ---
-
-resource "aws_iam_role_policy" "agent_scaledjob_preflight" {
-  name = "preflight-readonly"
-  role = aws_iam_role.agent_scaledjob.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid    = "PreflightReadOnly"
-      Effect = "Allow"
-      Action = [
-        "s3:ListAllMyBuckets",
-        "dynamodb:ListTables",
-        "eks:ListClusters",
-        "ecr:DescribeRepositories",
-        "iam:GetUser",
-        "iam:ListRoles",
-        "codebuild:ListProjects",
-        "bedrock:ListFoundationModels",
-        "secretsmanager:ListSecrets",
-        "cognito-idp:ListUserPools",
-      ]
-      Resource = "*"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "agent_scaledjob_url_analysis_evidence" {
-  name = "url-analysis-evidence-s3"
-  role = aws_iam_role.agent_scaledjob.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid    = "UrlAnalysisEvidenceS3"
-      Effect = "Allow"
-      Action = [
-        "s3:PutObject",
-        "s3:GetObject",
-      ]
-      Resource = "arn:aws:s3:::adp-${var.environment}-url-analysis-evidence-v2-${local.account_id}/*"
-    }]
+    ]
   })
 }
