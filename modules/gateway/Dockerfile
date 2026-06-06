@@ -15,6 +15,11 @@ FROM public.ecr.aws/docker/library/python:3.13-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get -y upgrade \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && curl -fsSL --retry 3 \
+         -o /etc/ssl/certs/rds-global-bundle.pem \
+         https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+    && test -s /etc/ssl/certs/rds-global-bundle.pem \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

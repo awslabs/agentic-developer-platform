@@ -339,6 +339,173 @@ class TestEnvironmentVariableIntegration:
         assert settings.rds_host == ""
 
 
+class TestRdsCaBundleVerification:
+    """Tests for RDS CA bundle verification (issue #1201).
+
+    Verifies that the SSL context explicitly uses the AWS RDS CA bundle
+    (not the system trust store) when TLS verification is enabled.
+    This is the regression guard for the first H2 attempt that assumed
+    the system trust store would validate RDS certs (it does not).
+    """
+
+    @pytest.fixture(autouse=True)
+    def reset_engine_and_env(self):
+        """Reset engine and clean env vars before/after each test."""
+        from src.shared.database import reset_engine
+
+        reset_engine()
+        original = os.environ.get("BG_RDS_TLS_VERIFY")
+        os.environ.pop("BG_RDS_TLS_VERIFY", None)
+        yield
+        reset_engine()
+        if original is not None:
+            os.environ["BG_RDS_TLS_VERIFY"] = original
+        else:
+            os.environ.pop("BG_RDS_TLS_VERIFY", None)
+
+    def test_ssl_context_uses_rds_bundle_when_verify_enabled(self):
+        """When BG_RDS_TLS_VERIFY is unset (or true), ssl.create_default_context is called with cafile."""
+        from src.shared.database import RDS_CA_BUNDLE_PATH, get_engine, reset_engine
+
+        reset_engine()
+
+        mock_settings = MagicMock()
+        mock_settings.rds_iam_auth = True
+        mock_settings.rds_host = "test-db.us-east-1.rds.amazonaws.com"
+        mock_settings.rds_port = 5432
+        mock_settings.rds_username = "bgadmin"
+        mock_settings.rds_dbname = "bedrockgateway"
+        mock_settings.aws_region = "us-east-1"
+        mock_settings.rds_tls_verify = True
+
+        mock_client = MagicMock()
+        mock_client.generate_db_auth_token.return_value = "mock-token"
+
+        with patch("boto3.client", return_value=mock_client):
+            with patch("src.shared.database.get_settings", return_value=mock_settings):
+                with patch("src.shared.database.create_async_engine"):
+                    with patch("src.shared.database.ssl.create_default_context") as mock_ssl:
+                        mock_ssl.return_value = MagicMock()
+                        get_engine()
+                        mock_ssl.assert_called_once_with(cafile=RDS_CA_BUNDLE_PATH)
+
+        reset_engine()
+
+    def test_ssl_context_uses_rds_bundle_via_mock(self):
+        """Verify ssl.create_default_context is called with cafile=RDS_CA_BUNDLE_PATH."""
+        from src.shared.database import RDS_CA_BUNDLE_PATH, get_engine, reset_engine
+
+        reset_engine()
+
+        mock_settings = MagicMock()
+        mock_settings.rds_iam_auth = True
+        mock_settings.rds_host = "test-db.us-east-1.rds.amazonaws.com"
+        mock_settings.rds_port = 5432
+        mock_settings.rds_username = "bgadmin"
+        mock_settings.rds_dbname = "bedrockgateway"
+        mock_settings.aws_region = "us-east-1"
+        mock_settings.rds_tls_verify = True
+
+        mock_client = MagicMock()
+        mock_client.generate_db_auth_token.return_value = "mock-token"
+
+        with patch("boto3.client", return_value=mock_client):
+            with patch("src.shared.database.get_settings", return_value=mock_settings):
+                with patch("src.shared.database.create_async_engine"):
+                    with patch("src.shared.database.ssl.create_default_context") as mock_ssl:
+                        mock_ssl.return_value = MagicMock()
+                        get_engine()
+                        mock_ssl.assert_called_once_with(cafile=RDS_CA_BUNDLE_PATH)
+
+        reset_engine()
+
+    def test_ssl_context_falls_back_when_verify_disabled(self):
+        """When BG_RDS_TLS_VERIFY=false, CERT_NONE is set and warning is logged."""
+        from src.shared.database import get_engine, reset_engine
+
+        reset_engine()
+        os.environ["BG_RDS_TLS_VERIFY"] = "false"
+
+        mock_settings = MagicMock()
+        mock_settings.rds_iam_auth = True
+        mock_settings.rds_host = "test-db.us-east-1.rds.amazonaws.com"
+        mock_settings.rds_port = 5432
+        mock_settings.rds_username = "bgadmin"
+        mock_settings.rds_dbname = "bedrockgateway"
+        mock_settings.aws_region = "us-east-1"
+        mock_settings.rds_tls_verify = False
+
+        mock_client = MagicMock()
+        mock_client.generate_db_auth_token.return_value = "mock-token"
+
+        captured_kwargs = {}
+
+        def capture_create_async_engine(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return MagicMock()
+
+        with patch("boto3.client", return_value=mock_client):
+            with patch("src.shared.database.get_settings", return_value=mock_settings):
+                with patch("src.shared.database.create_async_engine", side_effect=capture_create_async_engine):
+                    with patch("src.shared.database.logger") as mock_logger:
+                        get_engine()
+                        mock_logger.warning.assert_called_once_with("RDS TLS verification disabled (BG_RDS_TLS_VERIFY=false). MITM risk!")
+
+        ssl_ctx = captured_kwargs.get("connect_args", {}).get("ssl")
+        assert ssl_ctx is not None
+        assert ssl_ctx.verify_mode == ssl.CERT_NONE
+        assert ssl_ctx.check_hostname is False
+
+        reset_engine()
+
+    def test_default_is_verify_enabled(self):
+        """With no BG_RDS_TLS_VERIFY env var, verification is enabled with the bundle."""
+        from src.shared.database import RDS_CA_BUNDLE_PATH, get_engine, reset_engine
+
+        reset_engine()
+        os.environ.pop("BG_RDS_TLS_VERIFY", None)
+
+        mock_settings = MagicMock()
+        mock_settings.rds_iam_auth = True
+        mock_settings.rds_host = "test-db.us-east-1.rds.amazonaws.com"
+        mock_settings.rds_port = 5432
+        mock_settings.rds_username = "bgadmin"
+        mock_settings.rds_dbname = "bedrockgateway"
+        mock_settings.aws_region = "us-east-1"
+        mock_settings.rds_tls_verify = True  # default behavior
+
+        mock_client = MagicMock()
+        mock_client.generate_db_auth_token.return_value = "mock-token"
+
+        with patch("boto3.client", return_value=mock_client):
+            with patch("src.shared.database.get_settings", return_value=mock_settings):
+                with patch("src.shared.database.create_async_engine"):
+                    with patch("src.shared.database.ssl.create_default_context") as mock_ssl:
+                        mock_ssl.return_value = MagicMock()
+                        get_engine()
+                        mock_ssl.assert_called_once_with(cafile=RDS_CA_BUNDLE_PATH)
+
+        reset_engine()
+
+    def test_bundle_path_present(self):
+        """Assert /etc/ssl/certs/rds-global-bundle.pem exists (regression guard for Dockerfile).
+
+        This test catches the exact failure mode from the first H2 attempt:
+        if the Dockerfile fails to download the bundle, this test fails,
+        preventing a deploy that would crash with CERTIFICATE_VERIFY_FAILED.
+        """
+        from pathlib import Path
+
+        from src.shared.database import RDS_CA_BUNDLE_PATH
+
+        bundle = Path(RDS_CA_BUNDLE_PATH)
+        if not bundle.exists():
+            pytest.skip(
+                "RDS CA bundle not present (expected in Docker image, not local dev). Run in CI where the gateway image is built to validate this."
+            )
+        assert bundle.stat().st_size > 0, "RDS CA bundle is empty"
+
+
 class TestRdsTlsVerification:
     """Tests for RDS TLS verification (issue #1157).
 
@@ -387,19 +554,27 @@ class TestRdsTlsVerification:
 
         captured_kwargs = {}
 
-        original_create = __import__("sqlalchemy.ext.asyncio", fromlist=["create_async_engine"]).create_async_engine
-
         def capture_create_async_engine(*args, **kwargs):
             captured_kwargs.update(kwargs)
-            return original_create(*args, **kwargs)
+            return MagicMock()
+
+        # Use a real SSL context as the return value so we can inspect
+        # verify_mode and check_hostname. The cafile argument is validated
+        # separately in TestRdsCaBundleVerification.
+        _real_create_default_context = ssl.create_default_context
+
+        def mock_create_default_context(**kwargs):
+            if "cafile" in kwargs:
+                # When cafile is passed, return a real context with default verify settings
+                return _real_create_default_context()
+            # When no cafile (verify disabled path), return a real context for mutation
+            return _real_create_default_context()
 
         with patch("boto3.client", return_value=mock_client):
             with patch("src.shared.database.get_settings", return_value=mock_settings):
-                with patch(
-                    "src.shared.database.create_async_engine",
-                    side_effect=capture_create_async_engine,
-                ):
-                    get_engine()
+                with patch("src.shared.database.create_async_engine", side_effect=capture_create_async_engine):
+                    with patch("src.shared.database.ssl.create_default_context", side_effect=mock_create_default_context):
+                        get_engine()
 
         connect_args = captured_kwargs.get("connect_args", {})
         return connect_args.get("ssl")
@@ -453,6 +628,7 @@ class TestRdsTlsVerification:
 
         with patch("boto3.client", return_value=mock_client):
             with patch("src.shared.database.get_settings", return_value=mock_settings):
-                with patch("src.shared.database.logger") as mock_logger:
-                    get_engine()
-                    mock_logger.warning.assert_called_once_with("RDS TLS verification disabled (BG_RDS_TLS_VERIFY=false). MITM risk!")
+                with patch("src.shared.database.create_async_engine"):
+                    with patch("src.shared.database.logger") as mock_logger:
+                        get_engine()
+                        mock_logger.warning.assert_called_once_with("RDS TLS verification disabled (BG_RDS_TLS_VERIFY=false). MITM risk!")

@@ -99,9 +99,12 @@ async def run_async_migrations() -> None:
     if rds_iam_auth:
         import ssl
 
-        ssl_ctx = ssl.create_default_context()  # loads system CAs
+        rds_ca_bundle_path = "/etc/ssl/certs/rds-global-bundle.pem"
         rds_tls_verify = os.getenv("BG_RDS_TLS_VERIFY", "true").lower() != "false"
-        if not rds_tls_verify:
+        if rds_tls_verify:
+            ssl_ctx = ssl.create_default_context(cafile=rds_ca_bundle_path)
+        else:
+            ssl_ctx = ssl.create_default_context()
             ssl_ctx.check_hostname = False
             ssl_ctx.verify_mode = ssl.CERT_NONE
         connect_args["ssl"] = ssl_ctx

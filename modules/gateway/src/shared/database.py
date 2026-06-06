@@ -24,6 +24,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Path to the AWS RDS CA bundle downloaded in the Dockerfile.
+# This bundle covers all AWS regions and is required for TLS verification
+# against RDS instances (the system trust store does NOT validate the chain).
+RDS_CA_BUNDLE_PATH = "/etc/ssl/certs/rds-global-bundle.pem"
+
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
@@ -132,12 +137,14 @@ def get_engine() -> AsyncEngine:
 
                 engine_kwargs["poolclass"] = NullPool
 
-                ssl_ctx = ssl.create_default_context()  # loads system CAs (/etc/ssl/certs)
-                if not settings.rds_tls_verify:
+                if settings.rds_tls_verify:
+                    ssl_ctx = ssl.create_default_context(cafile=RDS_CA_BUNDLE_PATH)
+                    # default context: check_hostname=True, verify_mode=CERT_REQUIRED
+                else:
                     logger.warning("RDS TLS verification disabled (BG_RDS_TLS_VERIFY=false). MITM risk!")
+                    ssl_ctx = ssl.create_default_context()
                     ssl_ctx.check_hostname = False
                     ssl_ctx.verify_mode = ssl.CERT_NONE
-                # else: default context already has CERT_REQUIRED + check_hostname=True
                 engine_kwargs["connect_args"] = {"ssl": ssl_ctx}
             else:
                 engine_kwargs["pool_size"] = 20
