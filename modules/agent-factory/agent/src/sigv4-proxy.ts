@@ -97,6 +97,10 @@ const server = http.createServer(async (req, res) => {
 
   console.log(`[proxy] → ${method} ${upstreamUrl} (${body.length}b)`);
 
+  // Response-body idle timeout: if upstream sends headers then stalls mid-stream,
+  // destroy the connection so the SDK sees a broken stream and retries.
+  const RESP_IDLE_MS = 180_000; // 3 minutes
+
   const parsed = new URL(upstreamUrl);
   const proxyReq = https.request({
     hostname: parsed.hostname,
@@ -108,12 +112,45 @@ const server = http.createServer(async (req, res) => {
   }, (proxyRes) => {
     console.log(`[proxy] ← ${proxyRes.statusCode}`);
     res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+
+    // Idle watchdog on the response body — upstream can send headers then stall.
+    let idleTimeout = setTimeout(() => {
+      console.error(`[proxy] response idle timeout: no data for ${RESP_IDLE_MS / 1000}s — destroying stream`);
+      proxyRes.destroy(new Error('response idle timeout'));
+    }, RESP_IDLE_MS);
+    const bumpIdle = () => {
+      clearTimeout(idleTimeout);
+      idleTimeout = setTimeout(() => {
+        console.error(`[proxy] response idle timeout: no data for ${RESP_IDLE_MS / 1000}s — destroying stream`);
+        proxyRes.destroy(new Error('response idle timeout'));
+      }, RESP_IDLE_MS);
+    };
+    proxyRes.on('data', bumpIdle);
+    proxyRes.on('end', () => clearTimeout(idleTimeout));
+
+    // Handle errors on the response stream (e.g. from idle-timeout destroy).
+    // Without this handler, a destroyed proxyRes emits an unhandled 'error'
+    // which would crash the proxy process.
+    proxyRes.on('error', (err) => {
+      console.error('[proxy] response stream error:', err.message);
+      if (!res.headersSent) { res.writeHead(502); res.end('Upstream error'); }
+      else if (!res.destroyed) res.destroy();
+    });
+
     proxyRes.pipe(res);
+  });
+
+  // Enforce the request-level timeout — the declared `timeout` option only
+  // emits a 'timeout' event; without this handler the socket is never aborted.
+  proxyReq.on('timeout', () => {
+    console.error('[proxy] upstream request timeout — destroying connection');
+    proxyReq.destroy(new Error('upstream request timeout'));
   });
 
   proxyReq.on('error', (err) => {
     console.error('[proxy] upstream error:', err.message);
-    res.writeHead(502); res.end('Upstream error');
+    if (!res.headersSent) { res.writeHead(502); res.end('Upstream error'); }
+    else if (!res.destroyed) res.destroy();
   });
 
   if (body.length) proxyReq.write(body);

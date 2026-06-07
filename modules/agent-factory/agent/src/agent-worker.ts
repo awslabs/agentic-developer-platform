@@ -1111,6 +1111,7 @@ Now, complete the assigned task.`;
         maxRetries: 5,
         baseDelayMs: 10_000,
         maxDelayMs: 120_000,
+        idleTimeoutMs: 600_000, // 10 min — detect silent upstream stalls (issue #1223)
         log: (msg) => log('WARN', msg),
       })) {
         lastActivityTime = Date.now();

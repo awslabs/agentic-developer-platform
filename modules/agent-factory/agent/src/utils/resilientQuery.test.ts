@@ -626,6 +626,249 @@ describe('resilientQuery', () => {
     });
   });
 
+  describe('idle timeout watchdog', () => {
+    it('should trigger retry when iterator.next() never resolves (stall detection)', async () => {
+      jest.useRealTimers();
+
+      let callCount = 0;
+      const messages = [{ type: 'result', subtype: 'success' }];
+
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          // First call: iterator that never resolves (simulates a stalled stream)
+          const closeFn = jest.fn();
+          const stalledIterator = {
+            [Symbol.asyncIterator]() {
+              return {
+                next: () => new Promise<IteratorResult<unknown>>(() => {
+                  // Never resolves — simulates a silent upstream stall
+                }),
+              };
+            },
+            close: closeFn,
+          };
+          return stalledIterator as any;
+        }
+        // Second call succeeds
+        return asyncFromArray(messages) as any;
+      });
+
+      const log = jest.fn();
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'test', options: {} } as any,
+        maxRetries: 5,
+        baseDelayMs: 10,
+        maxDelayMs: 50,
+        idleTimeoutMs: 100, // 100ms for fast test
+        log,
+      };
+
+      const results = await collectAll(resilientQuery(opts));
+
+      expect(results).toEqual(messages);
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('Retryable error'));
+      // Verify the error message matches the idle timeout pattern
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('stream idle timeout'));
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('should NOT time out when messages arrive before idleTimeoutMs', async () => {
+      jest.useRealTimers();
+
+      // Create a generator that yields messages with delays shorter than idleTimeoutMs
+      const closeFn = jest.fn();
+      const messages = [
+        { type: 'assistant', content: 'msg1' },
+        { type: 'assistant', content: 'msg2' },
+        { type: 'result', subtype: 'success' },
+      ];
+
+      mockQuery.mockImplementation(() => {
+        async function* slowButValid(): AsyncGenerator<unknown> {
+          for (const msg of messages) {
+            // Delay 30ms between messages (well under 100ms timeout)
+            await new Promise(r => setTimeout(r, 30));
+            yield msg;
+          }
+        }
+        return Object.assign(slowButValid(), { close: closeFn }) as any;
+      });
+
+      const log = jest.fn();
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'test', options: {} } as any,
+        maxRetries: 3,
+        baseDelayMs: 10,
+        idleTimeoutMs: 100, // 100ms timeout — messages arrive every 30ms, well within
+        log,
+      };
+
+      const results = await collectAll(resilientQuery(opts));
+
+      expect(results).toEqual(messages);
+      expect(mockQuery).toHaveBeenCalledTimes(1); // No retries needed
+      // No retry log messages should exist
+      const retryCalls = log.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && call[0].includes('Retryable error')
+      );
+      expect(retryCalls).toHaveLength(0);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('should abort after 3 consecutive idle-timeout retries with no messages yielded', async () => {
+      jest.useRealTimers();
+
+      // Every attempt stalls without yielding any messages
+      mockQuery.mockImplementation(() => {
+        const closeFn = jest.fn();
+        const stalledIterator = {
+          [Symbol.asyncIterator]() {
+            return {
+              next: () => new Promise<IteratorResult<unknown>>(() => {
+                // Never resolves
+              }),
+            };
+          },
+          close: closeFn,
+        };
+        return stalledIterator as any;
+      });
+
+      const log = jest.fn();
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'test', options: {} } as any,
+        maxRetries: 5, // Would allow 5 retries normally
+        baseDelayMs: 10,
+        maxDelayMs: 50,
+        idleTimeoutMs: 50, // 50ms for fast test
+        log,
+      };
+
+      await expect(collectAll(resilientQuery(opts))).rejects.toThrow('stream idle timeout');
+      // Should abort after 3 consecutive stalls, not the full 5 retries
+      // 1 initial + 2 retries = 3 total calls (fires on the 3rd consecutive stall)
+      expect(mockQuery).toHaveBeenCalledTimes(3);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('consecutive idle-timeout retries'));
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('should reset consecutive stall counter when a message is yielded between stalls', async () => {
+      jest.useRealTimers();
+
+      let callCount = 0;
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          // First call: stalls with no messages
+          const closeFn = jest.fn();
+          return Object.assign(
+            { [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<unknown>>(() => {}) }; } },
+            { close: closeFn }
+          ) as any;
+        }
+        if (callCount === 2) {
+          // Second call: yields a message then stalls (counter should reset)
+          const closeFn = jest.fn();
+          let yielded = false;
+          return Object.assign(
+            {
+              [Symbol.asyncIterator]() {
+                return {
+                  next: () => {
+                    if (!yielded) {
+                      yielded = true;
+                      return Promise.resolve({ done: false, value: { type: 'assistant', content: 'hello' } });
+                    }
+                    return new Promise<IteratorResult<unknown>>(() => {}); // stall after yield
+                  },
+                };
+              },
+            },
+            { close: closeFn }
+          ) as any;
+        }
+        if (callCount === 3) {
+          // Third call: stalls again (counter was reset, so this is consecutive=1)
+          const closeFn = jest.fn();
+          return Object.assign(
+            { [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<unknown>>(() => {}) }; } },
+            { close: closeFn }
+          ) as any;
+        }
+        // Fourth call: succeeds
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const log = jest.fn();
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'test', options: {} } as any,
+        maxRetries: 5,
+        baseDelayMs: 10,
+        maxDelayMs: 50,
+        idleTimeoutMs: 50,
+        log,
+      };
+
+      const results = await collectAll(resilientQuery(opts));
+
+      // Should NOT abort — the yield between stalls resets the consecutive counter
+      expect(mockQuery).toHaveBeenCalledTimes(4);
+      // Should have yielded the message from call 2
+      expect(results).toContainEqual({ type: 'assistant', content: 'hello' });
+      // Should NOT have the "consecutive" abort message
+      const abortCalls = log.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && call[0].includes('consecutive idle-timeout retries')
+      );
+      expect(abortCalls).toHaveLength(0);
+
+      jest.useFakeTimers();
+    }, 15000);
+
+    it('should call session.close() on idle timeout (cleanup)', async () => {
+      jest.useRealTimers();
+
+      const closeFn = jest.fn();
+      let callCount = 0;
+
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          const stalledIterator = {
+            [Symbol.asyncIterator]() {
+              return {
+                next: () => new Promise<IteratorResult<unknown>>(() => {}),
+              };
+            },
+            close: closeFn,
+          };
+          return stalledIterator as any;
+        }
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'test', options: {} } as any,
+        maxRetries: 5,
+        baseDelayMs: 10,
+        maxDelayMs: 50,
+        idleTimeoutMs: 50,
+        log: jest.fn(),
+      };
+
+      await collectAll(resilientQuery(opts));
+
+      // session.close() should have been called on the stalled session
+      expect(closeFn).toHaveBeenCalled();
+
+      jest.useFakeTimers();
+    }, 10000);
+  });
+
   describe('error message patterns', () => {
     const retryablePatterns = [
       'fetch failed',
