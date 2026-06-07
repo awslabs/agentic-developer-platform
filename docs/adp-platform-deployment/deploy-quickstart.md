@@ -340,19 +340,38 @@ psql "...as master..." -c "GRANT rds_iam TO bgadmin;"
 
 ## Phase 6 — Frontend (React → S3 → CloudFront) ✅ verified
 
+**⚠️ Build with the FULL `VITE_*` env — not just `VITE_API_URL`.** Vite vars are
+baked into the bundle at build time. If you build with only `VITE_API_URL`, the
+deployed app shows *"GitHub sign-in is not configured (VITE_GITHUB_AUTH_BROKER_URL
+not set)"* and Cognito login is unconfigured too. All the values come from SSM
+params that **Phase 4 already created** (so Phase 6 can build correctly the first
+time — no rebuild needed; clicking GitHub login works once Phases 6b/6c make the
+broker live). This mirrors what `gateway-deploy.yml` passes.
+
 ```bash
 cd modules/gateway/frontend
 npm ci
-VITE_API_URL="/api" npm run build       # NOT /api/gateway — /api is what's verified working
-BUCKET=$(aws ssm get-parameter --name /adp/dev/gateway/frontend-bucket  --query Parameter.Value --output text)
-DIST=$(aws ssm get-parameter   --name /adp/dev/gateway/cloudfront-id    --query Parameter.Value --output text)
+get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null; }
+
+VITE_API_URL="/api" \
+VITE_COGNITO_REGION="us-east-1" \
+VITE_COGNITO_USER_POOL_ID="$(get_ssm /adp/dev/gateway/cognito-user-pool-id)" \
+VITE_COGNITO_CLIENT_ID="$(get_ssm /adp/dev/gateway/cognito-client-id)" \
+VITE_COGNITO_DOMAIN="$(get_ssm /adp/dev/gateway/cognito-domain)" \
+VITE_GITHUB_AUTH_BROKER_URL="$(get_ssm /adp/dev/gateway/github-auth-broker-url)" \
+VITE_AGENT_WS_URL="$(get_ssm /adp/dev/gateway/agent-ws-url)" \
+  npm run build       # VITE_API_URL is "/api" — NOT /api/gateway
+
+BUCKET=$(get_ssm /adp/dev/gateway/frontend-bucket)
+DIST=$(get_ssm /adp/dev/gateway/cloudfront-id)
 aws s3 sync dist/ "s3://${BUCKET}/" --delete
 aws cloudfront create-invalidation --distribution-id "$DIST" --paths "/*"
 ```
 
-Cleanest phase — no gotchas. The `frontend-bucket` / `cloudfront-id` /
-`cloudfront-domain` SSM params are created by the Phase 4 terraform, so this just
-works once Phase 4 is applied. Node 24 builds fine (repo says ≥ 22).
+Notes: `VITE_AGENT_WS_URL` may be empty (the agent-gateway WebSocket isn't part
+of the webhook path) — the app tolerates it. Node 24 builds fine (repo says ≥ 22).
+If you ever change the broker/Cognito values, you must **rebuild + re-sync** —
+they're compiled in, not read at runtime.
 
 Verify:
 ```bash
