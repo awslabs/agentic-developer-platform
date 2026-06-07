@@ -48,11 +48,15 @@ for file in "${LEARNING_DIR}"/*.md; do
   CONTENT=$(cat "$file" | jq -Rs .)
 
   echo -n "  Importing ${FILENAME}... "
-  RESULT=$(curl -s -X POST "${MCP_URL}" \
+  RAW_RESULT=$(curl -s -X POST "${MCP_URL}/mcp" \
     -H "Authorization: Bearer ${TOKEN}" \
     -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
     --max-time 30 \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":$((COUNT+1)),\"method\":\"tools/call\",\"params\":{\"name\":\"capture\",\"arguments\":{\"content\":${CONTENT},\"slug\":\"${SLUG}\"}}}" 2>/dev/null || echo '{"error":"request failed"}')
+    -d "{\"jsonrpc\":\"2.0\",\"id\":$((COUNT+1)),\"method\":\"tools/call\",\"params\":{\"name\":\"put_page\",\"arguments\":{\"content\":${CONTENT},\"slug\":\"${SLUG}\"}}}" 2>/dev/null || echo '{"error":"request failed"}')
+  # Extract JSON from SSE data: line
+  RESULT=$(echo "$RAW_RESULT" | grep "^data:" | head -1 | sed 's/^data: //')
+  [ -z "$RESULT" ] && RESULT='{"error":{"message":"empty response"}}'
 
   if echo "$RESULT" | jq -e '.error' >/dev/null 2>&1; then
     echo "FAIL"

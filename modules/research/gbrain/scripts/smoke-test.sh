@@ -51,11 +51,14 @@ fi
 
 # Test 2: MCP tools/list
 echo -n "2. MCP tools/list... "
-TOOLS_RESPONSE=$(curl -s -X POST "${MCP_URL}" \
+TOOLS_RAW=$(curl -s -X POST "${MCP_URL}/mcp" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
   --max-time 10 \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' 2>/dev/null || echo "{}")
+# Response is SSE format (data: {...}); extract JSON payload
+TOOLS_RESPONSE=$(echo "$TOOLS_RAW" | grep "^data:" | head -1 | sed 's/^data: //')
 TOOLS_COUNT=$(echo "$TOOLS_RESPONSE" | jq '.result.tools | length' 2>/dev/null || echo "0")
 if [ "$TOOLS_COUNT" -gt 0 ] 2>/dev/null; then
   echo "PASS ($TOOLS_COUNT tools available)"
@@ -67,11 +70,13 @@ fi
 
 # Test 3: Write (capture)
 echo -n "3. Write test (capture)... "
-WRITE_RESULT=$(curl -s -X POST "${MCP_URL}" \
+WRITE_RAW=$(curl -s -X POST "${MCP_URL}/mcp" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
   --max-time 15 \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"capture","arguments":{"content":"smoke-test-page","slug":"test/smoke-test"}}}' 2>/dev/null || echo "{}")
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"put_page","arguments":{"content":"---\ntitle: Smoke Test\n---\nsmoke-test-page content","slug":"test/smoke-test"}}}' 2>/dev/null || echo "{}")
+WRITE_RESULT=$(echo "$WRITE_RAW" | grep "^data:" | head -1 | sed 's/^data: //')
 WRITE_STATUS=$(echo "$WRITE_RESULT" | jq -r '.result.content[0].text // .error.message // "unknown"' 2>/dev/null || echo "error")
 if echo "$WRITE_STATUS" | grep -qi "error\|fail\|unknown"; then
   echo "FAIL ($WRITE_STATUS)"
@@ -83,11 +88,13 @@ fi
 
 # Test 4: Read (search)
 echo -n "4. Read test (search)... "
-SEARCH_RESULT=$(curl -s -X POST "${MCP_URL}" \
+SEARCH_RAW=$(curl -s -X POST "${MCP_URL}/mcp" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
   --max-time 15 \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search","arguments":{"query":"smoke-test-page"}}}' 2>/dev/null || echo "{}")
+SEARCH_RESULT=$(echo "$SEARCH_RAW" | grep "^data:" | head -1 | sed 's/^data: //')
 SEARCH_STATUS=$(echo "$SEARCH_RESULT" | jq -r '.result.content[0].text // .error.message // "unknown"' 2>/dev/null || echo "error")
 if echo "$SEARCH_STATUS" | grep -qi "error\|fail\|unknown"; then
   echo "FAIL ($SEARCH_STATUS)"
