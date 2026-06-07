@@ -56,6 +56,11 @@ if [ -z "$GITHUB_ORG" ]; then
   echo "  --env ENV            Environment (default: dev)"
   echo "  --webhook-url URL    Override webhook URL (default: auto-detect from Terraform output)"
   echo ""
+  echo "Env vars:"
+  echo "  APP_VISIBILITY       private (default, recommended) | public. Public is only"
+  echo "                       needed when external orgs (tenants you don't own) install"
+  echo "                       the app. Prompted interactively if unset."
+  echo ""
   echo "The script will:"
   echo "  1. Open your browser to create the GitHub App with pre-filled settings"
   echo "  2. Store the App ID in Secrets Manager"
@@ -67,6 +72,45 @@ fi
 # Validate prerequisites
 command -v aws &>/dev/null || fail "AWS CLI not installed"
 command -v gh &>/dev/null  || fail "GitHub CLI (gh) not installed"
+
+# -----------------------------------------------------------------------------
+# App visibility — private (recommended) vs public
+# -----------------------------------------------------------------------------
+# A GitHub App's visibility controls WHO can install it:
+#   - private: only the owning org/user can install it. The UI "Link GitHub"
+#              flow still works for users INSIDE the owning org (subject to the
+#              org's "allow members to install GitHub Apps" setting).
+#   - public:  ANY org/user can install it. Required only when ADP will be used
+#              by tenants in OTHER GitHub orgs you don't own (true cross-org
+#              multi-tenant / hosted SaaS).
+#
+# Recommendation: PRIVATE. Choose public ONLY for cross-org multi-tenant.
+# Set APP_VISIBILITY=private|public to skip the prompt (useful for automation).
+APP_VISIBILITY="${APP_VISIBILITY:-}"
+if [ -z "$APP_VISIBILITY" ]; then
+  echo ""
+  echo "Should the GitHub App be private or public?"
+  echo "  1) Private (recommended) — only the '$GITHUB_ORG' org can install it."
+  echo "                             Fine for single-org use, even with many"
+  echo "                             teams/repos onboarding via the UI."
+  echo "  2) Public                — ANY GitHub org can install it. Choose this"
+  echo "                             ONLY if external orgs (tenants you don't own)"
+  echo "                             will use the platform."
+  echo -n "Choose [1/2] (default 1 = private): "
+  read -r _vis_choice
+  case "${_vis_choice:-1}" in
+    2) APP_VISIBILITY="public" ;;
+    *) APP_VISIBILITY="private" ;;
+  esac
+fi
+[ "$APP_VISIBILITY" = "private" ] || [ "$APP_VISIBILITY" = "public" ] \
+  || fail "APP_VISIBILITY must be 'private' or 'public' (got '$APP_VISIBILITY')"
+# Manifest form field is public=true|false.
+APP_PUBLIC=$([ "$APP_VISIBILITY" = "public" ] && echo "true" || echo "false")
+echo "App visibility: $APP_VISIBILITY"
+if [ "$APP_VISIBILITY" = "public" ]; then
+  warn "Public app — installable by ANY GitHub org. Only correct for cross-org multi-tenant."
+fi
 
 # Secrets Manager paths
 SECRET_ID_PATH="adp/${ENVIRONMENT}/github-app/adp-agent-platform-id"
@@ -223,12 +267,13 @@ echo ""
 echo "  Webhook URL: $WEBHOOK_URL"
 echo ""
 
-# Build the manifest URL with pre-filled settings
-# Note: public=true because this is the hosted platform app customers install
+# Build the manifest URL with pre-filled settings.
+# Visibility (public=true|false) is operator-chosen above: private is the
+# recommended default; public only for cross-org multi-tenant.
 URL="https://github.com/organizations/${GITHUB_ORG}/settings/apps/new"
 URL="${URL}?name=${APP_NAME}"
 URL="${URL}&url=https://github.com/${GITHUB_ORG}/adp"
-URL="${URL}&public=true"
+URL="${URL}&public=${APP_PUBLIC}"
 URL="${URL}&webhook_active=true"
 URL="${URL}&webhook_url=${WEBHOOK_URL}"
 URL="${URL}&contents=write"
