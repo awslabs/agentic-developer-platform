@@ -27,25 +27,28 @@ The fastest path from clone to running platform:
 git clone https://github.com/<your-org>/adp.git
 cd adp
 
-# 1. Authenticate
-aws configure  # or export AWS_PROFILE=<your-profile>
-gh auth login
+# 1. Authenticate — the account this resolves to is the deploy target
+export AWS_PROFILE=<your-profile>   # or aws configure
+aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
 
-# 2. Configure for your org (creates config/deployment.yml from your AWS + GH context)
-./platform/scripts/setup-org.sh <YOUR_GITHUB_ORG> adp
-
-# 3. Create GitHub Apps (opens browser 3 times — interactive)
-./platform/scripts/create-github-apps.sh <YOUR_GITHUB_ORG>
-
-# 4. Deploy everything (~30-45 minutes)
-./platform/scripts/deploy-all.sh
+# 2. Deploy the platform + gateway (~30-45 minutes)
+./platform/scripts/deploy-all.sh [--gateway-only]
 ```
 
-That's it. The script handles bootstrap, infrastructure, image builds, K8s deployment, frontend, and ALB wiring.
+That handles bootstrap, infrastructure, image builds, K8s deployment, frontend,
+and the gateway ALB second pass. **GitHub is not set up upfront** — for the
+webhook agent path, wire GitHub at the end with `register-github-app.sh` (see
+Phase 3b). `deploy-all.sh` does NOT deploy the webhook-ingress stack or build the
+broker/agent-runtime artifacts — use the stage-by-stage scripts in Phase 3b for
+the agent path.
 
 ### Deployment config
 
-Step 2 above creates `config/deployment.yml` (gitignored) with values auto-detected from `aws sts get-caller-identity`, your `AWS_REGION`, and the `<YOUR_GITHUB_ORG>` argument. Every script and workflow in the repo reads this file via `platform/scripts/load-deploy-config.sh` to find the target account / region / environment / GitHub org. Edit the file directly if you need to change targets later — there's no `account_id` to hand-edit in any script or workflow.
+`config/deployment.yml` (gitignored) is **optional**. If absent, every script
+resolves the target account from `aws sts get-caller-identity` (and region from
+`AWS_REGION`). Write the file only to pin a specific target; scripts/workflows
+read it via `platform/scripts/load-deploy-config.sh`. There's no `account_id` to
+hand-edit in any script.
 
 Schema (full reference in `config/deployment.yml.example`):
 
@@ -93,59 +96,28 @@ deploy-all.sh execution order:
 
 ## Detailed Walkthrough
 
-### Phase 0: GitHub Setup (Interactive — ~10 minutes)
+### Prerequisite: Authenticate + choose your AWS profile
 
-This is the only phase that requires your attention. Everything after is automated.
-
-#### Authenticate
-
-```bash
-# Verify AWS access
-aws sts get-caller-identity
-# Should show your account ID and role/user
-
-# Verify GitHub CLI
-gh auth status
-# Should show "Logged in to github.com"
-```
-
-#### Choose your AWS profile
+There is **no upfront GitHub setup phase**. (An older "Phase 0" ran `setup-org.sh`
++ `create-github-apps.sh` to create 3 org-owned apps — that was the legacy **ARC**
+track. The webhook agent path wires GitHub at the **end** via
+`register-github-app.sh` (see Phase 3b / the GitHub App wiring step), after the
+infrastructure it points at exists.) The only thing to set up first is your AWS
+profile — everything keys off the account it resolves to.
 
 ```bash
-# List available profiles
-aws configure list-profiles
-
-# Set the one you want (skip if using default)
-export AWS_PROFILE=<chosen-profile>
-
-# Confirm the account
+# Verify AWS access + confirm the target account
+export AWS_PROFILE=<chosen-profile>          # skip if using default
 aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
+
+# (GitHub is only needed later, for the agent path) verify gh is authed:
+gh auth status
 ```
 
-#### Configure the repo for your org
-
-```bash
-./platform/scripts/setup-org.sh <YOUR_GITHUB_ORG> adp
-```
-
-This replaces org references throughout the repo. Idempotent — safe to run multiple times.
-
-#### Create GitHub Apps
-
-Required for Agent Factory. Skip if deploying gateway only.
-
-Three apps are created (`<org>-adp-agent-dev`, `-pm`, `-ops`). Each one:
-1. Opens your browser to the GitHub App creation page (permissions pre-filled)
-2. You click "Create GitHub App"
-3. Note the App ID, click "Generate a private key" (downloads `.pem`)
-4. Enter the App ID in the terminal
-5. Browser reopens for installation — select your org, pick the `adp` repo, click Install
-
-```bash
-./platform/scripts/create-github-apps.sh <YOUR_GITHUB_ORG>
-```
-
-The script auto-detects the `.pem` in `~/Downloads` and stores credentials in Secrets Manager at `adp/<org>/gh-app-{dev,pm,ops}-{id,key}`.
+`config/deployment.yml` is optional — if absent, the account resolves from the
+active profile (`aws sts get-caller-identity`). Write it by hand (4 lines:
+`account_id`, `region`, `environment`, `github_org`) only if you want to pin a
+specific target.
 
 ### Phase 1: Bootstrap
 
@@ -223,6 +195,32 @@ The script:
 - Performs a two-pass Terraform apply for the gateway (first creates MOCK API Gateway, second wires the real ALB after the Ingress controller provisions it)
 
 Duration: ~30-45 minutes. Longest step is EKS Auto Mode provisioning (~15 min).
+
+### Phase 3b: Stage-by-stage steps (when NOT using deploy-all.sh)
+
+`deploy-all.sh` chains everything, but operators deploying module-by-module (or
+on a track deploy-all.sh doesn't cover — notably the **webhook agent path**) must
+run several steps that publish artifacts Terraform only ships as **placeholders**.
+A fresh deploy never fires the push-triggered CI workflows that normally publish
+them, so each has a standalone, idempotent script:
+
+| Step | Script | Why it's needed |
+|------|--------|-----------------|
+| **Gateway second pass (ALB)** | `platform/scripts/wire-gateway-alb.sh --apply` | The gateway API Gateway ships a MOCK OpenAPI body until the ALB is wired. This discovers the EKS Ingress ALB, re-applies gateway-infra with the ALB vars, and forces a stage redeploy so the real routes (backend `/{proxy+}` + `/auth/github`) go live. Run after the gateway backend pods are up. |
+| **Broker Lambda code** | `modules/gateway/scripts/deploy-broker.sh` | Terraform creates the `github-auth-broker` Lambda with a 503 placeholder zip. This packages + uploads + updates the real code. Required for GitHub login. |
+| **Webhook-ingress stack** | `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh` | deploy-all.sh does NOT deploy this. One cohesive step: builds the `adp-agent-runtime` worker image (CodeBuild), packages + uploads the webhook Lambda zip, and `terraform apply`s the stack (API GW → Lambda → SQS → KEDA → agent-worker). |
+| **GitHub App wiring** | `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org>` | Final step. Creates the GitHub App (visibility prompt; private by default), stores creds, and calls `wire-github-app.sh` to point the running platform (UI "Link GitHub" install + login) at it. Pass `--client-secret` to also wire GitHub login. |
+
+All scripts support `--dry-run` and `--skip-*` flags and are safe to re-run.
+After GitHub App wiring, install the App on a repo
+(`https://github.com/apps/<app-slug>/installations/new`) and `@mention` an agent
+(e.g. `@agent-developer ...`) in an issue/PR comment to trigger it.
+
+> **The "placeholder artifact" rule of thumb:** Terraform ships a placeholder for
+> anything a separate push-triggered CI workflow normally publishes — the gateway
+> image, agent-runtime image, broker Lambda code, webhook Lambda zip, Lambda
+> layers, and the ALB-gated API GW body. The scripts above are the manual
+> equivalents of those workflows for a from-clean deploy.
 
 ### Phase 4: Verification
 
