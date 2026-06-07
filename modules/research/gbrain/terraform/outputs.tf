@@ -37,3 +37,8 @@ output "db_credentials_secret_arn" {
   description = "Secrets Manager ARN for RDS credentials"
   value       = module.rds.credentials_secret_arn
 }
+
+output "build_project_name" {
+  description = "CodeBuild project name for building the gbrain container image"
+  value       = module.build.project_name
+}

@@ -90,6 +90,20 @@ module "scheduler" {
 }
 
 # -----------------------------------------------------------------------------
+# Build (CodeBuild project for container image — owns its own IAM role)
+# -----------------------------------------------------------------------------
+module "build" {
+  source = "./modules/build"
+
+  name_prefix  = local.name_prefix
+  account_id   = local.account_id
+  aws_region   = var.aws_region
+  state_bucket = var.state_bucket
+  ecr_repo_arn = module.storage.ecr_repo_arn
+  common_tags  = local.common_tags
+}
+
+# -----------------------------------------------------------------------------
 # Security Groups
 # -----------------------------------------------------------------------------
 resource "aws_security_group" "svc" {

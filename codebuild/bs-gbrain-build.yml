@@ -1,0 +1,22 @@
+version: 0.2
+
+# Builds the gbrain experimental container image and pushes to ECR.
+# Referenced by modules/research/gbrain/terraform/modules/build/ CodeBuild
+# project. Ships inside adp-source.zip alongside the other bs-*.yml buildspecs.
+#
+# Env vars set by the CodeBuild project:
+#   AWS_REGION, REGISTRY
+
+phases:
+  pre_build:
+    commands:
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY
+  build:
+    commands:
+      - cd modules/research/gbrain
+      - docker build --no-cache --pull -t $REGISTRY/adp-research-gbrain:latest -f docker/Dockerfile .
+      - '[ -n "${IMAGE_TAG:-}" ] && docker tag $REGISTRY/adp-research-gbrain:latest $REGISTRY/adp-research-gbrain:$IMAGE_TAG || true'
+  post_build:
+    commands:
+      - docker push $REGISTRY/adp-research-gbrain:latest
+      - '[ -n "${IMAGE_TAG:-}" ] && docker push $REGISTRY/adp-research-gbrain:$IMAGE_TAG || true'

@@ -15,6 +15,11 @@ variable "owner_email" {
   type        = string
 }
 
+variable "state_bucket" {
+  description = "S3 bucket holding Terraform state and adp-source.zip (used by CodeBuild)"
+  type        = string
+}
+
 variable "vpc_id" {
   description = "VPC ID to deploy into (shared ADP VPC)"
   type        = string

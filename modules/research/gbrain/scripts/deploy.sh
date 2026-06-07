@@ -8,40 +8,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODULE_DIR="$(dirname "$SCRIPT_DIR")"
 TF_DIR="${MODULE_DIR}/terraform"
-DOCKER_DIR="${MODULE_DIR}/docker"
 
 AWS_REGION="${AWS_REGION:-us-east-1}"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
-IMAGE_NAME="adp-research-gbrain"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
 
 echo "=== gbrain Deployment ==="
 echo "Account:  ${ACCOUNT_ID}"
 echo "Region:   ${AWS_REGION}"
-echo "Registry: ${REGISTRY}"
 echo ""
 
-# Step 1: Create ECR repository (idempotent)
-echo "--- Step 1: Ensuring ECR repository exists..."
-aws ecr describe-repositories --repository-names "${IMAGE_NAME}" --region "${AWS_REGION}" 2>/dev/null \
-  || aws ecr create-repository --repository-name "${IMAGE_NAME}" --region "${AWS_REGION}" --image-tag-mutability MUTABLE
-
-# Step 2: Build Docker image
-echo "--- Step 2: Building Docker image..."
-cd "${MODULE_DIR}"
-docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" -f docker/Dockerfile .
-
-# Step 3: Push to ECR
-echo "--- Step 3: Pushing to ECR..."
-aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${REGISTRY}"
-docker tag "${IMAGE_NAME}:${IMAGE_TAG}" "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
-docker push "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
-echo "Pushed: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
-
-# Step 4: Terraform init + apply
-echo "--- Step 4: Terraform apply..."
+# Step 1: Terraform init + apply (creates all infra including the CodeBuild project)
+echo "--- Step 1: Terraform apply..."
 cd "${TF_DIR}"
 
 terraform init \
@@ -55,7 +33,48 @@ terraform init \
 
 terraform apply \
   -var-file=environments/dev.tfvars \
+  -var="state_bucket=${STATE_BUCKET}" \
   -auto-approve
+
+# Step 2: Trigger CodeBuild to build and push the container image
+echo "--- Step 2: Building container image via CodeBuild..."
+PROJECT=$(terraform output -raw build_project_name)
+echo "CodeBuild project: ${PROJECT}"
+
+BUILD_ID=$(aws codebuild start-build \
+  --project-name "${PROJECT}" \
+  --region "${AWS_REGION}" \
+  --query 'build.id' --output text)
+echo "Build started: ${BUILD_ID}"
+
+# Step 3: Poll until build completes
+echo "--- Step 3: Waiting for build to complete..."
+while true; do
+  STATUS=$(aws codebuild batch-get-builds \
+    --ids "${BUILD_ID}" \
+    --region "${AWS_REGION}" \
+    --query 'builds[0].buildStatus' --output text)
+
+  case "${STATUS}" in
+    IN_PROGRESS)
+      echo "  Build in progress..."
+      sleep 15
+      ;;
+    SUCCEEDED)
+      echo "  Build succeeded!"
+      break
+      ;;
+    *)
+      echo "  Build failed with status: ${STATUS}"
+      echo "  Fetching logs URL..."
+      aws codebuild batch-get-builds \
+        --ids "${BUILD_ID}" \
+        --region "${AWS_REGION}" \
+        --query 'builds[0].logs.deepLink' --output text
+      exit 1
+      ;;
+  esac
+done
 
 echo ""
 echo "=== Deployment Complete ==="
