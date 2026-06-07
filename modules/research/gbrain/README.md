@@ -43,11 +43,28 @@ This builds the Docker image, pushes to ECR, and runs `terraform apply`.
 
 ### Teardown
 
+**Via GitHub Actions (recommended):**
+
+Run the `Gbrain Infra Destroy` workflow — type `gbrain` to confirm.
+
+**Locally:**
+
 ```bash
 ./scripts/teardown.sh
 ```
 
-Destroys all resources, cleans ECR/Secrets Manager/state files, and verifies no orphans.
+The hardened teardown performs 8 steps in order:
+1. Asserts integration kill-switch is off (no agent mid-call)
+2. Scales ECS service to 0 (drains Fargate ENIs)
+3. Empties S3 bucket (handles versioned objects)
+4. Runs `terraform destroy` (removes all infra including CodeBuild)
+5. Force-deletes ECR repository and Secrets Manager secrets
+6. Wipes Terraform state files from the state bucket
+7. Orphan audit — **fails loud** if it cannot verify (never false all-clear)
+8. Post-destroy assertions (CodeBuild, ECS, RDS, ECR, S3 all confirmed gone)
+
+Every step is idempotent and tolerates "already gone." The executing role needs
+`tag:GetResources` permission for the orphan audit (step 7).
 
 ## Integration
 

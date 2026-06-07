@@ -1,6 +1,7 @@
 # S3 bucket for gbrain brain repository
 resource "aws_s3_bucket" "brain_repo" {
-  bucket = "${var.name_prefix}-repo-${var.account_id}"
+  bucket        = "${var.name_prefix}-repo-${var.account_id}"
+  force_destroy = true
 
   tags = {
     Name = "${var.name_prefix}-repo"

@@ -1,0 +1,97 @@
+name: Gbrain Infra Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "gbrain" to confirm destruction'
+        required: true
+        type: string
+
+concurrency:
+  group: tf-apply-gbrain
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+  MODULE_NAME: research/gbrain
+
+jobs:
+  destroy:
+    name: Destroy Gbrain Infrastructure
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Confirm module name
+        run: |
+          if [ "${{ inputs.confirm }}" != "gbrain" ]; then
+            echo "::error::Input did not match 'gbrain'. Aborting to prevent accidental destroy."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg python3
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
+      - name: Configure kubectl
+        run: |
+          set -e
+          CLUSTER_NAME="adp-${{ env.ENVIRONMENT }}-eks-cluster"
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "${{ env.AWS_REGION }}" 2>/dev/null || {
+            echo "WARNING: Could not configure kubectl. EKS cluster may not exist."
+          }
+
+      - name: Run gbrain teardown
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+        run: |
+          set -e
+          chmod +x modules/research/gbrain/scripts/teardown.sh
+          # Override the sleep for CI (non-interactive)
+          export GBRAIN_TEARDOWN_NO_WAIT=true
+          bash modules/research/gbrain/scripts/teardown.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Terraform Destroy -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Action**: destroy" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Confirmation**: ${{ inputs.confirm }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "The teardown script handles:" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Integration kill-switch assertion" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. ECS service scale-to-zero" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. S3 bucket emptying (versioned)" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Terraform destroy (infra + CodeBuild)" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. ECR + Secrets Manager cleanup" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. Terraform state wipe" >> "$GITHUB_STEP_SUMMARY"
+          echo "7. Orphan audit (fail-loud)" >> "$GITHUB_STEP_SUMMARY"
+          echo "8. Post-destroy assertions" >> "$GITHUB_STEP_SUMMARY"
