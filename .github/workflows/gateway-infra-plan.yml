@@ -51,9 +51,23 @@ jobs:
           aws --version
           terraform version | head -1
 
+      # The committed backend tfvars keeps the literal
+      # "adp-terraform-state-ACCOUNT_ID" placeholder (the real account id is
+      # never committed). Resolve it at runtime from the runner's own identity
+      # and override the bucket on init, matching deploy-all.sh's pattern.
+      - name: Resolve Terraform state bucket
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ADP_STATE_BUCKET=adp-terraform-state-${ACCOUNT_ID}" >> "$GITHUB_ENV"
+          echo "Resolved state bucket: adp-terraform-state-${ACCOUNT_ID}"
+
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
+        run: |
+          terraform init \
+            -backend-config="../../../${{ env.BACKEND_CONFIG }}" \
+            -backend-config="bucket=${ADP_STATE_BUCKET}" \
+            -input=false -reconfigure
 
       - name: Terraform Plan
         id: plan

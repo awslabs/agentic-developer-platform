@@ -535,6 +535,29 @@ if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
   echo "Skipping gateway infra (--agent-factory-only or --agent-context-only)"
   ok "Skipped"
 else
+  # Fail fast if the GitHub auth broker is enabled but its OAuth secret is
+  # absent. gateway/infra reads adp/$ENVIRONMENT/cognito/github-oauth-credentials
+  # via a data source that resolves at PLAN time, so a missing secret aborts the
+  # apply with a cryptic "couldn't find secret". Surface it with the fix instead.
+  if grep -qE '^\s*enable_github_auth_broker\s*=\s*true' \
+       "$ROOT_DIR/environments/$ENVIRONMENT/modules/gateway.tfvars" 2>/dev/null; then
+    OAUTH_SECRET="adp/${ENVIRONMENT}/cognito/github-oauth-credentials"
+    if ! aws secretsmanager describe-secret --secret-id "$OAUTH_SECRET" \
+           --region "$AWS_REGION" &>/dev/null; then
+      fail "enable_github_auth_broker=true but Secrets Manager secret '$OAUTH_SECRET' is missing.
+  The gateway terraform plan reads it via a data source and will fail without it.
+  Provision the GitHub OAuth App credentials out-of-band, e.g.:
+    aws secretsmanager create-secret --name '$OAUTH_SECRET' \\
+      --secret-string '{\"client_id\":\"<id>\",\"client_secret\":\"<secret>\"}' --region $AWS_REGION
+  Or set enable_github_auth_broker=false in environments/$ENVIRONMENT/modules/gateway.tfvars to skip GitHub login."
+    fi
+  fi
+
+  # NOTE: The psycopg2/pyjwt Lambda layers are built automatically by the
+  # gateway terraform module (null_resource.build_*_layer → CodeBuild), so we no
+  # longer build them here — that path now works for stage-by-stage applies and
+  # CI too, not just this script. See modules/gateway/infra/main.tf.
+
   # Gateway infra runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/gateway/infra"
   terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false

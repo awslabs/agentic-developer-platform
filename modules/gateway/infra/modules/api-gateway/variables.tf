@@ -155,3 +155,9 @@ variable "broker_lambda_function_name" {
   type        = string
   default     = ""
 }
+
+variable "enable_broker_route" {
+  description = "Whether the GitHub auth broker is enabled. Drives count for the broker Lambda permission. Must be a plan-time-known bool (not derived from the broker's computed ARN, which is unknown until apply)."
+  type        = bool
+  default     = false
+}

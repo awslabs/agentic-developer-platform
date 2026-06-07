@@ -467,7 +467,10 @@ resource "aws_api_gateway_account" "main" {
 # Allows API Gateway to invoke the broker Lambda for /auth/github/* routes.
 
 resource "aws_lambda_permission" "broker_api_gateway" {
-  count = var.broker_lambda_invoke_arn != "" ? 1 : 0
+  # Use the plan-time-known enable flag, NOT broker_lambda_invoke_arn — the
+  # latter is the broker Lambda's computed invoke ARN (unknown until apply),
+  # which makes count un-evaluable at plan time ("Invalid count argument").
+  count = var.enable_broker_route ? 1 : 0
 
   statement_id  = "AllowAPIGatewayInvokeBroker"
   action        = "lambda:InvokeFunction"

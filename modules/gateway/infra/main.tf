@@ -70,6 +70,66 @@ locals {
   # Gateway service IRSA role (created by platform EKS module)
   gateway_service_irsa_role_arn  = data.terraform_remote_state.platform.outputs.gateway_service_irsa_role_arn
   gateway_service_irsa_role_name = data.terraform_remote_state.platform.outputs.gateway_service_irsa_role_name
+
+  state_bucket          = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+  layer_builder_script  = "${path.module}/../../../platform/scripts/build-lambda-layers.sh"
+}
+
+# =============================================================================
+# Lambda layer builds (Issue #1038 / #408) — auto-build so NO deploy path fails
+# =============================================================================
+# The budget-lambda (psycopg2) and lambda-authorizer (pyjwt) modules read their
+# layer zips from s3://<state-bucket>/lambda-layers/*.zip via `aws_s3_object`
+# data sources that resolve at PLAN time. If the zip is absent the apply dies
+# with "couldn't find resource". Previously only deploy-all.sh built these, so
+# stage-by-stage `terraform apply` and CI failed.
+#
+# These null_resources trigger the CodeBuild layer build (via the shared
+# build-lambda-layers.sh) BEFORE the consuming modules read S3. They are gated
+# by the SAME feature flags as their consumers (enable_chat_logging for
+# psycopg2, enable_api_gateway for pyjwt), so we never build a layer no Lambda
+# will use. CodeBuild does the Docker work — no local Docker needed. Matches the
+# existing null_resource + local-exec pattern used in the cognito module.
+resource "null_resource" "build_psycopg2_layer" {
+  count = var.enable_chat_logging ? 1 : 0
+
+  # Rebuild when the layer's build recipe changes; the build script itself is
+  # idempotent so re-running on every change is safe.
+  triggers = {
+    build_script  = filesha256(local.layer_builder_script)
+    layer_recipe  = filesha256("${path.module}/../lambda/layers/psycopg2/build.sh")
+    state_bucket  = local.state_bucket
+  }
+
+  provisioner "local-exec" {
+    command     = "bash '${local.layer_builder_script}' psycopg2"
+    interpreter = ["/bin/bash", "-c"]
+    environment = {
+      AWS_REGION       = var.aws_region
+      ENVIRONMENT      = var.environment
+      ADP_STATE_BUCKET = local.state_bucket
+    }
+  }
+}
+
+resource "null_resource" "build_pyjwt_layer" {
+  count = var.enable_api_gateway ? 1 : 0
+
+  triggers = {
+    build_script = filesha256(local.layer_builder_script)
+    layer_recipe = filesha256("${path.module}/../lambda/layers/pyjwt/build.sh")
+    state_bucket = local.state_bucket
+  }
+
+  provisioner "local-exec" {
+    command     = "bash '${local.layer_builder_script}' pyjwt"
+    interpreter = ["/bin/bash", "-c"]
+    environment = {
+      AWS_REGION       = var.aws_region
+      ENVIRONMENT      = var.environment
+      ADP_STATE_BUCKET = local.state_bucket
+    }
+  }
 }
 
 # =============================================================================
@@ -655,7 +715,9 @@ module "budget_lambda" {
   # S3 bucket containing pre-built Lambda layer artifacts (Issue #1038)
   lambda_artifact_bucket = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
 
-  depends_on = [module.s3_chat_logs, module.rds]
+  # Ensure the psycopg2 layer zip is built+uploaded before this module's
+  # aws_s3_object data source reads it.
+  depends_on = [module.s3_chat_logs, module.rds, null_resource.build_psycopg2_layer]
 }
 
 # =============================================================================
@@ -708,6 +770,9 @@ module "api_gateway" {
   # Issue #1011: GitHub Auth Broker route in OpenAPI body
   broker_lambda_invoke_arn    = var.enable_github_auth_broker ? module.github_auth_broker[0].invoke_arn : ""
   broker_lambda_function_name = var.enable_github_auth_broker ? module.github_auth_broker[0].function_name : ""
+  # Plan-time-known bool so the broker Lambda permission's count is evaluable
+  # at plan time (the invoke_arn above is unknown until apply).
+  enable_broker_route = var.enable_github_auth_broker
 
   depends_on = [module.cognito]
 }
@@ -745,7 +810,9 @@ module "lambda_authorizer" {
   # Issue #642: KMS encryption for DynamoDB tables
   kms_key_arn = aws_kms_key.dynamodb.arn
 
-  depends_on = [module.api_gateway, module.cognito]
+  # Ensure the pyjwt layer zip is built+uploaded before this module's
+  # aws_s3_object data source reads it.
+  depends_on = [module.api_gateway, module.cognito, null_resource.build_pyjwt_layer]
 }
 
 # =============================================================================
