@@ -419,6 +419,34 @@ aws lambda get-function-configuration --function-name bedrockgw-dev-github-auth-
 curl -s -o /dev/null -w "%{http_code}\n" "https://<apigw>/dev/auth/github/start"   # 302
 ```
 
+## Phase 6d — Bootstrap the first admin ✅ verified — REQUIRED for login
+
+A fresh deploy has **no rows in the `users` table**, so the onboarding gate
+returns "request access" for **everyone** — including the seeded Cognito admin —
+and nobody can approve anyone (`create_test_users=true` only creates the Cognito
+user + "admins" group, not the DB rows). Seed the first admin's DB rows so they
+become "registered" and can approve real users:
+
+```bash
+modules/gateway/scripts/bootstrap-admin.sh --env dev
+```
+Resolves the seeded admin's Cognito sub (from `adp/dev/gateway/test-admin-credentials`)
+and runs the in-pod entrypoint `python -m src.admin.onboarding.bootstrap_admin`,
+which reuses `approve_request` to atomically create org/tenant/dept/team/user +
+the cognito identity (role `platform_admin`). Idempotent. For an operator using
+their own SSO admin instead of the test admin, pass `--email`/`--pool-id`/`--org`.
+
+> **The image must contain `bootstrap_admin.py`.** It runs *inside* the gateway
+> pod, so the deployed `adp-gateway` image must include this module — i.e. build
+> the gateway image (Phase 5) from a tree that has it. (If the pod predates it,
+> rebuild + redeploy the image first.)
+
+Verify:
+```bash
+# Log in as the admin (email/password), then:
+curl -s -H "Authorization: Bearer <admin-jwt>" https://<apigw>/dev/admin/access/status   # {"status":"registered"}
+```
+
 ## Agent Factory — Webhook-Ingress stack (ARC-free agent path) ✅ verified
 
 This is the **GitHub-decoupled, ARC-free** way to run agents:
@@ -483,10 +511,11 @@ The complete stage-by-stage path, each step backed by a re-runnable script:
 1. Phases 1–6 — bootstrap → preflight → platform → gateway infra → gateway backend → frontend (above)
 2. `platform/scripts/wire-gateway-alb.sh --apply` — gateway second pass (Phase 6b)
 3. `modules/gateway/scripts/deploy-broker.sh --env dev` — broker Lambda code (Phase 6c)
-4. `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev` — webhook stack
-5. `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev [--client-secret <s>]` — create + wire the GitHub App
-6. Install the App on a target repo (UI "Link GitHub" or `github.com/apps/<slug>/installations/new`)
-7. `@agent-developer <task>` in an issue/PR comment → webhook → SQS → KEDA → agent-worker pod
+4. `modules/gateway/scripts/bootstrap-admin.sh --env dev` — first-admin DB rows (Phase 6d; REQUIRED for login)
+5. `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev` — webhook stack
+6. `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev [--client-secret <s>]` — create + wire the GitHub App
+7. Install the App on a target repo (UI "Link GitHub" or `github.com/apps/<slug>/installations/new`)
+8. `@agent-developer <task>` in an issue/PR comment → webhook → SQS → KEDA → agent-worker pod
 
 ## Phases 7–9 (full ARC path) — `deploy-all.sh` ⚠️ unverified here
 
