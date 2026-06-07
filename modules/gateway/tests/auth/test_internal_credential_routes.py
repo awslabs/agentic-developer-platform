@@ -139,8 +139,23 @@ def _make_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
         yield db_session
 
     app.dependency_overrides[get_db] = _get_db
-    # Auth: always pass if correct key supplied (mirrors real _verify_internal_key)
-    # We rely on the real dependency but patch settings below per test.
+
+    # Auth: override verify_internal_or_irsa with a faithful stand-in that
+    # enforces the shared-key check against _VALID_KEY. The real dependency
+    # reads settings.internal_api_key inside src.internal.auth_deps (NOT in
+    # credential_routes/routes), so the per-test `patch(...get_settings)` calls
+    # never reached it — every call 503'd ("not configured"). Overriding the
+    # dependency itself is the robust fix and still exercises the 403 path.
+    from fastapi import Header, HTTPException
+
+    from src.internal.auth_deps import verify_internal_or_irsa
+
+    async def _verify(x_internal_api_key: str | None = Header(default=None)) -> None:
+        if x_internal_api_key != _VALID_KEY:
+            raise HTTPException(status_code=403, detail={"error": "forbidden"})
+
+    app.dependency_overrides[verify_internal_or_irsa] = _verify
+
     if mock_sm is not None:
         app.dependency_overrides[get_secrets_manager] = lambda: mock_sm
     return TestClient(app, raise_server_exceptions=False)

@@ -94,6 +94,21 @@ def _make_app(db_session: AsyncSession) -> TestClient:
         yield db_session
 
     app.dependency_overrides[get_db] = _get_db
+
+    # Auth: the real verify_internal_or_irsa reads settings.internal_api_key
+    # inside src.internal.auth_deps (not src.internal.routes), so the per-test
+    # `patch("src.internal.routes.get_settings")` never reached it and every
+    # call 503'd. Override the dependency with a faithful key check (still
+    # exercises the 403 path).
+    from fastapi import Header, HTTPException
+
+    from src.internal.auth_deps import verify_internal_or_irsa
+
+    async def _verify(x_internal_api_key: str | None = Header(default=None)) -> None:
+        if x_internal_api_key != _VALID_KEY:
+            raise HTTPException(status_code=403, detail={"error": "forbidden"})
+
+    app.dependency_overrides[verify_internal_or_irsa] = _verify
     return TestClient(app, raise_server_exceptions=False)
 
 
