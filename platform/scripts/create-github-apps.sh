@@ -89,8 +89,67 @@ store_secret() {
 echo ""
 echo "ADP GitHub App Creator"
 echo "======================"
-echo "Org: $GITHUB_ORG"
+echo "Owner/org arg: $GITHUB_ORG"
 echo ""
+
+# -----------------------------------------------------------------------------
+# App ownership scope — org-owned vs user-owned
+# -----------------------------------------------------------------------------
+# GitHub Apps are owned by EITHER an organization (requires org-owner rights) OR
+# a user account (requires only that the user can admin the target repo). The
+# ARC runner registers at the repo level either way (githubConfigUrl uses the
+# repo), so the only thing that changes between the two is WHERE the app is
+# created and HOW its installation is verified.
+#
+# Set APP_SCOPE=org|user to skip the prompt (useful for automation).
+APP_SCOPE="${APP_SCOPE:-}"
+if [ -z "$APP_SCOPE" ]; then
+  echo "Where should the GitHub Apps be created/owned?"
+  echo "  1) Organization  — apps owned by the '$GITHUB_ORG' org."
+  echo "                     Requires you to be an ORG OWNER."
+  echo "  2) Personal/repo — apps owned by your GitHub user account, then installed"
+  echo "                     on specific repo(s). Works with only REPO ADMIN access"
+  echo "                     (no org-owner rights needed) — for corporate setups."
+  echo -n "Choose [1/2] (default 1): "
+  read -r _scope_choice
+  case "${_scope_choice:-1}" in
+    2) APP_SCOPE="user" ;;
+    *) APP_SCOPE="org" ;;
+  esac
+fi
+[ "$APP_SCOPE" = "org" ] || [ "$APP_SCOPE" = "user" ] || fail "APP_SCOPE must be 'org' or 'user' (got '$APP_SCOPE')"
+echo "App ownership scope: $APP_SCOPE"
+echo ""
+
+# Base URL for creating a new GitHub App, depending on scope.
+app_create_base_url() {
+  if [ "$APP_SCOPE" = "org" ]; then
+    echo "https://github.com/organizations/${GITHUB_ORG}/settings/apps/new"
+  else
+    echo "https://github.com/settings/apps/new"   # creates under the authenticated user
+  fi
+}
+
+# Base URL for registering a new OAuth App, depending on scope.
+oauth_create_base_url() {
+  if [ "$APP_SCOPE" = "org" ]; then
+    echo "https://github.com/organizations/${GITHUB_ORG}/settings/applications/new"
+  else
+    echo "https://github.com/settings/applications/new"
+  fi
+}
+
+# Look up an app's installation id. Org scope reads the org's installations;
+# user scope reads the authenticated user's installations (works for apps
+# installed on personal repos OR on org repos the user can access).
+lookup_install_id() {
+  local app_id="$1"
+  if [ "$APP_SCOPE" = "org" ]; then
+    gh api "/orgs/$GITHUB_ORG/installations" --jq ".installations[] | select(.app_id==$app_id) | .id" 2>/dev/null || echo ""
+  else
+    gh api "/user/installations" --jq ".installations[] | select(.app_id==$app_id) | .id" 2>/dev/null || echo ""
+  fi
+}
 
 APPS=("dev" "pm" "ops")
 APP_NAMES=("${GITHUB_ORG}-adp-agent-dev" "${GITHUB_ORG}-adp-agent-pm" "${GITHUB_ORG}-adp-agent-ops")
@@ -114,40 +173,49 @@ for i in 0 1 2; do
     APP_ID="$EXISTING_ID"
 
     # Check if installed — if not, open browser for installation
-    INSTALL_ID=$(gh api "/orgs/$GITHUB_ORG/installations" --jq ".installations[] | select(.app_id==$APP_ID) | .id" 2>/dev/null || echo "")
+    INSTALL_ID=$(lookup_install_id "$APP_ID")
     if [ -n "$INSTALL_ID" ]; then
-      ok "Already installed on $GITHUB_ORG (installation ID: $INSTALL_ID)"
+      ok "Already installed (installation ID: $INSTALL_ID)"
     else
-      echo "  App exists but is NOT installed on $GITHUB_ORG. Opening browser..."
+      echo "  App exists but is NOT installed yet. Opening browser..."
       INSTALL_URL="https://github.com/apps/${APP_NAME}/installations/select_target"
       open_url "$INSTALL_URL"
       echo -n "  Press Enter after you've installed the app in the browser..."
       read -r
       sleep 2
-      INSTALL_ID=$(gh api "/orgs/$GITHUB_ORG/installations" --jq ".installations[] | select(.app_id==$APP_ID) | .id" 2>/dev/null || echo "")
+      INSTALL_ID=$(lookup_install_id "$APP_ID")
       [ -n "$INSTALL_ID" ] && ok "Installed (ID: $INSTALL_ID)" || warn "Could not verify installation"
     fi
     continue
   fi
 
-  # Build the manifest URL with pre-filled permissions
-  URL="https://github.com/organizations/${GITHUB_ORG}/settings/apps/new"
+  # Build the manifest URL with pre-filled permissions.
+  # Base differs by scope: org-owned vs user-owned (see app_create_base_url).
+  URL="$(app_create_base_url)"
   URL="${URL}?name=${APP_NAME}"
   URL="${URL}&url=https://github.com/${GITHUB_ORG}/adp"
   URL="${URL}&public=false"
   URL="${URL}&webhook_active=false"
+  # Repository-level permissions — apply to both org- and user-owned apps.
   URL="${URL}&contents=write"
   URL="${URL}&issues=write"
   URL="${URL}&pull_requests=write"
   URL="${URL}&checks=write"
   URL="${URL}&workflows=write"
   URL="${URL}&metadata=read"
-  URL="${URL}&members=read"
-  URL="${URL}&organization_projects=write"
   # administration:write lets ARC register repo-scoped self-hosted runners.
   # actions:write lets those runners claim and run workflow jobs.
   URL="${URL}&administration=write"
   URL="${URL}&actions=write"
+  # Organization-level permissions — only meaningful for org-owned apps. A
+  # user-owned app (repo-admin path) can't grant org perms, and requesting them
+  # just clutters the consent screen, so omit them in user scope. The agent
+  # features that use members:read / organization_projects (e.g. PM project
+  # boards) are org-only and not available in the personal-repo deployment.
+  if [ "$APP_SCOPE" = "org" ]; then
+    URL="${URL}&members=read"
+    URL="${URL}&organization_projects=write"
+  fi
   URL="${URL}&events[]=issues"
   URL="${URL}&events[]=issue_comment"
   URL="${URL}&events[]=pull_request"
@@ -205,8 +273,14 @@ for i in 0 1 2; do
 
   # Install the app on the org
   echo ""
-  echo "  Now install the app on your org."
-  echo "  Opening browser — select '$GITHUB_ORG' org, choose 'Only select repositories', pick 'adp'."
+  echo "  Now install the app."
+  if [ "$APP_SCOPE" = "org" ]; then
+    echo "  Opening browser — select the '$GITHUB_ORG' org, choose 'Only select repositories', pick 'adp'."
+  else
+    echo "  Opening browser — select your user account, choose 'Only select repositories',"
+    echo "  and pick the repo(s) you administer (e.g. '$GITHUB_ORG/adp' if it's under your account,"
+    echo "  or whichever repo you onboarded). Repo-admin access is sufficient — no org rights needed."
+  fi
   echo ""
 
   INSTALL_URL="https://github.com/apps/${APP_NAME}/installations/select_target"
@@ -218,10 +292,10 @@ for i in 0 1 2; do
   # Verify installation and add extra repos
   echo "  Verifying installation..."
   sleep 2
-  INSTALL_ID=$(gh api "/orgs/$GITHUB_ORG/installations" --jq ".installations[] | select(.app_id==$APP_ID) | .id" 2>/dev/null || echo "")
+  INSTALL_ID=$(lookup_install_id "$APP_ID")
 
   if [ -n "$INSTALL_ID" ]; then
-    ok "App installed on $GITHUB_ORG (installation ID: $INSTALL_ID)"
+    ok "App installed (installation ID: $INSTALL_ID)"
 
     # Add extra repos if specified
     if [ ${#EXTRA_REPOS[@]+"${#EXTRA_REPOS[@]}"} -gt 0 ] 2>/dev/null; then
@@ -281,7 +355,7 @@ else
 
     # Pre-fill the OAuth App registration form with name + URLs.
     OAUTH_APP_NAME="${GITHUB_ORG}-adp-oauth"
-    OAUTH_URL="https://github.com/organizations/${GITHUB_ORG}/settings/applications/new"
+    OAUTH_URL="$(oauth_create_base_url)"
     OAUTH_URL="${OAUTH_URL}?oauth_application[name]=${OAUTH_APP_NAME}"
     OAUTH_URL="${OAUTH_URL}&oauth_application[url]=${HOMEPAGE_URL}"
     OAUTH_URL="${OAUTH_URL}&oauth_application[callback_url]=${CALLBACK_URL}"
@@ -364,7 +438,7 @@ for i in 0 1 2; do
   ROLE="${APPS[$i]}"
   APP_NAME="${APP_NAMES[$i]}"
   APP_ID=$(aws secretsmanager get-secret-value --secret-id "adp/${GITHUB_ORG}/gh-app-${ROLE}-id" --query 'SecretString' --output text --region "$AWS_REGION" 2>/dev/null || echo "0")
-  INSTALL_ID=$(gh api "/orgs/$GITHUB_ORG/installations" --jq ".installations[] | select(.app_id==$APP_ID) | .id" 2>/dev/null || echo "")
+  INSTALL_ID=$(lookup_install_id "$APP_ID")
   if [ -n "$INSTALL_ID" ]; then
     REPOS=$(gh api "/user/installations/$INSTALL_ID/repositories" --jq '[.repositories[].name] | join(", ")' 2>/dev/null || echo "?")
     ok "$APP_NAME installed (ID: $INSTALL_ID) → repos: $REPOS"
