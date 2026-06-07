@@ -2,42 +2,62 @@
 set -euo pipefail
 
 # =============================================================================
-# ADP — Register Public GitHub App: ADP Agent Platform
+# ADP — Register GitHub App (ADP Agent Platform) + wire it into the platform
 # =============================================================================
-# Creates (or verifies) the hosted public GitHub App that customers install.
-# Stores the App ID and private key in Secrets Manager.
+# Creates (or verifies) the GitHub App customers install, stores its App ID +
+# private key in Secrets Manager, then calls wire-github-app.sh to point the
+# running platform (gateway UI install flow + GitHub login) at it.
+#
+# Designed to be runnable NON-INTERACTIVELY: pass --app-id / --pem-path /
+# --client-secret / --visibility as flags and it won't prompt. Any input not
+# supplied as a flag is prompted for interactively (the browser-create flow).
 #
 # Usage:
-#   ./register-github-app.sh <github-org> [--env dev] [--webhook-url URL]
+#   ./register-github-app.sh <github-org> [options]
 #
-# Prerequisites:
-#   - AWS CLI configured with appropriate permissions
-#   - gh CLI authenticated
-#   - Secrets Manager secret adp/<env>/webhook-ingress/github-webhook-secret exists
+# Options (all optional except <github-org>):
+#   --env ENV              Environment (default: dev)                  [ADP_ENV]
+#   --webhook-url URL      Webhook URL (default: auto-detect from TF output)
+#   --visibility V         private (default) | public                  [APP_VISIBILITY]
+#   --app-id ID            App ID — skips the "Enter the App ID" prompt
+#   --pem-path PATH        Private key .pem — skips auto-detect/prompt
+#   --client-secret SECRET OAuth client secret (for GitHub login wiring). Shown
+#                          once at app creation; pass it to wire login in the
+#                          same run.                                    [GH_APP_CLIENT_SECRET]
+#   --region REGION        AWS region (default: us-east-1)              [AWS_REGION]
+#   --no-wire              Register only; skip calling wire-github-app.sh.
+#
+# Prerequisites: aws CLI + creds; gh authenticated; the webhook-ingress stack
+# applied (provides the webhook URL + secret).
 # =============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 GITHUB_ORG="${1:-}"
 shift 2>/dev/null || true
 
-ENVIRONMENT="dev"
+ENVIRONMENT="${ADP_ENV:-dev}"
 WEBHOOK_URL=""
 AWS_REGION="${AWS_REGION:-us-east-1}"
 APP_NAME_BASE="adp-agent-platform"
+APP_VISIBILITY="${APP_VISIBILITY:-}"
+APP_ID_FLAG=""
+PEM_PATH_FLAG=""
+CLIENT_SECRET="${GH_APP_CLIENT_SECRET:-}"
+NO_WIRE=false
 
 # Parse optional flags
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --env)
-      ENVIRONMENT="$2"
-      shift 2
-      ;;
-    --webhook-url)
-      WEBHOOK_URL="$2"
-      shift 2
-      ;;
-    *)
-      shift
-      ;;
+    --env)            ENVIRONMENT="$2"; shift 2 ;;
+    --webhook-url)    WEBHOOK_URL="$2"; shift 2 ;;
+    --visibility)     APP_VISIBILITY="$2"; shift 2 ;;
+    --app-id)         APP_ID_FLAG="$2"; shift 2 ;;
+    --pem-path)       PEM_PATH_FLAG="$2"; shift 2 ;;
+    --client-secret)  CLIENT_SECRET="$2"; shift 2 ;;
+    --region)         AWS_REGION="$2"; shift 2 ;;
+    --no-wire)        NO_WIRE=true; shift ;;
+    *)                shift ;;
   esac
 done
 
@@ -48,24 +68,24 @@ fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
 info() { echo -e "${BLUE}ℹ${NC} $1"; }
 
 if [ -z "$GITHUB_ORG" ]; then
-  echo "Usage: $0 <github-org> [--env dev] [--webhook-url URL]"
+  echo "Usage: $0 <github-org> [options]"
   echo ""
-  echo "Registers the public 'ADP Agent Platform' GitHub App."
+  echo "Registers the 'adp-agent-platform' GitHub App and wires it into the platform."
   echo ""
   echo "Options:"
-  echo "  --env ENV            Environment (default: dev)"
-  echo "  --webhook-url URL    Override webhook URL (default: auto-detect from Terraform output)"
+  echo "  --env ENV              Environment (default: dev)"
+  echo "  --webhook-url URL      Override webhook URL (default: auto-detect from TF output)"
+  echo "  --visibility V         private (default) | public  (also via APP_VISIBILITY env)"
+  echo "  --app-id ID            App ID — skips the interactive 'Enter the App ID' prompt"
+  echo "  --pem-path PATH        Private key .pem path — skips ~/Downloads auto-detect"
+  echo "  --client-secret SECRET OAuth client secret → wires GitHub LOGIN in the same run"
+  echo "  --region REGION        AWS region (default: us-east-1)"
+  echo "  --no-wire              Register only; don't call wire-github-app.sh"
   echo ""
-  echo "Env vars:"
-  echo "  APP_VISIBILITY       private (default, recommended) | public. Public is only"
-  echo "                       needed when external orgs (tenants you don't own) install"
-  echo "                       the app. Prompted interactively if unset."
-  echo ""
-  echo "The script will:"
-  echo "  1. Open your browser to create the GitHub App with pre-filled settings"
-  echo "  2. Store the App ID in Secrets Manager"
-  echo "  3. Store the private key in Secrets Manager"
-  echo "  4. Configure the webhook URL and secret"
+  echo "Interactive by default (opens browser, prompts for App ID + .pem). Supply"
+  echo "  --app-id/--pem-path/--visibility to run non-interactively. After storing the"
+  echo "  app creds it calls wire-github-app.sh to point the gateway UI install flow"
+  echo "  (and, with --client-secret, GitHub login) at the new app."
   exit 1
 fi
 
@@ -300,11 +320,16 @@ echo "    3. Note the App ID shown at the top of the next page"
 echo "    4. Scroll down → click 'Generate a private key' (downloads a .pem file)"
 echo ""
 
-open_url "$URL"
-
-# Wait for user to enter the App ID
-echo -n "  Enter the App ID: "
-read -r APP_ID
+# Only open the browser + prompt when the App ID wasn't supplied as a flag.
+if [ -n "$APP_ID_FLAG" ]; then
+  APP_ID="$APP_ID_FLAG"
+  info "Using App ID from --app-id: $APP_ID (skipping browser create prompt)"
+else
+  open_url "$URL"
+  # Wait for user to enter the App ID
+  echo -n "  Enter the App ID: "
+  read -r APP_ID
+fi
 
 if [ -z "$APP_ID" ]; then
   fail "No App ID provided"
@@ -319,17 +344,20 @@ fi
 # Step 5: Locate and store the private key
 # =============================================================================
 
-echo "  Looking for the private key .pem file..."
-sleep 2
-
 PEM_FILE=""
-PEM_FILE=$(find_latest_pem)
-
-if [ -z "$PEM_FILE" ]; then
-  echo ""
-  echo "  Could not auto-detect the .pem file in $DOWNLOADS."
-  echo -n "  Enter the path to the downloaded .pem file: "
-  read -r PEM_FILE
+if [ -n "$PEM_PATH_FLAG" ]; then
+  PEM_FILE="$PEM_PATH_FLAG"
+  info "Using private key from --pem-path: $PEM_FILE"
+else
+  echo "  Looking for the private key .pem file..."
+  sleep 2
+  PEM_FILE=$(find_latest_pem)
+  if [ -z "$PEM_FILE" ]; then
+    echo ""
+    echo "  Could not auto-detect the .pem file in $DOWNLOADS."
+    echo -n "  Enter the path to the downloaded .pem file: "
+    read -r PEM_FILE
+  fi
 fi
 
 if [ ! -f "$PEM_FILE" ]; then
@@ -395,8 +423,41 @@ echo "  Secrets:"
 echo "    ID:  $SECRET_ID_PATH"
 echo "    Key: $SECRET_KEY_PATH"
 echo ""
+
+# =============================================================================
+# Step 8: Wire the app into the running platform (gateway UI install + login)
+# =============================================================================
+# Registering only stores the app creds. wire-github-app.sh points the running
+# services at this app: the gateway's "Link GitHub" install flow
+# (BG_GITHUB_APP_SLUG/ID/PRIVATE_KEY) and — if --client-secret was provided —
+# GitHub login (broker OAuth client_id/secret). Kept as a separate, independently
+# re-runnable script (e.g. to re-wire after a gateway redeploy or secret rotation).
+WIRE_SCRIPT="${SCRIPT_DIR}/wire-github-app.sh"
+if [ "$NO_WIRE" = true ]; then
+  info "--no-wire set; skipping platform wiring."
+  info "Run it later:  ${WIRE_SCRIPT} --app-slug ${APP_NAME} --env ${ENVIRONMENT} [--client-secret <secret>]"
+elif [ ! -x "$WIRE_SCRIPT" ]; then
+  warn "wire-github-app.sh not found/executable at $WIRE_SCRIPT — skipping wiring."
+  warn "Run it manually:  bash ${WIRE_SCRIPT} --app-slug ${APP_NAME} --env ${ENVIRONMENT}"
+else
+  echo -e "${BLUE}━━━ Wiring the app into the running platform ━━━${NC}"
+  WIRE_ARGS=(--app-slug "$APP_NAME" --env "$ENVIRONMENT" --region "$AWS_REGION")
+  [ -n "$CLIENT_SECRET" ] && WIRE_ARGS+=(--client-secret "$CLIENT_SECRET")
+  # AWS_REGION already in env; pass through. The wire script auto-fetches the
+  # OAuth client_id via `gh api /apps/<slug>`.
+  AWS_REGION="$AWS_REGION" bash "$WIRE_SCRIPT" "${WIRE_ARGS[@]}" || \
+    warn "Wiring step reported an issue — review output above; you can re-run wire-github-app.sh."
+fi
+
+echo ""
 echo "Next steps:"
-echo "  1. Install the app on a test repo"
-echo "  2. Label an issue to trigger a webhook"
-echo "  3. Check the webhook-events DynamoDB table for the event"
+echo "  1. Install the app on a repo: https://github.com/apps/${APP_NAME}/installations/new"
+echo "  2. @mention an agent in an issue/PR comment (e.g. @agent-developer ...)"
+echo "  3. Check the webhook-events DynamoDB table / kubectl get pods -n adp-agents"
+if [ -z "$CLIENT_SECRET" ] && [ "$NO_WIRE" = false ]; then
+  echo ""
+  warn "GitHub LOGIN not wired (no --client-secret). To enable UI login: generate an"
+  warn "  OAuth client secret (App settings → 'Generate a new client secret'), then:"
+  warn "  ${WIRE_SCRIPT} --app-slug ${APP_NAME} --env ${ENVIRONMENT} --client-secret <secret>"
+fi
 echo ""

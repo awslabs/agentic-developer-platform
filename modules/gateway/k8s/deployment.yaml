@@ -83,6 +83,18 @@ spec:
                   name: bedrockgateway-secrets
                   key: internal-api-key
                   optional: true
+            # GitHub App private key — used by the connections "Link GitHub"
+            # install-callback to fetch installation metadata (GitHubAppClient).
+            # Slug + App ID come from the configmap (BG_GITHUB_APP_SLUG /
+            # BG_GITHUB_APP_ID); the key is sensitive so it lives in the secret.
+            # Populated by wire-github-app.sh. Optional so the gateway still
+            # starts before GitHub is wired.
+            - name: BG_GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bedrockgateway-secrets
+                  key: BG_GITHUB_APP_PRIVATE_KEY
+                  optional: true
             # Issue #144: Tracing configuration
             # X-Ray tracing via CloudWatch Observability addon's OTLP receiver
             - name: BG_OTEL_ENABLED
