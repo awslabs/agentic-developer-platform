@@ -251,6 +251,15 @@ resource "aws_security_group" "rds" {
     Service  = "database"
     DataType = "tenant-data"
   })
+
+  # The EKS-managed cluster SG ingress rule is added as a standalone
+  # aws_security_group_rule in platform/infra/main.tf (it can't live here — the
+  # cluster SG id isn't known until the EKS module, which depends on this one).
+  # Without ignoring inline ingress changes, the inline block above and that
+  # standalone rule perpetually revert each other on every apply.
+  lifecycle {
+    ignore_changes = [ingress]
+  }
 }
 
 # Security Group - Redis (ElastiCache)
@@ -280,6 +289,12 @@ resource "aws_security_group" "redis" {
     Service  = "cache"
     DataType = "ephemeral"
   })
+
+  # See the rds SG above: the cluster-SG ingress is a standalone rule in
+  # platform/infra/main.tf; ignore inline ingress so they don't fight.
+  lifecycle {
+    ignore_changes = [ingress]
+  }
 }
 
 # VPC Endpoints for AWS services (optional but recommended)
@@ -343,6 +358,15 @@ resource "aws_security_group" "vpc_endpoints" {
     Name    = "${var.name_prefix}-sg-vpce"
     Service = "vpc-endpoints"
   })
+
+  # The EKS-managed cluster SG ingress (443) is a standalone rule in
+  # platform/infra/main.tf — required so IRSA pods can reach the STS / Secrets
+  # Manager / ECR interface endpoints (Auto Mode pods use the managed cluster SG,
+  # not the custom eks SG referenced inline above). Ignore inline ingress so the
+  # two definitions don't revert each other every apply.
+  lifecycle {
+    ignore_changes = [ingress]
+  }
 }
 
 # ---------------------------------------------------------------------------

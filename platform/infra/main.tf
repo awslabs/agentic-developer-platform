@@ -178,6 +178,24 @@ resource "aws_security_group_rule" "redis_from_eks_cluster" {
   source_security_group_id = module.eks.cluster_security_group_id
 }
 
+# Interface VPC endpoints (STS, Secrets Manager, ECR, etc.) — HTTPS from the
+# EKS-managed cluster SG. Without this, IRSA pods can't reach the regional STS
+# endpoint to assume their role: `sts:AssumeRoleWithWebIdentity` hangs, which in
+# turn hangs anything that needs AWS creds (RDS IAM-auth token generation, the
+# rds-bootstrap job, Secrets Manager reads) and shows up as CrashLoopBackOff
+# with the app stuck in startup. The vpc_endpoints SG in modules/networking only
+# allows the custom aws_security_group.eks; Auto Mode pods use the managed
+# cluster SG instead — same reason the rds/redis rules above exist here.
+resource "aws_security_group_rule" "vpc_endpoints_from_eks_cluster" {
+  type                     = "ingress"
+  description              = "HTTPS to interface VPC endpoints from EKS-managed cluster SG"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = module.networking.vpc_endpoint_sg_id
+  source_security_group_id = module.eks.cluster_security_group_id
+}
+
 # -----------------------------------------------------------------------------
 # ECR Repositories
 # -----------------------------------------------------------------------------
