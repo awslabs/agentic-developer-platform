@@ -1,0 +1,11 @@
+environment          = "dev"
+aws_region           = "us-east-1"
+owner_email          = "ops@adp.internal"
+vpc_id               = "vpc-0d6115bead9301d25"
+private_subnet_ids   = ["subnet-0860c744097c41a03", "subnet-03ae2ea2ebdf611bb"]
+vpc_cidr             = "10.0.0.0/16"
+instance_class       = "db.t4g.micro"
+db_allocated_storage = 20
+desired_count        = 1
+cpu                  = 1024
+memory               = 2048

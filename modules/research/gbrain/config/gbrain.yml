@@ -1,0 +1,64 @@
+# gbrain configuration for ADP persona-scoped experiential learning
+# Each persona captures and retrieves knowledge scoped to its domain.
+
+brain:
+  name: adp-persona-learning
+  description: "Experiential knowledge store for ADP agent personas"
+  version: "0.1.0"
+
+personas:
+  operations:
+    description: "Infrastructure, deployment, monitoring knowledge"
+    learning_types:
+      - deploy_fix
+      - infra_pattern
+      - incident_response
+      - monitoring_insight
+  developer:
+    description: "Code patterns, architecture decisions, implementation knowledge"
+    learning_types:
+      - code_pattern
+      - bug_fix
+      - architecture_decision
+      - test_strategy
+  architect:
+    description: "Design decisions, trade-off analysis, system boundaries"
+    learning_types:
+      - design_decision
+      - trade_off_analysis
+      - system_boundary
+      - integration_pattern
+  reviewer:
+    description: "Review patterns, recurring findings, quality standards"
+    learning_types:
+      - review_finding
+      - quality_pattern
+      - security_concern
+      - style_convention
+
+synthesis:
+  # Dream cycle configuration
+  schedule: "daily"
+  time_utc: "03:00"
+  # Minimum learnings before synthesis triggers
+  min_learnings_threshold: 5
+  # Maximum age of unsynthesized learnings (days)
+  max_unsynthesized_age: 7
+
+storage:
+  # Brain repository backing store
+  type: "s3"
+  # Bucket configured via GBRAIN_S3_BUCKET env var
+
+database:
+  # PostgreSQL with pgvector for semantic search
+  type: "postgres"
+  extensions:
+    - vector
+  # Connection configured via GBRAIN_DB_* env vars
+
+model:
+  # Model for synthesis and embedding
+  provider: "bedrock"
+  synthesis_model: "anthropic.claude-sonnet-4-20250514"
+  embedding_model: "amazon.titan-embed-text-v2:0"

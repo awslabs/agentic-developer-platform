@@ -1,0 +1,90 @@
+# ADP Schema Pack for Experiential Learning
+# Defines the knowledge graph schema for persona learning.
+
+schema_pack:
+  name: adp-experiential-learning
+  version: "0.1.0"
+  description: "Schema for capturing and retrieving persona-scoped experiential knowledge"
+
+node_types:
+  learning:
+    description: "A single experiential learning captured by an agent"
+    properties:
+      persona:
+        type: string
+        required: true
+        enum: [operations, developer, architect, reviewer]
+      learning_type:
+        type: string
+        required: true
+      context:
+        type: string
+        description: "Issue/PR/task that generated this learning"
+      confidence:
+        type: number
+        min: 0.0
+        max: 1.0
+        default: 0.7
+      validated:
+        type: boolean
+        default: false
+      timestamp:
+        type: datetime
+        required: true
+
+  synthesis:
+    description: "A synthesized insight from multiple learnings"
+    properties:
+      persona:
+        type: string
+        required: true
+      theme:
+        type: string
+        required: true
+      source_count:
+        type: integer
+        description: "Number of learnings that contributed"
+      contradiction_detected:
+        type: boolean
+        default: false
+
+  pattern:
+    description: "A recurring pattern across multiple tasks"
+    properties:
+      domain:
+        type: string
+        required: true
+      frequency:
+        type: integer
+        default: 1
+      last_seen:
+        type: datetime
+
+edge_types:
+  derived_from:
+    description: "Synthesis was derived from these learnings"
+    from: synthesis
+    to: learning
+
+  contradicts:
+    description: "This learning contradicts another"
+    from: learning
+    to: learning
+
+  supports:
+    description: "This learning supports/validates another"
+    from: learning
+    to: learning
+
+  exemplifies:
+    description: "This learning is an instance of a pattern"
+    from: learning
+    to: pattern
+
+  cross_persona:
+    description: "Knowledge transferred between personas"
+    from: learning
+    to: learning
+    properties:
+      transfer_context:
+        type: string
