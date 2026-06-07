@@ -1,8 +1,8 @@
-FROM oven/bun:1 AS build
+FROM public.ecr.aws/oven/bun:1 AS build
 WORKDIR /app
 RUN bun install -g github:garrytan/gbrain@v0.42.26.0
 
-FROM oven/bun:1
+FROM public.ecr.aws/oven/bun:1
 WORKDIR /app
 
 # Copy gbrain from global install
