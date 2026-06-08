@@ -36,9 +36,11 @@ points at exists. The infra phases:
 export AWS_PROFILE=<profile> AWS_REGION=us-east-1   # the account everything keys off
 ./platform/scripts/bootstrap.sh                     # Phase 1
 ./platform/scripts/preflight-check.sh               # Phase 2
-# Phase 3–6: terraform applies + image/frontend builds (see each phase below)
-./platform/scripts/wire-gateway-alb.sh --apply      # Phase 6b (gateway second pass)
-./modules/gateway/scripts/deploy-broker.sh --env dev  # Phase 6c (login)
+# Phase 3–5: terraform applies + backend image build (see each phase below)
+./modules/gateway/scripts/deploy-frontend.sh --env dev   # Phase 6 (build/sync SPA + CFN template)
+./platform/scripts/wire-gateway-alb.sh --apply           # Phase 6b (gateway second pass)
+./modules/gateway/scripts/deploy-broker.sh --env dev     # Phase 6c (login)
+./modules/gateway/scripts/bootstrap-admin.sh --env dev   # Phase 6d (seed first admin)
 # Agent path (optional):
 ./modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev   # Phase 7
 ./modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev  # Phase 8
@@ -340,53 +342,31 @@ psql "...as master..." -c "GRANT rds_iam TO bgadmin;"
 
 ## Phase 6 — Frontend (React → S3 → CloudFront) ✅ verified
 
-**⚠️ Build with the FULL `VITE_*` env — not just `VITE_API_URL`.** Vite vars are
-baked into the bundle at build time. If you build with only `VITE_API_URL`, the
-deployed app shows *"GitHub sign-in is not configured (VITE_GITHUB_AUTH_BROKER_URL
-not set)"* and Cognito login is unconfigured too. All the values come from SSM
-params that **Phase 4 already created** (so Phase 6 can build correctly the first
-time — no rebuild needed; clicking GitHub login works once Phases 6b/6c make the
-broker live). This mirrors what `gateway-deploy.yml` passes.
-
 ```bash
-cd modules/gateway/frontend
-npm ci
-get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null; }
-
-VITE_API_URL="/api" \
-VITE_COGNITO_REGION="us-east-1" \
-VITE_COGNITO_USER_POOL_ID="$(get_ssm /adp/dev/gateway/cognito-user-pool-id)" \
-VITE_COGNITO_CLIENT_ID="$(get_ssm /adp/dev/gateway/cognito-client-id)" \
-VITE_COGNITO_DOMAIN="$(get_ssm /adp/dev/gateway/cognito-domain)" \
-VITE_GITHUB_AUTH_BROKER_URL="$(get_ssm /adp/dev/gateway/github-auth-broker-url)" \
-VITE_AGENT_WS_URL="$(get_ssm /adp/dev/gateway/agent-ws-url)" \
-  npm run build       # VITE_API_URL is "/api" — NOT /api/gateway
-
-BUCKET=$(get_ssm /adp/dev/gateway/frontend-bucket)
-DIST=$(get_ssm /adp/dev/gateway/cloudfront-id)
-# Exclude cfn-templates/ so the --delete doesn't wipe the CFN role template
-# uploaded just below (it lives in the same bucket).
-aws s3 sync dist/ "s3://${BUCKET}/" --delete --exclude "cfn-templates/*"
-
-# REQUIRED for the "Add AWS account" flow: upload the CloudFormation role
-# template. The gateway pre-signs a GET for this object; without it the flow
-# fails with "S3 error: The specified key does not exist." (gateway-deploy.yml
-# does this automatically; a manual deploy must do it here.)
-aws s3 cp ../src/auth/cfn_templates/aws_role_v1.yaml \
-  "s3://${BUCKET}/cfn-templates/aws_role_v1.yaml" --content-type text/yaml
-
-aws cloudfront create-invalidation --distribution-id "$DIST" --paths "/*"
+./modules/gateway/scripts/deploy-frontend.sh --env dev
 ```
 
-Notes: `VITE_AGENT_WS_URL` may be empty (the agent-gateway WebSocket isn't part
-of the webhook path) — the app tolerates it. Node 24 builds fine (repo says ≥ 22).
-If you ever change the broker/Cognito values, you must **rebuild + re-sync** —
-they're compiled in, not read at runtime.
+One idempotent script (the manual equivalent of `gateway-deploy.yml`'s frontend
+job). It:
+1. **Builds with the FULL `VITE_*` env resolved from SSM** — not just
+   `VITE_API_URL`. Vite vars are baked into the bundle at build time; building
+   with only `VITE_API_URL` ships a broken app (*"GitHub sign-in is not
+   configured"* + Cognito unconfigured). All values come from SSM params Phase 4
+   created.
+2. **Syncs `dist/` → the frontend bucket**, excluding `cfn-templates/*` so the
+   `--delete` doesn't wipe the template.
+3. **Uploads the CloudFormation role template** (`cfn-templates/aws_role_v1.yaml`)
+   — REQUIRED for **Settings → Add AWS account**. The gateway pre-signs a GET for
+   it; without it the flow fails *"S3 error: The specified key does not exist."*
+   (Pairs with the gateway-infra grant — `s3:ListBucket`/`GetObject` on
+   `cfn-templates/*`, applied in Phase 4.)
+4. **Invalidates CloudFront.**
 
-The **CFN template upload** + the gateway role's `s3:ListBucket`/`s3:GetObject`
-on `cfn-templates/*` (gateway-infra) are both required for **Settings → Add AWS
-account**; skipping the upload here is the usual cause of "specified key does not
-exist."
+Flags: `--dry-run`, `--skip-build` (deploy an existing `dist/`), `--skip-template`.
+Notes: `VITE_AGENT_WS_URL` may be empty (the agent-gateway WebSocket isn't part of
+the webhook path) — the app tolerates it. Node 24 builds fine (repo says ≥ 22).
+If you change broker/Cognito values, re-run the script (they're compiled in, not
+read at runtime).
 
 Verify:
 ```bash

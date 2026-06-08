@@ -207,6 +207,7 @@ Deletes the Terraform state backend (S3 bucket + DynamoDB lock table). Requires 
 | `platform/scripts/empty-s3-buckets.sh` | Idempotent S3 bucket emptier (versioned + non-versioned) |
 | `platform/scripts/delete-ingress-and-wait.sh` | Pre-destroy: delete Ingress, wait for ALB cleanup |
 | `platform/scripts/force-delete-secrets.sh` | Pre-destroy: force-delete secrets by prefix (protects gh-app-*) |
+| `modules/gateway/scripts/deploy-frontend.sh` | Phase 6: build the SPA with the full VITE_* env from SSM, sync to S3 (excluding cfn-templates/*), upload the CFN role template (required for "Add AWS account"), invalidate CloudFront. Manual equivalent of gateway-deploy.yml's frontend job |
 | `platform/scripts/wire-gateway-alb.sh` | Discover internal ALB → SSM; `--apply` re-applies gateway-infra with ALB vars + redeploys API GW stage (gateway second pass — switches API GW from MOCK to real `/{proxy+}` + `/auth/github` routes) |
 | `modules/gateway/scripts/deploy-broker.sh` | Publish the real github-auth-broker Lambda code (terraform ships a 503 placeholder); required for GitHub login |
 | `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh` | Deploy the ARC-free webhook agent path: build agent-runtime image + package/upload webhook Lambda zip + terraform apply (NOT covered by deploy-all.sh) |

@@ -184,7 +184,7 @@ The phases at a glance (each step idempotent and re-runnable):
 | 3 | Platform infra (VPC, EKS, ECR, IAM) | terraform / `deploy-all.sh` | All |
 | 4 | Gateway infra (RDS, Redis, Cognito, CloudFront, S3) | terraform / `deploy-all.sh` | Gateway |
 | 5 | Gateway backend on EKS (image → ECR → pods) | terraform / `deploy-all.sh` | Gateway |
-| 6 | Frontend (React → S3 → CloudFront) | terraform / `deploy-all.sh` | Gateway |
+| 6 | Frontend (React → S3 → CloudFront) + CFN template upload | `modules/gateway/scripts/deploy-frontend.sh` | Gateway |
 | 6b | Gateway second pass — wire ALB (MOCK API GW → real routes) | `wire-gateway-alb.sh --apply` | Gateway |
 | 6c | Broker Lambda code (real GitHub-login handler) | `modules/gateway/scripts/deploy-broker.sh` | Login |
 | 6d | Seed the first admin (org/user/role) | `modules/gateway/scripts/bootstrap-admin.sh` | Login |
