@@ -117,129 +117,44 @@ See **[docs/lightweight-install.md](docs/lightweight-install.md)** for the full 
 
 > **Authoritative deploy guide:** [`docs/adp-platform-deployment/deploy-quickstart.md`](docs/adp-platform-deployment/deploy-quickstart.md) is the verified, phase-by-phase procedure maintained against real end-to-end runs. Start there; the sections below are the orientation.
 
-## Deploy with Your AI Agent (Recommended)
+## Deploying
 
-The fastest way to deploy ADP is to let your AI coding agent handle it. Open this repo in any AI-powered editor (Kiro, Claude Code, Cursor, Copilot) and say:
+> **The authoritative, verified procedure is [`docs/adp-platform-deployment/deploy-quickstart.md`](docs/adp-platform-deployment/deploy-quickstart.md)** — maintained against real end-to-end runs. Follow it for the exact phase sequence, commands, verification, and gotchas. The summary below is orientation only; don't deploy from it.
 
-> "Read AGENTS.md and deploy this platform"
+**There is no upfront GitHub setup.** Everything keys off the AWS account your active profile resolves to. For the agent path, GitHub is wired at the **end** (`register-github-app.sh`); gateway-only needs no GitHub at all.
 
-The agent will:
-1. Ask which modules you want (gateway, agent factory, or both)
-2. Ask for your GitHub org name and configure the repo for your org
-3. Run preflight checks and tell you what to install if anything is missing
-4. Deploy the shared platform (VPC, EKS, ECR)
-5. Deploy your chosen modules, verifying each step
-6. Guide you through GitHub App setup (for Agent Factory)
-7. Deploy the Agent Gateway (WebSocket API, SQS queues, KEDA)
-8. Give you a final status summary with URLs and next steps
-
-The agent handles everything autonomously — it only asks you when it genuinely needs input (AWS credentials, GitHub org name, GitHub App creation).
-
-The deployment instructions live in three files for maximum tool compatibility:
-- `AGENTS.md` — universal (any agent can read this)
-- `CLAUDE.md` — Claude Code auto-reads this on startup
-- `.kiro/steering/deployment.md` — Kiro auto-loads this into context
-
-## Deploy with Scripts (Manual)
-
-If you prefer to run things yourself, three scripts handle the full lifecycle:
+A deploy is a sequence of idempotent, stage-by-stage scripts:
 
 ```bash
-# 1. Configure for your GitHub org (required for Agent Factory)
-./platform/scripts/setup-org.sh <your-github-org>
+export AWS_PROFILE=<profile> AWS_REGION=us-east-1     # the account everything keys off
+aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table  # confirm target
 
-# 2. Validate your environment
-./platform/scripts/preflight-check.sh
-
-# 3. Deploy everything (runs in AWS via CodeBuild — only needs AWS CLI)
-./platform/scripts/deploy-all.sh
+./platform/scripts/bootstrap.sh                       # 1  Terraform state backend
+./platform/scripts/preflight-check.sh                 # 2  environment validation
+# 3–6  platform infra + gateway infra + backend + frontend (terraform applies + image/frontend builds)
+./platform/scripts/wire-gateway-alb.sh --apply        # 6b gateway second pass (MOCK API GW → real ALB routes)
+./modules/gateway/scripts/deploy-broker.sh --env dev  # 6c GitHub-login broker Lambda code
+./modules/gateway/scripts/bootstrap-admin.sh --env dev # 6d seed the first admin (REQUIRED for login)
+# Agent path (optional):
+./modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev   # 7  webhook stack + agent-runtime image
+./modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev # 8  create + wire the GitHub App
 ```
 
-Options for `deploy-all.sh`:
-- `--gateway-only` — deploy platform + gateway, skip agent factory
-- `--agent-factory-only` — deploy platform + agent factory + agent gateway, skip gateway
-- `--skip-frontend` — skip frontend build
-- `--local` — run Terraform/Docker/npm locally instead of CodeBuild
-- `--destroy` — tear down all infrastructure
+**Why the extra scripts beyond `deploy-all.sh`:** Terraform ships *placeholders* for things a push-triggered CI workflow normally publishes (the MOCK API Gateway body, a 503 broker Lambda stub, `:latest` image refs, the webhook Lambda zip). A fresh manual deploy fires none of those workflows, so `deploy-all.sh` alone leaves you without working login, a first admin, or the agent path. The stage-by-stage scripts above (`wire-gateway-alb.sh --apply`, `deploy-broker.sh`, `bootstrap-admin.sh`, `deploy-webhook-ingress.sh`, `register-github-app.sh`) are the manual equivalents — deploy-quickstart.md sequences them. **Don't skip them.**
 
-## Deploy Step-by-Step
+`deploy-all.sh` chains the infra phases (1–6, incl. the ALB pass) but **not** the broker, first-admin bootstrap, or webhook/agent path:
 
-If you want full control over each phase:
+| Flag | Effect |
+|------|--------|
+| `--gateway-only` | platform + gateway only (no GitHub needed) |
+| `--agent-context-only` | platform + Agent Context (code intelligence) |
+| `--skip-frontend` | skip the React frontend build |
+| `--local` | build images with local Docker instead of CodeBuild |
+| `--destroy` | tear down (reverse order: agent-context → agent-factory → gateway → platform) |
 
-### Step 1: Bootstrap Terraform State Backend
+### Deploy with your AI agent
 
-```bash
-cd platform/scripts
-export AWS_REGION=us-east-1
-export ENVIRONMENT=dev
-./bootstrap.sh
-```
-
-### Step 2: Deploy Shared Platform
-
-```bash
-cd platform/infra
-terraform init -backend-config=../../environments/dev/backend.tfvars
-terraform apply -var-file=../../environments/dev/platform.tfvars
-```
-
-### Step 3: Deploy Modules
-
-Pick the modules you need. Each has its own Terraform and deployment steps.
-
-#### Gateway (Bedrock Proxy)
-
-Multi-tenant proxy for Amazon Bedrock with Cognito auth, cascading budgets, rate limiting, and an admin dashboard.
-
-```bash
-# Infrastructure (RDS, Redis, Cognito, CloudFront, S3, etc.)
-cd modules/gateway/infra
-terraform init -backend-config=../../../environments/dev/modules/gateway-backend.tfvars
-terraform apply -var-file=../../../environments/dev/modules/gateway.tfvars
-
-# Backend (Docker → ECR → EKS)
-cd modules/gateway
-docker build -t adp-gateway .
-# Push to ECR, then:
-kubectl apply -f k8s/ -n adp-gateway
-
-# Frontend (React → S3 → CloudFront)
-cd modules/gateway/frontend
-npm ci && npm run build
-aws s3 sync dist/ s3://<frontend-bucket>/ --delete
-```
-
-Full details: [modules/gateway/README.md](modules/gateway/README.md)
-
-#### Agent Factory (Code Agents + Agent Gateway)
-
-Autonomous AI agents that implement GitHub issues using Claude on Bedrock. Includes the Agent Gateway for async delivery via Slack, WebSocket, and CLI channels.
-
-```bash
-# Infrastructure (Runner IAM, ARC, Secrets Manager, beads, Agent Gateway: SQS + API GW + KEDA)
-cd modules/agent-factory/infra
-terraform init -backend-config=../../../environments/dev/modules/agent-factory-backend.tfvars
-terraform apply -var-file=terraform.tfvars
-
-# Agent Gateway (Docker image + KEDA ScaledJob)
-cd modules/agent-factory/scripts
-./deploy-gateway.sh
-
-# Store GitHub App credentials
-aws secretsmanager put-secret-value --secret-id adp/gh-app-dev-id --secret-string "<APP_ID>"
-aws secretsmanager put-secret-value --secret-id adp/gh-app-dev-key --secret-string "$(cat key.pem)"
-
-# Test: label any issue with "agent-developer"
-gh issue edit <NUMBER> --add-label "agent-developer"
-```
-
-Full details: [modules/agent-factory/SETUP-GUIDE.md](modules/agent-factory/SETUP-GUIDE.md)
-
-#### MCP Hub
-
-MCP server hub for agent messaging and tool routing. In progress. Lives under the harness module (`modules/harness/mcp-hub/`) because it is the tools surface of the harness — see `ARCHITECTURE.md` for the six-surface model.
-
-See: [modules/harness/mcp-hub/](modules/harness/mcp-hub/)
+Open the repo in any AI editor (Claude Code, Kiro, Cursor) and say *"Read CLAUDE.md and deploy this platform."* The agent confirms your target AWS account, then executes the phases in deploy-quickstart.md, verifying each before moving on, and only stops for genuine input (AWS account choice, the GitHub App browser steps). Instructions live in `AGENTS.md` (universal), `CLAUDE.md` (Claude Code auto-reads on startup), and `.kiro/steering/deployment.md` (Kiro).
 
 ## Local Development (No AWS Required)
 
