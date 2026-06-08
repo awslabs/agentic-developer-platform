@@ -7,7 +7,15 @@ It's the layer between "a clever prompt that works on your laptop" and "an agent
 ## What you get out of the box
 
 - **Governed model access** — a multi-tenant Amazon Bedrock proxy with per-org/team/user budgets, rate limits, and full audit. Point Claude Code, Cursor, or any OpenAI-compatible client at one endpoint.
-- **Autonomous code agents** — mention an agent on a GitHub issue or PR; a pod spins up, does the work, and opens a PR. No runner babysitting.
+- **A team of autonomous coding agents** — mention an agent on a GitHub issue or PR; a pod spins up, does the work, and opens a PR. No runner babysitting. The personas cover the full AI development life cycle (AIDLC):
+  - **@agent-product** — gathers requirements, writes user stories + acceptance criteria
+  - **@agent-pm** — orchestrates the workflow, decomposes work, coordinates the board
+  - **@agent-architect** — designs systems, defines interfaces, produces design docs
+  - **@agent-developer** — writes production code + tests, opens the PR
+  - **@agent-reviewer** — the quality gate: reviews for correctness/security, blocks on real issues
+  - **@agent-operations** — deploys, monitors, and maintains infrastructure
+
+  Domains add their own (e.g. **@malware-analysis-agent** in the cyber pack), and new personas are a five-file declaration — no platform changes.
 - **Code intelligence** — one MCP endpoint giving agents semantic search, code search, wikis, and persistent memory across your codebases.
 - **A shared harness** — tool routing, jobs, events, artifacts, and human-in-the-loop approvals, so every agent gets the same plumbing instead of reinventing it. *(In progress — see `ARCHITECTURE.md`.)*
 
