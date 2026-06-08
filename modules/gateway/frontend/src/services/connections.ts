@@ -23,6 +23,7 @@ export interface GitHubConnectionItem {
   account_type: string;
   repository_selection: string;
   repository_count: number;
+  repositories: string[];
   installed_at: string | null;
   configure_url: string;
 }
@@ -46,7 +47,7 @@ export interface DeleteConnectionResponse {
  */
 export async function startGitHubInstall(): Promise<InstallStartResponse> {
   return apiClient.post<InstallStartResponse>(
-    '/api/admin/connections/github/install-start',
+    '/admin/connections/github/install-start',
     {},
   );
 }
@@ -55,7 +56,7 @@ export async function startGitHubInstall(): Promise<InstallStartResponse> {
  * List all GitHub installations connected to the current tenant.
  */
 export async function listConnections(): Promise<ConnectionsListResponse> {
-  return apiClient.get<ConnectionsListResponse>('/api/admin/connections');
+  return apiClient.get<ConnectionsListResponse>('/admin/connections');
 }
 
 /**
@@ -66,6 +67,6 @@ export async function deleteGitHubConnection(
   installationId: number,
 ): Promise<DeleteConnectionResponse> {
   return apiClient.delete<DeleteConnectionResponse>(
-    `/api/admin/connections/github/${installationId}`,
+    `/admin/connections/github/${installationId}`,
   );
 }

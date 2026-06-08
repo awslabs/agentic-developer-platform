@@ -36,6 +36,10 @@ class GitHubConnectionItem(BaseModel):
     account_type: str = Field(..., description="'Organization' or 'User'")
     repository_selection: str = Field(..., description="'all' or 'selected'")
     repository_count: int = Field(default=0)
+    repositories: list[str] = Field(
+        default_factory=list,
+        description="Accessible repo full names (owner/repo); empty for legacy rows written before names were captured.",
+    )
     installed_at: datetime | None = None
     configure_url: str = Field(..., description="Deep-link to GitHub App settings for this installation")
 

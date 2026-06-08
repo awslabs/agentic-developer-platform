@@ -37,7 +37,7 @@ describe('Connections Service', () => {
   });
 
   describe('startGitHubInstall', () => {
-    it('calls POST /api/admin/connections/github/install-start with empty body', async () => {
+    it('calls POST /admin/connections/github/install-start with empty body', async () => {
       const mockResponse: InstallStartResponse = {
         install_url: 'https://github.com/apps/adp-agent/installations/new?state=abc123',
         state_token: 'abc123',
@@ -49,7 +49,7 @@ describe('Connections Service', () => {
       const result = await startGitHubInstall();
 
       expect(apiClient.post).toHaveBeenCalledWith(
-        '/api/admin/connections/github/install-start',
+        '/admin/connections/github/install-start',
         {},
       );
       expect(result.install_url).toContain('github.com');
@@ -73,7 +73,7 @@ describe('Connections Service', () => {
   });
 
   describe('listConnections', () => {
-    it('calls GET /api/admin/connections and returns connections array', async () => {
+    it('calls GET /admin/connections and returns connections array', async () => {
       const mockResponse: ConnectionsListResponse = {
         connections: [
           {
@@ -93,7 +93,7 @@ describe('Connections Service', () => {
 
       const result = await listConnections();
 
-      expect(apiClient.get).toHaveBeenCalledWith('/api/admin/connections');
+      expect(apiClient.get).toHaveBeenCalledWith('/admin/connections');
       expect(result.connections).toHaveLength(1);
       expect(result.connections[0].installation_id).toBe(12345);
       expect(result.connections[0].account_login).toBe('my-org');
@@ -111,7 +111,7 @@ describe('Connections Service', () => {
   });
 
   describe('deleteGitHubConnection', () => {
-    it('calls DELETE /api/admin/connections/github/{installationId}', async () => {
+    it('calls DELETE /admin/connections/github/{installationId}', async () => {
       const mockResponse: DeleteConnectionResponse = {
         deleted: true,
         installation_id: 12345,
@@ -122,7 +122,7 @@ describe('Connections Service', () => {
       const result = await deleteGitHubConnection(12345);
 
       expect(apiClient.delete).toHaveBeenCalledWith(
-        '/api/admin/connections/github/12345',
+        '/admin/connections/github/12345',
       );
       expect(result.deleted).toBe(true);
       expect(result.installation_id).toBe(12345);
@@ -137,7 +137,7 @@ describe('Connections Service', () => {
       await deleteGitHubConnection(99999);
 
       expect(apiClient.delete).toHaveBeenCalledWith(
-        '/api/admin/connections/github/99999',
+        '/admin/connections/github/99999',
       );
     });
   });

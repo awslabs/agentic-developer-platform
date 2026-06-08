@@ -251,11 +251,25 @@ class TestAttachToAdpDefault:
 class TestInstallCallbackDispatch:
     """Verify install_callback correctly routes personal accounts to adp-default."""
 
-    async def _write_nonce(self, db: AsyncSession, jti: str = "test-jti") -> None:
+    async def _write_nonce(self, db: AsyncSession, jti: str = "test-jti", user_org_id: str = "") -> None:
         from datetime import UTC, datetime, timedelta
 
+        from src.shared.models.organization import User
         from src.shared.models.vault import MagicLinkNonce
 
+        # install_callback resolves the caller's org from the users table via the
+        # nonce's target_user_id, so seed a matching User row.
+        if user_org_id and await db.get(User, "user-001") is None:
+            db.add(
+                User(
+                    id="user-001",
+                    org_id=user_org_id,
+                    team_id="team-001",
+                    email="user-001@test.local",
+                    cognito_sub="sub-abc",
+                )
+            )
+            await db.commit()
         nonce = MagicLinkNonce(
             jti=jti,
             provider="github_install",
@@ -268,35 +282,33 @@ class TestInstallCallbackDispatch:
         db.add(nonce)
         await db.commit()
 
-    async def test_personal_account_calls_attach_to_adp_default(self, db_session: AsyncSession, adp_default_org):
-        """install_callback with account_type=User dispatches to adp-default flow."""
+    async def test_personal_account_attaches_to_callers_own_org(self, db_session: AsyncSession, adp_default_org):
+        """A personal (User) install attaches to the caller's OWN org (named after
+        their GitHub login), not the shared adp-default tenant. Row is scoped by
+        the GitHub account id and stores the repo names."""
         from unittest.mock import AsyncMock, MagicMock
 
         from src.admin.connections.github_client import GitHubAppClient
         from src.admin.connections.service import install_callback
 
-        await self._write_nonce(db_session, jti="personal-jti")
+        # The caller's own org (a GitHub-login user's per-user tenant).
+        await self._write_nonce(db_session, jti="personal-jti", user_org_id="pranavsharma1000")
 
         gh = MagicMock(spec=GitHubAppClient)
         gh.get_installation = AsyncMock(
             return_value={
                 "id": 999,
-                "account": {
-                    "type": "User",
-                    "login": "alice",
-                    "id": 12345,
-                },
+                "account": {"type": "User", "login": "alice", "id": 12345},
                 "repository_selection": "all",
                 "created_at": "2026-05-01T10:00:00Z",
             }
         )
+        gh.list_installation_repository_names = AsyncMock(return_value=["alice/proj-a", "alice/proj-b"])
 
         result = await install_callback(
             installation_id=999,
             setup_action="install",
             state="personal-jti",
-            caller_user_id="user-001",
-            caller_org_id=get_adp_default_org_id(),
             db=db_session,
             github_client=gh,
         )
@@ -304,15 +316,17 @@ class TestInstallCallbackDispatch:
         assert result["success"] is True
         assert result["account_type"] == "User"
 
-        # Verify mapping was created
         from sqlalchemy import select
 
         stmt = select(ChannelTenantMap).where(
             ChannelTenantMap.provider == "github",
-            ChannelTenantMap.provider_scope_id == "personal:12345:user-001",
+            ChannelTenantMap.provider_scope_id == "12345",
         )
         row = (await db_session.execute(stmt)).scalar_one_or_none()
         assert row is not None
+        assert row.org_id == "pranavsharma1000"
+        assert row.install_metadata["repositories"] == ["alice/proj-a", "alice/proj-b"]
+        assert row.install_metadata["repository_count"] == 2
 
     async def test_org_account_does_not_call_adp_default(self, db_session: AsyncSession, adp_default_org):
         """install_callback with account_type=Organization uses normal org flow."""
@@ -332,7 +346,7 @@ class TestInstallCallbackDispatch:
         db_session.add(paid_org)
         await db_session.commit()
 
-        await self._write_nonce(db_session, jti="org-jti")
+        await self._write_nonce(db_session, jti="org-jti", user_org_id="org-paid-002")
 
         gh = MagicMock(spec=GitHubAppClient)
         gh.get_installation = AsyncMock(
@@ -347,13 +361,12 @@ class TestInstallCallbackDispatch:
                 "created_at": "2026-05-01T10:00:00Z",
             }
         )
+        gh.list_installation_repository_names = AsyncMock(return_value=["my-corp/api"])
 
         result = await install_callback(
             installation_id=888,
             setup_action="install",
             state="org-jti",
-            caller_user_id="user-001",
-            caller_org_id="org-paid-002",
             db=db_session,
             github_client=gh,
         )

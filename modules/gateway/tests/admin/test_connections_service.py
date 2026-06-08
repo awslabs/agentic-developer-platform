@@ -106,6 +106,7 @@ def _mock_github_client(
     )
     client.delete_installation = AsyncMock(return_value=None)
     client.list_installation_repositories = AsyncMock(return_value=2)
+    client.list_installation_repository_names = AsyncMock(return_value=["acme/repo-one", "acme/repo-two"])
     return client
 
 
@@ -197,8 +198,28 @@ class TestInstallCallback:
         target_user_id: str = "user-001",
         expired: bool = False,
         consumed: bool = False,
+        seed_user: bool = True,
+        user_org_id: str = "org-test-001",
     ) -> MagicLinkNonce:
         now = datetime.now(UTC)
+        # The callback resolves the caller's org from the users table via the
+        # nonce's target_user_id, so seed a matching User (unless the test wants
+        # to exercise the no-user path).
+        if seed_user:
+            from src.shared.models.organization import User
+
+            existing = await db.get(User, target_user_id)
+            if existing is None:
+                db.add(
+                    User(
+                        id=target_user_id,
+                        org_id=user_org_id,
+                        team_id="team-test-001",
+                        email=f"{target_user_id}@test.local",
+                        cognito_sub="sub-abc",
+                    )
+                )
+                await db.commit()
         nonce = MagicLinkNonce(
             jti=jti,
             provider=_PROVIDER_GITHUB_INSTALL,
@@ -222,8 +243,6 @@ class TestInstallCallback:
                 installation_id=100,
                 setup_action="install",
                 state="exp-jti",
-                caller_user_id="user-001",
-                caller_org_id="org-test-001",
                 db=db_session,
             )
 
@@ -237,8 +256,6 @@ class TestInstallCallback:
                 installation_id=100,
                 setup_action="install",
                 state="con-jti",
-                caller_user_id="user-001",
-                caller_org_id="org-test-001",
                 db=db_session,
             )
 
@@ -250,13 +267,13 @@ class TestInstallCallback:
                 installation_id=100,
                 setup_action="install",
                 state="nonexistent-jti",
-                caller_user_id="user-001",
-                caller_org_id="org-test-001",
                 db=db_session,
             )
 
-    async def test_rejects_cross_user_nonce(self, db_session: AsyncSession, org_in_db):
-        await self._write_nonce(db_session, jti="cross-jti", target_user_id="other-user")
+    async def test_rejects_nonce_with_no_matching_user(self, db_session: AsyncSession, org_in_db):
+        """The nonce is the authenticator; if it points at a user that no longer
+        exists (and no cognito_sub match), the caller can't be resolved → reject."""
+        await self._write_nonce(db_session, jti="orphan-jti", target_user_id="ghost-user", seed_user=False)
 
         from src.auth.magic_link import TargetUserMismatchError
 
@@ -264,9 +281,7 @@ class TestInstallCallback:
             await install_callback(
                 installation_id=100,
                 setup_action="install",
-                state="cross-jti",
-                caller_user_id="user-001",  # different user
-                caller_org_id="org-test-001",
+                state="orphan-jti",
                 db=db_session,
             )
 
@@ -278,8 +293,6 @@ class TestInstallCallback:
             installation_id=124731131,
             setup_action="install",
             state="ok-jti",
-            caller_user_id="user-001",
-            caller_org_id="org-test-001",
             db=db_session,
             github_client=gh,
         )
@@ -298,8 +311,6 @@ class TestInstallCallback:
             installation_id=124731131,
             setup_action="install",
             state="consume-jti",
-            caller_user_id="user-001",
-            caller_org_id="org-test-001",
             db=db_session,
             github_client=gh,
         )
@@ -337,8 +348,6 @@ class TestInstallCallback:
                 installation_id=124731131,
                 setup_action="install",
                 state="conflict-jti",
-                caller_user_id="user-001",
-                caller_org_id="org-test-001",
                 db=db_session,
                 github_client=gh,
             )
@@ -352,8 +361,6 @@ class TestInstallCallback:
             installation_id=999,
             setup_action="install",
             state="personal-jti",
-            caller_user_id="user-001",
-            caller_org_id="org-test-001",
             db=db_session,
             github_client=gh,
         )
@@ -441,8 +448,8 @@ class TestDeleteConnection:
         gh = _mock_github_client(account_github_id=98765)
         with pytest.raises(PermissionError):
             await delete_connection(
-                installation_id=124731131,
-                caller_org_id="org-test-001",  # different tenant
+                installation_id=124731131,  # different tenant
+                caller_org_id="org-test-001",
                 db=db_session,
                 github_client=gh,
             )

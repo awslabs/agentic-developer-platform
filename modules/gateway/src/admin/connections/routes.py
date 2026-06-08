@@ -3,10 +3,10 @@
 Issue #465: GitHub App install + connection management.
 
 Endpoints:
-    POST   /api/admin/connections/github/install-start
-    GET    /api/admin/connections/github/install-callback
-    GET    /api/admin/connections
-    DELETE /api/admin/connections/github/{installation_id}
+    POST   /admin/connections/github/install-start
+    GET    /admin/connections/github/install-callback
+    GET    /admin/connections
+    DELETE /admin/connections/github/{installation_id}
 """
 
 from __future__ import annotations
@@ -43,8 +43,15 @@ from .service import (
 
 logger = logging.getLogger(__name__)
 
+# NOTE: prefix is "/admin/connections", NOT "/api/admin/connections". CloudFront
+# fronts the gateway with an /api/* behavior whose viewer-request function strips
+# the leading /api before forwarding to the ALB — so the SPA calls
+# /api/admin/connections/... and the backend must serve /admin/connections/...
+# (every other admin router follows the same convention). Mounting this under
+# /api/admin/... made GitHub's Setup-URL redirect and the SPA's calls 404 after
+# the strip → the connections UI never populated.
 router = APIRouter(
-    prefix="/api/admin/connections",
+    prefix="/admin/connections",
     tags=["connections"],
 )
 
@@ -101,15 +108,17 @@ async def github_install_callback(
     installation_id: int,
     setup_action: str = "install",
     state: str = "",
-    current_user: TokenContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
     """Handle the GitHub redirect after app installation.
 
-    GitHub redirects here with ?installation_id=&setup_action=&state=.
-    Validates the state nonce, consumes it, and attaches the installation
-    to the caller's ADP tenant. Redirects to the connections page on both
-    success and failure.
+    GitHub redirects the operator's browser here as a plain GET with
+    ?installation_id=&setup_action=&state= and **no Authorization header** — so
+    this endpoint is intentionally NOT behind get_current_user. The single-use,
+    short-TTL `state` nonce (minted by install-start for a specific signed-in
+    user) is the authenticator: install_callback validates + consumes it and
+    resolves the caller's user/org from it. Redirects to the connections page on
+    both success and failure.
     """
     if not state:
         return _redirect_error("missing_state", "Missing state parameter from GitHub redirect")
@@ -119,8 +128,6 @@ async def github_install_callback(
             installation_id=installation_id,
             setup_action=setup_action,
             state=state,
-            caller_user_id=current_user.user_id,
-            caller_org_id=current_user.org_id,
             db=db,
         )
         return _redirect_success(installation_id)
@@ -134,8 +141,8 @@ async def github_install_callback(
         return _redirect_error("state_replayed", "Installation link already used. Please start a new install.")
 
     except TargetUserMismatchError as exc:
-        logger.warning("install-callback cross-user attempt jti=%s user=%s: %s", state, current_user.user_id, exc)
-        return _redirect_error("unauthorized", "Installation link was not issued for your account.")
+        logger.warning("install-callback unresolved user jti=%s: %s", state, exc)
+        return _redirect_error("unauthorized", "Installation link was not issued for a known user.")
 
     except PermissionError as exc:
         logger.warning("install-callback cross-tenant conflict installation_id=%d: %s", installation_id, exc)

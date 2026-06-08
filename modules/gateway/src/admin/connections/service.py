@@ -168,12 +168,17 @@ async def install_callback(
     installation_id: int,
     setup_action: str,
     state: str,
-    caller_user_id: str,
-    caller_org_id: str,
     db: AsyncSession,
     github_client: GitHubAppClient | None = None,
 ) -> dict[str, Any]:
-    """Validate state nonce, consume it, and attach the installation to the caller's tenant.
+    """Validate state nonce, consume it, and attach the installation to the tenant.
+
+    Identity comes from the **state nonce**, not a bearer token: GitHub redirects
+    the operator's browser here as a plain GET with no Authorization header, so
+    there is no token to read. The nonce was minted by install-start for a
+    specific signed-in user (`target_user_id`), is single-use, and expires in 15
+    minutes — so it is the authenticator here. We resolve the caller's user_id
+    from the nonce and their org_id from the `users` table.
 
     Returns a dict with keys:
         success          — bool
@@ -184,10 +189,12 @@ async def install_callback(
         error_message    — str | None
 
     Raises:
-        ValueError  — nonce validation failure (expired, consumed, wrong user)
+        ValueError  — nonce validation failure (expired, consumed, not found)
         PermissionError — cross-tenant ownership conflict
     """
     from sqlalchemy import select, update
+
+    from src.shared.models.organization import User
 
     # 1. Look up nonce
     stmt = select(MagicLinkNonce).where(
@@ -210,15 +217,19 @@ async def install_callback(
     if nonce.consumed_at is not None:
         raise NonceAlreadyConsumedError(f"State token already used: {state}")
 
-    # 2. Cross-user replay protection
-    if nonce.target_user_id is not None and nonce.target_user_id != caller_user_id:
-        logger.warning(
-            "GitHub install-callback cross-user replay attempt jti=%s target=%s caller=%s",
-            state,
-            nonce.target_user_id,
-            caller_user_id,
-        )
-        raise TargetUserMismatchError("State token was issued for a different user")
+    # 2. Resolve the caller's org from the nonce (the nonce IS the authenticator
+    #    — see the docstring). target_user_id is the internal users.id set at
+    #    install-start; provider_user_id is the cognito_sub. The install attaches
+    #    to this user's own org (org + personal installs alike).
+    user_row = None
+    if nonce.target_user_id:
+        user_row = await db.get(User, nonce.target_user_id)
+    if user_row is None and nonce.provider_user_id:
+        user_row = (await db.execute(select(User).where(User.cognito_sub == nonce.provider_user_id))).scalar_one_or_none()
+    if user_row is None:
+        logger.warning("GitHub install-callback: no users row for nonce jti=%s", state)
+        raise TargetUserMismatchError("Could not resolve the user this install link was issued for")
+    caller_org_id = user_row.org_id
 
     # 3. Atomically consume the nonce (WHERE consumed_at IS NULL prevents races)
     consume_stmt = (
@@ -244,6 +255,8 @@ async def install_callback(
     account_login = "unknown"
     account_type = "Organization"
     github_org_id: int | None = None
+    repository_selection = "selected"
+    repositories: list[str] = []
 
     if github_client is not None:
         try:
@@ -252,42 +265,38 @@ async def install_callback(
             account_login = account.get("login", "unknown")
             account_type = account.get("type", "Organization")
             github_org_id = account.get("id")
+            repository_selection = meta.get("repository_selection", "selected")
             _cache_set(installation_id, meta)
         except Exception as exc:
             logger.warning("Could not fetch GitHub installation metadata: %s", exc)
-
-    # 5. Branch: Organization vs User (personal) account
-    if account_type == "Organization":
-        # Delegate org creation/attachment to the admin identity service.
-        # We call the service layer directly to stay within the same transaction boundary.
-        # Cross-tenant check: if the org is already claimed by a different ADP tenant, reject.
+        # Fetch the actual repo names (informational; never fail the install for it).
         try:
-            await _attach_org_installation(
-                installation_id=installation_id,
-                github_org_id=github_org_id,
-                github_org_login=account_login,
-                caller_org_id=caller_org_id,
-                db=db,
-            )
-        except PermissionError:
-            raise
+            repositories = await github_client.list_installation_repository_names(installation_id)
+        except Exception as exc:
+            logger.warning("Could not fetch repositories for installation %d: %s", installation_id, exc)
 
+    # 5. Attach to the caller's tenant. Both Organization and personal (User)
+    #    installs attach to caller_org_id — for a GitHub-login user that org is
+    #    their own per-user tenant (named after their login), created at
+    #    onboarding. (Older code routed personal accounts to a shared adp-default
+    #    org, which required that org to be pre-seeded and otherwise FK-failed.)
+    await _attach_org_installation(
+        installation_id=installation_id,
+        github_org_id=github_org_id,
+        github_org_login=account_login,
+        caller_org_id=caller_org_id,
+        db=db,
+        account_type=account_type,
+        repository_selection=repository_selection,
+        repositories=repositories,
+    )
+
+    if account_type == "Organization":
         # Issue #719: Populate organizations.github_installation_ids so that
         # future users from this org are matched to this tenant automatically.
         await _append_installation_id_to_org(
             installation_id=installation_id,
             caller_org_id=caller_org_id,
-            db=db,
-        )
-    else:
-        # Personal account — attach to adp-default free-tier tenant (issue #466)
-        from .adp_default import attach_to_adp_default
-
-        await attach_to_adp_default(
-            installation_id=installation_id,
-            account_login=account_login,
-            github_account_id=github_org_id,
-            caller_user_id=caller_user_id,
             db=db,
         )
 
@@ -308,14 +317,18 @@ def _build_install_metadata(
     account_type: str,
     repository_selection: str = "selected",
     repository_count: int = 0,
+    repositories: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the metadata dict stored on ChannelTenantMap at install time."""
+    repos = repositories or []
     return {
         "installation_id": installation_id,
         "account_login": account_login,
         "account_type": account_type,
         "repository_selection": repository_selection,
-        "repository_count": repository_count,
+        # Keep count consistent with the stored names when we have them.
+        "repository_count": len(repos) if repos else repository_count,
+        "repositories": repos,
     }
 
 
@@ -326,22 +339,37 @@ async def _attach_org_installation(
     github_org_login: str,
     caller_org_id: str,
     db: AsyncSession,
+    account_type: str = "Organization",
+    repository_selection: str = "selected",
+    repositories: list[str] | None = None,
 ) -> None:
-    """Attach a GitHub org installation to the caller's ADP tenant.
+    """Attach a GitHub installation (org or personal) to the caller's ADP tenant.
 
     Checks for cross-tenant ownership conflicts via the ChannelTenantMap table.
     On conflict, raises PermissionError with a user-actionable message.
-    On first install, upserts a ChannelTenantMap row.
+    On first install, inserts a ChannelTenantMap row; on re-install, updates the
+    metadata. Stores the repo names so the connections UI can list them.
     """
     from sqlalchemy import select
 
     from src.shared.models.vault import ChannelTenantMap
 
-    # Check if this GitHub org is already mapped to an ADP tenant
+    repos = repositories or []
+
+    # Scope key: the GitHub account id (numeric) when available, else the login.
     if github_org_id is not None:
         scope_id = str(github_org_id)
     else:
         scope_id = github_org_login
+
+    def _meta() -> dict[str, Any]:
+        return _build_install_metadata(
+            installation_id=installation_id,
+            account_login=github_org_login,
+            account_type=account_type,
+            repository_selection=repository_selection,
+            repositories=repos,
+        )
 
     stmt = select(ChannelTenantMap).where(
         ChannelTenantMap.provider == "github",
@@ -353,20 +381,17 @@ async def _attach_org_installation(
     if existing is not None:
         if existing.org_id != caller_org_id:
             raise PermissionError(
-                f"GitHub org '{github_org_login}' is already connected to another ADP tenant. Contact support if you believe this is an error."
+                f"GitHub account '{github_org_login}' is already connected to another ADP tenant. Contact support if you believe this is an error."
             )
         # Already mapped to this tenant — update metadata (idempotent re-install)
-        existing.install_metadata = _build_install_metadata(
-            installation_id=installation_id,
-            account_login=github_org_login,
-            account_type="Organization",
-        )
+        existing.install_metadata = _meta()
         await db.commit()
         logger.info(
-            "GitHub org %s re-installed installation_id=%d tenant=%s",
+            "GitHub %s re-installed installation_id=%d tenant=%s (%d repos)",
             github_org_login,
             installation_id,
             caller_org_id,
+            len(repos),
         )
         return
 
@@ -375,19 +400,16 @@ async def _attach_org_installation(
         provider="github",
         provider_scope_id=scope_id,
         org_id=caller_org_id,
-        install_metadata=_build_install_metadata(
-            installation_id=installation_id,
-            account_login=github_org_login,
-            account_type="Organization",
-        ),
+        install_metadata=_meta(),
     )
     db.add(mapping)
     await db.commit()
     logger.info(
-        "GitHub org %s (installation_id=%d) attached to tenant %s",
+        "GitHub %s (installation_id=%d) attached to tenant %s (%d repos)",
         github_org_login,
         installation_id,
         caller_org_id,
+        len(repos),
     )
 
 
@@ -479,7 +501,10 @@ async def list_connections(
         account_login = md.get("account_login", "(unknown)")
         account_type = md.get("account_type", "Organization")
         repo_selection = md.get("repository_selection", "selected")
-        repo_count = int(md.get("repository_count") or 0)
+        repositories = md.get("repositories") or []
+        # Prefer the stored names' length; fall back to the count field for
+        # legacy rows written before names were captured.
+        repo_count = len(repositories) if repositories else int(md.get("repository_count") or 0)
 
         configure_url = f"https://github.com/settings/installations/{install_id}"
 
@@ -491,6 +516,7 @@ async def list_connections(
                 account_type=account_type,
                 repository_selection=repo_selection,
                 repository_count=repo_count,
+                repositories=repositories,
                 installed_at=mapping.created_at,
                 configure_url=configure_url,
             )

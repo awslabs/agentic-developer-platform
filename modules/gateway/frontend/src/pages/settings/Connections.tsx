@@ -42,7 +42,10 @@ export default function Connections() {
     setIsLoading(true);
     try {
       const data = await listConnections();
-      setConnections(data.connections);
+      // Guard against a malformed/empty response (e.g. an error body without a
+      // connections array) — GitHubTile does connections.length and would crash
+      // on undefined. Default to [] so the page renders the empty state instead.
+      setConnections(data?.connections ?? []);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to load connections';
       toast.error(message);

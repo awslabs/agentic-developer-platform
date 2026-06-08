@@ -32,6 +32,7 @@ export function InstallationCard({ connection, onDisconnect }: InstallationCardP
     }
   };
 
+  const repos = connection.repositories ?? [];
   const repoLabel =
     connection.repository_selection === 'all'
       ? 'All repositories'
@@ -49,6 +50,18 @@ export function InstallationCard({ connection, onDisconnect }: InstallationCardP
         <span className="text-sm text-gray-500 dark:text-gray-400">
           {repoLabel} · Installation #{connection.installation_id}
         </span>
+        {repos.length > 0 && (
+          <ul className="mt-1 flex flex-wrap gap-1">
+            {repos.map((name) => (
+              <li
+                key={name}
+                className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+              >
+                {name}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       <div className="flex items-center gap-2">

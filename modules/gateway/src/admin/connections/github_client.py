@@ -100,10 +100,18 @@ class GitHubAppClient:
     async def list_installation_repositories(self, installation_id: int) -> int:
         """Return the count of repositories accessible via this installation.
 
-        Uses the installation's own access token (not the app JWT) so that
-        the scope is limited to the installation's granted repos.
+        Thin wrapper over list_installation_repository_names for callers that
+        only need the count (kept for backward compatibility).
+        """
+        return len(await self.list_installation_repository_names(installation_id))
 
-        Returns 0 on any error (repository count is informational only).
+    async def list_installation_repository_names(self, installation_id: int) -> list[str]:
+        """Return the ``full_name`` (owner/repo) of every repo this install can access.
+
+        Uses the installation's own access token (not the app JWT) so the scope
+        is limited to the installation's granted repos. Paginates so "all"-type
+        installs with many repos are fully listed. Returns [] on any error
+        (repository info is informational only — never fail the install for it).
         """
         try:
             # First, get an installation access token
@@ -114,21 +122,31 @@ class GitHubAppClient:
             resp.raise_for_status()
             token = resp.json().get("token", "")
 
-            # List repositories for this installation
-            repos_resp = await self._http_client.get(
-                "/installation/repositories",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-                params={"per_page": 1},  # we only need the total_count
-            )
-            repos_resp.raise_for_status()
-            return repos_resp.json().get("total_count", 0)
+            names: list[str] = []
+            page = 1
+            while True:
+                repos_resp = await self._http_client.get(
+                    "/installation/repositories",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    params={"per_page": 100, "page": page},
+                )
+                repos_resp.raise_for_status()
+                body = repos_resp.json()
+                repos = body.get("repositories", []) or []
+                names.extend(r.get("full_name") or r.get("name", "") for r in repos)
+                # Stop when we've collected everything (total_count) or a short page.
+                total = body.get("total_count")
+                if not repos or (total is not None and len(names) >= total) or len(repos) < 100:
+                    break
+                page += 1
+            return [n for n in names if n]
         except Exception as exc:
-            logger.warning("Could not fetch repository count for installation %d: %s", installation_id, exc)
-            return 0
+            logger.warning("Could not fetch repositories for installation %d: %s", installation_id, exc)
+            return []
 
     async def get_installation_token(self, installation_id: int) -> str:
         """Exchange the App JWT for a short-lived installation access token.

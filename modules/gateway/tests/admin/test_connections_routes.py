@@ -78,7 +78,7 @@ def _make_client(
 
 
 # ---------------------------------------------------------------------------
-# POST /api/admin/connections/github/install-start
+# POST /admin/connections/github/install-start
 # ---------------------------------------------------------------------------
 
 
@@ -97,7 +97,7 @@ class TestInstallStartRoute:
             "src.admin.connections.routes.install_start",
             new=AsyncMock(return_value=expected),
         ):
-            resp = client.post("/api/admin/connections/github/install-start")
+            resp = client.post("/admin/connections/github/install-start")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -113,7 +113,7 @@ class TestInstallStartRoute:
             "src.admin.connections.routes.install_start",
             new=AsyncMock(side_effect=RuntimeError("DB down")),
         ):
-            resp = client.post("/api/admin/connections/github/install-start")
+            resp = client.post("/admin/connections/github/install-start")
 
         assert resp.status_code == 500
 
@@ -123,13 +123,13 @@ class TestInstallStartRoute:
         application.include_router(router)
         # No dependency overrides — real dependency raises 401 without a token
         client = TestClient(application, raise_server_exceptions=False)
-        resp = client.post("/api/admin/connections/github/install-start")
+        resp = client.post("/admin/connections/github/install-start")
         # Without overrides the real dependency raises 401 or 503 (not configured)
         assert resp.status_code in (401, 503)
 
 
 # ---------------------------------------------------------------------------
-# GET /api/admin/connections/github/install-callback
+# GET /admin/connections/github/install-callback
 # ---------------------------------------------------------------------------
 
 
@@ -152,7 +152,7 @@ class TestInstallCallbackRoute:
             new=AsyncMock(return_value=success_result),
         ):
             resp = client.get(
-                "/api/admin/connections/github/install-callback?installation_id=124731131&setup_action=install&state=abc-123",
+                "/admin/connections/github/install-callback?installation_id=124731131&setup_action=install&state=abc-123",
                 follow_redirects=False,
             )
 
@@ -165,7 +165,7 @@ class TestInstallCallbackRoute:
         client = _make_client(app, user=user, mock_db=mock_db)
 
         resp = client.get(
-            "/api/admin/connections/github/install-callback?installation_id=100",
+            "/admin/connections/github/install-callback?installation_id=100",
             follow_redirects=False,
         )
         assert resp.status_code == 302
@@ -182,7 +182,7 @@ class TestInstallCallbackRoute:
             new=AsyncMock(side_effect=TokenExpiredError("expired")),
         ):
             resp = client.get(
-                "/api/admin/connections/github/install-callback?installation_id=100&state=old-state",
+                "/admin/connections/github/install-callback?installation_id=100&state=old-state",
                 follow_redirects=False,
             )
 
@@ -200,7 +200,7 @@ class TestInstallCallbackRoute:
             new=AsyncMock(side_effect=NonceAlreadyConsumedError("used")),
         ):
             resp = client.get(
-                "/api/admin/connections/github/install-callback?installation_id=100&state=used-state",
+                "/admin/connections/github/install-callback?installation_id=100&state=used-state",
                 follow_redirects=False,
             )
 
@@ -218,7 +218,7 @@ class TestInstallCallbackRoute:
             new=AsyncMock(side_effect=TargetUserMismatchError("wrong user")),
         ):
             resp = client.get(
-                "/api/admin/connections/github/install-callback?installation_id=100&state=other-state",
+                "/admin/connections/github/install-callback?installation_id=100&state=other-state",
                 follow_redirects=False,
             )
 
@@ -234,7 +234,7 @@ class TestInstallCallbackRoute:
             new=AsyncMock(side_effect=PermissionError("org claimed by another tenant")),
         ):
             resp = client.get(
-                "/api/admin/connections/github/install-callback?installation_id=100&state=conflict-state",
+                "/admin/connections/github/install-callback?installation_id=100&state=conflict-state",
                 follow_redirects=False,
             )
 
@@ -243,7 +243,7 @@ class TestInstallCallbackRoute:
 
 
 # ---------------------------------------------------------------------------
-# GET /api/admin/connections
+# GET /admin/connections
 # ---------------------------------------------------------------------------
 
 
@@ -270,7 +270,7 @@ class TestGetConnectionsRoute:
             "src.admin.connections.routes.list_connections",
             new=AsyncMock(return_value=connections_result),
         ):
-            resp = client.get("/api/admin/connections")
+            resp = client.get("/admin/connections")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -286,7 +286,7 @@ class TestGetConnectionsRoute:
             "src.admin.connections.routes.list_connections",
             new=AsyncMock(return_value=ConnectionsListResponse(connections=[])),
         ):
-            resp = client.get("/api/admin/connections")
+            resp = client.get("/admin/connections")
 
         assert resp.status_code == 200
         assert resp.json()["connections"] == []
@@ -299,13 +299,13 @@ class TestGetConnectionsRoute:
             "src.admin.connections.routes.list_connections",
             new=AsyncMock(side_effect=RuntimeError("DB error")),
         ):
-            resp = client.get("/api/admin/connections")
+            resp = client.get("/admin/connections")
 
         assert resp.status_code == 500
 
 
 # ---------------------------------------------------------------------------
-# DELETE /api/admin/connections/github/{installation_id}
+# DELETE /admin/connections/github/{installation_id}
 # ---------------------------------------------------------------------------
 
 
@@ -320,7 +320,7 @@ class TestDeleteConnectionRoute:
             "src.admin.connections.routes.delete_connection",
             new=AsyncMock(return_value=delete_result),
         ):
-            resp = client.delete("/api/admin/connections/github/124731131")
+            resp = client.delete("/admin/connections/github/124731131")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -331,7 +331,7 @@ class TestDeleteConnectionRoute:
         user = _make_user(is_admin=False)
         client = _make_client(app, user=user, mock_db=mock_db)
 
-        resp = client.delete("/api/admin/connections/github/124731131")
+        resp = client.delete("/admin/connections/github/124731131")
         assert resp.status_code == 403
 
     def test_not_found_returns_404(self, app, mock_db):
@@ -342,7 +342,7 @@ class TestDeleteConnectionRoute:
             "src.admin.connections.routes.delete_connection",
             new=AsyncMock(side_effect=ValueError("not found")),
         ):
-            resp = client.delete("/api/admin/connections/github/9999")
+            resp = client.delete("/admin/connections/github/9999")
 
         assert resp.status_code == 404
 
@@ -354,6 +354,6 @@ class TestDeleteConnectionRoute:
             "src.admin.connections.routes.delete_connection",
             new=AsyncMock(side_effect=PermissionError("wrong tenant")),
         ):
-            resp = client.delete("/api/admin/connections/github/9999")
+            resp = client.delete("/admin/connections/github/9999")
 
         assert resp.status_code == 403
