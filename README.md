@@ -191,26 +191,9 @@ The phases at a glance (each step idempotent and re-runnable):
 | 7 | Webhook agent stack + agent-runtime image | `webhook-ingress/scripts/deploy-webhook-ingress.sh` | Agents |
 | 8 | Create + wire the GitHub App | `webhook-ingress/scripts/register-github-app.sh <org>` | Agents |
 
-Phases 1–6 (incl. 6b) are chained by `deploy-all.sh`; **6c, 6d, 7, 8 are not** (see the placeholder note below). The commands:
+**`deploy-all.sh` chains Phases 1–6 (incl. the 6b ALB pass) but NOT 6c, 6d, 7, 8.** Why: Terraform ships *placeholders* for things a push-triggered CI workflow normally publishes (the MOCK API Gateway body, a 503 broker Lambda stub, `:latest` image refs, the webhook Lambda zip). A fresh manual deploy fires none of those, so `deploy-all.sh` alone leaves you without working login, a first admin, or the agent path — run the 6c/6d/7/8 scripts (deploy-quickstart.md sequences them; don't skip them).
 
-```bash
-export AWS_PROFILE=<profile> AWS_REGION=us-east-1     # the account everything keys off
-aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table  # confirm target
-
-./platform/scripts/bootstrap.sh                       # 1  Terraform state backend
-./platform/scripts/preflight-check.sh                 # 2  environment validation
-# 3–6  platform infra + gateway infra + backend + frontend (terraform applies + image/frontend builds)
-./platform/scripts/wire-gateway-alb.sh --apply        # 6b gateway second pass (MOCK API GW → real ALB routes)
-./modules/gateway/scripts/deploy-broker.sh --env dev  # 6c GitHub-login broker Lambda code
-./modules/gateway/scripts/bootstrap-admin.sh --env dev # 6d seed the first admin (REQUIRED for login)
-# Agent path (optional):
-./modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev   # 7  webhook stack + agent-runtime image
-./modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev # 8  create + wire the GitHub App
-```
-
-**Why the extra scripts beyond `deploy-all.sh`:** Terraform ships *placeholders* for things a push-triggered CI workflow normally publishes (the MOCK API Gateway body, a 503 broker Lambda stub, `:latest` image refs, the webhook Lambda zip). A fresh manual deploy fires none of those workflows, so `deploy-all.sh` alone leaves you without working login, a first admin, or the agent path. The stage-by-stage scripts above (`wire-gateway-alb.sh --apply`, `deploy-broker.sh`, `bootstrap-admin.sh`, `deploy-webhook-ingress.sh`, `register-github-app.sh`) are the manual equivalents — deploy-quickstart.md sequences them. **Don't skip them.**
-
-`deploy-all.sh` chains the infra phases (1–6, incl. the ALB pass) but **not** the broker, first-admin bootstrap, or webhook/agent path:
+`deploy-all.sh` flags:
 
 | Flag | Effect |
 |------|--------|
