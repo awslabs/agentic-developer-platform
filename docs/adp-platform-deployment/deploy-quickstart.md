@@ -433,8 +433,19 @@ modules/gateway/scripts/bootstrap-admin.sh --env dev
 Resolves the seeded admin's Cognito sub (from `adp/dev/gateway/test-admin-credentials`)
 and runs the in-pod entrypoint `python -m src.admin.onboarding.bootstrap_admin`,
 which reuses `approve_request` to atomically create org/tenant/dept/team/user +
-the cognito identity (role `platform_admin`). Idempotent. For an operator using
-their own SSO admin instead of the test admin, pass `--email`/`--pool-id`/`--org`.
+the cognito identity (role `platform_admin`). It then sets the Cognito user's
+`custom:role` + `custom:org_id` attributes (see below). Idempotent. For an
+operator using their own SSO admin instead of the test admin, pass
+`--email`/`--pool-id`/`--org`.
+
+> **Two writes, not one — DB row *and* Cognito attributes.** The onboarding gate
+> (`/access/status`) and backend admin powers come from the **DB row** + the
+> Cognito `admins` group. But the frontend's org/role come from the access token's
+> `custom:org_id` / `custom:role` claims, which the pre-token-generation Lambda
+> copies from the **Cognito user attributes** — it never reads the DB. So seeding
+> only the DB row leaves the admin "registered" but with an empty org/role in the
+> UI. The script sets both; **log out and back in afterward** so a fresh token
+> carries the claims.
 
 > **The image must contain `bootstrap_admin.py`.** It runs *inside* the gateway
 > pod, so the deployed `adp-gateway` image must include this module — i.e. build

@@ -94,6 +94,9 @@ ok "Cognito sub: $SUB"
 # -----------------------------------------------------------------------------
 # 3. Run the in-pod bootstrap entrypoint (reuses the pod's DB IAM access).
 # -----------------------------------------------------------------------------
+# The entrypoint defaults --org to "platform-admin" when omitted; mirror that
+# here so step 4 sets the matching Cognito attribute.
+EFFECTIVE_ORG="${ORG:-platform-admin}"
 ORG_ARG=""
 [ -n "$ORG" ] && ORG_ARG="--org $ORG"
 
@@ -105,7 +108,25 @@ echo ""
 echo "Running in-pod bootstrap..."
 run "$CMD"
 
+# -----------------------------------------------------------------------------
+# 4. Mirror role + org onto the Cognito user's custom attributes.
+#    The pre-token-generation Lambda (handle_user_token_generation) copies
+#    custom:role / custom:org_id from the USER ATTRIBUTES into the access token —
+#    it does NOT read the DB. So seeding only the DB row leaves the operator
+#    logged in with an empty org/role in the UI until these are set. Setting
+#    them here makes a fresh login mint a token carrying org_id + role.
+# -----------------------------------------------------------------------------
+ATTR_CMD="aws cognito-idp admin-update-user-attributes \
+  --user-pool-id '${POOL_ID}' --username '${EMAIL}' --region '${AWS_REGION}' \
+  --user-attributes Name=custom:role,Value='${ROLE}' Name=custom:org_id,Value='${EFFECTIVE_ORG}'"
+
+echo ""
+echo "Setting Cognito custom:role + custom:org_id (read by the pre-token Lambda)..."
+run "$ATTR_CMD"
+ok "Cognito attributes set: custom:role=${ROLE} custom:org_id=${EFFECTIVE_ORG}"
+
 echo ""
 ok "Bootstrap complete (idempotent — 'already-bootstrapped' is success)."
-echo "  Verify: log in as $EMAIL (email/password) — access status should be 'registered',"
-echo "          then approve any pending GitHub users from the admin UI."
+echo "  Verify: log out + back in as $EMAIL (email/password) so a fresh token picks"
+echo "          up custom:role/custom:org_id — access status should be 'registered',"
+echo "          org_id=${EFFECTIVE_ORG}; then approve pending GitHub users from the admin UI."
