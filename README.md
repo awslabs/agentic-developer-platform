@@ -32,6 +32,49 @@ It's the layer between "a clever prompt that works on your laptop" and "an agent
 
 Agents are the consumers; humans and services invoke them through a separate inbound surface. To add capability, you write declarations — tools, jobs, events, skills, agents — and the harness handles the rest. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full mental model.
 
+## Where this is heading: one control plane, many domain planes
+
+> **Vision / north star — not yet built.** This describes the direction ADP is being built toward, not current capability.
+
+**The driver: enterprise-wide AI transformation needs a common foundation.** When every team races to adopt agents on its own, you get N incompatible stacks, N security postures, and N budget blind spots. The answer isn't to centralize all the work — that kills delivery speed — it's a **shared base each domain can customize, tailor, and localize, while governance and security stay centralized.**
+
+ADP is that base. A single org runs **one control plane** and **multiple domain planes** — each domain plane its own ADP instance specialized for a problem space:
+
+- **AI Operations** — running, monitoring, and remediating AI/ML systems
+- **Cyber Threat** — malware analysis and threat research (the first domain today)
+- **Agentic Analytics** — agent-driven data pipelines and insight generation
+- *…and others, each a peer domain plane*
+
+```
+                    ┌──────────────────────────────┐
+                    │         Control Plane        │
+                    │  org-wide governance: policy, │
+                    │  identity, budgets, audit,    │
+                    │  model access, provenance     │
+                    └───────────────┬──────────────┘
+                          centralized guardrails
+            ┌────────────────┬──────┴───────┬────────────────┐
+            ▼                ▼              ▼                ▼
+   ┌────────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────┐
+   │ AI Operations  │ │ Cyber Threat │ │  Agentic     │ │   …      │
+   │  domain plane  │ │ domain plane │ │  Analytics   │ │ (more)   │
+   │ (ADP instance) │ │(ADP instance)│ │ domain plane │ │          │
+   └────────────────┘ └──────────────┘ └──────────────┘ └──────────┘
+      each team tailors + localizes its own agents, tools, delivery
+```
+
+**Two planes — governance *and* speed, not one at the expense of the other:**
+
+- **Control plane → centralized governance & security.** One place for policy, identity, budgets, audit, model access, and provenance. Security and finance get a single pane of glass; guardrails are set once and inherited by every domain.
+- **Domain planes → local autonomy & speed.** Each team gets the same foundation but **customizes and localizes** it — its own agents, tools, domain infra, and release cadence — and ships without waiting on a central queue, while still operating inside the control plane's guardrails.
+
+**Open by design — for maximum flexibility:**
+
+- **Open standards.** Agents reach the world through open, vendor-neutral interfaces — MCP for tools/context, standard GitHub webhooks, OpenAI-compatible model APIs — so a domain team can swap a backend or bring its own without re-platforming. No proprietary lock-in at the boundaries.
+- **Open source (coming).** The foundation is moving to an open-source license so any team can run, inspect, extend, and contribute back — maximum flexibility for domains to customize, with a shared upstream so improvements compound across the org instead of fragmenting into forks.
+
+That's the enterprise-transformation payoff: a common, open foundation that accelerates every team, with org-wide control and security assisting rather than blocking. Today ADP ships the **domain-plane substrate** (this repo), with cyber as the first domain; the cross-instance control plane and the open-source release are the next major build-outs.
+
 ## Modules
 
 | Module | Path | What it does | Status |
@@ -293,4 +336,4 @@ adp/
 
 ## License
 
-Private — Internal use only.
+Private — Internal use only. **An open-source license is coming** (see "Where this is heading" above); until it lands, treat this repo as internal.
