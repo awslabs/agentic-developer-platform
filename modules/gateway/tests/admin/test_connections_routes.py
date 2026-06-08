@@ -88,7 +88,7 @@ class TestInstallStartRoute:
         client = _make_client(app, user=user, mock_db=mock_db)
 
         expected = InstallStartResponse(
-            install_url="https://github.com/apps/aws-e-adp-agent-dev/installations/new?state=abc-123",
+            install_url="https://github.com/apps/test-adp-agent/installations/new?state=abc-123",
             state_token="abc-123",
             expires_at=datetime.now(UTC) + timedelta(minutes=15),
         )

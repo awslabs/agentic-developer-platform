@@ -31,6 +31,17 @@ from src.shared.models.vault import ChannelTenantMap, MagicLinkNonce
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
+@pytest.fixture(autouse=True)
+def _configure_github_app(monkeypatch):
+    """The App slug is now required deployment config (no hardcoded fallback).
+
+    get_settings() reads BG_GITHUB_APP_SLUG from the environment fresh on each
+    call, so setting the env var here makes install_start() resolve a real slug.
+    Tests that assert the unconfigured 503 path override this explicitly.
+    """
+    monkeypatch.setenv("BG_GITHUB_APP_SLUG", "test-adp-agent")
+
+
 @pytest.fixture
 async def db_engine():
     engine = create_async_engine(
@@ -146,6 +157,25 @@ class TestInstallStart:
             db=db_session,
         )
         assert f"state={result.state_token}" in result.install_url
+
+    async def test_install_url_uses_configured_slug(self, db_session: AsyncSession, monkeypatch):
+        """The install URL is built from BG_GITHUB_APP_SLUG (deployment config),
+        not a hardcoded app name — so each deployment points at its own App."""
+        monkeypatch.setenv("BG_GITHUB_APP_SLUG", "my-org-adp-agent")
+        result = await install_start(cognito_sub="sub-abc", user_id="user-001", db=db_session)
+        assert "github.com/apps/my-org-adp-agent/installations/new" in result.install_url
+
+    async def test_raises_503_when_app_slug_unconfigured(self, db_session: AsyncSession, monkeypatch):
+        """No hardcoded fallback: a blank slug must fail loudly rather than point
+        the install button at the wrong App."""
+        from fastapi import HTTPException
+
+        monkeypatch.delenv("BG_GITHUB_APP_SLUG", raising=False)
+        monkeypatch.setenv("BG_GITHUB_APP_SLUG", "")
+        with pytest.raises(HTTPException) as exc_info:
+            await install_start(cognito_sub="sub-abc", user_id="user-001", db=db_session)
+        assert exc_info.value.status_code == 503
+        assert "BG_GITHUB_APP_SLUG" in str(exc_info.value.detail)
 
     async def test_each_call_generates_unique_nonce(self, db_session: AsyncSession):
         r1 = await install_start(cognito_sub="sub-abc", user_id="user-001", db=db_session)

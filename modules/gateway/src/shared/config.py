@@ -96,6 +96,18 @@ class Settings(BaseSettings):
     # Every environment uses the same UUID so seed scripts and code agree.
     adp_default_org_id: str = "00000000-0000-4000-a000-000000000001"
 
+    # Issue #465: GitHub App identity — the single App this deployment installs +
+    # authenticates as for the "Link GitHub" / install flow and agent webhooks.
+    # MUST be configured per deployment (set BG_GITHUB_APP_SLUG / BG_GITHUB_APP_ID
+    # / BG_GITHUB_APP_PRIVATE_KEY via the gateway configmap + secret). There is no
+    # hardcoded default on purpose: a wrong/empty value silently pointing the UI
+    # at some other App is how the install flow breaks (the UI offers App X while
+    # the gateway holds App Y's key → installs never attach). Empty = unconfigured;
+    # the connections endpoints fail loudly rather than guess.
+    github_app_slug: str = ""  # e.g. "adp-agent-platform" (the github.com/apps/<slug>)
+    github_app_id: str = ""  # numeric GitHub App ID
+    github_app_private_key: str = ""  # PEM-encoded RSA private key
+
     model_config = {"env_prefix": "BG_", "env_file": ".env"}
 
 

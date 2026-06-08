@@ -18,6 +18,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.magic_link import (
@@ -79,10 +80,25 @@ def _cache_invalidate(installation_id: int) -> None:
 def _get_github_app_slug() -> str:
     """Return the GitHub App slug used for the install URL.
 
-    Reads BG_GITHUB_APP_SLUG env var; falls back to the dev app name.
+    Reads the BG_GITHUB_APP_SLUG env var (Settings.github_app_slug). This is
+    deployment config — there is NO hardcoded fallback on purpose. A blank value
+    means the App identity was never wired into the gateway; returning a guessed
+    slug would silently point the UI's install button at the wrong App (the user
+    installs App X while the gateway can only authenticate as App Y → the install
+    never attaches, and nothing shows in the UI). Fail loudly instead.
     """
     settings = get_settings()
-    return getattr(settings, "github_app_slug", "") or "aws-e-adp-agent-dev"
+    slug = getattr(settings, "github_app_slug", "") or ""
+    if not slug:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "GitHub App not configured: set BG_GITHUB_APP_SLUG (and "
+                "BG_GITHUB_APP_ID / BG_GITHUB_APP_PRIVATE_KEY) on the gateway. "
+                "Run register-github-app.sh / wire-github-app.sh for this deployment."
+            ),
+        )
+    return slug
 
 
 def _get_github_app_credentials() -> tuple[str, str]:
