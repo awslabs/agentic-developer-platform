@@ -68,6 +68,8 @@ ADP is that base. A single org runs **one control plane** and **multiple domain 
 - **Control plane → centralized governance & security.** One place for policy, identity, budgets, audit, model access, and provenance. Security and finance get a single pane of glass; guardrails are set once and inherited by every domain.
 - **Domain planes → local autonomy & speed.** Each team gets the same foundation but **customizes and localizes** it — its own agents, tools, domain infra, and release cadence — and ships without waiting on a central queue, while still operating inside the control plane's guardrails.
 
+This is a **platform-of-platforms** shape — established patterns enterprises already trust, applied to agents. The control-plane / domain-plane split mirrors **AWS Control Tower** (org-wide guardrails over many autonomous accounts); the extensible, domain-customizable foundation mirrors **Spotify Backstage** (one base many teams extend). ADP is following those patterns for the agentic era — *we're building toward this, not claiming parity with those mature products.*
+
 **Open by design — for maximum flexibility:**
 
 - **Open standards.** Agents reach the world through open, vendor-neutral interfaces — MCP for tools/context, standard GitHub webhooks, OpenAI-compatible model APIs — so a domain team can swap a backend or bring its own without re-platforming. No proprietary lock-in at the boundaries.
