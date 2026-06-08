@@ -638,3 +638,39 @@ async def test_ddb_write_failure_best_effort(admin_app_client, db_engine):
     assert resp.json()["status"] == "approved"
     # Metric should have been emitted for DDB failure
     mock_metric.assert_called_with("ADP/Onboarding", "OnboardingApproval.DdbWriteFailure")
+
+
+# ---------------------------------------------------------------------------
+# Cognito user-pool-id resolution (regression: onboarding 400'd for valid
+# GitHub sessions when only BG_COGNITO_USER_POOL_ID was set, not the bare name)
+# ---------------------------------------------------------------------------
+
+
+class TestCognitoUserPoolIdResolution:
+    def test_reads_bg_prefixed_name(self):
+        from src.admin.onboarding.handler import _cognito_user_pool_id
+
+        with patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_bgonly"}, clear=True):
+            assert _cognito_user_pool_id() == "us-east-1_bgonly"
+
+    def test_reads_bare_name(self):
+        from src.admin.onboarding.handler import _cognito_user_pool_id
+
+        with patch.dict(os.environ, {"COGNITO_USER_POOL_ID": "us-east-1_bareonly"}, clear=True):
+            assert _cognito_user_pool_id() == "us-east-1_bareonly"
+
+    def test_bg_prefixed_takes_precedence(self):
+        from src.admin.onboarding.handler import _cognito_user_pool_id
+
+        with patch.dict(
+            os.environ,
+            {"BG_COGNITO_USER_POOL_ID": "us-east-1_bg", "COGNITO_USER_POOL_ID": "us-east-1_bare"},
+            clear=True,
+        ):
+            assert _cognito_user_pool_id() == "us-east-1_bg"
+
+    def test_empty_when_neither_set(self):
+        from src.admin.onboarding.handler import _cognito_user_pool_id
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert _cognito_user_pool_id() == ""

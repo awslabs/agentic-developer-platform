@@ -38,6 +38,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _cognito_user_pool_id() -> str:
+    """Resolve the Cognito user pool id from either env-var spelling.
+
+    The configmap sets ``BG_COGNITO_USER_POOL_ID`` (the BG_-prefixed name that
+    pydantic Settings reads); some deployments also export the bare
+    ``COGNITO_USER_POOL_ID``. Onboarding's GitHub-identity lookup historically
+    read ONLY the bare name, so a deployment that set just the BG_ form left it
+    empty → _fetch_github_identity_from_cognito returned ("","") → the access
+    request 400'd with "Onboarding currently requires signing in via GitHub"
+    even for a valid GitHub session. Check both, matching cognito_service.py /
+    admin/routes.py.
+    """
+    return os.environ.get("BG_COGNITO_USER_POOL_ID") or os.environ.get("COGNITO_USER_POOL_ID", "")
+
+
 def _get_auto_approve_orgs() -> list[dict]:
     """Parse ONBOARDING_AUTO_APPROVE_ORGS from environment (JSON list)."""
     raw = os.environ.get("ONBOARDING_AUTO_APPROVE_ORGS", "[]")
@@ -134,7 +149,7 @@ def _fetch_github_identity_from_cognito(cognito_sub: str) -> tuple[str, str]:
     Username convention (set by the broker on AdminCreateUser):
       github_<numeric_github_id>  →  we parse the id back out of the username
     """
-    user_pool_id = os.environ.get("COGNITO_USER_POOL_ID", "")
+    user_pool_id = _cognito_user_pool_id()
     if not user_pool_id:
         return "", ""
     try:
@@ -651,7 +666,7 @@ async def deny_access_request(
 
     # Get Cognito client for AdminDeleteUser
     cognito_client = None
-    user_pool_id = os.environ.get("COGNITO_USER_POOL_ID")
+    user_pool_id = _cognito_user_pool_id()
     if user_pool_id:
         try:
             import boto3
