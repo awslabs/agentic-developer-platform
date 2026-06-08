@@ -364,7 +364,17 @@ VITE_AGENT_WS_URL="$(get_ssm /adp/dev/gateway/agent-ws-url)" \
 
 BUCKET=$(get_ssm /adp/dev/gateway/frontend-bucket)
 DIST=$(get_ssm /adp/dev/gateway/cloudfront-id)
-aws s3 sync dist/ "s3://${BUCKET}/" --delete
+# Exclude cfn-templates/ so the --delete doesn't wipe the CFN role template
+# uploaded just below (it lives in the same bucket).
+aws s3 sync dist/ "s3://${BUCKET}/" --delete --exclude "cfn-templates/*"
+
+# REQUIRED for the "Add AWS account" flow: upload the CloudFormation role
+# template. The gateway pre-signs a GET for this object; without it the flow
+# fails with "S3 error: The specified key does not exist." (gateway-deploy.yml
+# does this automatically; a manual deploy must do it here.)
+aws s3 cp ../src/auth/cfn_templates/aws_role_v1.yaml \
+  "s3://${BUCKET}/cfn-templates/aws_role_v1.yaml" --content-type text/yaml
+
 aws cloudfront create-invalidation --distribution-id "$DIST" --paths "/*"
 ```
 
@@ -372,6 +382,11 @@ Notes: `VITE_AGENT_WS_URL` may be empty (the agent-gateway WebSocket isn't part
 of the webhook path) — the app tolerates it. Node 24 builds fine (repo says ≥ 22).
 If you ever change the broker/Cognito values, you must **rebuild + re-sync** —
 they're compiled in, not read at runtime.
+
+The **CFN template upload** + the gateway role's `s3:ListBucket`/`s3:GetObject`
+on `cfn-templates/*` (gateway-infra) are both required for **Settings → Add AWS
+account**; skipping the upload here is the usual cause of "specified key does not
+exist."
 
 Verify:
 ```bash

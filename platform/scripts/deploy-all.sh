@@ -707,13 +707,31 @@ if [ "$SKIP_FRONTEND" = false ] && [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGEN
   # Frontend build runs directly (npm + aws s3 sync) — no CodeBuild needed.
   cd "$ROOT_DIR/modules/gateway/frontend"
   npm ci
-  VITE_API_URL="/api" npm run build
+  # Build with the FULL VITE_* env from SSM (NOT just VITE_API_URL) — these are
+  # baked into the bundle at build time; omitting them ships a broken app
+  # ("GitHub sign-in is not configured" + Cognito unconfigured). Mirrors
+  # gateway-deploy.yml.
+  _ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo ""; }
+  VITE_API_URL="/api" \
+  VITE_COGNITO_REGION="${AWS_REGION:-us-east-1}" \
+  VITE_COGNITO_USER_POOL_ID="$(_ssm /adp/$ENVIRONMENT/gateway/cognito-user-pool-id)" \
+  VITE_COGNITO_CLIENT_ID="$(_ssm /adp/$ENVIRONMENT/gateway/cognito-client-id)" \
+  VITE_COGNITO_DOMAIN="$(_ssm /adp/$ENVIRONMENT/gateway/cognito-domain)" \
+  VITE_GITHUB_AUTH_BROKER_URL="$(_ssm /adp/$ENVIRONMENT/gateway/github-auth-broker-url)" \
+  VITE_AGENT_WS_URL="$(_ssm /adp/$ENVIRONMENT/gateway/agent-ws-url)" \
+    npm run build
   BUCKET=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/frontend-bucket" --query "Parameter.Value" --output text 2>/dev/null) || true
   if [ -n "$BUCKET" ] && [ "$BUCKET" != "None" ]; then
-    aws s3 sync dist/ "s3://${BUCKET}/" --delete
+    # Exclude cfn-templates/ so --delete doesn't wipe the CFN role template we
+    # upload next.
+    aws s3 sync dist/ "s3://${BUCKET}/" --delete --exclude "cfn-templates/*"
+    # REQUIRED for the "Add AWS account" flow: the gateway pre-signs a GET for
+    # this template; without it the flow fails "specified key does not exist".
+    aws s3 cp "$ROOT_DIR/modules/gateway/src/auth/cfn_templates/aws_role_v1.yaml" \
+      "s3://${BUCKET}/cfn-templates/aws_role_v1.yaml" --content-type text/yaml > /dev/null
     DIST_ID=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-id" --query "Parameter.Value" --output text 2>/dev/null) || true
     [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ] && aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*" > /dev/null
-    ok "Frontend deployed"
+    ok "Frontend deployed (+ CFN template uploaded)"
   else
     warn "Frontend bucket not found in SSM"
   fi
