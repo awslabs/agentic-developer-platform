@@ -210,7 +210,13 @@ resource "aws_iam_role_policy" "gateway_elasticache_iam_auth" {
   depends_on = [module.redis]
 }
 
-# Cognito read permissions (scoped to the gateway's Cognito pool)
+# Cognito permissions (scoped to the gateway's Cognito pool).
+# Read: onboarding identity lookup, admin group/user listing.
+# Write (AdminUpdateUserAttributes): onboarding approval syncs the approved
+# user's role/org onto their Cognito custom: attributes so the pre-token Lambda
+# emits them in the access token (see admin/onboarding/approval.py). Without
+# this the approved user logs in with an empty role/org → broken SPA nav +
+# dashboard. Scoped to this pool only.
 resource "aws_iam_role_policy" "gateway_cognito_read" {
   name = "${local.name_prefix}-policy-gateway-cognito-read"
   role = local.gateway_service_irsa_role_name
@@ -225,7 +231,8 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
           "cognito-idp:ListUsers",
           "cognito-idp:ListGroups",
           "cognito-idp:ListUsersInGroup",
-          "cognito-idp:AdminGetUser"
+          "cognito-idp:AdminGetUser",
+          "cognito-idp:AdminUpdateUserAttributes"
         ]
         Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
       }

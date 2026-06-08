@@ -636,8 +636,10 @@ async def test_ddb_write_failure_best_effort(admin_app_client, db_engine):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "approved"
-    # Metric should have been emitted for DDB failure
-    mock_metric.assert_called_with("ADP/Onboarding", "OnboardingApproval.DdbWriteFailure")
+    # Metric should have been emitted for DDB failure. Use assert_any_call (not
+    # assert_called_with) because approve_request now also runs a post-commit
+    # Cognito claim-sync step that emits its own metric afterward.
+    mock_metric.assert_any_call("ADP/Onboarding", "OnboardingApproval.DdbWriteFailure")
 
 
 # ---------------------------------------------------------------------------
@@ -674,3 +676,64 @@ class TestCognitoUserPoolIdResolution:
 
         with patch.dict(os.environ, {}, clear=True):
             assert _cognito_user_pool_id() == ""
+
+
+# ---------------------------------------------------------------------------
+# Cognito role-claim sync on approval (regression: approved users logged in
+# with empty role/org → broken SPA nav + dashboard "undefined reading map")
+# ---------------------------------------------------------------------------
+
+
+class TestSyncCognitoRoleClaims:
+    def test_sets_role_org_team_attributes(self):
+        from src.admin.onboarding import approval
+
+        mock_client = MagicMock()
+        with (
+            patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=True),
+            patch("boto3.client", return_value=mock_client),
+        ):
+            approval._sync_cognito_role_claims(
+                cognito_sub="sub-abc",
+                org_id="acme",
+                role="org_admin",
+                team_id="team-1",
+                department_id="dept-1",
+            )
+
+        mock_client.admin_update_user_attributes.assert_called_once()
+        kwargs = mock_client.admin_update_user_attributes.call_args.kwargs
+        assert kwargs["UserPoolId"] == "us-east-1_pool"
+        assert kwargs["Username"] == "sub-abc"
+        attrs = {a["Name"]: a["Value"] for a in kwargs["UserAttributes"]}
+        assert attrs["custom:role"] == "org_admin"
+        assert attrs["custom:org_id"] == "acme"
+        assert attrs["custom:team_id"] == "team-1"
+        assert attrs["custom:department_id"] == "dept-1"
+
+    def test_skips_and_metrics_when_pool_id_missing(self):
+        from src.admin.onboarding import approval
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("boto3.client") as mock_boto,
+            patch("src.admin.onboarding.approval._emit_metric") as mock_metric,
+        ):
+            approval._sync_cognito_role_claims(cognito_sub="sub-abc", org_id="acme", role="org_admin", team_id="t")
+
+        mock_boto.assert_not_called()
+        mock_metric.assert_called_with("ADP/Onboarding", "OnboardingApproval.CognitoClaimSyncSkipped")
+
+    def test_failure_is_best_effort(self):
+        from src.admin.onboarding import approval
+
+        mock_client = MagicMock()
+        mock_client.admin_update_user_attributes.side_effect = Exception("cognito down")
+        with (
+            patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=True),
+            patch("boto3.client", return_value=mock_client),
+            patch("src.admin.onboarding.approval._emit_metric") as mock_metric,
+        ):
+            # Must not raise — approval already committed.
+            approval._sync_cognito_role_claims(cognito_sub="sub-abc", org_id="acme", role="org_admin", team_id="t")
+        mock_metric.assert_called_with("ADP/Onboarding", "OnboardingApproval.CognitoClaimSyncFailure")

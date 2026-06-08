@@ -25,6 +25,56 @@ def _v2_write_enabled() -> bool:
     return os.environ.get("USER_IDENTITY_INDEX_V2_WRITE", "false").lower() == "true"
 
 
+def _cognito_user_pool_id() -> str:
+    """Resolve the Cognito user pool id from either env-var spelling.
+
+    Matches admin/cognito_service.py + onboarding/handler.py: the configmap sets
+    BG_COGNITO_USER_POOL_ID; some deployments also export the bare name.
+    """
+    return os.environ.get("BG_COGNITO_USER_POOL_ID") or os.environ.get("COGNITO_USER_POOL_ID", "")
+
+
+def _sync_cognito_role_claims(*, cognito_sub: str, org_id: str, role: str, team_id: str, department_id: str = "") -> None:
+    """Write role/org/team onto the Cognito user's custom: attributes.
+
+    The pre-token-generation Lambda copies custom:role / custom:org_id /
+    custom:team_id / custom:department_id from the Cognito USER ATTRIBUTES into
+    the access token — it does NOT read Postgres. So approving a request (which
+    only writes the DB rows) leaves the user's token with an empty role/org →
+    the SPA hides nav items and the dashboard errors ("undefined reading map").
+    Setting the attributes here makes a fresh login mint a correct token.
+
+    Best-effort + idempotent: logs + emits a metric on failure rather than
+    rolling back the (already-committed) approval. The user pool accepts
+    admin-update by the user's `sub` as Username.
+    """
+    pool_id = _cognito_user_pool_id()
+    if not pool_id:
+        logger.warning("Cannot sync Cognito role claims: no BG_COGNITO_USER_POOL_ID / COGNITO_USER_POOL_ID set")
+        _emit_metric("ADP/Onboarding", "OnboardingApproval.CognitoClaimSyncSkipped")
+        return
+    attrs = [
+        {"Name": "custom:role", "Value": role},
+        {"Name": "custom:org_id", "Value": org_id},
+        {"Name": "custom:team_id", "Value": team_id},
+    ]
+    if department_id:
+        attrs.append({"Name": "custom:department_id", "Value": department_id})
+    try:
+        import boto3
+
+        client = boto3.client("cognito-idp", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        client.admin_update_user_attributes(
+            UserPoolId=pool_id,
+            Username=cognito_sub,
+            UserAttributes=attrs,
+        )
+        logger.info("Synced Cognito role claims for sub=%s (role=%s org=%s)", cognito_sub, role, org_id)
+    except Exception:
+        logger.exception("Failed to sync Cognito role claims for sub=%s", cognito_sub)
+        _emit_metric("ADP/Onboarding", "OnboardingApproval.CognitoClaimSyncFailure")
+
+
 def _emit_metric(namespace: str, metric_name: str, value: float = 1.0) -> None:
     """Best-effort CloudWatch metric emission."""
     try:
@@ -77,6 +127,15 @@ async def approve_request(
         request.decided_by = admin_sub
         request.decided_at = now
         await db.commit()
+        # Re-sync Cognito claims in case a prior approval predated this step or
+        # the attributes were cleared — cheap + idempotent. (team_id is omitted
+        # on this path; role + org_id are what gate the SPA nav/dashboard.)
+        _sync_cognito_role_claims(
+            cognito_sub=request.cognito_sub,
+            org_id=tenant_id,
+            role="org_admin",
+            team_id="",
+        )
         return tenant_id
 
     # Create all rows in a single transaction
@@ -186,6 +245,18 @@ async def approve_request(
         except Exception:
             logger.exception("DDB write-through failed for github identity (onboarding approval)")
             _emit_metric("ADP/Onboarding", "OnboardingApproval.DdbWriteFailure")
+
+    # Post-commit: sync role/org/team onto the Cognito user so the next token
+    # the user mints carries them (the pre-token Lambda reads Cognito attrs, not
+    # Postgres). Without this the approved user logs in with an empty role/org →
+    # broken SPA nav + dashboard. Best-effort; never rolls back the approval.
+    _sync_cognito_role_claims(
+        cognito_sub=request.cognito_sub,
+        org_id=tenant_id,
+        role="org_admin",
+        team_id=team_id,
+        department_id=dept_id,
+    )
 
     return tenant_id
 
