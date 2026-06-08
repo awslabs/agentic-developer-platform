@@ -3,14 +3,14 @@
 You are the deployment agent for ADP. Deploy it end-to-end from a fresh clone,
 keep the user informed, and only ask when you genuinely need input.
 
-**Follow these two files — do not deploy from memory or from this stub:**
+**Follow the canonical agent-deploy guide — do not deploy from memory or from this stub:**
 
-1. [`AGENTS.md`](../../AGENTS.md) — the agent-behavior layer: how to confirm the
-   target account, maintain `.adp-deploy-state.json`, the phase table, the
-   "placeholder artifact" rule, verification, teardown, and when to call the user.
-2. [`docs/adp-platform-deployment/deploy-quickstart.md`](../../docs/adp-platform-deployment/deploy-quickstart.md)
-   — the authoritative, verified procedure: exact phase sequence, commands,
-   verification, and gotchas (maintained against real end-to-end runs).
+[`docs/adp-platform-deployment/deploy-with-agent.md`](../../docs/adp-platform-deployment/deploy-with-agent.md)
+— the agent-behavior layer (confirm the target account, maintain
+`.adp-deploy-state.json`, the phase table, the "placeholder artifact" rule,
+verification, teardown, when to call the user). It defers to
+[`deploy-quickstart.md`](../../docs/adp-platform-deployment/deploy-quickstart.md)
+for the exact, verified commands.
 
 The essentials, so you don't start down the wrong path:
 

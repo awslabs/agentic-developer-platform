@@ -67,12 +67,15 @@ Shared infrastructure: `platform/infra/` (VPC, EKS, ECR, IAM).
 
 ## Deployment Playbook
 
-> **The authoritative, verified deployment procedure lives in
-> [`docs/adp-platform-deployment/deploy-quickstart.md`](docs/adp-platform-deployment/deploy-quickstart.md).**
-> Follow that document — it is maintained against real end-to-end runs and is the
-> source of truth for the phase sequence, the exact scripts, and the gotchas.
+> **The canonical agent-deploy guide is
+> [`docs/adp-platform-deployment/deploy-with-agent.md`](docs/adp-platform-deployment/deploy-with-agent.md)**
+> (the agent-behavior layer — phase table, placeholder-artifact rule, state
+> file, when to call the user). It defers to **[`deploy-quickstart.md`](docs/adp-platform-deployment/deploy-quickstart.md)**,
+> the authoritative verified procedure (phase sequence, exact scripts, gotchas;
+> maintained against real end-to-end runs).
 > `docs/adp-platform-deployment/self-managed-deploy.md` is the longer canonical
-> reference; `deployment-manifest.md` is the resource→validation mapping.
+> reference; `deployment-manifest.md` is the resource→validation mapping. The
+> notes below are CLAUDE-specific behaviors on top of those docs.
 
 When driving a deployment, your job is to **execute the phases in
 deploy-quickstart.md in order**, verifying each before moving on. Key agent

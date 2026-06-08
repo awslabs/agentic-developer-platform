@@ -222,9 +222,9 @@ aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table  
 
 ### Deploy with your AI agent
 
-Open the repo in any AI editor (Claude Code, Kiro, Cursor) and say *"Read the deploy instructions and deploy this platform."* The agent confirms your target AWS account, then executes the phases in deploy-quickstart.md, verifying each before moving on, and only stops for genuine input (AWS account choice, the GitHub App browser steps).
+Open the repo in any AI editor (Claude Code, Kiro, Cursor) and say *"Read the deploy-with-agent guide and deploy this platform."* The agent confirms your target AWS account, then executes the phases, verifying each before moving on, and only stops for genuine input (AWS account choice, the GitHub App browser steps).
 
-The agent-behavior layer lives in **`AGENTS.md`** (universal) and **`CLAUDE.md`** (Claude Code auto-reads it on startup); **`.kiro/steering/deployment.md`** redirects Kiro to the same. All three defer to **deploy-quickstart.md** for the exact commands, so the procedure has one source of truth and never drifts across copies.
+→ **[`docs/adp-platform-deployment/deploy-with-agent.md`](docs/adp-platform-deployment/deploy-with-agent.md)** is the canonical agent-deploy guide. `AGENTS.md`, `CLAUDE.md`, and `.kiro/steering/deployment.md` all point to it, so there's one source of truth.
 
 ## Directory Structure
 
