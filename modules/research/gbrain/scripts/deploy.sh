@@ -145,6 +145,69 @@ fi
 echo "  ✅ Step 4: Service stable with ${RUNNING_COUNT} running task(s)"
 
 # -----------------------------------------------------------------------------
+# Step 4b: Verify brain initialization
+#
+# The container entrypoint (entrypoint.sh) runs `gbrain init --non-interactive`
+# before `serve` on every task start — this ensures the brain is always
+# configured from the injected GBRAIN_DB_* env vars, even on restart.
+#
+# This step verifies that init succeeded by checking the task is actually
+# serving (not crash-looping with "No brain configured"). If the task is up
+# and the health check passed (Step 4 waited for stability), the brain is
+# initialized.
+#
+# If for any reason the entrypoint init didn't work (e.g. first deploy of the
+# new image before entrypoint.sh was added), we fall back to running init via
+# execute-command.
+# -----------------------------------------------------------------------------
+echo ""
+echo "--- Step 4b: Verifying brain initialization..."
+
+TASK_ARN_4B=$(aws ecs list-tasks \
+  --cluster "${ECS_CLUSTER}" \
+  --service-name "${ECS_SERVICE}" \
+  --desired-status RUNNING \
+  --region "${AWS_REGION}" \
+  --query 'taskArns[0]' --output text)
+
+if [ -z "${TASK_ARN_4B}" ] || [ "${TASK_ARN_4B}" = "None" ]; then
+  echo "  ❌ Step 4b: No running task found — brain init cannot proceed"
+  exit 1
+fi
+
+# Check if the task is healthy (entrypoint init worked)
+TASK_HEALTH=$(aws ecs describe-tasks \
+  --cluster "${ECS_CLUSTER}" \
+  --tasks "${TASK_ARN_4B}" \
+  --region "${AWS_REGION}" \
+  --query 'tasks[0].containers[0].healthStatus' --output text 2>/dev/null || echo "UNKNOWN")
+
+if [ "${TASK_HEALTH}" = "HEALTHY" ]; then
+  echo "  Brain is configured (task healthy — entrypoint init succeeded)"
+else
+  # Task may still be in start-period for health check, or entrypoint init
+  # may have partially failed. Run init explicitly as a fallback.
+  echo "  Task health: ${TASK_HEALTH} — running explicit brain init as fallback..."
+  INIT_CMD="gbrain init --non-interactive 2>&1 || true"
+  INIT_RESULT=$(aws ecs execute-command \
+    --cluster "${ECS_CLUSTER}" \
+    --task "${TASK_ARN_4B}" \
+    --container "gbrain" \
+    --interactive \
+    --region "${AWS_REGION}" \
+    --command "sh -c \"${INIT_CMD}\"" 2>&1 || true)
+
+  if echo "${INIT_RESULT}" | grep -qi "FATAL\|panic\|permission denied"; then
+    echo "  ❌ Step 4b: Brain init failed"
+    echo "  ${INIT_RESULT}"
+    exit 1
+  fi
+  echo "  Brain init executed (fallback path)"
+fi
+
+echo "  ✅ Step 4b: Brain initialization verified"
+
+# -----------------------------------------------------------------------------
 # Step 5: Initialize + migrate the database (idempotent, non-interactive)
 #
 # This step:

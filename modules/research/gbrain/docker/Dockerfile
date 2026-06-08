@@ -18,12 +18,14 @@ RUN apt-get update \
 # resolves correctly (relative imports work from the symlink target's real path).
 RUN bun install -g github:garrytan/gbrain#959af1068d05f54477c70500fb8387a11f9ccb9c
 
-# Copy configuration
+# Copy configuration and entrypoint
 COPY config/ /app/config/
+COPY docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1
 
-CMD ["gbrain", "serve", "--http", "--port", "3000"]
+ENTRYPOINT ["/app/entrypoint.sh"]
