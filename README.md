@@ -175,7 +175,23 @@ Three core services run as peers on the cluster: **Gateway** (governed Bedrock a
 
 **There is no upfront GitHub setup.** Everything keys off the AWS account your active profile resolves to. For the agent path, GitHub is wired at the **end** (`register-github-app.sh`); gateway-only needs no GitHub at all.
 
-A deploy is a sequence of idempotent, stage-by-stage scripts:
+The phases at a glance (each step idempotent and re-runnable):
+
+| Phase | What it does | Script | Needed for |
+|------:|--------------|--------|-----------|
+| 1 | Terraform state backend (S3 + DynamoDB) | `platform/scripts/bootstrap.sh` | All |
+| 2 | Environment / preflight validation | `platform/scripts/preflight-check.sh` | All |
+| 3 | Platform infra (VPC, EKS, ECR, IAM) | terraform / `deploy-all.sh` | All |
+| 4 | Gateway infra (RDS, Redis, Cognito, CloudFront, S3) | terraform / `deploy-all.sh` | Gateway |
+| 5 | Gateway backend on EKS (image → ECR → pods) | terraform / `deploy-all.sh` | Gateway |
+| 6 | Frontend (React → S3 → CloudFront) | terraform / `deploy-all.sh` | Gateway |
+| 6b | Gateway second pass — wire ALB (MOCK API GW → real routes) | `wire-gateway-alb.sh --apply` | Gateway |
+| 6c | Broker Lambda code (real GitHub-login handler) | `modules/gateway/scripts/deploy-broker.sh` | Login |
+| 6d | Seed the first admin (org/user/role) | `modules/gateway/scripts/bootstrap-admin.sh` | Login |
+| 7 | Webhook agent stack + agent-runtime image | `webhook-ingress/scripts/deploy-webhook-ingress.sh` | Agents |
+| 8 | Create + wire the GitHub App | `webhook-ingress/scripts/register-github-app.sh <org>` | Agents |
+
+Phases 1–6 (incl. 6b) are chained by `deploy-all.sh`; **6c, 6d, 7, 8 are not** (see the placeholder note below). The commands:
 
 ```bash
 export AWS_PROFILE=<profile> AWS_REGION=us-east-1     # the account everything keys off
