@@ -79,14 +79,16 @@ That's the enterprise-transformation payoff: a common, open foundation that acce
 
 ## Modules
 
-| Module | Path | What it does | Status |
-|--------|------|-------------|--------|
-| [Gateway](modules/gateway/) | `modules/gateway/` | Multi-tenant Bedrock proxy with Cognito auth, budgets, rate limiting, admin UI | Active |
-| [Agent Factory](modules/agent-factory/) | `modules/agent-factory/` | Autonomous agents (Claude SDK + Bedrock) with three execution models — GitHub webhook, Conversational Gateway, and self-hosted runners | Active |
-| [Agent Context](modules/agent-context/) | `modules/agent-context/` | Code intelligence: semantic search, code search, wikis, and memory behind one MCP endpoint (fronts OpenViking, Sourcebot, DeepWiki, LiteLLM) | Active |
-| [Domain Apps](modules/domain-apps/) | `modules/domain-apps/` | Self-contained capability packs built on the substrate — cyber/malware analysis is the first | Active (cyber) |
-| [MCP Hub](modules/harness/mcp-hub/) | `modules/harness/mcp-hub/` | MCP tools surface of the harness (part of the harness; see `ARCHITECTURE.md`) | In Progress |
-| [User Services](modules/user-services/) | `modules/user-services/` | Per-user products the user owns — vault (credentials), knowledge repo, bespoke agents, chief-of-staff | Design |
+Where the code lives and how mature each piece is (the capabilities are described in *What you get out of the box* above):
+
+| Module | Path | Status |
+|--------|------|--------|
+| [Gateway](modules/gateway/) | `modules/gateway/` | Active |
+| [Agent Factory](modules/agent-factory/) | `modules/agent-factory/` | Active |
+| [Agent Context](modules/agent-context/) | `modules/agent-context/` | Active |
+| [Domain Apps](modules/domain-apps/) | `modules/domain-apps/` | Active (cyber) |
+| [MCP Hub](modules/harness/mcp-hub/) | `modules/harness/mcp-hub/` | In Progress |
+| [User Services](modules/user-services/) | `modules/user-services/` | Design |
 
 ### Agent Factory — three execution models
 
