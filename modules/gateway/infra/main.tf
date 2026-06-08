@@ -71,8 +71,8 @@ locals {
   gateway_service_irsa_role_arn  = data.terraform_remote_state.platform.outputs.gateway_service_irsa_role_arn
   gateway_service_irsa_role_name = data.terraform_remote_state.platform.outputs.gateway_service_irsa_role_name
 
-  state_bucket          = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
-  layer_builder_script  = "${path.module}/../../../platform/scripts/build-lambda-layers.sh"
+  state_bucket         = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+  layer_builder_script = "${path.module}/../../../platform/scripts/build-lambda-layers.sh"
 }
 
 # =============================================================================
@@ -96,9 +96,9 @@ resource "null_resource" "build_psycopg2_layer" {
   # Rebuild when the layer's build recipe changes; the build script itself is
   # idempotent so re-running on every change is safe.
   triggers = {
-    build_script  = filesha256(local.layer_builder_script)
-    layer_recipe  = filesha256("${path.module}/../lambda/layers/psycopg2/build.sh")
-    state_bucket  = local.state_bucket
+    build_script = filesha256(local.layer_builder_script)
+    layer_recipe = filesha256("${path.module}/../lambda/layers/psycopg2/build.sh")
+    state_bucket = local.state_bucket
   }
 
   provisioner "local-exec" {
@@ -258,6 +258,22 @@ resource "aws_iam_role_policy" "gateway_cfn_template_read" {
         Effect   = "Allow"
         Action   = ["s3:GetObject"]
         Resource = "${module.frontend_s3.bucket_arn}/cfn-templates/*"
+      },
+      {
+        # The "Add AWS account" flow pre-signs a GET for the CFN template; the
+        # SDK/console fetch path also performs s3:ListBucket on the bucket (a
+        # bucket-level action, so it's scoped by prefix here, not the object
+        # ARN). Without it the flow fails: "not authorized to perform
+        # s3:ListBucket on resource arn:aws:s3:::<frontend-bucket>".
+        Sid      = "CfnTemplateList"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = module.frontend_s3.bucket_arn
+        Condition = {
+          StringLike = {
+            "s3:prefix" = ["cfn-templates/*"]
+          }
+        }
       }
     ]
   })
