@@ -58,42 +58,49 @@ The core modules are the substrate — the leverage is building **domain apps** 
 
 ## Architecture
 
+Humans and services arrive through two front doors — the **admin/chat UI** (CloudFront → S3 + internal ALB) and **API Gateway** (GitHub webhooks + WebSocket chat). Everything runs on one shared EKS cluster, where the three core services and any domain apps sit side by side.
+
 ```
-                              Internet
-                                 │
-                    ┌────────────▼───────────┐
-                    │       CloudFront       │
-                    └────────────┬───────────┘
-                                 │
-                ┌────────────────┼────────────────┐
-                │                │                │
-     ┌──────────▼──────┐  ┌─────▼──────┐  ┌─────▼──────────────┐
-     │  S3 (Admin UI)  │  │ Internal   │  │ API Gateway        │
-     │  React+Tailwind │  │ ALB (EKS)  │  │ (webhook + WS chat)│
-     └─────────────────┘  └─────┬──────┘  └─────┬──────────────┘
-                                │                │ (→ Lambda → SQS)
-                    ┌───────────▼────────────────▼┐
-                    │     Shared EKS Cluster      │
-                    │        (adp-dev-eks)         │
-                    │                              │
-                    │  ┌─────────┐  ┌───────────┐ │
-                    │  │ Gateway │  │KEDA Scaled│ │
-                    │  │  Pods   │  │   Jobs    │ │
-                    │  └────┬────┘  └─────┬─────┘ │
-                    │       │       ┌─────▼─────┐ │
-                    │       │       │  Agent    │ │
-                    │       │       │  Workers  │ │   (+ ARC runners
-                    │       │       │  + Context│ │    for pipelines)
-                    │       │       └─────┬─────┘ │
-                    └───────┼─────────────┼───────┘
-                            │             │
-              ┌─────────────┼─────────────┼──────────────┐
-              │             │             │              │
-     ┌────────▼───┐  ┌─────▼────┐  ┌─────▼────┐  ┌─────▼────┐
-     │    RDS     │  │  Redis   │  │ Bedrock  │  │   SQS    │
-     │ PostgreSQL │  │(optional)│  │ (Claude) │  │ + DynamoDB│
-     └────────────┘  └──────────┘  └──────────┘  └──────────┘
+   Humans · GitHub · Slack · CLI · OpenAI-compatible clients
+                          │
+        ┌─────────────────┼────────────────────────┐
+        │                 │                         │
+  ┌─────▼──────┐   ┌───────▼──────┐        ┌─────────▼─────────┐
+  │ CloudFront │   │ Internal ALB │        │   API Gateway     │
+  │  → S3 UI   │   │   (→ EKS)    │        │ webhook + WS chat │
+  └─────┬──────┘   └───────┬──────┘        └─────────┬─────────┘
+        │                  │            (HMAC/auth → Lambda → SQS)
+        └──────────────────┼─────────────────────────┘
+                           │
+   ┌───────────────────────▼──────────────────────────────────────┐
+   │                 Shared EKS Cluster (adp-dev-eks)              │
+   │                                                              │
+   │  ┌──────────────┐  ┌───────────────┐  ┌───────────────────┐ │
+   │  │   Gateway    │  │ Agent Factory │  │   Agent Context   │ │
+   │  │ Bedrock proxy│  │ KEDA ScaledJob│  │   MCP endpoint    │ │
+   │  │ + admin API  │  │ → agent-worker│  │ (semantic + code  │ │
+   │  │              │  │   pods        │  │  search, wiki,    │ │
+   │  └──────┬───────┘  └──────┬────────┘  │  memory)          │ │
+   │         │                 │           └─────────┬─────────┘ │
+   │  ┌──────┴───────┐         │           ┌─────────▼─────────┐ │
+   │  │ Domain apps  │◄────────┘           │ OpenViking ·      │ │
+   │  │ cyber: malware│  agents reach      │ Sourcebot ·       │ │
+   │  │ workers + ARC │  Context + tools   │ DeepWiki ·        │ │
+   │  │ runners       │  via the harness   │ LiteLLM proxy     │ │
+   │  └──────┬───────┘                     └───────────────────┘ │
+   └─────────┼──────────────────────────────────────────────────┘
+             │
+   ┌─────────┼─────────┬──────────┬───────────┬───────────────┐
+   │         │         │          │           │               │
+┌──▼───┐ ┌───▼───┐ ┌───▼────┐ ┌───▼─────┐ ┌───▼────┐  ┌────────▼────┐
+│ RDS  │ │ Redis │ │Bedrock │ │  SQS +  │ │  S3    │  │ Secrets /   │
+│ (PG) │ │(rate  │ │(Claude,│ │ DynamoDB│ │(arti-  │  │ Cognito     │
+│      │ │ limit)│ │ Titan) │ │ queues, │ │ facts) │  │ (authn/z)   │
+└──────┘ └───────┘ └────────┘ │ index)  │ └────────┘  └─────────────┘
+                              └─────────┘
 ```
+
+Three core services run as peers on the cluster: **Gateway** (governed Bedrock access + admin API), **Agent Factory** (the agent runtime, fed by the webhook / conversational / ARC front doors), and **Agent Context** (code intelligence behind a single MCP endpoint, fronting OpenViking, Sourcebot, DeepWiki, and a LiteLLM proxy). **Domain apps** (e.g. cyber/malware) bring their own workers and reach the other services only through the harness.
 
 ## Lightweight Install (Agents Only)
 
