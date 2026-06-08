@@ -1,8 +1,8 @@
 # ADP — Agentic Developer Platform
 
-**ADP is the infrastructure for running AI agents.** You bring the agent's job; ADP handles everything around it — model access, scaling, auth, tenant isolation, memory, tool access, audit, and cost controls. Adding a new agent is a five-file task; the platform provides the rest.
+**ADP is the foundation for building and running AI agents across an enterprise.** Not one product — a base on which many agentic platforms get built (AI Operations, Cyber Threat, Agentic Analytics, …), with governance and security centralized and delivery owned locally by each team.
 
-It's the layer between "a clever prompt that works on your laptop" and "an agent a whole org can safely use against real systems."
+Concretely: you bring the agent's job, and ADP handles everything around it — model access, scaling, auth, tenant isolation, memory, tool access, audit, and cost controls. Adding a new agent is a five-file task; the platform provides the rest. It's the layer between "a clever prompt that works on your laptop" and "an agent a whole org can safely use against real systems."
 
 ## What you get out of the box
 
