@@ -1,19 +1,60 @@
 # ADP — Agentic Developer Platform
 
-Multi-tenant AI infrastructure for developer tools. Three modules on a shared AWS platform.
+**ADP is the infrastructure for running AI agents.** You bring the agent's job; ADP handles everything around it — model access, scaling, auth, tenant isolation, memory, tool access, audit, and cost controls. Adding a new agent is a five-file task; the platform provides the rest.
+
+It's the layer between "a clever prompt that works on your laptop" and "an agent a whole org can safely use against real systems."
+
+## What you get out of the box
+
+- **Governed model access** — a multi-tenant Amazon Bedrock proxy with per-org/team/user budgets, rate limits, and full audit. Point Claude Code, Cursor, or any OpenAI-compatible client at one endpoint.
+- **Autonomous code agents** — mention an agent on a GitHub issue or PR; a pod spins up, does the work, and opens a PR. No runner babysitting.
+- **Code intelligence** — one MCP endpoint giving agents semantic search, code search, wikis, and persistent memory across your codebases.
+- **A shared harness** — tool routing, jobs, events, artifacts, and human-in-the-loop approvals, so every agent gets the same plumbing instead of reinventing it. *(In progress — see `ARCHITECTURE.md`.)*
+
+## Where it fits
+
+- Give a whole org **safe, metered access to LLMs** without each team wiring its own Bedrock setup.
+- Run **autonomous agents on your repos** — implementation, review, ops — triggered from GitHub or chat.
+- Build **your own domain agents** (security research, AI operations, data) on a substrate that already handles identity, scaling, and audit.
+- Ship **per-user products** (vault, knowledge repo, chief-of-staff) that act on a single person's behalf.
+
+## The model in one line
+
+**Apps declare. Harness operates. Platform runs. User services are owned by the user.**
+
+Agents are the consumers; humans and services invoke them through a separate inbound surface. To add capability, you write declarations — tools, jobs, events, skills, agents — and the harness handles the rest. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full mental model.
 
 ## Modules
 
 | Module | Path | What it does | Status |
 |--------|------|-------------|--------|
 | [Gateway](modules/gateway/) | `modules/gateway/` | Multi-tenant Bedrock proxy with Cognito auth, budgets, rate limiting, admin UI | Active |
-| [Agent Factory](modules/agent-factory/) | `modules/agent-factory/` | Autonomous code agents (Claude SDK + Bedrock) with async delivery via Slack, WebSocket, CLI | Active |
-| [MCP Hub](modules/harness/mcp-hub/) | `modules/harness/mcp-hub/` | MCP server hub for agent messaging and tool routing (part of the harness; see `ARCHITECTURE.md`) | In Progress |
+| [Agent Factory](modules/agent-factory/) | `modules/agent-factory/` | Autonomous agents (Claude SDK + Bedrock) with three execution models — GitHub webhook, Conversational Gateway, and self-hosted runners | Active |
+| [Agent Context](modules/agent-context/) | `modules/agent-context/` | Code intelligence: semantic search, code search, wikis, and memory behind one MCP endpoint (fronts OpenViking, Sourcebot, DeepWiki, LiteLLM) | Active |
+| [Domain Apps](modules/domain-apps/) | `modules/domain-apps/` | Self-contained capability packs built on the substrate — cyber/malware analysis is the first | Active (cyber) |
+| [MCP Hub](modules/harness/mcp-hub/) | `modules/harness/mcp-hub/` | MCP tools surface of the harness (part of the harness; see `ARCHITECTURE.md`) | In Progress |
 | [User Services](modules/user-services/) | `modules/user-services/` | Per-user products the user owns — vault (credentials), knowledge repo, bespoke agents, chief-of-staff | Design |
 
-Agent Factory includes two sub-components:
-- Runners — ARC-based GitHub Actions runners on EKS, triggered by issue labels
-- Agent Gateway — async delivery pipeline (WebSocket API GW → SQS → KEDA ScaledJobs) for Slack, webchat, and CLI channels
+### Agent Factory — three execution models
+
+Autonomous agents share one runtime but can be summoned through different front doors, and can also drive deterministic pipelines:
+
+- **GitHub (webhook-ingress)** — `@mention` or label an issue/PR → `API Gateway → Lambda (HMAC + tenant lookup) → SQS FIFO → KEDA → agent-worker` spins up, does the work, and opens a PR. No self-hosted runners needed.
+- **Conversational Gateway** — talk to agents from **Slack, a web chat UI, or CLI**; an Ingest Lambda uses a fast Bedrock classifier to route each message to the right execution path (`WebSocket/SQS → KEDA → response Lambdas`).
+- **Self-hosted runners (ARC)** — deterministic GitHub Actions pipelines on EKS that an agent can **trigger and monitor**. The right tool when you need a known, auditable, repeatable sequence (e.g. complex multi-stage deployments) rather than open-ended agent reasoning. Setup: [`modules/agent-factory/SETUP-GUIDE.md`](modules/agent-factory/SETUP-GUIDE.md).
+
+### Build your own: domain apps
+
+The core modules are the substrate — the leverage is building **domain apps** on top. A domain app is a self-contained pack for a problem space, plugged into the shared harness. You write the *declarations* — agents, tools, jobs, events, skills, schemas — and the platform provides model access, scaling, identity, audit, and memory underneath.
+
+**Working example — the cyber domain** (`modules/domain-apps/cyber/`): a **malware-analysis agent** that takes a sample (S3 pointer + a GitHub issue), runs a deterministic 7-stage pipeline, and posts a structured report back to the issue. It shows the patterns a serious domain needs:
+- **reasoning/byte-handling isolation** — the reasoning agent never touches sample bytes; byte-handling workers have no model or internet access;
+- heavy stages dispatched to dedicated **worker queues**;
+- its own **domain infra** (sandbox cluster, workers) alongside the shared platform.
+
+**Build the next one** — the same shape applies to any domain. You add an `apps/<domain>/` pack (`agents/`, `tools/`, `jobs/`, `events/`, `skills/`, `schemas/`, optional `frontend/` + `infra/`). Apps are peers: they talk only through the harness (events, tools, context), never by importing each other — so a new domain ships without touching the platform or other apps.
+
+**Planned domains** — **AI Operations** (agents that run, monitor, and remediate AI/ML systems) and **Data Platforms** (agent-driven data pipelines and governance), each shipping as a new pack on the same substrate.
 
 ## Architecture
 
@@ -26,22 +67,23 @@ Agent Factory includes two sub-components:
                                  │
                 ┌────────────────┼────────────────┐
                 │                │                │
-     ┌──────────▼──────┐  ┌─────▼──────┐  ┌─────▼──────────┐
-     │  S3 (Admin UI)  │  │ Internal   │  │ API Gateway WS │
-     │  React+Tailwind │  │ ALB (EKS)  │  │ (Agent Gateway)│
-     └─────────────────┘  └─────┬──────┘  └─────┬──────────┘
-                                │                │
+     ┌──────────▼──────┐  ┌─────▼──────┐  ┌─────▼──────────────┐
+     │  S3 (Admin UI)  │  │ Internal   │  │ API Gateway        │
+     │  React+Tailwind │  │ ALB (EKS)  │  │ (webhook + WS chat)│
+     └─────────────────┘  └─────┬──────┘  └─────┬──────────────┘
+                                │                │ (→ Lambda → SQS)
                     ┌───────────▼────────────────▼┐
                     │     Shared EKS Cluster      │
-                    │         (adp-dev-eks)        │
+                    │        (adp-dev-eks)         │
                     │                              │
                     │  ┌─────────┐  ┌───────────┐ │
-                    │  │ Gateway │  │ARC Runners│ │
-                    │  │  Pods   │  │  (Agents) │ │
+                    │  │ Gateway │  │KEDA Scaled│ │
+                    │  │  Pods   │  │   Jobs    │ │
                     │  └────┬────┘  └─────┬─────┘ │
                     │       │       ┌─────▼─────┐ │
-                    │       │       │KEDA Scaled│ │
-                    │       │       │  Jobs     │ │
+                    │       │       │  Agent    │ │
+                    │       │       │  Workers  │ │   (+ ARC runners
+                    │       │       │  + Context│ │    for pipelines)
                     │       │       └─────┬─────┘ │
                     └───────┼─────────────┼───────┘
                             │             │
@@ -66,12 +108,14 @@ See **[docs/lightweight-install.md](docs/lightweight-install.md)** for the full 
 ## Prerequisites
 
 - AWS CLI v2 with admin access
-- Terraform >= 1.5
+- Terraform >= 1.14
 - Docker
 - kubectl + Helm v3
 - Node.js >= 22
 - Python >= 3.12
 - GitHub CLI (`gh`)
+
+> **Authoritative deploy guide:** [`docs/adp-platform-deployment/deploy-quickstart.md`](docs/adp-platform-deployment/deploy-quickstart.md) is the verified, phase-by-phase procedure maintained against real end-to-end runs. Start there; the sections below are the orientation.
 
 ## Deploy with Your AI Agent (Recommended)
 
@@ -223,18 +267,19 @@ All workflows live in `.github/workflows/`:
 | Workflow | Trigger | Module |
 |----------|---------|--------|
 | `gateway-ci.yml` | PR to `modules/gateway/src/**` | Gateway — lint, test, Docker build |
-| `gateway-deploy.yml` | Push to main (`modules/gateway/src/**`) | Gateway — ECR, EKS, S3, CloudFront |
-| `gateway-infra.yml` | Push/PR to `modules/gateway/infra/**` | Gateway — Terraform plan/apply |
-| `platform-infra-plan.yml` | Platform infra changes | Platform — Terraform plan |
-| `platform-infra-apply.yml` | Platform infra changes | Platform — Terraform apply |
-| `agent-developer.yml` | `agent-developer` label | Agent Factory — code implementation |
-| `agent-architect.yml` | `agent-architect` label | Agent Factory — architecture design |
-| `agent-pm.yml` | `agent-pm` label | Agent Factory — project management |
-| `agent-reviewer.yml` | `agent-reviewer` label | Agent Factory — code review + merge |
-| `agent-product.yml` | `agent-product` label | Agent Factory — requirements analysis |
-| `agent-operations.yml` | `agent-operations` label | Agent Factory — infrastructure + deploy |
-| `pr-review-trigger.yml` | PR from `agent/*` branch | Agent Factory — auto-triggers reviewer |
-| `skill-agent.yml` | `skill-agent` label | Agent Factory — skill-driven agent |
+| `gateway-deploy.yml` | Push to main (`modules/gateway/src/**`, `frontend/**`) | Gateway — ECR, EKS, S3, CloudFront |
+| `gateway-infra-plan.yml` / `-apply.yml` / `-destroy.yml` | Gateway infra changes / dispatch | Gateway — Terraform plan/apply/destroy |
+| `platform-infra-plan.yml` / `-apply.yml` | Platform infra changes | Platform — Terraform plan/apply |
+| `webhook-ingress-ci.yml` / `-deploy.yml` / `-destroy.yml` | Webhook-ingress changes / dispatch | Agent Factory — GitHub webhook agent stack |
+| `agent-gateway-deploy.yml` | Conversational Gateway changes | Agent Factory — Conversational Gateway delivery |
+| `agent-worker-image.yml` | Agent runtime changes | Agent Factory — build `adp-agent-runtime` image |
+| `agent-factory-infra-{plan,apply,destroy}.yml` | Agent Factory infra changes / dispatch | Agent Factory — Terraform (incl. ARC runners) |
+| `agent-context-infra-{plan,apply,destroy}.yml`, `agent-context-images-build.yml`, `agent-context-ingest.yml` | Agent Context changes / dispatch | Agent Context — infra, images, ingestion |
+| `agent-developer.yml`, `agent-reviewer.yml`, `agent-architect.yml`, `agent-pm.yml`, `agent-product.yml`, `agent-operations.yml`, `agent-pt-superpower.yml` | Issue/PR mention or label | Agent Factory — agent personas |
+| `malware-analysis-agent.yml` | `malware-analysis-agent` label | Domain Apps (cyber) — 7-stage malware analysis |
+| `cyber-infra-{plan,apply}.yml` | Cyber domain infra changes | Domain Apps (cyber) — Terraform |
+
+(Run `ls .github/workflows/` for the complete, current set — agent triggers are moving from labels toward `@mention`-in-comments.)
 
 ## Directory Structure
 
@@ -257,26 +302,38 @@ adp/
 │   │   ├── tests/               # pytest suite
 │   │   └── docs/                # OpenAPI spec, schema docs
 │   │
-│   ├── agent-factory/           # Code Agents
+│   ├── agent-factory/           # Autonomous agents (three execution models)
 │   │   ├── agent/               # TypeScript agent runtime (Claude SDK)
-│   │   ├── gateway/             # Agent Gateway (async delivery)
+│   │   ├── agent-worker-image/  # Container image for the agent worker pod
+│   │   ├── webhook-ingress/     # GitHub webhook stack (API GW → Lambda → SQS → KEDA)
+│   │   ├── gateway/             # Conversational Gateway (Slack / WebSocket / CLI delivery)
 │   │   │   ├── app/             # SQS consumer + persona loader
 │   │   │   ├── lambdas/         # Ingest (classifier, channels) + Response (routers)
 │   │   │   └── k8s/             # KEDA ScaledJob manifests
 │   │   ├── rules/               # Agent personas, phases, templates
 │   │   ├── infra/               # Terraform (runner IAM, ARC, secrets, beads, gateway)
+│   │   ├── runner-infra/        # ARC self-hosted runners (deterministic pipelines)
 │   │   ├── actions/             # GitHub composite actions
 │   │   ├── client-workflows/    # Reusable workflow callers for other repos
-│   │   ├── runner-infra/        # Reference: standalone runner setup
 │   │   ├── docker/              # github-token-refresher
-│   │   └── scripts/             # Build, deploy, deploy-gateway.sh
+│   │   └── scripts/             # Build + deploy scripts
 │   │
-│   └── harness/                # Harness — outbound surface agents use
-│       ├── contracts/          # Versioned schemas (tool, job, event, ...)
-│       └── mcp-hub/            # MCP tools surface (formerly modules/mcp-gateway/)
-│           ├── docker/         # agent-mail MCP server
-│           ├── scripts/        # Deploy scripts
-│           └── *.md            # Requirements, design docs
+│   ├── agent-context/           # Code intelligence (one MCP endpoint)
+│   │   ├── infra/               # Terraform (OpenViking, Sourcebot, DeepWiki, LiteLLM)
+│   │   └── k8s/                 # MCP server + backend manifests
+│   │
+│   ├── domain-apps/             # Domain capability packs
+│   │   └── cyber/               # Cyber domain — 7-stage malware-analysis agent
+│   │       ├── agent/           # Personas (malware-analysis-agent, ...)
+│   │       ├── workers/         # Byte-handling workers (no model / no internet)
+│   │       ├── infra/ k8s/      # Domain-specific infra + manifests
+│   │       └── scripts/         # Domain deploy scripts
+│   │
+│   ├── harness/                # Harness — outbound surface agents use
+│   │   ├── contracts/          # Versioned schemas (tool, job, event, ...)
+│   │   └── mcp-hub/            # MCP tools surface (in progress)
+│   │
+│   └── user-services/          # Per-user products (vault, knowledge repo, ...) — design
 │
 ├── environments/                # Terraform var files (dev/staging/prod)
 ├── libs/                        # Shared libraries (Python, TypeScript)
@@ -290,11 +347,16 @@ adp/
 
 | Doc | Location |
 |-----|----------|
+| **Architecture (mental model)** | [ARCHITECTURE.md](ARCHITECTURE.md) — the four categories, the two skins, where new work goes |
+| **Deploy Quick Start (authoritative)** | [docs/adp-platform-deployment/deploy-quickstart.md](docs/adp-platform-deployment/deploy-quickstart.md) — verified phase-by-phase procedure |
+| Self-Managed Deploy (full reference) | [docs/adp-platform-deployment/self-managed-deploy.md](docs/adp-platform-deployment/self-managed-deploy.md) |
 | Gateway README | [modules/gateway/README.md](modules/gateway/README.md) |
 | Gateway OpenAPI Spec | [modules/gateway/docs/openapi.yaml](modules/gateway/docs/openapi.yaml) |
-| Agent Factory Setup | [modules/agent-factory/SETUP-GUIDE.md](modules/agent-factory/SETUP-GUIDE.md) |
 | Agent Factory README | [modules/agent-factory/README.md](modules/agent-factory/README.md) |
-| Agent Gateway Routing | [modules/agent-factory/gateway/docs/intelligent-routing.md](modules/agent-factory/gateway/docs/intelligent-routing.md) |
+| Agent Factory Setup (ARC runners) | [modules/agent-factory/SETUP-GUIDE.md](modules/agent-factory/SETUP-GUIDE.md) |
+| Conversational Gateway Routing | [modules/agent-factory/gateway/docs/intelligent-routing.md](modules/agent-factory/gateway/docs/intelligent-routing.md) |
+| Agent Context README | [modules/agent-context/README.md](modules/agent-context/README.md) |
+| Cyber Domain (malware agent) | [modules/domain-apps/cyber/](modules/domain-apps/cyber/) |
 | MCP Hub Requirements | [modules/harness/mcp-hub/mcp_gateway_requirements.md](modules/harness/mcp-hub/mcp_gateway_requirements.md) |
 | Agent Coding Guidelines | [docs/agent-coding-guidelines.md](docs/agent-coding-guidelines.md) — universal behavioral rules every agent writing code must follow |
 | Deployment Playbook | [AGENTS.md](AGENTS.md) |

@@ -100,10 +100,19 @@ behaviors that still apply on top of that doc:
 The phase summary (timing/scope) and per-phase commands, verification, and
 troubleshooting are all in deploy-quickstart.md — do not duplicate them here.
 
-> **Legacy note:** earlier versions of this file inlined a 10-phase playbook with
-> an upfront "Phase 0: GitHub setup" (`setup-org.sh` + 3 org-owned apps). That was
-> the ARC track and is superseded. If you specifically need the ARC self-hosted-
-> runner path, see `modules/agent-factory/SETUP-GUIDE.md`.
+> **Deploy-path note:** earlier versions of this file inlined a 10-phase playbook
+> with an upfront "Phase 0: GitHub setup" (`setup-org.sh` + 3 org-owned apps) that
+> stood up ARC self-hosted runners as the *agent onboarding/deploy path*. That
+> **onboarding path is superseded** by the webhook-ingress flow (GitHub webhook →
+> Lambda → SQS → KEDA → agent-worker; see deploy-quickstart.md) — for summoning an
+> agent to do open-ended work, use webhook-ingress, not ARC.
+>
+> **ARC runners are NOT deprecated as an execution model**, though. They remain a
+> first-class, complementary capability: deterministic GitHub Actions pipelines on
+> EKS that an agent can **trigger and monitor** — the right tool when you need a
+> known, auditable, repeatable sequence of steps (e.g. complex multi-stage
+> deployments) rather than open-ended agent reasoning. Setup + usage for that path
+> lives in `modules/agent-factory/SETUP-GUIDE.md`.
 
 ## Troubleshooting Reference
 
