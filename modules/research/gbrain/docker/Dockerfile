@@ -1,27 +1,22 @@
-# ---- build stage ----
-FROM public.ecr.aws/docker/library/node:22-slim AS build
-ENV BUN_INSTALL=/root/.bun
-ENV PATH=/root/.bun/bin:$PATH
-RUN apt-get update && apt-get install -y --no-install-recommends curl unzip ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://bun.sh/install | bash
-WORKDIR /app
-RUN bun install -g github:garrytan/gbrain@v0.42.26.0
-
-# ---- runtime stage ----
+# Single-stage build — both stages were identical (same base + bun); multi-stage
+# added no size benefit and broke the gbrain binary (COPY dereferenced the bin
+# symlink, severing cli.ts from its relative imports).
 FROM public.ecr.aws/docker/library/node:22-slim
 ENV BUN_INSTALL=/root/.bun
 ENV PATH=/root/.bun/bin:$PATH
 WORKDIR /app
 
-# Bun runtime is required to run gbrain — install it in the final image too
-RUN apt-get update && apt-get install -y --no-install-recommends curl unzip ca-certificates \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl unzip ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://bun.sh/install | bash
 
-# Copy gbrain from global install
-COPY --from=build /root/.bun/install/global/node_modules /app/node_modules
-COPY --from=build /root/.bun/bin/gbrain /usr/local/bin/gbrain
+# Install gbrain globally — pinned to commit 959af1068d (v0.42.36.0 per
+# package.json on master). Uses #ref syntax; the @ref shorthand is mis-parsed
+# by Bun (see #1275). The global install creates a symlink at
+# /root/.bun/bin/gbrain → .../node_modules/gbrain/src/cli.ts which bun
+# resolves correctly (relative imports work from the symlink target's real path).
+RUN bun install -g github:garrytan/gbrain#959af1068d05f54477c70500fb8387a11f9ccb9c
 
 # Copy configuration
 COPY config/ /app/config/
