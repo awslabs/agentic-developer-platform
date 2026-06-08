@@ -153,16 +153,6 @@ Humans and services arrive through two front doors — the **admin/chat UI** (Cl
 
 Three core services run as peers on the cluster: **Gateway** (governed Bedrock access + admin API), **Agent Factory** (the agent runtime, fed by the webhook / conversational / ARC front doors), and **Agent Context** (code intelligence behind a single MCP endpoint, fronting OpenViking, Sourcebot, DeepWiki, and a LiteLLM proxy). **Domain apps** (e.g. cyber/malware) bring their own workers and reach the other services only through the harness.
 
-## Lightweight Install (Agents Only)
-
-Want to run the ADP code agents on your own AWS account without deploying the full platform? If you already have an EKS cluster with ARC runners, you can be up and running in 15 minutes:
-
-```bash
-./platform/scripts/lightweight-setup.sh
-```
-
-See **[docs/lightweight-install.md](docs/lightweight-install.md)** for the full guide, prerequisites, and troubleshooting.
-
 ## Prerequisites
 
 - AWS CLI v2 with admin access
@@ -213,46 +203,6 @@ aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table  
 ### Deploy with your AI agent
 
 Open the repo in any AI editor (Claude Code, Kiro, Cursor) and say *"Read CLAUDE.md and deploy this platform."* The agent confirms your target AWS account, then executes the phases in deploy-quickstart.md, verifying each before moving on, and only stops for genuine input (AWS account choice, the GitHub App browser steps). Instructions live in `AGENTS.md` (universal), `CLAUDE.md` (Claude Code auto-reads on startup), and `.kiro/steering/deployment.md` (Kiro).
-
-## Local Development (No AWS Required)
-
-For the gateway, you can run locally with Docker Compose:
-
-```bash
-cd modules/gateway
-docker compose up
-# Backend at http://localhost:8080, Postgres at :5432, Redis at :6379
-```
-
-For the agent runtime:
-
-```bash
-cd modules/agent-factory/agent
-npm install
-npm run build
-npm test
-```
-
-## CI/CD Workflows
-
-All workflows live in `.github/workflows/`:
-
-| Workflow | Trigger | Module |
-|----------|---------|--------|
-| `gateway-ci.yml` | PR to `modules/gateway/src/**` | Gateway — lint, test, Docker build |
-| `gateway-deploy.yml` | Push to main (`modules/gateway/src/**`, `frontend/**`) | Gateway — ECR, EKS, S3, CloudFront |
-| `gateway-infra-plan.yml` / `-apply.yml` / `-destroy.yml` | Gateway infra changes / dispatch | Gateway — Terraform plan/apply/destroy |
-| `platform-infra-plan.yml` / `-apply.yml` | Platform infra changes | Platform — Terraform plan/apply |
-| `webhook-ingress-ci.yml` / `-deploy.yml` / `-destroy.yml` | Webhook-ingress changes / dispatch | Agent Factory — GitHub webhook agent stack |
-| `agent-gateway-deploy.yml` | Conversational Gateway changes | Agent Factory — Conversational Gateway delivery |
-| `agent-worker-image.yml` | Agent runtime changes | Agent Factory — build `adp-agent-runtime` image |
-| `agent-factory-infra-{plan,apply,destroy}.yml` | Agent Factory infra changes / dispatch | Agent Factory — Terraform (incl. ARC runners) |
-| `agent-context-infra-{plan,apply,destroy}.yml`, `agent-context-images-build.yml`, `agent-context-ingest.yml` | Agent Context changes / dispatch | Agent Context — infra, images, ingestion |
-| `agent-developer.yml`, `agent-reviewer.yml`, `agent-architect.yml`, `agent-pm.yml`, `agent-product.yml`, `agent-operations.yml`, `agent-pt-superpower.yml` | Issue/PR mention or label | Agent Factory — agent personas |
-| `malware-analysis-agent.yml` | `malware-analysis-agent` label | Domain Apps (cyber) — 7-stage malware analysis |
-| `cyber-infra-{plan,apply}.yml` | Cyber domain infra changes | Domain Apps (cyber) — Terraform |
-
-(Run `ls .github/workflows/` for the complete, current set — agent triggers are moving from labels toward `@mention`-in-comments.)
 
 ## Directory Structure
 
