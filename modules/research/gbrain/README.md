@@ -27,15 +27,28 @@ Isolated experimental deployment of [gbrain](https://github.com/garrytan/gbrain)
 
 ## Quick Start
 
-### Deploy
+### Deploy (one command, fully end-to-end)
 
 ```bash
 ./scripts/deploy.sh
 ```
 
-This builds the Docker image, pushes to ECR, and runs `terraform apply`.
+This single command drives the **entire** deployment lifecycle — no manual steps,
+no console clicks:
 
-### Smoke Test
+1. **Terraform apply** — creates/updates all infrastructure (ECS, RDS, ECR, IAM, etc.)
+2. **CodeBuild** — builds and pushes the container image to ECR from committed main
+3. **Service rollout** — force-new-deployment + waits for ECS service to stabilize
+4. **DB migration** — enables pgvector, runs schema migrations to v113 (idempotent)
+5. **Seed** — imports existing learnings from `agent_learning/` (idempotent upsert)
+6. **Smoke test** — health + tools/list + write/read round-trip; **the deploy fails if this fails**
+
+**Idempotent**: running `deploy.sh` on an already-healthy deployment is a green no-op.
+
+**Repeatability guarantee**: `./scripts/teardown.sh` → `./scripts/deploy.sh` → fully working
+gbrain (service healthy, schema v113, seeded, smoke test green) with zero manual intervention.
+
+### Smoke Test (standalone)
 
 ```bash
 ./scripts/smoke-test.sh
