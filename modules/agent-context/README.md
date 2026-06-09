@@ -10,6 +10,16 @@ The platform indexes ~100 curated repositories, web documentation sites, and (op
 
 > **Cost note:** This module is opt-in because the full stack (especially GraphRAG and wiki generation) costs ~$800/month idle. Deploy with `--agent-context-only` flag or set `AGENT_CONTEXT_ENABLED=true`.
 
+### Deployment Cost Tiers
+
+| Mode | Monthly Cost | What's Deployed |
+|------|-------------|-----------------|
+| **Personal-context-only** (`--personal-context-only`) | **~$280/mo** | OpenViking, LiteLLM proxy, Context MCP Server, synthesis CronJob |
+| **Full stack** (default) | **~$800/mo** | Everything above + Sourcebot, DeepWiki, ingestion pipeline, KEDA workers |
+| **Incremental** (adding personal context to existing full deploy) | **~$0–30/mo** | Synthesis CronJob only (OpenViking/LiteLLM already running) |
+
+Use `--personal-context-only` when you only need per-user experiential memory (save/recall/synthesize) without the code-intelligence backends (code search, wiki generation, repository indexing).
+
 ## Architecture
 
 ```
@@ -201,9 +211,21 @@ cp config.env config.local.env
 # Deploy everything (kubectl + Terraform + Helm)
 ./deploy.sh
 
+# Deploy personal-context only (lean stack, ~$280/mo)
+./deploy.sh --personal-context-only
+
 # Validate (10 automated checks)
 ./scripts/validate.sh
 ```
+
+#### `--personal-context-only` flag
+
+Deploys the lean personal-context stack only:
+- **Deployed**: OpenViking (vector + AGFS), LiteLLM proxy (embeddings + synthesis LLM), Context MCP Server (experience tool active), personal-context synthesis CronJob
+- **Skipped**: Sourcebot, DeepWiki, OpenSearch Serverless, ingestion pipeline (repos/URLs/infra), KEDA workers
+- **Conditional**: Neptune deployed only if `GRAPHRAG_ENABLED=true`
+
+This reduces monthly cost from ~$800 to ~$280, suitable for operators who need personal context without code intelligence. Can also be set via environment variable: `PERSONAL_CONTEXT_ONLY=true ./deploy.sh`
 
 `deploy.sh` performs:
 1. Configure kubectl for EKS cluster

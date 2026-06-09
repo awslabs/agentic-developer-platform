@@ -10,18 +10,31 @@ source "${SCRIPT_DIR}/config.env"
 [[ -f "${SCRIPT_DIR}/config.local.env" ]] && source "${SCRIPT_DIR}/config.local.env"
 
 # Parse arguments
+PERSONAL_CONTEXT_ONLY="${PERSONAL_CONTEXT_ONLY:-false}"
 while [[ $# -gt 0 ]]; do
   case $1 in
     --config)
       source "$2"
       shift 2
       ;;
+    --personal-context-only)
+      PERSONAL_CONTEXT_ONLY=true
+      shift
+      ;;
     --skip-validate)
       SKIP_VALIDATE=true
       shift
       ;;
     --help)
-      echo "Usage: ./deploy.sh [--config config.local.env] [--skip-validate]"
+      echo "Usage: ./deploy.sh [--config config.local.env] [--personal-context-only] [--skip-validate]"
+      echo ""
+      echo "Options:"
+      echo "  --config <file>           Source additional config overrides"
+      echo "  --personal-context-only   Deploy lean stack only (OpenViking + LiteLLM +"
+      echo "                            Context MCP + synthesis CronJob). Skips Sourcebot,"
+      echo "                            DeepWiki, ingestion pipeline, and OpenSearch."
+      echo "                            Cost: ~\$280/mo vs ~\$800/mo full stack."
+      echo "  --skip-validate           Skip post-deployment validation"
       exit 0
       ;;
     *)
@@ -37,6 +50,12 @@ echo "============================================"
 echo "Cluster:    ${CLUSTER_NAME}"
 echo "Region:     ${AWS_REGION}"
 echo "Namespace:  ${NAMESPACE}"
+if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
+  echo "Mode:       PERSONAL-CONTEXT-ONLY (lean stack)"
+  echo "            Deploys: OpenViking, LiteLLM, Context MCP, Synthesis CronJob"
+  echo "            Skips:   Sourcebot, DeepWiki, OpenSearch, Ingestion pipeline"
+  echo "            Cost:    ~\$280/mo (vs ~\$800/mo full stack)"
+fi
 echo "============================================"
 
 # Configure kubectl
@@ -136,12 +155,20 @@ bash "${SCRIPT_DIR}/scripts/deploy-openviking.sh"
 # NOTE: CodeGraphContext pod removed (Issue #105) — cgc now runs during ingestion.
 # The ingestion pipeline (ingest-repo.py) handles structural analysis.
 
-# Deploy Sourcebot
-echo ""
-bash "${SCRIPT_DIR}/scripts/deploy-sourcebot.sh"
+# Deploy Sourcebot (skipped in personal-context-only mode)
+if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
+  echo ""
+  echo "Skipping Sourcebot (--personal-context-only mode)"
+else
+  echo ""
+  bash "${SCRIPT_DIR}/scripts/deploy-sourcebot.sh"
+fi
 
-# Deploy DeepWiki (optional)
-if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
+# Deploy DeepWiki (skipped in personal-context-only mode)
+if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
+  echo ""
+  echo "Skipping DeepWiki (--personal-context-only mode)"
+elif [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
   echo ""
   bash "${SCRIPT_DIR}/scripts/deploy-deepwiki.sh"
 else
@@ -150,37 +177,63 @@ else
 fi
 
 # Deploy Terraform infrastructure (SQS + DynamoDB + optional GraphRAG)
-echo ""
-echo "Deploying Terraform infrastructure (SQS, DynamoDB, GraphRAG)..."
-if [ -d "${SCRIPT_DIR}/terraform" ]; then
-  cd "${SCRIPT_DIR}/terraform"
-  terraform init -upgrade
-
-  TF_VARS="-var=graphrag_enabled=${GRAPHRAG_ENABLED:-false}"
-  terraform apply -auto-approve ${TF_VARS} || {
-    echo "WARNING: Terraform deployment failed."
-  }
-
-  # Export SQS queue URL and DynamoDB table name
-  SQS_QUEUE_URL=$(terraform output -raw ingestion_queue_url 2>/dev/null || echo "")
-  DYNAMO_TABLE=$(terraform output -raw dynamodb_table_name 2>/dev/null || echo "adp-context-service-state")
-  export SQS_QUEUE_URL DYNAMO_TABLE
-  echo "  SQS Queue URL: ${SQS_QUEUE_URL:-not set}"
-  echo "  DynamoDB Table: ${DYNAMO_TABLE}"
-
-  # Export GraphRAG endpoints if enabled
-  if [ "${GRAPHRAG_ENABLED:-false}" = "true" ]; then
+# In personal-context-only mode, only deploy GraphRAG (Neptune) if its flag is on;
+# skip SQS and ingestion-related infra.
+if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
+  if [ "${GRAPHRAG_ENABLED:-false}" = "true" ] && [ -d "${SCRIPT_DIR}/terraform" ]; then
+    echo ""
+    echo "Deploying Terraform infrastructure (Neptune only, personal-context-only mode)..."
+    cd "${SCRIPT_DIR}/terraform"
+    terraform init -upgrade
+    TF_VARS="-var=graphrag_enabled=true"
+    terraform apply -auto-approve ${TF_VARS} || {
+      echo "WARNING: Terraform deployment failed."
+    }
     NEPTUNE_ENDPOINT=$(terraform output -raw neptune_endpoint 2>/dev/null || echo "")
-    OPENSEARCH_ENDPOINT=$(terraform output -raw opensearch_collection_endpoint 2>/dev/null || echo "")
-    export NEPTUNE_ENDPOINT OPENSEARCH_ENDPOINT
+    export NEPTUNE_ENDPOINT
     echo "  Neptune endpoint: ${NEPTUNE_ENDPOINT:-not set}"
-    echo "  OpenSearch endpoint: ${OPENSEARCH_ENDPOINT:-not set}"
+    cd "${SCRIPT_DIR}"
+  else
+    echo ""
+    echo "Skipping Terraform infrastructure (--personal-context-only, GraphRAG not enabled)"
   fi
-  cd "${SCRIPT_DIR}"
+else
+  echo ""
+  echo "Deploying Terraform infrastructure (SQS, DynamoDB, GraphRAG)..."
+  if [ -d "${SCRIPT_DIR}/terraform" ]; then
+    cd "${SCRIPT_DIR}/terraform"
+    terraform init -upgrade
+
+    TF_VARS="-var=graphrag_enabled=${GRAPHRAG_ENABLED:-false}"
+    terraform apply -auto-approve ${TF_VARS} || {
+      echo "WARNING: Terraform deployment failed."
+    }
+
+    # Export SQS queue URL and DynamoDB table name
+    SQS_QUEUE_URL=$(terraform output -raw ingestion_queue_url 2>/dev/null || echo "")
+    DYNAMO_TABLE=$(terraform output -raw dynamodb_table_name 2>/dev/null || echo "adp-context-service-state")
+    export SQS_QUEUE_URL DYNAMO_TABLE
+    echo "  SQS Queue URL: ${SQS_QUEUE_URL:-not set}"
+    echo "  DynamoDB Table: ${DYNAMO_TABLE}"
+
+    # Export GraphRAG endpoints if enabled
+    if [ "${GRAPHRAG_ENABLED:-false}" = "true" ]; then
+      NEPTUNE_ENDPOINT=$(terraform output -raw neptune_endpoint 2>/dev/null || echo "")
+      OPENSEARCH_ENDPOINT=$(terraform output -raw opensearch_collection_endpoint 2>/dev/null || echo "")
+      export NEPTUNE_ENDPOINT OPENSEARCH_ENDPOINT
+      echo "  Neptune endpoint: ${NEPTUNE_ENDPOINT:-not set}"
+      echo "  OpenSearch endpoint: ${OPENSEARCH_ENDPOINT:-not set}"
+    fi
+    cd "${SCRIPT_DIR}"
+  fi
 fi
 
 # Deploy Ingestion Refresh CronJob (unified: repos + URLs + infra discovery)
-if [ "${INGESTION_REFRESH_ENABLED:-true}" = "true" ]; then
+# Skipped in personal-context-only mode (no code-intelligence backends to feed)
+if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
+  echo ""
+  echo "Skipping Ingestion Refresh CronJob (--personal-context-only mode)"
+elif [ "${INGESTION_REFRESH_ENABLED:-true}" = "true" ]; then
   echo ""
   echo "Deploying Ingestion Refresh CronJob..."
 
@@ -256,26 +309,45 @@ echo "============================================"
 echo "Deployment complete!"
 echo "============================================"
 echo ""
-echo "Services:"
-echo "  OpenViking:    http://openviking.${NAMESPACE}.svc.cluster.local:1933"
-echo "  Sourcebot:     http://sourcebot.${NAMESPACE}.svc.cluster.local:3000"
-echo "  LiteLLM Proxy: http://litellm-proxy.${NAMESPACE}.svc.cluster.local:${LITELLM_PORT}"
-if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
-  echo "  DeepWiki:      http://deepwiki.${NAMESPACE}.svc.cluster.local:${DEEPWIKI_PORT}"
-fi
-if [ "${INGESTION_REFRESH_ENABLED:-true}" = "true" ]; then
-  echo "  Ingestion:     CronJob ingestion-refresh (${INGESTION_REFRESH_SCHEDULE})"
-fi
-if [ "${SYNTHESIS_ENABLED:-true}" = "true" ]; then
-  echo "  Synthesis:     CronJob personal-context-synthesis (${SYNTHESIS_SCHEDULE:-0 3 * * *})"
-fi
-if [ "${GRAPHRAG_ENABLED:-false}" = "true" ]; then
-  echo "  Neptune:       ${NEPTUNE_ENDPOINT:-not deployed}:${NEPTUNE_PORT:-8182}"
-  echo "  OpenSearch:    ${OPENSEARCH_ENDPOINT:-not deployed}"
-fi
-if [ -n "${SQS_QUEUE_URL}" ]; then
-  echo "  SQS Queue:     ${SQS_QUEUE_URL}"
-  echo "  DynamoDB:      ${DYNAMO_TABLE}"
-  echo "  KEDA Workers:  ScaledJob ingestion-worker (0-10 replicas)"
+if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
+  echo "Mode: PERSONAL-CONTEXT-ONLY (lean stack, ~\$280/mo)"
+  echo ""
+  echo "Services:"
+  echo "  OpenViking:    http://openviking.${NAMESPACE}.svc.cluster.local:1933"
+  echo "  LiteLLM Proxy: http://litellm-proxy.${NAMESPACE}.svc.cluster.local:${LITELLM_PORT}"
+  if [ "${SYNTHESIS_ENABLED:-true}" = "true" ]; then
+    echo "  Synthesis:     CronJob personal-context-synthesis (${SYNTHESIS_SCHEDULE:-0 3 * * *})"
+  fi
+  if [ "${GRAPHRAG_ENABLED:-false}" = "true" ]; then
+    echo "  Neptune:       ${NEPTUNE_ENDPOINT:-not deployed}:${NEPTUNE_PORT:-8182}"
+  fi
+  echo ""
+  echo "Skipped (not needed for personal context):"
+  echo "  Sourcebot, DeepWiki, Ingestion pipeline, OpenSearch, KEDA workers"
+else
+  echo "Mode: FULL STACK (~\$800/mo)"
+  echo ""
+  echo "Services:"
+  echo "  OpenViking:    http://openviking.${NAMESPACE}.svc.cluster.local:1933"
+  echo "  Sourcebot:     http://sourcebot.${NAMESPACE}.svc.cluster.local:3000"
+  echo "  LiteLLM Proxy: http://litellm-proxy.${NAMESPACE}.svc.cluster.local:${LITELLM_PORT}"
+  if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
+    echo "  DeepWiki:      http://deepwiki.${NAMESPACE}.svc.cluster.local:${DEEPWIKI_PORT}"
+  fi
+  if [ "${INGESTION_REFRESH_ENABLED:-true}" = "true" ]; then
+    echo "  Ingestion:     CronJob ingestion-refresh (${INGESTION_REFRESH_SCHEDULE})"
+  fi
+  if [ "${SYNTHESIS_ENABLED:-true}" = "true" ]; then
+    echo "  Synthesis:     CronJob personal-context-synthesis (${SYNTHESIS_SCHEDULE:-0 3 * * *})"
+  fi
+  if [ "${GRAPHRAG_ENABLED:-false}" = "true" ]; then
+    echo "  Neptune:       ${NEPTUNE_ENDPOINT:-not deployed}:${NEPTUNE_PORT:-8182}"
+    echo "  OpenSearch:    ${OPENSEARCH_ENDPOINT:-not deployed}"
+  fi
+  if [ -n "${SQS_QUEUE_URL:-}" ]; then
+    echo "  SQS Queue:     ${SQS_QUEUE_URL}"
+    echo "  DynamoDB:      ${DYNAMO_TABLE}"
+    echo "  KEDA Workers:  ScaledJob ingestion-worker (0-10 replicas)"
+  fi
 fi
 echo ""
