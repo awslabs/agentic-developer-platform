@@ -127,6 +127,35 @@ variable "agent_pod_deadline_seconds" {
   default     = 5400 # 90 min — matches sqs_visibility_timeout. Bumped from 1800 to give long-running orchestrator pods headroom; orchestrators self-handoff at ~85 min.
 }
 
+variable "agent_warm_pool_replicas" {
+  description = <<-DESC
+    Number of warm-pool "balloon" pods for the agent worker (see warm-pool.tf).
+    Each balloon runs the agent image at NEGATIVE priority on its own node, so a
+    summoned agent (priority 0) preempts it and lands on an already-running,
+    image-pre-pulled node instead of waiting ~60-90s for a cold node + ~30s image
+    pull. Set to the number of agents you want able to start instantly in
+    parallel. 0 disables the warm pool (scale-from-zero; first agent is slow).
+    Each replica holds one node 24/7 at the agent's resource request — the cost
+    trade-off for instant starts.
+  DESC
+  type        = number
+  default     = 1
+}
+
+variable "agent_image_prepull_enabled" {
+  description = <<-DESC
+    Run a DaemonSet (warm-pool.tf) that pre-pulls the ~650 MB agent image onto
+    EVERY node in adp-agents, so a summoned agent skips the ~30s image pull no
+    matter which node it lands on — covering parallel agents beyond the warm-pool
+    replica count and agents scheduled onto existing/other nodes. Mirrors the
+    proven embark1 `chat-agent-image-prepull` DaemonSet. Pairs with the warm pool
+    (which handles the cold-node BOOT delay); together they match embark1's fast
+    starts. Tiny footprint (10m cpu / 32Mi per node, just holds the image cached).
+  DESC
+  type        = bool
+  default     = true
+}
+
 # Issue #575: the gateway's API Gateway invoke URL is resolved at apply time
 # from SSM (published by modules/gateway/infra/) rather than passed in as a
 # tfvar. Keeps new environments repeatable — no per-env hardcoding.

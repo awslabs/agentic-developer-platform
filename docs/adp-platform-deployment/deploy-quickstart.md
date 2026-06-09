@@ -559,6 +559,38 @@ diagnosing the symptom.)
        --cli-binary-format raw-in-base64-out /dev/stdout   # expect a real JSON message
      ```
 
+### ⚠️ Slow first agent (1-2 min to first comment) on small/fresh clusters
+
+On a cluster running scale-from-zero with few nodes, a summoned agent waits for
+**both** a cold node to be provisioned (~60-90s on EKS Auto Mode / Karpenter)
+**and** the ~650 MB agent image to be pulled (~30s) before it can run — so the
+first live comment lands in 1-2 min, vs 10-15s on a warm multi-node cluster.
+Confirmed via pod events: `Pulled image ... in 31s` on a cold node vs `174ms`
+when cached.
+
+**Fix — two complementary mechanisms in `warm-pool.tf`** (mirrors how embark1 stays
+fast: warm nodes + a `chat-agent-image-prepull` DaemonSet):
+
+1. **Warm pool** (`agent_warm_pool_replicas`, default `1`) — N "balloon" pods run
+   the agent image at **negative priority**, holding warm nodes. A summoned agent
+   (priority 0) preempts a balloon and starts on that node instantly; the balloon
+   reschedules and re-warms a node for the next summon. Removes the **cold-node
+   boot** delay for up to N parallel agents. Each replica holds one node 24/7
+   (cost trade-off); `0` disables.
+2. **Image pre-pull DaemonSet** (`agent_image_prepull_enabled`, default `true`) —
+   one tiny pod per node keeps the ~650 MB agent image cached on **every** node,
+   so the ~30s pull is gone regardless of which node an agent lands on — covering
+   parallel agents beyond the warm-pool count and agents scheduled onto other
+   nodes. Tiny footprint (10m cpu / 32Mi per node).
+
+Verify:
+```bash
+kubectl get deploy agent-warm-pool -n adp-agents               # READY = replicas
+kubectl get daemonset agent-image-prepull -n adp-agents        # READY = node count
+# After a summon, the agent pod's events should show NO new node + image "Pulled ... in <1s"
+# (confirmed live on 919: 168ms cached vs 31s cold).
+```
+
 ### Then wire GitHub — `register-github-app.sh`
 After the stack is up, run `register-github-app.sh` to make GitHub integration
 live:
