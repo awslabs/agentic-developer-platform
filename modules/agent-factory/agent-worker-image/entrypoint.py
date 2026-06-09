@@ -139,6 +139,17 @@ def main() -> int:
         os.environ["ADP_ROOT_HUMAN_ID"] = root_human_id
     os.environ["ADP_IS_HUMAN_ROOTED"] = "true" if is_human_rooted else "false"
 
+    # Issue #1289: Expose personal-context identity for the Node agent runtime.
+    # These env vars are read by the worker harness to set X-Owner-Sub and
+    # X-Tenant-Id on Context MCP requests. Set from trusted dispatch metadata
+    # only — never from agent/LLM input.
+    cognito_sub = envelope.get("cognito_sub", "")
+    if cognito_sub:
+        os.environ["ADP_OWNER_SUB"] = cognito_sub
+    # tenant_id is already extracted above; expose it under the personal-context
+    # name so the harness doesn't need to know about TENANT_ID vs ADP_TENANT_ID.
+    os.environ["ADP_TENANT_ID"] = tenant_id
+
     repo_owner, repo_name = repo.split("/", 1)
     logger.info(
         "Processing: tenant=%s persona=%s repo=%s issue=#%s correlation=%s",

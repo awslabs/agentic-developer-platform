@@ -665,6 +665,13 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
         if val:
             identity_fields[key] = val
 
+    # Issue #1289: propagate cognito_sub for personal-context identity.
+    # user_id IS the Cognito sub for webchat (extracted from JWT on $connect).
+    # We include it explicitly as cognito_sub so the worker can set
+    # X-Owner-Sub on Context MCP requests from trusted dispatch metadata.
+    if message.user_id:
+        identity_fields["cognito_sub"] = message.user_id
+
     # Stage C (#186): forward artifact ID attachments to the worker so it can
     # inject them into the system prompt. The frontend sends string IDs
     # (e.g. ["art_abc123"]) in platform_data; MediaAttachment objects from

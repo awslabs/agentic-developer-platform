@@ -785,3 +785,124 @@ class TestNoSubDropsMessage:
         task = json.loads(messages[0]["Body"])
         assert task["user_id"] == cognito_sub
         assert task["user_id"] != "cMJocfj3IAMCJSQ="
+
+
+class TestCognitoSubPropagation:
+    """Issue #1289: cognito_sub must be propagated in SQS dispatch for personal-context identity."""
+
+    def test_cognito_sub_included_in_sqs_message(self, mocked_aws_services):
+        """When a user-dispatched task is created, cognito_sub is set from the Cognito JWT sub."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "long_running",
+            "persona": "developer",
+            "response": None,
+            "thread_action": "new",
+            "reasoning": "Complex task",
+        })
+
+        handler = _import_handler(mock_bedrock=mock_bedrock)
+        cognito_sub = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        event = mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": "Deploy the service", "session_id": "sess-pc"},
+            connection_id="conn-pc-test",
+            authorizer_claims={
+                "sub": cognito_sub,
+                "email": "dev@example.com",
+                "custom:tenant_id": "org-acme-prod",
+                "custom:org_id": "org-acme-prod",
+            },
+        )
+        result = handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["status"] == "processing"
+
+        # Verify cognito_sub is present in the SQS message
+        sqs = mocked_aws_services["sqs"]
+        resp = sqs.receive_message(
+            QueueUrl="https://sqs.us-east-1.amazonaws.com/123/adp-dev-agent-gateway-tasks",
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=0,
+        )
+        messages = resp.get("Messages", [])
+        assert len(messages) >= 1
+        task = json.loads(messages[0]["Body"])
+        assert task["cognito_sub"] == cognito_sub
+        assert task["tenant_id"] == "org-acme-prod"
+
+    def test_cognito_sub_matches_user_id(self, mocked_aws_services):
+        """cognito_sub is the same value as user_id (both sourced from JWT sub)."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "long_running",
+            "persona": "architect",
+            "response": None,
+            "thread_action": "new",
+            "reasoning": "Design task",
+        })
+
+        handler = _import_handler(mock_bedrock=mock_bedrock)
+        cognito_sub = "55086498-3091-80e1-cd4a-23d7215d4fcc"
+        event = mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": "Design the API", "session_id": "sess-match"},
+            connection_id="conn-match",
+            authorizer_claims={"sub": cognito_sub, "email": "arch@example.com"},
+        )
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+        sqs = mocked_aws_services["sqs"]
+        resp = sqs.receive_message(
+            QueueUrl="https://sqs.us-east-1.amazonaws.com/123/adp-dev-agent-gateway-tasks",
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=0,
+        )
+        messages = resp.get("Messages", [])
+        assert len(messages) >= 1
+        task = json.loads(messages[0]["Body"])
+        # cognito_sub and user_id should be identical (both from JWT sub)
+        assert task["cognito_sub"] == task["user_id"]
+        assert task["cognito_sub"] == cognito_sub
+
+    def test_existing_dispatch_unaffected_without_personal_context(self, mocked_aws_services):
+        """Existing dispatch paths work unchanged when no personal-context consumer reads cognito_sub (regression)."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "long_running",
+            "persona": "developer",
+            "response": None,
+            "thread_action": "new",
+            "reasoning": "Standard task",
+        })
+
+        handler = _import_handler(mock_bedrock=mock_bedrock)
+        cognito_sub = "66086498-4091-90e1-de5b-34e8326e5gdd"
+        event = mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": "Fix the bug", "session_id": "sess-compat"},
+            connection_id="conn-compat",
+            authorizer_claims={"sub": cognito_sub, "email": "user@example.com"},
+        )
+        result = handler.lambda_handler(event, None)
+        assert result["statusCode"] == 200
+
+        sqs = mocked_aws_services["sqs"]
+        resp = sqs.receive_message(
+            QueueUrl="https://sqs.us-east-1.amazonaws.com/123/adp-dev-agent-gateway-tasks",
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=0,
+        )
+        messages = resp.get("Messages", [])
+        assert len(messages) >= 1
+        task = json.loads(messages[0]["Body"])
+        # All existing fields still present
+        assert "task_id" in task
+        assert "session_id" in task
+        assert "message" in task
+        assert task["user_id"] == cognito_sub
+        # cognito_sub is additive — it doesn't break existing keys
+        assert task["cognito_sub"] == cognito_sub

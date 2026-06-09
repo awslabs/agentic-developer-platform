@@ -627,10 +627,17 @@ def handler(event: dict, context) -> dict:
             logger.warning("write_pointer failed (fail-soft): %s", e)
 
     # 13. Build envelope + publish to SQS
+    # Issue #1289: include cognito_sub for personal-context identity propagation.
+    # For human users resolved via identity_resolver, user_id is the platform
+    # user ID (which maps 1:1 to a Cognito sub). For bot/service-account
+    # senders, cognito_sub is empty — the MCP server will fail-closed (no
+    # personal-context access for bots, by design).
+    cognito_sub = resolved.user_id if resolved.user_kind == "human" else ""
     envelope = {
         "version": "1.0",
         "channel": "github",
         "tenant_id": tenant_id,
+        "cognito_sub": cognito_sub,
         "persona": intent.persona,
         "actor": {
             "user_id": resolved.user_id,

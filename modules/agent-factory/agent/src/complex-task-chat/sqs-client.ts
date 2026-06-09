@@ -35,6 +35,9 @@ export interface TaskPayload {
   department_id?: string;
   account_type?: string;
   role?: string;
+  // Issue #1289: Cognito sub for personal-context identity propagation.
+  // Set by the dispatcher from authenticated context — never from agent input.
+  cognito_sub?: string;
   // Delivery-routing fields supplied by the ingest Lambda. We echo these
   // back in TaskResponse so the response Lambda can post to the right
   // channel. Missing any of these → response Lambda falls back to REST

@@ -26,6 +26,7 @@ import { Scrubber } from './context/scrubber';
 import { vaultToolsForTurn } from './vault/tools';
 import { VaultGatewayClient } from './vault/gateway-client';
 import { createCredsInjector, CredsInjector } from '../aws-creds-injector';
+import { buildPersonalContextIdentity, getPersonalContextEnvVars } from './personal-context-headers';
 
 const TOKEN_BUDGET = Number(process.env.CONTEXT_TOKEN_BUDGET ?? 150_000);
 
@@ -94,6 +95,8 @@ async function processOne(
     department_id,
     account_type,
     role: user_role,
+    // Issue #1289: Cognito sub for personal-context identity propagation
+    cognito_sub,
     // Delivery routing — echoed into every sendResponse() so the response
     // Lambda knows which channel/connection to deliver to. Missing any of
     // these caused WS replies to silently fall back to REST polling.
@@ -330,7 +333,26 @@ async function processOne(
     // Issue #586: Get scoped env for the agent's bash subshells. This env has
     // pod-IRSA stripped and user's assumed-role creds injected. When no injector
     // is available (vault disabled), omit `env` so the SDK defaults to process.env.
-    const scopedEnv = credsInjector ? await credsInjector.getScopedEnv() : undefined;
+    let scopedEnv = credsInjector ? await credsInjector.getScopedEnv() : undefined;
+
+    // Issue #1289: Inject personal-context identity env vars into the subprocess
+    // environment. These are read by the Context MCP Server client to set
+    // X-Owner-Sub / X-Tenant-Id headers. Built from TRUSTED dispatch metadata
+    // (SQS message fields set by the gateway/webhook-ingress), never from
+    // agent/LLM input. The identity is frozen at construction time.
+    const personalContextIdentity = buildPersonalContextIdentity({
+      cognito_sub,
+      tenant_id,
+      user_id,
+    });
+    const pcEnvVars = getPersonalContextEnvVars(personalContextIdentity);
+    if (Object.keys(pcEnvVars).length > 0) {
+      // Merge into scoped env if it exists, otherwise create a minimal env
+      // with just the personal-context vars (the SDK will merge with process.env).
+      scopedEnv = scopedEnv
+        ? { ...scopedEnv, ...pcEnvVars }
+        : { ...process.env, ...pcEnvVars } as Record<string, string | undefined>;
+    }
 
     const result = await runQuery({
       systemPrompt,
