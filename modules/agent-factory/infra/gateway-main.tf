@@ -421,7 +421,12 @@ resource "kubernetes_config_map" "agent_gateway_config" {
     SESSIONS_TABLE_NAME = module.gateway_sessions.table_name
     AWS_REGION          = var.aws_region
     AGENT_DIR           = "/app/agent"
-    ANTHROPIC_MODEL     = "global.anthropic.claude-opus-4-6-v1"
+    # Use the `us.` cross-region inference profile (NOT `global.`): the `us.`
+    # profile is available in every account we deploy to, whereas `global.` is
+    # not enabled on all accounts (e.g. test account 919157478356 returns
+    # "invalid model identifier" for global.* and AccessDenied until the
+    # Marketplace subscription lands). `us.` works on both 919 and embark1.
+    ANTHROPIC_MODEL = "us.anthropic.claude-opus-4-6-v1"
     # Phase 3 gateway routing (issue #748)
     ADP_BEDROCK_VIA            = "gateway"
     SIGV4_PROXY_TARGET         = var.gateway_deployed ? "${data.aws_ssm_parameter.gateway_apigw_invoke_url[0].value}/agent" : ""

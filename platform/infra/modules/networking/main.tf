@@ -428,18 +428,20 @@ resource "aws_vpc_endpoint" "sqs" {
   })
 }
 
-resource "aws_vpc_endpoint" "execute_api" {
-  vpc_id              = aws_vpc.main.id
-  service_name        = "com.amazonaws.${var.aws_region}.execute-api"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = aws_subnet.private[*].id
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
-  private_dns_enabled = true
-
-  tags = merge(var.common_tags, {
-    Name = "${var.name_prefix}-vpce-execute-api"
-  })
-}
+# NOTE: There is intentionally NO execute-api interface VPC endpoint.
+#
+# An execute-api interface endpoint with private_dns_enabled=true hijacks ALL
+# `*.execute-api.<region>.amazonaws.com` DNS resolution inside the VPC, pointing
+# it at the endpoint's private ENIs. That endpoint only serves PRIVATE-type API
+# Gateway APIs. Our APIs (bedrockgw-dev-api and the webhook-ingress API) are both
+# REGIONAL (public) by design:
+#   - the agent worker reaches bedrockgw-dev-api `/agent` via sigv4 (and we also
+#     want developers to reach it from their laptops),
+#   - GitHub must reach the webhook-ingress API from the public internet.
+# With the endpoint present, the in-VPC worker's signed `/agent` call resolved to
+# the VPCE, found no matching private API, and got a blanket 403 ForbiddenException
+# at the edge (see the 919 vs embark1 diff — embark1 has no such endpoint and works).
+# Removed deliberately; do not re-add unless a genuinely PRIVATE API is introduced.
 
 # ---------------------------------------------------------------------------
 # VPC Endpoint (Gateway) — DynamoDB

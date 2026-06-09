@@ -120,8 +120,3 @@ output "vpc_endpoint_sqs_id" {
   description = "ID of the SQS Interface VPC endpoint"
   value       = aws_vpc_endpoint.sqs.id
 }
-
-output "vpc_endpoint_execute_api_id" {
-  description = "ID of the Execute API Interface VPC endpoint"
-  value       = aws_vpc_endpoint.execute_api.id
-}

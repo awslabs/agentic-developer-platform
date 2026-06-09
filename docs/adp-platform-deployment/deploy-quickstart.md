@@ -502,6 +502,63 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://${ID}.execute-api.us-e
 - **KEDA ScaledJob namespace is `adp-agents`** (the README says
   `adp-gateway-agents` — doc drift).
 
+### ⚠️ Two account-level blockers that make the agent hang silently after "Session initialized"
+
+Both were hit on a real run (account `919157478356`). The agent clones the repo,
+posts a live status comment, reaches `Session initialized`, then **hangs with no
+further updates** — its first Bedrock call never completes. Neither surfaces a
+clear error in the live GitHub comment, so check for these directly. (Both are
+fixed in IaC by PR #1304; the notes below are for accounts deployed before it or
+diagnosing the symptom.)
+
+1. **`execute-api` VPC interface endpoint hijacks DNS → blanket `403
+   ForbiddenException`.** If `platform/infra` created an `execute-api` interface
+   VPC endpoint with `private_dns_enabled=true` (it did between #1177 and #1304),
+   it hijacks **all** `*.execute-api.<region>.amazonaws.com` DNS inside the VPC to
+   the endpoint's private ENIs. That endpoint only serves **PRIVATE** API Gateway
+   APIs, but `bedrockgw-dev-api` (the `/agent` path) and the webhook API are both
+   **REGIONAL/public** — so the worker's signed `/agent` call resolves to the
+   VPCE, matches no private API, and gets `403 ForbiddenException` for *every*
+   route. Both APIs are public by design (the worker **and** developers' laptops
+   hit the bedrock API; GitHub hits the webhook API), so there is no private API
+   to serve — the endpoint must not exist.
+   - **Diagnose:** from a pod in `adp-agents`, resolve the API host. Private
+     `10.x` IPs = hijacked (broken); public IPs = good.
+     ```bash
+     # broken: resolves to the VPCE private ENIs
+     getent hosts <bedrock-api-id>.execute-api.us-east-1.amazonaws.com
+     # confirm the culprit endpoint exists:
+     aws ec2 describe-vpc-endpoints \
+       --filters Name=service-name,Values=com.amazonaws.us-east-1.execute-api \
+       --query 'VpcEndpoints[].{id:VpcEndpointId,privateDns:PrivateDnsEnabled}'
+     ```
+   - **Fix:** on latest `main` (#1304) the endpoint is gone — re-apply
+     `platform/infra`. To unblock an already-deployed account immediately:
+     `aws ec2 delete-vpc-endpoints --vpc-endpoint-ids <vpce-id>` (DNS reverts to
+     the public edge within a couple of minutes). A signed `/dev/agent/health`
+     then returns **200** instead of `Forbidden`.
+
+2. **Bedrock model access / wrong inference-profile prefix.** The agent invokes
+   `us.anthropic.claude-opus-4-6-v1` (#1304; older images used
+   `global.anthropic.claude-opus-4-6-v1`). On a fresh account:
+   - **Model access must be enabled** for Claude Opus 4.6 in the **Bedrock console
+     → Model access** (this performs the AWS Marketplace `Subscribe` the API error
+     names; it **cannot** be done purely via CLI). Until then, `InvokeModel`
+     returns `AccessDeniedException: ... aws-marketplace:Subscribe ...`. Takes
+     ~2 min to propagate after enabling.
+   - **Use the `us.` profile, not `global.`** — the `global.` cross-region profile
+     is not enabled on every account (919 returns `ValidationException: invalid
+     model identifier`); `us.anthropic.claude-opus-4-6-v1` works on every account
+     tested. The streaming path makes this especially nasty: the gateway returns
+     HTTP **200** with an empty `text/event-stream`, so the SDK waits forever with
+     no error — exactly the silent hang.
+   - **Diagnose (source of truth is `invoke`, not `list-inference-profiles`):**
+     ```bash
+     aws bedrock-runtime invoke-model --model-id us.anthropic.claude-opus-4-6-v1 \
+       --body '{"anthropic_version":"bedrock-2023-05-31","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}' \
+       --cli-binary-format raw-in-base64-out /dev/stdout   # expect a real JSON message
+     ```
+
 ### Then wire GitHub — `register-github-app.sh`
 After the stack is up, run `register-github-app.sh` to make GitHub integration
 live:
@@ -521,7 +578,10 @@ The complete stage-by-stage path, each step backed by a re-runnable script:
 5. `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev` — webhook stack
 6. `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev [--client-secret <s>]` — create + wire the GitHub App
 7. Install the App on a target repo (UI "Link GitHub" or `github.com/apps/<slug>/installations/new`)
-8. `@agent-developer <task>` in an issue/PR comment → webhook → SQS → KEDA → agent-worker pod
+8. **Bedrock console → Model access → enable Claude Opus 4.6** (one-time, manual,
+   per account; CLI can't do the Marketplace subscribe). Without it the agent
+   hangs silently after "Session initialized" — see the gotcha above.
+9. `@agent-developer <task>` in an issue/PR comment → webhook → SQS → KEDA → agent-worker pod
 
 ## Phases 7–9 (full ARC path) — `deploy-all.sh` ⚠️ unverified here
 
