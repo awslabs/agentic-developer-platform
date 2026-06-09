@@ -62,6 +62,11 @@ import {
   setLogger as setBeadsLogger,
 } from './beads';
 
+// Experience-save post-task hook — Issue #1294
+// Extracts learnings from agent output and persists to personal-context store.
+import { saveExperienceLearnings } from './experience-save-hook';
+import { buildPersonalContextIdentity, getPersonalContextHeaders } from './complex-task-chat/personal-context-headers';
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -1623,6 +1628,28 @@ Please check the workflow logs for details.`);
       }
     } catch (memErr) {
       log('WARN', `Memory: failed to write context: ${(memErr as Error).message}`);
+    }
+
+    // Issue #1294: Experience-save post-task hook — persist learnings to
+    // personal-context store (non-blocking, best-effort). Only fires on
+    // success and when PERSONAL_CONTEXT_SAVE_ENABLED=true.
+    if (agentSucceeded) {
+      try {
+        const pcIdentity = buildPersonalContextIdentity({
+          cognito_sub: process.env.ADP_OWNER_SUB,
+          tenant_id: process.env.ADP_TENANT_ID,
+        });
+        const pcHeaders = getPersonalContextHeaders(pcIdentity);
+        await saveExperienceLearnings({
+          agentOutput: agentResult,
+          persona: AGENT_TYPE,
+          identityHeaders: pcHeaders,
+          taskContext: { issue: ISSUE_NUMBER, repo: `${REPO_OWNER}/${REPO_NAME}` },
+          log,
+        });
+      } catch (expErr) {
+        log('WARN', `[experience-save] Hook failed (non-blocking): ${(expErr as Error).message}`);
+      }
     }
 
     clearInterval(cwFlushTimer);
