@@ -33,6 +33,7 @@ from ulid import ULID
 from .identity import CallerIdentity
 from .models import EntryType, PersonalContextEntry
 from .storage import PersonalContextStore, build_entry_path
+from . import graph as personal_graph
 
 logger = logging.getLogger(__name__)
 
@@ -353,8 +354,9 @@ class SynthesisPipeline:
 
         # Write synthesis entries
         for insight in result.insights:
+            synthesis_id = str(ULID())
             synthesis_entry = {
-                "id": str(ULID()),
+                "id": synthesis_id,
                 "type": "synthesis",
                 "owner_sub": owner_sub,
                 "tenant_id": tenant_id,
@@ -370,6 +372,31 @@ class SynthesisPipeline:
                 "confidence": 0.7,
             }
             self.store.write_entry(identity, synthesis_entry)
+
+            # Write Neptune graph edges: synthesis derived_from each source learning
+            if personal_graph.is_graph_enabled():
+                personal_graph.upsert_vertex(
+                    entry_id=synthesis_id,
+                    owner_sub=owner_sub,
+                    tenant_id=tenant_id,
+                    entry_type="synthesis",
+                    persona=persona,
+                    visibility="private",
+                )
+                for learning in learnings:
+                    personal_graph.upsert_vertex(
+                        entry_id=learning.id,
+                        owner_sub=learning.owner_sub,
+                        tenant_id=learning.tenant_id,
+                        entry_type=learning.type.value,
+                        persona=learning.persona.value,
+                        visibility=learning.visibility.value,
+                    )
+                    personal_graph.add_edge(
+                        from_entry_id=synthesis_id,
+                        to_entry_id=learning.id,
+                        edge_type="derived_from",
+                    )
 
         # Mark contradictions via adjacency-list in context
         for contradiction in result.contradictions:
@@ -397,9 +424,10 @@ class SynthesisPipeline:
         entry_b: PersonalContextEntry,
         description: str,
     ) -> None:
-        """Mark two entries as contradicting each other (adjacency-list).
+        """Mark two entries as contradicting each other (adjacency-list + graph).
 
-        Writes the relationship into each entry's context dict.
+        Writes the relationship into each entry's context dict and, when the
+        graph flag is on, also persists a ``contradicts`` edge in Neptune.
         """
         # Update entry_a
         contradicts_a = entry_a.context.get("contradicts", [])
@@ -416,6 +444,35 @@ class SynthesisPipeline:
         entry_b.context["contradiction_detected"] = True
         path_b = build_entry_path(entry_b)
         self.store.backend.put(path_b, entry_b.model_dump())
+
+        # Write Neptune graph edge (bidirectional contradicts)
+        if personal_graph.is_graph_enabled():
+            personal_graph.upsert_vertex(
+                entry_id=entry_a.id,
+                owner_sub=entry_a.owner_sub,
+                tenant_id=entry_a.tenant_id,
+                entry_type=entry_a.type.value,
+                persona=entry_a.persona.value,
+                visibility=entry_a.visibility.value,
+            )
+            personal_graph.upsert_vertex(
+                entry_id=entry_b.id,
+                owner_sub=entry_b.owner_sub,
+                tenant_id=entry_b.tenant_id,
+                entry_type=entry_b.type.value,
+                persona=entry_b.persona.value,
+                visibility=entry_b.visibility.value,
+            )
+            personal_graph.add_edge(
+                from_entry_id=entry_a.id,
+                to_entry_id=entry_b.id,
+                edge_type="contradicts",
+            )
+            personal_graph.add_edge(
+                from_entry_id=entry_b.id,
+                to_entry_id=entry_a.id,
+                edge_type="contradicts",
+            )
 
     def _check_supersession(
         self,

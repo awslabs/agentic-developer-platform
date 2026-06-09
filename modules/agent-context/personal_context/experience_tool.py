@@ -20,6 +20,7 @@ from .embeddings import EmbeddingClient
 from .identity import CallerIdentity, require_identity
 from .models import EntryType, Persona, PersonalContextEntry, Visibility
 from .storage import PersonalContextStore
+from . import graph as personal_graph
 
 
 class ExperienceToolError(Exception):
@@ -156,7 +157,7 @@ class ExperienceTool:
         """Recall entries via semantic search, ranked by similarity x decay_score.
 
         Required: query, persona.
-        Optional: limit, cross_persona, visibility.
+        Optional: limit, cross_persona, visibility, graph_expand.
         """
         query = arguments.get("query", "").strip()
         if not query:
@@ -172,6 +173,7 @@ class ExperienceTool:
 
         limit = arguments.get("limit", 5)
         cross_persona = arguments.get("cross_persona", False)
+        graph_expand = arguments.get("graph_expand", False)
 
         # Generate query embedding
         query_embedding = self.embedding_client.embed(query)
@@ -210,25 +212,32 @@ class ExperienceTool:
             path = build_entry_path(entry)
             self.store.backend.put(path, entry.model_dump())
 
-            results.append(
-                {
-                    "id": entry.id,
-                    "content": entry.content,
-                    "persona": entry.persona.value,
-                    "learning_type": entry.learning_type,
-                    "confidence": entry.confidence,
-                    "decay_score": entry.decay_score,
-                    "score": round(score, 4),
-                    "visibility": entry.visibility.value,
-                    "created_at": entry.created_at,
-                }
-            )
+            result_item: dict[str, Any] = {
+                "id": entry.id,
+                "content": entry.content,
+                "persona": entry.persona.value,
+                "learning_type": entry.learning_type,
+                "confidence": entry.confidence,
+                "decay_score": entry.decay_score,
+                "score": round(score, 4),
+                "visibility": entry.visibility.value,
+                "created_at": entry.created_at,
+            }
+
+            # Optionally expand 1-hop graph neighborhood (when flag is on)
+            if graph_expand and personal_graph.is_graph_enabled():
+                neighbors = personal_graph.get_neighbors(entry.id, identity)
+                if neighbors:
+                    result_item["graph_neighbors"] = neighbors
+
+            results.append(result_item)
 
         return {
             "status": "ok",
             "query": query,
             "results": results,
             "total": len(results),
+            "graph_expanded": graph_expand and personal_graph.is_graph_enabled(),
         }
 
     def _list_syntheses(
