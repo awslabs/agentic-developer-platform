@@ -2,7 +2,7 @@
 E2E tests for the Context MCP Server endpoint.
 
 Tests 7-12 from issue #21:
-7.  GET /tools lists exactly 5 tools: search, understand, impact, browse, remember
+7.  GET /tools lists exactly 6 tools: search, understand, impact, browse, remember, experience
 8.  search() against empty index returns well-formed empty result
 9.  search(scope="docs") returns results (live only)
 10. remember + search(scope="memory") round-trip (live only)
@@ -17,20 +17,20 @@ import uuid
 import pytest
 
 
-EXPECTED_TOOL_NAMES = {"search", "understand", "impact", "browse", "remember"}
+EXPECTED_TOOL_NAMES = {"search", "understand", "impact", "browse", "remember", "experience"}
 
 
 # ---------------------------------------------------------------------------
-# Test 7: GET /tools lists exactly 5 tools
+# Test 7: GET /tools lists exactly 6 tools
 # ---------------------------------------------------------------------------
 
 
 class TestToolsListing:
-    """Verify the MCP endpoint exposes exactly the 5 documented tools."""
+    """Verify the MCP endpoint exposes exactly the 6 documented tools."""
 
     def test_tools_count(self, mcp_client):
         tools = mcp_client.get_tools()
-        assert len(tools) == 5, f"Expected 5 tools, got {len(tools)}: {tools}"
+        assert len(tools) == 6, f"Expected 6 tools, got {len(tools)}: {tools}"
 
     def test_tools_names(self, mcp_client):
         tools = mcp_client.get_tools()
@@ -63,24 +63,28 @@ class TestSearchEmpty:
     """Verify search on an empty/mock index returns a valid response."""
 
     def test_search_empty_returns_valid_response(self, mcp_client):
-        result = mcp_client.call_tool("search", {
-            "query": "hello world",
-            "scope": "code",
-            "limit": 5,
-        })
+        result = mcp_client.call_tool(
+            "search",
+            {
+                "query": "hello world",
+                "scope": "code",
+                "limit": 5,
+            },
+        )
         assert isinstance(result, dict), f"Expected dict, got {type(result)}"
         # Must have a results field (possibly empty)
-        assert "results" in result or "error" not in result, (
-            f"Search returned error: {result}"
-        )
+        assert "results" in result or "error" not in result, f"Search returned error: {result}"
 
     def test_search_empty_no_500(self, mcp_client):
         """Search on empty index must not return a 500/stack trace."""
-        result = mcp_client.call_tool("search", {
-            "query": "nonexistent-query-xyz-12345",
-            "scope": "code",
-            "limit": 1,
-        })
+        result = mcp_client.call_tool(
+            "search",
+            {
+                "query": "nonexistent-query-xyz-12345",
+                "scope": "code",
+                "limit": 1,
+            },
+        )
         # Should get a clean response, not an error
         assert isinstance(result, dict)
         if "error" in result:
@@ -98,10 +102,13 @@ class TestSearchDocs:
 
     @pytest.mark.live_only
     def test_search_docs_returns_results(self, mcp_client):
-        result = mcp_client.call_tool("search", {
-            "query": "kubernetes deployment",
-            "scope": "docs",
-        })
+        result = mcp_client.call_tool(
+            "search",
+            {
+                "query": "kubernetes deployment",
+                "scope": "docs",
+            },
+        )
         assert isinstance(result, dict)
         results = result.get("results", [])
         assert len(results) > 0, "Expected at least one doc search result"
@@ -121,21 +128,27 @@ class TestRememberRecall:
         test_value = f"e2e-test-memory-{uuid.uuid4().hex[:8]}"
 
         # Store
-        store_result = mcp_client.call_tool("remember", {
-            "session_id": test_key,
-            "messages": [
-                {"role": "user", "content": f"Remember this: {test_value}"},
-                {"role": "assistant", "content": f"Stored: {test_value}"},
-            ],
-            "outcome": test_value,
-        })
+        store_result = mcp_client.call_tool(
+            "remember",
+            {
+                "session_id": test_key,
+                "messages": [
+                    {"role": "user", "content": f"Remember this: {test_value}"},
+                    {"role": "assistant", "content": f"Stored: {test_value}"},
+                ],
+                "outcome": test_value,
+            },
+        )
         assert isinstance(store_result, dict)
 
         # Recall via search
-        search_result = mcp_client.call_tool("search", {
-            "query": test_value,
-            "scope": "memory",
-        })
+        search_result = mcp_client.call_tool(
+            "search",
+            {
+                "query": test_value,
+                "scope": "memory",
+            },
+        )
         assert isinstance(search_result, dict)
         results = search_result.get("results", [])
         assert len(results) > 0, (
@@ -153,9 +166,7 @@ class TestMalformedInput:
 
     def test_malformed_json_returns_400(self, mcp_client):
         resp = mcp_client.call_tool_raw(b"{{invalid json")
-        assert resp.status_code == 400, (
-            f"Expected 400 for malformed JSON, got {resp.status_code}"
-        )
+        assert resp.status_code == 400, f"Expected 400 for malformed JSON, got {resp.status_code}"
 
     def test_malformed_json_no_stack_trace(self, mcp_client):
         resp = mcp_client.call_tool_raw(b"not json at all")

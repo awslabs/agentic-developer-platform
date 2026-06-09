@@ -308,6 +308,21 @@ EXPECTED_MCP_TOOLS = [
             "outcome": {"type": "string", "required": False},
         },
     ),
+    MCPToolSchema(
+        name="experience",
+        description="Save or recall experiential knowledge (per-user, persona-scoped, synthesized)",
+        parameters={
+            "action": {"type": "string", "enum": ["save", "recall", "list_syntheses"], "required": True},
+            "persona": {"type": "string", "enum": ["operations", "developer", "architect", "reviewer"], "required": True},
+            "content": {"type": "string", "required": False},
+            "learning_type": {"type": "string", "required": False},
+            "context": {"type": "object", "required": False},
+            "query": {"type": "string", "required": False},
+            "visibility": {"type": "string", "enum": ["private", "shared"], "required": False},
+            "limit": {"type": "integer", "required": False},
+            "cross_persona": {"type": "boolean", "required": False},
+        },
+    ),
 ]
 
 
@@ -340,6 +355,16 @@ class MockMCPClient:
             return {"action": arguments.get("action", "ls"), "entries": []}
         elif name == "remember":
             return {"stored": True, "session_id": arguments.get("session_id", "")}
+        elif name == "experience":
+            action = arguments.get("action", "")
+            if action == "save":
+                return {"status": "saved", "id": f"01MOCK{uuid.uuid4().hex[:6].upper()}", "persona": arguments.get("persona", "developer"), "visibility": arguments.get("visibility", "private")}
+            elif action == "recall":
+                return {"status": "ok", "query": arguments.get("query", ""), "results": [], "total": 0}
+            elif action == "list_syntheses":
+                return {"status": "ok", "persona": arguments.get("persona", "developer"), "syntheses": [], "total": 0}
+            else:
+                return {"error": f"Invalid action: {action}"}
         else:
             return {"error": f"Unknown tool: {name}"}
 
