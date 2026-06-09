@@ -1,0 +1,67 @@
+# Personal Context Synthesis CronJob ("dream cycle")
+# Runs daily at 3am UTC (offset from 6am ingestion refresh):
+#   - Synthesizes raw learnings into higher-order insights per user-persona
+#   - Detects contradictions between entries (adjacency-list relationships)
+#   - Decays confidence on idle entries (never deletes)
+#   - Marks superseded entries
+#
+# Manual trigger:
+#   kubectl create job --from=cronjob/personal-context-synthesis manual-synthesis -n ${NAMESPACE}
+#
+# Variables substituted at deploy time: ${NAMESPACE}, ${SERVICE_ACCOUNT},
+# ${INGESTION_IMAGE}, ${SYNTHESIS_SCHEDULE}, ${SYNTHESIS_MODEL},
+# ${MIN_LEARNINGS_THRESHOLD}, ${MAX_UNSYNTHESIZED_AGE_DAYS}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: personal-context-synthesis
+  namespace: ${NAMESPACE}
+  labels:
+    app: personal-context-synthesis
+    app.kubernetes.io/part-of: agent-context-platform
+    app.kubernetes.io/component: personal-context
+spec:
+  schedule: "${SYNTHESIS_SCHEDULE}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600  # 1 hour max
+      ttlSecondsAfterFinished: 259200  # Clean up after 3 days
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: personal-context-synthesis
+        spec:
+          serviceAccountName: ${SERVICE_ACCOUNT}
+          containers:
+          - name: synthesis
+            image: ${INGESTION_IMAGE}
+            command: ["python", "-m", "personal_context.synthesis"]
+            env:
+            - name: OV_URL
+              value: "http://openviking.${NAMESPACE}.svc.cluster.local:1933"
+            - name: LLM_BASE_URL
+              value: "http://litellm-proxy.${NAMESPACE}.svc.cluster.local:4000/v1"
+            - name: OPENVIKING_ROOT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-context-secrets
+                  key: openviking-root-key
+                  optional: true
+            - name: SYNTHESIS_MODEL
+              value: "${SYNTHESIS_MODEL}"
+            - name: MIN_LEARNINGS_THRESHOLD
+              value: "${MIN_LEARNINGS_THRESHOLD}"
+            - name: MAX_UNSYNTHESIZED_AGE_DAYS
+              value: "${MAX_UNSYNTHESIZED_AGE_DAYS}"
+            resources:
+              requests:
+                cpu: "250m"
+                memory: "512Mi"
+              limits:
+                cpu: "1"
+                memory: "2Gi"
+          restartPolicy: OnFailure

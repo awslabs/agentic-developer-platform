@@ -223,6 +223,28 @@ else
   echo "Skipping Ingestion Refresh CronJob (INGESTION_REFRESH_ENABLED=false)"
 fi
 
+# Deploy Personal Context Synthesis CronJob (daily 3am UTC)
+if [ "${SYNTHESIS_ENABLED:-true}" = "true" ]; then
+  echo ""
+  echo "Deploying Personal Context Synthesis CronJob..."
+
+  export SYNTHESIS_SCHEDULE="${SYNTHESIS_SCHEDULE:-0 3 * * *}"
+  export SYNTHESIS_MODEL="${SYNTHESIS_MODEL:-bedrock/global.anthropic.claude-sonnet-4-6}"
+  export MIN_LEARNINGS_THRESHOLD="${MIN_LEARNINGS_THRESHOLD:-5}"
+  export MAX_UNSYNTHESIZED_AGE_DAYS="${MAX_UNSYNTHESIZED_AGE_DAYS:-7}"
+
+  # Ensure _common.sh is sourced for template_file
+  [[ "$(type -t template_file)" == "function" ]] || source "${SCRIPT_DIR}/scripts/_common.sh"
+
+  template_file "${SCRIPT_DIR}/manifests/personal-context-synthesis-cronjob.yaml" | kubectl apply -f -
+
+  echo "  CronJob deployed: schedule='${SYNTHESIS_SCHEDULE}'"
+  echo "  Manual trigger: kubectl create job --from=cronjob/personal-context-synthesis manual-synthesis -n ${NAMESPACE}"
+else
+  echo ""
+  echo "Skipping Personal Context Synthesis CronJob (SYNTHESIS_ENABLED=false)"
+fi
+
 # Validate
 if [ "${SKIP_VALIDATE:-false}" != "true" ]; then
   echo ""
@@ -243,6 +265,9 @@ if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
 fi
 if [ "${INGESTION_REFRESH_ENABLED:-true}" = "true" ]; then
   echo "  Ingestion:     CronJob ingestion-refresh (${INGESTION_REFRESH_SCHEDULE})"
+fi
+if [ "${SYNTHESIS_ENABLED:-true}" = "true" ]; then
+  echo "  Synthesis:     CronJob personal-context-synthesis (${SYNTHESIS_SCHEDULE:-0 3 * * *})"
 fi
 if [ "${GRAPHRAG_ENABLED:-false}" = "true" ]; then
   echo "  Neptune:       ${NEPTUNE_ENDPOINT:-not deployed}:${NEPTUNE_PORT:-8182}"
