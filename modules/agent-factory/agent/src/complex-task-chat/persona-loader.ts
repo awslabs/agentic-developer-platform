@@ -99,12 +99,15 @@ function validatePersonaName(name: unknown): string | null {
 }
 
 /**
- * Compose the final system prompt from base persona, learnings, and general memories.
+ * Compose the final system prompt from base persona, learnings, recalled experience,
+ * and general memories.
  */
 export function composeSystemPrompt(input: {
   base: string;
   personaLearnings: MemoryRecord[];
   memories: MemoryRecord[];
+  /** Issue #1293: pre-formatted prior-experience section from recall-at-task-start hook. */
+  priorExperience?: string;
 }): string {
   const parts: string[] = [];
 
@@ -129,6 +132,12 @@ export function composeSystemPrompt(input: {
       parts.push('  </memory>');
     }
     parts.push('</persona-learnings>');
+  }
+
+  // Prior experience (recalled from personal-context; Issue #1293)
+  if (input.priorExperience) {
+    parts.push('');
+    parts.push(input.priorExperience);
   }
 
   // General memories (user prefs, component facts)

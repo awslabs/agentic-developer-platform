@@ -27,6 +27,7 @@ import { vaultToolsForTurn } from './vault/tools';
 import { VaultGatewayClient } from './vault/gateway-client';
 import { createCredsInjector, CredsInjector } from '../aws-creds-injector';
 import { buildPersonalContextIdentity, getPersonalContextEnvVars } from './personal-context-headers';
+import { recallAtTaskStart, RECALL_ENABLED } from './recall-at-task-start';
 
 const TOKEN_BUDGET = Number(process.env.CONTEXT_TOKEN_BUDGET ?? 150_000);
 
@@ -282,12 +283,35 @@ async function processOne(
         : '\n\nUser has NOT connected an AWS account. If they ask for AWS operations, tell them to visit /settings/credentials to connect one.';
     }
 
+    // Issue #1293: Recall-at-task-start — retrieve the user's most relevant
+    // prior learnings from personal-context and inject into system prompt.
+    // Gated by PERSONAL_CONTEXT_RECALL_ENABLED (default off). Graceful
+    // degradation: if recall fails, the task proceeds normally.
+    const personalContextIdentity = buildPersonalContextIdentity({
+      cognito_sub,
+      tenant_id,
+      user_id,
+    });
+    let priorExperienceSection = '';
+    if (RECALL_ENABLED) {
+      const recallResult = await recallAtTaskStart(
+        personalContextIdentity,
+        message,
+        agent_type,
+      );
+      if (recallResult.warning) {
+        console.warn(`[chat-agent] ${recallResult.warning}`);
+      }
+      priorExperienceSection = recallResult.promptSection;
+    }
+
     const systemPrompt = composeSystemPrompt({
       base: channelDirective
         ? channelDirective + '\n\n' + persona.baseSystemPrompt + attachmentBlock + credentialsSummary + awsEnvHint
         : persona.baseSystemPrompt + attachmentBlock + credentialsSummary + awsEnvHint,
       personaLearnings: persona.learnings,
       memories: memBlock,
+      priorExperience: priorExperienceSection,
     });
     const systemTokens = estimateTokens(systemPrompt);
 
@@ -340,11 +364,7 @@ async function processOne(
     // X-Owner-Sub / X-Tenant-Id headers. Built from TRUSTED dispatch metadata
     // (SQS message fields set by the gateway/webhook-ingress), never from
     // agent/LLM input. The identity is frozen at construction time.
-    const personalContextIdentity = buildPersonalContextIdentity({
-      cognito_sub,
-      tenant_id,
-      user_id,
-    });
+    // NOTE: personalContextIdentity is built earlier (Issue #1293 recall hook).
     const pcEnvVars = getPersonalContextEnvVars(personalContextIdentity);
     if (Object.keys(pcEnvVars).length > 0) {
       // Merge into scoped env if it exists, otherwise create a minimal env
