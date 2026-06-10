@@ -23,7 +23,7 @@ variable "tags" {
 variable "sqs_visibility_timeout" {
   description = "SQS visibility timeout in seconds. Should match pod activeDeadlineSeconds so a killed pod's message becomes visible for retry promptly. Too long = stuck-message pain when pods die; too short = live pods racing re-delivery."
   type        = number
-  default     = 5400 # 90 min — matches pod activeDeadlineSeconds (see scaledjob.tf). Bumped from 1800 to give long-running orchestrator pods (e.g. deploy-instance #946) headroom before self-handoff.
+  default     = 21600 # 6h — matches pod activeDeadlineSeconds (see scaledjob.tf). Bumped from 90min so a long-running deploy orchestrator can finish in ONE pod (no cross-pod self-handoff, which is fragile). Max allowed by SQS is 12h.
 }
 
 variable "sqs_max_receive_count" {
@@ -124,7 +124,7 @@ variable "agent_image" {
 variable "agent_pod_deadline_seconds" {
   description = "Max runtime for an agent pod before Kubernetes kills it. MUST match sqs_visibility_timeout so a killed pod releases its SQS message for retry at the same instant."
   type        = number
-  default     = 5400 # 90 min — matches sqs_visibility_timeout. Bumped from 1800 to give long-running orchestrator pods headroom; orchestrators self-handoff at ~85 min.
+  default     = 21600 # 6h — matches sqs_visibility_timeout. Bumped from 90min so a long-running deploy orchestrator (which dispatches + `gh run watch`es each pipeline phase end-to-end) completes in a SINGLE pod, avoiding fragile cross-pod self-handoff.
 }
 
 variable "agent_warm_pool_replicas" {
