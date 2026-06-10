@@ -81,7 +81,7 @@ def session_factory():
             )
             await session.commit()
 
-    asyncio.get_event_loop().run_until_complete(_setup())
+    asyncio.run(_setup())
     return factory
 
 
@@ -97,7 +97,7 @@ class TestResolveEffectiveOrgId:
                 result = await resolve_effective_org_id(ctx, db)
             assert result == "org-acme"
 
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())
 
     def test_fallback_to_db_when_token_empty(self, session_factory):
         """If token org_id is empty, resolve from users.org_id via cognito_sub."""
@@ -108,7 +108,7 @@ class TestResolveEffectiveOrgId:
                 result = await resolve_effective_org_id(ctx, db)
             assert result == "org-acme"
 
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())
 
     def test_409_when_both_empty(self, session_factory):
         """If token and DB both have empty org_id, raise HTTP 409."""
@@ -122,7 +122,7 @@ class TestResolveEffectiveOrgId:
                 assert exc_info.value.status_code == 409
                 assert exc_info.value.detail["error"] == "user_not_assigned_to_org"
 
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())
 
     def test_409_when_user_not_found(self, session_factory):
         """If no user row matches the cognito_sub, raise HTTP 409."""
@@ -135,4 +135,4 @@ class TestResolveEffectiveOrgId:
                     await resolve_effective_org_id(ctx, db)
                 assert exc_info.value.status_code == 409
 
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())

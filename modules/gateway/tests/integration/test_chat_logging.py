@@ -142,10 +142,16 @@ class TestChatLoggingIntegration:
         assert stored_data["request_id"] == "test-req-123"
         assert stored_data["message"] == "Test log entry"
 
-    @mock_aws
     @pytest.mark.asyncio
     async def test_full_pipeline_with_moto(self, sample_request_with_secrets, sample_response_with_secrets, timestamp):
         """Test full pipeline with mocked S3."""
+        # moto's @mock_aws decorator returns a sync wrapper that hides the
+        # coroutine from pytest-asyncio >= 1.0, so enter it as a context
+        # manager instead.
+        with mock_aws():
+            await self._run_full_pipeline(sample_request_with_secrets, sample_response_with_secrets, timestamp)
+
+    async def _run_full_pipeline(self, sample_request_with_secrets, sample_response_with_secrets, timestamp):
         # Create mock S3 bucket
         conn = boto3.client("s3", region_name="us-east-1")
         conn.create_bucket(Bucket="test-chat-logs")

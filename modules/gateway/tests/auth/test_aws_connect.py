@@ -190,7 +190,7 @@ def app_and_client(mock_sm):
             )
             await session.commit()
 
-    asyncio.get_event_loop().run_until_complete(_setup())
+    asyncio.run(_setup())
 
     app = FastAPI()
     app.include_router(router)
