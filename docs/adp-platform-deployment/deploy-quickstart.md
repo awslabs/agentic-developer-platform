@@ -591,15 +591,59 @@ kubectl get daemonset agent-image-prepull -n adp-agents        # READY = node co
 # (confirmed live on 919: 168ms cached vs 31s cold).
 ```
 
-### Then wire GitHub — `register-github-app.sh`
+### Then wire GitHub — `register-github-app.sh` (operator runbook)
+
 After the stack is up, run `register-github-app.sh` to make GitHub integration
-live:
-- Creates **one** GitHub App (`adp-agent-platform`), sets its webhook → this API
-  Gateway, and populates the 3 placeholder secrets.
-- **Visibility is operator-chosen** (default **private**; choose public only for
-  cross-org multi-tenant).
-- Users then install that one App on their repos via the UI "Link GitHub" flow
-  (repo-admin only).
+live. It creates the GitHub App (`adp-agent-platform`) people install on their
+repos, points its webhook at this deployment's API Gateway, and stores the App's
+credentials in **this deployment's** Secrets Manager. **One App per deployment.**
+
+This is an **interactive, per-operator** step (it opens a browser to create the
+App) — the only two things you substitute are **your AWS account** and **your
+GitHub org**; everything else (webhook URL, permissions, secret paths) is
+auto-derived.
+
+```bash
+# 1. Credentials for the account you deployed INTO (cross-account: assume the
+#    customer role first). Confirm — the App secrets are written to THIS account.
+export AWS_PROFILE=<your-profile>          # or assume into the customer account
+export AWS_REGION=us-east-1
+aws sts get-caller-identity --query Account --output text    # MUST be your deploy account
+
+# 2. gh must be logged in as someone who can create Apps in <your-org> (admin:org).
+gh auth status
+
+# 3. Register (pass YOUR GitHub org as the first arg):
+./modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <your-org> --env dev
+#    No org-OWNER rights on <your-org>? Create a personal App instead:
+#    ./...register-github-app.sh <your-org> --env dev --owner-type user --repo <your-org>/<repo>
+```
+
+> **Org-owner vs user-owned App.** Creating an **org-owned** App (the default)
+> requires **org-owner** rights on `<your-org>` — many people don't have that.
+> If you don't, pass **`--owner-type user`** to create the App under your own
+> account instead (any user can; install it on repos you admin). For a shared
+> team deployment, have an org owner run it with the default `--owner-type org`.
+> Use `--repo <owner/name>` to set the install-target repo in the printed URL
+> (defaults to `<your-org>/adp`).
+
+The script will:
+- prompt **private vs public** (choose **private** unless you need cross-org
+  multi-tenant install);
+- **open a browser** to `https://github.com/organizations/<your-org>/settings/apps/new`
+  with the name, webhook URL, and permissions pre-filled → click **Create GitHub
+  App** → **Generate a private key** (downloads a `.pem`) → note the **App ID**
+  (+ client secret, shown once);
+- prompt for the **App ID** and **.pem path** (or pass `--app-id` / `--pem-path`
+  / `--client-secret` as flags to skip the prompts), then store them in Secrets
+  Manager + wire the gateway.
+
+Then **install the App** on the repo(s) you'll trigger agents from:
+`https://github.com/apps/<app-slug>/installations/new` (repo-admin only) — or via
+the gateway UI "Link GitHub" flow.
+
+**Verify:** comment `@agent-developer say hello` on an issue in an installed repo
+→ a worker pod spawns (`kubectl get pods -n adp-agents`) and the agent replies.
 
 ### End-to-end checklist — full ordered script sequence (working agent)
 The complete stage-by-stage path, each step backed by a re-runnable script:

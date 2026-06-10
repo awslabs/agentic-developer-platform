@@ -45,6 +45,13 @@ APP_ID_FLAG=""
 PEM_PATH_FLAG=""
 CLIENT_SECRET="${GH_APP_CLIENT_SECRET:-}"
 NO_WIRE=false
+# Owner of the GitHub App. "org" creates it under the org (requires org-owner
+# rights); "user" creates it under the caller's personal account (any user, no
+# org-admin needed) — the escape hatch for operators without org-admin.
+OWNER_TYPE="${APP_OWNER_TYPE:-org}"
+# Optional install-target repo (owner/name); only used to print the exact
+# install URL at the end. Defaults to "<github-org>/adp".
+INSTALL_REPO="${APP_INSTALL_REPO:-}"
 
 # Parse optional flags
 while [[ $# -gt 0 ]]; do
@@ -52,6 +59,8 @@ while [[ $# -gt 0 ]]; do
     --env)            ENVIRONMENT="$2"; shift 2 ;;
     --webhook-url)    WEBHOOK_URL="$2"; shift 2 ;;
     --visibility)     APP_VISIBILITY="$2"; shift 2 ;;
+    --owner-type)     OWNER_TYPE="$2"; shift 2 ;;
+    --repo)           INSTALL_REPO="$2"; shift 2 ;;
     --app-id)         APP_ID_FLAG="$2"; shift 2 ;;
     --pem-path)       PEM_PATH_FLAG="$2"; shift 2 ;;
     --client-secret)  CLIENT_SECRET="$2"; shift 2 ;;
@@ -76,11 +85,21 @@ if [ -z "$GITHUB_ORG" ]; then
   echo "  --env ENV              Environment (default: dev)"
   echo "  --webhook-url URL      Override webhook URL (default: auto-detect from TF output)"
   echo "  --visibility V         private (default) | public  (also via APP_VISIBILITY env)"
+  echo "  --owner-type T         org (default) | user. 'org' creates the App under the"
+  echo "                         org (needs org-OWNER rights); 'user' creates it under"
+  echo "                         your personal account (no org-admin needed). [APP_OWNER_TYPE]"
+  echo "  --repo OWNER/NAME      Install-target repo, for the printed install URL"
+  echo "                         (default: <github-org>/adp).                  [APP_INSTALL_REPO]"
   echo "  --app-id ID            App ID — skips the interactive 'Enter the App ID' prompt"
   echo "  --pem-path PATH        Private key .pem path — skips ~/Downloads auto-detect"
   echo "  --client-secret SECRET OAuth client secret → wires GitHub LOGIN in the same run"
   echo "  --region REGION        AWS region (default: us-east-1)"
   echo "  --no-wire              Register only; don't call wire-github-app.sh"
+  echo ""
+  echo "Don't have org-owner rights on '<github-org>'? Use --owner-type user to create a"
+  echo "  personal App under your own account instead (any user can; install it on repos"
+  echo "  you admin). For a shared team deployment, have an org owner run it with the"
+  echo "  default --owner-type org."
   echo ""
   echo "Interactive by default (opens browser, prompts for App ID + .pem). Supply"
   echo "  --app-id/--pem-path/--visibility to run non-interactively. After storing the"
@@ -88,6 +107,13 @@ if [ -z "$GITHUB_ORG" ]; then
   echo "  (and, with --client-secret, GitHub login) at the new app."
   exit 1
 fi
+
+case "$OWNER_TYPE" in
+  org|user) ;;
+  *) fail "--owner-type must be 'org' or 'user' (got '$OWNER_TYPE')" ;;
+esac
+# Default the install repo to <github-org>/adp when not supplied.
+INSTALL_REPO="${INSTALL_REPO:-${GITHUB_ORG}/adp}"
 
 # Validate prerequisites
 command -v aws &>/dev/null || fail "AWS CLI not installed"
@@ -193,7 +219,8 @@ store_secret() {
 echo ""
 echo "ADP Agent Platform — GitHub App Registration"
 echo "============================================="
-echo "Org: $GITHUB_ORG | Env: $ENVIRONMENT"
+echo "Org: $GITHUB_ORG | Owner: $OWNER_TYPE | Install repo: $INSTALL_REPO | Env: $ENVIRONMENT"
+[ "$OWNER_TYPE" = "org" ] && info "Creating an ORG-owned App — needs org-OWNER rights on '$GITHUB_ORG'. No org-admin? re-run with --owner-type user."
 echo ""
 
 if [ -z "$WEBHOOK_URL" ]; then
@@ -290,9 +317,15 @@ echo ""
 # Build the manifest URL with pre-filled settings.
 # Visibility (public=true|false) is operator-chosen above: private is the
 # recommended default; public only for cross-org multi-tenant.
-URL="https://github.com/organizations/${GITHUB_ORG}/settings/apps/new"
+# Owner-scoped create-App page: org page needs org-owner rights; the user page
+# (github.com/settings/apps/new) works for any account without org-admin.
+if [ "$OWNER_TYPE" = "user" ]; then
+  URL="https://github.com/settings/apps/new"
+else
+  URL="https://github.com/organizations/${GITHUB_ORG}/settings/apps/new"
+fi
 URL="${URL}?name=${APP_NAME}"
-URL="${URL}&url=https://github.com/${GITHUB_ORG}/adp"
+URL="${URL}&url=https://github.com/${INSTALL_REPO}"
 URL="${URL}&public=${APP_PUBLIC}"
 URL="${URL}&webhook_active=true"
 URL="${URL}&webhook_url=${WEBHOOK_URL}"
@@ -451,7 +484,8 @@ fi
 
 echo ""
 echo "Next steps:"
-echo "  1. Install the app on a repo: https://github.com/apps/${APP_NAME}/installations/new"
+echo "  1. Install the app (suggested target repo: ${INSTALL_REPO}):"
+echo "       https://github.com/apps/${APP_NAME}/installations/new"
 echo "  2. @mention an agent in an issue/PR comment (e.g. @agent-developer ...)"
 echo "  3. Check the webhook-events DynamoDB table / kubectl get pods -n adp-agents"
 if [ -z "$CLIENT_SECRET" ] && [ "$NO_WIRE" = false ]; then
