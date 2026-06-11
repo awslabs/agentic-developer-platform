@@ -38,23 +38,35 @@ Object.defineProperty(globalThis, 'crypto', {
 describe('buildGitHubLoginUrl', () => {
   beforeEach(() => {
     sessionStorage.clear();
+    vi.unstubAllEnvs();
   });
 
-  it('includes identity_provider=GitHub parameter', async () => {
+  // GitHub login no longer routes through the Cognito hosted UI (GitHub doesn't
+  // support the OIDC discovery Cognito needs). buildGitHubLoginUrl now returns
+  // the broker Lambda's /start endpoint, configured via VITE_GITHUB_AUTH_BROKER_URL;
+  // the broker owns the GitHub OAuth + PKCE flow. See services/auth.ts.
+  it('returns the broker /start endpoint when the broker URL is configured', async () => {
+    vi.stubEnv('VITE_GITHUB_AUTH_BROKER_URL', 'https://broker.example.com');
+
     const url = await buildGitHubLoginUrl();
-    const params = new URL(url).searchParams;
 
-    expect(params.get('identity_provider')).toBe('GitHub');
-    expect(params.get('response_type')).toBe('code');
-    expect(params.get('client_id')).toBe('test-client-id');
-    expect(params.get('scope')).toBe('openid email profile');
-    expect(params.get('code_challenge_method')).toBe('S256');
-    expect(params.get('code_challenge')).toBeTruthy();
+    expect(url).toBe('https://broker.example.com/start');
   });
 
-  it('stores PKCE verifier in sessionStorage', async () => {
-    await buildGitHubLoginUrl();
-    expect(sessionStorage.getItem('pkce_code_verifier')).toBeTruthy();
+  it('strips a trailing slash from the configured broker URL', async () => {
+    vi.stubEnv('VITE_GITHUB_AUTH_BROKER_URL', 'https://broker.example.com/');
+
+    const url = await buildGitHubLoginUrl();
+
+    expect(url).toBe('https://broker.example.com/start');
+  });
+
+  it('throws when the broker URL is not configured', async () => {
+    vi.stubEnv('VITE_GITHUB_AUTH_BROKER_URL', '');
+
+    await expect(buildGitHubLoginUrl()).rejects.toThrow(
+      'GitHub sign-in is not configured'
+    );
   });
 });
 

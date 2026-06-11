@@ -51,15 +51,19 @@ vi.mock('@/config/cognito', () => ({
   isCognitoConfigured: () => true,
 }));
 
-// Mock fetch for token exchange
+// Mock fetch for token exchange.
+// NOTE: assign inside beforeEach, not at module scope. The MSW server's
+// server.listen() (in src/test/setup.ts beforeAll) replaces globalThis.fetch
+// with its interceptor AFTER this module is evaluated, so a module-level
+// assignment gets clobbered. Re-installing per test ensures our mock wins.
 const mockFetch = vi.fn();
-(globalThis as unknown as { fetch: typeof fetch }).fetch = mockFetch;
 
 describe('Auth Service - OAuth PKCE', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sessionStorage.clear();
     mockFetch.mockReset();
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = mockFetch;
   });
 
   afterEach(() => {

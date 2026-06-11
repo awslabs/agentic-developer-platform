@@ -84,18 +84,23 @@ describe('Login Page', () => {
     locationHrefSpy.mockRestore();
   });
 
-  it('shows error when Cognito is not configured and GitHub is clicked', async () => {
+  it('GitHub login does not gate on Cognito config (uses the broker flow)', async () => {
+    // GitHub sign-in routes through the broker Lambda, independent of Cognito
+    // hosted UI — so an unconfigured Cognito must NOT block it. Only email
+    // login checks isCognitoConfigured (see handleEmailLogin in Login.tsx).
     vi.mocked(isCognitoConfigured).mockReturnValue(false);
+    vi.mocked(authService.buildGitHubLoginUrl).mockResolvedValue('https://broker.example.com/start');
 
     renderLogin();
 
     fireEvent.click(screen.getByTestId('github-login-btn'));
 
     await waitFor(() => {
-      expect(
-        screen.getByText('Authentication is not configured. Please contact your administrator.')
-      ).toBeInTheDocument();
+      expect(authService.buildGitHubLoginUrl).toHaveBeenCalled();
     });
+    expect(
+      screen.queryByText('Authentication is not configured. Please contact your administrator.')
+    ).not.toBeInTheDocument();
   });
 
   it('shows error when Cognito is not configured and Email is clicked', async () => {

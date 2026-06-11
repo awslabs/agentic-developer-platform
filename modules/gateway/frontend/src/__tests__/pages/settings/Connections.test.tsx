@@ -19,6 +19,12 @@ vi.mock('@/services/connections', () => ({
   deleteGitHubConnection: vi.fn(),
 }));
 
+// Connections calls useAuth() to read the current user (free-tier banner gating).
+// Mock the hook so the page can render without a full AuthProvider + auth bootstrap.
+vi.mock('@/hooks/useAuth', () => ({
+  useAuth: () => ({ user: { orgId: 'org-test' } }),
+}));
+
 import {
   startGitHubInstall,
   listConnections,

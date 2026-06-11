@@ -33,7 +33,9 @@ describe('ApiClient', () => {
     });
 
     it('includes authorization header when token is present', async () => {
-      sessionStorage.setItem('auth_token', 'test-token');
+      // apiClient reads the token via getAccessToken(), which uses the
+      // 'cognito_access_token' sessionStorage key (see services/auth.ts).
+      sessionStorage.setItem('cognito_access_token', 'test-token');
       mockFetch.mockResolvedValueOnce({
         ok: true,
         text: () => Promise.resolve(JSON.stringify({})),

@@ -11,16 +11,19 @@ import userEvent from '@testing-library/user-event';
 import { EntitySelector } from '@/components/shared/EntitySelector';
 import { EntityType } from '@/types';
 
-// Mock the admin service
+// Mock the admin service. EntitySelector fetches org entities from Cognito via
+// the backend, using the getCognito{Users,Teams,Departments} helpers.
 vi.mock('@/services/admin', () => ({
-  getDepartments: vi.fn(),
-  getTeams: vi.fn(),
+  getCognitoUsers: vi.fn(),
+  getCognitoTeams: vi.fn(),
+  getCognitoDepartments: vi.fn(),
 }));
 
-import { getDepartments, getTeams } from '@/services/admin';
+import { getCognitoUsers, getCognitoTeams, getCognitoDepartments } from '@/services/admin';
 
-const mockGetDepartments = getDepartments as ReturnType<typeof vi.fn>;
-const mockGetTeams = getTeams as ReturnType<typeof vi.fn>;
+const mockGetDepartments = getCognitoDepartments as ReturnType<typeof vi.fn>;
+const mockGetTeams = getCognitoTeams as ReturnType<typeof vi.fn>;
+const mockGetUsers = getCognitoUsers as ReturnType<typeof vi.fn>;
 
 const defaultProps = {
   orgId: 'org-001',
@@ -40,8 +43,8 @@ describe('EntitySelector', () => {
     vi.clearAllMocks();
     mockGetDepartments.mockResolvedValue({
       items: [
-        { id: 'dept-001', orgId: 'org-001', name: 'Engineering', createdAt: '2024-01-01' },
-        { id: 'dept-002', orgId: 'org-001', name: 'Sales', createdAt: '2024-01-01' },
+        { departmentId: 'dept-001', orgId: 'org-001' },
+        { departmentId: 'dept-002', orgId: 'org-001' },
       ],
       total: 2,
       page: 1,
@@ -50,10 +53,17 @@ describe('EntitySelector', () => {
     });
     mockGetTeams.mockResolvedValue({
       items: [
-        { id: 'team-001', departmentId: 'dept-001', name: 'Backend', createdAt: '2024-01-01' },
-        { id: 'team-002', departmentId: 'dept-001', name: 'Frontend', createdAt: '2024-01-01' },
+        { groupName: 'Backend', description: 'Backend team' },
+        { groupName: 'Frontend', description: 'Frontend team' },
       ],
       total: 2,
+      page: 1,
+      pageSize: 100,
+      hasMore: false,
+    });
+    mockGetUsers.mockResolvedValue({
+      items: [],
+      total: 0,
       page: 1,
       pageSize: 100,
       hasMore: false,
@@ -96,7 +106,7 @@ describe('EntitySelector', () => {
       renderComponent({ entityType: EntityType.TEAM });
 
       await waitFor(() => {
-        expect(mockGetDepartments).toHaveBeenCalled();
+        expect(mockGetTeams).toHaveBeenCalledWith('org-001', { pageSize: 100 });
       });
     });
   });
@@ -106,7 +116,7 @@ describe('EntitySelector', () => {
       renderComponent({ entityType: EntityType.DEPARTMENT });
 
       await waitFor(() => {
-        expect(mockGetDepartments).toHaveBeenCalledWith('org-001', { pageSize: 100 });
+        expect(mockGetDepartments).toHaveBeenCalledWith('org-001');
       });
     });
   });
