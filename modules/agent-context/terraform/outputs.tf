@@ -58,6 +58,28 @@ output "opensearch_access_role_arn" {
   value       = var.graphrag_enabled ? module.opensearch_serverless[0].access_role_arn : ""
 }
 
+# --- RDS (agent_context database on shared gateway instance) ---
+
+output "rds_bootstrap_job_name" {
+  description = "Name of the K8s Job that creates the agent_context DB + user"
+  value       = module.rds_bootstrap.bootstrap_job_name
+}
+
+output "ac_db_name" {
+  description = "Name of the agent_context database"
+  value       = module.rds_bootstrap.ac_db_name
+}
+
+output "ac_db_username" {
+  description = "PostgreSQL username for agent-context workloads"
+  value       = module.rds_bootstrap.ac_db_username
+}
+
+output "ac_rds_host" {
+  description = "RDS instance hostname (shared with gateway)"
+  value       = local.rds_host
+}
+
 # --- SQS + DynamoDB ---
 
 output "ingestion_queue_url" {

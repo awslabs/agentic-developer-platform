@@ -45,6 +45,41 @@ locals {
 
   name_prefix = "adp-${var.environment}-agent-context"
   bucket_name = "agent-context-platform-data-${var.account_id}"
+
+  # RDS details from gateway module (shared instance)
+  rds_host              = data.terraform_remote_state.gateway.outputs.rds_instance_address
+  rds_instance_id       = data.terraform_remote_state.gateway.outputs.rds_instance_id
+  rds_master_secret_arn = data.terraform_remote_state.gateway.outputs.rds_master_user_secret_arn
+}
+
+# =============================================================================
+# Gateway Remote State (for RDS instance details)
+# =============================================================================
+# The agent_context database lives on the gateway's shared RDS instance.
+# We read its outputs to get the host, instance ID, and master secret ARN.
+
+data "terraform_remote_state" "gateway" {
+  backend = "s3"
+  config = {
+    bucket = "adp-terraform-state-${var.account_id}"
+    key    = "${var.environment}/gateway/terraform.tfstate"
+    region = var.aws_region
+  }
+}
+
+# =============================================================================
+# Kubernetes Provider (for bootstrap Job)
+# =============================================================================
+
+provider "kubernetes" {
+  host                   = local.cluster_endpoint
+  cluster_ca_certificate = base64decode(local.cluster_ca)
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", local.cluster_name]
+  }
 }
 
 # =============================================================================
@@ -168,4 +203,24 @@ module "images_build" {
   state_bucket               = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
   codebuild_service_role_arn = data.terraform_remote_state.platform.outputs.codebuild_role_arn
   common_tags                = var.tags
+}
+
+# =============================================================================
+# RDS Bootstrap (agent_context database + user on shared gateway RDS instance)
+# =============================================================================
+# Creates the `agent_context` database and `agent_context_svc` role on the
+# gateway's shared RDS instance. Issue #1355.
+
+module "rds_bootstrap" {
+  source = "./modules/rds-bootstrap"
+
+  name_prefix            = local.name_prefix
+  namespace              = var.namespace
+  aws_region             = var.aws_region
+  db_host                = local.rds_host
+  master_user_secret_arn = local.rds_master_secret_arn
+  oidc_provider_arn      = local.oidc_provider_arn
+  oidc_issuer            = local.oidc_issuer
+  rds_instance_id        = local.rds_instance_id
+  common_tags            = var.tags
 }

@@ -255,3 +255,14 @@ output "identity_index_table_arn" {
   description = "ARN of the DynamoDB identity-index table"
   value       = aws_dynamodb_table.identity_index.arn
 }
+
+# Issue #1355: RDS details for agent-context database bootstrap
+output "rds_instance_address" {
+  description = "RDS instance hostname (without port) for cross-module consumers"
+  value       = module.rds.db_instance_address
+}
+
+output "rds_instance_id" {
+  description = "RDS instance ID (used as bootstrap job trigger)"
+  value       = module.rds.db_instance_id
+}
