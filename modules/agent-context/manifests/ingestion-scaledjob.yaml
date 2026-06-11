@@ -64,7 +64,7 @@ spec:
               - name: CLONE_BASE
                 value: /tmp/repos
               - name: CODE_INDEX_DIR
-                value: /tmp/code-indexes
+                value: /platform-data/code-indexes
             resources:
               requests:
                 cpu: "500m"
