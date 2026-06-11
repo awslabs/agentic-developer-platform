@@ -1,0 +1,154 @@
+version: 0.2
+
+# =============================================================================
+# Vulnerability Scan — OSV-Scanner + Trivy (replaces bs-grype-scan.yml)
+#
+# Scans CycloneDX SBOMs produced by the Syft job for known vulnerabilities.
+# - OSV-Scanner: ecosystem packages (npm, PyPI, Go, Cargo, etc.)
+# - Trivy: OS/base-image layer (Debian, Alpine, RHEL, etc.)
+#
+# Both are Apache-2.0 licensed (commercially clean).
+# Outputs normalized JSON findings to S3 for downstream DB ingestion.
+# =============================================================================
+
+env:
+  variables:
+    OSV_SCANNER_VERSION: "2.3.8"
+    TRIVY_VERSION: "0.71.0"
+
+phases:
+  install:
+    commands:
+      # Install OSV-Scanner from GitHub Releases
+      - |
+        curl -sSfL "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
+          -o /usr/local/bin/osv-scanner
+        chmod +x /usr/local/bin/osv-scanner
+        osv-scanner --version
+      # Install Trivy from GitHub Releases
+      - |
+        curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+          | tar xz -C /usr/local/bin trivy
+        trivy --version
+      # Install Python dependencies for normalization
+      - pip install --quiet --no-input boto3
+
+  pre_build:
+    commands:
+      - aws sts get-caller-identity
+      - DATE=$(date -u +%Y/%m/%d)
+      - RUN_ID="${CODEBUILD_BUILD_ID##*:}"
+      - echo "Run ID=${RUN_ID} date=${DATE}"
+      - if [ -z "${SECURITY_SCANS_BUCKET}" ]; then echo "ERROR SECURITY_SCANS_BUCKET not set" && exit 1; fi
+      # Download SBOMs from the most recent Syft run
+      - |
+        SBOM_PREFIX="sbom/${DATE}"
+        echo "Looking for SBOMs under s3://${SECURITY_SCANS_BUCKET}/${SBOM_PREFIX}/"
+        mkdir -p /tmp/sboms
+        aws s3 sync "s3://${SECURITY_SCANS_BUCKET}/${SBOM_PREFIX}/" /tmp/sboms/ \
+          --exclude "*" --include "*.cdx.json" || {
+          echo "WARN: No SBOMs found for today — checking yesterday"
+          YESTERDAY=$(date -u -d "yesterday" +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d)
+          aws s3 sync "s3://${SECURITY_SCANS_BUCKET}/sbom/${YESTERDAY}/" /tmp/sboms/ \
+            --exclude "*" --include "*.cdx.json"
+        }
+        SBOM_COUNT=$(find /tmp/sboms -name "*.cdx.json" | wc -l)
+        echo "Downloaded ${SBOM_COUNT} SBOMs"
+        if [ "${SBOM_COUNT}" -eq 0 ]; then
+          echo "ERROR: No SBOMs available to scan"
+          exit 1
+        fi
+
+  build:
+    commands:
+      - |
+        set -euo pipefail
+
+        mkdir -p /tmp/findings/osv /tmp/findings/trivy /tmp/findings/normalized
+
+        SBOM_FILES=$(find /tmp/sboms -name "*.cdx.json" | sort)
+        TOTAL=$(echo "$SBOM_FILES" | wc -l)
+        echo "Scanning ${TOTAL} SBOMs"
+
+        OSV_OK=0
+        OSV_FAIL=0
+        TRIVY_OK=0
+        TRIVY_FAIL=0
+
+        for SBOM in $SBOM_FILES; do
+          SLUG=$(basename "$SBOM" .cdx.json)
+          echo "=== Scanning: ${SLUG} ==="
+
+          # --- OSV-Scanner (ecosystem packages) ---
+          echo "  [osv-scanner] scanning..."
+          if osv-scanner scan source -L "${SBOM}" --format json \
+               > "/tmp/findings/osv/${SLUG}.json" 2>/tmp/osv-err.log; then
+            OSV_OK=$((OSV_OK + 1))
+          else
+            RC=$?
+            if [ $RC -eq 1 ]; then
+              # Exit code 1 = vulnerabilities found (not an error)
+              OSV_OK=$((OSV_OK + 1))
+            else
+              echo "  [osv-scanner] FAILED (rc=${RC}): $(head -3 /tmp/osv-err.log)"
+              OSV_FAIL=$((OSV_FAIL + 1))
+              rm -f "/tmp/findings/osv/${SLUG}.json"
+            fi
+          fi
+
+          # --- Trivy (OS/image layer) ---
+          echo "  [trivy] scanning..."
+          if trivy sbom "${SBOM}" --format json --scanners vuln \
+               > "/tmp/findings/trivy/${SLUG}.json" 2>/tmp/trivy-err.log; then
+            TRIVY_OK=$((TRIVY_OK + 1))
+          else
+            echo "  [trivy] FAILED (rc=$?): $(head -3 /tmp/trivy-err.log)"
+            TRIVY_FAIL=$((TRIVY_FAIL + 1))
+            rm -f "/tmp/findings/trivy/${SLUG}.json"
+          fi
+        done
+
+        echo ""
+        echo "=== Scan Summary ==="
+        echo "OSV-Scanner: ${OSV_OK}/${TOTAL} succeeded, ${OSV_FAIL} failed"
+        echo "Trivy:       ${TRIVY_OK}/${TOTAL} succeeded, ${TRIVY_FAIL} failed"
+
+        # --- Normalize findings ---
+        echo ""
+        echo "=== Normalizing findings ==="
+        python3 "${CODEBUILD_SRC_DIR}/codebuild/normalize-vuln-findings.py" \
+          --osv-dir /tmp/findings/osv \
+          --trivy-dir /tmp/findings/trivy \
+          --output-dir /tmp/findings/normalized
+
+        # --- Upload to S3 ---
+        FINDINGS_COUNT=$(find /tmp/findings/normalized -name "*.json" | wc -l)
+        echo "Uploading ${FINDINGS_COUNT} normalized finding files to S3"
+
+        aws s3 sync /tmp/findings/normalized/ \
+          "s3://${SECURITY_SCANS_BUCKET}/vulns/${DATE}/${RUN_ID}/" \
+          --content-type application/json \
+          --metadata "commit=${CODEBUILD_RESOLVED_SOURCE_VERSION:-unknown}"
+
+        # Also upload raw scanner output for audit/debugging
+        aws s3 sync /tmp/findings/osv/ \
+          "s3://${SECURITY_SCANS_BUCKET}/vulns/${DATE}/${RUN_ID}/raw/osv/" \
+          --content-type application/json
+        aws s3 sync /tmp/findings/trivy/ \
+          "s3://${SECURITY_SCANS_BUCKET}/vulns/${DATE}/${RUN_ID}/raw/trivy/" \
+          --content-type application/json
+
+        echo ""
+        echo "=== Done ==="
+        echo "Results: s3://${SECURITY_SCANS_BUCKET}/vulns/${DATE}/${RUN_ID}/"
+
+        # Minimum-coverage assertion (same as former Grype job)
+        TOTAL_SCANNED=$((OSV_OK > TRIVY_OK ? OSV_OK : TRIVY_OK))
+        if [ "${TOTAL_SCANNED}" -lt "$((TOTAL / 2))" ]; then
+          echo "ERROR: Only ${TOTAL_SCANNED}/${TOTAL} SBOMs scanned — below 50% threshold"
+          exit 1
+        fi
+        exit 0
+
+artifacts:
+  files: []
