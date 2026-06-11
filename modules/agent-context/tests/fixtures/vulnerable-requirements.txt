@@ -1,0 +1,7 @@
+# Fixture: Python lockfile with a known-vulnerable dependency.
+# CVE-2023-32681: requests < 2.31.0 — SSRF via redirect to a file:// URL.
+# Used by: test_vuln_loop.py (V2), test_vuln_e2e.py (E2E flagship)
+requests==2.25.0
+flask==3.0.0
+pydantic==2.5.3
+urllib3==1.26.18

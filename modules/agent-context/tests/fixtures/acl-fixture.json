@@ -1,0 +1,27 @@
+{
+  "_comment": "Permission snapshot fixture: 2 principals, 2 private repos, 1 public repo.",
+  "repos": {
+    "org/repo-alpha": {
+      "visibility": "private",
+      "principals": ["principal-alice-uuid-1234"]
+    },
+    "org/repo-beta": {
+      "visibility": "private",
+      "principals": ["principal-bob-uuid-5678"]
+    },
+    "oss/public-lib": {
+      "visibility": "public",
+      "principals": ["__public__"]
+    }
+  },
+  "principals": {
+    "principal-alice-uuid-1234": {
+      "display_name": "alice",
+      "repos": ["org/repo-alpha"]
+    },
+    "principal-bob-uuid-5678": {
+      "display_name": "bob",
+      "repos": ["org/repo-beta"]
+    }
+  }
+}

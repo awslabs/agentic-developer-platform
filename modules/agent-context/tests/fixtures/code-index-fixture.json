@@ -1,0 +1,36 @@
+{
+  "_comment": "Pre-computed structural index for unit tests (I5, I6, I7).",
+  "repo_id": "org/fixture-repo",
+  "indexed_at": "2026-06-01T00:00:00Z",
+  "definitions": [
+    {
+      "symbol": "connect_db",
+      "file": "src/db.py",
+      "line": 42,
+      "kind": "function",
+      "signature": "def connect_db(host: str, port: int) -> Connection"
+    },
+    {
+      "symbol": "handle_request",
+      "file": "src/api.py",
+      "line": 10,
+      "kind": "function",
+      "signature": "async def handle_request(req: Request) -> Response"
+    },
+    {
+      "symbol": "process_job",
+      "file": "src/worker.py",
+      "line": 5,
+      "kind": "function",
+      "signature": "def process_job(job_id: str) -> None"
+    }
+  ],
+  "call_graph": {
+    "src/db.py::connect_db": [
+      "src/api.py::handle_request",
+      "src/worker.py::process_job"
+    ],
+    "src/api.py::handle_request": [],
+    "src/worker.py::process_job": []
+  }
+}
