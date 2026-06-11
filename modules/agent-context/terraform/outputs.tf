@@ -14,31 +14,21 @@ output "irsa_role_name" {
   value       = module.iam.role_name
 }
 
-# --- S3 Files ---
-
-output "file_system_id" {
-  description = "EFS file system ID for the S3 Files mount"
-  value       = module.s3_files.file_system_id
-}
+# --- S3 Storage (Mountpoint for Amazon S3) ---
 
 output "bucket_name" {
-  description = "S3 bucket name"
+  description = "S3 bucket name for platform data"
   value       = module.s3_files.bucket_name
 }
 
-output "mount_target_ips" {
-  description = "IP addresses of the EFS mount targets"
-  value       = module.s3_files.mount_target_ips
+output "bucket_arn" {
+  description = "S3 bucket ARN for platform data"
+  value       = module.s3_files.bucket_arn
 }
 
-output "csi_controller_role_arn" {
-  description = "IAM role ARN for the EFS CSI controller"
-  value       = module.s3_files.csi_controller_role_arn
-}
-
-output "csi_node_role_arn" {
-  description = "IAM role ARN for the EFS CSI node daemonset"
-  value       = module.s3_files.csi_node_role_arn
+output "s3_csi_role_arn" {
+  description = "IAM role ARN for the Mountpoint S3 CSI driver"
+  value       = module.s3_files.s3_csi_role_arn
 }
 
 # --- GraphRAG ---

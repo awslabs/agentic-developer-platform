@@ -1,8 +1,19 @@
 ###############################################################################
-# S3 Files Module — S3 bucket + EFS file system + mount targets + IAM + CSI
+# S3 Files Module — S3 bucket + Mountpoint for Amazon S3 CSI driver
 #
-# Creates an S3 bucket with an EFS file system overlay that allows POSIX
-# mounts via the EFS CSI driver. Pods mount the file system as NFS v4.1.
+# Creates an S3 bucket and installs the Mountpoint for Amazon S3 CSI driver
+# so pods can mount the bucket directly as a POSIX filesystem. Replaces the
+# previous EFS-over-S3 overlay with a simpler, cheaper architecture.
+#
+# Mountpoint semantics:
+#   - New file creation: supported (sequential writes)
+#   - Full-object overwrite: supported (with --allow-overwrite mount option)
+#   - Random/partial writes: NOT supported
+#   - File locking: NOT supported
+#   - Reads: fully supported, high throughput
+#
+# Writers MUST produce complete artifacts as new files (or full replacements).
+# Git clones and in-progress builds belong on emptyDir scratch, not here.
 ###############################################################################
 
 data "aws_caller_identity" "current" {}
@@ -85,85 +96,9 @@ resource "aws_s3_bucket_public_access_block" "platform_data" {
   restrict_public_buckets = true
 }
 
-# ─── EFS File System (S3 Files) ────────────────────────────────────────────
-#
-# This creates an EFS file system backed by the S3 bucket.
-# NOTE: As of early 2026, the aws_efs_file_system resource with s3_import
-# or the dedicated aws_s3_file_system resource may not be available in the
-# Terraform AWS provider. We create a standard EFS file system and configure
-# the S3 Files integration via the EFS CSI driver's volumeHandle format.
-#
-# The EFS CSI driver v3.0.0+ supports S3 Files via a special volumeHandle:
-#   <file-system-id>::<s3-bucket-name>
-#
-# If the Terraform provider adds native aws_s3_file_system support, migrate
-# to that resource. For now, EFS + volumeHandle is the supported path.
+# ─── IAM Role for Mountpoint S3 CSI Driver (IRSA) ────────────────────────────
 
-resource "aws_efs_file_system" "platform_data" {
-  creation_token = "${var.bucket_name}-efs"
-  encrypted      = true
-
-  performance_mode = "generalPurpose"
-  throughput_mode  = "elastic"
-
-  tags = merge(var.tags, {
-    Name = "${var.bucket_name}-efs"
-  })
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
-# ─── Security Group for Mount Targets ──────────────────────────────────────
-
-resource "aws_security_group" "efs_mount" {
-  name_prefix = "agent-context-efs-"
-  description = "Allow NFS traffic from EKS nodes to EFS mount targets"
-  vpc_id      = var.vpc_id
-
-  tags = merge(var.tags, {
-    Name = "agent-context-efs-mount"
-  })
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-resource "aws_security_group_rule" "efs_ingress_nfs" {
-  type                     = "ingress"
-  from_port                = 2049
-  to_port                  = 2049
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.efs_mount.id
-  source_security_group_id = var.node_security_group_id
-  description              = "NFS from EKS nodes"
-}
-
-resource "aws_security_group_rule" "efs_egress_all" {
-  type              = "egress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
-  security_group_id = aws_security_group.efs_mount.id
-  cidr_blocks       = ["0.0.0.0/0"]
-  description       = "Allow all outbound"
-}
-
-# ─── Mount Targets (one per subnet/AZ) ────────────────────────────────────
-
-resource "aws_efs_mount_target" "platform_data" {
-  count = length(var.subnet_ids)
-
-  file_system_id  = aws_efs_file_system.platform_data.id
-  subnet_id       = var.subnet_ids[count.index]
-  security_groups = [aws_security_group.efs_mount.id]
-}
-
-# ─── IAM Role for EFS CSI Controller (IRSA) ───────────────────────────────
-
-data "aws_iam_policy_document" "efs_csi_controller_assume" {
+data "aws_iam_policy_document" "s3_csi_assume" {
   statement {
     effect  = "Allow"
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -176,7 +111,7 @@ data "aws_iam_policy_document" "efs_csi_controller_assume" {
     condition {
       test     = "StringLike"
       variable = "${local.oidc_provider_id}:sub"
-      values   = ["system:serviceaccount:kube-system:efs-csi-*"]
+      values   = ["system:serviceaccount:kube-system:s3-csi-*"]
     }
 
     condition {
@@ -187,22 +122,17 @@ data "aws_iam_policy_document" "efs_csi_controller_assume" {
   }
 }
 
-resource "aws_iam_role" "efs_csi_controller" {
-  name               = "${var.cluster_name}-efs-csi-controller"
-  assume_role_policy = data.aws_iam_policy_document.efs_csi_controller_assume.json
+resource "aws_iam_role" "s3_csi_controller" {
+  name               = "${var.cluster_name}-s3-csi-controller"
+  assume_role_policy = data.aws_iam_policy_document.s3_csi_assume.json
 
   tags = merge(var.tags, {
-    Name = "${var.cluster_name}-efs-csi-controller"
+    Name = "${var.cluster_name}-s3-csi-controller"
   })
 }
 
-resource "aws_iam_role_policy_attachment" "efs_csi_controller_policy" {
-  role       = aws_iam_role.efs_csi_controller.name
-  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
-}
-
-# Additional S3 access for S3 Files integration
-data "aws_iam_policy_document" "s3_files_access" {
+# S3 access policy scoped to the platform-data bucket
+data "aws_iam_policy_document" "s3_csi_access" {
   statement {
     effect = "Allow"
     actions = [
@@ -211,116 +141,77 @@ data "aws_iam_policy_document" "s3_files_access" {
       "s3:DeleteObject",
       "s3:ListBucket",
       "s3:GetBucketLocation",
+      "s3:AbortMultipartUpload",
+      "s3:ListMultipartUploadParts",
     ]
     resources = [
       aws_s3_bucket.platform_data.arn,
       "${aws_s3_bucket.platform_data.arn}/*",
     ]
   }
-
 }
 
-resource "aws_iam_policy" "s3_files_access" {
-  name   = "${var.cluster_name}-s3-files-access"
-  policy = data.aws_iam_policy_document.s3_files_access.json
+resource "aws_iam_policy" "s3_csi_access" {
+  name   = "${var.cluster_name}-mountpoint-s3-access"
+  policy = data.aws_iam_policy_document.s3_csi_access.json
 
   tags = merge(var.tags, {
-    Name = "${var.cluster_name}-s3-files-access"
+    Name = "${var.cluster_name}-mountpoint-s3-access"
   })
 }
 
-resource "aws_iam_role_policy_attachment" "efs_csi_s3_access" {
-  role       = aws_iam_role.efs_csi_controller.name
-  policy_arn = aws_iam_policy.s3_files_access.arn
+resource "aws_iam_role_policy_attachment" "s3_csi_access" {
+  role       = aws_iam_role.s3_csi_controller.name
+  policy_arn = aws_iam_policy.s3_csi_access.arn
 }
 
-# ─── IAM Role for EFS CSI Node DaemonSet (IRSA) ──────────────────────────
+# ─── Mountpoint for Amazon S3 CSI Driver EKS Add-on ─────────────────────────
 
-data "aws_iam_policy_document" "efs_csi_node_assume" {
-  statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = ["arn:${local.partition}:iam::${local.account_id}:oidc-provider/${local.oidc_provider_id}"]
-    }
-
-    condition {
-      test     = "StringLike"
-      variable = "${local.oidc_provider_id}:sub"
-      values   = ["system:serviceaccount:kube-system:efs-csi-*"]
-    }
-
-    condition {
-      test     = "StringLike"
-      variable = "${local.oidc_provider_id}:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_iam_role" "efs_csi_node" {
-  name               = "${var.cluster_name}-efs-csi-node"
-  assume_role_policy = data.aws_iam_policy_document.efs_csi_node_assume.json
-
-  tags = merge(var.tags, {
-    Name = "${var.cluster_name}-efs-csi-node"
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "efs_csi_node_policy" {
-  role       = aws_iam_role.efs_csi_node.name
-  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
-}
-
-resource "aws_iam_role_policy_attachment" "efs_csi_node_s3_readonly" {
-  role       = aws_iam_role.efs_csi_node.name
-  policy_arn = "arn:${local.partition}:iam::aws:policy/AmazonS3ReadOnlyAccess"
-}
-
-# ─── EFS CSI Driver EKS Add-on ────────────────────────────────────────────
-
-resource "aws_eks_addon" "efs_csi_driver" {
-  cluster_name             = var.cluster_name
-  addon_name               = "aws-efs-csi-driver"
-  addon_version            = var.efs_csi_driver_version
-  service_account_role_arn = aws_iam_role.efs_csi_controller.arn
+resource "aws_eks_addon" "mountpoint_s3_csi_driver" {
+  cluster_name                = var.cluster_name
+  addon_name                  = "aws-mountpoint-s3-csi-driver"
+  addon_version               = var.mountpoint_s3_csi_driver_version
+  service_account_role_arn    = aws_iam_role.s3_csi_controller.arn
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
 
   tags = merge(var.tags, {
-    Name = "efs-csi-driver"
+    Name = "mountpoint-s3-csi-driver"
   })
 
   depends_on = [
-    aws_iam_role_policy_attachment.efs_csi_controller_policy,
-    aws_iam_role_policy_attachment.efs_csi_s3_access,
+    aws_iam_role_policy_attachment.s3_csi_access,
   ]
 }
 
-# ─── S3 Bucket Prefixes (create directory markers) ────────────────────────
+# ─── S3 Bucket Prefixes (directory markers for Knowledge Layer) ──────────────
 
-resource "aws_s3_object" "prefix_deepwiki" {
+resource "aws_s3_object" "prefix_zoekt_shards" {
   bucket  = aws_s3_bucket.platform_data.id
-  key     = "deepwiki/"
+  key     = "zoekt-shards/"
   content = ""
 }
 
-resource "aws_s3_object" "prefix_openviking" {
+resource "aws_s3_object" "prefix_code_indexes" {
   bucket  = aws_s3_bucket.platform_data.id
-  key     = "openviking/"
+  key     = "code-indexes/"
   content = ""
 }
 
-resource "aws_s3_object" "prefix_codegraph" {
+resource "aws_s3_object" "prefix_wikis" {
   bucket  = aws_s3_bucket.platform_data.id
-  key     = "codegraph/"
+  key     = "wikis/"
   content = ""
 }
 
-resource "aws_s3_object" "prefix_sourcebot" {
+resource "aws_s3_object" "prefix_sbom" {
   bucket  = aws_s3_bucket.platform_data.id
-  key     = "sourcebot/"
+  key     = "sbom/"
+  content = ""
+}
+
+resource "aws_s3_object" "prefix_learning" {
+  bucket  = aws_s3_bucket.platform_data.id
+  key     = "learning/"
   content = ""
 }

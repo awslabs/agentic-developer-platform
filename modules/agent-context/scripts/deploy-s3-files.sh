@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Deploy S3 Files storage infrastructure
-# Runs Terraform to create AWS resources + creates K8s StorageClass/PV/PVC
+# Deploy S3 Files storage infrastructure (Mountpoint for Amazon S3)
+# Runs Terraform to create AWS resources + creates K8s PV/PVC
 #
 # Usage: ./scripts/deploy-s3-files.sh [--terraform-only] [--k8s-only]
 #
@@ -35,54 +35,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "============================================"
-echo "S3 Files Storage Deployment"
+echo "Mountpoint S3 Storage Deployment"
 echo "============================================"
 
-# ─── Step 1: Discover cluster networking (for Terraform) ──────────────────
-
-discover_cluster_networking() {
-  echo ""
-  echo "Discovering cluster networking..."
-
-  # Get VPC ID
-  VPC_ID=$(aws eks describe-cluster \
-    --name "${CLUSTER_NAME}" \
-    --region "${AWS_REGION}" \
-    --query 'cluster.resourcesVpcConfig.vpcId' \
-    --output text 2>/dev/null || echo "")
-
-  if [ -z "${VPC_ID}" ] || [ "${VPC_ID}" = "None" ]; then
-    echo "ERROR: Could not determine VPC ID for cluster ${CLUSTER_NAME}"
-    echo "Set vpc_id in terraform.tfvars manually."
-    return 1
-  fi
-  echo "  VPC: ${VPC_ID}"
-
-  # Get subnet IDs (same as EKS node subnets)
-  SUBNET_IDS=$(aws eks describe-cluster \
-    --name "${CLUSTER_NAME}" \
-    --region "${AWS_REGION}" \
-    --query 'cluster.resourcesVpcConfig.subnetIds' \
-    --output json 2>/dev/null || echo "[]")
-  echo "  Subnets: ${SUBNET_IDS}"
-
-  # Get node security group
-  NODE_SG=$(aws eks describe-cluster \
-    --name "${CLUSTER_NAME}" \
-    --region "${AWS_REGION}" \
-    --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' \
-    --output text 2>/dev/null || echo "")
-
-  if [ -z "${NODE_SG}" ] || [ "${NODE_SG}" = "None" ]; then
-    echo "ERROR: Could not determine node security group for cluster ${CLUSTER_NAME}"
-    return 1
-  fi
-  echo "  Node SG: ${NODE_SG}"
-
-  export VPC_ID SUBNET_IDS NODE_SG
-}
-
-# ─── Step 2: Run Terraform ────────────────────────────────────────────────
+# ─── Step 1: Run Terraform ────────────────────────────────────────────────
 
 run_terraform() {
   echo ""
@@ -95,28 +51,6 @@ run_terraform() {
 
   cd "${TF_DIR}"
 
-  # Auto-discover networking if terraform.tfvars doesn't exist
-  if [ ! -f "terraform.tfvars" ]; then
-    echo "No terraform.tfvars found — auto-discovering cluster networking..."
-    discover_cluster_networking
-
-    cat > terraform.tfvars <<EOF
-cluster_name           = "${CLUSTER_NAME}"
-aws_region             = "${AWS_REGION}"
-bucket_name            = "agent-context-platform-data"
-namespace              = "${NAMESPACE}"
-vpc_id                 = "${VPC_ID}"
-subnet_ids             = ${SUBNET_IDS}
-node_security_group_id = "${NODE_SG}"
-
-tags = {
-  Environment = "production"
-  Team        = "agent-context"
-}
-EOF
-    echo "  Generated terraform.tfvars"
-  fi
-
   echo "  Running terraform init..."
   terraform init -input=false
 
@@ -127,51 +61,51 @@ EOF
   terraform apply -input=false tfplan
 
   # Capture outputs
-  FS_ID=$(terraform output -raw file_system_id)
+  BUCKET_NAME=$(terraform output -raw bucket_name)
   echo ""
-  echo "  File System ID: ${FS_ID}"
-  echo "  Bucket:         $(terraform output -raw bucket_name)"
+  echo "  Bucket: ${BUCKET_NAME}"
+  echo "  S3 CSI Role: $(terraform output -raw s3_csi_role_arn)"
 
   cd "${ROOT_DIR}"
-  export FS_ID
+  export BUCKET_NAME
 }
 
-# ─── Step 3: Apply K8s Manifests ──────────────────────────────────────────
+# ─── Step 2: Apply K8s Manifests ──────────────────────────────────────────
 
 apply_k8s_manifests() {
   echo ""
   echo "--- K8s Storage Manifests ---"
 
-  # Get file system ID (from Terraform output or env)
-  if [ -z "${FS_ID:-}" ]; then
+  # Get bucket name (from Terraform output or env)
+  if [ -z "${BUCKET_NAME:-}" ]; then
     if [ -f "${TF_DIR}/terraform.tfstate" ] || [ -d "${TF_DIR}/.terraform" ]; then
       cd "${TF_DIR}"
-      FS_ID=$(terraform output -raw file_system_id 2>/dev/null || echo "")
+      BUCKET_NAME=$(terraform output -raw bucket_name 2>/dev/null || echo "")
       cd "${ROOT_DIR}"
     fi
   fi
 
-  if [ -z "${FS_ID:-}" ]; then
-    echo "ERROR: File system ID not available."
-    echo "Run with Terraform first, or set FS_ID environment variable."
+  if [ -z "${BUCKET_NAME:-}" ]; then
+    echo "ERROR: Bucket name not available."
+    echo "Run with Terraform first, or set BUCKET_NAME environment variable."
     exit 1
   fi
 
-  echo "  Using File System ID: ${FS_ID}"
+  echo "  Using bucket: ${BUCKET_NAME}"
 
-  # Check if EFS CSI driver is running
-  echo "  Checking EFS CSI driver..."
-  if kubectl get daemonset efs-csi-node -n kube-system &>/dev/null; then
-    echo "  EFS CSI driver: installed"
+  # Check if Mountpoint S3 CSI driver is running
+  echo "  Checking Mountpoint S3 CSI driver..."
+  if kubectl get daemonset s3-csi-node -n kube-system &>/dev/null; then
+    echo "  Mountpoint S3 CSI driver: installed"
   else
-    echo "  WARNING: EFS CSI driver not detected in kube-system."
+    echo "  WARNING: Mountpoint S3 CSI driver not detected in kube-system."
     echo "  The CSI driver should be installed by Terraform (EKS add-on)."
     echo "  Continuing anyway — the PV/PVC will be created but may not bind until the driver is ready."
   fi
 
-  # Template the manifest with the file system ID and apply
-  echo "  Applying StorageClass + PV + PVC..."
-  sed "s/<FILE_SYSTEM_ID>/${FS_ID}/g" "${MANIFESTS_DIR}/s3-files-storage.yaml" | kubectl apply -f -
+  # Template the manifest with the bucket name and apply
+  echo "  Applying PV + PVC..."
+  sed "s/<BUCKET_NAME>/${BUCKET_NAME}/g" "${MANIFESTS_DIR}/s3-files-storage.yaml" | kubectl apply -f -
 
   # Wait for PVC to bind
   echo "  Waiting for PVC to bind..."
@@ -180,7 +114,7 @@ apply_k8s_manifests() {
   else
     PVC_STATUS=$(kubectl get pvc platform-data -n "${NAMESPACE}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
     echo "  WARNING: PVC platform-data status: ${PVC_STATUS}"
-    echo "  The PVC may take additional time to bind after the EFS CSI driver starts."
+    echo "  The PVC may take additional time to bind after the Mountpoint S3 CSI driver starts."
   fi
 }
 
@@ -197,12 +131,12 @@ fi
 
 echo ""
 echo "============================================"
-echo "S3 Files storage deployment complete!"
+echo "Mountpoint S3 storage deployment complete!"
 echo "============================================"
 echo ""
 echo "Storage:"
-echo "  PVC:         platform-data (500Gi, ReadWriteMany)"
-echo "  StorageClass: s3-files"
+echo "  PVC:         platform-data (ReadWriteMany, backed by S3 via Mountpoint)"
+echo "  Bucket:      ${BUCKET_NAME:-<from terraform output>}"
 echo "  Mount in pods via:"
 echo "    volumes:"
 echo "      - name: platform-data"
@@ -210,6 +144,8 @@ echo "        persistentVolumeClaim:"
 echo "          claimName: platform-data"
 echo "    volumeMounts:"
 echo "      - name: platform-data"
-echo "        mountPath: /data"
-echo "        subPath: <service-name>"
+echo "        mountPath: /platform-data"
+echo ""
+echo "IMPORTANT: Writers must produce complete artifacts (no in-place edits)."
+echo "Git clones and build scratch belong on emptyDir, not this mount."
 echo ""

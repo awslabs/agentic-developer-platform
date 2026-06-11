@@ -81,15 +81,12 @@ module "iam" {
 module "s3_files" {
   source = "./modules/s3-files"
 
-  cluster_name           = local.cluster_name
-  aws_region             = var.aws_region
-  bucket_name            = local.bucket_name
-  namespace              = var.namespace
-  vpc_id                 = local.vpc_id
-  subnet_ids             = local.private_subnets
-  node_security_group_id = local.node_security_group_id
-  oidc_provider_url      = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
-  tags                   = var.tags
+  cluster_name      = local.cluster_name
+  aws_region        = var.aws_region
+  bucket_name       = local.bucket_name
+  namespace         = var.namespace
+  oidc_provider_url = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
+  tags              = var.tags
 }
 
 # =============================================================================

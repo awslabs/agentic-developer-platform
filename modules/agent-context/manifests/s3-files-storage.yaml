@@ -1,34 +1,36 @@
-# S3 Files Storage — StorageClass + PV + PVC
-# The PV volumeHandle must be set to the EFS file system ID from Terraform output.
-# deploy-s3-files.sh handles this substitution automatically.
----
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: s3-files
-provisioner: efs.csi.aws.com
-parameters:
-  provisioningMode: efs-ap
-  directoryPerms: "700"
+# Mountpoint for Amazon S3 Storage — PV + PVC
+# Replaces the previous EFS-over-S3 overlay with direct S3 bucket mount.
+# deploy-s3-files.sh handles the bucket name substitution automatically.
+#
+# Mountpoint semantics:
+#   - New file creation + full-object overwrite (--allow-overwrite)
+#   - Deletion allowed (--allow-delete)
+#   - NO random/partial writes, NO file locking
+#   - Writers must produce complete artifacts (never modify in place)
 ---
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: agent-context-s3-files
+  name: agent-context-platform-data
   labels:
     app.kubernetes.io/part-of: agent-context-platform
-    app.kubernetes.io/component: s3-files-storage
+    app.kubernetes.io/component: s3-mountpoint-storage
 spec:
   capacity:
-    storage: 500Gi
+    storage: 1Ti  # Notional — S3 storage is unlimited
   volumeMode: Filesystem
   accessModes:
     - ReadWriteMany
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: s3-files
+  storageClassName: ""
+  mountOptions:
+    - allow-delete
+    - allow-overwrite
   csi:
-    driver: efs.csi.aws.com
-    volumeHandle: <FILE_SYSTEM_ID>
+    driver: s3.csi.aws.com
+    volumeHandle: s3-csi-<BUCKET_NAME>
+    volumeAttributes:
+      bucketName: <BUCKET_NAME>
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -37,12 +39,12 @@ metadata:
   namespace: agent-context
   labels:
     app.kubernetes.io/part-of: agent-context-platform
-    app.kubernetes.io/component: s3-files-storage
+    app.kubernetes.io/component: s3-mountpoint-storage
 spec:
   accessModes:
     - ReadWriteMany
-  storageClassName: s3-files
+  storageClassName: ""
   resources:
     requests:
-      storage: 500Gi
-  volumeName: agent-context-s3-files
+      storage: 1Ti
+  volumeName: agent-context-platform-data
