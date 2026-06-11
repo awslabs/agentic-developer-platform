@@ -456,18 +456,16 @@ def test_middleware_get_agent_budget_config_id_without_trust():
 
 def test_lambda_parse_chat_log_with_agent_fields():
     """Test Lambda parser includes agent fields."""
-    import os
-    import sys
-
-    # Add lambda path for imports
-    lambda_path = os.path.join(os.path.dirname(__file__), "..", "lambda", "budget-usage-tracker")
-    if lambda_path not in sys.path:
-        sys.path.insert(0, lambda_path)
+    import importlib
 
     # Skip if psycopg2 not available (Lambda dependency)
     pytest.importorskip("psycopg2")
 
-    from handler import parse_chat_log
+    # ``tests.lambda`` can't be a dotted import (lambda is a keyword), so reach
+    # the loader via importlib. It loads the handler under a unique module name,
+    # avoiding the ``handler`` collision with other lambdas in the same run.
+    load_handler = importlib.import_module("tests.lambda._handler_loader").load_handler
+    parse_chat_log = load_handler("budget-usage-tracker").parse_chat_log
 
     chat_log = {
         "org_id": "org-123",
@@ -495,16 +493,12 @@ def test_lambda_parse_chat_log_with_agent_fields():
 
 def test_lambda_parse_chat_log_without_agent_fields():
     """Test Lambda parser handles missing agent fields gracefully."""
-    import os
-    import sys
-
-    lambda_path = os.path.join(os.path.dirname(__file__), "..", "lambda", "budget-usage-tracker")
-    if lambda_path not in sys.path:
-        sys.path.insert(0, lambda_path)
+    import importlib
 
     pytest.importorskip("psycopg2")
 
-    from handler import parse_chat_log
+    load_handler = importlib.import_module("tests.lambda._handler_loader").load_handler
+    parse_chat_log = load_handler("budget-usage-tracker").parse_chat_log
 
     chat_log = {
         "org_id": "org-123",

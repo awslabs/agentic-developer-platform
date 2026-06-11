@@ -4,16 +4,12 @@ Tests for Budget Usage Tracker Lambda Handler.
 Issue #234: Budget Usage Tracking Lambda
 """
 
-import sys
 from datetime import UTC, datetime
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 
-# Add lambda shared directory to path
-lambda_shared_path = Path(__file__).parent.parent.parent / "lambda" / "shared"
-sys.path.insert(0, str(lambda_shared_path))
+from ._handler_loader import load_handler
 
 
 def _has_psycopg2() -> bool:
@@ -169,12 +165,8 @@ class TestPeriodCalculation:
     )
     def test_import_handler(self):
         """Test that handler module can be imported."""
-        # This tests the handler import works with the shared module path manipulation
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
-        sys.path.insert(0, str(handler_path))
-
-        # Import the get_period_starts function
-        from handler import get_period_starts
+        # This tests the handler loads cleanly under its unique module name.
+        get_period_starts = load_handler("budget-usage-tracker").get_period_starts
 
         # Test with a known date: Wednesday, February 26, 2026
         timestamp = datetime(2026, 2, 26, 12, 30, 0, tzinfo=UTC)
@@ -205,10 +197,7 @@ class TestChatLogParsing:
 
     def test_parse_valid_chat_log(self):
         """Test parsing a valid chat log."""
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
-        sys.path.insert(0, str(handler_path))
-
-        from handler import parse_chat_log
+        parse_chat_log = load_handler("budget-usage-tracker").parse_chat_log
 
         chat_log = {
             "request_id": "test-123",
@@ -237,10 +226,7 @@ class TestChatLogParsing:
 
     def test_parse_chat_log_missing_required_field(self):
         """Test parsing chat log with missing required field."""
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
-        sys.path.insert(0, str(handler_path))
-
-        from handler import parse_chat_log
+        parse_chat_log = load_handler("budget-usage-tracker").parse_chat_log
 
         chat_log = {
             "request_id": "test-123",
@@ -259,10 +245,7 @@ class TestChatLogParsing:
 
     def test_parse_chat_log_missing_usage(self):
         """Test parsing chat log with missing usage data."""
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
-        sys.path.insert(0, str(handler_path))
-
-        from handler import parse_chat_log
+        parse_chat_log = load_handler("budget-usage-tracker").parse_chat_log
 
         chat_log = {
             "org_id": "acme",
@@ -276,10 +259,7 @@ class TestChatLogParsing:
 
     def test_parse_chat_log_no_team_id(self):
         """Test parsing chat log without team_id."""
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
-        sys.path.insert(0, str(handler_path))
-
-        from handler import parse_chat_log
+        parse_chat_log = load_handler("budget-usage-tracker").parse_chat_log
 
         chat_log = {
             "org_id": "acme",
@@ -299,10 +279,7 @@ class TestChatLogParsing:
 
     def test_parse_chat_log_extracts_request_id(self):
         """Issue #1074: Test that request_id is extracted from chat log."""
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
-        sys.path.insert(0, str(handler_path))
-
-        from handler import parse_chat_log
+        parse_chat_log = load_handler("budget-usage-tracker").parse_chat_log
 
         chat_log = {
             "request_id": "abc-123-def",
@@ -323,10 +300,7 @@ class TestChatLogParsing:
 
     def test_parse_chat_log_missing_request_id_returns_none(self):
         """Issue #1074: request_id is optional, returns None if absent."""
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
-        sys.path.insert(0, str(handler_path))
-
-        from handler import parse_chat_log
+        parse_chat_log = load_handler("budget-usage-tracker").parse_chat_log
 
         chat_log = {
             "org_id": "acme",
@@ -354,12 +328,9 @@ class TestBridgeCostToUsageLogs:
 
     def test_bridge_updates_row(self):
         """Test that bridge updates usage_logs when request_id matches."""
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
-        sys.path.insert(0, str(handler_path))
-
         from unittest.mock import MagicMock
 
-        from handler import bridge_cost_to_usage_logs
+        bridge_cost_to_usage_logs = load_handler("budget-usage-tracker").bridge_cost_to_usage_logs
 
         # Mock connection and cursor
         mock_conn = MagicMock()
@@ -378,12 +349,9 @@ class TestBridgeCostToUsageLogs:
 
     def test_bridge_no_matching_row(self):
         """Test that bridge returns False when no matching row found."""
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
-        sys.path.insert(0, str(handler_path))
-
         from unittest.mock import MagicMock
 
-        from handler import bridge_cost_to_usage_logs
+        bridge_cost_to_usage_logs = load_handler("budget-usage-tracker").bridge_cost_to_usage_logs
 
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
@@ -397,12 +365,9 @@ class TestBridgeCostToUsageLogs:
 
     def test_bridge_handles_exception(self):
         """Test that bridge handles exceptions gracefully."""
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "budget-usage-tracker"
-        sys.path.insert(0, str(handler_path))
-
         from unittest.mock import MagicMock
 
-        from handler import bridge_cost_to_usage_logs
+        bridge_cost_to_usage_logs = load_handler("budget-usage-tracker").bridge_cost_to_usage_logs
 
         mock_conn = MagicMock()
         mock_conn.cursor.return_value.__enter__ = MagicMock(side_effect=Exception("DB connection lost"))

@@ -154,7 +154,7 @@ class TestEnums:
         assert set(VerificationMethod) == {"oauth", "magic_link", "admin_manual"}
 
     def test_credential_type_values(self):
-        expected = {"api_key", "oauth_token", "basic_auth", "bearer", "ssh_key", "certificate", "config_file"}
+        expected = {"api_key", "oauth_token", "basic_auth", "bearer", "ssh_key", "certificate", "config_file", "aws_role"}
         assert set(CredentialType) == expected
 
 

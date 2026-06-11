@@ -5,16 +5,16 @@ Issue #234: Budget Usage Tracking Lambda
 """
 
 import json
-import sys
 from decimal import Decimal
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Add lambda shared directory to path
-lambda_shared_path = Path(__file__).parent.parent.parent / "lambda" / "shared"
-sys.path.insert(0, str(lambda_shared_path))
+from ._handler_loader import handler_module_name, load_handler
+
+# Unique module name for the pricing-refresh handler — used both to load it and
+# as the patch target, so it never collides with other lambdas' ``handler``.
+_PRICING_HANDLER = handler_module_name("pricing-refresh")
 
 
 def _has_psycopg2() -> bool:
@@ -25,6 +25,15 @@ def _has_psycopg2() -> bool:
         return True
     except ImportError:
         return False
+
+
+# Register the handler module under its unique name at import time when its
+# deps are available, so the class-level @patch(f"{_PRICING_HANDLER}.…")
+# decorators can resolve their target (patch imports the target before the
+# test body runs). Skipped when psycopg2 is absent — those tests are skipped
+# too, so the module is never needed.
+if _has_psycopg2():
+    load_handler("pricing-refresh")
 
 
 from pricing_fallback import MODEL_PRICING  # noqa: E402
@@ -39,10 +48,7 @@ class TestPricingRefreshHandler:
 
     def test_extract_model_pricing_from_product(self):
         """Test extracting model pricing from AWS Pricing API product data."""
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "pricing-refresh"
-        sys.path.insert(0, str(handler_path))
-
-        from handler import extract_model_pricing_from_product
+        extract_model_pricing_from_product = load_handler("pricing-refresh").extract_model_pricing_from_product
 
         # Sample product data structure from AWS Pricing API
         product = {
@@ -80,10 +86,7 @@ class TestPricingRefreshHandler:
 
     def test_extract_model_pricing_missing_model_id(self):
         """Test extracting pricing when model ID is missing."""
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "pricing-refresh"
-        sys.path.insert(0, str(handler_path))
-
-        from handler import extract_model_pricing_from_product
+        extract_model_pricing_from_product = load_handler("pricing-refresh").extract_model_pricing_from_product
 
         product = {
             "product": {
@@ -97,10 +100,7 @@ class TestPricingRefreshHandler:
 
     def test_extract_model_pricing_missing_on_demand(self):
         """Test extracting pricing when OnDemand terms are missing."""
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "pricing-refresh"
-        sys.path.insert(0, str(handler_path))
-
-        from handler import extract_model_pricing_from_product
+        extract_model_pricing_from_product = load_handler("pricing-refresh").extract_model_pricing_from_product
 
         product = {
             "product": {
@@ -156,13 +156,10 @@ class TestFallbackPricing:
 class TestHandlerIntegration:
     """Integration tests for the handler function."""
 
-    @patch("handler.get_db_connection")
-    @patch("handler.boto3.client")
+    @patch(f"{_PRICING_HANDLER}.get_db_connection")
+    @patch(f"{_PRICING_HANDLER}.boto3.client")
     def test_handler_with_pricing_api_failure_uses_fallback(self, mock_boto_client, mock_get_db_connection):
         """Test that handler falls back to hardcoded pricing when API fails."""
-        handler_path = Path(__file__).parent.parent.parent / "lambda" / "pricing-refresh"
-        sys.path.insert(0, str(handler_path))
-
         # Mock pricing client to raise exception
         mock_pricing_client = MagicMock()
         mock_pricing_client.get_paginator.return_value.paginate.side_effect = Exception("Pricing API throttled")
@@ -176,7 +173,7 @@ class TestHandlerIntegration:
         mock_get_db_connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
         mock_get_db_connection.return_value.__exit__ = MagicMock(return_value=False)
 
-        from handler import handler
+        handler = load_handler("pricing-refresh").handler
 
         event = {"source": "aws.events"}
         context = MagicMock()

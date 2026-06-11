@@ -139,11 +139,23 @@ class TestBudgetEnforcementIntegration:
             json={"model": "claude-3-5-sonnet", "messages": [{"role": "user", "content": "Hi"}]},
         )
 
-        assert response.status_code == 429
+        # The enforcement middleware returns 402 Payment Required (not 429): the
+        # AWS SDK auto-retries 429 (throttling), which makes a budget-blocked
+        # client appear hung in a retry loop. See _send_budget_exceeded.
+        assert response.status_code == 402
         assert "budget_exceeded" in response.json()["error"]
+        # Block-path headers the middleware sets.
+        assert response.headers["retry-after"] == "3600"
+        assert response.headers["x-budget-remaining"] == "0"
+        assert response.headers["x-budget-limit"] == "100.00"
 
-    def test_warning_headers_added_for_soft_limit(self, token_context, mock_budget_service):
-        """Test that warning headers are added for soft limit breaches."""
+    def test_soft_limit_warning_does_not_block(self, token_context, mock_budget_service):
+        """A soft-limit breach (allowed=True with warnings) lets the request through.
+
+        The active ASGI enforcement middleware does not inject success-path
+        warning headers (X-Budget-Warning) — that was a superseded middleware.
+        What matters here is that a warning-only result is not blocked.
+        """
         mock_budget_service.check_budget_hierarchy = AsyncMock(
             return_value=EnforcementResult(
                 allowed=True,
@@ -166,8 +178,7 @@ class TestBudgetEnforcementIntegration:
         )
 
         assert response.status_code == 200
-        # Check for warning header
-        assert "X-Budget-Warning" in response.headers
+        assert response.json() == {"message": "success"}
 
     def test_non_enforced_paths_skip_budget_check(self, token_context, mock_budget_service):
         """Test that non-enforced paths skip budget checks."""
@@ -241,8 +252,14 @@ class TestRateLimitEnforcementIntegration:
         assert "rate_limited" in response.json()["error"]
         assert "Retry-After" in response.headers
 
-    def test_rate_limit_headers_in_response(self, token_context, mock_ratelimit_service):
-        """Test that rate limit headers are included in response."""
+    def test_under_limit_request_passes_through(self, token_context, mock_ratelimit_service):
+        """A request under the rate limit is forwarded to the route unchanged.
+
+        The active ASGI enforcement middleware only emits X-RateLimit-* headers
+        on the 429 block path (see _send_rate_limited); it does not decorate
+        successful responses. Block-path headers are covered by
+        test_request_blocked_when_rate_limited.
+        """
         app = create_test_app(ratelimit_service=mock_ratelimit_service)
 
         @app.middleware("http")
@@ -258,9 +275,9 @@ class TestRateLimitEnforcementIntegration:
         )
 
         assert response.status_code == 200
-        # Rate limit headers should be present
-        assert "X-RateLimit-Limit" in response.headers
-        assert "X-RateLimit-Remaining" in response.headers
+        assert response.json() == {"message": "success"}
+        # consume_rate_limit is called on the allowed path.
+        mock_ratelimit_service.consume_rate_limit.assert_awaited_once()
 
 
 class TestCombinedEnforcementIntegration:

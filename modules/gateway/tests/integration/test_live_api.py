@@ -27,6 +27,12 @@ import boto3
 import httpx
 import pytest
 
+# Every test in this module makes real HTTP calls against the deployed gateway
+# (CloudFront → ALB → EKS → RDS → Bedrock) and needs a live Cognito M2M secret.
+# Mark the whole module live_only so the unit CI job (pytest -m "not live_only")
+# deselects it; it runs in gateway-live-tests.yml (pytest -m "live_only").
+pytestmark = pytest.mark.live_only
+
 # =============================================================================
 # Configuration
 # =============================================================================
