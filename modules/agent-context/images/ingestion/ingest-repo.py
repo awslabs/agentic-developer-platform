@@ -266,8 +266,8 @@ def _sanitize_git_output(text: str) -> str:
 
     # Redact x-access-token:xxx@ patterns (shouldn't appear, but just in case)
     text = re.sub(r"x-access-token:[^@]+@", "x-access-token:***@", text)
-    # Redact ghp_/gho_/ghu_ tokens
-    text = re.sub(r"(ghp_|gho_|ghu_|github_pat_)[A-Za-z0-9_]+", r"\1***", text)
+    # Redact GitHub token prefixes (ghp_=PAT, gho_=OAuth, ghu_=user, ghs_=App installation)
+    text = re.sub(r"(ghp_|gho_|ghu_|ghs_|github_pat_)[A-Za-z0-9_]+", r"\1***", text)
     return text
 
 

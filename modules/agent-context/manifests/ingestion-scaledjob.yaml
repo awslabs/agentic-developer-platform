@@ -5,7 +5,8 @@
 #   NAMESPACE, SERVICE_ACCOUNT, INGESTION_IMAGE, SQS_QUEUE_URL,
 #   DYNAMO_TABLE, AWS_REGION, OV_URL, OPENVIKING_ROOT_KEY,
 #   DEEPWIKI_URL, NEPTUNE_ENDPOINT, NEPTUNE_PORT, OPENSEARCH_ENDPOINT,
-#   LLM_BASE_URL, WIKI_LLM_MODEL, GRAPHRAG_ENABLED, ECR_REGISTRY
+#   LLM_BASE_URL, WIKI_LLM_MODEL, GRAPHRAG_ENABLED, ECR_REGISTRY,
+#   GITHUB_APP_ID_SECRET, GITHUB_APP_KEY_SECRET, GITHUB_APP_OWNER
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
@@ -65,11 +66,13 @@ spec:
                 value: /tmp/repos
               - name: CODE_INDEX_DIR
                 value: /platform-data/code-indexes
-              # GitHub App secret references for authenticated cloning (private repos)
+              # GitHub App configuration for authenticated cloning (private repos)
               - name: GITHUB_APP_ID_SECRET
                 value: "${GITHUB_APP_ID_SECRET}"
               - name: GITHUB_APP_KEY_SECRET
                 value: "${GITHUB_APP_KEY_SECRET}"
+              - name: GITHUB_APP_OWNER
+                value: "${GITHUB_APP_OWNER}"
             resources:
               requests:
                 cpu: "500m"

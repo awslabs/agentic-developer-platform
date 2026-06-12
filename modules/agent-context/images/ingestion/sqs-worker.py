@@ -288,6 +288,10 @@ def _mint_github_token() -> bool:
 
     Returns True if token was successfully obtained, False otherwise.
     Failure is non-fatal — anonymous clones still work for public repos.
+
+    Note: GitHub App installation tokens expire after 1 hour (GitHub-enforced).
+    Since each KEDA ScaledJob pod processes one message then exits (backoffLimit=0),
+    and per-repo ingestion takes ≤15 min, mint-per-pod is sufficient.
     """
     app_id_secret = os.getenv("GITHUB_APP_ID_SECRET", "")
     app_key_secret = os.getenv("GITHUB_APP_KEY_SECRET", "")
@@ -296,20 +300,26 @@ def _mint_github_token() -> bool:
         log.info("No GitHub App secrets configured — using anonymous clones")
         return False
 
+    owner = os.getenv("GITHUB_APP_OWNER", "")
+
     try:
+        cmd = [
+            sys.executable,
+            "/app/github-app-token.py",
+            "--app-id-secret",
+            app_id_secret,
+            "--app-key-secret",
+            app_key_secret,
+            "--region",
+            AWS_REGION,
+            "--output-file",
+            "/tmp/github-token",
+        ]
+        if owner:
+            cmd.extend(["--owner", owner])
+
         result = subprocess.run(
-            [
-                sys.executable,
-                "/app/github-app-token.py",
-                "--app-id-secret",
-                app_id_secret,
-                "--app-key-secret",
-                app_key_secret,
-                "--region",
-                AWS_REGION,
-                "--output-file",
-                "/tmp/github-token",
-            ],
+            cmd,
             capture_output=True,
             timeout=30,
         )
