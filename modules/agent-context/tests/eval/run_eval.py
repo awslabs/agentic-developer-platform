@@ -213,15 +213,20 @@ def check_ingestion(config: EvalConfig, corpus: list[Repo]) -> dict[str, bool]:
         try:
             if config.eval_mode == "direct":
                 # Query Zoekt: search for any file in this repo
+                # Use a common token as content query (Zoekt needs a content term)
                 resp = httpx.post(
                     f"{config.zoekt_url}/api/search",
-                    json={"q": f"r:{repo.name} f:.", "num": 1},
+                    json={"q": f"r:{repo.name}", "num": 1},
                     timeout=config.timeout,
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    file_matches = data.get("Result", {}).get("FileMatches", []) or []
-                    results[repo.name] = len(file_matches) > 0
+                    result = data.get("Result", {})
+                    # Zoekt v16+ uses "Files" instead of "FileMatches"
+                    file_matches = result.get("FileMatches") or result.get("Files") or []
+                    # Also check FileCount for repo-only queries (no content matches but files exist)
+                    file_count = result.get("FileCount", 0)
+                    results[repo.name] = len(file_matches) > 0 or file_count > 0
                 else:
                     results[repo.name] = False
             else:
@@ -300,8 +305,12 @@ def _query_zoekt(config: EvalConfig, arguments: dict[str, Any]) -> dict[str, Any
     data = resp.json()
 
     # Transform Zoekt response to match MCP search response format
+    # Zoekt v16+ uses "Files" instead of "FileMatches"
+    result_data = data.get("Result", {})
+    file_matches = result_data.get("FileMatches") or result_data.get("Files") or []
+
     results = []
-    for file_match in data.get("Result", {}).get("FileMatches", []) or []:
+    for file_match in file_matches:
         file_name = file_match.get("FileName", "")
         repo_name = file_match.get("Repository", "")
         for line_match in file_match.get("LineMatches", []) or []:
@@ -318,7 +327,7 @@ def _query_zoekt(config: EvalConfig, arguments: dict[str, Any]) -> dict[str, Any
 
     # Also add file-level matches (in case LineMatches is empty)
     if not results:
-        for file_match in data.get("Result", {}).get("FileMatches", []) or []:
+        for file_match in file_matches:
             file_name = file_match.get("FileName", "")
             repo_name = file_match.get("Repository", "")
             results.append(
@@ -352,8 +361,11 @@ def _query_zoekt_browse(config: EvalConfig, arguments: dict[str, Any]) -> dict[s
     data = resp.json()
 
     # Extract unique directory entries at the requested depth
+    # Zoekt v16+ uses "Files" instead of "FileMatches"
+    result_data = data.get("Result", {})
+    file_matches = result_data.get("FileMatches") or result_data.get("Files") or []
     entries = set()
-    for file_match in data.get("Result", {}).get("FileMatches", []) or []:
+    for file_match in file_matches:
         file_name = file_match.get("FileName", "")
         # Get the relative path from the prefix
         if path_prefix and file_name.startswith(path_prefix):
