@@ -29,7 +29,7 @@ spec:
       serviceAccountName: ${SERVICE_ACCOUNT}
       containers:
       - name: zoekt-webserver
-        image: ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG:-latest}
+        image: ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG}
         command: ["zoekt-webserver"]
         args:
           - "-index"

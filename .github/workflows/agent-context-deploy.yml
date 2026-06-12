@@ -160,9 +160,9 @@ jobs:
           source scripts/_common.sh
           load_config "$(pwd)"
 
-          export NAMESPACE SERVICE_ACCOUNT
+          export NAMESPACE SERVICE_ACCOUNT ZOEKT_IMAGE_TAG
           template_file manifests/zoekt.yaml | kubectl apply -f -
-          echo "Zoekt webserver deployed"
+          echo "Zoekt webserver deployed (image tag: ${ZOEKT_IMAGE_TAG})"
 
       - name: Deploy LiteLLM Proxy
         run: |
