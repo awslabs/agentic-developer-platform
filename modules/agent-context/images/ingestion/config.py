@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     sqs_queue_url: str = ""
     dynamo_table: str = "adp-context-service-state"
 
+    # --- Zoekt (exact/regex code search) ----------------------------------------
+    zoekt_url: str = "http://zoekt.agent-context.svc.cluster.local:6070"
+    zoekt_timeout: float = 10.0
+
     # --- DeepWiki -------------------------------------------------------------
     deepwiki_url: str = "http://deepwiki.agent-context.svc.cluster.local:8001"
     deepwiki_enabled: bool = True

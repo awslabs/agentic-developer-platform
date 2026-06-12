@@ -1,0 +1,94 @@
+# Zoekt webserver — exact/regex code search
+# Replaces Sourcebot (FSL-1.1-ALv2) with direct Zoekt (Apache-2.0).
+# Issue: #1346  Design: docs/design-notes/1346-zoekt-direct-replacement.md
+#
+# Read-only: serves pre-built .zoekt shard files from S3 via Mountpoint.
+# Indexing is handled by the ingestion pipeline (separate sub-issue).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zoekt-webserver
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: zoekt-webserver
+    app.kubernetes.io/part-of: agent-context-platform
+    app.kubernetes.io/component: search
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: zoekt-webserver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: zoekt-webserver
+        app.kubernetes.io/part-of: agent-context-platform
+        app.kubernetes.io/component: search
+    spec:
+      serviceAccountName: ${SERVICE_ACCOUNT}
+      containers:
+      - name: zoekt-webserver
+        image: ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG:-latest}
+        command: ["zoekt-webserver"]
+        args:
+          - "-index"
+          - "/data/index"
+          - "-listen"
+          - ":6070"
+          - "-rpc"
+        ports:
+        - containerPort: 6070
+          name: http
+          protocol: TCP
+        volumeMounts:
+        - name: index-data
+          mountPath: /data/index
+          subPath: zoekt-shards
+          readOnly: true
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "2Gi"
+          limits:
+            cpu: "1"
+            memory: "4Gi"
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 6070
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 6070
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 5
+      volumes:
+      - name: index-data
+        persistentVolumeClaim:
+          claimName: platform-data
+          readOnly: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zoekt
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: zoekt-webserver
+    app.kubernetes.io/part-of: agent-context-platform
+spec:
+  selector:
+    app.kubernetes.io/name: zoekt-webserver
+  ports:
+  - name: http
+    port: 6070
+    targetPort: 6070
+    protocol: TCP
+  type: ClusterIP
