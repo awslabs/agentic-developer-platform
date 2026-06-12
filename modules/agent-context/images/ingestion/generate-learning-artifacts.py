@@ -37,15 +37,15 @@ logging.basicConfig(
 )
 log = logging.getLogger("learning-artifacts")
 
-# Configuration
-LEARNING_DIR = os.getenv("LEARNING_DIR", "/platform-data/learning")
-CODE_INDEX_DIR = os.getenv("CODE_INDEX_DIR", "/platform-data/code-indexes")
-CLONE_BASE = os.getenv("CLONE_BASE", "/platform-data/repos")
-LLM_MODEL = os.getenv("WIKI_LLM_MODEL", "bedrock/global.anthropic.claude-opus-4-6-v1")
-LLM_BASE_URL = os.getenv(
-    "LLM_BASE_URL", "http://litellm-proxy.agent-context.svc.cluster.local:4000/v1"
-)
-REPOS_FILE = os.getenv("REPOS_FILE", "/config/repos.txt")
+# Configuration (centralized via config.py)
+from config import settings
+
+LEARNING_DIR = settings.learning_dir
+CODE_INDEX_DIR = settings.code_index_dir
+CLONE_BASE = settings.clone_base
+LLM_MODEL = settings.model_learning
+LLM_BASE_URL = settings.llm_base_url
+REPOS_FILE = settings.repos_file
 
 
 def safe_name(repo: str) -> str:

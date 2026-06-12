@@ -38,29 +38,29 @@ logging.basicConfig(
 log = logging.getLogger("ingest-repo")
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration (centralized via config.py)
 # ---------------------------------------------------------------------------
 
-DEEPWIKI_URL = os.getenv("DEEPWIKI_URL", "http://deepwiki.agent-context.svc.cluster.local:8001")
-DEEPWIKI_ENABLED = os.getenv("DEEPWIKI_ENABLED", "true").lower() == "true"
+from config import settings
+
+DEEPWIKI_URL = settings.deepwiki_url
+DEEPWIKI_ENABLED = settings.deepwiki_enabled
 # Clone to persistent S3 Files mount instead of /tmp (shared across enrichment consumers)
-CLONE_BASE = os.getenv("CLONE_BASE", "/platform-data/repos")
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "120"))
-CODE_INDEX_DIR = os.getenv("CODE_INDEX_DIR", "/platform-data/code-indexes")
+CLONE_BASE = settings.clone_base
+REQUEST_TIMEOUT = settings.request_timeout
+CODE_INDEX_DIR = settings.code_index_dir
 
 # GraphRAG configuration
-GRAPHRAG_ENABLED = os.getenv("GRAPHRAG_ENABLED", "false").lower() == "true"
-NEPTUNE_ENDPOINT = os.getenv("NEPTUNE_ENDPOINT", "")
-NEPTUNE_PORT = int(os.getenv("NEPTUNE_PORT", "8182"))
-OPENSEARCH_ENDPOINT = os.getenv("OPENSEARCH_ENDPOINT", "")
-LLM_MODEL = os.getenv("WIKI_LLM_MODEL", "bedrock/global.anthropic.claude-opus-4-6-v1")
-LLM_BASE_URL = os.getenv(
-    "LLM_BASE_URL", "http://litellm-proxy.agent-context.svc.cluster.local:4000/v1"
-)
+GRAPHRAG_ENABLED = settings.graphrag_enabled
+NEPTUNE_ENDPOINT = settings.neptune_endpoint
+NEPTUNE_PORT = settings.neptune_port
+OPENSEARCH_ENDPOINT = settings.opensearch_endpoint
+LLM_MODEL = settings.model_wiki
+LLM_BASE_URL = settings.llm_base_url
 
 # DynamoDB configuration (for state tracking — replaces repo-state.json)
-DYNAMO_TABLE = os.getenv("DYNAMO_TABLE", "adp-context-service-state")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+DYNAMO_TABLE = settings.dynamo_table
+AWS_REGION = settings.aws_region
 
 
 # ---------------------------------------------------------------------------
@@ -845,7 +845,7 @@ def _get_neptune_signed_headers(method: str, url: str, body: str | None = None) 
         creds = session.get_credentials()
         if creds:
             creds = creds.get_frozen_credentials()
-            region = os.getenv("AWS_REGION", "us-east-1")
+            region = settings.aws_region
             request = AWSRequest(method=method, url=url, headers=headers, data=body)
             SigV4Auth(creds, "neptune-db", region).add_auth(request)
             return dict(request.headers)
@@ -1136,10 +1136,10 @@ def main():
     )
     parser.add_argument(
         "--ov-url",
-        default=os.getenv("OV_URL", "http://openviking.agent-context.svc.cluster.local:1933"),
+        default=settings.ov_url,
     )
     parser.add_argument(
-        "--ov-key", default=os.getenv("OPENVIKING_ROOT_KEY", os.getenv("ROOT_KEY", ""))
+        "--ov-key", default=settings.ov_key,
     )
     parser.add_argument(
         "--skip-ov", action="store_true", help="Skip OpenViking ingestion (enrichment only)"

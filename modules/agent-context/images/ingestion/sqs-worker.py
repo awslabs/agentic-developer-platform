@@ -30,14 +30,16 @@ logging.basicConfig(
 log = logging.getLogger("sqs-worker")
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration (centralized via config.py)
 # ---------------------------------------------------------------------------
 
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-SQS_QUEUE_URL = os.getenv("SQS_QUEUE_URL", "")
-DYNAMO_TABLE = os.getenv("DYNAMO_TABLE", "adp-context-service-state")
-OV_URL = os.getenv("OV_URL", "http://openviking.agent-context.svc.cluster.local:1933")
-OV_KEY = os.getenv("OPENVIKING_ROOT_KEY", os.getenv("ROOT_KEY", ""))
+from config import settings
+
+AWS_REGION = settings.aws_region
+SQS_QUEUE_URL = settings.sqs_queue_url
+DYNAMO_TABLE = settings.dynamo_table
+OV_URL = settings.ov_url
+OV_KEY = settings.ov_key
 
 # Timeouts per content type (seconds)
 TIMEOUTS = {
@@ -293,14 +295,14 @@ def _mint_github_token() -> bool:
     Since each KEDA ScaledJob pod processes one message then exits (backoffLimit=0),
     and per-repo ingestion takes ≤15 min, mint-per-pod is sufficient.
     """
-    app_id_secret = os.getenv("GITHUB_APP_ID_SECRET", "")
-    app_key_secret = os.getenv("GITHUB_APP_KEY_SECRET", "")
+    app_id_secret = settings.github_app_id_secret
+    app_key_secret = settings.github_app_key_secret
 
     if not app_id_secret or not app_key_secret:
         log.info("No GitHub App secrets configured — using anonymous clones")
         return False
 
-    owner = os.getenv("GITHUB_APP_OWNER", "")
+    owner = settings.github_app_owner
 
     try:
         cmd = [

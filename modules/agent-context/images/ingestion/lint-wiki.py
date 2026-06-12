@@ -36,26 +36,28 @@ logging.basicConfig(
 log = logging.getLogger("lint-wiki")
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration (centralized via config.py)
 # ---------------------------------------------------------------------------
 
-OV_URL = os.getenv("OV_URL", "http://openviking.agent-context.svc.cluster.local:1933")
-OV_KEY = os.getenv("OPENVIKING_ROOT_KEY", os.getenv("ROOT_KEY", ""))
-STATE_DIR = os.getenv("STATE_DIR", "/platform-data")
-REPOS_FILE = os.getenv("REPOS_FILE", "/config/repos.txt")
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "120"))
+from config import settings
+
+OV_URL = settings.ov_url
+OV_KEY = settings.ov_key
+STATE_DIR = settings.state_dir
+REPOS_FILE = settings.repos_file
+REQUEST_TIMEOUT = settings.request_timeout
 
 # How many repos to sample for L1 language check
-L1_SAMPLE_SIZE = int(os.getenv("L1_SAMPLE_SIZE", "20"))
+L1_SAMPLE_SIZE = settings.l1_sample_size
 
 # Stale wiki threshold in days
-STALE_WIKI_DAYS = int(os.getenv("STALE_WIKI_DAYS", "14"))
+STALE_WIKI_DAYS = settings.stale_wiki_days
 
 # GraphRAG configuration
-NEPTUNE_ENDPOINT = os.getenv("NEPTUNE_ENDPOINT", "")
-NEPTUNE_PORT = int(os.getenv("NEPTUNE_PORT", "8182"))
-LEARNING_DIR = os.getenv("LEARNING_DIR", "/platform-data/learning")
-CODE_INDEX_DIR = os.getenv("CODE_INDEX_DIR", "/platform-data/code-indexes")
+NEPTUNE_ENDPOINT = settings.neptune_endpoint
+NEPTUNE_PORT = settings.neptune_port
+LEARNING_DIR = settings.learning_dir
+CODE_INDEX_DIR = settings.code_index_dir
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +467,7 @@ def check_broken_learning_paths(all_repos: list[str]) -> list[str]:
     """Find learning paths that reference non-existent files."""
     issues = []
     broken_count = 0
-    clone_base = os.getenv("CLONE_BASE", "/platform-data/repos")
+    clone_base = settings.clone_base
 
     for repo in all_repos:
         lp_path = os.path.join(LEARNING_DIR, repo.replace("/", "-"), "learning-path.json")

@@ -1,0 +1,74 @@
+# Centralized configuration for the Agent Context platform.
+# Single source of truth for all non-secret environment variables.
+# All pods consume this via envFrom: configMapRef.
+#
+# Variables substituted at deploy time by template_file() from _common.sh:
+#   NAMESPACE, AWS_REGION, SQS_QUEUE_URL, DYNAMO_TABLE, DEEPWIKI_ENABLED,
+#   GRAPHRAG_ENABLED, NEPTUNE_ENDPOINT, NEPTUNE_PORT, OPENSEARCH_ENDPOINT,
+#   WIKI_LLM_MODEL, GITHUB_APP_ID_SECRET, GITHUB_APP_KEY_SECRET, GITHUB_APP_OWNER
+#
+# Secrets (OPENVIKING_ROOT_KEY) stay in agent-context-secrets — NOT in this ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-context-config
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/part-of: agent-context-platform
+    app.kubernetes.io/component: config
+data:
+  # --- Core services ---
+  OV_URL: "http://openviking.${NAMESPACE}.svc.cluster.local:1933"
+  DEEPWIKI_URL: "http://deepwiki.${NAMESPACE}.svc.cluster.local:8001"
+  LLM_BASE_URL: "http://litellm-proxy.${NAMESPACE}.svc.cluster.local:4000/v1"
+
+  # --- AWS ---
+  AWS_REGION: "${AWS_REGION}"
+
+  # --- SQS + DynamoDB ---
+  SQS_QUEUE_URL: "${SQS_QUEUE_URL}"
+  DYNAMO_TABLE: "${DYNAMO_TABLE}"
+
+  # --- Feature flags ---
+  DEEPWIKI_ENABLED: "${DEEPWIKI_ENABLED}"
+  GRAPHRAG_ENABLED: "${GRAPHRAG_ENABLED}"
+
+  # --- Per-task model tiering ---
+  # Wiki generation/updates: needs strong reasoning
+  MODEL_WIKI: "${WIKI_LLM_MODEL}"
+  # Topic tagging: classification task (cheap + fast)
+  MODEL_TAGGING: "bedrock/global.anthropic.claude-haiku-4-6"
+  # Index page generation: summarization (cheap + fast)
+  MODEL_INDEX: "bedrock/global.anthropic.claude-haiku-4-6"
+  # Curricula + learning artifacts: needs reasoning
+  MODEL_LEARNING: "${WIKI_LLM_MODEL}"
+  # GraphRAG entity extraction: structured output (cheap)
+  MODEL_GRAPHRAG: "bedrock/global.anthropic.claude-haiku-4-6"
+  # Legacy key (backward compat — maps to MODEL_WIKI)
+  WIKI_LLM_MODEL: "${WIKI_LLM_MODEL}"
+
+  # --- GraphRAG (Neptune + OpenSearch) ---
+  NEPTUNE_ENDPOINT: "${NEPTUNE_ENDPOINT}"
+  NEPTUNE_PORT: "${NEPTUNE_PORT}"
+  OPENSEARCH_ENDPOINT: "${OPENSEARCH_ENDPOINT}"
+
+  # --- File paths ---
+  CLONE_BASE: "/platform-data/repos"
+  CODE_INDEX_DIR: "/platform-data/code-indexes"
+  LEARNING_DIR: "/platform-data/learning"
+  STATE_DIR: "/platform-data"
+  REPOS_FILE: "/config/repos.txt"
+  URLS_FILE: "/config/urls.txt"
+  DOCS_FILE: "/config/docs.txt"
+  ACCOUNTS_FILE: "/config/accounts.txt"
+
+  # --- Timeouts and limits ---
+  REQUEST_TIMEOUT: "120"
+  MAX_WIKIS_PER_RUN: "15"
+  MAX_INDEXES_PER_RUN: "15"
+  MIN_CLUSTER_SIZE: "3"
+
+  # --- GitHub App ---
+  GITHUB_APP_ID_SECRET: "${GITHUB_APP_ID_SECRET}"
+  GITHUB_APP_KEY_SECRET: "${GITHUB_APP_KEY_SECRET}"
+  GITHUB_APP_OWNER: "${GITHUB_APP_OWNER}"

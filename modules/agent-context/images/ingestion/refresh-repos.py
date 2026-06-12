@@ -57,29 +57,29 @@ logging.basicConfig(
 log = logging.getLogger("refresh")
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration (centralized via config.py)
 # ---------------------------------------------------------------------------
 
-OV_URL = os.getenv("OV_URL", "http://openviking.agent-context.svc.cluster.local:1933")
-OV_KEY = os.getenv("OPENVIKING_ROOT_KEY", os.getenv("ROOT_KEY", ""))
-STATE_DIR = os.getenv("STATE_DIR", "/platform-data")
-REPOS_FILE = os.getenv("REPOS_FILE", "/config/repos.txt")
-URLS_FILE = os.getenv("URLS_FILE", "/config/urls.txt")
-DOCS_FILE = os.getenv("DOCS_FILE", "/config/docs.txt")
-ACCOUNTS_FILE = os.getenv("ACCOUNTS_FILE", "/config/accounts.txt")
+from config import settings
+
+OV_URL = settings.ov_url
+OV_KEY = settings.ov_key
+STATE_DIR = settings.state_dir
+REPOS_FILE = settings.repos_file
+URLS_FILE = settings.urls_file
+DOCS_FILE = settings.docs_file
+ACCOUNTS_FILE = settings.accounts_file
 
 # SQS publisher mode: when SQS_QUEUE_URL is set, delegate to publish-ingestion.py
-SQS_QUEUE_URL = os.getenv("SQS_QUEUE_URL", "")
-DEEPWIKI_URL = os.getenv("DEEPWIKI_URL", "http://deepwiki.agent-context.svc.cluster.local:8001")
+SQS_QUEUE_URL = settings.sqs_queue_url
+DEEPWIKI_URL = settings.deepwiki_url
 DEEPWIKI_SIGNIFICANT_THRESHOLD = 10  # Re-run DeepWiki if >N files changed
-MAX_WIKIS_PER_RUN = int(os.getenv("MAX_WIKIS_PER_RUN", "15"))  # Cap wiki generation per CronJob run
+MAX_WIKIS_PER_RUN = settings.max_wikis_per_run
 
 # LLM configuration for incremental wiki updates and topic tagging
-LLM_MODEL = os.getenv("WIKI_LLM_MODEL", "bedrock/global.anthropic.claude-opus-4-6-v1")
-LLM_BASE_URL = os.getenv(
-    "LLM_BASE_URL", "http://litellm-proxy.agent-context.svc.cluster.local:4000/v1"
-)
-CLONE_BASE = os.getenv("CLONE_BASE", "/tmp/repos")
+LLM_MODEL = settings.model_wiki
+LLM_BASE_URL = settings.llm_base_url
+CLONE_BASE = settings.clone_base
 
 
 # ---------------------------------------------------------------------------

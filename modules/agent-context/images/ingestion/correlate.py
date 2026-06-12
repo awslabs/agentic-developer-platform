@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -29,9 +28,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("correlate")
 
-OV_URL = os.getenv("OV_URL", "http://openviking.agent-context.svc.cluster.local:1933")
-OV_KEY = os.getenv("OPENVIKING_ROOT_KEY", os.getenv("ROOT_KEY", ""))
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "120"))
+from config import settings
+
+OV_URL = settings.ov_url
+OV_KEY = settings.ov_key
+REQUEST_TIMEOUT = settings.request_timeout
 
 
 def ov_headers(api_key: str) -> dict[str, str]:
@@ -178,7 +179,7 @@ def correlate_resources(
 
 def main():
     parser = argparse.ArgumentParser(description="Correlate code with infrastructure")
-    parser.add_argument("--accounts-file", default=os.getenv("ACCOUNTS_FILE", "/config/accounts.txt"))
+    parser.add_argument("--accounts-file", default=settings.accounts_file)
     args = parser.parse_args()
 
     if not OV_KEY:

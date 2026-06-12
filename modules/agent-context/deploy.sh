@@ -114,11 +114,20 @@ if [ -f "${SCRIPT_DIR}/kubernetes/serviceaccount.yaml" ]; then
   fi
 fi
 
+# Deploy centralized ConfigMap (single source of truth for all non-secret config)
+echo ""
+echo "Deploying agent-context-config ConfigMap..."
+source "${SCRIPT_DIR}/scripts/_common.sh"
+export NAMESPACE AWS_REGION SQS_QUEUE_URL DYNAMO_TABLE DEEPWIKI_ENABLED
+export GRAPHRAG_ENABLED NEPTUNE_ENDPOINT NEPTUNE_PORT OPENSEARCH_ENDPOINT
+export WIKI_LLM_MODEL GITHUB_APP_ID_SECRET GITHUB_APP_KEY_SECRET GITHUB_APP_OWNER
+template_file "${SCRIPT_DIR}/manifests/agent-context-configmap.yaml" | kubectl apply -f -
+echo "  ConfigMap agent-context-config deployed"
+
 # Apply ingestion pipeline RBAC (cross-namespace access for runner SA)
 echo ""
 echo "Applying ingestion pipeline RBAC..."
-source "${SCRIPT_DIR}/scripts/_common.sh"
-export NAMESPACE RUNNER_NAMESPACE RUNNER_SERVICE_ACCOUNT
+export RUNNER_NAMESPACE RUNNER_SERVICE_ACCOUNT
 template_file "${SCRIPT_DIR}/manifests/ingestion-rbac.yaml" | kubectl apply -f -
 echo "  Role: ingestion-pipeline-role (ns: ${NAMESPACE})"
 echo "  Binding: ${RUNNER_NAMESPACE}:${RUNNER_SERVICE_ACCOUNT} -> ingestion-pipeline-role"

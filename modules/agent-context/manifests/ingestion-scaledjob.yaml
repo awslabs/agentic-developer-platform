@@ -32,47 +32,22 @@ spec:
           - name: worker
             image: ${INGESTION_IMAGE}
             command: ["python3", "/app/sqs-worker.py"]
+            envFrom:
+              - configMapRef:
+                  name: agent-context-config
+              - secretRef:
+                  name: agent-context-secrets
+                  optional: true
             env:
-              - name: SQS_QUEUE_URL
-                value: "${SQS_QUEUE_URL}"
-              - name: DYNAMO_TABLE
-                value: "${DYNAMO_TABLE}"
-              - name: AWS_REGION
-                value: "${AWS_REGION}"
-              - name: OV_URL
-                value: "${OV_URL}"
+              # Override: SQS workers clone to ephemeral /tmp (not persistent storage)
+              - name: CLONE_BASE
+                value: /tmp/repos
+              # Secret injected from K8s Secret (not ConfigMap)
               - name: OPENVIKING_ROOT_KEY
                 valueFrom:
                   secretKeyRef:
                     name: agent-context-secrets
                     key: openviking-root-key
-              - name: DEEPWIKI_URL
-                value: "${DEEPWIKI_URL}"
-              - name: DEEPWIKI_ENABLED
-                value: "${DEEPWIKI_ENABLED}"
-              - name: GRAPHRAG_ENABLED
-                value: "${GRAPHRAG_ENABLED}"
-              - name: NEPTUNE_ENDPOINT
-                value: "${NEPTUNE_ENDPOINT}"
-              - name: NEPTUNE_PORT
-                value: "${NEPTUNE_PORT}"
-              - name: OPENSEARCH_ENDPOINT
-                value: "${OPENSEARCH_ENDPOINT}"
-              - name: LLM_BASE_URL
-                value: "${LLM_BASE_URL}"
-              - name: WIKI_LLM_MODEL
-                value: "${WIKI_LLM_MODEL}"
-              - name: CLONE_BASE
-                value: /tmp/repos
-              - name: CODE_INDEX_DIR
-                value: /platform-data/code-indexes
-              # GitHub App configuration for authenticated cloning (private repos)
-              - name: GITHUB_APP_ID_SECRET
-                value: "${GITHUB_APP_ID_SECRET}"
-              - name: GITHUB_APP_KEY_SECRET
-                value: "${GITHUB_APP_KEY_SECRET}"
-              - name: GITHUB_APP_OWNER
-                value: "${GITHUB_APP_OWNER}"
             resources:
               requests:
                 cpu: "500m"

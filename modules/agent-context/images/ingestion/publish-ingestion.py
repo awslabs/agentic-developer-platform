@@ -36,19 +36,21 @@ logging.basicConfig(
 log = logging.getLogger("publish-ingestion")
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration (centralized via config.py)
 # ---------------------------------------------------------------------------
 
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-SQS_QUEUE_URL = os.getenv("SQS_QUEUE_URL", "")
-DYNAMO_TABLE = os.getenv("DYNAMO_TABLE", "adp-context-service-state")
+from config import settings
+
+AWS_REGION = settings.aws_region
+SQS_QUEUE_URL = settings.sqs_queue_url
+DYNAMO_TABLE = settings.dynamo_table
 
 # Default source file paths (used inside K8s pods with ConfigMap mounts)
 DEFAULT_SOURCE_FILES = {
-    "repo": os.getenv("REPOS_FILE", "/config/repos.txt"),
-    "url": os.getenv("URLS_FILE", "/config/urls.txt"),
-    "doc": os.getenv("DOCS_FILE", "/config/docs.txt"),
-    "infra": os.getenv("ACCOUNTS_FILE", "/config/accounts.txt"),
+    "repo": settings.repos_file,
+    "url": settings.urls_file,
+    "doc": settings.docs_file,
+    "infra": settings.accounts_file,
 }
 
 # Steps per content type

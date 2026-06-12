@@ -38,18 +38,18 @@ logging.basicConfig(
 )
 log = logging.getLogger("ingest-doc")
 
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "120"))
-MAX_DOWNLOAD_SIZE = int(os.getenv("MAX_DOWNLOAD_SIZE", str(100 * 1024 * 1024)))  # 100 MB
+from config import settings
+
+REQUEST_TIMEOUT = settings.request_timeout
+MAX_DOWNLOAD_SIZE = settings.max_download_size
 
 # GraphRAG configuration
-GRAPHRAG_ENABLED = os.getenv("GRAPHRAG_ENABLED", "false").lower() == "true"
-NEPTUNE_ENDPOINT = os.getenv("NEPTUNE_ENDPOINT", "")
-NEPTUNE_PORT = int(os.getenv("NEPTUNE_PORT", "8182"))
-OPENSEARCH_ENDPOINT = os.getenv("OPENSEARCH_ENDPOINT", "")
-LLM_MODEL = os.getenv("WIKI_LLM_MODEL", "bedrock/global.anthropic.claude-opus-4-6-v1")
-LLM_BASE_URL = os.getenv(
-    "LLM_BASE_URL", "http://litellm-proxy.agent-context.svc.cluster.local:4000/v1"
-)
+GRAPHRAG_ENABLED = settings.graphrag_enabled
+NEPTUNE_ENDPOINT = settings.neptune_endpoint
+NEPTUNE_PORT = settings.neptune_port
+OPENSEARCH_ENDPOINT = settings.opensearch_endpoint
+LLM_MODEL = settings.model_graphrag
+LLM_BASE_URL = settings.llm_base_url
 
 # Try to import markitdown
 MARKITDOWN_AVAILABLE = False
@@ -459,8 +459,8 @@ def main():
     parser = argparse.ArgumentParser(description="Ingest a document into OpenViking")
     parser.add_argument("--source", required=True, help="Document source (URL or S3 URI)")
     parser.add_argument("--title", help="Document title")
-    parser.add_argument("--ov-url", default=os.getenv("OV_URL", "http://openviking.agent-context.svc.cluster.local:1933"))
-    parser.add_argument("--ov-key", default=os.getenv("OPENVIKING_ROOT_KEY", os.getenv("ROOT_KEY", "")))
+    parser.add_argument("--ov-url", default=settings.ov_url)
+    parser.add_argument("--ov-key", default=settings.ov_key)
     parser.add_argument("--tags", default="{}", help="JSON tags object")
     args = parser.parse_args()
 

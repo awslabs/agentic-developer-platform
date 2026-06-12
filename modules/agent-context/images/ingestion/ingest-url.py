@@ -15,10 +15,8 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import re
 import sys
-import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -33,11 +31,13 @@ logging.basicConfig(
 )
 log = logging.getLogger("ingest-url")
 
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "120"))
+from config import settings
+
+REQUEST_TIMEOUT = settings.request_timeout
 
 # DynamoDB configuration
-DYNAMO_TABLE = os.getenv("DYNAMO_TABLE", "adp-context-service-state")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+DYNAMO_TABLE = settings.dynamo_table
+AWS_REGION = settings.aws_region
 
 # Try to import crawl4ai — graceful fallback if not available
 CRAWL4AI_AVAILABLE = False
@@ -425,8 +425,8 @@ def update_dynamo_state_url(url: str, result: dict[str, Any], tags: dict[str, st
 def main():
     parser = argparse.ArgumentParser(description="Crawl a URL and ingest into OpenViking")
     parser.add_argument("--url", required=True, help="URL to crawl")
-    parser.add_argument("--ov-url", default=os.getenv("OV_URL", "http://openviking.agent-context.svc.cluster.local:1933"))
-    parser.add_argument("--ov-key", default=os.getenv("OPENVIKING_ROOT_KEY", os.getenv("ROOT_KEY", "")))
+    parser.add_argument("--ov-url", default=settings.ov_url)
+    parser.add_argument("--ov-key", default=settings.ov_key)
     parser.add_argument("--max-pages", type=int, default=100, help="Max pages to crawl (default: 100)")
     parser.add_argument("--tags", default="{}", help="JSON tags object for metadata")
     args = parser.parse_args()

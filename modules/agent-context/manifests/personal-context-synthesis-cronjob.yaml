@@ -40,17 +40,21 @@ spec:
           - name: synthesis
             image: ${INGESTION_IMAGE}
             command: ["python", "-m", "personal_context.synthesis"]
+            envFrom:
+            - configMapRef:
+                name: agent-context-config
+            - secretRef:
+                name: agent-context-secrets
+                optional: true
             env:
-            - name: OV_URL
-              value: "http://openviking.${NAMESPACE}.svc.cluster.local:1933"
-            - name: LLM_BASE_URL
-              value: "http://litellm-proxy.${NAMESPACE}.svc.cluster.local:4000/v1"
+            # Secret injected from K8s Secret (not ConfigMap)
             - name: OPENVIKING_ROOT_KEY
               valueFrom:
                 secretKeyRef:
                   name: agent-context-secrets
                   key: openviking-root-key
                   optional: true
+            # Synthesis-specific config (overrides ConfigMap values)
             - name: SYNTHESIS_MODEL
               value: "${SYNTHESIS_MODEL}"
             - name: MIN_LEARNINGS_THRESHOLD

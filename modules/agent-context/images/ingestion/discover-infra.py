@@ -30,9 +30,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("discover-infra")
 
-OV_URL = os.getenv("OV_URL", "http://openviking.agent-context.svc.cluster.local:1933")
-OV_KEY = os.getenv("OPENVIKING_ROOT_KEY", os.getenv("ROOT_KEY", ""))
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "120"))
+from config import settings
+
+OV_URL = settings.ov_url
+OV_KEY = settings.ov_key
+REQUEST_TIMEOUT = settings.request_timeout
 
 # Try importing boto3
 try:
@@ -306,7 +308,7 @@ def parse_workflows_from_repos(ov_url: str, headers: dict) -> dict[str, Any]:
 
 def main():
     parser = argparse.ArgumentParser(description="AWS infrastructure discovery")
-    parser.add_argument("--accounts-file", default=os.getenv("ACCOUNTS_FILE", "/config/accounts.txt"))
+    parser.add_argument("--accounts-file", default=settings.accounts_file)
     parser.add_argument("--account", help="Single account to discover (overrides file)")
     parser.add_argument("--role", default="AgentContextReadOnly")
     parser.add_argument("--regions", default="us-east-1", help="Comma-separated regions")

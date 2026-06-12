@@ -95,41 +95,20 @@ spec:
 
                 echo ""
                 echo "=== Refresh complete $(date -u) ==="
+            envFrom:
+            - configMapRef:
+                name: agent-context-config
+            - secretRef:
+                name: agent-context-secrets
+                optional: true
             env:
-            - name: OV_URL
-              value: "http://openviking.${NAMESPACE}.svc.cluster.local:1933"
-            - name: DEEPWIKI_URL
-              value: "http://deepwiki.${NAMESPACE}.svc.cluster.local:8001"
+            # Secret injected from K8s Secret (not ConfigMap)
             - name: OPENVIKING_ROOT_KEY
               valueFrom:
                 secretKeyRef:
                   name: agent-context-secrets
                   key: openviking-root-key
                   optional: true
-            - name: STATE_DIR
-              value: "/platform-data"
-            - name: WIKI_LLM_MODEL
-              value: "bedrock/global.anthropic.claude-opus-4-6-v1"
-            - name: LLM_BASE_URL
-              value: "http://litellm-proxy.${NAMESPACE}.svc.cluster.local:4000/v1"
-            - name: REPOS_FILE
-              value: "/config/repos.txt"
-            - name: URLS_FILE
-              value: "/config/urls.txt"
-            - name: ACCOUNTS_FILE
-              value: "/config/accounts.txt"
-            - name: GRAPHRAG_ENABLED
-              value: "${GRAPHRAG_ENABLED}"
-            - name: NEPTUNE_ENDPOINT
-              value: "${NEPTUNE_ENDPOINT}"
-            - name: NEPTUNE_PORT
-              value: "${NEPTUNE_PORT}"
-            - name: OPENSEARCH_ENDPOINT
-              value: "${OPENSEARCH_ENDPOINT}"
-            - name: LEARNING_DIR
-              value: "/platform-data/learning"
-            - name: CLONE_BASE
-              value: "/platform-data/repos"
             volumeMounts:
             - name: platform-data
               mountPath: /platform-data

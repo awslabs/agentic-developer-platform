@@ -36,24 +36,24 @@ logging.basicConfig(
 log = logging.getLogger("generate-indexes")
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration (centralized via config.py)
 # ---------------------------------------------------------------------------
 
-OV_URL = os.getenv("OV_URL", "http://openviking.agent-context.svc.cluster.local:1933")
-OV_KEY = os.getenv("OPENVIKING_ROOT_KEY", os.getenv("ROOT_KEY", ""))
-STATE_DIR = os.getenv("STATE_DIR", "/platform-data")
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "120"))
+from config import settings
 
-LLM_MODEL = os.getenv("WIKI_LLM_MODEL", "bedrock/global.anthropic.claude-opus-4-6-v1")
-LLM_BASE_URL = os.getenv(
-    "LLM_BASE_URL", "http://litellm-proxy.agent-context.svc.cluster.local:4000/v1"
-)
+OV_URL = settings.ov_url
+OV_KEY = settings.ov_key
+STATE_DIR = settings.state_dir
+REQUEST_TIMEOUT = settings.request_timeout
+
+LLM_MODEL = settings.model_index
+LLM_BASE_URL = settings.llm_base_url
 
 # Minimum repos in a topic cluster to generate an index page
-MIN_CLUSTER_SIZE = int(os.getenv("MIN_CLUSTER_SIZE", "3"))
+MIN_CLUSTER_SIZE = settings.min_cluster_size
 
 # Maximum number of index pages to generate per run
-MAX_INDEXES_PER_RUN = int(os.getenv("MAX_INDEXES_PER_RUN", "15"))
+MAX_INDEXES_PER_RUN = settings.max_indexes_per_run
 
 
 # ---------------------------------------------------------------------------
