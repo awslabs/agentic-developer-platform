@@ -21,7 +21,7 @@ via the Mountpoint S3 CSI driver.
 | Claim | Status | Detail |
 |-------|--------|--------|
 | Mountpoint for S3 CSI driver is GA | **Confirmed** | Available as EKS managed add-on `aws-mountpoint-s3-csi-driver`. [docs.aws.amazon.com/eks/latest/userguide/s3-csi.html] |
-| Write-once / no-in-place-modify | **Confirmed with nuance** | No random writes or partial modifications. New files created sequentially. Full-object overwrite possible only with `--allow-overwrite` flag + `O_TRUNC`; without it, create-only. We do NOT enable `--allow-overwrite` — enforces true write-once. [github.com/awslabs/mountpoint-s3/blob/main/doc/SEMANTICS.md] |
+| Write-once / no-in-place-modify | **Confirmed with nuance** | No random writes or partial modifications. New files created sequentially. Full-object overwrite possible only with `--allow-overwrite` flag + `O_TRUNC`; without it, create-only. We enable `--allow-overwrite` because re-indexing produces a new complete object at the same path — this is full-object replacement, not in-place modification. [github.com/awslabs/mountpoint-s3/blob/main/doc/SEMANTICS.md] |
 | No file locking | **Confirmed** | POSIX file locks (`lockf`) are not supported. |
 | CSI driver name | **Confirmed** | `s3.csi.aws.com` |
 | IRSA support | **Confirmed** | Uses OIDC + `eks.amazonaws.com/role-arn` annotation |

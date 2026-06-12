@@ -110,7 +110,7 @@ module "iam" {
 }
 
 # =============================================================================
-# S3 Files Storage (S3 bucket + EFS + CSI driver)
+# S3 Files Storage (S3 bucket + Mountpoint for Amazon S3 CSI driver)
 # =============================================================================
 
 module "s3_files" {
