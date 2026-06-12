@@ -41,10 +41,10 @@ OV_KEY = os.getenv("OPENVIKING_ROOT_KEY", os.getenv("ROOT_KEY", ""))
 
 # Timeouts per content type (seconds)
 TIMEOUTS = {
-    "repo": 900,    # 15 min
-    "url": 600,     # 10 min
-    "doc": 300,     # 5 min
-    "infra": 300,   # 5 min
+    "repo": 900,  # 15 min
+    "url": 600,  # 10 min
+    "doc": 300,  # 5 min
+    "infra": 300,  # 5 min
 }
 
 # AWS clients
@@ -101,6 +101,7 @@ def update_dynamo_status(
 
     if extra_attrs:
         import re as _re
+
         for k, v in extra_attrs.items():
             # Sanitize attribute name to prevent DynamoDB expression injection
             safe_k = _re.sub(r"[^a-zA-Z0-9_]", "_", k)
@@ -163,10 +164,14 @@ def write_dynamo_run_record(
 def ingest_repo(source: str, tags: dict[str, str], steps: list[str] | None = None) -> None:
     """Run ingest-repo.py for a repository."""
     cmd = [
-        sys.executable, "/app/ingest-repo.py",
-        "--repo", source,
-        "--ov-url", OV_URL,
-        "--ov-key", OV_KEY,
+        sys.executable,
+        "/app/ingest-repo.py",
+        "--repo",
+        source,
+        "--ov-url",
+        OV_URL,
+        "--ov-key",
+        OV_KEY,
     ]
     if tags:
         cmd.extend(["--tags", json.dumps(tags)])
@@ -176,11 +181,16 @@ def ingest_repo(source: str, tags: dict[str, str], steps: list[str] | None = Non
 def ingest_url(source: str, tags: dict[str, str]) -> None:
     """Run ingest-url.py for a URL."""
     cmd = [
-        sys.executable, "/app/ingest-url.py",
-        "--url", source,
-        "--ov-url", OV_URL,
-        "--ov-key", OV_KEY,
-        "--max-pages", "100",
+        sys.executable,
+        "/app/ingest-url.py",
+        "--url",
+        source,
+        "--ov-url",
+        OV_URL,
+        "--ov-key",
+        OV_KEY,
+        "--max-pages",
+        "100",
     ]
     if tags:
         cmd.extend(["--tags", json.dumps(tags)])
@@ -190,10 +200,14 @@ def ingest_url(source: str, tags: dict[str, str]) -> None:
 def ingest_doc(source: str, tags: dict[str, str], title: str | None = None) -> None:
     """Run ingest-doc.py for a document."""
     cmd = [
-        sys.executable, "/app/ingest-doc.py",
-        "--source", source,
-        "--ov-url", OV_URL,
-        "--ov-key", OV_KEY,
+        sys.executable,
+        "/app/ingest-doc.py",
+        "--source",
+        source,
+        "--ov-url",
+        OV_URL,
+        "--ov-key",
+        OV_KEY,
     ]
     if title:
         cmd.extend(["--title", title])
@@ -205,10 +219,14 @@ def ingest_doc(source: str, tags: dict[str, str], title: str | None = None) -> N
 def discover_infra(source: str, tags: dict[str, str]) -> None:
     """Run discover-infra.py for an AWS account."""
     cmd = [
-        sys.executable, "/app/discover-infra.py",
-        "--account", source,
-        "--ov-url", OV_URL,
-        "--ov-key", OV_KEY,
+        sys.executable,
+        "/app/discover-infra.py",
+        "--account",
+        source,
+        "--ov-url",
+        OV_URL,
+        "--ov-key",
+        OV_KEY,
     ]
     if tags:
         cmd.extend(["--tags", json.dumps(tags)])
@@ -265,10 +283,60 @@ def delete_sqs_message(receipt_handle: str) -> None:
         log.error("Failed to delete SQS message: %s", e)
 
 
+def _mint_github_token() -> bool:
+    """Mint a GitHub App token and write to /tmp/github-token.
+
+    Returns True if token was successfully obtained, False otherwise.
+    Failure is non-fatal — anonymous clones still work for public repos.
+    """
+    app_id_secret = os.getenv("GITHUB_APP_ID_SECRET", "")
+    app_key_secret = os.getenv("GITHUB_APP_KEY_SECRET", "")
+
+    if not app_id_secret or not app_key_secret:
+        log.info("No GitHub App secrets configured — using anonymous clones")
+        return False
+
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "/app/github-app-token.py",
+                "--app-id-secret",
+                app_id_secret,
+                "--app-key-secret",
+                app_key_secret,
+                "--region",
+                AWS_REGION,
+                "--output-file",
+                "/tmp/github-token",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            log.info("GitHub App token minted successfully")
+            os.environ["GIT_ASKPASS"] = "/app/git-credential-helper.sh"
+            os.environ["GIT_TERMINAL_PROMPT"] = "0"
+            return True
+        else:
+            stderr = result.stderr.decode()[:200]
+            log.warning("GitHub App token mint failed: %s", stderr)
+            return False
+    except subprocess.TimeoutExpired:
+        log.warning("GitHub App token mint timed out")
+        return False
+    except Exception as e:
+        log.warning("GitHub App token mint error: %s", e)
+        return False
+
+
 def main():
     if not SQS_QUEUE_URL:
         log.error("SQS_QUEUE_URL not set")
         sys.exit(1)
+
+    # Mint GitHub App token before processing (enables private repo clones)
+    _mint_github_token()
 
     result = receive_sqs_message()
     if result is None:
@@ -306,7 +374,10 @@ def main():
         # Success — update state and write run record
         update_dynamo_status(source, content_type, "complete", tags=tags)
         write_dynamo_run_record(
-            source, content_type, "success", duration,
+            source,
+            content_type,
+            "success",
+            duration,
             trigger=triggered_by,
             steps={s: "ok" for s in steps},
         )
@@ -321,7 +392,10 @@ def main():
         # Failure — update state but don't delete message (goes back to queue for retry, then DLQ)
         update_dynamo_status(source, content_type, "failed", error=error_msg, tags=tags)
         write_dynamo_run_record(
-            source, content_type, "failed", duration,
+            source,
+            content_type,
+            "failed",
+            duration,
             trigger=triggered_by,
             error=error_msg,
         )

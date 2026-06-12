@@ -33,7 +33,8 @@ RUN pip install --no-cache-dir \
     boto3 \
     gremlinpython \
     opensearch-py \
-    markitdown
+    markitdown \
+    PyJWT[crypto]
 
 # Install Playwright browsers for crawl4ai JS rendering
 RUN crawl4ai-setup || echo "crawl4ai-setup not available or optional — continuing"
@@ -43,6 +44,13 @@ COPY ingest-repo.py ingest-url.py ingest-doc.py refresh-repos.py \
      discover-infra.py sqs-worker.py publish-ingestion.py \
      correlate.py lint-wiki.py generate-indexes.py \
      generate-learning-artifacts.py generate-curricula.py /app/
+
+# GitHub App token minting script (from scripts/github-app-token.py)
+COPY github-app-token.py /app/github-app-token.py
+
+# Git credential helper for authenticated cloning (GIT_ASKPASS)
+COPY git-credential-helper.sh /app/git-credential-helper.sh
+RUN chmod +x /app/git-credential-helper.sh
 
 WORKDIR /app
 

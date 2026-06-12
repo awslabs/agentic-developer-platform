@@ -41,9 +41,7 @@ log = logging.getLogger("ingest-repo")
 # Configuration
 # ---------------------------------------------------------------------------
 
-DEEPWIKI_URL = os.getenv(
-    "DEEPWIKI_URL", "http://deepwiki.agent-context.svc.cluster.local:8001"
-)
+DEEPWIKI_URL = os.getenv("DEEPWIKI_URL", "http://deepwiki.agent-context.svc.cluster.local:8001")
 DEEPWIKI_ENABLED = os.getenv("DEEPWIKI_ENABLED", "true").lower() == "true"
 # Clone to persistent S3 Files mount instead of /tmp (shared across enrichment consumers)
 CLONE_BASE = os.getenv("CLONE_BASE", "/platform-data/repos")
@@ -74,6 +72,7 @@ def _get_dynamodb_table():
     """Lazy-init DynamoDB table resource."""
     try:
         import boto3
+
         return boto3.resource("dynamodb", region_name=AWS_REGION).Table(DYNAMO_TABLE)
     except Exception as e:
         log.debug("DynamoDB not available: %s", e)
@@ -94,18 +93,18 @@ def update_dynamo_state(org_repo: str, result: dict[str, Any], tags: dict[str, s
         "record_type": "STATE",
         "content_type": "repo",
         "updated_at": now,
-        "openviking_status": "complete" if result.get("openviking") in ("submitted", "ok") else (
-            "failed" if result.get("openviking") == "failed" else "skipped"
-        ),
-        "code_index_status": "complete" if result.get("code_index") == "written" else (
-            "failed" if result.get("code_index") in ("failed", "fs_write_failed") else "skipped"
-        ),
-        "deepwiki_status": "complete" if result.get("deepwiki") in ("uploaded", "generated") else (
-            "failed" if result.get("deepwiki") == "failed" else "skipped"
-        ),
-        "graphrag_status": "complete" if result.get("graphrag") == "ok" else (
-            "failed" if result.get("graphrag") == "failed" else "skipped"
-        ),
+        "openviking_status": "complete"
+        if result.get("openviking") in ("submitted", "ok")
+        else ("failed" if result.get("openviking") == "failed" else "skipped"),
+        "code_index_status": "complete"
+        if result.get("code_index") == "written"
+        else ("failed" if result.get("code_index") in ("failed", "fs_write_failed") else "skipped"),
+        "deepwiki_status": "complete"
+        if result.get("deepwiki") in ("uploaded", "generated")
+        else ("failed" if result.get("deepwiki") == "failed" else "skipped"),
+        "graphrag_status": "complete"
+        if result.get("graphrag") == "ok"
+        else ("failed" if result.get("graphrag") == "failed" else "skipped"),
         "last_error": result.get("error"),
     }
 
@@ -117,8 +116,10 @@ def update_dynamo_state(org_repo: str, result: dict[str, Any], tags: dict[str, s
     if os.path.exists(os.path.join(clone_path, ".git")):
         try:
             sha_result = subprocess.run(
-                ["git", "rev-parse", "HEAD"], cwd=clone_path,
-                capture_output=True, timeout=10,
+                ["git", "rev-parse", "HEAD"],
+                cwd=clone_path,
+                capture_output=True,
+                timeout=10,
             )
             if sha_result.returncode == 0:
                 item["last_sha"] = sha_result.stdout.decode().strip()
@@ -225,7 +226,12 @@ def upload_to_openviking(
         resp = requests.post(
             f"{ov_url}/api/v1/resources",
             headers={**headers, "Content-Type": "application/json"},
-            json={"temp_file_id": temp_id, "to": target_uri, "wait": True, "timeout": REQUEST_TIMEOUT},
+            json={
+                "temp_file_id": temp_id,
+                "to": target_uri,
+                "wait": True,
+                "timeout": REQUEST_TIMEOUT,
+            },
             timeout=REQUEST_TIMEOUT + 10,
         )
         if resp.status_code < 300:
@@ -250,20 +256,43 @@ def upload_to_openviking(
 # ---------------------------------------------------------------------------
 
 
+def _sanitize_git_output(text: str) -> str:
+    """Remove any credentials from git output.
+
+    Git with GIT_ASKPASS shouldn't leak credentials in stderr,
+    but defense-in-depth: redact anything that looks like a token.
+    """
+    import re
+
+    # Redact x-access-token:xxx@ patterns (shouldn't appear, but just in case)
+    text = re.sub(r"x-access-token:[^@]+@", "x-access-token:***@", text)
+    # Redact ghp_/gho_/ghu_ tokens
+    text = re.sub(r"(ghp_|gho_|ghu_|github_pat_)[A-Za-z0-9_]+", r"\1***", text)
+    return text
+
+
 def git_clone(repo_url: str, dest: str) -> bool:
-    """Clone a repo. Returns True on success."""
+    """Clone a repo using GIT_ASKPASS for auth. Returns True on success."""
     Path(dest).parent.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    # GIT_ASKPASS is already set by sqs-worker if token is available.
+    # Ensure terminal prompt is disabled regardless.
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
     try:
         subprocess.run(
             ["git", "clone", "--depth=1", repo_url, dest],
             check=True,
             capture_output=True,
             timeout=300,
+            env=env,
         )
         log.info("Cloned %s -> %s", repo_url, dest)
         return True
     except subprocess.CalledProcessError as e:
-        log.error("git clone failed: %s", e.stderr.decode()[:300])
+        stderr = _sanitize_git_output(e.stderr.decode()[:500])
+        log.error("git clone failed for %s: %s", repo_url, stderr)
         return False
     except subprocess.TimeoutExpired:
         log.error("git clone timed out for %s", repo_url)
@@ -393,7 +422,9 @@ def _build_basic_code_index(clone_path: str, org_repo: str) -> dict[str, Any]:
                             mod = stripped.split("from")[-1].strip().strip("\"';")
                             if not mod.startswith("."):
                                 dependencies_external.add(mod.split("/")[0])
-                    if "function " in stripped and ("export" in stripped or stripped.startswith("function ")):
+                    if "function " in stripped and (
+                        "export" in stripped or stripped.startswith("function ")
+                    ):
                         # Extract function name
                         idx = stripped.find("function ") + 9
                         name = stripped[idx:].split("(")[0].strip()
@@ -440,9 +471,7 @@ def _build_basic_code_index(clone_path: str, org_repo: str) -> dict[str, Any]:
     }
 
 
-def _write_code_index_to_filesystem(
-    code_index_json: str, safe_name: str, org_repo: str
-) -> bool:
+def _write_code_index_to_filesystem(code_index_json: str, safe_name: str, org_repo: str) -> bool:
     """Write code-index JSON to the shared filesystem (platform-data PVC).
 
     This is the primary storage for structured code-index data, read by the
@@ -616,15 +645,17 @@ def graphrag_extract(
         for sym in symbols[:500]:
             eid = f"{org_repo}:{sym.get('file', '')}:{sym.get('name', '')}"
             entity_id_set.add(eid)
-            entities.append({
-                "entity_id": eid,
-                "name": sym.get("name", ""),
-                "type": sym.get("type", "symbol"),
-                "file": sym.get("file", ""),
-                "line": sym.get("line", 0),
-                "repo": org_repo,
-                "source": "code-index",
-            })
+            entities.append(
+                {
+                    "entity_id": eid,
+                    "name": sym.get("name", ""),
+                    "type": sym.get("type", "symbol"),
+                    "file": sym.get("file", ""),
+                    "line": sym.get("line", 0),
+                    "repo": org_repo,
+                    "source": "code-index",
+                }
+            )
 
         # Import relationships from code-index
         # Create file-level entities so import edges have valid source vertices
@@ -634,32 +665,38 @@ def graphrag_extract(
             if file_eid not in file_entities_created:
                 file_entities_created.add(file_eid)
                 entity_id_set.add(file_eid)
-                entities.append({
-                    "entity_id": file_eid,
-                    "name": file.rsplit("/", 1)[-1] if "/" in file else file,
-                    "type": "module",
-                    "file": file,
-                    "repo": org_repo,
-                    "source": "code-index",
-                })
+                entities.append(
+                    {
+                        "entity_id": file_eid,
+                        "name": file.rsplit("/", 1)[-1] if "/" in file else file,
+                        "type": "module",
+                        "file": file,
+                        "repo": org_repo,
+                        "source": "code-index",
+                    }
+                )
             for imp in file_imports:
                 # Create a package entity for the import target
                 pkg_eid = f"pkg:{imp}"
                 if pkg_eid not in entity_id_set:
                     entity_id_set.add(pkg_eid)
-                    entities.append({
-                        "entity_id": pkg_eid,
-                        "name": imp,
-                        "type": "package",
-                        "repo": "__external__",
-                        "source": "code-index",
-                    })
-                relationships.append({
-                    "from": file_eid,
-                    "to": pkg_eid,
-                    "type": "imports",
-                    "repo": org_repo,
-                })
+                    entities.append(
+                        {
+                            "entity_id": pkg_eid,
+                            "name": imp,
+                            "type": "package",
+                            "repo": "__external__",
+                            "source": "code-index",
+                        }
+                    )
+                relationships.append(
+                    {
+                        "from": file_eid,
+                        "to": pkg_eid,
+                        "type": "imports",
+                        "repo": org_repo,
+                    }
+                )
 
         # Call graph edges — normalize to entity_id format
         call_graph = code_index.get("call_graph", {})
@@ -670,51 +707,67 @@ def graphrag_extract(
                 # If caller_eid isn't in entity set, try to find a matching entity
                 if caller_eid not in entity_id_set:
                     # Look for any entity whose id ends with the caller
-                    matches = [e for e in entity_id_set if e.endswith(f":{caller}") or e.endswith(f":{caller.split(':')[-1]}")]
+                    matches = [
+                        e
+                        for e in entity_id_set
+                        if e.endswith(f":{caller}") or e.endswith(f":{caller.split(':')[-1]}")
+                    ]
                     if matches:
                         caller_eid = matches[0]
                 for callee in callees:
                     callee_eid = f"{org_repo}:{callee}"
                     if callee_eid not in entity_id_set:
-                        matches = [e for e in entity_id_set if e.endswith(f":{callee}") or e.endswith(f":{callee.split(':')[-1]}")]
+                        matches = [
+                            e
+                            for e in entity_id_set
+                            if e.endswith(f":{callee}") or e.endswith(f":{callee.split(':')[-1]}")
+                        ]
                         if matches:
                             callee_eid = matches[0]
-                    relationships.append({
-                        "from": caller_eid,
-                        "to": callee_eid,
-                        "type": "calls",
-                        "repo": org_repo,
-                    })
+                    relationships.append(
+                        {
+                            "from": caller_eid,
+                            "to": callee_eid,
+                            "type": "calls",
+                            "repo": org_repo,
+                        }
+                    )
 
         # External dependency edges — create repo-level and package entities
         repo_eid = f"{org_repo}:__repo__"
         if repo_eid not in entity_id_set:
             entity_id_set.add(repo_eid)
-            entities.append({
-                "entity_id": repo_eid,
-                "name": org_repo.split("/")[-1],
-                "type": "repository",
-                "repo": org_repo,
-                "source": "code-index",
-            })
+            entities.append(
+                {
+                    "entity_id": repo_eid,
+                    "name": org_repo.split("/")[-1],
+                    "type": "repository",
+                    "repo": org_repo,
+                    "source": "code-index",
+                }
+            )
         ext_deps = code_index.get("dependencies", {}).get("external", [])
         for dep in ext_deps:
             pkg_eid = f"pkg:{dep}"
             if pkg_eid not in entity_id_set:
                 entity_id_set.add(pkg_eid)
-                entities.append({
-                    "entity_id": pkg_eid,
-                    "name": dep,
-                    "type": "package",
-                    "repo": "__external__",
-                    "source": "code-index",
-                })
-            relationships.append({
-                "from": repo_eid,
-                "to": pkg_eid,
-                "type": "depends_on",
-                "repo": org_repo,
-            })
+                entities.append(
+                    {
+                        "entity_id": pkg_eid,
+                        "name": dep,
+                        "type": "package",
+                        "repo": "__external__",
+                        "source": "code-index",
+                    }
+                )
+            relationships.append(
+                {
+                    "from": repo_eid,
+                    "to": pkg_eid,
+                    "type": "depends_on",
+                    "repo": org_repo,
+                }
+            )
 
     # 2. Extract higher-level entities from wiki (architecture components, patterns)
     if wiki:
@@ -724,17 +777,19 @@ def graphrag_extract(
                 headers={"Content-Type": "application/json"},
                 json={
                     "model": LLM_MODEL,
-                    "messages": [{
-                        "role": "user",
-                        "content": (
-                            f"Extract entities and relationships from this architecture wiki for {org_repo}.\n\n"
-                            f"{wiki[:4000]}\n\n"
-                            "Return JSON with two arrays:\n"
-                            '- "entities": [{{"name": "...", "type": "component|pattern|service|api", "description": "..."}}]\n'
-                            '- "relationships": [{{"from": "...", "to": "...", "type": "uses|implements|communicates_with|part_of"}}]\n'
-                            "Return ONLY valid JSON."
-                        ),
-                    }],
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Extract entities and relationships from this architecture wiki for {org_repo}.\n\n"
+                                f"{wiki[:4000]}\n\n"
+                                "Return JSON with two arrays:\n"
+                                '- "entities": [{{"name": "...", "type": "component|pattern|service|api", "description": "..."}}]\n'
+                                '- "relationships": [{{"from": "...", "to": "...", "type": "uses|implements|communicates_with|part_of"}}]\n'
+                                "Return ONLY valid JSON."
+                            ),
+                        }
+                    ],
                     "max_tokens": 3000,
                     "temperature": 0.1,
                 },
@@ -742,6 +797,7 @@ def graphrag_extract(
             )
             if resp.status_code < 300:
                 import re
+
                 content = resp.json()["choices"][0]["message"]["content"]
                 # Try to parse JSON from response
                 try:
@@ -807,11 +863,7 @@ def _clear_repo_structural_graph(org_repo: str) -> bool:
     wiki entities (source='wiki') in the same graph.
     """
     neptune_url = f"https://{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}/gremlin"
-    query = (
-        f"g.V().has('repo', '{org_repo}')"
-        f".has('source', 'code-index')"
-        f".drop()"
-    )
+    query = f"g.V().has('repo', '{org_repo}').has('source', 'code-index').drop()"
     body = json.dumps({"gremlin": query})
     headers = _get_neptune_signed_headers("POST", neptune_url, body)
     try:
@@ -826,9 +878,7 @@ def _clear_repo_structural_graph(org_repo: str) -> bool:
         return False
 
 
-def _write_to_neptune(
-    entities: list[dict], relationships: list[dict], org_repo: str
-) -> bool:
+def _write_to_neptune(entities: list[dict], relationships: list[dict], org_repo: str) -> bool:
     """Write entities and relationships to Neptune via Gremlin HTTP API with IAM auth."""
     neptune_url = f"https://{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}/gremlin"
 
@@ -837,7 +887,7 @@ def _write_to_neptune(
         for ent in entities:
             props = {k: v for k, v in ent.items() if v and isinstance(v, (str, int, float))}
             prop_steps = "".join(
-                f".property('{k}', '{str(v).replace(chr(39), chr(92)+chr(39))}')"
+                f".property('{k}', '{str(v).replace(chr(39), chr(92) + chr(39))}')"
                 for k, v in props.items()
                 if k != "entity_id"
             )
@@ -888,12 +938,16 @@ def _write_to_neptune(
             if resp.status_code >= 400:
                 log.debug(
                     "Neptune edge write failed: HTTP %d for %s->%s",
-                    resp.status_code, from_id[:50], to_id[:50],
+                    resp.status_code,
+                    from_id[:50],
+                    to_id[:50],
                 )
 
         log.info(
             "GraphRAG: wrote %d entities + %d relationships for %s",
-            len(entities), len(relationships), org_repo,
+            len(entities),
+            len(relationships),
+            org_repo,
         )
         return True
     except Exception as e:
@@ -979,9 +1033,7 @@ def ingest_repo(
                 safe_name = org_repo.replace("/", "-")
 
                 # Write to filesystem (primary — for programmatic access by MCP server)
-                fs_written = _write_code_index_to_filesystem(
-                    code_index_json, safe_name, org_repo
-                )
+                fs_written = _write_code_index_to_filesystem(code_index_json, safe_name, org_repo)
 
                 # Upload as markdown summary (for semantic search/understand)
                 code_index_md = _code_index_to_markdown(code_index)
@@ -1056,7 +1108,9 @@ def ingest_repo(
 
             graphrag_result = graphrag_extract(clone_path, org_repo, ci_data, wiki_content)
             if graphrag_result:
-                result["graphrag"] = f"{graphrag_result['entities']} entities, {graphrag_result['relationships']} relationships"
+                result["graphrag"] = (
+                    f"{graphrag_result['entities']} entities, {graphrag_result['relationships']} relationships"
+                )
             else:
                 result["graphrag"] = "skipped"
         except Exception as e:
@@ -1077,10 +1131,19 @@ def ingest_repo(
 
 def main():
     parser = argparse.ArgumentParser(description="Ingest a GitHub repo into the platform")
-    parser.add_argument("--repo", required=True, help="org/repo to ingest (e.g., aws-samples/bedrock-chat)")
-    parser.add_argument("--ov-url", default=os.getenv("OV_URL", "http://openviking.agent-context.svc.cluster.local:1933"))
-    parser.add_argument("--ov-key", default=os.getenv("OPENVIKING_ROOT_KEY", os.getenv("ROOT_KEY", "")))
-    parser.add_argument("--skip-ov", action="store_true", help="Skip OpenViking ingestion (enrichment only)")
+    parser.add_argument(
+        "--repo", required=True, help="org/repo to ingest (e.g., aws-samples/bedrock-chat)"
+    )
+    parser.add_argument(
+        "--ov-url",
+        default=os.getenv("OV_URL", "http://openviking.agent-context.svc.cluster.local:1933"),
+    )
+    parser.add_argument(
+        "--ov-key", default=os.getenv("OPENVIKING_ROOT_KEY", os.getenv("ROOT_KEY", ""))
+    )
+    parser.add_argument(
+        "--skip-ov", action="store_true", help="Skip OpenViking ingestion (enrichment only)"
+    )
     parser.add_argument("--skip-cgc", action="store_true", help="Skip code-index generation")
     parser.add_argument("--skip-deepwiki", action="store_true", help="Skip DeepWiki generation")
     parser.add_argument("--skip-graphrag", action="store_true", help="Skip GraphRAG extraction")
