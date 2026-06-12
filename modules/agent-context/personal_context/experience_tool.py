@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol
 
 from ulid import ULID
 
@@ -31,6 +31,16 @@ class ExperienceToolError(Exception):
         super().__init__(message)
 
 
+class EmbeddingStore(Protocol):
+    """Protocol for persistent embedding storage backends."""
+
+    def store(self, owner_sub: str, entry_id: str, embedding: list[float]) -> None: ...
+    def recall(
+        self, owner_sub: str, query_embedding: list[float], top_k: int = 20
+    ) -> list[tuple[str, float]]: ...
+    def delete(self, owner_sub: str, entry_id: str) -> None: ...
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors."""
     if len(a) != len(b) or len(a) == 0:
@@ -43,6 +53,39 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+class InMemoryEmbeddingStore:
+    """In-memory embedding store (legacy fallback, lost on pod restart).
+
+    Used when STORAGE_BACKEND=openviking or when no S3 Vectors backend
+    is configured. Exists only for backward compatibility during migration.
+    """
+
+    def __init__(self) -> None:
+        self._embeddings: dict[str, list[float]] = {}
+
+    def store(self, owner_sub: str, entry_id: str, embedding: list[float]) -> None:
+        self._embeddings[entry_id] = embedding
+
+    def recall(
+        self, owner_sub: str, query_embedding: list[float], top_k: int = 20
+    ) -> list[tuple[str, float]]:
+        """Return all stored embeddings as (entry_id, distance) pairs.
+
+        Distance is computed as ``1.0 - cosine_similarity`` to match
+        S3 Vectors cosine-distance semantics.
+        """
+        results: list[tuple[str, float]] = []
+        for entry_id, embedding in self._embeddings.items():
+            similarity = _cosine_similarity(query_embedding, embedding)
+            distance = 1.0 - similarity
+            results.append((entry_id, distance))
+        results.sort(key=lambda x: x[1])
+        return results[:top_k]
+
+    def delete(self, owner_sub: str, entry_id: str) -> None:
+        self._embeddings.pop(entry_id, None)
+
+
 class ExperienceTool:
     """Handler for the ``experience`` MCP tool.
 
@@ -52,12 +95,20 @@ class ExperienceTool:
         PersonalContextStore instance (provides owner-scoped CRUD).
     embedding_client:
         Client implementing the EmbeddingClient protocol.
+    embedding_store:
+        Persistent embedding storage backend. If None, falls back to
+        InMemoryEmbeddingStore (legacy behavior, lost on restart).
     """
 
-    def __init__(self, store: PersonalContextStore, embedding_client: EmbeddingClient):
+    def __init__(
+        self,
+        store: PersonalContextStore,
+        embedding_client: EmbeddingClient,
+        embedding_store: EmbeddingStore | None = None,
+    ):
         self.store = store
         self.embedding_client = embedding_client
-        self._embeddings: dict[str, list[float]] = {}
+        self.embedding_store: EmbeddingStore = embedding_store or InMemoryEmbeddingStore()
 
     def handle(self, arguments: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
         """Route an experience tool call to the appropriate action.
@@ -143,8 +194,8 @@ class ExperienceTool:
         # Write via store (force-stamps owner_sub/tenant_id from identity)
         entry = self.store.write_entry(identity, entry_data)
 
-        # Store embedding alongside entry (keyed by entry id)
-        self._store_embedding(entry.id, embedding)
+        # Persist embedding in the embedding store (survives pod restart)
+        self.embedding_store.store(identity.owner_sub, entry.id, embedding)
 
         return {
             "status": "saved",
@@ -185,13 +236,22 @@ class ExperienceTool:
         if not cross_persona:
             entries = [e for e in entries if e.persona == persona]
 
+        # Get embedding similarity via the embedding store
+        # Recall from the owner's index to get (entry_id, distance) pairs
+        recall_results = self.embedding_store.recall(
+            identity.owner_sub, query_embedding, top_k=limit * 4
+        )
+        # Build a map of entry_id -> similarity (1 - distance for cosine)
+        similarity_map: dict[str, float] = {
+            entry_id: 1.0 - distance for entry_id, distance in recall_results
+        }
+
         # Score entries: similarity x decay_score
         scored: list[tuple[float, PersonalContextEntry]] = []
         for entry in entries:
-            entry_embedding = self._get_embedding(entry.id)
-            if entry_embedding is None:
+            similarity = similarity_map.get(entry.id)
+            if similarity is None:
                 continue
-            similarity = _cosine_similarity(query_embedding, entry_embedding)
             combined_score = similarity * entry.decay_score
             scored.append((combined_score, entry))
 
@@ -279,15 +339,3 @@ class ExperienceTool:
             "syntheses": results,
             "total": len(results),
         }
-
-    # -----------------------------------------------------------------------
-    # Embedding storage (in-memory index; future: persist in AGFS alongside entry)
-    # -----------------------------------------------------------------------
-
-    def _store_embedding(self, entry_id: str, embedding: list[float]) -> None:
-        """Store an embedding keyed by entry ID."""
-        self._embeddings[entry_id] = embedding
-
-    def _get_embedding(self, entry_id: str) -> list[float] | None:
-        """Retrieve a stored embedding by entry ID."""
-        return self._embeddings.get(entry_id)

@@ -30,10 +30,10 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Options:"
       echo "  --config <file>           Source additional config overrides"
-      echo "  --personal-context-only   Deploy lean stack only (OpenViking + LiteLLM +"
-      echo "                            Context MCP + synthesis CronJob). Skips Sourcebot,"
+      echo "  --personal-context-only   Deploy lean stack only (LiteLLM + Context MCP +"
+      echo "                            synthesis CronJob + S3 Vectors). Skips Sourcebot,"
       echo "                            DeepWiki, ingestion pipeline, and OpenSearch."
-      echo "                            Cost: ~\$280/mo vs ~\$800/mo full stack."
+      echo "                            Cost: ~\$80/mo vs ~\$800/mo full stack."
       echo "  --skip-validate           Skip post-deployment validation"
       exit 0
       ;;
@@ -52,7 +52,7 @@ echo "Region:     ${AWS_REGION}"
 echo "Namespace:  ${NAMESPACE}"
 if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
   echo "Mode:       PERSONAL-CONTEXT-ONLY (lean stack)"
-  echo "            Deploys: OpenViking, LiteLLM, Context MCP, Synthesis CronJob"
+  echo "            Deploys: LiteLLM, Context MCP, Synthesis CronJob, S3 Vectors"
   echo "            Skips:   Sourcebot, DeepWiki, OpenSearch, Ingestion pipeline"
   echo "            Cost:    ~\$280/mo (vs ~\$800/mo full stack)"
 fi
@@ -157,9 +157,8 @@ echo "============================================"
 echo ""
 bash "${SCRIPT_DIR}/scripts/deploy-litellm-proxy.sh"
 
-# Deploy/Configure OpenViking (embedding + VLM config, restart)
-echo ""
-bash "${SCRIPT_DIR}/scripts/deploy-openviking.sh"
+# NOTE: OpenViking removed (Issue #1383). Semantic search now uses S3 Vectors.
+# Personal context AGFS entries use S3 directly. No pod needed.
 
 # NOTE: CodeGraphContext pod removed (Issue #105) — cgc now runs during ingestion.
 # The ingestion pipeline (ingest-repo.py) handles structural analysis.
@@ -267,7 +266,6 @@ elif [ "${INGESTION_REFRESH_ENABLED:-true}" = "true" ]; then
   if [ -n "${SQS_QUEUE_URL}" ] && [ -f "${SCRIPT_DIR}/manifests/ingestion-scaledjob.yaml" ]; then
     echo ""
     echo "Deploying KEDA ScaledJob for parallel ingestion..."
-    export OV_URL="http://openviking.${NAMESPACE}.svc.cluster.local:1933"
     export DEEPWIKI_URL="http://deepwiki.${NAMESPACE}.svc.cluster.local:8001"
     export LLM_BASE_URL="http://litellm-proxy.${NAMESPACE}.svc.cluster.local:4000/v1"
     export DEEPWIKI_ENABLED GRAPHRAG_ENABLED NEPTUNE_ENDPOINT NEPTUNE_PORT OPENSEARCH_ENDPOINT
@@ -277,7 +275,7 @@ elif [ "${INGESTION_REFRESH_ENABLED:-true}" = "true" ]; then
     echo "  Queue: ${SQS_QUEUE_URL}"
   fi
 
-  # Clean up legacy OpenViking-only refresh CronJob if it exists
+  # Clean up legacy CronJobs if they exist
   kubectl delete cronjob openviking-repo-refresh -n "${NAMESPACE}" 2>/dev/null && \
     echo "  Cleaned up legacy openviking-repo-refresh CronJob" || true
 else
@@ -319,10 +317,10 @@ echo "Deployment complete!"
 echo "============================================"
 echo ""
 if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
-  echo "Mode: PERSONAL-CONTEXT-ONLY (lean stack, ~\$280/mo)"
+  echo "Mode: PERSONAL-CONTEXT-ONLY (lean stack, ~\$80/mo)"
   echo ""
   echo "Services:"
-  echo "  OpenViking:    http://openviking.${NAMESPACE}.svc.cluster.local:1933"
+  echo "  S3 Vectors:    adp-${ENVIRONMENT:-dev}-code-vectors (semantic search)"
   echo "  LiteLLM Proxy: http://litellm-proxy.${NAMESPACE}.svc.cluster.local:${LITELLM_PORT}"
   if [ "${SYNTHESIS_ENABLED:-true}" = "true" ]; then
     echo "  Synthesis:     CronJob personal-context-synthesis (${SYNTHESIS_SCHEDULE:-0 3 * * *})"
@@ -334,10 +332,10 @@ if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
   echo "Skipped (not needed for personal context):"
   echo "  Sourcebot, DeepWiki, Ingestion pipeline, OpenSearch, KEDA workers"
 else
-  echo "Mode: FULL STACK (~\$800/mo)"
+  echo "Mode: FULL STACK (~\$600/mo)"
   echo ""
   echo "Services:"
-  echo "  OpenViking:    http://openviking.${NAMESPACE}.svc.cluster.local:1933"
+  echo "  S3 Vectors:    adp-${ENVIRONMENT:-dev}-code-vectors (semantic search)"
   echo "  Sourcebot:     http://sourcebot.${NAMESPACE}.svc.cluster.local:3000"
   echo "  LiteLLM Proxy: http://litellm-proxy.${NAMESPACE}.svc.cluster.local:${LITELLM_PORT}"
   if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then

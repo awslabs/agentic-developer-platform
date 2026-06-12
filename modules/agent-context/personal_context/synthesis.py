@@ -45,6 +45,10 @@ SYNTHESIS_MODEL = os.environ.get("SYNTHESIS_MODEL", "bedrock/global.anthropic.cl
 LLM_BASE_URL = os.environ.get(
     "LLM_BASE_URL", "http://litellm-proxy.agent-context.svc.cluster.local:4000/v1"
 )
+STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "s3")
+S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "agent-context-platform-data-879318057152")
+S3_REGION = os.environ.get("AWS_REGION", "us-east-1")
+# Legacy OpenViking URL — only used when STORAGE_BACKEND=openviking
 OV_URL = os.environ.get("OV_URL", "http://openviking.agent-context.svc.cluster.local:1933")
 MIN_LEARNINGS_THRESHOLD = int(os.environ.get("MIN_LEARNINGS_THRESHOLD", "5"))
 MAX_UNSYNTHESIZED_AGE_DAYS = int(os.environ.get("MAX_UNSYNTHESIZED_AGE_DAYS", "7"))
@@ -574,13 +578,25 @@ class SynthesisPipeline:
 
 
 def _create_agfs_backend() -> Any:
-    """Create an AGFS backend connected to OpenViking.
+    """Create an AGFS-compatible backend based on STORAGE_BACKEND env var.
 
     Returns a backend object with put/get/delete/list_prefix methods.
-    """
 
+    - STORAGE_BACKEND=s3 (default): uses S3AGFSBackend (durable, serverless).
+    - STORAGE_BACKEND=openviking (legacy): uses OpenViking HTTP API.
+    """
+    backend_type = os.environ.get("STORAGE_BACKEND", STORAGE_BACKEND)
+
+    if backend_type == "s3":
+        from .backends.s3_backend import S3AGFSBackend
+
+        bucket = os.environ.get("S3_BUCKET_NAME", S3_BUCKET_NAME)
+        region = os.environ.get("AWS_REGION", S3_REGION)
+        return S3AGFSBackend(bucket_name=bucket, region_name=region)
+
+    # Legacy OpenViking backend (for rollback during migration)
     class OpenVikingAGFSBackend:
-        """AGFS backend using OpenViking HTTP API."""
+        """AGFS backend using OpenViking HTTP API (legacy)."""
 
         def __init__(self, base_url: str, root_key: str | None = None):
             self.base_url = base_url.rstrip("/")

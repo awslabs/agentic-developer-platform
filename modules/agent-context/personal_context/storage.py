@@ -1,8 +1,8 @@
-"""Owner-scoped storage namespaces for personal context in AGFS.
+"""Owner-scoped storage namespaces for personal context.
 
 Provides namespace path construction, entry CRUD, and owner/visibility
-read-filter logic. All entries are stored as JSON documents in OpenViking's
-AGFS filesystem under owner-scoped paths:
+read-filter logic. All entries are stored as JSON documents in an
+AGFS-compatible backend (S3 or legacy OpenViking) under owner-scoped paths:
 
 - Private: ``/personal/<cognito_sub>/{learnings,syntheses,patterns}/<ulid>.json``
 - Shared:  ``/shared/<tenant_id>/{learnings,syntheses,patterns}/<ulid>.json``

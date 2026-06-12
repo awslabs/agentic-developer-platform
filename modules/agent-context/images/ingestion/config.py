@@ -28,7 +28,19 @@ class Settings(BaseSettings):
     Environment variables override these at runtime (via K8s ConfigMap envFrom).
     """
 
-    # --- Core services --------------------------------------------------------
+    # --- Storage backend --------------------------------------------------------
+    # Feature flag: "s3" (default, new) or "openviking" (legacy, for rollback)
+    storage_backend: str = "s3"
+
+    # --- S3 Vectors (semantic search) -----------------------------------------
+    s3_vectors_bucket_name: str = ""
+    s3_vectors_shard_count: int = 4
+    s3_vectors_region: str = ""  # Falls back to aws_region if empty
+
+    # --- S3 (AGFS replacement for personal context + content) -----------------
+    s3_bucket_name: str = ""  # The platform data bucket for personal-context entries
+
+    # --- Legacy OpenViking (deprecated — used only when storage_backend=openviking)
     ov_url: str = "http://openviking.agent-context.svc.cluster.local:1933"
     openviking_root_key: str = ""
     # Legacy alias — some scripts used ROOT_KEY
@@ -124,6 +136,11 @@ class Settings(BaseSettings):
     def ov_key(self) -> str:
         """Resolve the OpenViking API key (supports both env var names)."""
         return self.openviking_root_key or self.root_key
+
+    @property
+    def effective_s3_vectors_region(self) -> str:
+        """Resolve the S3 Vectors region (falls back to aws_region)."""
+        return self.s3_vectors_region or self.aws_region
 
     model_config = {
         "env_prefix": "",

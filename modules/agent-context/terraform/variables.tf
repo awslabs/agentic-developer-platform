@@ -69,6 +69,14 @@ variable "opensearch_allow_public_access" {
   default     = false
 }
 
+# --- S3 Vectors (Semantic Search) --------------------------------------------
+
+variable "s3_vectors_shard_count" {
+  description = "Number of code-vector index shards for write-throughput scaling (hash-by-org)"
+  type        = number
+  default     = 4
+}
+
 # --- SQS + DynamoDB (Parallel Ingestion Pipeline) ---------------------------
 
 variable "dynamodb_table_name" {

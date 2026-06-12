@@ -191,6 +191,25 @@ module "dynamodb_state" {
 }
 
 # =============================================================================
+# S3 Vectors (semantic search — code embeddings + personal context)
+# =============================================================================
+
+module "s3_vectors" {
+  source = "./modules/s3-vectors"
+
+  environment     = var.environment
+  name_prefix     = local.name_prefix
+  account_id      = data.aws_caller_identity.current.account_id
+  aws_region      = data.aws_region.current.name
+  shard_count     = var.s3_vectors_shard_count
+  dimension       = 1024
+  distance_metric = "cosine"
+  irsa_role_name  = module.iam.role_name
+
+  depends_on = [module.iam]
+}
+
+# =============================================================================
 # Docker Images Build (ECR repos + CodeBuild projects for auto-rebuild)
 # =============================================================================
 
