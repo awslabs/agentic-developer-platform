@@ -157,6 +157,13 @@ def update_dynamo_state(org_repo: str, result: dict[str, Any], tags: dict[str, s
         "graphrag_status": "complete"
         if result.get("graphrag") == "ok"
         else ("failed" if result.get("graphrag") == "failed" else "skipped"),
+        "sbom_source_status": "complete"
+        if result.get("sbom_source") == "complete"
+        else (
+            "failed"
+            if result.get("sbom_source") in ("failed", "syft_failed", "syft_timeout")
+            else "skipped"
+        ),
         "last_error": result.get("error"),
     }
 
@@ -890,6 +897,166 @@ def _write_to_neptune(entities: list[dict], relationships: list[dict], org_repo:
 
 
 # ---------------------------------------------------------------------------
+# Source SBOM generation (Rail 1 — #1358)
+# ---------------------------------------------------------------------------
+
+
+def _generate_source_sbom(clone_path: str, org_repo: str, s3_store: S3ContentStore) -> str:
+    """Run Syft against a cloned repo directory and store the CycloneDX SBOM.
+
+    Steps:
+      1. Run `syft dir:{clone_path} -o cyclonedx-json` -> /tmp SBOM file
+      2. Upload CycloneDX JSON to S3
+      3. Parse dependencies and upsert into Postgres (best-effort)
+
+    Returns: "complete", "syft_failed", or "failed"
+    """
+    import tempfile
+
+    from sbom_parser import parse_cyclonedx
+
+    sbom_s3_prefix = settings.sbom_s3_prefix
+    syft_timeout = settings.syft_timeout
+
+    # Generate a safe slug for the S3 key
+    safe_name = org_repo.replace("/", "-")
+    sbom_filename = f"sbom-source-{safe_name}.cdx.json"
+    sbom_path = os.path.join(tempfile.gettempdir(), sbom_filename)
+
+    # Step 1: Run Syft
+    try:
+        syft_result = subprocess.run(
+            [
+                "syft",
+                f"dir:{clone_path}",
+                "-o",
+                f"cyclonedx-json={sbom_path}",
+                "--quiet",
+            ],
+            capture_output=True,
+            timeout=syft_timeout,
+        )
+        if syft_result.returncode != 0:
+            stderr = syft_result.stderr.decode()[:500] if syft_result.stderr else ""
+            log.warning("Syft exited %d for %s: %s", syft_result.returncode, org_repo, stderr)
+            return "syft_failed"
+    except FileNotFoundError:
+        log.warning("Syft binary not found — skipping source SBOM for %s", org_repo)
+        return "syft_not_installed"
+    except subprocess.TimeoutExpired:
+        log.warning("Syft timed out (%ds) for %s", syft_timeout, org_repo)
+        return "syft_timeout"
+
+    # Verify output file exists and is non-empty
+    if not os.path.isfile(sbom_path) or os.path.getsize(sbom_path) == 0:
+        log.warning("Syft produced no output for %s", org_repo)
+        return "syft_failed"
+
+    # Step 2: Upload to S3
+    s3_key = f"{sbom_s3_prefix}/repos/{org_repo}/source.cdx.json"
+    try:
+        with open(sbom_path, "rb") as f:
+            sbom_bytes = f.read()
+
+        s3_store._s3.put_object(
+            Bucket=s3_store.bucket_name,
+            Key=s3_key,
+            Body=sbom_bytes,
+            ContentType="application/json",
+            Metadata={
+                "org_repo": org_repo,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "sbom_type": "source",
+            },
+        )
+        log.info(
+            "Source SBOM uploaded: s3://%s/%s (%d bytes)",
+            s3_store.bucket_name, s3_key, len(sbom_bytes),
+        )
+    except Exception as e:
+        log.error("S3 upload failed for source SBOM of %s: %s", org_repo, e)
+        # S3 is the durable record — if it fails, report failure
+        return "failed"
+
+    # Step 3: Parse and upsert to Postgres (best-effort — non-blocking)
+    if settings.sbom_db_enabled:
+        try:
+            records = parse_cyclonedx(sbom_bytes.decode("utf-8"), source="code")
+            if records:
+                import db as sbom_db
+
+                conn = sbom_db.get_connection()
+                try:
+                    git_url = f"https://github.com/{org_repo}"
+                    repo_id = sbom_db.ensure_repo_exists(conn, org_repo, git_url)
+                    sbom_db.upsert_dependencies(conn, repo_id, records)
+                    # Get current SHA for status update
+                    sha = None
+                    git_head = os.path.join(clone_path, ".git")
+                    if os.path.exists(git_head):
+                        sha_result = subprocess.run(
+                            ["git", "rev-parse", "HEAD"],
+                            cwd=clone_path,
+                            capture_output=True,
+                            timeout=10,
+                        )
+                        if sha_result.returncode == 0:
+                            sha = sha_result.stdout.decode().strip()
+                    sbom_db.update_repo_sbom_status(
+                        conn, repo_id, source_status="complete", last_source_sha=sha
+                    )
+                finally:
+                    conn.close()
+                log.info("Wrote %d dependency rows to Postgres for %s", len(records), org_repo)
+        except Exception as e:
+            # Postgres insert is best-effort — S3 is the durable record
+            log.warning("Postgres upsert failed for %s (non-blocking): %s", org_repo, e)
+
+    # Detect Dockerfiles for Rail 2 metadata
+    _detect_dockerfiles(clone_path, org_repo)
+
+    # Clean up temp file
+    try:
+        os.unlink(sbom_path)
+    except OSError:
+        pass
+
+    return "complete"
+
+
+def _detect_dockerfiles(clone_path: str, org_repo: str) -> None:
+    """Detect Dockerfiles in the repo and record in DynamoDB for Rail 2 triggering."""
+    dockerfiles = []
+    for root, _dirs, files in os.walk(clone_path):
+        # Skip common vendor/build directories
+        rel_root = os.path.relpath(root, clone_path)
+        if any(skip in rel_root for skip in (".git", "node_modules", ".terraform", "vendor")):
+            continue
+        for f in files:
+            if f == "Dockerfile" or f.endswith(".Dockerfile"):
+                rel_path = os.path.join(rel_root, f) if rel_root != "." else f
+                dockerfiles.append(rel_path)
+
+    if dockerfiles:
+        log.info("Found %d Dockerfile(s) in %s: %s", len(dockerfiles), org_repo, dockerfiles[:5])
+        # Record in DynamoDB for Rail 2 image SBOM triggering
+        table = _get_dynamodb_table()
+        if table:
+            try:
+                pk = f"repo#{org_repo}"
+                table.update_item(
+                    Key={"source": pk, "record_type": "STATE"},
+                    UpdateExpression="SET has_dockerfile = :hd, dockerfiles = :dfs",
+                    ExpressionAttributeValues={
+                        ":hd": True,
+                        ":dfs": dockerfiles[:20],  # Cap to avoid DynamoDB item size limits
+                    },
+                )
+            except Exception as e:
+                log.debug("DynamoDB dockerfile update failed for %s: %s", org_repo, e)
+
+
+# ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
 
@@ -910,6 +1077,7 @@ def ingest_repo(
         "code_index": "skipped",
         "deepwiki": "skipped",
         "graphrag": "skipped",
+        "sbom_source": "skipped",
     }
 
     # Initialize the S3 content store and writer adapter
@@ -1070,7 +1238,17 @@ def ingest_repo(
             log.warning("GraphRAG failed for %s: %s — continuing", org_repo, e)
             result["graphrag"] = f"error: {e}"
 
-    # Step 5: Keep clone on persistent storage (S3 Files) — don't delete
+    # Step 5b: Source SBOM generation (Rail 1 — #1358)
+    # Run Syft against the cloned directory to produce a CycloneDX JSON SBOM.
+    # Non-blocking: failure does not stop the pipeline.
+    if settings.sbom_enabled:
+        try:
+            result["sbom_source"] = _generate_source_sbom(clone_path, org_repo, s3_store)
+        except Exception as e:
+            log.warning("Source SBOM failed for %s: %s — continuing", org_repo, e)
+            result["sbom_source"] = "failed"
+
+    # Step 6: Keep clone on persistent storage (S3 Files) — don't delete
     # Clone is reused by GraphRAG, learning artifacts, and daily refresh.
     # Only /tmp clones should be cleaned up.
     if CLONE_BASE.startswith("/tmp"):

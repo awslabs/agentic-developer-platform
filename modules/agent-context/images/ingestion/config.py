@@ -109,6 +109,12 @@ class Settings(BaseSettings):
     github_app_key_secret: str = ""
     github_app_owner: str = ""
 
+    # --- SBOM generation (dual-rail, #1358) ------------------------------------
+    sbom_enabled: bool = True
+    sbom_s3_prefix: str = "sbom"  # S3 key prefix within platform-data bucket
+    syft_timeout: int = 120  # seconds for syft CLI execution
+    sbom_db_enabled: bool = True  # Write dependency rows to Postgres (best-effort)
+
     # --- Personal Context Synthesis -------------------------------------------
     synthesis_model: str = "bedrock/global.anthropic.claude-sonnet-4-6"
     min_learnings_threshold: int = 5

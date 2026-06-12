@@ -21,6 +21,11 @@ RUN apt-get update && \
         make \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Install Syft for SBOM generation (dual-rail #1358)
+ARG SYFT_VERSION=1.11.1
+RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+    | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}"
+
 # Python deps
 RUN pip install --no-cache-dir \
     codegraphcontext \
@@ -35,13 +40,14 @@ RUN pip install --no-cache-dir \
     opensearch-py \
     markitdown \
     PyJWT[crypto] \
-    pydantic-settings
+    pydantic-settings \
+    psycopg2-binary
 
 # Install Playwright browsers for crawl4ai JS rendering
 RUN crawl4ai-setup || echo "crawl4ai-setup not available or optional — continuing"
 
 # Copy pipeline scripts (config.py must be first — all scripts import it)
-COPY config.py s3_store.py wiki_store.py /app/
+COPY config.py s3_store.py wiki_store.py sbom_parser.py db.py /app/
 COPY ingest-repo.py ingest-url.py ingest-doc.py refresh-repos.py \
      discover-infra.py sqs-worker.py publish-ingestion.py \
      correlate.py lint-wiki.py generate-indexes.py \

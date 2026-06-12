@@ -77,7 +77,7 @@ def update_dynamo_status(
     }
 
     # Set per-step status fields based on the overall status
-    for step in ["s3_status", "deepwiki_status", "graphrag_status", "code_index_status"]:
+    for step in ["s3_status", "deepwiki_status", "graphrag_status", "code_index_status", "sbom_source_status"]:
         if status == "processing":
             update_expr += f", {step} = :pending"
             expr_values[":pending"] = "pending"

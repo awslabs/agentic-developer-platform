@@ -1,0 +1,132 @@
+version: 0.2
+
+# Image SBOM generation (Rail 2) — build Dockerfiles and scan with Syft.
+# Triggered for repos with has_dockerfile=true AND sha != last_image_sbom_sha.
+# Best-effort: individual build failures record a marker, never fail the build.
+#
+# Design ref: docs/design-notes/1358-dual-rail-sbom-generation.md (section 3.2)
+#
+# Required env vars (passed at start-build time):
+#   REPO_URL          - git clone URL
+#   REPO_ORG_NAME     - e.g. "aws-e/adp"
+#   COMMIT_SHA        - commit to build
+#   PLATFORM_DATA_BUCKET - S3 bucket for SBOM storage
+#   DOCKERFILES       - comma-separated list of Dockerfile paths (optional; auto-discovers if empty)
+#
+# Optional overrides:
+#   SYFT_VERSION      - default 1.11.1
+#   BUILD_TIMEOUT     - per-docker-build timeout in seconds (default 600)
+
+env:
+  variables:
+    SYFT_VERSION: "1.11.1"
+    BUILD_TIMEOUT: "600"
+
+phases:
+  install:
+    commands:
+      - curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}"
+      - syft version
+  pre_build:
+    commands:
+      - aws sts get-caller-identity
+      - |
+        if [ -z "${PLATFORM_DATA_BUCKET}" ]; then echo "ERROR: PLATFORM_DATA_BUCKET not set" && exit 1; fi
+        if [ -z "${REPO_URL}" ]; then echo "ERROR: REPO_URL not set" && exit 1; fi
+        if [ -z "${REPO_ORG_NAME}" ]; then echo "ERROR: REPO_ORG_NAME not set" && exit 1; fi
+      - echo "Repo=${REPO_ORG_NAME} SHA=${COMMIT_SHA:-HEAD}"
+      - git clone --depth=1 "${REPO_URL}" /src
+      - |
+        if [ -n "${COMMIT_SHA}" ]; then
+          cd /src && git fetch --depth=1 origin "${COMMIT_SHA}" && git checkout "${COMMIT_SHA}"
+        fi
+  build:
+    commands:
+      - |
+        cd /src
+
+        # Discover Dockerfiles (use env var if provided, else auto-discover)
+        if [ -n "${DOCKERFILES}" ]; then
+          DOCKERFILE_LIST=$(echo "${DOCKERFILES}" | tr ',' '\n')
+        else
+          DOCKERFILE_LIST=$(find . -name 'Dockerfile' -o -name '*.Dockerfile' \
+            | grep -v node_modules | grep -v .git | grep -v .terraform | sort)
+        fi
+
+        TOTAL=$(echo "$DOCKERFILE_LIST" | grep -c . || echo 0)
+        echo "Found ${TOTAL} Dockerfile(s) to scan"
+        echo "$DOCKERFILE_LIST"
+
+        BUILT=0
+        FAILED=0
+        UPLOADED=0
+
+        ORG=$(echo "${REPO_ORG_NAME}" | cut -d'/' -f1)
+        REPO=$(echo "${REPO_ORG_NAME}" | cut -d'/' -f2)
+
+        for DF in $DOCKERFILE_LIST; do
+          # Generate a slug from the Dockerfile path
+          SLUG=$(echo "$DF" | sed 's|^\./||;s|/Dockerfile$||;s|\.Dockerfile$||;s|/|-|g')
+          if [ "$SLUG" = "Dockerfile" ] || [ -z "$SLUG" ]; then SLUG="root"; fi
+          IMAGE_TAG="sbom-image-target:${SLUG}"
+          BUILD_DIR=$(dirname "$DF")
+          S3_KEY="sbom/images/${REPO_ORG_NAME}/${SLUG}.image.cdx.json"
+
+          echo "=== Building ${DF} (slug=${SLUG}, timeout=${BUILD_TIMEOUT}s) ==="
+
+          # Extract base image from FROM line for metadata
+          BASE_IMAGE=$(grep -m1 '^FROM' "$DF" | awk '{print $2}' || echo "unknown")
+
+          # Build with timeout — best-effort, never block
+          if ! timeout "${BUILD_TIMEOUT}" docker build --no-cache --pull --quiet \
+               -f "$DF" -t "${IMAGE_TAG}" "${BUILD_DIR}" 2>&1 | tail -10; then
+            echo "WARN: docker build failed for ${DF} — recording build_failed marker"
+            FAILED=$((FAILED + 1))
+            # Upload a failure marker so coverage reporting is honest
+            echo "{\"status\":\"build_failed\",\"dockerfile\":\"${DF}\",\"repo\":\"${REPO_ORG_NAME}\"}" \
+              | aws s3 cp - "s3://${PLATFORM_DATA_BUCKET}/${S3_KEY%.cdx.json}.build_failed.json" \
+                --content-type application/json || true
+            docker system prune -f >/dev/null 2>&1 || true
+            continue
+          fi
+
+          BUILT=$((BUILT + 1))
+
+          # Run Syft on the built image
+          if ! syft "${IMAGE_TAG}" -o cyclonedx-json --file "/tmp/sbom-${SLUG}.cdx.json" 2>&1; then
+            echo "WARN: syft scan failed for ${DF} — skipping upload"
+            FAILED=$((FAILED + 1))
+            docker rmi "${IMAGE_TAG}" >/dev/null 2>&1 || true
+            continue
+          fi
+
+          # Upload SBOM to S3
+          aws s3 cp "/tmp/sbom-${SLUG}.cdx.json" "s3://${PLATFORM_DATA_BUCKET}/${S3_KEY}" \
+            --content-type application/json \
+            --metadata "commit=${COMMIT_SHA:-unknown},dockerfile=${DF},base_image=${BASE_IMAGE},sbom_type=image"
+
+          UPLOADED=$((UPLOADED + 1))
+
+          # Cleanup image to free disk
+          docker rmi "${IMAGE_TAG}" >/dev/null 2>&1 || true
+          rm -f "/tmp/sbom-${SLUG}.cdx.json"
+        done
+
+        echo "================================================================="
+        echo "Image SBOM Summary for ${REPO_ORG_NAME}:"
+        echo "  Dockerfiles found: ${TOTAL}"
+        echo "  Built successfully: ${BUILT}"
+        echo "  SBOMs uploaded: ${UPLOADED}"
+        echo "  Build failures: ${FAILED}"
+        echo "================================================================="
+
+        # Best-effort: do NOT fail the build for individual scan failures
+        exit 0
+
+  post_build:
+    commands:
+      - docker system prune -f >/dev/null 2>&1 || true
+      - echo "Image SBOM scan complete"
+
+artifacts:
+  files: []
