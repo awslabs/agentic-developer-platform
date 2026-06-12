@@ -1,0 +1,304 @@
+# =============================================================================
+# Agent Context — Service Deployment Workflow
+# =============================================================================
+# Deploys agent-context K8s services (namespace, RBAC, ConfigMap, Zoekt,
+# LiteLLM proxy, DeepWiki, CronJobs, KEDA ScaledJob) to EKS.
+#
+# Prerequisite: agent-context-infra-apply.yml has been run (creates IAM, S3,
+# SQS, DynamoDB, ECR). Images must be built (agent-context-images-build.yml).
+#
+# This is the manual-trigger equivalent of running `deploy.sh` locally.
+# =============================================================================
+
+name: Agent Context Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_litellm_verify:
+        description: 'Skip LiteLLM endpoint verification (faster, for re-deploys)'
+        type: boolean
+        default: false
+      skip_deepwiki:
+        description: 'Skip DeepWiki deployment'
+        type: boolean
+        default: false
+      ingestion_image_tag:
+        description: 'Ingestion image tag (default: latest built on main)'
+        required: false
+        default: ''
+
+concurrency:
+  group: agent-context-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+  EKS_CLUSTER: adp-dev-eks-cluster
+  NAMESPACE: agent-context
+  ECR_REGISTRY: 879318057152.dkr.ecr.us-east-1.amazonaws.com
+
+jobs:
+  deploy:
+    name: Deploy Services
+    runs-on: arc-runner-org
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+          echo "Cluster access configured:"
+          kubectl cluster-info 2>/dev/null | head -2 || true
+
+      - name: Verify AWS account
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          echo "Account: $ACCOUNT"
+          if [ "$ACCOUNT" != "879318057152" ]; then
+            echo "::error::Wrong AWS account! Expected 879318057152, got $ACCOUNT"
+            exit 1
+          fi
+
+      - name: Create namespace
+        run: |
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          echo "Namespace ${{ env.NAMESPACE }} ensured"
+
+      - name: Create StorageClass (ebs-gp3)
+        run: |
+          if ! kubectl get storageclass ebs-gp3 >/dev/null 2>&1; then
+            kubectl apply -f modules/agent-context/kubernetes/storageclass-ebs-gp3.yaml
+            echo "Created ebs-gp3 StorageClass"
+          else
+            echo "ebs-gp3 StorageClass already exists"
+          fi
+
+      - name: Deploy ConfigMap
+        run: |
+          cd modules/agent-context
+          source scripts/_common.sh
+          load_config "$(pwd)"
+
+          # Export all variables needed for template substitution
+          export NAMESPACE AWS_REGION SQS_QUEUE_URL DYNAMO_TABLE DEEPWIKI_ENABLED
+          export GRAPHRAG_ENABLED NEPTUNE_ENDPOINT NEPTUNE_PORT OPENSEARCH_ENDPOINT
+          export WIKI_LLM_MODEL GITHUB_APP_ID_SECRET GITHUB_APP_KEY_SECRET GITHUB_APP_OWNER
+          export S3_VECTORS_BUCKET_NAME S3_VECTORS_REGION S3_FILES_BUCKET S3_CONTENT_PREFIX ZOEKT_URL
+
+          template_file manifests/agent-context-configmap.yaml | kubectl apply -f -
+          echo "ConfigMap agent-context-config deployed"
+
+      - name: Apply RBAC (runner access to agent-context namespace)
+        run: |
+          cd modules/agent-context
+          source scripts/_common.sh
+          load_config "$(pwd)"
+
+          export NAMESPACE RUNNER_NAMESPACE RUNNER_SERVICE_ACCOUNT
+          template_file manifests/ingestion-rbac.yaml | kubectl apply -f -
+          echo "RBAC: ${RUNNER_NAMESPACE}:${RUNNER_SERVICE_ACCOUNT} → ingestion-pipeline-role"
+
+      - name: Create ServiceAccount (IRSA)
+        run: |
+          cd modules/agent-context
+          source scripts/_common.sh
+          load_config "$(pwd)"
+
+          # Get IRSA role ARN from Terraform state
+          IRSA_ROLE_ARN=""
+          if [ -d terraform/.terraform ]; then
+            IRSA_ROLE_ARN=$(cd terraform && terraform output -raw irsa_role_arn 2>/dev/null || echo "")
+          fi
+          # Fallback: construct from naming convention
+          if [ -z "$IRSA_ROLE_ARN" ]; then
+            IRSA_ROLE_ARN="arn:aws:iam::879318057152:role/adp-dev-agent-context-irsa"
+          fi
+          export IRSA_ROLE_ARN
+
+          if [ -f kubernetes/serviceaccount.yaml ]; then
+            template_file kubernetes/serviceaccount.yaml | kubectl apply -f -
+            echo "ServiceAccount ${SERVICE_ACCOUNT} with IRSA: ${IRSA_ROLE_ARN}"
+          else
+            # Create basic SA with IRSA annotation
+            cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: ${SERVICE_ACCOUNT}
+            namespace: ${NAMESPACE}
+            annotations:
+              eks.amazonaws.com/role-arn: "${IRSA_ROLE_ARN}"
+          EOF
+            echo "ServiceAccount ${SERVICE_ACCOUNT} created with IRSA: ${IRSA_ROLE_ARN}"
+          fi
+
+      - name: Deploy S3 Mountpoint storage (PV/PVC)
+        run: |
+          cd modules/agent-context
+          source scripts/_common.sh
+          load_config "$(pwd)"
+
+          # Check if Mountpoint CSI driver is installed
+          if kubectl get daemonset s3-csi-node -n kube-system >/dev/null 2>&1; then
+            echo "Mountpoint S3 CSI driver: installed"
+          else
+            echo "WARNING: Mountpoint S3 CSI driver not detected. PV/PVC may not bind."
+          fi
+
+          # Template and apply storage manifest
+          BUCKET_NAME="${S3_FILES_BUCKET}"
+          sed "s/<BUCKET_NAME>/${BUCKET_NAME}/g" manifests/s3-files-storage.yaml | kubectl apply -f -
+          echo "PV/PVC for S3 bucket: ${BUCKET_NAME}"
+
+      - name: Deploy Zoekt (code search)
+        run: |
+          cd modules/agent-context
+          source scripts/_common.sh
+          load_config "$(pwd)"
+
+          export NAMESPACE SERVICE_ACCOUNT
+          template_file manifests/zoekt.yaml | kubectl apply -f -
+          echo "Zoekt webserver deployed"
+
+      - name: Deploy LiteLLM Proxy
+        run: |
+          cd modules/agent-context
+          source scripts/_common.sh
+          load_config "$(pwd)"
+
+          export NAMESPACE BEDROCK_EMBEDDING_MODEL BEDROCK_EMBEDDING_DIMENSION BEDROCK_REGION
+          export BEDROCK_VLM_MODEL VLM_MAX_CONCURRENT VLM_MAX_RETRIES
+          export SERVICE_ACCOUNT LITELLM_PORT LITELLM_IMAGE
+
+          # Determine image: use ECR-built image if available, else default
+          LITELLM_ECR="${ECR_REGISTRY}/adp-dev-agent-context-litellm-proxy"
+          # Check for latest tag in ECR
+          LATEST_TAG=$(aws ecr describe-images --repository-name adp-dev-agent-context-litellm-proxy \
+            --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
+            --output text 2>/dev/null || echo "")
+          if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "None" ]; then
+            export LITELLM_IMAGE="${LITELLM_ECR}:${LATEST_TAG}"
+            echo "Using ECR image: ${LITELLM_IMAGE}"
+          else
+            echo "Using default image: ${LITELLM_IMAGE}"
+          fi
+
+          template_file manifests/litellm-config.yaml | kubectl apply -f -
+          template_file manifests/litellm-proxy.yaml | kubectl apply -f -
+          echo "LiteLLM proxy deployed"
+
+      - name: Deploy DeepWiki
+        if: ${{ inputs.skip_deepwiki != true }}
+        run: |
+          cd modules/agent-context
+          source scripts/_common.sh
+          load_config "$(pwd)"
+
+          if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
+            export NAMESPACE SERVICE_ACCOUNT DEEPWIKI_PORT DEEPWIKI_IMAGE LITELLM_PORT
+            template_file manifests/deepwiki.yaml | kubectl apply -f -
+            echo "DeepWiki deployed"
+          else
+            echo "DeepWiki disabled (DEEPWIKI_ENABLED=false)"
+          fi
+
+      - name: Deploy Ingestion CronJob + KEDA ScaledJob
+        run: |
+          cd modules/agent-context
+          source scripts/_common.sh
+          load_config "$(pwd)"
+
+          # Determine ingestion image
+          INPUT_TAG="${{ inputs.ingestion_image_tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            INGESTION_IMAGE="${ECR_REGISTRY}/adp-dev-agent-context-ingestion:${INPUT_TAG}"
+          else
+            # Get latest built tag
+            LATEST_TAG=$(aws ecr describe-images --repository-name adp-dev-agent-context-ingestion \
+              --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
+              --output text 2>/dev/null || echo "")
+            if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "None" ]; then
+              INGESTION_IMAGE="${ECR_REGISTRY}/adp-dev-agent-context-ingestion:${LATEST_TAG}"
+            fi
+          fi
+          export INGESTION_IMAGE
+          echo "Ingestion image: ${INGESTION_IMAGE}"
+
+          # Create content ConfigMap
+          kubectl create configmap ingestion-content-config \
+            --from-file=repos.txt=index_content/repos.txt \
+            --from-file=urls.txt=index_content/urls.txt \
+            --from-file=docs.txt=index_content/docs.txt \
+            --from-file=accounts.txt=index_content/accounts.txt \
+            -n ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+          # Deploy CronJob
+          export NAMESPACE SERVICE_ACCOUNT INGESTION_REFRESH_SCHEDULE SQS_QUEUE_URL DYNAMO_TABLE
+          template_file manifests/repo-refresh-cronjob.yaml | kubectl apply -f -
+          echo "Ingestion CronJob deployed"
+
+          # Deploy KEDA ScaledJob (if SQS configured)
+          if [ -n "${SQS_QUEUE_URL:-}" ] && [ -f manifests/ingestion-scaledjob.yaml ]; then
+            export DEEPWIKI_URL="http://deepwiki.${NAMESPACE}.svc.cluster.local:8001"
+            export LLM_BASE_URL="http://litellm-proxy.${NAMESPACE}.svc.cluster.local:4000/v1"
+            export DEEPWIKI_ENABLED GRAPHRAG_ENABLED NEPTUNE_ENDPOINT NEPTUNE_PORT OPENSEARCH_ENDPOINT
+            export WIKI_LLM_MODEL ECR_REGISTRY
+            template_file manifests/ingestion-scaledjob.yaml | kubectl apply -f -
+            echo "KEDA ScaledJob deployed"
+          fi
+
+      - name: Wait for rollouts
+        run: |
+          echo "Waiting for deployments to be ready..."
+          kubectl rollout status deploy/zoekt-webserver -n ${{ env.NAMESPACE }} --timeout=180s || echo "WARNING: Zoekt not ready"
+          kubectl rollout status deploy/litellm-proxy -n ${{ env.NAMESPACE }} --timeout=300s || echo "WARNING: LiteLLM not ready"
+
+      - name: Verify deployment
+        run: |
+          echo "=== Pod Status ==="
+          kubectl get pods -n ${{ env.NAMESPACE }} -o wide
+          echo ""
+          echo "=== Services ==="
+          kubectl get svc -n ${{ env.NAMESPACE }}
+          echo ""
+          echo "=== PVCs ==="
+          kubectl get pvc -n ${{ env.NAMESPACE }}
+          echo ""
+          echo "=== CronJobs ==="
+          kubectl get cronjob -n ${{ env.NAMESPACE }}
+          echo ""
+
+          # Structural check: no OpenViking/Sourcebot pods
+          if kubectl get pods -n ${{ env.NAMESPACE }} -l app.kubernetes.io/name=openviking 2>/dev/null | grep -q Running; then
+            echo "::error::OpenViking pod found — should not exist in new stack!"
+            exit 1
+          fi
+          if kubectl get pods -n ${{ env.NAMESPACE }} -l app.kubernetes.io/name=sourcebot 2>/dev/null | grep -q Running; then
+            echo "::error::Sourcebot pod found — should not exist in new stack!"
+            exit 1
+          fi
+          echo "✅ No legacy OpenViking/Sourcebot pods found (correct)"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Agent Context Deploy"
+            echo ""
+            echo "| Resource | Status |"
+            echo "|----------|--------|"
+            echo "| Namespace | $(kubectl get ns ${{ env.NAMESPACE }} -o jsonpath='{.status.phase}' 2>/dev/null || echo 'MISSING') |"
+            echo "| Zoekt | $(kubectl get deploy zoekt-webserver -n ${{ env.NAMESPACE }} -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo 'N/A') |"
+            echo "| LiteLLM | $(kubectl get deploy litellm-proxy -n ${{ env.NAMESPACE }} -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo 'N/A') |"
+            echo "| PVC | $(kubectl get pvc platform-data -n ${{ env.NAMESPACE }} -o jsonpath='{.status.phase}' 2>/dev/null || echo 'N/A') |"
+            echo "| Ingestion CronJob | $(kubectl get cronjob ingestion-refresh -n ${{ env.NAMESPACE }} -o jsonpath='{.spec.schedule}' 2>/dev/null || echo 'N/A') |"
+            echo ""
+            echo "**Images running:**"
+            echo '```'
+            kubectl get pods -n ${{ env.NAMESPACE }} -o jsonpath='{range .items[*]}{.metadata.name}: {.spec.containers[0].image}{"\n"}{end}' 2>/dev/null || echo "Unable to query"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

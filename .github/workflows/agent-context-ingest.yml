@@ -31,6 +31,9 @@ jobs:
         with:
           sparse-checkout: modules/agent-context/index_content
 
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --name adp-dev-eks-cluster --region us-east-1
+
       - name: Update ingestion content ConfigMap
         run: |
           kubectl create configmap ingestion-content-config \

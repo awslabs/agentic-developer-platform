@@ -56,7 +56,7 @@ resource "aws_opensearchserverless_security_policy" "network" {
       ]
       AllowFromPublic = true
     }
-  ]) : jsonencode([
+    ]) : jsonencode([
     {
       Description = "VPC access for GraphRAG collection"
       Rules = [

@@ -80,7 +80,9 @@ resource "aws_iam_policy" "runner_boundary" {
           "wafv2:GetWebACLForResource", "wafv2:ListResourcesForWebACL",
           "wafv2:TagResource", "wafv2:UntagResource", "wafv2:ListTagsForResource",
           # CloudTrail
-          "cloudtrail:*"
+          "cloudtrail:*",
+          # S3 Vectors — agent-context code embeddings (Issue #1406)
+          "s3vectors:*"
         ]
         Resource = "*"
       },
@@ -649,6 +651,21 @@ resource "aws_iam_policy" "runner_services" {
           "sqs:UntagQueue"
         ]
         Resource = "arn:aws:sqs:us-east-1:*:adp-*"
+      },
+      {
+        Sid    = "S3VectorsMgmt"
+        Effect = "Allow"
+        Action = [
+          "s3vectors:CreateVectorBucket",
+          "s3vectors:DeleteVectorBucket",
+          "s3vectors:GetVectorBucket",
+          "s3vectors:ListVectorBuckets",
+          "s3vectors:CreateIndex",
+          "s3vectors:DeleteIndex",
+          "s3vectors:GetIndex",
+          "s3vectors:ListIndexes"
+        ]
+        Resource = "arn:aws:s3vectors:us-east-1:*:vector-bucket/adp-*"
       },
       {
         Sid    = "SSMParameterOps"

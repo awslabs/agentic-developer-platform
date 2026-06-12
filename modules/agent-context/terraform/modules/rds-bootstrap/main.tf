@@ -57,7 +57,7 @@ resource "aws_iam_role_policy" "ac_rds_bootstrap_secrets" {
       {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = var.master_user_secret_arn
+        Resource = var.master_user_secret_arn != "" ? var.master_user_secret_arn : "arn:aws:secretsmanager:*:*:secret:placeholder-not-used"
       }
     ]
   })

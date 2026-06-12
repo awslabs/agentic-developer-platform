@@ -204,28 +204,43 @@ def check_ingestion(config: EvalConfig, corpus: list[Repo]) -> dict[str, bool]:
     """Verify all corpus repos have been ingested.
 
     Returns a dict of repo_name → ingested (True/False).
-    Checks by querying the MCP browse verb for each repo.
+    In MCP mode: queries the browse verb for each repo.
+    In direct mode: queries Zoekt to check if the repo has indexed shards.
     """
     results: dict[str, bool] = {}
 
     for repo in corpus:
         try:
-            # Use browse verb to check if repo is indexed
-            resp = httpx.post(
-                f"{config.mcp_url}/call",
-                json={
-                    "name": "browse",
-                    "arguments": {"action": "ls", "uri": f"/{repo.name}"},
-                },
-                timeout=config.timeout,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                # If browse returns entries, repo is indexed
-                entries = data.get("entries", [])
-                results[repo.name] = len(entries) > 0
+            if config.eval_mode == "direct":
+                # Query Zoekt: search for any file in this repo
+                resp = httpx.post(
+                    f"{config.zoekt_url}/api/search",
+                    json={"q": f"r:{repo.name} f:.", "num": 1},
+                    timeout=config.timeout,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    file_matches = data.get("Result", {}).get("FileMatches", []) or []
+                    results[repo.name] = len(file_matches) > 0
+                else:
+                    results[repo.name] = False
             else:
-                results[repo.name] = False
+                # Use browse verb to check if repo is indexed
+                resp = httpx.post(
+                    f"{config.mcp_url}/call",
+                    json={
+                        "name": "browse",
+                        "arguments": {"action": "ls", "uri": f"/{repo.name}"},
+                    },
+                    timeout=config.timeout,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # If browse returns entries, repo is indexed
+                    entries = data.get("entries", [])
+                    results[repo.name] = len(entries) > 0
+                else:
+                    results[repo.name] = False
         except Exception as e:
             log.warning("Ingestion check failed for %s: %s", repo.name, e)
             results[repo.name] = False
@@ -252,6 +267,107 @@ def query_mcp(config: EvalConfig, verb: str, arguments: dict[str, Any]) -> dict[
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def query_direct(config: EvalConfig, verb: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Query backends directly (bypasses MCP/Door server).
+
+    Supports search_exact and search_semantic via Zoekt.
+    Other verbs (understand, impact, browse) raise NotImplementedError.
+    """
+    if verb in ("search_exact", "search_semantic"):
+        return _query_zoekt(config, arguments)
+    elif verb == "browse":
+        return _query_zoekt_browse(config, arguments)
+    else:
+        raise NotImplementedError(
+            f"Direct mode does not support verb '{verb}' — requires MCP/Door server"
+        )
+
+
+def _query_zoekt(config: EvalConfig, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Query Zoekt directly for code search."""
+    query = arguments.get("query", "")
+    limit = arguments.get("limit", 20)
+
+    # Zoekt web API: POST /api/search
+    resp = httpx.post(
+        f"{config.zoekt_url}/api/search",
+        json={"q": query, "num": limit},
+        timeout=config.timeout,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    # Transform Zoekt response to match MCP search response format
+    results = []
+    for file_match in data.get("Result", {}).get("FileMatches", []) or []:
+        file_name = file_match.get("FileName", "")
+        repo_name = file_match.get("Repository", "")
+        for line_match in file_match.get("LineMatches", []) or []:
+            content = line_match.get("Line", "")
+            results.append(
+                {
+                    "file": f"{repo_name}/{file_name}" if repo_name else file_name,
+                    "path": file_name,
+                    "content": content,
+                    "line": line_match.get("LineNumber", 0),
+                    "repo": repo_name,
+                }
+            )
+
+    # Also add file-level matches (in case LineMatches is empty)
+    if not results:
+        for file_match in data.get("Result", {}).get("FileMatches", []) or []:
+            file_name = file_match.get("FileName", "")
+            repo_name = file_match.get("Repository", "")
+            results.append(
+                {
+                    "file": f"{repo_name}/{file_name}" if repo_name else file_name,
+                    "path": file_name,
+                    "content": "",
+                    "repo": repo_name,
+                }
+            )
+
+    return {"results": results[:limit]}
+
+
+def _query_zoekt_browse(config: EvalConfig, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Query Zoekt for directory listing (browse verb)."""
+    uri = arguments.get("uri", "")
+    # Parse URI: /<repo>/<path> → search for files under that path
+    parts = uri.strip("/").split("/", 1)
+    repo = parts[0] if parts else ""
+    path_prefix = parts[1] if len(parts) > 1 else ""
+
+    # Use Zoekt file search to list files under the path
+    query = f"r:{repo} f:{path_prefix}" if path_prefix else f"r:{repo} f:."
+    resp = httpx.post(
+        f"{config.zoekt_url}/api/search",
+        json={"q": query, "num": 100},
+        timeout=config.timeout,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    # Extract unique directory entries at the requested depth
+    entries = set()
+    for file_match in data.get("Result", {}).get("FileMatches", []) or []:
+        file_name = file_match.get("FileName", "")
+        # Get the relative path from the prefix
+        if path_prefix and file_name.startswith(path_prefix):
+            relative = file_name[len(path_prefix) :].lstrip("/")
+        elif not path_prefix:
+            relative = file_name
+        else:
+            relative = file_name
+        # Take the first path component (file or directory)
+        first_component = relative.split("/")[0] if relative else ""
+        if first_component:
+            entries.add(first_component)
+
+    return {"entries": [{"name": e} for e in sorted(entries)]}
 
 
 def build_query_arguments(question: GoldenQuestion) -> dict[str, Any]:
@@ -499,11 +615,29 @@ def run_evaluation(config: EvalConfig) -> EvalReport:
 
         try:
             arguments = build_query_arguments(question)
-            response = query_mcp(config, question.verb, arguments)
+            if config.eval_mode == "direct":
+                response = query_direct(config, question.verb, arguments)
+            else:
+                response = query_mcp(config, question.verb, arguments)
             elapsed = (time.time() - start) * 1000
 
             result = score_result(question, response, config)
             result.elapsed_ms = elapsed
+
+        except NotImplementedError as e:
+            # In direct mode, some verbs aren't supported — skip gracefully
+            elapsed = (time.time() - start) * 1000
+            result = EvalResult(
+                question_id=question.id,
+                repo=question.repo,
+                verb=question.verb,
+                query=question.query,
+                passed=False,
+                score=0.0,
+                error=f"SKIPPED (direct mode): {e}",
+                elapsed_ms=elapsed,
+            )
+            report.errors += 1
 
         except Exception as e:
             elapsed = (time.time() - start) * 1000

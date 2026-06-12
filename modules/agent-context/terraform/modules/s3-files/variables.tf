@@ -38,5 +38,5 @@ variable "glacier_transition_days" {
 variable "mountpoint_s3_csi_driver_version" {
   description = "Version of the Mountpoint for Amazon S3 CSI driver EKS add-on"
   type        = string
-  default     = "v1.12.0-eksbuild.1"
+  default     = "v1.15.0-eksbuild.1"
 }

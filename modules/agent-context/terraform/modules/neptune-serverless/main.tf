@@ -66,17 +66,17 @@ resource "aws_security_group_rule" "neptune_egress" {
 # ─── Neptune Serverless Cluster ──────────────────────────────────────────────
 
 resource "aws_neptune_cluster" "graphrag" {
-  cluster_identifier                   = "${var.cluster_name}-graphrag"
-  engine                               = "neptune"
-  engine_version                       = var.neptune_engine_version
-  iam_database_authentication_enabled  = true
-  neptune_subnet_group_name            = aws_neptune_subnet_group.graphrag.name
-  vpc_security_group_ids               = [aws_security_group.neptune.id]
-  storage_encrypted                    = true
-  skip_final_snapshot                  = var.skip_final_snapshot
-  final_snapshot_identifier            = var.skip_final_snapshot ? null : "${var.cluster_name}-graphrag-final"
-  apply_immediately                    = true
-  deletion_protection                  = var.deletion_protection
+  cluster_identifier                  = "${var.cluster_name}-graphrag"
+  engine                              = "neptune"
+  engine_version                      = var.neptune_engine_version
+  iam_database_authentication_enabled = true
+  neptune_subnet_group_name           = aws_neptune_subnet_group.graphrag.name
+  vpc_security_group_ids              = [aws_security_group.neptune.id]
+  storage_encrypted                   = true
+  skip_final_snapshot                 = var.skip_final_snapshot
+  final_snapshot_identifier           = var.skip_final_snapshot ? null : "${var.cluster_name}-graphrag-final"
+  apply_immediately                   = true
+  deletion_protection                 = var.deletion_protection
 
   serverless_v2_scaling_configuration {
     min_capacity = var.min_capacity

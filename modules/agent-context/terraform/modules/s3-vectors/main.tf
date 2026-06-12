@@ -4,21 +4,31 @@
 # Creates an S3 Vectors bucket with N hash-sharded indexes for code embeddings.
 # Each index stores 1024-dim Titan Embed v2 vectors with cosine distance.
 # Personal-context indexes are created dynamically per-user at runtime.
+#
+# NOTE: aws_s3vectors_* resources require AWS provider >= 5.101 (not yet
+# released as of 2026-06-12). The bucket and indexes are created via AWS CLI
+# as a manual step. This module manages only the IAM policy attachment.
+# When provider support lands, uncomment the resources below.
 # =============================================================================
 
-resource "aws_s3vectors_vector_bucket" "code_vectors" {
+# resource "aws_s3vectors_vector_bucket" "code_vectors" {
+#   vector_bucket_name = "adp-${var.environment}-code-vectors-${var.account_id}"
+# }
+#
+# resource "aws_s3vectors_index" "code_shards" {
+#   count = var.shard_count
+#
+#   vector_bucket_name = aws_s3vectors_vector_bucket.code_vectors.vector_bucket_name
+#   index_name         = "code-shard-${count.index}"
+#
+#   dimension       = var.dimension
+#   distance_metric = var.distance_metric
+#   data_type       = "float32"
+# }
+
+locals {
+  # Constructed bucket name (mirrors what the resource would create)
   vector_bucket_name = "adp-${var.environment}-code-vectors-${var.account_id}"
-}
-
-resource "aws_s3vectors_index" "code_shards" {
-  count = var.shard_count
-
-  vector_bucket_name = aws_s3vectors_vector_bucket.code_vectors.vector_bucket_name
-  index_name         = "code-shard-${count.index}"
-
-  dimension       = var.dimension
-  distance_metric = var.distance_metric
-  data_type       = "float32"
 }
 
 # =============================================================================
