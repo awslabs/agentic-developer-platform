@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Refresh GitHub App installation token and update Sourcebot
+# Refresh GitHub App installation token for agent-context services.
 # Can be run manually or via cron.
 set -euo pipefail
 
@@ -32,7 +32,4 @@ else
   exit 1
 fi
 
-echo "[$(date)] Restarting Sourcebot..."
-kubectl rollout restart deploy/sourcebot -n "${NAMESPACE}"
-kubectl rollout status deploy/sourcebot -n "${NAMESPACE}" --timeout=180s
 echo "[$(date)] Token refresh complete."

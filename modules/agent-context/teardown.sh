@@ -53,24 +53,32 @@ if [ "${DELETE_NAMESPACE}" = "true" ]; then
 else
   echo ""
   echo "Removing deployments..."
-  for DEPLOY in litellm-proxy sourcebot sourcebot-postgres sourcebot-redis openviking-server deepwiki; do
+  for DEPLOY in litellm-proxy openviking-server deepwiki; do
     kubectl delete deploy "${DEPLOY}" -n "${NAMESPACE}" --timeout=60s 2>/dev/null || true
   done
   # Legacy: remove CodeGraphContext pod if it still exists (removed in #105)
   kubectl delete deploy codegraph-context -n "${NAMESPACE}" --timeout=60s 2>/dev/null || true
+  # Legacy: remove Sourcebot pods if they still exist (removed in #1347)
+  for DEPLOY in sourcebot sourcebot-postgres sourcebot-redis; do
+    kubectl delete deploy "${DEPLOY}" -n "${NAMESPACE}" --timeout=60s 2>/dev/null || true
+  done
 
   echo "Removing services..."
-  for SVC in litellm-proxy sourcebot sourcebot-postgres sourcebot-redis openviking deepwiki; do
+  for SVC in litellm-proxy openviking deepwiki; do
     kubectl delete svc "${SVC}" -n "${NAMESPACE}" --timeout=30s 2>/dev/null || true
   done
   # Legacy: remove CodeGraphContext service
   kubectl delete svc codegraph -n "${NAMESPACE}" --timeout=30s 2>/dev/null || true
+  # Legacy: remove Sourcebot services (removed in #1347)
+  for SVC in sourcebot sourcebot-postgres sourcebot-redis; do
+    kubectl delete svc "${SVC}" -n "${NAMESPACE}" --timeout=30s 2>/dev/null || true
+  done
 
   echo "Removing CronJobs and ScaledJobs..."
-  kubectl delete cronjob sourcebot-token-refresh -n "${NAMESPACE}" 2>/dev/null || true
   kubectl delete cronjob ingestion-refresh -n "${NAMESPACE}" 2>/dev/null || true
-  # Legacy CronJob
+  # Legacy CronJobs
   kubectl delete cronjob openviking-repo-refresh -n "${NAMESPACE}" 2>/dev/null || true
+  kubectl delete cronjob sourcebot-token-refresh -n "${NAMESPACE}" 2>/dev/null || true
   # KEDA ScaledJob for parallel ingestion
   kubectl delete scaledjob ingestion-worker -n "${NAMESPACE}" 2>/dev/null || true
   kubectl delete triggerauthentication keda-aws-auth -n "${NAMESPACE}" 2>/dev/null || true
@@ -78,11 +86,16 @@ else
   kubectl delete jobs -l app=ingestion-worker -n "${NAMESPACE}" 2>/dev/null || true
 
   echo "Removing RBAC..."
+  # Legacy: remove Sourcebot token-refresh RBAC (removed in #1347)
   kubectl delete role sourcebot-token-refresh -n "${NAMESPACE}" 2>/dev/null || true
   kubectl delete rolebinding sourcebot-token-refresh -n "${NAMESPACE}" 2>/dev/null || true
 
   echo "Removing ConfigMaps..."
-  for CM in openviking-config sourcebot-config github-app-token-script deepwiki-config ingestion-content-config agent-context-refresh-scripts; do
+  for CM in openviking-config deepwiki-config ingestion-content-config agent-context-refresh-scripts; do
+    kubectl delete configmap "${CM}" -n "${NAMESPACE}" 2>/dev/null || true
+  done
+  # Legacy: remove Sourcebot configmaps (removed in #1347)
+  for CM in sourcebot-config github-app-token-script; do
     kubectl delete configmap "${CM}" -n "${NAMESPACE}" 2>/dev/null || true
   done
 
@@ -92,6 +105,7 @@ else
   if [ "${DELETE_PVCS}" = "true" ]; then
     echo "Removing EBS PVCs (data will be lost)..."
     # NOTE: codegraph-data PVC is orphaned (CodeGraphContext removed in #105)
+    # NOTE: sourcebot-* PVCs are orphaned (Sourcebot removed in #1347)
     for PVC in openviking-data sourcebot-data sourcebot-postgres-data sourcebot-redis-data codegraph-data; do
       kubectl delete pvc "${PVC}" -n "${NAMESPACE}" --timeout=60s 2>/dev/null || true
     done

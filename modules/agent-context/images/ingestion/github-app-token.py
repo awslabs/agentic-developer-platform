@@ -23,7 +23,8 @@ Usage:
   python3 github-app-token.py \
     --app-id-secret adp/gh-app-ops-id \
     --app-key-secret adp/gh-app-ops-key \
-    --k8s-secret sourcebot-github-token \
+    --k8s-secret agent-context-secrets \
+    --k8s-key github-token \
     --namespace agent-context
 """
 import argparse

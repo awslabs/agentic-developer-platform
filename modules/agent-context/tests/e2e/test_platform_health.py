@@ -21,9 +21,6 @@ import pytest
 
 EXPECTED_DEPLOYMENTS = [
     "litellm-proxy",
-    "sourcebot",
-    "sourcebot-postgres",
-    "sourcebot-redis",
     "openviking-server",
     "deepwiki",
     "codegraph",
@@ -31,7 +28,6 @@ EXPECTED_DEPLOYMENTS = [
 
 EXPECTED_SERVICES = {
     "openviking": 1933,
-    "sourcebot": 3000,
     "deepwiki": 8001,
     "litellm-proxy": 4000,
     "context-mcp": 5100,
@@ -40,9 +36,6 @@ EXPECTED_SERVICES = {
 EXPECTED_PVCS = {
     "openviking-data": "200Gi",
     "platform-data": None,  # S3/EFS — size varies
-    "sourcebot-data": "100Gi",
-    "sourcebot-postgres-data": "20Gi",
-    "sourcebot-redis-data": "10Gi",
 }
 
 

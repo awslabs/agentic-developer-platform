@@ -86,8 +86,7 @@ class MockKubeClient:
     def __post_init__(self):
         # Pre-populate with expected resources for unit tests
         expected_deploys = [
-            "litellm-proxy", "sourcebot", "sourcebot-postgres",
-            "sourcebot-redis", "openviking-server", "deepwiki", "codegraph",
+            "litellm-proxy", "openviking-server", "deepwiki", "codegraph",
         ]
         for name in expected_deploys:
             self._deployments[name] = {
@@ -97,7 +96,6 @@ class MockKubeClient:
 
         expected_services = {
             "openviking": {"port": 1933},
-            "sourcebot": {"port": 3000},
             "deepwiki": {"port": 8001},
             "litellm-proxy": {"port": 4000},
             "context-mcp": {"port": 5100},
@@ -111,9 +109,6 @@ class MockKubeClient:
         pvcs = {
             "openviking-data": {"storage": "200Gi", "phase": "Bound"},
             "platform-data": {"storage": "8.0Ei", "phase": "Bound"},
-            "sourcebot-data": {"storage": "100Gi", "phase": "Bound"},
-            "sourcebot-postgres-data": {"storage": "20Gi", "phase": "Bound"},
-            "sourcebot-redis-data": {"storage": "10Gi", "phase": "Bound"},
         }
         for name, info in pvcs.items():
             self._pvcs[name] = {

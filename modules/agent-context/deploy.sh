@@ -31,8 +31,8 @@ while [[ $# -gt 0 ]]; do
       echo "Options:"
       echo "  --config <file>           Source additional config overrides"
       echo "  --personal-context-only   Deploy lean stack only (LiteLLM + Context MCP +"
-      echo "                            synthesis CronJob + S3 Vectors). Skips Sourcebot,"
-      echo "                            DeepWiki, ingestion pipeline, and OpenSearch."
+      echo "                            synthesis CronJob + S3 Vectors). Skips DeepWiki,"
+      echo "                            ingestion pipeline, and OpenSearch."
       echo "                            Cost: ~\$80/mo vs ~\$800/mo full stack."
       echo "  --skip-validate           Skip post-deployment validation"
       exit 0
@@ -53,7 +53,7 @@ echo "Namespace:  ${NAMESPACE}"
 if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
   echo "Mode:       PERSONAL-CONTEXT-ONLY (lean stack)"
   echo "            Deploys: LiteLLM, Context MCP, Synthesis CronJob, S3 Vectors"
-  echo "            Skips:   Sourcebot, DeepWiki, OpenSearch, Ingestion pipeline"
+  echo "            Skips:   DeepWiki, OpenSearch, Ingestion pipeline"
   echo "            Cost:    ~\$280/mo (vs ~\$800/mo full stack)"
 fi
 echo "============================================"
@@ -163,14 +163,7 @@ bash "${SCRIPT_DIR}/scripts/deploy-litellm-proxy.sh"
 # NOTE: CodeGraphContext pod removed (Issue #105) — cgc now runs during ingestion.
 # The ingestion pipeline (ingest-repo.py) handles structural analysis.
 
-# Deploy Sourcebot (skipped in personal-context-only mode)
-if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
-  echo ""
-  echo "Skipping Sourcebot (--personal-context-only mode)"
-else
-  echo ""
-  bash "${SCRIPT_DIR}/scripts/deploy-sourcebot.sh"
-fi
+# NOTE: Sourcebot removed (Issue #1347). Code search now uses Zoekt directly.
 
 # Deploy DeepWiki (skipped in personal-context-only mode)
 if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
@@ -330,13 +323,12 @@ if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
   fi
   echo ""
   echo "Skipped (not needed for personal context):"
-  echo "  Sourcebot, DeepWiki, Ingestion pipeline, OpenSearch, KEDA workers"
+  echo "  DeepWiki, Ingestion pipeline, OpenSearch, KEDA workers"
 else
   echo "Mode: FULL STACK (~\$600/mo)"
   echo ""
   echo "Services:"
   echo "  S3 Vectors:    adp-${ENVIRONMENT:-dev}-code-vectors (semantic search)"
-  echo "  Sourcebot:     http://sourcebot.${NAMESPACE}.svc.cluster.local:3000"
   echo "  LiteLLM Proxy: http://litellm-proxy.${NAMESPACE}.svc.cluster.local:${LITELLM_PORT}"
   if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
     echo "  DeepWiki:      http://deepwiki.${NAMESPACE}.svc.cluster.local:${DEEPWIKI_PORT}"

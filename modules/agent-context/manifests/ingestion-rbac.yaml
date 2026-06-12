@@ -1,9 +1,8 @@
 # Cross-namespace RBAC for the ingestion pipeline
 # Allows the GitHub Actions runner (in RUNNER_NAMESPACE) to access
 # resources in the agent-context namespace needed by ingest-content.yml:
-#   - Read agent-context-secrets (OpenViking API key)
-#   - Read/update sourcebot-config ConfigMap
-#   - Restart deployments (sourcebot, deepwiki)
+#   - Read agent-context-secrets (API keys)
+#   - Restart deployments (deepwiki)
 #   - Create/manage Jobs (wiki indexing)
 #   - Exec into pods (DeepWiki wiki generation)
 #
@@ -19,20 +18,15 @@ metadata:
     app.kubernetes.io/part-of: agent-context-platform
     app.kubernetes.io/component: rbac
 rules:
-  # Read the OpenViking API key from the shared secret
+  # Read the API keys from the shared secret
   - apiGroups: [""]
     resources: ["secrets"]
     resourceNames: ["agent-context-secrets"]
     verbs: ["get"]
-  # Read and update the Sourcebot config
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    resourceNames: ["sourcebot-config"]
-    verbs: ["get", "update", "patch"]
-  # Restart deployments (rollout restart) — limited to sourcebot and deepwiki
+  # Restart deployments (rollout restart) — limited to deepwiki
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    resourceNames: ["sourcebot", "deepwiki"]
+    resourceNames: ["deepwiki"]
     verbs: ["get", "patch"]
   # Create and manage wiki-indexing Jobs
   - apiGroups: ["batch"]

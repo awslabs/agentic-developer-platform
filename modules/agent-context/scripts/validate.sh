@@ -27,7 +27,7 @@ check_warn() { echo "  [WARN] $1"; WARN=$((WARN + 1)); }
 echo ""
 echo "--- Check 1: Pod Status ---"
 
-EXPECTED_DEPLOYS="litellm-proxy sourcebot sourcebot-postgres sourcebot-redis openviking-server"
+EXPECTED_DEPLOYS="litellm-proxy openviking-server"
 for DEPLOY in ${EXPECTED_DEPLOYS}; do
   READY=$(kubectl get deploy "${DEPLOY}" -n "${NAMESPACE}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
   if [ "${READY:-0}" -ge 1 ]; then
@@ -201,43 +201,7 @@ if [ -n "${CGC_POD}" ]; then
   check_warn "Legacy CodeGraphContext pod still running: ${CGC_POD} — should be removed (Issue #105)"
 fi
 
-# ─── Check 5: Sourcebot ─────────────────────────────────────────────────────
-echo ""
-echo "--- Check 5: Sourcebot ---"
-
-# Sourcebot uses node/alpine - try curl first, fallback to wget
-SB_HEALTH=$(kubectl exec deploy/sourcebot -n "${NAMESPACE}" -c sourcebot -- curl -sf http://localhost:3000/api/health 2>/dev/null \
-  || kubectl exec deploy/sourcebot -n "${NAMESPACE}" -c sourcebot -- wget -qO- http://localhost:3000/api/health 2>/dev/null \
-  || echo "UNREACHABLE")
-if echo "${SB_HEALTH}" | grep -q '"ok"'; then
-  check_pass "Sourcebot /api/health: ${SB_HEALTH}"
-else
-  check_fail "Sourcebot /api/health: ${SB_HEALTH:0:100}"
-fi
-
-# Check Postgres
-PG_READY=$(kubectl exec deploy/sourcebot-postgres -n "${NAMESPACE}" -- pg_isready -U postgres 2>/dev/null || echo "NOT_READY")
-if echo "${PG_READY}" | grep -q "accepting connections"; then
-  check_pass "Sourcebot Postgres: accepting connections"
-else
-  check_fail "Sourcebot Postgres: ${PG_READY:0:100}"
-fi
-
-# Check Redis
-REDIS_PING=$(kubectl exec deploy/sourcebot-redis -n "${NAMESPACE}" -- redis-cli ping 2>/dev/null || echo "NOT_READY")
-if [ "${REDIS_PING}" = "PONG" ]; then
-  check_pass "Sourcebot Redis: PONG"
-else
-  check_fail "Sourcebot Redis: ${REDIS_PING}"
-fi
-
-# Check CronJob exists
-CJ_EXISTS=$(kubectl get cronjob sourcebot-token-refresh -n "${NAMESPACE}" -o name 2>/dev/null || echo "")
-if [ -n "${CJ_EXISTS}" ]; then
-  check_pass "Token refresh CronJob: exists"
-else
-  check_warn "Token refresh CronJob: not found (GitHub App token rotation not active)"
-fi
+# NOTE: Sourcebot removed (Issue #1347). Code search now uses Zoekt directly.
 
 # ─── Check 6: DeepWiki ──────────────────────────────────────────────────────
 echo ""
@@ -280,7 +244,7 @@ ARC_NS="arc-runners-aisuperplane"
 ARC_POD=$(kubectl get pods -n "${ARC_NS}" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 
 if [ -n "${ARC_POD}" ]; then
-  for SVC in openviking:1933 sourcebot:3000 litellm-proxy:${LITELLM_PORT}; do
+  for SVC in openviking:1933 litellm-proxy:${LITELLM_PORT}; do
     SVC_NAME=$(echo "${SVC}" | cut -d: -f1)
     SVC_PORT=$(echo "${SVC}" | cut -d: -f2)
     DNS_CHECK=$(kubectl exec "${ARC_POD}" -n "${ARC_NS}" -- nslookup "${SVC_NAME}.${NAMESPACE}.svc.cluster.local" 2>/dev/null | grep -c "Address" || echo "0")
@@ -395,13 +359,6 @@ if [ "${CAN_GET_SECRET}" = "yes" ]; then
   check_pass "Runner SA can read agent-context-secrets"
 else
   check_fail "Runner SA cannot read agent-context-secrets (${SA_SUBJECT})"
-fi
-
-CAN_PATCH_CM=$(kubectl auth can-i patch configmaps/sourcebot-config -n "${NAMESPACE}" --as="${SA_SUBJECT}" 2>/dev/null || echo "no")
-if [ "${CAN_PATCH_CM}" = "yes" ]; then
-  check_pass "Runner SA can patch sourcebot-config ConfigMap"
-else
-  check_fail "Runner SA cannot patch sourcebot-config ConfigMap (${SA_SUBJECT})"
 fi
 
 CAN_CREATE_JOB=$(kubectl auth can-i create jobs -n "${NAMESPACE}" --as="${SA_SUBJECT}" 2>/dev/null || echo "no")
