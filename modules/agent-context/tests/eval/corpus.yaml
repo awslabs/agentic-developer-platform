@@ -1,0 +1,99 @@
+# Evaluation Corpus — 15 public repositories
+# Mix: real codebases, skill/agent collections, curated markdown lists
+# Used by run_eval.py to validate Knowledge Layer answer quality.
+#
+# Types:
+#   code   — substantial codebase with functions, classes, call graphs
+#   skills — agent skill/tool collections (mixed code + config)
+#   list   — large curated-list / markdown repos (awesome-*)
+
+repos:
+  - name: agent-skills
+    url: https://github.com/addyosmani/agent-skills
+    type: skills
+    description: "Collection of reusable AI agent skills by Addy Osmani"
+    languages: [markdown, typescript]
+
+  - name: superpowers
+    url: https://github.com/obra/superpowers
+    type: skills
+    description: "Claude Code superpowers — advanced prompts and techniques"
+    languages: [markdown]
+
+  - name: agency-agents
+    url: https://github.com/msitarzewski/agency-agents
+    type: skills
+    description: "Agency framework agent definitions and configurations"
+    languages: [yaml, markdown]
+
+  - name: last30days-skill
+    url: https://github.com/mvanhorn/last30days-skill
+    type: skills
+    description: "Alexa skill reporting what happened in the last 30 days"
+    languages: [javascript]
+
+  - name: headroom
+    url: https://github.com/chopratejas/headroom
+    type: code
+    description: "Video conferencing app with AI features"
+    languages: [javascript, typescript]
+
+  - name: Agent-Reach
+    url: https://github.com/Panniantong/Agent-Reach
+    type: code
+    description: "Multi-agent research and evaluation framework"
+    languages: [python]
+
+  - name: CopilotKit
+    url: https://github.com/CopilotKit/CopilotKit
+    type: code
+    description: "Open-source framework for building AI copilots in React apps"
+    languages: [typescript, javascript]
+
+  - name: career-ops
+    url: https://github.com/santifer/career-ops
+    type: skills
+    description: "Job search automation with AI agents"
+    languages: [python, markdown]
+
+  - name: codegraph
+    url: https://github.com/colbymchenry/codegraph
+    type: code
+    description: "Code analysis and graph visualization tool"
+    languages: [typescript, javascript]
+
+  - name: Understand-Anything
+    url: https://github.com/Egonex-AI/Understand-Anything
+    type: code
+    description: "AI-powered document understanding and analysis"
+    languages: [python]
+
+  - name: CloakBrowser
+    url: https://github.com/CloakHQ/CloakBrowser
+    type: code
+    description: "Privacy-focused browser with fingerprint protection"
+    languages: [typescript, javascript]
+
+  - name: skills
+    url: https://github.com/mattpocock/skills
+    type: skills
+    description: "Matt Pocock's TypeScript tips and educational content"
+    languages: [typescript, markdown]
+
+  - name: academic-research-skills
+    url: https://github.com/Imbad0202/academic-research-skills
+    type: skills
+    description: "Academic research methodology and skills resources"
+    languages: [markdown]
+
+  - name: awesome-selfhosted
+    url: https://github.com/awesome-selfhosted/awesome-selfhosted
+    type: list
+    description: "Curated list of self-hosted software alternatives"
+    languages: [markdown]
+
+  - name: Awesome-Hacking
+    url: https://github.com/Hack-with-Github/Awesome-Hacking
+    type: list
+    description: "Curated list of hacking tools, resources, and references"
+    languages: [markdown]

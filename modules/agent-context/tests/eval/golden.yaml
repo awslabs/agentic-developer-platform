@@ -1,0 +1,720 @@
+# Golden-answer evaluation dataset for the Knowledge Layer.
+# ~75 questions (5 per repo) spread across MCP verbs.
+#
+# Verbs:
+#   search_exact    — literal token/symbol/string known to exist
+#   search_semantic — concept query using words NOT in the code (vocabulary-mismatch)
+#   understand      — explain a specific module/function
+#   impact          — what calls / what breaks if X changes
+#   browse          — navigate repo structure
+#
+# Each question has:
+#   id, repo, verb, query, expected (verb-specific), pass_criterion, notes
+
+questions:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 1: agent-skills (addyosmani/agent-skills) — skills/agent
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: agent-skills-01
+    repo: agent-skills
+    verb: search_exact
+    query: "doubt-driven-development"
+    expected:
+      files: ["skills/doubt-driven-development"]
+    pass_criterion: "Expected skill directory/file in top 3 results"
+
+  - id: agent-skills-02
+    repo: agent-skills
+    verb: search_semantic
+    query: "automated code quality review before merging"
+    expected:
+      files: ["commands/review.toml", "skills/code-review"]
+    pass_criterion: "Review-related skill or command file in top 5 results"
+    notes: "Vocabulary mismatch: query says 'merging' and 'quality review', repo uses 'review' command and skill names"
+
+  - id: agent-skills-03
+    repo: agent-skills
+    verb: browse
+    query: "/agent-skills/commands"
+    expected:
+      entries: ["build.toml", "review.toml", "spec.toml", "test.toml", "ship.toml"]
+    pass_criterion: "At least 3 of the 7 TOML command files listed"
+
+  - id: agent-skills-04
+    repo: agent-skills
+    verb: understand
+    query: "agent-skills/plugin.json"
+    expected:
+      location: "plugin.json"
+      key_facts: ["agent-skills", "1.0.0", "commands", "skills"]
+    pass_criterion: "Response mentions plugin name, version, and structure"
+
+  - id: agent-skills-05
+    repo: agent-skills
+    verb: search_semantic
+    query: "breaking down complex features into smaller implementation tasks"
+    expected:
+      files: ["commands/planning.toml", "skills/idea-refine"]
+    pass_criterion: "Planning command or idea-refine skill in top 5 results"
+    notes: "Vocabulary mismatch: query uses 'breaking down' and 'implementation tasks', repo uses 'planning' and 'idea-refine'"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 2: superpowers (obra/superpowers) — skills/agent
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: superpowers-01
+    repo: superpowers
+    verb: search_exact
+    query: "subagent-driven-development"
+    expected:
+      files: ["skills/subagent-driven-development"]
+    pass_criterion: "Subagent-driven-development skill file in top 3 results"
+
+  - id: superpowers-02
+    repo: superpowers
+    verb: search_semantic
+    query: "running multiple independent coding tasks simultaneously"
+    expected:
+      files: ["skills/dispatching-parallel-agents", "skills/using-git-worktrees"]
+    pass_criterion: "Parallel agents or worktrees skill in top 5 results"
+    notes: "Vocabulary mismatch: query says 'simultaneously' and 'independent tasks', repo uses 'dispatching-parallel-agents' and 'worktrees'"
+
+  - id: superpowers-03
+    repo: superpowers
+    verb: browse
+    query: "/superpowers/skills"
+    expected:
+      entries: ["subagent-driven-development", "dispatching-parallel-agents", "using-git-worktrees", "verification-before-completion", "writing-skills"]
+    pass_criterion: "At least 4 of the 14 skill directories listed"
+
+  - id: superpowers-04
+    repo: superpowers
+    verb: understand
+    query: "superpowers/skills/subagent-driven-development"
+    expected:
+      location: "skills/subagent-driven-development"
+      key_facts: ["sub-agent", "spec", "plan", "implement", "TDD"]
+    pass_criterion: "Response explains the subagent workflow with spec/plan/implement phases"
+
+  - id: superpowers-05
+    repo: superpowers
+    verb: search_exact
+    query: "implementer-prompt.md"
+    expected:
+      files: ["skills/subagent-driven-development/implementer-prompt.md"]
+    pass_criterion: "Implementer prompt file found in top 3 results"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 3: agency-agents (msitarzewski/agency-agents) — skills/agent
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: agency-agents-01
+    repo: agency-agents
+    verb: search_exact
+    query: "engineering-solidity-smart-contract-engineer"
+    expected:
+      files: ["engineering/engineering-solidity-smart-contract-engineer.md"]
+    pass_criterion: "Solidity engineer agent file in top 3 results"
+
+  - id: agency-agents-02
+    repo: agency-agents
+    verb: search_semantic
+    query: "geographic information systems mapping and spatial analysis"
+    expected:
+      files: ["gis/"]
+    pass_criterion: "GIS division directory or agent file in top 5 results"
+    notes: "Vocabulary mismatch: query uses 'geographic information systems' and 'spatial analysis', repo uses 'gis' directory name"
+
+  - id: agency-agents-03
+    repo: agency-agents
+    verb: browse
+    query: "/agency-agents"
+    expected:
+      entries: ["engineering", "design", "marketing", "security", "finance", "game-development", "gis", "spatial-computing"]
+    pass_criterion: "At least 5 of the 16+ division directories listed"
+
+  - id: agency-agents-04
+    repo: agency-agents
+    verb: search_semantic
+    query: "virtual reality and augmented reality application development agents"
+    expected:
+      files: ["spatial-computing/"]
+    pass_criterion: "Spatial-computing division in top 5 results"
+    notes: "Vocabulary mismatch: query says 'virtual reality' and 'augmented reality', repo uses 'spatial-computing'"
+
+  - id: agency-agents-05
+    repo: agency-agents
+    verb: search_exact
+    query: "install.sh"
+    expected:
+      files: ["scripts/install.sh"]
+    pass_criterion: "Install script in top 3 results"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 4: last30days-skill (mvanhorn/last30days-skill) — skills
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: last30days-01
+    repo: last30days-skill
+    verb: search_exact
+    query: "SKILL.md"
+    expected:
+      files: ["skills/last30days/SKILL.md"]
+    pass_criterion: "SKILL.md file in top 3 results"
+
+  - id: last30days-02
+    repo: last30days-skill
+    verb: search_semantic
+    query: "aggregating social media content from multiple platforms with popularity ranking"
+    expected:
+      files: ["skills/last30days/SKILL.md", "README.md"]
+    pass_criterion: "Main skill or README in top 5 results"
+    notes: "Vocabulary mismatch: query says 'aggregating' and 'popularity ranking', repo uses terms like 'upvotes, likes, real money' scoring"
+
+  - id: last30days-03
+    repo: last30days-skill
+    verb: browse
+    query: "/last30days-skill"
+    expected:
+      entries: ["skills", "tests", "fixtures", "hooks", "docs"]
+    pass_criterion: "At least 3 top-level directories listed"
+
+  - id: last30days-04
+    repo: last30days-skill
+    verb: understand
+    query: "last30days-skill/CONCEPTS.md"
+    expected:
+      location: "CONCEPTS.md"
+      key_facts: ["search", "sources", "Reddit", "YouTube", "scoring"]
+    pass_criterion: "Response explains the multi-source search concept with scoring"
+
+  - id: last30days-05
+    repo: last30days-skill
+    verb: search_exact
+    query: "HERMES_SETUP"
+    expected:
+      files: ["HERMES_SETUP.md"]
+    pass_criterion: "Hermes setup file in top 3 results"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 5: headroom (chopratejas/headroom) — code
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: headroom-01
+    repo: headroom
+    verb: search_exact
+    query: "ContentRouter"
+    expected:
+      files: ["headroom/compress.py", "crates/headroom-core"]
+    pass_criterion: "ContentRouter class/struct in top 3 results"
+
+  - id: headroom-02
+    repo: headroom
+    verb: search_semantic
+    query: "reducing LLM input token costs while preserving answer accuracy"
+    expected:
+      files: ["headroom/compress.py", "README.md", "headroom/lean_ctx/"]
+    pass_criterion: "Compression module or README in top 5 results"
+    notes: "Vocabulary mismatch: query says 'reducing token costs' and 'preserving accuracy', repo uses 'compression' and 'context' terminology"
+
+  - id: headroom-03
+    repo: headroom
+    verb: understand
+    query: "headroom/headroom/compress.py"
+    expected:
+      location: "headroom/compress.py"
+      key_facts: ["ContentRouter", "SmartCrusher", "CodeCompressor", "compression"]
+    pass_criterion: "Response identifies compression components and their roles"
+
+  - id: headroom-04
+    repo: headroom
+    verb: impact
+    query: "headroom/headroom/compress.py::ContentRouter"
+    expected:
+      affected: ["proxy", "mcp_registry", "lean_ctx"]
+    pass_criterion: "At least 1 downstream consumer of ContentRouter identified"
+
+  - id: headroom-05
+    repo: headroom
+    verb: browse
+    query: "/headroom/crates"
+    expected:
+      entries: ["headroom-core", "headroom-parity", "headroom-proxy", "headroom-py"]
+    pass_criterion: "At least 3 of the 4 Rust crates listed"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 6: Agent-Reach (Panniantong/Agent-Reach) — code
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: agent-reach-01
+    repo: Agent-Reach
+    verb: search_exact
+    query: "cookie_extract"
+    expected:
+      files: ["agent_reach/cookie_extract.py"]
+    pass_criterion: "cookie_extract.py in top 3 results"
+
+  - id: agent-reach-02
+    repo: Agent-Reach
+    verb: search_semantic
+    query: "checking connectivity status to external web services"
+    expected:
+      files: ["agent_reach/doctor.py"]
+    pass_criterion: "doctor.py (diagnostic command) in top 5 results"
+    notes: "Vocabulary mismatch: query says 'connectivity status' and 'external web services', repo uses 'doctor' command that checks platform reachability"
+
+  - id: agent-reach-03
+    repo: Agent-Reach
+    verb: understand
+    query: "Agent-Reach/agent_reach/channels"
+    expected:
+      location: "agent_reach/channels"
+      key_facts: ["youtube", "twitter", "reddit", "bilibili", "xiaohongshu"]
+    pass_criterion: "Response lists platform-specific channel modules"
+
+  - id: agent-reach-04
+    repo: Agent-Reach
+    verb: impact
+    query: "Agent-Reach/agent_reach/cookie_extract.py"
+    expected:
+      affected: ["channels", "twitter", "xiaohongshu", "bilibili"]
+    pass_criterion: "At least 1 channel that depends on cookie extraction identified"
+
+  - id: agent-reach-05
+    repo: Agent-Reach
+    verb: browse
+    query: "/Agent-Reach/agent_reach/channels"
+    expected:
+      entries: ["youtube.py", "twitter.py", "reddit.py", "bilibili.py", "xiaohongshu.py"]
+    pass_criterion: "At least 3 platform channel files listed"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 7: CopilotKit (CopilotKit/CopilotKit) — code
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: copilotkit-01
+    repo: CopilotKit
+    verb: search_exact
+    query: "useCopilotAction"
+    expected:
+      files: ["packages/react-core"]
+    pass_criterion: "useCopilotAction hook definition in react-core package, top 3 results"
+
+  - id: copilotkit-02
+    repo: CopilotKit
+    verb: search_semantic
+    query: "building conversational AI interfaces embedded in web applications"
+    expected:
+      files: ["packages/react-ui", "packages/react-textarea", "README.md"]
+    pass_criterion: "React UI package or README in top 5 results"
+    notes: "Vocabulary mismatch: query says 'conversational AI interfaces embedded in web applications', repo uses 'CopilotKit', 'react-ui', 'react-textarea'"
+
+  - id: copilotkit-03
+    repo: CopilotKit
+    verb: understand
+    query: "CopilotKit/packages/react-core"
+    expected:
+      location: "packages/react-core"
+      key_facts: ["hooks", "CopilotKit", "action", "state", "React"]
+    pass_criterion: "Response explains react-core as the hook/state layer for CopilotKit"
+
+  - id: copilotkit-04
+    repo: CopilotKit
+    verb: impact
+    query: "CopilotKit/packages/react-core"
+    expected:
+      affected: ["react-ui", "react-textarea", "react-native", "angular", "vue"]
+    pass_criterion: "At least 2 downstream packages that depend on react-core identified"
+
+  - id: copilotkit-05
+    repo: CopilotKit
+    verb: browse
+    query: "/CopilotKit/packages"
+    expected:
+      entries: ["react-core", "react-ui", "react-textarea", "runtime", "angular", "vue"]
+    pass_criterion: "At least 4 of the SDK packages listed"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 8: career-ops (santifer/career-ops) — skills
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: career-ops-01
+    repo: career-ops
+    verb: search_exact
+    query: "build-cv-latex.mjs"
+    expected:
+      files: ["build-cv-latex.mjs"]
+    pass_criterion: "CV builder script in top 3 results"
+
+  - id: career-ops-02
+    repo: career-ops
+    verb: search_semantic
+    query: "automated resume generation tailored to specific job postings"
+    expected:
+      files: ["build-cv-latex.mjs", "modes/latex.md", "modes/apply.md"]
+    pass_criterion: "CV/resume generation file in top 5 results"
+    notes: "Vocabulary mismatch: query says 'resume generation tailored to job postings', repo uses 'build-cv-latex' and 'apply' mode"
+
+  - id: career-ops-03
+    repo: career-ops
+    verb: browse
+    query: "/career-ops/modes"
+    expected:
+      entries: ["apply.md", "scan.md", "pipeline.md", "followup.md", "latex.md", "tracker.md"]
+    pass_criterion: "At least 4 of the mode files listed"
+
+  - id: career-ops-04
+    repo: career-ops
+    verb: understand
+    query: "career-ops/modes/auto-pipeline.md"
+    expected:
+      location: "modes/auto-pipeline.md"
+      key_facts: ["pipeline", "scan", "evaluate", "apply", "automated"]
+    pass_criterion: "Response explains the auto-pipeline mode workflow"
+
+  - id: career-ops-05
+    repo: career-ops
+    verb: search_exact
+    query: "followup-cadence"
+    expected:
+      files: ["modes/followup.md"]
+      content: ["followup"]
+    pass_criterion: "Followup cadence concept in top 3 results"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 9: codegraph (colbymchenry/codegraph) — code
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: codegraph-01
+    repo: codegraph
+    verb: search_exact
+    query: "dynamic-boundaries"
+    expected:
+      files: ["src/mcp/dynamic-boundaries.ts"]
+    pass_criterion: "dynamic-boundaries.ts in top 3 results"
+
+  - id: codegraph-02
+    repo: codegraph
+    verb: search_semantic
+    query: "parsing source code structure to understand function relationships"
+    expected:
+      files: ["src/extraction/", "src/mcp/engine.ts"]
+    pass_criterion: "Extraction module or engine in top 5 results"
+    notes: "Vocabulary mismatch: query says 'parsing source code structure' and 'function relationships', repo uses 'extraction' and tree-sitter based graph"
+
+  - id: codegraph-03
+    repo: codegraph
+    verb: understand
+    query: "codegraph/src/mcp/engine.ts"
+    expected:
+      location: "src/mcp/engine.ts"
+      key_facts: ["graph", "index", "query", "MCP"]
+    pass_criterion: "Response explains the MCP engine as the graph query layer"
+
+  - id: codegraph-04
+    repo: codegraph
+    verb: impact
+    query: "codegraph/src/mcp/engine.ts"
+    expected:
+      affected: ["tools.ts", "server-instructions.ts", "daemon.ts"]
+    pass_criterion: "At least 1 MCP module that depends on engine.ts identified"
+
+  - id: codegraph-05
+    repo: codegraph
+    verb: browse
+    query: "/codegraph/src/extraction"
+    expected:
+      entries: ["vue-extractor.ts", "svelte-extractor.ts", "razor-extractor.ts", "liquid-extractor.ts"]
+    pass_criterion: "At least 3 language-specific extractor files listed"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 10: Understand-Anything (Egonex-AI/Understand-Anything) — code
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: understand-anything-01
+    repo: Understand-Anything
+    verb: search_exact
+    query: "understand-dashboard"
+    expected:
+      files: ["understand-anything-plugin/skills/understand-dashboard"]
+    pass_criterion: "Dashboard skill in top 3 results"
+
+  - id: understand-anything-02
+    repo: Understand-Anything
+    verb: search_semantic
+    query: "visualizing code architecture as an interactive graph diagram"
+    expected:
+      files: ["understand-anything-plugin/skills/understand-dashboard", "understand-anything-plugin/skills/understand"]
+    pass_criterion: "Dashboard or understand skill in top 5 results"
+    notes: "Vocabulary mismatch: query says 'interactive graph diagram', repo uses 'knowledge graph' and 'interactive dashboard'"
+
+  - id: understand-anything-03
+    repo: Understand-Anything
+    verb: understand
+    query: "Understand-Anything/understand-anything-plugin/skills"
+    expected:
+      location: "understand-anything-plugin/skills"
+      key_facts: ["understand", "dashboard", "diff", "domain", "knowledge", "onboard"]
+    pass_criterion: "Response lists the available skill commands and their purposes"
+
+  - id: understand-anything-04
+    repo: Understand-Anything
+    verb: impact
+    query: "Understand-Anything/understand-anything-plugin/skills/understand"
+    expected:
+      affected: ["understand-dashboard", "understand-diff", "understand-domain"]
+    pass_criterion: "At least 1 downstream skill that builds on base understand"
+
+  - id: understand-anything-05
+    repo: Understand-Anything
+    verb: browse
+    query: "/Understand-Anything/understand-anything-plugin/skills"
+    expected:
+      entries: ["understand", "understand-chat", "understand-dashboard", "understand-diff", "understand-domain", "understand-explain", "understand-knowledge", "understand-onboard"]
+    pass_criterion: "At least 5 of the 8 skill directories listed"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 11: CloakBrowser (CloakHQ/CloakBrowser) — code
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: cloakbrowser-01
+    repo: CloakBrowser
+    verb: search_exact
+    query: "humanize"
+    expected:
+      files: ["cloakbrowser/human/", "cloakbrowser/browser.py"]
+    pass_criterion: "Humanize module or browser.py in top 3 results"
+
+  - id: cloakbrowser-02
+    repo: CloakBrowser
+    verb: search_semantic
+    query: "evading automated bot detection by mimicking human browsing patterns"
+    expected:
+      files: ["cloakbrowser/human/", "cloakbrowser/browser.py", "tests/test_stealth.py"]
+    pass_criterion: "Human simulation module or stealth test in top 5 results"
+    notes: "Vocabulary mismatch: query says 'evading bot detection' and 'mimicking human patterns', repo uses 'humanize', 'stealth', and C++ fingerprint patches"
+
+  - id: cloakbrowser-03
+    repo: CloakBrowser
+    verb: understand
+    query: "CloakBrowser/cloakbrowser/browser.py"
+    expected:
+      location: "cloakbrowser/browser.py"
+      key_facts: ["launch", "Playwright", "fingerprint", "stealth", "browser"]
+    pass_criterion: "Response explains browser.py as the main entry point with launch() function"
+
+  - id: cloakbrowser-04
+    repo: CloakBrowser
+    verb: impact
+    query: "CloakBrowser/cloakbrowser/config.py"
+    expected:
+      affected: ["browser.py", "download.py", "geoip.py"]
+    pass_criterion: "At least 1 module that imports/uses config identified"
+
+  - id: cloakbrowser-05
+    repo: CloakBrowser
+    verb: browse
+    query: "/CloakBrowser/cloakbrowser"
+    expected:
+      entries: ["browser.py", "config.py", "download.py", "geoip.py", "human", "widevine.py"]
+    pass_criterion: "At least 4 of the package modules listed"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 12: skills (mattpocock/skills) — skills
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: skills-matt-01
+    repo: skills
+    verb: search_exact
+    query: "grill-with-docs"
+    expected:
+      files: ["skills/grill-with-docs"]
+    pass_criterion: "Grill-with-docs skill in top 3 results"
+
+  - id: skills-matt-02
+    repo: skills
+    verb: search_semantic
+    query: "questioning assumptions and challenging design decisions during development"
+    expected:
+      files: ["skills/grill-me", "skills/grill-with-docs"]
+    pass_criterion: "Grill-me or grill-with-docs skill in top 5 results"
+    notes: "Vocabulary mismatch: query says 'questioning assumptions' and 'challenging decisions', repo uses 'grill-me' and 'grill-with-docs'"
+
+  - id: skills-matt-03
+    repo: skills
+    verb: browse
+    query: "/skills/skills"
+    expected:
+      entries: ["grill-with-docs", "tdd", "diagnose", "triage", "prototype", "caveman", "handoff", "teach"]
+    pass_criterion: "At least 5 of the skill directories listed"
+
+  - id: skills-matt-04
+    repo: skills
+    verb: understand
+    query: "skills/skills/tdd"
+    expected:
+      location: "skills/tdd"
+      key_facts: ["test", "driven", "development", "red", "green"]
+    pass_criterion: "Response explains TDD skill workflow"
+
+  - id: skills-matt-05
+    repo: skills
+    verb: search_exact
+    query: "improve-codebase-architecture"
+    expected:
+      files: ["skills/improve-codebase-architecture"]
+    pass_criterion: "Architecture improvement skill in top 3 results"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 13: academic-research-skills (Imbad0202/academic-research-skills) — skills
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: academic-research-01
+    repo: academic-research-skills
+    verb: search_exact
+    query: "ars-plan"
+    expected:
+      files: ["commands/"]
+      content: ["ars-plan"]
+    pass_criterion: "ars-plan command reference in top 3 results"
+
+  - id: academic-research-02
+    repo: academic-research-skills
+    verb: search_semantic
+    query: "detecting fabricated citations and verifying reference authenticity"
+    expected:
+      files: ["academic-paper-reviewer/", "shared/ground_truth_isolation_pattern.md"]
+    pass_criterion: "Paper reviewer or ground truth isolation in top 5 results"
+    notes: "Vocabulary mismatch: query says 'fabricated citations' and 'reference authenticity', repo uses 'fabricated-reference' as a HIGH-WARN class and 'ground_truth_isolation_pattern'"
+
+  - id: academic-research-03
+    repo: academic-research-skills
+    verb: browse
+    query: "/academic-research-skills"
+    expected:
+      entries: ["academic-paper", "academic-paper-reviewer", "academic-pipeline", "deep-research", "skills", "commands", "shared"]
+    pass_criterion: "At least 4 of the top-level directories listed"
+
+  - id: academic-research-04
+    repo: academic-research-skills
+    verb: understand
+    query: "academic-research-skills/academic-pipeline"
+    expected:
+      location: "academic-pipeline"
+      key_facts: ["pipeline", "stages", "integrity", "research", "agents"]
+    pass_criterion: "Response explains the 10-stage pipeline orchestrator"
+
+  - id: academic-research-05
+    repo: academic-research-skills
+    verb: search_semantic
+    query: "multi-agent team collaborating on literature review and synthesis"
+    expected:
+      files: ["deep-research/", "academic-paper/"]
+    pass_criterion: "Deep research or academic paper skill in top 5 results"
+    notes: "Vocabulary mismatch: query says 'multi-agent team' and 'literature review', repo uses '13-agent team' for deep-research and '12-agent' for paper writing"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 14: awesome-selfhosted — list
+  # Note: structural/impact verbs don't apply to a curated markdown list.
+  # Leaning toward semantic + browse + content search.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: awesome-selfhosted-01
+    repo: awesome-selfhosted
+    verb: search_exact
+    query: "Plausible"
+    expected:
+      files: ["README.md"]
+      content: ["Plausible"]
+    pass_criterion: "Plausible Analytics entry found in README, top 3 results"
+
+  - id: awesome-selfhosted-02
+    repo: awesome-selfhosted
+    verb: search_semantic
+    query: "privacy-respecting website visitor counting without cookies"
+    expected:
+      files: ["README.md"]
+      content: ["Plausible", "GoatCounter", "Matomo", "Analytics"]
+    pass_criterion: "Analytics section or privacy-friendly analytics tool in top 5 results"
+    notes: "Vocabulary mismatch: query says 'visitor counting without cookies', repo lists analytics tools by name with license tags"
+
+  - id: awesome-selfhosted-03
+    repo: awesome-selfhosted
+    verb: browse
+    query: "/awesome-selfhosted"
+    expected:
+      entries: ["README.md", "non-free.md"]
+    pass_criterion: "README.md and non-free.md listed"
+
+  - id: awesome-selfhosted-04
+    repo: awesome-selfhosted
+    verb: search_semantic
+    query: "open source alternatives to commercial AI chatbot platforms"
+    expected:
+      files: ["README.md"]
+      content: ["Generative Artificial Intelligence", "GenAI"]
+    pass_criterion: "GenAI section or AI-related entries in top 5 results"
+    notes: "Vocabulary mismatch: query says 'AI chatbot platforms', repo uses category 'Generative Artificial Intelligence (GenAI)'"
+
+  - id: awesome-selfhosted-05
+    repo: awesome-selfhosted
+    verb: search_exact
+    query: "Community-Supported Agriculture"
+    expected:
+      files: ["README.md"]
+      content: ["Community-Supported Agriculture"]
+    pass_criterion: "CSA section heading found in top 3 results"
+    notes: "Tests exact match on an unusual category name"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Repo 15: Awesome-Hacking — list
+  # Note: structural/impact verbs don't apply. Leaning toward
+  # semantic + browse + content search.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: awesome-hacking-01
+    repo: Awesome-Hacking
+    verb: search_exact
+    query: "GTFOBins"
+    expected:
+      files: ["README.md"]
+      content: ["GTFOBins"]
+    pass_criterion: "GTFOBins entry found in README, top 3 results"
+
+  - id: awesome-hacking-02
+    repo: Awesome-Hacking
+    verb: search_semantic
+    query: "exploiting legitimate system utilities to bypass security controls"
+    expected:
+      files: ["README.md"]
+      content: ["GTFOBins", "Unix binaries"]
+    pass_criterion: "GTFOBins or LOLBAS-related entry in top 5 results"
+    notes: "Vocabulary mismatch: query says 'exploiting legitimate system utilities', repo lists GTFOBins as 'Unix binaries for bypassing security restrictions'"
+
+  - id: awesome-hacking-03
+    repo: Awesome-Hacking
+    verb: browse
+    query: "/Awesome-Hacking"
+    expected:
+      entries: ["README.md", "contributing.md"]
+    pass_criterion: "README.md listed in browse results"
+
+  - id: awesome-hacking-04
+    repo: Awesome-Hacking
+    verb: search_semantic
+    query: "using machine learning and artificial intelligence for network defense"
+    expected:
+      files: ["README.md"]
+      content: ["awesome-rl-for-cybersecurity", "Reinforcement Learning"]
+    pass_criterion: "RL for cybersecurity or AI-security list in top 5 results"
+    notes: "Vocabulary mismatch: query says 'machine learning for network defense', repo lists 'awesome-rl-for-cybersecurity' about Reinforcement Learning for Cyber Security"
+
+  - id: awesome-hacking-05
+    repo: Awesome-Hacking
+    verb: search_exact
+    query: "Capsulecorp Pentest"
+    expected:
+      files: ["README.md"]
+      content: ["Capsulecorp Pentest"]
+    pass_criterion: "Capsulecorp Pentest entry found in top 3 results"
