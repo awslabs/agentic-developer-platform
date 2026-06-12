@@ -20,6 +20,18 @@ data:
         litellm_params:
           model: "bedrock/${BEDROCK_VLM_MODEL}"
           aws_region_name: "${BEDROCK_REGION}"
+      # Per-task model tiering (see images/ingestion/config.py): wiki/learning/synthesis
+      # route to Sonnet; tagging/index/graphrag route to Haiku. Both must be
+      # registered here or those ingestion calls 404 at the proxy.
+      - model_name: "bedrock/global.anthropic.claude-sonnet-4-6"
+        litellm_params:
+          model: "bedrock/global.anthropic.claude-sonnet-4-6"
+          aws_region_name: "${BEDROCK_REGION}"
+      - model_name: "bedrock/global.anthropic.claude-haiku-4-6"
+        litellm_params:
+          model: "bedrock/global.anthropic.claude-haiku-4-6"
+          aws_region_name: "${BEDROCK_REGION}"
+      # Opus retained for any explicit opt-in; not a default for any ingestion task.
       - model_name: "bedrock/global.anthropic.claude-opus-4-6-v1"
         litellm_params:
           model: "bedrock/global.anthropic.claude-opus-4-6-v1"
