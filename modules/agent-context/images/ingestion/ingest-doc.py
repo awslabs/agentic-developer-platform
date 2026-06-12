@@ -4,13 +4,13 @@
 Pipeline:
   1. Fetch document (URL download or S3 cp)
   2. Convert to markdown using markitdown (handles PDF, PPTX, DOCX, HTML, images)
-  3. Upload to OpenViking at viking://resources/docs/{slug}.md
+  3. Upload to S3 at docs/{slug}.md
   4. GraphRAG entity extraction (if enabled)
   5. Return result summary
 
 Usage:
-  python ingest-doc.py --source https://arxiv.org/pdf/2405.12345 --ov-url http://openviking:1933 --ov-key KEY
-  python ingest-doc.py --source s3://adp-docs/sprint.pdf --ov-url http://openviking:1933 --ov-key KEY
+  python ingest-doc.py --source https://arxiv.org/pdf/2405.12345
+  python ingest-doc.py --source s3://adp-docs/sprint.pdf
   python ingest-doc.py --source s3://adp-docs/sprint.pdf --title "Sprint Review" --tags '{"team":"platform"}'
 """
 
@@ -39,6 +39,7 @@ logging.basicConfig(
 log = logging.getLogger("ingest-doc")
 
 from config import settings
+from s3_store import S3ContentStore
 
 REQUEST_TIMEOUT = settings.request_timeout
 MAX_DOWNLOAD_SIZE = settings.max_download_size
@@ -59,62 +60,6 @@ try:
     MARKITDOWN_AVAILABLE = True
 except ImportError:
     log.warning("markitdown not available — will use basic text extraction")
-
-
-# ---------------------------------------------------------------------------
-# OpenViking helpers
-# ---------------------------------------------------------------------------
-
-
-def ov_headers(api_key: str) -> dict[str, str]:
-    return {
-        "X-API-Key": api_key,
-        "X-OpenViking-Account": "default",
-        "X-OpenViking-User": "default",
-    }
-
-
-def upload_to_openviking(
-    ov_url: str,
-    headers: dict,
-    content: str,
-    filename: str,
-    target_uri: str,
-) -> bool:
-    """Upload content to OpenViking via temp_upload + add resource."""
-    try:
-        files = {"file": (filename, content.encode("utf-8"), "application/octet-stream")}
-        resp = requests.post(
-            f"{ov_url}/api/v1/resources/temp_upload",
-            headers={k: v for k, v in headers.items() if k != "Content-Type"},
-            files=files,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code >= 300:
-            log.warning("temp_upload failed: HTTP %d", resp.status_code)
-            return False
-
-        temp_id = resp.json().get("result", {}).get("temp_file_id")
-        if not temp_id:
-            log.warning("temp_upload returned no temp_file_id")
-            return False
-
-        resp = requests.post(
-            f"{ov_url}/api/v1/resources",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"temp_file_id": temp_id, "to": target_uri, "wait": True, "timeout": REQUEST_TIMEOUT},
-            timeout=REQUEST_TIMEOUT + 10,
-        )
-        if resp.status_code < 300:
-            log.info("Uploaded -> %s", target_uri)
-            return True
-        else:
-            log.warning("add resource failed: HTTP %d", resp.status_code)
-            return False
-
-    except Exception as e:
-        log.error("Upload failed for %s: %s", filename, e)
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -249,12 +194,12 @@ def convert_to_markdown(file_path: str, title: str | None = None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Viking URI helpers
+# S3 path helpers
 # ---------------------------------------------------------------------------
 
 
 def source_to_slug(source: str) -> str:
-    """Convert a source path to a safe slug for the Viking URI."""
+    """Convert a source path to a safe slug for the S3 path."""
     # Remove protocol prefixes
     slug = re.sub(r"^(https?://|s3://)", "", source)
     # Replace path separators and special chars
@@ -265,10 +210,10 @@ def source_to_slug(source: str) -> str:
     return slug[:200]
 
 
-def source_to_viking_uri(source: str) -> str:
-    """Convert a source to a viking:// URI for docs."""
+def source_to_s3_path(source: str) -> str:
+    """Convert a source to an S3 content path for docs."""
     slug = source_to_slug(source)
-    return f"viking://resources/docs/{slug}.md"
+    return f"docs/{slug}.md"
 
 
 # ---------------------------------------------------------------------------
@@ -372,8 +317,6 @@ Content (first 5000 chars):
 
 def ingest_document(
     source: str,
-    ov_url: str,
-    ov_key: str,
     title: str | None = None,
     tags: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -387,6 +330,13 @@ def ingest_document(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "steps": {},
     }
+
+    # Initialize S3 content store
+    store = S3ContentStore(
+        bucket_name=settings.s3_bucket_name,
+        prefix=settings.s3_content_prefix,
+        region_name=settings.aws_region,
+    )
 
     with tempfile.TemporaryDirectory(prefix="ingest-doc-") as tmpdir:
         # Step 1: Fetch document
@@ -417,16 +367,13 @@ def ingest_document(
         header += f"ingested_at: {datetime.now(timezone.utc).isoformat()}\n---\n\n"
         markdown = header + markdown
 
-        # Step 3: Upload to OpenViking
-        log.info("Step 3: Uploading to OpenViking")
-        headers = ov_headers(ov_key)
-        target_uri = source_to_viking_uri(source)
-        slug = source_to_slug(source)
-        filename = f"{slug}.md"
+        # Step 3: Upload to S3
+        log.info("Step 3: Uploading to S3")
+        s3_path = source_to_s3_path(source)
 
-        uploaded = upload_to_openviking(ov_url, headers, markdown, filename, target_uri)
-        result["steps"]["openviking"] = "ok" if uploaded else "failed"
-        result["viking_uri"] = target_uri
+        uploaded = store.put_content(s3_path, markdown)
+        result["steps"]["s3_upload"] = "ok" if uploaded else "failed"
+        result["s3_path"] = s3_path
 
         # Step 4: GraphRAG extraction
         if GRAPHRAG_ENABLED:
@@ -443,7 +390,7 @@ def ingest_document(
     step_results = result["steps"]
     if all(v in ("ok", "skipped") for v in step_results.values()):
         result["status"] = "complete"
-    elif step_results.get("openviking") == "ok":
+    elif step_results.get("s3_upload") == "ok":
         result["status"] = "partial"
     else:
         result["status"] = "failed"
@@ -456,17 +403,11 @@ def ingest_document(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Ingest a document into OpenViking")
+    parser = argparse.ArgumentParser(description="Ingest a document into S3 content store")
     parser.add_argument("--source", required=True, help="Document source (URL or S3 URI)")
     parser.add_argument("--title", help="Document title")
-    parser.add_argument("--ov-url", default=settings.ov_url)
-    parser.add_argument("--ov-key", default=settings.ov_key)
     parser.add_argument("--tags", default="{}", help="JSON tags object")
     args = parser.parse_args()
-
-    if not args.ov_key:
-        log.error("No OpenViking API key. Set --ov-key or OPENVIKING_ROOT_KEY env var.")
-        sys.exit(1)
 
     try:
         tags = json.loads(args.tags)
@@ -475,8 +416,6 @@ def main():
 
     result = ingest_document(
         source=args.source,
-        ov_url=args.ov_url,
-        ov_key=args.ov_key,
         title=args.title,
         tags=tags,
     )

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Correlate code repos with AWS infrastructure and CI/CD pipelines.
 
-Reads resource inventory, IaC maps, and deploy maps from OpenViking,
+Reads resource inventory, IaC maps, and deploy maps from S3,
 then produces a relationship-graph.json linking repos to resources to pipelines.
 
 Usage:
@@ -14,12 +14,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import sys
 from datetime import datetime, timezone
 from typing import Any
-
-import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,82 +26,9 @@ logging.basicConfig(
 log = logging.getLogger("correlate")
 
 from config import settings
+from s3_store import S3ContentStore
 
-OV_URL = settings.ov_url
-OV_KEY = settings.ov_key
 REQUEST_TIMEOUT = settings.request_timeout
-
-
-def ov_headers(api_key: str) -> dict[str, str]:
-    return {
-        "X-API-Key": api_key,
-        "X-OpenViking-Account": "default",
-        "X-OpenViking-User": "default",
-    }
-
-
-def upload_to_openviking(ov_url: str, headers: dict, content: str, filename: str, target_uri: str) -> bool:
-    try:
-        files = {"file": (filename, content.encode("utf-8"), "application/octet-stream")}
-        resp = requests.post(
-            f"{ov_url}/api/v1/resources/temp_upload",
-            headers={k: v for k, v in headers.items() if k != "Content-Type"},
-            files=files,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code >= 300:
-            return False
-        temp_id = resp.json().get("result", {}).get("temp_file_id")
-        if not temp_id:
-            return False
-        resp = requests.post(
-            f"{ov_url}/api/v1/resources",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"temp_file_id": temp_id, "to": target_uri, "wait": True, "timeout": REQUEST_TIMEOUT},
-            timeout=REQUEST_TIMEOUT + 10,
-        )
-        return resp.status_code < 300
-    except Exception as e:
-        log.error("Upload failed: %s", e)
-        return False
-
-
-def read_from_openviking(ov_url: str, headers: dict, uri: str) -> dict | None:
-    """Read a JSON resource from OpenViking."""
-    try:
-        resp = requests.get(
-            f"{ov_url}/api/v1/content/read",
-            headers=headers,
-            params={"uri": uri},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code < 300:
-            data = resp.json()
-            content = data.get("result", "") if isinstance(data, dict) else str(data)
-            if content:
-                return json.loads(content)
-        return None
-    except Exception:
-        return None
-
-
-def list_from_openviking(ov_url: str, headers: dict, uri: str) -> list[dict]:
-    """List directory contents from OpenViking."""
-    try:
-        resp = requests.get(
-            f"{ov_url}/api/v1/fs/ls",
-            headers=headers,
-            params={"uri": uri},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code < 300:
-            data = resp.json()
-            if isinstance(data, dict) and "result" in data:
-                return data["result"] or []
-            return data if isinstance(data, list) else []
-        return []
-    except Exception:
-        return []
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +76,7 @@ def correlate_resources(
     # Match workflow deploy targets to resources
     for repo, deploy_data in deploy_maps.items():
         for workflow in deploy_data.get("workflows", []):
-            # Check if workflow URI mentions any known resource names
+            # Check if workflow mentions any known resource names
             workflow_lower = workflow.lower()
             for name, resource in resource_by_name.items():
                 if name in workflow_lower and len(name) > 5:  # Avoid short name matches
@@ -180,24 +104,26 @@ def correlate_resources(
 def main():
     parser = argparse.ArgumentParser(description="Correlate code with infrastructure")
     parser.add_argument("--accounts-file", default=settings.accounts_file)
-    args = parser.parse_args()
+    parser.parse_args()  # validates args; no action-specific flags currently
 
-    if not OV_KEY:
-        log.error("No OpenViking API key.")
+    if not settings.s3_bucket_name:
+        log.error("No S3 bucket name configured.")
         sys.exit(1)
 
-    headers = ov_headers(OV_KEY)
+    store = S3ContentStore(
+        bucket_name=settings.s3_bucket_name,
+        prefix=settings.s3_content_prefix,
+        region_name=settings.aws_region,
+    )
 
-    # Read all infrastructure inventories from OpenViking
+    # Read all infrastructure inventories from S3
     all_resources: list[dict] = []
-    infra_entries = list_from_openviking(OV_URL, headers, "viking://resources/infra/")
+    infra_entries = store.list_prefix("infra/")
     for entry in infra_entries:
         name = entry.get("name", "")
         if entry.get("is_dir", False):
             # Read resources.json for this account
-            resources_data = read_from_openviking(
-                OV_URL, headers, f"viking://resources/infra/{name}/resources.json"
-            )
+            resources_data = store.get_json(f"infra/{name}/resources.json")
             if resources_data and "resources" in resources_data:
                 all_resources.extend(resources_data["resources"])
                 log.info("Loaded %d resources from account %s", len(resources_data["resources"]), name)
@@ -206,23 +132,23 @@ def main():
     iac_maps: dict[str, Any] = {}
     deploy_maps: dict[str, Any] = {}
 
-    # List all repos in OpenViking
-    repo_orgs = list_from_openviking(OV_URL, headers, "viking://resources/")
+    # List all repos in S3
+    repo_orgs = store.list_prefix("repos/")
     for org_entry in repo_orgs:
         org_name = org_entry.get("name", "")
         if not org_entry.get("is_dir", False) or org_name in ("web", "infra", "deepwiki"):
             continue
-        repos = list_from_openviking(OV_URL, headers, f"viking://resources/{org_name}/")
+        repos = store.list_prefix(f"repos/{org_name}/")
         for repo_entry in repos:
             repo_name = repo_entry.get("name", "")
             repo_path = f"{org_name}/{repo_name}"
 
             # Try reading infra-map and deploy-map
-            infra_map = read_from_openviking(OV_URL, headers, f"viking://resources/{repo_path}/.infra-map.json")
+            infra_map = store.get_json(f"repos/{repo_path}/.infra-map.json")
             if infra_map:
                 iac_maps[repo_path] = infra_map
 
-            deploy_map = read_from_openviking(OV_URL, headers, f"viking://resources/{repo_path}/.deploy-map.json")
+            deploy_map = store.get_json(f"repos/{repo_path}/.deploy-map.json")
             if deploy_map:
                 deploy_maps[repo_path] = deploy_map
 
@@ -240,13 +166,9 @@ def main():
     for entry in infra_entries:
         name = entry.get("name", "")
         if entry.get("is_dir", False):
-            target_uri = f"viking://resources/infra/{name}/relationships.json"
-            uploaded = upload_to_openviking(
-                OV_URL,
-                headers,
+            uploaded = store.put_content(
+                f"infra/{name}/relationships.json",
                 json.dumps(graph, indent=2),
-                f"relationships-{name}.json",
-                target_uri,
             )
             if uploaded:
                 log.info("Uploaded relationship graph for account %s: %d relationships", name, len(graph["relationships"]))

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Per-URL web crawling pipeline.
 
-Crawls web pages using crawl4ai, converts to markdown, and uploads to OpenViking.
+Crawls web pages using crawl4ai, converts to markdown, and uploads to S3.
 Supports sitemap discovery for documentation sites.
 
 Usage:
-  python ingest-url.py --url https://docs.example.com/ --ov-url http://openviking:1933 --ov-key KEY
-  python ingest-url.py --url https://blog.example.com/post --ov-url http://openviking:1933 --ov-key KEY --max-pages 50
+  python ingest-url.py --url https://docs.example.com/
+  python ingest-url.py --url https://blog.example.com/post --max-pages 50
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ logging.basicConfig(
 log = logging.getLogger("ingest-url")
 
 from config import settings
+from s3_store import S3ContentStore
 
 REQUEST_TIMEOUT = settings.request_timeout
 
@@ -47,62 +48,6 @@ try:
     CRAWL4AI_AVAILABLE = True
 except ImportError:
     log.warning("crawl4ai not available — will use requests-based fallback")
-
-
-# ---------------------------------------------------------------------------
-# OpenViking helpers (shared pattern with ingest-repo.py)
-# ---------------------------------------------------------------------------
-
-
-def ov_headers(api_key: str) -> dict[str, str]:
-    return {
-        "X-API-Key": api_key,
-        "X-OpenViking-Account": "default",
-        "X-OpenViking-User": "default",
-    }
-
-
-def upload_to_openviking(
-    ov_url: str,
-    headers: dict,
-    content: str,
-    filename: str,
-    target_uri: str,
-) -> bool:
-    """Upload a file to OpenViking via temp_upload + add resource."""
-    try:
-        files = {"file": (filename, content.encode("utf-8"), "application/octet-stream")}
-        resp = requests.post(
-            f"{ov_url}/api/v1/resources/temp_upload",
-            headers={k: v for k, v in headers.items() if k != "Content-Type"},
-            files=files,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code >= 300:
-            log.warning("temp_upload failed: HTTP %d", resp.status_code)
-            return False
-
-        temp_id = resp.json().get("result", {}).get("temp_file_id")
-        if not temp_id:
-            log.warning("temp_upload returned no temp_file_id")
-            return False
-
-        resp = requests.post(
-            f"{ov_url}/api/v1/resources",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"temp_file_id": temp_id, "to": target_uri, "wait": True, "timeout": REQUEST_TIMEOUT},
-            timeout=REQUEST_TIMEOUT + 10,
-        )
-        if resp.status_code < 300:
-            log.info("Uploaded -> %s", target_uri)
-            return True
-        else:
-            log.warning("add resource failed: HTTP %d", resp.status_code)
-            return False
-
-    except Exception as e:
-        log.error("Upload failed for %s: %s", filename, e)
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -285,15 +230,15 @@ async def crawl_url(url: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# URL-to-Viking-path conversion
+# URL-to-S3-path conversion
 # ---------------------------------------------------------------------------
 
 
-def url_to_viking_path(url: str) -> str:
-    """Convert a URL to a viking:// resource path.
+def url_to_s3_path(url: str) -> str:
+    """Convert a URL to an S3 content path.
 
     Example: https://docs.aws.amazon.com/bedrock/userguide/agents.html
-          -> viking://resources/web/docs.aws.amazon.com/bedrock/userguide/agents.md
+          -> web/docs.aws.amazon.com/bedrock/userguide/agents.md
     """
     parsed = urlparse(url)
     domain = parsed.netloc
@@ -304,7 +249,7 @@ def url_to_viking_path(url: str) -> str:
     if not path:
         path = "index"
 
-    return f"viking://resources/web/{domain}/{path}.md"
+    return f"web/{domain}/{path}.md"
 
 
 def url_to_filename(url: str) -> str:
@@ -322,12 +267,16 @@ def url_to_filename(url: str) -> str:
 
 async def ingest_url(
     url: str,
-    ov_url: str,
-    ov_key: str,
     max_pages: int = 100,
 ) -> dict[str, Any]:
     """Full crawling pipeline for one URL (may expand to multiple pages via sitemap)."""
-    headers = ov_headers(ov_key)
+    # Initialize S3 content store
+    store = S3ContentStore(
+        bucket_name=settings.s3_bucket_name,
+        prefix=settings.s3_content_prefix,
+        region_name=settings.aws_region,
+    )
+
     result: dict[str, Any] = {
         "url": url,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -354,10 +303,9 @@ async def ingest_url(
 
             result["pages_crawled"] += 1
 
-            # Upload to OpenViking
-            target_uri = url_to_viking_path(page_url)
-            filename = url_to_filename(page_url)
-            uploaded = upload_to_openviking(ov_url, headers, markdown, filename, target_uri)
+            # Upload to S3
+            s3_path = url_to_s3_path(page_url)
+            uploaded = store.put_content(s3_path, markdown)
             if uploaded:
                 result["pages_uploaded"] += 1
             else:
@@ -393,7 +341,7 @@ def update_dynamo_state_url(url: str, result: dict[str, Any], tags: dict[str, st
             "record_type": "STATE",
             "content_type": "url",
             "updated_at": now,
-            "openviking_status": "complete" if result.get("pages_uploaded", 0) > 0 else "failed",
+            "s3_status": "complete" if result.get("pages_uploaded", 0) > 0 else "failed",
             "pages_discovered": result.get("pages_discovered", 0),
             "pages_uploaded": result.get("pages_uploaded", 0),
             "graphrag_status": "skipped",
@@ -423,17 +371,11 @@ def update_dynamo_state_url(url: str, result: dict[str, Any], tags: dict[str, st
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Crawl a URL and ingest into OpenViking")
+    parser = argparse.ArgumentParser(description="Crawl a URL and ingest into S3 content store")
     parser.add_argument("--url", required=True, help="URL to crawl")
-    parser.add_argument("--ov-url", default=settings.ov_url)
-    parser.add_argument("--ov-key", default=settings.ov_key)
     parser.add_argument("--max-pages", type=int, default=100, help="Max pages to crawl (default: 100)")
     parser.add_argument("--tags", default="{}", help="JSON tags object for metadata")
     args = parser.parse_args()
-
-    if not args.ov_key:
-        log.error("No OpenViking API key. Set --ov-key or OPENVIKING_ROOT_KEY env var.")
-        sys.exit(1)
 
     try:
         tags = json.loads(args.tags)
@@ -443,8 +385,6 @@ def main():
     result = asyncio.run(
         ingest_url(
             url=args.url,
-            ov_url=args.ov_url,
-            ov_key=args.ov_key,
             max_pages=args.max_pages,
         )
     )

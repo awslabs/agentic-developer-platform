@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Per-repo ingestion pipeline (Option C).
+"""Per-repo ingestion pipeline.
 
 Pipeline steps:
-  1. POST to OpenViking (GitHub URL) — it clones & indexes internally
-  2. Clone repo to /tmp for enrichment
-  3. Run cgc analyze -> code-index.json -> filesystem + markdown summary to OpenViking
-  4. Call DeepWiki API -> wiki.md -> upload to OpenViking via temp_upload
-  5. GraphRAG extraction -> Neptune (with delete-before-reload for stale entity cleanup)
-  6. Cleanup temp clone
+  1. Clone repo to persistent storage (S3 Files mount)
+  2. Run cgc analyze -> code-index.json -> filesystem + S3 markdown summary
+  3. Call DeepWiki API -> wiki.md -> S3 + S3 Vectors (via wiki_store)
+  4. GraphRAG extraction -> Neptune (with delete-before-reload for stale entity cleanup)
+  5. Keep clone on persistent storage for downstream consumers
 
 Usage:
-  python ingest-repo.py --repo org/repo --ov-url http://openviking:1933 --ov-key ROOT_KEY
-  python ingest-repo.py --repo org/repo --ov-url http://openviking:1933 --ov-key ROOT_KEY --skip-ov
+  python ingest-repo.py --repo org/repo
+  python ingest-repo.py --repo org/repo --skip-deepwiki
 """
 
 from __future__ import annotations
@@ -22,8 +21,6 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -62,6 +59,61 @@ LLM_BASE_URL = settings.llm_base_url
 DYNAMO_TABLE = settings.dynamo_table
 AWS_REGION = settings.aws_region
 
+# S3 content store configuration
+S3_BUCKET_NAME = settings.s3_bucket_name
+S3_CONTENT_PREFIX = settings.s3_content_prefix
+WIKI_S3_PREFIX = settings.wiki_s3_prefix
+CODE_INDEX_S3_PREFIX = settings.code_index_s3_prefix
+S3_VECTORS_BUCKET = settings.s3_vectors_bucket
+S3_VECTORS_SHARD_COUNT = settings.s3_vectors_shard_count
+
+# ---------------------------------------------------------------------------
+# S3 content store + wiki store imports
+# ---------------------------------------------------------------------------
+
+from s3_store import S3ContentStore
+from wiki_store import store_wiki, store_code_index_to_s3
+
+
+# ---------------------------------------------------------------------------
+# S3 Writer Adapter (bridges S3ContentStore to wiki_store.S3Writer protocol)
+# ---------------------------------------------------------------------------
+
+
+class _S3WriterAdapter:
+    """Adapts S3ContentStore to satisfy the wiki_store.S3Writer protocol.
+
+    The wiki_store module expects an object with a `put_object(bucket, key, body) -> bool`
+    method. S3ContentStore uses `put_content(path, content) -> bool` which prepends its
+    own prefix and always targets its configured bucket. This adapter bypasses the prefix
+    logic and writes directly to the specified bucket/key.
+    """
+
+    def __init__(self, store: S3ContentStore):
+        self._s3_client = store._s3
+
+    def put_object(self, bucket: str, key: str, body: str) -> bool:
+        """Write content to S3 at the given bucket/key."""
+        try:
+            if isinstance(body, str):
+                encoded = body.encode("utf-8")
+                content_type = "text/plain; charset=utf-8"
+            else:
+                encoded = body
+                content_type = "application/octet-stream"
+
+            self._s3_client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=encoded,
+                ContentType=content_type,
+            )
+            log.info("S3 put_object: s3://%s/%s (%d bytes)", bucket, key, len(encoded))
+            return True
+        except Exception as e:
+            log.error("S3 put_object failed for s3://%s/%s: %s", bucket, key, e)
+            return False
+
 
 # ---------------------------------------------------------------------------
 # DynamoDB state helpers
@@ -93,9 +145,9 @@ def update_dynamo_state(org_repo: str, result: dict[str, Any], tags: dict[str, s
         "record_type": "STATE",
         "content_type": "repo",
         "updated_at": now,
-        "openviking_status": "complete"
-        if result.get("openviking") in ("submitted", "ok")
-        else ("failed" if result.get("openviking") == "failed" else "skipped"),
+        "s3_status": "complete"
+        if result.get("s3_upload") in ("ok", "complete")
+        else ("failed" if result.get("s3_upload") == "failed" else "skipped"),
         "code_index_status": "complete"
         if result.get("code_index") == "written"
         else ("failed" if result.get("code_index") in ("failed", "fs_write_failed") else "skipped"),
@@ -131,124 +183,6 @@ def update_dynamo_state(org_repo: str, result: dict[str, Any], tags: dict[str, s
         log.info("DynamoDB state updated for %s", org_repo)
     except Exception as e:
         log.warning("DynamoDB state update failed for %s: %s", org_repo, e)
-
-
-# ---------------------------------------------------------------------------
-# OpenViking helpers
-# ---------------------------------------------------------------------------
-
-
-def ov_headers(api_key: str) -> dict[str, str]:
-    return {
-        "X-API-Key": api_key,
-        "X-OpenViking-Account": "default",
-        "X-OpenViking-User": "default",
-    }
-
-
-def openviking_ingest(ov_url: str, headers: dict, org_repo: str) -> bool:
-    """Submit a GitHub repo URL to OpenViking for ingestion (async)."""
-    try:
-        resp = requests.post(
-            f"{ov_url}/api/v1/resources",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"path": f"https://github.com/{org_repo}"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        log.info("OpenViking ingest %s: HTTP %d", org_repo, resp.status_code)
-        return resp.status_code < 300
-    except Exception as e:
-        log.error("OpenViking ingest failed for %s: %s", org_repo, e)
-        return False
-
-
-def upload_to_openviking(
-    ov_url: str,
-    headers: dict,
-    content: str | bytes,
-    filename: str,
-    target_uri: str,
-) -> bool:
-    """Upload a file to OpenViking.
-
-    For enrichment files (.code-index.json, wiki.md) that belong inside an
-    already-indexed repo, uses content/write (writes to the AGFS and triggers
-    reindexing).  Falls back to temp_upload + resource add for new resources.
-    """
-    if isinstance(content, str):
-        content_str = content
-    else:
-        content_str = content.decode("utf-8", errors="replace")
-
-    # --- Primary path: content/write (works for files inside existing resources) ---
-    try:
-        resp = requests.post(
-            f"{ov_url}/api/v1/content/write",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"uri": target_uri, "content": content_str, "wait": False},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code < 300:
-            log.info("Wrote %s -> %s via content/write", filename, target_uri)
-            return True
-        log.debug(
-            "content/write returned %d for %s — trying temp_upload fallback",
-            resp.status_code,
-            target_uri,
-        )
-    except Exception as e:
-        log.debug("content/write failed for %s: %s — trying temp_upload", target_uri, e)
-
-    # --- Fallback: temp_upload + resource add (for new top-level resources) ---
-    try:
-        content_bytes = content_str.encode("utf-8")
-        files = {"file": (filename, content_bytes, "application/octet-stream")}
-        resp = requests.post(
-            f"{ov_url}/api/v1/resources/temp_upload",
-            headers={k: v for k, v in headers.items() if k != "Content-Type"},
-            files=files,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code >= 300:
-            log.warning(
-                "temp_upload failed for %s: HTTP %d — %s",
-                filename,
-                resp.status_code,
-                resp.text[:200],
-            )
-            return False
-
-        temp_id = resp.json().get("result", {}).get("temp_file_id")
-        if not temp_id:
-            log.warning("temp_upload returned no temp_file_id for %s", filename)
-            return False
-
-        resp = requests.post(
-            f"{ov_url}/api/v1/resources",
-            headers={**headers, "Content-Type": "application/json"},
-            json={
-                "temp_file_id": temp_id,
-                "to": target_uri,
-                "wait": True,
-                "timeout": REQUEST_TIMEOUT,
-            },
-            timeout=REQUEST_TIMEOUT + 10,
-        )
-        if resp.status_code < 300:
-            log.info("Uploaded %s -> %s via temp_upload", filename, target_uri)
-            return True
-        else:
-            log.warning(
-                "add resource failed for %s: HTTP %d — %s",
-                target_uri,
-                resp.status_code,
-                resp.text[:200],
-            )
-            return False
-
-    except Exception as e:
-        log.error("Upload failed for %s: %s", filename, e)
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +421,7 @@ def _write_code_index_to_filesystem(code_index_json: str, safe_name: str, org_re
     except OSError as e:
         log.warning(
             "Failed to write code-index to filesystem for %s: %s — "
-            "falling back to OpenViking-only upload",
+            "falling back to S3-only upload",
             org_repo,
             e,
         )
@@ -495,7 +429,7 @@ def _write_code_index_to_filesystem(code_index_json: str, safe_name: str, org_re
 
 
 def _code_index_to_markdown(code_index: dict[str, Any]) -> str:
-    """Convert code-index JSON to a markdown summary for OpenViking indexing."""
+    """Convert code-index JSON to a markdown summary for S3 semantic search."""
     lines = [f"# Code Index: {code_index.get('repo', 'unknown')}\n"]
     lines.append(f"Analyzed at: {code_index.get('analyzed_at', 'unknown')}\n")
 
@@ -962,9 +896,6 @@ def _write_to_neptune(entities: list[dict], relationships: list[dict], org_repo:
 
 def ingest_repo(
     org_repo: str,
-    ov_url: str,
-    ov_key: str,
-    skip_ov: bool = False,
     skip_cgc: bool = False,
     skip_deepwiki: bool = False,
 ) -> dict[str, Any]:
@@ -972,24 +903,24 @@ def ingest_repo(
 
     Returns a result dict with status for each step.
     """
-    headers = ov_headers(ov_key)
     result: dict[str, Any] = {
         "repo": org_repo,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "openviking": "skipped",
+        "s3_upload": "skipped",
         "code_index": "skipped",
         "deepwiki": "skipped",
         "graphrag": "skipped",
     }
 
-    # Step 1: Submit to OpenViking (async — it clones from GitHub internally)
-    if not skip_ov:
-        if openviking_ingest(ov_url, headers, org_repo):
-            result["openviking"] = "submitted"
-        else:
-            result["openviking"] = "failed"
+    # Initialize the S3 content store and writer adapter
+    s3_store = S3ContentStore(
+        bucket_name=S3_BUCKET_NAME,
+        prefix=S3_CONTENT_PREFIX,
+        region_name=AWS_REGION,
+    )
+    s3_writer = _S3WriterAdapter(s3_store)
 
-    # Step 2: Clone to persistent storage (S3 Files mount) — shared across enrichment consumers
+    # Step 1: Clone to persistent storage (S3 Files mount) — shared across enrichment consumers
     # If clone exists, do git fetch instead of full re-clone
     clone_path = os.path.join(CLONE_BASE, org_repo)
     if os.path.exists(os.path.join(clone_path, ".git")):
@@ -1024,7 +955,7 @@ def ingest_repo(
         return result
     result["clone"] = "ok"
 
-    # Step 3: Run cgc → code-index.json → upload to OpenViking
+    # Step 2: Run cgc -> code-index.json -> filesystem + S3 markdown summary
     if not skip_cgc:
         try:
             code_index = cgc_analyze(clone_path, org_repo)
@@ -1035,18 +966,24 @@ def ingest_repo(
                 # Write to filesystem (primary — for programmatic access by MCP server)
                 fs_written = _write_code_index_to_filesystem(code_index_json, safe_name, org_repo)
 
-                # Upload as markdown summary (for semantic search/understand)
+                # Upload as markdown summary to S3 (for semantic search/understand)
                 code_index_md = _code_index_to_markdown(code_index)
-                upload_to_openviking(
-                    ov_url,
-                    headers,
+                s3_key = store_code_index_to_s3(
                     code_index_md,
-                    f"{safe_name}-code-index.md",
-                    f"viking://resources/{org_repo}/.code-index.md",
+                    org_repo,
+                    s3_writer=s3_writer,
+                    s3_bucket=S3_BUCKET_NAME,
+                    code_index_s3_prefix=CODE_INDEX_S3_PREFIX,
                 )
 
+                if s3_key:
+                    result["s3_upload"] = "ok"
+                    log.info("Code-index markdown uploaded to S3: %s", s3_key)
+                else:
+                    result["s3_upload"] = "failed"
+
                 # Filesystem is the primary storage for structured code-index data;
-                # Neptune holds the graph representation; OpenViking gets the markdown summary only.
+                # Neptune holds the graph representation; S3 gets the markdown summary.
                 if fs_written:
                     result["code_index"] = "written"
                 else:
@@ -1063,27 +1000,43 @@ def ingest_repo(
             log.warning("cgc failed for %s: %s — continuing without code-index", org_repo, e)
             result["code_index"] = f"error: {e}"
 
-    # Step 4: Generate DeepWiki wiki → upload to OpenViking
+    # Step 3: Generate DeepWiki wiki -> upload to S3 + S3 Vectors
     if not skip_deepwiki and DEEPWIKI_ENABLED:
         try:
             wiki = deepwiki_generate(org_repo)
             if wiki:
-                safe_name = org_repo.replace("/", "-")
-                uploaded = upload_to_openviking(
-                    ov_url,
-                    headers,
-                    wiki,
-                    f"{safe_name}-wiki.md",
-                    f"viking://resources/deepwiki/{safe_name}-wiki.md",
+                # Extract org_id from org_repo (e.g., "aws-e/adp" -> "aws-e")
+                org_id = org_repo.split("/")[0]
+
+                # All repos are org-visible by default; the Door ACL filter
+                # refines access at query time.
+                allowed_principals = ["*"]
+
+                wiki_result = store_wiki(
+                    wiki_text=wiki,
+                    org_repo=org_repo,
+                    org_id=org_id,
+                    allowed_principals=allowed_principals,
+                    s3_writer=s3_writer,
+                    s3_bucket=S3_BUCKET_NAME,
+                    wiki_s3_prefix=WIKI_S3_PREFIX,
+                    shard_count=S3_VECTORS_SHARD_COUNT,
                 )
-                result["deepwiki"] = "uploaded" if uploaded else "upload_failed"
+
+                if wiki_result.s3_success:
+                    result["deepwiki"] = "uploaded"
+                    # Update s3_upload status to reflect wiki upload too
+                    if result["s3_upload"] != "ok":
+                        result["s3_upload"] = "ok"
+                else:
+                    result["deepwiki"] = "upload_failed"
             else:
                 result["deepwiki"] = "generation_failed"
         except Exception as e:
             log.warning("DeepWiki failed for %s: %s — continuing without wiki", org_repo, e)
             result["deepwiki"] = f"error: {e}"
 
-    # Step 5: GraphRAG extraction — entities and relationships into Neptune
+    # Step 4: GraphRAG extraction — entities and relationships into Neptune
     if GRAPHRAG_ENABLED:
         try:
             # Get code_index for GraphRAG if we have it
@@ -1117,7 +1070,7 @@ def ingest_repo(
             log.warning("GraphRAG failed for %s: %s — continuing", org_repo, e)
             result["graphrag"] = f"error: {e}"
 
-    # Step 6: Keep clone on persistent storage (S3 Files) — don't delete
+    # Step 5: Keep clone on persistent storage (S3 Files) — don't delete
     # Clone is reused by GraphRAG, learning artifacts, and daily refresh.
     # Only /tmp clones should be cleaned up.
     if CLONE_BASE.startswith("/tmp"):
@@ -1134,25 +1087,11 @@ def main():
     parser.add_argument(
         "--repo", required=True, help="org/repo to ingest (e.g., aws-samples/bedrock-chat)"
     )
-    parser.add_argument(
-        "--ov-url",
-        default=settings.ov_url,
-    )
-    parser.add_argument(
-        "--ov-key", default=settings.ov_key,
-    )
-    parser.add_argument(
-        "--skip-ov", action="store_true", help="Skip OpenViking ingestion (enrichment only)"
-    )
     parser.add_argument("--skip-cgc", action="store_true", help="Skip code-index generation")
     parser.add_argument("--skip-deepwiki", action="store_true", help="Skip DeepWiki generation")
     parser.add_argument("--skip-graphrag", action="store_true", help="Skip GraphRAG extraction")
     parser.add_argument("--tags", default="{}", help="JSON tags object for metadata")
     args = parser.parse_args()
-
-    if not args.ov_key:
-        log.error("No OpenViking API key. Set --ov-key or OPENVIKING_ROOT_KEY env var.")
-        sys.exit(1)
 
     try:
         tags = json.loads(args.tags)
@@ -1161,9 +1100,6 @@ def main():
 
     result = ingest_repo(
         org_repo=args.repo,
-        ov_url=args.ov_url,
-        ov_key=args.ov_key,
-        skip_ov=args.skip_ov,
         skip_cgc=args.skip_cgc,
         skip_deepwiki=args.skip_deepwiki,
     )
@@ -1172,10 +1108,6 @@ def main():
     update_dynamo_state(args.repo, result, tags=tags)
 
     print(json.dumps(result, indent=2))
-
-    # Exit non-zero only if OpenViking ingestion failed (enrichment failures are non-blocking)
-    if result.get("openviking") == "failed":
-        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -38,8 +38,6 @@ from config import settings
 AWS_REGION = settings.aws_region
 SQS_QUEUE_URL = settings.sqs_queue_url
 DYNAMO_TABLE = settings.dynamo_table
-OV_URL = settings.ov_url
-OV_KEY = settings.ov_key
 
 # Timeouts per content type (seconds)
 TIMEOUTS = {
@@ -79,7 +77,7 @@ def update_dynamo_status(
     }
 
     # Set per-step status fields based on the overall status
-    for step in ["openviking_status", "deepwiki_status", "graphrag_status", "code_index_status"]:
+    for step in ["s3_status", "deepwiki_status", "graphrag_status", "code_index_status"]:
         if status == "processing":
             update_expr += f", {step} = :pending"
             expr_values[":pending"] = "pending"
@@ -170,10 +168,6 @@ def ingest_repo(source: str, tags: dict[str, str], steps: list[str] | None = Non
         "/app/ingest-repo.py",
         "--repo",
         source,
-        "--ov-url",
-        OV_URL,
-        "--ov-key",
-        OV_KEY,
     ]
     if tags:
         cmd.extend(["--tags", json.dumps(tags)])
@@ -187,10 +181,6 @@ def ingest_url(source: str, tags: dict[str, str]) -> None:
         "/app/ingest-url.py",
         "--url",
         source,
-        "--ov-url",
-        OV_URL,
-        "--ov-key",
-        OV_KEY,
         "--max-pages",
         "100",
     ]
@@ -206,10 +196,6 @@ def ingest_doc(source: str, tags: dict[str, str], title: str | None = None) -> N
         "/app/ingest-doc.py",
         "--source",
         source,
-        "--ov-url",
-        OV_URL,
-        "--ov-key",
-        OV_KEY,
     ]
     if title:
         cmd.extend(["--title", title])
@@ -225,10 +211,6 @@ def discover_infra(source: str, tags: dict[str, str]) -> None:
         "/app/discover-infra.py",
         "--account",
         source,
-        "--ov-url",
-        OV_URL,
-        "--ov-key",
-        OV_KEY,
     ]
     if tags:
         cmd.extend(["--tags", json.dumps(tags)])

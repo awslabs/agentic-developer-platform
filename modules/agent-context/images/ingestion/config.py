@@ -28,23 +28,14 @@ class Settings(BaseSettings):
     Environment variables override these at runtime (via K8s ConfigMap envFrom).
     """
 
-    # --- Storage backend --------------------------------------------------------
-    # Feature flag: "s3" (default, new) or "openviking" (legacy, for rollback)
-    storage_backend: str = "s3"
-
-    # --- S3 Vectors (semantic search) -----------------------------------------
+    # --- S3 Vectors (semantic search) --------------------------------------------
     s3_vectors_bucket_name: str = ""
     s3_vectors_shard_count: int = 4
     s3_vectors_region: str = ""  # Falls back to aws_region if empty
 
-    # --- S3 (AGFS replacement for personal context + content) -----------------
-    s3_bucket_name: str = ""  # The platform data bucket for personal-context entries
-
-    # --- Legacy OpenViking (deprecated — used only when storage_backend=openviking)
-    ov_url: str = "http://openviking.agent-context.svc.cluster.local:1933"
-    openviking_root_key: str = ""
-    # Legacy alias — some scripts used ROOT_KEY
-    root_key: str = ""
+    # --- S3 (content store + personal context) --------------------------------
+    s3_bucket_name: str = ""  # Platform data bucket (content store + personal-context)
+    s3_content_prefix: str = "content"  # Key prefix for ingestion content objects
 
     # --- AWS ------------------------------------------------------------------
     aws_region: str = "us-east-1"
@@ -61,17 +52,12 @@ class Settings(BaseSettings):
     deepwiki_url: str = "http://deepwiki.agent-context.svc.cluster.local:8001"
     deepwiki_enabled: bool = True
 
-    # --- Wiki store (dual-sink: S3 + S3 Vectors) ------------------------------
-    # Controls where DeepWiki output is stored. Values: "dual" | "s3" | "openviking"
-    # "dual" = write to both S3 and OpenViking (transition period)
-    # "s3" = S3 + S3 Vectors only (target state after OpenViking removal)
-    # "openviking" = legacy OpenViking only (pre-migration)
-    wiki_sink: str = "dual"
+    # --- Wiki store (S3 + S3 Vectors) -------------------------------------------
+    wiki_sink: str = "s3"
     wiki_s3_prefix: str = "content/wikis"
     code_index_s3_prefix: str = "content/code-indexes"
     wiki_s3_bucket: str = ""  # Set via env: WIKI_S3_BUCKET
     s3_vectors_bucket: str = ""  # Set via env: S3_VECTORS_BUCKET
-    s3_vectors_shard_count: int = 4
 
     # --- LLM (via LiteLLM proxy) ----------------------------------------------
     llm_base_url: str = "http://litellm-proxy.agent-context.svc.cluster.local:4000/v1"
@@ -135,11 +121,6 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return v.lower() in ("true", "1", "yes")
         return v
-
-    @property
-    def ov_key(self) -> str:
-        """Resolve the OpenViking API key (supports both env var names)."""
-        return self.openviking_root_key or self.root_key
 
     @property
     def effective_s3_vectors_region(self) -> str:

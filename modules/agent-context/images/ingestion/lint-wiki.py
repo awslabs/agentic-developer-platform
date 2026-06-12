@@ -8,7 +8,7 @@ Checks for:
   4. Non-English L1 overviews (sampled)
   5. Orphan discoveries — discovery pages not linked from any wiki
 
-Produces a report uploaded to viking://resources/meta/lint-report.md
+Produces a report uploaded to meta/lint-report.md in S3.
 
 Usage:
   python lint-wiki.py
@@ -26,8 +26,6 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-import requests
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -40,9 +38,8 @@ log = logging.getLogger("lint-wiki")
 # ---------------------------------------------------------------------------
 
 from config import settings
+from s3_store import S3ContentStore
 
-OV_URL = settings.ov_url
-OV_KEY = settings.ov_key
 STATE_DIR = settings.state_dir
 REPOS_FILE = settings.repos_file
 REQUEST_TIMEOUT = settings.request_timeout
@@ -59,18 +56,27 @@ NEPTUNE_PORT = settings.neptune_port
 LEARNING_DIR = settings.learning_dir
 CODE_INDEX_DIR = settings.code_index_dir
 
+# ---------------------------------------------------------------------------
+# S3 content store (lazy singleton)
+# ---------------------------------------------------------------------------
+
+_store: S3ContentStore | None = None
+
+
+def _get_store() -> S3ContentStore:
+    global _store
+    if _store is None:
+        _store = S3ContentStore(
+            bucket_name=settings.s3_bucket_name,
+            prefix=settings.s3_content_prefix,
+            region_name=settings.aws_region,
+        )
+    return _store
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def ov_headers(api_key: str) -> dict[str, str]:
-    return {
-        "X-API-Key": api_key,
-        "X-OpenViking-Account": "default",
-        "X-OpenViking-User": "default",
-    }
 
 
 def parse_content_file(path: str) -> list[str]:
@@ -97,104 +103,6 @@ def load_state(filename: str) -> dict[str, Any]:
         except (json.JSONDecodeError, OSError) as e:
             log.warning("Failed to load %s: %s", path, e)
     return {}
-
-
-def ov_ls(uri: str, headers: dict) -> list[dict[str, Any]]:
-    """List resources at a URI in OpenViking."""
-    try:
-        resp = requests.get(
-            f"{OV_URL}/api/v1/fs/ls",
-            headers=headers,
-            params={"uri": uri},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code < 300:
-            data = resp.json()
-            if isinstance(data, dict) and "result" in data:
-                return data["result"] or []
-            return data if isinstance(data, list) else []
-        return []
-    except Exception as e:
-        log.warning("ls failed for %s: %s", uri, e)
-        return []
-
-
-def ov_read(uri: str, headers: dict) -> str:
-    """Read content from OpenViking."""
-    try:
-        resp = requests.get(
-            f"{OV_URL}/api/v1/content/read",
-            headers=headers,
-            params={"uri": uri},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code < 300:
-            data = resp.json()
-            return data.get("result", "") if isinstance(data, dict) else str(data)
-        return ""
-    except Exception as e:
-        log.warning("read failed for %s: %s", uri, e)
-        return ""
-
-
-def ov_overview(uri: str, headers: dict) -> str:
-    """Get L1 overview from OpenViking."""
-    try:
-        resp = requests.get(
-            f"{OV_URL}/api/v1/content/overview",
-            headers=headers,
-            params={"uri": uri},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code < 300:
-            data = resp.json()
-            return data.get("result", "") if isinstance(data, dict) else str(data)
-        return ""
-    except Exception as e:
-        log.warning("overview failed for %s: %s", uri, e)
-        return ""
-
-
-def upload_to_openviking(content: str, target_uri: str, headers: dict) -> bool:
-    """Upload content to OpenViking."""
-    try:
-        resp = requests.post(
-            f"{OV_URL}/api/v1/content/write",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"uri": target_uri, "content": content, "wait": False},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code < 300:
-            log.info("Uploaded lint report to %s", target_uri)
-            return True
-        log.warning("content/write returned %d for %s", resp.status_code, target_uri)
-    except Exception as e:
-        log.warning("Upload failed for %s: %s", target_uri, e)
-
-    # Fallback: temp_upload
-    try:
-        files = {"file": ("lint-report.md", content.encode("utf-8"), "text/markdown")}
-        resp = requests.post(
-            f"{OV_URL}/api/v1/resources/temp_upload",
-            headers={k: v for k, v in headers.items() if k != "Content-Type"},
-            files=files,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code >= 300:
-            return False
-        temp_id = resp.json().get("result", {}).get("temp_file_id")
-        if not temp_id:
-            return False
-        resp = requests.post(
-            f"{OV_URL}/api/v1/resources",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"temp_file_id": temp_id, "to": target_uri, "wait": True, "timeout": REQUEST_TIMEOUT},
-            timeout=REQUEST_TIMEOUT + 10,
-        )
-        return resp.status_code < 300
-    except Exception as e:
-        log.warning("Upload fallback failed for %s: %s", target_uri, e)
-        return False
 
 
 def is_likely_english(text: str) -> bool:
@@ -267,24 +175,30 @@ def check_missing_code_index(
 
 
 def check_l1_language(
-    all_repos: list[str], headers: dict, sample_size: int = 20
+    all_repos: list[str], sample_size: int = 20
 ) -> list[str]:
     """Sample repos and check for non-English L1 overviews."""
     issues = []
+    store = _get_store()
     sample = random.sample(all_repos, min(sample_size, len(all_repos)))
 
     for repo in sample:
-        overview = ov_overview(f"viking://resources/{repo}/", headers)
-        if overview and not is_likely_english(overview):
-            issues.append(f"Non-English L1 overview: {repo}")
+        # Read the wiki markdown from S3 and use first 500 chars as overview
+        safe_name = repo.replace("/", "-")
+        content = store.get_content(f"wikis/{safe_name}-wiki.md")
+        if content:
+            overview = content[:500]
+            if not is_likely_english(overview):
+                issues.append(f"Non-English L1 overview: {repo}")
 
     return issues
 
 
-def check_orphan_discoveries(headers: dict) -> list[str]:
+def check_orphan_discoveries() -> list[str]:
     """Find discovery pages not referenced from any wiki."""
     issues = []
-    discoveries = ov_ls("viking://resources/discoveries/", headers)
+    store = _get_store()
+    discoveries = store.list_prefix("discoveries/")
 
     if not discoveries:
         return []
@@ -320,6 +234,8 @@ def check_graph_health() -> list[str]:
     if not NEPTUNE_ENDPOINT:
         issues.append("Graph: Neptune not configured (NEPTUNE_ENDPOINT not set)")
         return issues
+
+    import requests
 
     neptune_url = f"https://{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}/gremlin"
 
@@ -386,7 +302,7 @@ def check_graph_contradictions(all_repos: list[str]) -> list[str]:
 
 
 def check_missing_graph_data(all_repos: list[str], repo_state: dict[str, Any]) -> list[str]:
-    """Find repos indexed in OpenViking but not in Neptune."""
+    """Find repos indexed in S3 but not in Neptune."""
     issues = []
     if not NEPTUNE_ENDPOINT:
         return issues
@@ -603,11 +519,11 @@ def main():
     parser.add_argument("--repos-file", default=REPOS_FILE)
     args = parser.parse_args()
 
-    if not OV_KEY:
-        log.error("No OpenViking API key. Set OPENVIKING_ROOT_KEY env var.")
+    if not settings.s3_bucket_name:
+        log.error("No S3 bucket configured. Set S3_BUCKET_NAME env var.")
         sys.exit(1)
 
-    headers = ov_headers(OV_KEY)
+    store = _get_store()
 
     # Load repos and state
     all_repos = parse_content_file(args.repos_file)
@@ -632,10 +548,10 @@ def main():
     all_issues.extend(check_missing_code_index(all_repos, repo_state))
 
     log.info("Check 4: L1 language check (sampling %d repos)", L1_SAMPLE_SIZE)
-    all_issues.extend(check_l1_language(all_repos, headers, L1_SAMPLE_SIZE))
+    all_issues.extend(check_l1_language(all_repos, L1_SAMPLE_SIZE))
 
     log.info("Check 5: Orphan discoveries")
-    all_issues.extend(check_orphan_discoveries(headers))
+    all_issues.extend(check_orphan_discoveries())
 
     log.info("Check 6: Missing topic tags")
     all_issues.extend(check_missing_topics(all_repos, repo_state))
@@ -662,11 +578,9 @@ def main():
     report = generate_report(all_repos, repo_state, all_issues)
 
     log.info("Lint complete: %d issues found", len(all_issues))
-    log.info("Uploading report to viking://resources/meta/lint-report.md")
+    log.info("Uploading report to meta/lint-report.md")
 
-    uploaded = upload_to_openviking(
-        report, "viking://resources/meta/lint-report.md", headers
-    )
+    uploaded = store.put_content("meta/lint-report.md", report)
 
     if uploaded:
         log.info("Lint report uploaded successfully")

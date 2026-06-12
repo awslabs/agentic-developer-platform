@@ -21,7 +21,6 @@ import logging
 import os
 import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -55,9 +54,9 @@ DEFAULT_SOURCE_FILES = {
 
 # Steps per content type
 STEPS_BY_TYPE = {
-    "repo": ["openviking", "cgc", "deepwiki", "graphrag"],
-    "url": ["openviking", "graphrag"],
-    "doc": ["openviking", "graphrag"],
+    "repo": ["s3_upload", "cgc", "deepwiki", "graphrag"],
+    "url": ["s3_upload", "graphrag"],
+    "doc": ["s3_upload", "graphrag"],
     "infra": ["discovery", "graphrag"],
 }
 

@@ -5,7 +5,7 @@ Instead of hardcoded topics, this script:
   1. Reads topic tags from repo-state.json (assigned during ingestion by refresh-repos.py)
   2. Asks the LLM to cluster related tags into topic groups
   3. Generates an index page for each cluster with 3+ repos
-  4. Uploads index pages to viking://resources/meta/index-{slug}.md
+  4. Uploads index pages to meta/index-{slug}.md in S3
 
 Runs as the last step of the daily CronJob, after lint-wiki.py.
 
@@ -40,9 +40,8 @@ log = logging.getLogger("generate-indexes")
 # ---------------------------------------------------------------------------
 
 from config import settings
+from s3_store import S3ContentStore
 
-OV_URL = settings.ov_url
-OV_KEY = settings.ov_key
 STATE_DIR = settings.state_dir
 REQUEST_TIMEOUT = settings.request_timeout
 
@@ -55,18 +54,27 @@ MIN_CLUSTER_SIZE = settings.min_cluster_size
 # Maximum number of index pages to generate per run
 MAX_INDEXES_PER_RUN = settings.max_indexes_per_run
 
+# ---------------------------------------------------------------------------
+# S3 content store (lazy singleton)
+# ---------------------------------------------------------------------------
+
+_store: S3ContentStore | None = None
+
+
+def _get_store() -> S3ContentStore:
+    global _store
+    if _store is None:
+        _store = S3ContentStore(
+            bucket_name=settings.s3_bucket_name,
+            prefix=settings.s3_content_prefix,
+            region_name=settings.aws_region,
+        )
+    return _store
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def ov_headers(api_key: str) -> dict[str, str]:
-    return {
-        "X-API-Key": api_key,
-        "X-OpenViking-Account": "default",
-        "X-OpenViking-User": "default",
-    }
 
 
 def load_state(filename: str) -> dict[str, Any]:
@@ -112,90 +120,24 @@ def call_llm(prompt: str, max_tokens: int = 8192) -> str | None:
         return None
 
 
-def fetch_existing_index(slug: str, headers: dict) -> str | None:
-    """Fetch an existing index page from OpenViking."""
-    target_uri = f"viking://resources/meta/index-{slug}.md"
-    try:
-        resp = requests.get(
-            f"{OV_URL}/api/v1/content/read",
-            headers=headers,
-            params={"uri": target_uri},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code < 300:
-            data = resp.json()
-            content = data.get("result", "") if isinstance(data, dict) else str(data)
-            if content and len(content) > 50:
-                return content
-        return None
-    except Exception as e:
-        log.warning("Failed to fetch index %s: %s", slug, e)
-        return None
+def fetch_existing_index(slug: str) -> str | None:
+    """Fetch an existing index page from S3."""
+    store = _get_store()
+    content = store.get_content(f"meta/index-{slug}.md")
+    if content and len(content) > 50:
+        return content
+    return None
 
 
-def search_openviking(query: str, headers: dict, limit: int = 20) -> list[dict]:
-    """Search OpenViking for content related to a query."""
-    try:
-        resp = requests.post(
-            f"{OV_URL}/api/v1/search/search",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"query": query, "target_uri": "viking://resources/"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code < 300:
-            data = resp.json()
-            result = data.get("result", {})
-            if isinstance(result, dict):
-                resources = result.get("resources", [])
-                return resources[:limit]
-            return result[:limit] if isinstance(result, list) else []
-        return []
-    except Exception as e:
-        log.warning("Search failed for '%s': %s", query, e)
-        return []
-
-
-def upload_index(slug: str, content: str, headers: dict) -> bool:
-    """Upload an index page to OpenViking."""
-    target_uri = f"viking://resources/meta/index-{slug}.md"
-    try:
-        resp = requests.post(
-            f"{OV_URL}/api/v1/content/write",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"uri": target_uri, "content": content, "wait": False},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code < 300:
-            log.info("Uploaded index page: %s", target_uri)
-            return True
-        log.warning("content/write returned %d for %s", resp.status_code, target_uri)
-    except Exception as e:
-        log.warning("Upload failed for %s: %s", target_uri, e)
-
-    # Fallback: temp_upload
-    try:
-        files = {"file": (f"index-{slug}.md", content.encode("utf-8"), "text/markdown")}
-        resp = requests.post(
-            f"{OV_URL}/api/v1/resources/temp_upload",
-            headers={k: v for k, v in headers.items() if k != "Content-Type"},
-            files=files,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code >= 300:
-            return False
-        temp_id = resp.json().get("result", {}).get("temp_file_id")
-        if not temp_id:
-            return False
-        resp = requests.post(
-            f"{OV_URL}/api/v1/resources",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"temp_file_id": temp_id, "to": target_uri, "wait": True, "timeout": REQUEST_TIMEOUT},
-            timeout=REQUEST_TIMEOUT + 10,
-        )
-        return resp.status_code < 300
-    except Exception as e:
-        log.warning("Upload fallback failed for %s: %s", target_uri, e)
-        return False
+def upload_index(slug: str, content: str) -> bool:
+    """Upload an index page to S3."""
+    store = _get_store()
+    success = store.put_content(f"meta/index-{slug}.md", content)
+    if success:
+        log.info("Uploaded index page: meta/index-%s.md", slug)
+    else:
+        log.warning("Failed to upload index page: meta/index-%s.md", slug)
+    return success
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +203,6 @@ def generate_topic_index(
     cluster: dict[str, Any],
     repos_in_cluster: list[str],
     repo_state: dict[str, Any],
-    headers: dict,
 ) -> bool:
     """Generate and upload a topic index page for a cluster."""
     slug = cluster.get("slug", "unknown")
@@ -270,19 +211,11 @@ def generate_topic_index(
 
     log.info("Generating index for topic '%s' (%d repos)", name, len(repos_in_cluster))
 
-    # Search OpenViking for related content
-    search_query = " ".join(tags[:5]) + " " + name
-    search_results = search_openviking(search_query, headers)
-
-    # Format search results for LLM
+    # No semantic search needed — the LLM prompt already has the repo list
     results_text = ""
-    for r in search_results[:15]:
-        uri = r.get("uri", "")
-        abstract = r.get("abstract", r.get("content", ""))[:200]
-        results_text += f"- {uri}: {abstract}\n"
 
     # Get existing index page (for incremental update)
-    existing = fetch_existing_index(slug, headers)
+    existing = fetch_existing_index(slug)
 
     # Build repo info
     repo_info = ""
@@ -303,7 +236,7 @@ Repos in this topic ({len(repos_in_cluster)} total):
 Related content from search:
 {results_text if results_text else "(no search results available)"}
 
-{f"Previous version of this index (update it with any new repos or changes):\n{existing[:5000]}" if existing else "This is a new index page."}
+{("Previous version of this index (update it with any new repos or changes):" + chr(10) + existing[:5000]) if existing else "This is a new index page."}
 
 Format as markdown:
 - Title and description
@@ -320,7 +253,7 @@ Keep it concise and useful for a developer choosing between these tools."""
         log.warning("LLM failed to generate index for %s", slug)
         return False
 
-    return upload_index(slug, index_content, headers)
+    return upload_index(slug, index_content)
 
 
 # ---------------------------------------------------------------------------
@@ -333,11 +266,9 @@ def main():
     parser.add_argument("--force", action="store_true", help="Regenerate all indexes")
     args = parser.parse_args()
 
-    if not OV_KEY:
-        log.error("No OpenViking API key. Set OPENVIKING_ROOT_KEY env var.")
+    if not settings.s3_bucket_name:
+        log.error("No S3 bucket configured. Set S3_BUCKET_NAME env var.")
         sys.exit(1)
-
-    headers = ov_headers(OV_KEY)
 
     # Load repo state (contains topic tags from refresh-repos.py)
     repo_state = load_state("repo-state.json")
@@ -396,7 +327,7 @@ def main():
             continue
 
         # Generate index
-        if generate_topic_index(cluster, repos_in_cluster, repo_state, headers):
+        if generate_topic_index(cluster, repos_in_cluster, repo_state):
             indexes_generated += 1
             index_state[slug] = {
                 "name": cluster.get("name", slug),

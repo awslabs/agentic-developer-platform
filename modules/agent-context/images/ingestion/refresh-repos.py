@@ -27,6 +27,9 @@ from typing import Any
 
 import requests
 
+from config import settings
+from s3_store import S3ContentStore
+
 # ---------------------------------------------------------------------------
 # Input validators — guard subprocess args against flag-injection
 # ---------------------------------------------------------------------------
@@ -60,10 +63,6 @@ log = logging.getLogger("refresh")
 # Configuration (centralized via config.py)
 # ---------------------------------------------------------------------------
 
-from config import settings
-
-OV_URL = settings.ov_url
-OV_KEY = settings.ov_key
 STATE_DIR = settings.state_dir
 REPOS_FILE = settings.repos_file
 URLS_FILE = settings.urls_file
@@ -80,6 +79,13 @@ MAX_WIKIS_PER_RUN = settings.max_wikis_per_run
 LLM_MODEL = settings.model_wiki
 LLM_BASE_URL = settings.llm_base_url
 CLONE_BASE = settings.clone_base
+
+# S3 content store
+store = S3ContentStore(
+    bucket_name=settings.s3_bucket_name,
+    prefix=settings.s3_content_prefix,
+    region_name=settings.aws_region,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -209,26 +215,12 @@ def git_diff_stat(clone_path: str, old_sha: str, new_sha: str) -> str:
 
 
 def fetch_existing_wiki(org_repo: str) -> str | None:
-    """Fetch the existing wiki for a repo from OpenViking."""
-    headers = ov_headers(OV_KEY)
+    """Fetch the existing wiki for a repo from S3."""
     safe_name = org_repo.replace("/", "-")
-    target_uri = f"viking://resources/deepwiki/{safe_name}-wiki.md"
-    try:
-        resp = requests.get(
-            f"{OV_URL}/api/v1/content/read",
-            headers=headers,
-            params={"uri": target_uri},
-            timeout=60,
-        )
-        if resp.status_code < 300:
-            data = resp.json()
-            content = data.get("result", "") if isinstance(data, dict) else str(data)
-            if content and len(content) > 100:
-                return content
-        return None
-    except Exception as e:
-        log.warning("Failed to fetch existing wiki for %s: %s", org_repo, e)
-        return None
+    content = store.get_content(f"wikis/{safe_name}-wiki.md")
+    if content and len(content) > 100:
+        return content
+    return None
 
 
 def incremental_wiki_update(repo: str, old_sha: str, new_sha: str) -> bool:
@@ -290,7 +282,7 @@ Return the complete updated wiki markdown."""
         return False
 
     # 4. Upload updated wiki
-    if upload_wiki_to_openviking(updated_wiki, repo):
+    if upload_wiki_to_s3(updated_wiki, repo):
         log.info(
             "Incremental wiki update successful for %s (%d changed files)", repo, len(changed_files)
         )
@@ -394,10 +386,6 @@ def refresh_repo(repo: str, state: dict[str, Any], force: bool = False) -> bool:
                 "/app/ingest-repo.py",
                 "--repo",
                 _safe_repo(repo),
-                "--ov-url",
-                OV_URL,
-                "--ov-key",
-                OV_KEY,
             ],
             capture_output=True,
             timeout=900,  # 15 minute timeout per repo
@@ -502,10 +490,6 @@ def refresh_url(url: str, state: dict[str, Any], force: bool = False) -> bool:
                 "/app/ingest-url.py",
                 "--url",
                 _safe_url(url),
-                "--ov-url",
-                OV_URL,
-                "--ov-key",
-                OV_KEY,
                 "--max-pages",
                 "100",
             ],
@@ -558,15 +542,6 @@ def refresh_url(url: str, state: dict[str, Any], force: bool = False) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def ov_headers(api_key: str) -> dict[str, str]:
-    """Build OpenViking request headers."""
-    return {
-        "X-API-Key": api_key,
-        "X-OpenViking-Account": "default",
-        "X-OpenViking-User": "default",
-    }
-
-
 def deepwiki_generate(org_repo: str) -> str | None:
     """Call DeepWiki API to generate a wiki for a repo. Returns markdown or None."""
     try:
@@ -606,54 +581,15 @@ def deepwiki_generate(org_repo: str) -> str | None:
         return None
 
 
-def upload_wiki_to_openviking(wiki: str, org_repo: str) -> bool:
-    """Upload a DeepWiki wiki markdown to OpenViking."""
-    headers = ov_headers(OV_KEY)
+def upload_wiki_to_s3(wiki: str, org_repo: str) -> bool:
+    """Upload a DeepWiki wiki markdown to S3."""
     safe_name = org_repo.replace("/", "-")
-    target_uri = f"viking://resources/deepwiki/{safe_name}-wiki.md"
-    try:
-        resp = requests.post(
-            f"{OV_URL}/api/v1/content/write",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"uri": target_uri, "content": wiki, "wait": False},
-            timeout=120,
-        )
-        if resp.status_code < 300:
-            log.info("Uploaded wiki for %s -> %s", org_repo, target_uri)
-            return True
-        log.warning("content/write returned %d for %s wiki", resp.status_code, org_repo)
-    except Exception as e:
-        log.warning("Wiki upload failed for %s: %s", org_repo, e)
-
-    # Fallback: temp_upload
-    try:
-        files = {"file": (f"{safe_name}-wiki.md", wiki.encode("utf-8"), "text/markdown")}
-        resp = requests.post(
-            f"{OV_URL}/api/v1/resources/temp_upload",
-            headers={k: v for k, v in headers.items() if k != "Content-Type"},
-            files=files,
-            timeout=120,
-        )
-        if resp.status_code >= 300:
-            log.warning("temp_upload failed for %s wiki: HTTP %d", org_repo, resp.status_code)
-            return False
-        temp_id = resp.json().get("result", {}).get("temp_file_id")
-        if not temp_id:
-            return False
-        resp = requests.post(
-            f"{OV_URL}/api/v1/resources",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"temp_file_id": temp_id, "to": target_uri, "wait": True, "timeout": 120},
-            timeout=130,
-        )
-        if resp.status_code < 300:
-            log.info("Uploaded wiki for %s -> %s via temp_upload", org_repo, target_uri)
-            return True
-        log.warning("add resource failed for %s wiki: HTTP %d", org_repo, resp.status_code)
-        return False
-    except Exception as e:
-        log.warning("Wiki upload fallback failed for %s: %s", org_repo, e)
-        return False
+    success = store.put_content(f"wikis/{safe_name}-wiki.md", wiki)
+    if success:
+        log.info("Uploaded wiki for %s -> s3://.../%s/wikis/%s-wiki.md", org_repo, settings.s3_content_prefix, safe_name)
+    else:
+        log.warning("Wiki upload to S3 failed for %s", org_repo)
+    return success
 
 
 def backfill_deepwiki_wikis(repo_state: dict[str, Any]) -> int:
@@ -683,7 +619,7 @@ def backfill_deepwiki_wikis(repo_state: dict[str, Any]) -> int:
         )
         wiki = deepwiki_generate(repo)
         if wiki:
-            uploaded = upload_wiki_to_openviking(wiki, repo)
+            uploaded = upload_wiki_to_s3(wiki, repo)
             if uploaded:
                 repo_state[repo]["deepwiki_sha"] = repo_state[repo].get("last_sha", "backfill")
                 wikis_generated += 1
@@ -768,8 +704,8 @@ def main():
         return
 
     # --- Legacy Sequential Mode (fallback when SQS is not configured) ---
-    if not OV_KEY:
-        log.error("No OpenViking API key. Set OPENVIKING_ROOT_KEY env var.")
+    if not settings.s3_bucket_name:
+        log.error("No S3 bucket configured. Set S3_BUCKET_NAME env var.")
         sys.exit(1)
 
     start_time = time.monotonic()

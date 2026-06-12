@@ -27,11 +27,14 @@ if _INGESTION_DIR not in sys.path:
 # Parity tests — guard against silently changing defaults during refactor
 # ---------------------------------------------------------------------------
 
-# The old defaults (prior to this refactor) — extracted from the original
-# os.getenv("KEY", "default") calls across all 9 ingestion scripts.
-OLD_DEFAULTS = {
-    "ov_url": "http://openviking.agent-context.svc.cluster.local:1933",
+# The expected defaults — S3-based storage (OpenViking removed in #1387).
+EXPECTED_DEFAULTS = {
     "aws_region": "us-east-1",
+    "s3_bucket_name": "",
+    "s3_content_prefix": "content",
+    "s3_vectors_bucket_name": "",
+    "s3_vectors_shard_count": 4,
+    "s3_vectors_region": "",
     "sqs_queue_url": "",
     "dynamo_table": "adp-context-service-state",
     "deepwiki_url": "http://deepwiki.agent-context.svc.cluster.local:8001",
@@ -56,11 +59,12 @@ OLD_DEFAULTS = {
     "neptune_endpoint": "",
     "neptune_port": 8182,
     "opensearch_endpoint": "",
-    "openviking_root_key": "",
-    "root_key": "",
     "github_app_id_secret": "",
     "github_app_key_secret": "",
     "github_app_owner": "",
+    "wiki_sink": "s3",
+    "wiki_s3_prefix": "content/wikis",
+    "code_index_s3_prefix": "content/code-indexes",
 }
 
 
@@ -82,16 +86,16 @@ def _make_settings(**overrides):
 
 
 class TestParityDefaults:
-    """Every Settings default must equal the old os.getenv() default."""
+    """Every Settings default must equal the expected default."""
 
     def test_all_defaults_match(self):
         """Core parity assertion: no silent default drift during refactor."""
         s = _make_settings()
-        for key, expected in OLD_DEFAULTS.items():
+        for key, expected in EXPECTED_DEFAULTS.items():
             actual = getattr(s, key)
             assert actual == expected, (
                 f"Default drift detected for '{key}': "
-                f"Settings has {actual!r}, old default was {expected!r}"
+                f"Settings has {actual!r}, expected default was {expected!r}"
             )
 
 
@@ -109,6 +113,7 @@ class TestTypes:
         assert isinstance(s.max_download_size, int)
         assert isinstance(s.min_learnings_threshold, int)
         assert isinstance(s.max_unsynthesized_age_days, int)
+        assert isinstance(s.s3_vectors_shard_count, int)
 
     def test_boolean_fields(self):
         s = _make_settings()
@@ -117,8 +122,9 @@ class TestTypes:
 
     def test_string_fields(self):
         s = _make_settings()
-        assert isinstance(s.ov_url, str)
         assert isinstance(s.aws_region, str)
+        assert isinstance(s.s3_bucket_name, str)
+        assert isinstance(s.s3_content_prefix, str)
         assert isinstance(s.llm_base_url, str)
         assert isinstance(s.model_wiki, str)
         assert isinstance(s.model_tagging, str)
@@ -161,9 +167,13 @@ class TestBooleanParsing:
 class TestEnvOverrides:
     """Settings reads values from environment variables."""
 
-    def test_ov_url_override(self):
-        s = _make_settings(OV_URL="http://custom:1234")
-        assert s.ov_url == "http://custom:1234"
+    def test_s3_bucket_name_override(self):
+        s = _make_settings(S3_BUCKET_NAME="my-bucket")
+        assert s.s3_bucket_name == "my-bucket"
+
+    def test_s3_content_prefix_override(self):
+        s = _make_settings(S3_CONTENT_PREFIX="custom-prefix")
+        assert s.s3_content_prefix == "custom-prefix"
 
     def test_aws_region_override(self):
         s = _make_settings(AWS_REGION="eu-west-1")
@@ -176,6 +186,10 @@ class TestEnvOverrides:
     def test_neptune_port_from_env(self):
         s = _make_settings(NEPTUNE_PORT="9999")
         assert s.neptune_port == 9999
+
+    def test_s3_vectors_bucket_name_override(self):
+        s = _make_settings(S3_VECTORS_BUCKET_NAME="vectors-bucket")
+        assert s.s3_vectors_bucket_name == "vectors-bucket"
 
 
 class TestModelTiering:
@@ -204,24 +218,20 @@ class TestModelTiering:
         assert s.wiki_llm_model == "bedrock/custom-legacy"
 
 
-class TestOvKeyResolution:
-    """The ov_key property resolves from either env var name."""
+class TestS3VectorsRegion:
+    """The effective_s3_vectors_region property resolves correctly."""
 
-    def test_openviking_root_key(self):
-        s = _make_settings(OPENVIKING_ROOT_KEY="secret123")
-        assert s.ov_key == "secret123"
+    def test_explicit_region(self):
+        s = _make_settings(S3_VECTORS_REGION="us-west-2", AWS_REGION="us-east-1")
+        assert s.effective_s3_vectors_region == "us-west-2"
 
-    def test_root_key_fallback(self):
-        s = _make_settings(ROOT_KEY="fallback456")
-        assert s.ov_key == "fallback456"
+    def test_fallback_to_aws_region(self):
+        s = _make_settings(S3_VECTORS_REGION="", AWS_REGION="eu-west-1")
+        assert s.effective_s3_vectors_region == "eu-west-1"
 
-    def test_openviking_root_key_takes_precedence(self):
-        s = _make_settings(OPENVIKING_ROOT_KEY="primary", ROOT_KEY="fallback")
-        assert s.ov_key == "primary"
-
-    def test_empty_when_neither_set(self):
+    def test_default_fallback(self):
         s = _make_settings()
-        assert s.ov_key == ""
+        assert s.effective_s3_vectors_region == "us-east-1"
 
 
 class TestExtraFieldsIgnored:
@@ -230,4 +240,4 @@ class TestExtraFieldsIgnored:
     def test_unknown_env_var(self):
         s = _make_settings(COMPLETELY_UNKNOWN_VAR="whatever")
         # Should not raise — extra='ignore' in model_config
-        assert s.ov_url  # Still works normally
+        assert s.aws_region  # Still works normally

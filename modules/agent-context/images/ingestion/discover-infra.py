@@ -2,7 +2,7 @@
 """AWS Infrastructure discovery — Resource Explorer + IaC parsing.
 
 Discovers resources via AWS Resource Explorer, parses IaC (Terraform, CloudFormation, CDK)
-from indexed repos, and uploads resource inventory to OpenViking.
+from indexed repos, and uploads resource inventory to S3.
 
 Usage:
   python discover-infra.py --accounts-file /config/accounts.txt
@@ -15,13 +15,9 @@ import argparse
 import json
 import logging
 import os
-import re
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
-
-import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,9 +27,8 @@ logging.basicConfig(
 log = logging.getLogger("discover-infra")
 
 from config import settings
+from s3_store import S3ContentStore
 
-OV_URL = settings.ov_url
-OV_KEY = settings.ov_key
 REQUEST_TIMEOUT = settings.request_timeout
 
 # Try importing boto3
@@ -45,48 +40,6 @@ try:
 except ImportError:
     BOTO3_AVAILABLE = False
     log.warning("boto3 not available — AWS discovery will be limited")
-
-
-# ---------------------------------------------------------------------------
-# OpenViking helpers
-# ---------------------------------------------------------------------------
-
-
-def ov_headers(api_key: str) -> dict[str, str]:
-    return {
-        "X-API-Key": api_key,
-        "X-OpenViking-Account": "default",
-        "X-OpenViking-User": "default",
-    }
-
-
-def upload_to_openviking(ov_url: str, headers: dict, content: str, filename: str, target_uri: str) -> bool:
-    """Upload content to OpenViking via temp_upload."""
-    try:
-        files = {"file": (filename, content.encode("utf-8"), "application/octet-stream")}
-        resp = requests.post(
-            f"{ov_url}/api/v1/resources/temp_upload",
-            headers={k: v for k, v in headers.items() if k != "Content-Type"},
-            files=files,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code >= 300:
-            return False
-
-        temp_id = resp.json().get("result", {}).get("temp_file_id")
-        if not temp_id:
-            return False
-
-        resp = requests.post(
-            f"{ov_url}/api/v1/resources",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"temp_file_id": temp_id, "to": target_uri, "wait": True, "timeout": REQUEST_TIMEOUT},
-            timeout=REQUEST_TIMEOUT + 10,
-        )
-        return resp.status_code < 300
-    except Exception as e:
-        log.error("Upload failed: %s", e)
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -224,43 +177,37 @@ def discover_resources(account_id: str, role_name: str, regions: list[str]) -> d
 
 
 # ---------------------------------------------------------------------------
-# IaC parsing (from OpenViking indexed repos)
+# IaC parsing (from S3 content store)
 # ---------------------------------------------------------------------------
 
 
-def parse_iac_from_repos(ov_url: str, headers: dict) -> dict[str, Any]:
-    """Parse IaC declarations from repos already indexed in OpenViking.
+def parse_iac_from_repos(store: S3ContentStore) -> dict[str, Any]:
+    """Parse IaC declarations from repos already indexed in the S3 content store.
 
-    Searches for Terraform (.tf), CloudFormation (.yaml/.json), and CDK patterns.
+    Lists the repos/ prefix and looks for .infra-map.json files.
     Returns a map of repo -> IaC resources.
     """
     iac_map: dict[str, Any] = {}
 
-    # Search OpenViking for Terraform files
     try:
-        resp = requests.post(
-            f"{ov_url}/api/v1/search/search",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"query": "resource aws terraform provider", "target_uri": "viking://resources/"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code < 300:
-            data = resp.json()
-            results = data.get("result", {})
-            if isinstance(results, dict):
-                results = results.get("resources", [])
-            for r in results:
-                uri = r.get("uri", "")
-                if ".tf" in uri or "terraform" in uri.lower():
-                    # Extract repo from URI
-                    parts = uri.replace("viking://resources/", "").split("/", 2)
-                    if len(parts) >= 2:
-                        repo = f"{parts[0]}/{parts[1]}"
-                        if repo not in iac_map:
-                            iac_map[repo] = {"terraform_files": [], "resources": []}
-                        iac_map[repo]["terraform_files"].append(uri)
+        # List org-level directories under repos/
+        orgs = store.list_prefix("repos/")
+        for org_entry in orgs:
+            org_name = org_entry.get("name", "")
+            if not org_entry.get("is_dir", False):
+                continue
+            # List repos within this org
+            repos = store.list_prefix(f"repos/{org_name}/")
+            for repo_entry in repos:
+                repo_name = repo_entry.get("name", "")
+                if not repo_entry.get("is_dir", False):
+                    continue
+                repo_path = f"{org_name}/{repo_name}"
+                infra_data = store.get_json(f"repos/{repo_path}/.infra-map.json")
+                if infra_data:
+                    iac_map[repo_path] = infra_data
     except Exception as e:
-        log.warning("Failed to search for IaC files: %s", e)
+        log.warning("Failed to read IaC maps from S3: %s", e)
 
     return iac_map
 
@@ -270,33 +217,29 @@ def parse_iac_from_repos(ov_url: str, headers: dict) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def parse_workflows_from_repos(ov_url: str, headers: dict) -> dict[str, Any]:
-    """Search for CI/CD workflow files in indexed repos."""
+def parse_workflows_from_repos(store: S3ContentStore) -> dict[str, Any]:
+    """Search for CI/CD workflow/deploy maps in the S3 content store."""
     deploy_map: dict[str, Any] = {}
 
     try:
-        resp = requests.post(
-            f"{ov_url}/api/v1/search/search",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"query": "github actions workflow deploy build", "target_uri": "viking://resources/"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        if resp.status_code < 300:
-            data = resp.json()
-            results = data.get("result", {})
-            if isinstance(results, dict):
-                results = results.get("resources", [])
-            for r in results:
-                uri = r.get("uri", "")
-                if ".github/workflows" in uri or "buildspec" in uri:
-                    parts = uri.replace("viking://resources/", "").split("/", 2)
-                    if len(parts) >= 2:
-                        repo = f"{parts[0]}/{parts[1]}"
-                        if repo not in deploy_map:
-                            deploy_map[repo] = {"workflows": []}
-                        deploy_map[repo]["workflows"].append(uri)
+        # List org-level directories under repos/
+        orgs = store.list_prefix("repos/")
+        for org_entry in orgs:
+            org_name = org_entry.get("name", "")
+            if not org_entry.get("is_dir", False):
+                continue
+            # List repos within this org
+            repos = store.list_prefix(f"repos/{org_name}/")
+            for repo_entry in repos:
+                repo_name = repo_entry.get("name", "")
+                if not repo_entry.get("is_dir", False):
+                    continue
+                repo_path = f"{org_name}/{repo_name}"
+                deploy_data = store.get_json(f"repos/{repo_path}/.deploy-map.json")
+                if deploy_data:
+                    deploy_map[repo_path] = deploy_data
     except Exception as e:
-        log.warning("Failed to search for workflow files: %s", e)
+        log.warning("Failed to read deploy maps from S3: %s", e)
 
     return deploy_map
 
@@ -314,11 +257,15 @@ def main():
     parser.add_argument("--regions", default="us-east-1", help="Comma-separated regions")
     args = parser.parse_args()
 
-    if not OV_KEY:
-        log.error("No OpenViking API key.")
+    if not settings.s3_bucket_name:
+        log.error("No S3 bucket name configured.")
         sys.exit(1)
 
-    headers = ov_headers(OV_KEY)
+    store = S3ContentStore(
+        bucket_name=settings.s3_bucket_name,
+        prefix=settings.s3_content_prefix,
+        region_name=settings.aws_region,
+    )
 
     # Determine accounts to discover
     if args.account:
@@ -337,10 +284,9 @@ def main():
 
         resources = discover_resources(account_id, acct["role_name"], acct["regions"])
 
-        # Upload resource inventory
-        target_uri = f"viking://resources/infra/{account_id}/resources.json"
+        # Upload resource inventory to S3
         content = json.dumps(resources, indent=2)
-        uploaded = upload_to_openviking(OV_URL, headers, content, f"resources-{account_id}.json", target_uri)
+        uploaded = store.put_content(f"infra/{account_id}/resources.json", content)
         if uploaded:
             log.info("Uploaded %d resources for account %s", resources["total_resources"], account_id)
         else:
@@ -348,30 +294,20 @@ def main():
 
     # Step 2: Parse IaC from indexed repos
     log.info("Parsing IaC from indexed repos...")
-    iac_map = parse_iac_from_repos(OV_URL, headers)
+    iac_map = parse_iac_from_repos(store)
     for repo, iac_data in iac_map.items():
-        safe_repo = repo.replace("/", "-")
-        target_uri = f"viking://resources/{repo}/.infra-map.json"
-        upload_to_openviking(
-            OV_URL,
-            headers,
+        store.put_content(
+            f"repos/{repo}/.infra-map.json",
             json.dumps(iac_data, indent=2),
-            f"{safe_repo}-infra-map.json",
-            target_uri,
         )
 
     # Step 3: Parse CI/CD workflows from indexed repos
     log.info("Parsing CI/CD workflows from indexed repos...")
-    deploy_map = parse_workflows_from_repos(OV_URL, headers)
+    deploy_map = parse_workflows_from_repos(store)
     for repo, deploy_data in deploy_map.items():
-        safe_repo = repo.replace("/", "-")
-        target_uri = f"viking://resources/{repo}/.deploy-map.json"
-        upload_to_openviking(
-            OV_URL,
-            headers,
+        store.put_content(
+            f"repos/{repo}/.deploy-map.json",
             json.dumps(deploy_data, indent=2),
-            f"{safe_repo}-deploy-map.json",
-            target_uri,
         )
 
     log.info(

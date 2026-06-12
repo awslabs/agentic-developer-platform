@@ -41,7 +41,7 @@ RUN pip install --no-cache-dir \
 RUN crawl4ai-setup || echo "crawl4ai-setup not available or optional — continuing"
 
 # Copy pipeline scripts (config.py must be first — all scripts import it)
-COPY config.py /app/
+COPY config.py s3_store.py wiki_store.py /app/
 COPY ingest-repo.py ingest-url.py ingest-doc.py refresh-repos.py \
      discover-infra.py sqs-worker.py publish-ingestion.py \
      correlate.py lint-wiki.py generate-indexes.py \
