@@ -45,11 +45,26 @@ class Settings(BaseSettings):
     deepwiki_url: str = "http://deepwiki.agent-context.svc.cluster.local:8001"
     deepwiki_enabled: bool = True
 
+    # --- Wiki store (dual-sink: S3 + S3 Vectors) ------------------------------
+    # Controls where DeepWiki output is stored. Values: "dual" | "s3" | "openviking"
+    # "dual" = write to both S3 and OpenViking (transition period)
+    # "s3" = S3 + S3 Vectors only (target state after OpenViking removal)
+    # "openviking" = legacy OpenViking only (pre-migration)
+    wiki_sink: str = "dual"
+    wiki_s3_prefix: str = "content/wikis"
+    code_index_s3_prefix: str = "content/code-indexes"
+    wiki_s3_bucket: str = ""  # Set via env: WIKI_S3_BUCKET
+    s3_vectors_bucket: str = ""  # Set via env: S3_VECTORS_BUCKET
+    s3_vectors_shard_count: int = 4
+
     # --- LLM (via LiteLLM proxy) ----------------------------------------------
     llm_base_url: str = "http://litellm-proxy.agent-context.svc.cluster.local:4000/v1"
 
     # --- Per-task model tiering -----------------------------------------------
     # Wiki generation/updates: needs strong reasoning (Sonnet)
+    # NOTE: model_wiki is sent as a parameter to DeepWiki's /chat/completions/stream
+    # endpoint but DeepWiki's actual model is governed by its own container config
+    # (images/deepwiki/config/generator.json). These should stay in sync manually.
     model_wiki: str = "bedrock/global.anthropic.claude-sonnet-4-6"
     # Topic tagging: classification task (Haiku — cheap + fast)
     model_tagging: str = "bedrock/global.anthropic.claude-haiku-4-6"
