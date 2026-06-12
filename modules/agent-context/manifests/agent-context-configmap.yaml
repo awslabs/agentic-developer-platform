@@ -5,7 +5,9 @@
 # Variables substituted at deploy time by template_file() from _common.sh:
 #   NAMESPACE, AWS_REGION, SQS_QUEUE_URL, DYNAMO_TABLE, DEEPWIKI_ENABLED,
 #   GRAPHRAG_ENABLED, NEPTUNE_ENDPOINT, NEPTUNE_PORT, OPENSEARCH_ENDPOINT,
-#   WIKI_LLM_MODEL, GITHUB_APP_ID_SECRET, GITHUB_APP_KEY_SECRET, GITHUB_APP_OWNER
+#   WIKI_LLM_MODEL, GITHUB_APP_ID_SECRET, GITHUB_APP_KEY_SECRET, GITHUB_APP_OWNER,
+#   S3_VECTORS_BUCKET_NAME, S3_VECTORS_REGION, S3_FILES_BUCKET, S3_CONTENT_PREFIX,
+#   ZOEKT_URL
 #
 # Secrets (OPENVIKING_ROOT_KEY) stay in agent-context-secrets — NOT in this ConfigMap.
 apiVersion: v1
@@ -21,9 +23,23 @@ data:
   OV_URL: "http://openviking.${NAMESPACE}.svc.cluster.local:1933"
   DEEPWIKI_URL: "http://deepwiki.${NAMESPACE}.svc.cluster.local:8001"
   LLM_BASE_URL: "http://litellm-proxy.${NAMESPACE}.svc.cluster.local:4000/v1"
+  ZOEKT_URL: "http://zoekt.${NAMESPACE}.svc.cluster.local:6070"
 
   # --- AWS ---
   AWS_REGION: "${AWS_REGION}"
+
+  # --- S3 Vectors (semantic search) ---
+  S3_VECTORS_BUCKET_NAME: "${S3_VECTORS_BUCKET_NAME}"
+  S3_VECTORS_REGION: "${S3_VECTORS_REGION}"
+  S3_VECTORS_BUCKET: "${S3_VECTORS_BUCKET_NAME}"
+
+  # --- S3 (content store + platform data) ---
+  S3_BUCKET_NAME: "${S3_FILES_BUCKET}"
+  WIKI_S3_BUCKET: "${S3_FILES_BUCKET}"
+  S3_CONTENT_PREFIX: "${S3_CONTENT_PREFIX}"
+
+  # --- SBOM ---
+  SBOM_ENABLED: "true"
 
   # --- SQS + DynamoDB ---
   SQS_QUEUE_URL: "${SQS_QUEUE_URL}"

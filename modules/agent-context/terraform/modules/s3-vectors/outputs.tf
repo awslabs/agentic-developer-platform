@@ -1,6 +1,6 @@
 output "vector_bucket_name" {
   description = "Name of the S3 Vectors bucket"
-  value       = aws_s3vectors_vector_bucket.code_vectors.name
+  value       = aws_s3vectors_vector_bucket.code_vectors.vector_bucket_name
 }
 
 output "code_shard_index_names" {

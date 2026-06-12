@@ -7,13 +7,13 @@
 # =============================================================================
 
 resource "aws_s3vectors_vector_bucket" "code_vectors" {
-  name = "adp-${var.environment}-code-vectors-${var.account_id}"
+  vector_bucket_name = "adp-${var.environment}-code-vectors-${var.account_id}"
 }
 
 resource "aws_s3vectors_index" "code_shards" {
   count = var.shard_count
 
-  vector_bucket_name = aws_s3vectors_vector_bucket.code_vectors.name
+  vector_bucket_name = aws_s3vectors_vector_bucket.code_vectors.vector_bucket_name
   index_name         = "code-shard-${count.index}"
 
   dimension       = var.dimension

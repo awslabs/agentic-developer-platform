@@ -69,6 +69,14 @@ variable "opensearch_allow_public_access" {
   default     = false
 }
 
+# --- RDS Bootstrap (shared gateway RDS instance) ----------------------------
+
+variable "rds_enabled" {
+  description = "Enable RDS bootstrap (requires gateway module deployed first). Set false if gateway is not deployed."
+  type        = bool
+  default     = true
+}
+
 # --- S3 Vectors (Semantic Search) --------------------------------------------
 
 variable "s3_vectors_shard_count" {

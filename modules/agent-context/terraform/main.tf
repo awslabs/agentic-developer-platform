@@ -46,10 +46,10 @@ locals {
   name_prefix = "adp-${var.environment}-agent-context"
   bucket_name = "agent-context-platform-data-${var.account_id}"
 
-  # RDS details from gateway module (shared instance)
-  rds_host              = data.terraform_remote_state.gateway.outputs.rds_instance_address
-  rds_instance_id       = data.terraform_remote_state.gateway.outputs.rds_instance_id
-  rds_master_secret_arn = data.terraform_remote_state.gateway.outputs.rds_master_user_secret_arn
+  # RDS details from gateway module (shared instance) — only available when rds_enabled=true
+  rds_host              = var.rds_enabled ? data.terraform_remote_state.gateway[0].outputs.rds_instance_address : ""
+  rds_instance_id       = var.rds_enabled ? data.terraform_remote_state.gateway[0].outputs.rds_instance_id : ""
+  rds_master_secret_arn = var.rds_enabled ? data.terraform_remote_state.gateway[0].outputs.rds_master_user_secret_arn : ""
 }
 
 # =============================================================================
@@ -57,8 +57,10 @@ locals {
 # =============================================================================
 # The agent_context database lives on the gateway's shared RDS instance.
 # We read its outputs to get the host, instance ID, and master secret ARN.
+# Conditional: only read if rds_enabled=true (gateway must be deployed first).
 
 data "terraform_remote_state" "gateway" {
+  count   = var.rds_enabled ? 1 : 0
   backend = "s3"
   config = {
     bucket = "adp-terraform-state-${var.account_id}"
@@ -232,6 +234,7 @@ module "images_build" {
 
 module "rds_bootstrap" {
   source = "./modules/rds-bootstrap"
+  count  = var.rds_enabled ? 1 : 0
 
   name_prefix            = local.name_prefix
   namespace              = var.namespace

@@ -137,3 +137,22 @@ Houseofmvps/codesight
 Prismer-AI/PrismerCloud
 afshinm/zerobox
 lucasastorian/llmwiki
+
+# --- Evaluation Corpus (Issue #1406) ---
+# 15 repos used by tests/eval/ harness for answer-quality measurement.
+# Mix: real codebases, agent skill collections, curated markdown lists.
+addyosmani/agent-skills
+obra/superpowers
+msitarzewski/agency-agents
+mvanhorn/last30days-skill
+chopratejas/headroom
+Panniantong/Agent-Reach
+CopilotKit/CopilotKit
+santifer/career-ops
+colbymchenry/codegraph
+Egonex-AI/Understand-Anything
+CloakHQ/CloakBrowser
+mattpocock/skills
+Imbad0202/academic-research-skills
+awesome-selfhosted/awesome-selfhosted
+Hack-with-Github/Awesome-Hacking
