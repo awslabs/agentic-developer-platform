@@ -3,24 +3,20 @@ import os
 from contextlib import asynccontextmanager
 from importlib import import_module
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.admin.middleware import create_request_logging_middleware
-
-# Issue #143: TokenContextMiddleware sets request.state.token_context for enforcement middleware
+from src.auth.dependencies import require_admin  # Issue #1424: for agent-context router guard
 from src.auth.middleware import TokenContextMiddleware
-
-# Issue #131: Import enforcement middleware
 from src.budget.enforcement_middleware import BudgetEnforcementMiddleware
 from src.ratelimit.enforcement_middleware import RateLimitEnforcementMiddleware
 from src.shared.config import get_settings
+from src.shared.database import get_db  # Issue #1424: for agent-context router DI
 from src.shared.exceptions import BedrockGatewayError
 from src.shared.logging import configure_logging
 from src.shared.middleware.logging_middleware import LoggingMiddleware
-
-# Issue #144: Import tracing setup
 from src.shared.tracing import setup_tracing, shutdown_tracing
 
 logger = logging.getLogger("bedrockgateway")
@@ -203,6 +199,31 @@ def create_app() -> FastAPI:
             logger.debug(
                 "Module not available, skipping",
                 extra={"module_path": module_path, "error": str(e)},
+            )
+
+    # Issue #1424: Conditionally mount agent-context indexing admin router.
+    # Routes are DEFINED in agent-context, MOUNTED here behind AGENT_CONTEXT_ENABLED.
+    # Inherits Cognito JWT auth + admin-role guard from the gateway middleware stack.
+    if os.environ.get("AGENT_CONTEXT_ENABLED", "").lower() == "true":
+        try:
+            from agent_context.api.indexing_router import (
+                get_indexing_db,
+            )
+            from agent_context.api.indexing_router import (
+                router as indexing_router,
+            )
+
+            # Override the router's DB dependency with the gateway's session factory
+            app.dependency_overrides[get_indexing_db] = get_db
+            app.include_router(
+                indexing_router,
+                dependencies=[Depends(require_admin)],
+            )
+            logger.info("Agent-context indexing admin router mounted")
+        except ImportError as e:
+            logger.debug(
+                "Agent-context package not available, indexing admin routes skipped",
+                extra={"error": str(e)},
             )
 
     return app

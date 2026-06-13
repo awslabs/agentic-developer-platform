@@ -8,6 +8,8 @@ import type {
   Team,
   UserRole,
   UserRoleAssignRequest,
+  IndexRunListResponse,
+  IndexRunDetailResponse,
 } from '@/types';
 
 // Organization endpoints
@@ -522,5 +524,119 @@ export async function getCognitoDepartments(orgId: string): Promise<{
       departmentId: dept.department_id,
     })),
     total: response?.total ?? 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1424: Knowledge-layer indexing status endpoints
+// ---------------------------------------------------------------------------
+
+export async function getIndexingRuns(params?: {
+  page?: number;
+  pageSize?: number;
+}): Promise<IndexRunListResponse> {
+  const query = buildQueryString({
+    page: params?.page || 1,
+    page_size: params?.pageSize || 20,
+  });
+  const response = await apiClient.get<{
+    items: Array<{
+      id: string;
+      repo_id: string;
+      started_at: string;
+      completed_at: string | null;
+      duration_ms: number | null;
+      status: string;
+      commit_sha: string | null;
+      error: string | null;
+      total_repos: number;
+      repos_verified: number;
+      repos_failed: number;
+      repos_partial: number;
+    }>;
+    total: number;
+    page: number;
+    page_size: number;
+    has_more: boolean;
+    summary: {
+      total_repos: number;
+      fully_verified_pct: number;
+      failed_stages: number;
+      drift_count: number;
+    } | null;
+  }>(`/admin/indexing/runs${query}`);
+
+  const items = Array.isArray(response?.items) ? response.items : [];
+  return {
+    items: items.map((run) => ({
+      id: run.id,
+      repoId: run.repo_id,
+      startedAt: run.started_at,
+      completedAt: run.completed_at,
+      durationMs: run.duration_ms,
+      status: run.status,
+      commitSha: run.commit_sha,
+      error: run.error,
+      totalRepos: run.total_repos,
+      reposVerified: run.repos_verified,
+      reposFailed: run.repos_failed,
+      reposPartial: run.repos_partial,
+    })),
+    total: response?.total ?? 0,
+    page: response?.page ?? 1,
+    pageSize: response?.page_size ?? 20,
+    hasMore: response?.has_more ?? false,
+    summary: response?.summary
+      ? {
+          totalRepos: response.summary.total_repos,
+          fullyVerifiedPct: response.summary.fully_verified_pct,
+          failedStages: response.summary.failed_stages,
+          driftCount: response.summary.drift_count,
+        }
+      : null,
+  };
+}
+
+export async function getIndexingRunDetail(runId: string): Promise<IndexRunDetailResponse> {
+  const response = await apiClient.get<{
+    run_id: string;
+    started_at: string;
+    completed_at: string | null;
+    status: string;
+    commit_sha: string | null;
+    stages: Array<{
+      id: string;
+      run_id: string;
+      repo: string;
+      stage: string;
+      status: string;
+      artifact_ref: string | null;
+      verified_at: string | null;
+      attempts: number;
+      error: string | null;
+      started_at: string | null;
+      completed_at: string | null;
+    }>;
+  }>(`/admin/indexing/runs/${runId}`);
+
+  return {
+    runId: response.run_id,
+    startedAt: response.started_at,
+    completedAt: response.completed_at,
+    status: response.status,
+    commitSha: response.commit_sha,
+    stages: (response.stages || []).map((s) => ({
+      id: s.id,
+      runId: s.run_id,
+      repo: s.repo,
+      stage: s.stage,
+      status: s.status as IndexRunDetailResponse['stages'][number]['status'],
+      artifactRef: s.artifact_ref,
+      verifiedAt: s.verified_at,
+      attempts: s.attempts,
+      error: s.error,
+      startedAt: s.started_at,
+      completedAt: s.completed_at,
+    })),
   };
 }

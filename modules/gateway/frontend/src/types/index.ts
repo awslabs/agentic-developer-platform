@@ -459,3 +459,66 @@ export interface CognitoTeam {
 export interface CognitoDepartment {
   departmentId: string;
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1424: Knowledge-layer indexing status types
+// ---------------------------------------------------------------------------
+
+/** A single stage row from index_run_stages. */
+export interface IndexRunStage {
+  id: string;
+  runId: string;
+  repo: string;
+  stage: string;
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'verified' | 'skipped';
+  artifactRef: string | null;
+  verifiedAt: string | null;
+  attempts: number;
+  error: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+/** Level 1 — one row per index run. */
+export interface IndexRunSummary {
+  id: string;
+  repoId: string;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  status: string;
+  commitSha: string | null;
+  error: string | null;
+  totalRepos: number;
+  reposVerified: number;
+  reposFailed: number;
+  reposPartial: number;
+}
+
+/** Top-level summary stats for StatCards. */
+export interface IndexingSummaryStats {
+  totalRepos: number;
+  fullyVerifiedPct: number;
+  failedStages: number;
+  driftCount: number;
+}
+
+/** Paginated list of index runs (Level 1 response). */
+export interface IndexRunListResponse {
+  items: IndexRunSummary[];
+  total: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+  summary: IndexingSummaryStats | null;
+}
+
+/** Level 2 — per-repo, per-stage detail for a single run. */
+export interface IndexRunDetailResponse {
+  runId: string;
+  startedAt: string;
+  completedAt: string | null;
+  status: string;
+  commitSha: string | null;
+  stages: IndexRunStage[];
+}

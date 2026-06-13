@@ -1,5 +1,6 @@
 import { authHandlers } from './auth';
 import { adminHandlers } from './admin';
+import { indexingHandlers } from './indexing'; // Issue #1424
 import { poolHandlers } from './pool';
 import { budgetHandlers } from './budget';
 import { ratelimitHandlers } from './ratelimit';
@@ -87,6 +88,7 @@ const dashboardHandlers = [
 export const handlers = [
   ...authHandlers,
   ...adminHandlers,
+  ...indexingHandlers, // Issue #1424
   ...poolHandlers,
   ...budgetHandlers,
   ...ratelimitHandlers,

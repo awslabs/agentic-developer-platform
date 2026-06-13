@@ -93,6 +93,11 @@ export function Navigation() {
     navItems.push({ to: '/admin/access-requests', label: 'Access Requests', icon: '📋' });
   }
 
+  // Indexing Status page for platform admins (Issue #1424)
+  if (isPlatformAdmin()) {
+    navItems.push({ to: '/admin/indexing', label: 'Indexing Status', icon: '🔍' });
+  }
+
   return (
     <nav className="flex flex-col gap-1" aria-label="Main navigation">
       {navItems.map((item) => (
