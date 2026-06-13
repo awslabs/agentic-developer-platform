@@ -2,7 +2,8 @@
 # Replaces Sourcebot (FSL-1.1-ALv2) with direct Zoekt (Apache-2.0).
 # Issue: #1346  Design: docs/design-notes/1346-zoekt-direct-replacement.md
 #
-# Read-only: serves pre-built .zoekt shard files from S3 via Mountpoint.
+# Serves .zoekt shard files from an EBS-backed PVC (zoekt-index).
+# S3 Mountpoint (FUSE) is incompatible with zoekt's mkdir-on-startup.
 # Indexing is handled by the ingestion pipeline (separate sub-issue).
 ---
 apiVersion: apps/v1
@@ -36,7 +37,6 @@ spec:
         volumeMounts:
         - name: index-data
           mountPath: /data/index
-          subPath: zoekt-shards
       containers:
       - name: zoekt-webserver
         image: ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG}
@@ -54,8 +54,6 @@ spec:
         volumeMounts:
         - name: index-data
           mountPath: /data/index
-          subPath: zoekt-shards
-          readOnly: true
         resources:
           requests:
             cpu: "500m"
@@ -82,8 +80,7 @@ spec:
       volumes:
       - name: index-data
         persistentVolumeClaim:
-          claimName: platform-data
-          readOnly: true
+          claimName: zoekt-index
 ---
 apiVersion: v1
 kind: Service
@@ -102,3 +99,20 @@ spec:
     targetPort: 6070
     protocol: TCP
   type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zoekt-index
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: zoekt-webserver
+    app.kubernetes.io/part-of: agent-context-platform
+    app.kubernetes.io/component: search
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ebs-gp3
+  resources:
+    requests:
+      storage: 50Gi
