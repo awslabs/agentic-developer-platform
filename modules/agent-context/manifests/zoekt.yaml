@@ -115,4 +115,4 @@ spec:
   storageClassName: ebs-gp3
   resources:
     requests:
-      storage: 50Gi
+      storage: 20Gi
