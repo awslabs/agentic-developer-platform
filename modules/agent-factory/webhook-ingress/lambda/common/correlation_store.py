@@ -60,8 +60,8 @@ def channel_key(provider: str, repo: str, kind: str, number: int) -> str:
 def read_pointer(key: str) -> dict | None:
     """Read the correlation pointer for a channel.
 
-    Returns {correlation_id, root_human_id, is_human_rooted} or None if
-    no pointer exists or on DDB error.
+    Returns {correlation_id, root_human_id, is_human_rooted,
+    triggering_invocation_id} or None if no pointer exists or on DDB error.
 
     Uses ConsistentRead=True to close the bot-race window where two
     near-simultaneous bot events could both miss the pointer.
@@ -83,6 +83,7 @@ def read_pointer(key: str) -> dict | None:
             "correlation_id": item["correlation_id"],
             "root_human_id": item["root_human_id"],
             "is_human_rooted": item.get("is_human_rooted", True),
+            "triggering_invocation_id": item.get("triggering_invocation_id"),
         }
     except ClientError as e:
         logger.warning(
@@ -102,11 +103,17 @@ def write_pointer(
     root_human_id: str,
     is_human_rooted: bool,
     ttl_days: int = 7,
+    triggering_invocation_id: str | None = None,
 ) -> None:
     """Idempotently upsert a correlation pointer with TTL.
 
     Refreshes TTL on every call so active chains don't expire mid-flight.
     Fail-soft: logs warning + emits metric on error, does not raise.
+
+    Args:
+        triggering_invocation_id: The message_id/invocation_id of the run
+            that produced this outbound action. Used by the next inbound
+            webhook to set parent_invocation_id on the child run's provenance.
     """
     table = _get_table()
     if table is None:
@@ -115,16 +122,18 @@ def write_pointer(
 
     expires_at = int(time.time()) + (ttl_days * 86400)
 
+    item: dict[str, Any] = {
+        "channel_key": key,
+        "correlation_id": correlation_id,
+        "root_human_id": root_human_id,
+        "is_human_rooted": is_human_rooted,
+        "expires_at": expires_at,
+    }
+    if triggering_invocation_id:
+        item["triggering_invocation_id"] = triggering_invocation_id
+
     try:
-        table.put_item(
-            Item={
-                "channel_key": key,
-                "correlation_id": correlation_id,
-                "root_human_id": root_human_id,
-                "is_human_rooted": is_human_rooted,
-                "expires_at": expires_at,
-            }
-        )
+        table.put_item(Item=item)
     except ClientError as e:
         logger.warning(
             "write_pointer DDB error for key=%s: %s",

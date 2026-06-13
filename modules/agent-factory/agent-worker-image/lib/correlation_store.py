@@ -34,6 +34,7 @@ def write_pointer(
     root_human_id: str,
     is_human_rooted: bool,
     ttl_days: int = 7,
+    triggering_invocation_id: str | None = None,
 ) -> None:
     """Write a correlation pointer to DynamoDB. Fail-soft: logs and returns on error.
 
@@ -43,6 +44,8 @@ def write_pointer(
         root_human_id: The originating human's user ID.
         is_human_rooted: Whether the chain traces back to a human action.
         ttl_days: TTL in days for the pointer record.
+        triggering_invocation_id: The message_id/invocation_id of the producing
+            run. Propagated to the next inbound event as parent_invocation_id.
     """
     table = _table_name or os.environ.get("CORRELATION_POINTERS_TABLE", "")
     if not table:
@@ -51,16 +54,19 @@ def write_pointer(
 
     try:
         now = int(time.time())
+        item = {
+            "channel_key": {"S": channel_key},
+            "latest_correlation_id": {"S": correlation_id},
+            "latest_root_human_id": {"S": root_human_id},
+            "latest_is_human_rooted": {"BOOL": is_human_rooted},
+            "updated_at": {"N": str(now)},
+            "expires_at": {"N": str(now + ttl_days * 86400)},
+        }
+        if triggering_invocation_id:
+            item["triggering_invocation_id"] = {"S": triggering_invocation_id}
         _get_client().put_item(
             TableName=table,
-            Item={
-                "channel_key": {"S": channel_key},
-                "latest_correlation_id": {"S": correlation_id},
-                "latest_root_human_id": {"S": root_human_id},
-                "latest_is_human_rooted": {"BOOL": is_human_rooted},
-                "updated_at": {"N": str(now)},
-                "expires_at": {"N": str(now + ttl_days * 86400)},
-            },
+            Item=item,
         )
         logger.info("Wrote correlation pointer: channel=%s corr=%s", channel_key, correlation_id)
     except Exception as exc:

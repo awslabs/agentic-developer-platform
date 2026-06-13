@@ -55,6 +55,7 @@ class CreateProvenanceRequest(BaseModel):
     source_event: dict
     correlation_id: str
     org_id: str
+    parent_invocation_id: str | None = None
 
 
 class CreateProvenanceResponse(BaseModel):
@@ -106,8 +107,18 @@ async def create_provenance(
 
     # Insert provenance row
     now = utcnow()
+    row_id = new_uuid()
+
+    # Guard against self-referential parent (prevents cycles in lineage tree)
+    parent_inv_id = body.parent_invocation_id
+    if parent_inv_id and parent_inv_id == row_id:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "self_referential_parent", "message": "parent_invocation_id must not equal the row's own id"},
+        )
+
     row = ActionProvenance(
-        id=new_uuid(),
+        id=row_id,
         org_id=body.org_id,
         actor_user_id=body.actor_user_id,
         triggered_by=body.triggered_by,
@@ -116,6 +127,7 @@ async def create_provenance(
         action_kind=body.action_kind,
         source_event=body.source_event,
         correlation_id=body.correlation_id,
+        parent_invocation_id=parent_inv_id,
         created_at=now,
     )
     db.add(row)

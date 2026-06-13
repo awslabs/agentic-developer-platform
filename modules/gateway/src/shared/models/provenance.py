@@ -36,4 +36,5 @@ class ActionProvenance(Base, TenantMixin):
     action_kind: Mapped[str] = mapped_column(String(64), nullable=False)
     source_event: Mapped[dict] = mapped_column(JSON, nullable=False)
     correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    parent_invocation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -57,6 +57,7 @@ def post_provenance(
     source_event: str,
     correlation_id: str,
     org_id: str | None = None,
+    parent_invocation_id: str | None = None,
 ) -> str | None:
     """Post an action provenance record to the gateway. Fail-soft.
 
@@ -69,6 +70,7 @@ def post_provenance(
         source_event: Source event description (e.g. "worker:entrypoint").
         correlation_id: Correlation ID for this action chain.
         org_id: Organization ID (optional).
+        parent_invocation_id: The upstream run's message_id (nullable).
 
     Returns:
         The provenance_id from the gateway response, or None on failure.
@@ -101,6 +103,7 @@ def post_provenance(
         "source_event": source_event,
         "correlation_id": correlation_id,
         "org_id": org_id,
+        "parent_invocation_id": parent_invocation_id,
     }
 
     headers = {"Content-Type": "application/json"}

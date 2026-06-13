@@ -155,6 +155,7 @@ def post_provenance(
     source_event: dict,
     correlation_id: str,
     org_id: str,
+    parent_invocation_id: str | None = None,
 ) -> str | None:
     """POST to gateway /internal/v1/provenance.
 
@@ -180,6 +181,7 @@ def post_provenance(
         "source_event": source_event,
         "correlation_id": correlation_id,
         "org_id": org_id,
+        "parent_invocation_id": parent_invocation_id,
     }
 
     api_key = _resolve_internal_api_key()

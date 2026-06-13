@@ -288,6 +288,7 @@ def determine_correlation(payload: dict, resolved_identity, channel_key: str) ->
             "triggered_by": None,
             "is_human_rooted": True,
             "is_new_chain": True,
+            "parent_invocation_id": None,
         }
 
     # Bot sender: try to inherit from upstream DDB pointer
@@ -300,6 +301,7 @@ def determine_correlation(payload: dict, resolved_identity, channel_key: str) ->
             "triggered_by": resolved_identity.user_id,
             "is_human_rooted": pointer["is_human_rooted"],
             "is_new_chain": False,
+            "parent_invocation_id": pointer.get("triggering_invocation_id"),
         }
 
     # No pointer found — bot-initiated chain (e.g. cron-like, CI-triggered)
@@ -309,6 +311,7 @@ def determine_correlation(payload: dict, resolved_identity, channel_key: str) ->
         "triggered_by": None,
         "is_human_rooted": False,
         "is_new_chain": True,
+        "parent_invocation_id": None,
     }
 
 
@@ -611,6 +614,7 @@ def handler(event: dict, context) -> dict:
                 },
                 correlation_id=correlation_ctx["correlation_id"],
                 org_id=resolved.org_id,
+                parent_invocation_id=correlation_ctx.get("parent_invocation_id"),
             )
         except Exception as e:
             logger.warning("post_provenance failed (fail-soft): %s", e)
@@ -666,6 +670,9 @@ def handler(event: dict, context) -> dict:
             "correlation_id": correlation_ctx["correlation_id"] if correlation_ctx else "",
             "root_human_id": correlation_ctx["root_human_id"] if correlation_ctx else "",
             "is_human_rooted": correlation_ctx["is_human_rooted"] if correlation_ctx else True,
+            "parent_invocation_id": correlation_ctx.get("parent_invocation_id")
+            if correlation_ctx
+            else None,
         },
         "payload": payload,
         "arrived_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

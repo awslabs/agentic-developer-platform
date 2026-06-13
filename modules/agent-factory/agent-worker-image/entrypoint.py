@@ -139,6 +139,11 @@ def main() -> int:
         os.environ["ADP_ROOT_HUMAN_ID"] = root_human_id
     os.environ["ADP_IS_HUMAN_ROOTED"] = "true" if is_human_rooted else "false"
 
+    # Issue #1460: Export the run's own message_id so outbound correlation writes
+    # can record which run produced the action (parent edge for lineage).
+    if message_id:
+        os.environ["ADP_MESSAGE_ID"] = message_id
+
     # Issue #1289: Expose personal-context identity for the Node agent runtime.
     # These env vars are read by the worker harness to set X-Owner-Sub and
     # X-Tenant-Id on Context MCP requests. Set from trusted dispatch metadata
@@ -877,23 +882,28 @@ def _write_outbound_correlation(repo: str, channel_suffix: str, action_kind: str
 
     Fail-soft: logs warnings but never raises. Called only after the GitHub API
     call succeeded (Phase 2-d order of operations).
+
+    Issue #1460: Records the producing run's message_id as triggering_invocation_id
+    on the DDB pointer so the next inbound webhook can set parent_invocation_id.
     """
     corr = os.environ.get("ADP_CORRELATION_ID", "")
     root = os.environ.get("ADP_ROOT_HUMAN_ID", "")
     rooted = os.environ.get("ADP_IS_HUMAN_ROOTED", "false") == "true"
+    own_message_id = os.environ.get("ADP_MESSAGE_ID", "")
 
     if not corr or not root:
         return  # No correlation context — skip silently
 
     channel_key = f"github:{repo}:{channel_suffix}"
 
-    # DDB pointer write (fail-soft)
+    # DDB pointer write (fail-soft) — includes triggering_invocation_id for lineage
     try:
         write_pointer(
             channel_key=channel_key,
             correlation_id=corr,
             root_human_id=root,
             is_human_rooted=rooted,
+            triggering_invocation_id=own_message_id or None,
         )
     except Exception as exc:
         logger.warning("Outbound correlation pointer write failed (non-fatal): %s", exc)
