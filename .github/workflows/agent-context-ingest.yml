@@ -112,45 +112,46 @@ jobs:
       - name: Verify — Postgres (via in-cluster pod)
         run: |
           echo "=== Postgres verification ==="
+          cat > /tmp/verify_db.py << 'PYEOF'
+          import os, sys
+          sys.path.insert(0, '/app')
+          os.environ.setdefault('DB_HOST', 'bedrockgw-dev-postgres.civhekhiupfe.us-east-1.rds.amazonaws.com')
+          os.environ.setdefault('DB_NAME', 'agent_context')
+          os.environ.setdefault('DB_PORT', '5432')
+          os.environ.setdefault('DB_USER', 'agent_context_svc')
+          os.environ.setdefault('DB_USE_IAM_AUTH', 'true')
+          try:
+              import db
+              conn = db.get_connection()
+              cur = conn.cursor()
+              cur.execute("SELECT to_regclass('index_run_stages')")
+              print(f'index_run_stages exists: {cur.fetchone()[0]}')
+              cur.execute("SELECT to_regclass('index_runs')")
+              print(f'index_runs exists: {cur.fetchone()[0]}')
+              cur.execute('SELECT stage, status, count(*) FROM index_run_stages GROUP BY 1, 2 ORDER BY 1, 2')
+              rows = cur.fetchall()
+              print(f'\n=== Stage status summary ({len(rows)} rows) ===')
+              for row in rows:
+                  print(f'  {row[0]:20s} | {row[1]:12s} | {row[2]}')
+              cur.execute('SELECT count(*) FROM dependencies')
+              dep_count = cur.fetchone()[0]
+              print(f'\nDependency rows: {dep_count}')
+              cur.execute('SELECT count(*) FROM index_runs')
+              run_count = cur.fetchone()[0]
+              print(f'Index runs: {run_count}')
+              cur.execute('SELECT id, repo, status FROM index_runs ORDER BY started_at DESC LIMIT 5')
+              print('\n=== Recent index runs ===')
+              for row in cur.fetchall():
+                  print(f'  {row[0][:8]}... | {row[1]:40s} | {row[2]}')
+              conn.close()
+          except Exception as e:
+              print(f'DB verification failed: {e}')
+              sys.exit(1)
+          PYEOF
           kubectl run verify-db-$(date +%s) \
             --image=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:e62ae2c4f721159f2e47bb62ef3813c56bdbebda \
             --restart=Never \
             --rm -i \
             --overrides='{"spec":{"serviceAccountName":"agent-context-sa"}}' \
             -n agent-context \
-            --command -- python3 -c "
-import os, sys
-sys.path.insert(0, '/app')
-os.environ.setdefault('DB_HOST', 'bedrockgw-dev-postgres.civhekhiupfe.us-east-1.rds.amazonaws.com')
-os.environ.setdefault('DB_NAME', 'agent_context')
-os.environ.setdefault('DB_PORT', '5432')
-os.environ.setdefault('DB_USER', 'agent_context_svc')
-os.environ.setdefault('DB_USE_IAM_AUTH', 'true')
-try:
-    import db
-    conn = db.get_connection()
-    cur = conn.cursor()
-    cur.execute(\"SELECT to_regclass('index_run_stages')\")
-    print(f'index_run_stages exists: {cur.fetchone()[0]}')
-    cur.execute(\"SELECT to_regclass('index_runs')\")
-    print(f'index_runs exists: {cur.fetchone()[0]}')
-    cur.execute('SELECT stage, status, count(*) FROM index_run_stages GROUP BY 1, 2 ORDER BY 1, 2')
-    rows = cur.fetchall()
-    print(f'\n=== Stage status summary ({len(rows)} rows) ===')
-    for row in rows:
-        print(f'  {row[0]:20s} | {row[1]:12s} | {row[2]}')
-    cur.execute('SELECT count(*) FROM dependencies')
-    dep_count = cur.fetchone()[0]
-    print(f'\nDependency rows: {dep_count}')
-    cur.execute('SELECT count(*) FROM index_runs')
-    run_count = cur.fetchone()[0]
-    print(f'Index runs: {run_count}')
-    cur.execute('SELECT id, repo, status FROM index_runs ORDER BY started_at DESC LIMIT 5')
-    print('\n=== Recent index runs ===')
-    for row in cur.fetchall():
-        print(f'  {row[0][:8]}... | {row[1]:40s} | {row[2]}')
-    conn.close()
-except Exception as e:
-    print(f'DB verification failed: {e}')
-    sys.exit(1)
-" 2>&1 || echo "DB check pod failed (may need retry)"
+            --command -- python3 -c "$(cat /tmp/verify_db.py)" 2>&1 || echo "DB check pod failed (may need retry)"
