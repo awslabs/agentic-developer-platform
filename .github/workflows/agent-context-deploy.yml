@@ -191,6 +191,21 @@ jobs:
           template_file manifests/litellm-proxy.yaml | kubectl apply -f -
           echo "LiteLLM proxy deployed"
 
+      - name: Deploy DeepWiki ConfigMap
+        if: ${{ inputs.skip_deepwiki != true }}
+        run: |
+          cd modules/agent-context
+          source scripts/_common.sh
+          load_config "$(pwd)"
+
+          if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
+            export NAMESPACE
+            template_file manifests/deepwiki-configmap.yaml | kubectl apply -f -
+            echo "deepwiki-config ConfigMap deployed"
+          else
+            echo "DeepWiki disabled — skipping ConfigMap"
+          fi
+
       - name: Deploy DeepWiki
         if: ${{ inputs.skip_deepwiki != true }}
         run: |
@@ -199,7 +214,7 @@ jobs:
           load_config "$(pwd)"
 
           if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
-            export NAMESPACE SERVICE_ACCOUNT DEEPWIKI_PORT DEEPWIKI_IMAGE LITELLM_PORT
+            export NAMESPACE SERVICE_ACCOUNT DEEPWIKI_PORT DEEPWIKI_IMAGE LITELLM_PORT BEDROCK_REGION
             template_file manifests/deepwiki.yaml | kubectl apply -f -
             echo "DeepWiki deployed"
           else

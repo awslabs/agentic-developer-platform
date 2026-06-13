@@ -171,6 +171,16 @@ if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
   echo ""
   echo "Skipping DeepWiki (--personal-context-only mode)"
 elif [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
+  # Ensure deepwiki-config ConfigMap exists BEFORE the Deployment is applied
+  # (the Deployment mounts this ConfigMap as a volume — pod stays in
+  # ContainerCreating if it's missing)
+  echo ""
+  echo "Creating DeepWiki config ConfigMap..."
+  source "${SCRIPT_DIR}/scripts/_common.sh"
+  export NAMESPACE
+  template_file "${SCRIPT_DIR}/manifests/deepwiki-configmap.yaml" | kubectl apply -f -
+  echo "  deepwiki-config ConfigMap ready"
+
   echo ""
   bash "${SCRIPT_DIR}/scripts/deploy-deepwiki.sh"
 else

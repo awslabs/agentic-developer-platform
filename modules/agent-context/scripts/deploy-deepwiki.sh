@@ -23,10 +23,8 @@ echo "================================================"
 echo ""
 echo "[1/4] Creating DeepWiki config ConfigMap..."
 
-kubectl create configmap deepwiki-config \
-  --from-file=generator.json="${ROOT_DIR}/config/deepwiki-generator.json" \
-  --from-file=embedder.json="${ROOT_DIR}/config/deepwiki-embedder.json" \
-  -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+export NAMESPACE
+template_file "${ROOT_DIR}/manifests/deepwiki-configmap.yaml" | kubectl apply -f -
 
 echo "  ConfigMap created/updated."
 

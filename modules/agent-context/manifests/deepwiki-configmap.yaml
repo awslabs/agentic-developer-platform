@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: deepwiki-config
+  namespace: ${NAMESPACE}
+  labels:
+    app: deepwiki
+    app.kubernetes.io/name: deepwiki
+    app.kubernetes.io/part-of: agent-context-platform
+data:
+  generator.json: |
+    {
+      "default_provider": "openai",
+      "providers": {
+        "openai": {
+          "default_model": "bedrock/global.anthropic.claude-sonnet-4-6",
+          "supportsCustomModel": true,
+          "models": {
+            "bedrock/global.anthropic.claude-sonnet-4-6": {
+              "temperature": 0.7
+            }
+          }
+        }
+      }
+    }
+  embedder.json: |
+    {
+      "embedder": {
+        "client_class": "OpenAIClient",
+        "batch_size": 100,
+        "model_kwargs": {
+          "model": "bedrock/amazon.titan-embed-text-v2:0",
+          "dimensions": 256,
+          "encoding_format": "float"
+        }
+      },
+      "retriever": {
+        "top_k": 20
+      },
+      "text_splitter": {
+        "split_by": "word",
+        "chunk_size": 350,
+        "chunk_overlap": 100
+      }
+    }
