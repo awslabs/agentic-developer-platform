@@ -28,3 +28,4 @@ https://docs.aws.amazon.com/pdfs/neptune/latest/userguide/neptune-ug.pdf | Neptu
 # s3://adp-docs/meeting-notes/sprint-42.md | Sprint 42 Review | team:platform, type:meeting
 # s3://adp-docs/presentations/arch-overview.pptx | Architecture Deck | type:presentation, confidentiality:internal
 # s3://adp-docs/team-wiki/ | Team Wiki | team:platform, type:wiki
+# verify-trigger: 20260613T181500Z
