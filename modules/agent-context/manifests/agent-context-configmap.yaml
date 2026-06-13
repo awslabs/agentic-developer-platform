@@ -53,13 +53,13 @@ data:
   # Wiki generation/updates: needs strong reasoning
   MODEL_WIKI: "${WIKI_LLM_MODEL}"
   # Topic tagging: classification task (cheap + fast)
-  MODEL_TAGGING: "bedrock/global.anthropic.claude-haiku-4-6"
+  MODEL_TAGGING: "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
   # Index page generation: summarization (cheap + fast)
-  MODEL_INDEX: "bedrock/global.anthropic.claude-haiku-4-6"
+  MODEL_INDEX: "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
   # Curricula + learning artifacts: needs reasoning
   MODEL_LEARNING: "${WIKI_LLM_MODEL}"
   # GraphRAG entity extraction: structured output (cheap)
-  MODEL_GRAPHRAG: "bedrock/global.anthropic.claude-haiku-4-6"
+  MODEL_GRAPHRAG: "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
   # Legacy key (backward compat — maps to MODEL_WIKI)
   WIKI_LLM_MODEL: "${WIKI_LLM_MODEL}"
 

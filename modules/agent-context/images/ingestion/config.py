@@ -69,13 +69,13 @@ class Settings(BaseSettings):
     # (images/deepwiki/config/generator.json). These should stay in sync manually.
     model_wiki: str = "bedrock/global.anthropic.claude-sonnet-4-6"
     # Topic tagging: classification task (Haiku — cheap + fast)
-    model_tagging: str = "bedrock/global.anthropic.claude-haiku-4-6"
+    model_tagging: str = "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
     # Index page generation: summarization (Haiku — cheap + fast)
-    model_index: str = "bedrock/global.anthropic.claude-haiku-4-6"
+    model_index: str = "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
     # Curricula + learning artifacts: needs reasoning (Sonnet)
     model_learning: str = "bedrock/global.anthropic.claude-sonnet-4-6"
     # GraphRAG entity extraction from wiki: structured output (Haiku)
-    model_graphrag: str = "bedrock/global.anthropic.claude-haiku-4-6"
+    model_graphrag: str = "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0"
     # Legacy: WIKI_LLM_MODEL env var (kept for backward compat with manifests)
     wiki_llm_model: str = "bedrock/global.anthropic.claude-sonnet-4-6"
 
