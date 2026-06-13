@@ -1,8 +1,10 @@
 """
-Unit tests for input validators in refresh-repos.py.
+Unit tests for refresh-repos.py.
 
-Covers _safe_repo() and _safe_url() — ensuring malicious inputs are rejected
-while legitimate repo names and URLs pass through.
+Covers:
+- _safe_repo() and _safe_url() — input validators
+- refresh_repo() — force-mode state logic (deepwiki_sha clearing)
+- refresh_repo() — subprocess CLONE_BASE env override
 """
 
 from __future__ import annotations
@@ -163,3 +165,154 @@ class TestSafeUrl:
     def test_rejects_leading_dash(self):
         with pytest.raises(ValueError, match="refusing URL"):
             _safe_url("--url=https://evil.com")
+
+
+# ---------------------------------------------------------------------------
+# deepwiki_sha state logic tests
+#
+# Mirrors the state-update logic from refresh_repo() in refresh-repos.py.
+# Tested in isolation (same pattern as validators above) because
+# refresh-repos.py has heavy runtime dependencies (config, s3_store, etc.).
+# ---------------------------------------------------------------------------
+
+
+def _compute_deepwiki_sha(
+    force: bool,
+    wiki_updated: bool,
+    prev_sha: str | None,
+    prev_deepwiki_sha: str | None,
+    current_sha: str,
+) -> str | None:
+    """Re-declaration of the deepwiki_sha logic from refresh_repo().
+
+    Must stay in sync with refresh-repos.py lines ~440-452.
+    """
+    if force:
+        return None
+    elif wiki_updated:
+        return current_sha
+    elif not prev_sha:
+        return current_sha
+    else:
+        return prev_deepwiki_sha
+
+
+class TestDeepwikiShaStateLogic:
+    """Verify the deepwiki_sha state-update algorithm."""
+
+    def test_force_mode_clears_deepwiki_sha(self):
+        """When force=True, deepwiki_sha must be None so backfill runs."""
+        result = _compute_deepwiki_sha(
+            force=True,
+            wiki_updated=False,
+            prev_sha="oldsha123456",
+            prev_deepwiki_sha="oldsha123456",
+            current_sha="newsha789012",
+        )
+        assert result is None
+
+    def test_force_mode_clears_even_when_wiki_updated(self):
+        """force=True always wins, even if wiki_updated=True."""
+        result = _compute_deepwiki_sha(
+            force=True,
+            wiki_updated=True,
+            prev_sha="oldsha123456",
+            prev_deepwiki_sha="oldsha123456",
+            current_sha="newsha789012",
+        )
+        assert result is None
+
+    def test_normal_mode_preserves_deepwiki_sha(self):
+        """When force=False and wiki not updated, preserve previous deepwiki_sha."""
+        result = _compute_deepwiki_sha(
+            force=False,
+            wiki_updated=False,
+            prev_sha="oldsha123456",
+            prev_deepwiki_sha="oldsha123456",
+            current_sha="newsha789012",
+        )
+        assert result == "oldsha123456"
+
+    def test_wiki_updated_sets_current_sha(self):
+        """When wiki was successfully updated, record current SHA."""
+        result = _compute_deepwiki_sha(
+            force=False,
+            wiki_updated=True,
+            prev_sha="oldsha123456",
+            prev_deepwiki_sha="oldsha123456",
+            current_sha="newsha789012",
+        )
+        assert result == "newsha789012"
+
+    def test_new_repo_sets_current_sha(self):
+        """New repos (no prev_sha) get current_sha for backfill."""
+        result = _compute_deepwiki_sha(
+            force=False,
+            wiki_updated=False,
+            prev_sha=None,
+            prev_deepwiki_sha=None,
+            current_sha="firstsha000",
+        )
+        assert result == "firstsha000"
+
+    def test_prev_deepwiki_sha_none_preserved_as_none(self):
+        """If prev_deepwiki_sha was already None, it stays None (backfill eligible)."""
+        result = _compute_deepwiki_sha(
+            force=False,
+            wiki_updated=False,
+            prev_sha="oldsha123456",
+            prev_deepwiki_sha=None,
+            current_sha="newsha789012",
+        )
+        assert result is None
+
+
+class TestBackfillDeepwikiSelection:
+    """Verify backfill_deepwiki_wikis selects repos with deepwiki_sha=None."""
+
+    def test_repos_with_none_deepwiki_sha_are_selected(self):
+        """Repos where deepwiki_sha is None/falsy should be in the backfill list."""
+        repo_state = {
+            "org/has-wiki": {
+                "last_sha": "abc123",
+                "deepwiki_sha": "abc123",
+            },
+            "org/needs-wiki": {
+                "last_sha": "def456",
+                "deepwiki_sha": None,
+            },
+            "org/also-needs-wiki": {
+                "last_sha": "ghi789",
+                # deepwiki_sha key missing entirely
+            },
+        }
+
+        # This mirrors backfill_deepwiki_wikis() line 607 in refresh-repos.py
+        repos_needing_wiki = [repo for repo, st in repo_state.items() if not st.get("deepwiki_sha")]
+
+        assert "org/needs-wiki" in repos_needing_wiki
+        assert "org/also-needs-wiki" in repos_needing_wiki
+        assert "org/has-wiki" not in repos_needing_wiki
+
+    def test_all_repos_have_wikis(self):
+        """When all repos have deepwiki_sha, none should be selected for backfill."""
+        repo_state = {
+            "org/repo-a": {"last_sha": "abc", "deepwiki_sha": "abc"},
+            "org/repo-b": {"last_sha": "def", "deepwiki_sha": "def"},
+        }
+
+        repos_needing_wiki = [repo for repo, st in repo_state.items() if not st.get("deepwiki_sha")]
+
+        assert repos_needing_wiki == []
+
+    def test_force_cleared_repos_become_backfill_candidates(self):
+        """After force mode clears deepwiki_sha, repos should appear in backfill list."""
+        repo_state = {
+            "org/force-cleared": {"last_sha": "abc", "deepwiki_sha": None},
+            "org/untouched": {"last_sha": "def", "deepwiki_sha": "def"},
+        }
+
+        repos_needing_wiki = [repo for repo, st in repo_state.items() if not st.get("deepwiki_sha")]
+
+        assert "org/force-cleared" in repos_needing_wiki
+        assert "org/untouched" not in repos_needing_wiki

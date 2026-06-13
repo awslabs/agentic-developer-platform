@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -378,7 +379,13 @@ def refresh_repo(repo: str, state: dict[str, Any], force: bool = False) -> bool:
     else:
         log.info("NEW %s — first ingestion", repo)
 
-    # Re-ingest using ingest-repo.py
+    # Re-ingest using ingest-repo.py.
+    # Use an ephemeral local clone dir to avoid git-on-S3-Mountpoint issues
+    # (S3 Mountpoint FUSE doesn't reliably support git worktrees).
+    ingest_clone_dir = tempfile.mkdtemp(prefix="ingest-")
+    env_override = os.environ.copy()
+    env_override["CLONE_BASE"] = ingest_clone_dir
+
     try:
         result = subprocess.run(
             [
@@ -389,15 +396,24 @@ def refresh_repo(repo: str, state: dict[str, Any], force: bool = False) -> bool:
             ],
             capture_output=True,
             timeout=900,  # 15 minute timeout per repo
+            env=env_override,
         )
         if result.returncode == 0:
-            log.info("Re-ingested %s successfully", repo)
+            stdout_tail = result.stdout.decode()[-500:] if result.stdout else ""
+            log.info("Re-ingested %s successfully: %s", repo, stdout_tail)
         else:
-            log.warning("ingest-repo.py failed for %s: %s", repo, result.stderr.decode()[:300])
+            log.warning(
+                "ingest-repo.py failed for %s (exit %d): %s",
+                repo,
+                result.returncode,
+                result.stderr.decode()[:500],
+            )
     except subprocess.TimeoutExpired:
         log.warning("ingest-repo.py timed out for %s", repo)
     except Exception as e:
         log.warning("ingest-repo.py error for %s: %s", repo, e)
+    finally:
+        shutil.rmtree(ingest_clone_dir, ignore_errors=True)
 
     # --- Incremental wiki update for repos with existing wikis ---
     has_existing_wiki = bool(prev_state.get("deepwiki_sha"))
@@ -421,14 +437,26 @@ def refresh_repo(repo: str, state: dict[str, Any], force: bool = False) -> bool:
     # --- Topic tagging via LLM ---
     topics = tag_repo_with_topics(repo, state)
 
+    # Determine deepwiki_sha for state update:
+    # - force mode: clear to None so backfill_deepwiki_wikis() regenerates
+    # - wiki_updated: record current SHA (incremental update succeeded)
+    # - new repo (no prev_sha): set current SHA (will be backfilled)
+    # - unchanged: preserve previous deepwiki_sha
+    if force:
+        deepwiki_sha_val = None
+    elif wiki_updated:
+        deepwiki_sha_val = current_sha
+    elif not prev_sha:
+        deepwiki_sha_val = current_sha
+    else:
+        deepwiki_sha_val = prev_state.get("deepwiki_sha")
+
     # Update state regardless (to avoid re-processing on next run)
     state[repo] = {
         "last_sha": current_sha,
         "last_ingested": datetime.now(timezone.utc).isoformat(),
         "code_index_sha": current_sha,
-        "deepwiki_sha": current_sha
-        if wiki_updated
-        else (current_sha if not prev_sha else prev_state.get("deepwiki_sha")),
+        "deepwiki_sha": deepwiki_sha_val,
         "topics": topics,
         "topics_sha": current_sha if topics else prev_state.get("topics_sha"),
     }
