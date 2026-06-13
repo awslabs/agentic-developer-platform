@@ -62,10 +62,13 @@ Think of it as four filing systems, each good at one job:
 
 | Store | Plain-English description | What we keep here |
 |-------|---------------------------|-------------------|
-| **S3 bucket** (mounted as files) | A giant, durable folder in the cloud. We can read/write files in it like a normal disk, using a tool called **Mountpoint**. | Search index files, structure maps, dependency lists, wikis |
+| **S3 bucket** (mounted as files) | A giant, durable folder in the cloud. We can read/write files in it like a normal disk, using a tool called **Mountpoint**. | Durable **artifacts** (write-once): code-index.json, wikis, SBOMs, and the Zoekt shard *files* as produced |
 | **S3 Vectors** | A new AWS service that stores "meaning fingerprints" of text and finds similar ones. Like a search engine for *ideas*, not words. | The meaning-search index |
 | **PostgreSQL** (RDS) | A standard relational database. Good at structured records and "find all rows where…" queries. | The catalog (what's indexed), permissions (who can see what), and the dependency lookup |
+| **EBS (zoekt serving volume)** | A real block disk attached to the Zoekt pod — needed because a live search server `mmap`s and randomly reads/writes its index. | The **live, queryable** Zoekt index the server serves from |
 | **Worker scratch disk** | A temporary local disk on each working machine. Thrown away when the job finishes. | The cloned repo and half-built index files, while we're working |
+
+> **Important — Zoekt has TWO storage roles, don't conflate them (clarified 2026-06-13):** the durable shard *artifact* is a write-once S3 object (fits Mountpoint), but the **serving index** that the Zoekt server actually answers queries from must live on a real POSIX block disk (**EBS**) — a live search server does random reads + `mmap` + startup `mkdir`, which **S3 Mountpoint cannot do** (write-once, FUSE → the pod crash-loops on `mkdir /data/index: file exists`). So: shards are *produced* to S3 (durable, portable, rebuildable), but the running Zoekt pod *serves* from EBS. This is the one place "everything durable is in S3" doesn't hold — and it's intrinsic to running a stateful index server. See §13.3: this EBS requirement is the concrete reason to evaluate the per-query (Probe-style) model, which removes the standing server, the EBS volume, and this problem together.
 
 > **Why Postgres and not DynamoDB?** ADP's pods already talk to a PostgreSQL database (the gateway uses it, with migrations and IAM auth) — it's the proven, supported way for our code to reach a database from inside the cluster. DynamoDB is technically reachable but isn't a path we rely on today. Postgres is also a *better* fit for the dependency lookup, which is a relational question ("join components to repos to permissions"). So we use the database we already trust.
 
@@ -306,6 +309,8 @@ The **storage + data plane is entirely serverless** (a deliberate choice in the 
 ### 13.3 The zoekt decision = the §12 decision
 
 The single obstacle to "fully serverless" is zoekt-as-a-daemon. But §12 already surfaced the alternative: **Probe's model — no index server at all** (a binary the agent invokes per-query: ripgrep + AST over the cloned tree, milliseconds, no daemon). That is *inherently* serverless-compatible (a Lambda/Fargate invocation, not a standing pod). So **"go fully serverless" and §12's "structural/AST over a persistent semantic index" are the same move** — the thing blocking serverless (the zoekt daemon) is the thing §12 questioned. Resolve them together: keep zoekt as the one standing service, or adopt per-query structural execution. A real evaluation, not a default.
+
+> **The EBS requirement makes this concrete, not hypothetical (2026-06-13):** the first deploy proved Zoekt **must serve from an EBS block volume** — it cannot serve from S3 Mountpoint (crash-loops on `mkdir`). So the standing-Zoekt architecture now demonstrably costs: an always-on pod **+ an attached EBS volume + the only place our "durable = S3" rule breaks + a recurring deploy crash-loop**. That is the heaviest, least-portable, least-serverless component in the stack, and it's the clearest argument yet for the Probe per-query model, which removes the standing pod, the EBS volume, the S3-Mountpoint-incompatibility, AND the deploy fragility in one move. We keep EBS-backed Zoekt **now** (it's the only thing that serves a live index, and it unblocks the deploy), but the EBS mount is the trigger to schedule the Probe evaluation — it is no longer a "someday maybe."
 
 ### 13.4 Portability posture (standalone-able, don't fork yet)
 
