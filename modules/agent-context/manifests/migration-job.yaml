@@ -1,0 +1,65 @@
+# =============================================================================
+# Agent Context — Alembic Migration Job
+# =============================================================================
+# Runs `alembic upgrade head` inside the cluster where RDS is reachable via
+# IAM auth. Dispatched by agent-context-deploy.yml; the deploy FAILS if this
+# Job fails (migrations are blocking, not best-effort).
+#
+# Issue #1437: migration 003 couldn't apply because (a) CI runner can't reach
+# VPC-internal RDS, and (b) alembic config wasn't in the image.
+# =============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agent-context-migration-${MIGRATION_JOB_ID}
+  namespace: ${NAMESPACE}
+  labels:
+    app: agent-context-migration
+    purpose: alembic-upgrade
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app: agent-context-migration
+        purpose: alembic-upgrade
+    spec:
+      serviceAccountName: ${SERVICE_ACCOUNT}
+      restartPolicy: Never
+      containers:
+        - name: migration
+          image: ${INGESTION_IMAGE}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              echo "=== Agent Context: Alembic Migration ==="
+              echo "RDS host: ${AC_RDS_HOST}"
+              echo "Database: ${AC_RDS_DBNAME}"
+              cd /app/alembic
+              alembic upgrade head
+              echo "=== Current revision ==="
+              alembic current
+              echo "=== Migration complete ==="
+          env:
+            - name: AC_RDS_IAM_AUTH
+              value: "true"
+            - name: AC_RDS_HOST
+              value: "${AC_RDS_HOST}"
+            - name: AC_RDS_PORT
+              value: "${AC_RDS_PORT}"
+            - name: AC_RDS_USERNAME
+              value: "${AC_RDS_USERNAME}"
+            - name: AC_RDS_DBNAME
+              value: "${AC_RDS_DBNAME}"
+            - name: AC_AWS_REGION
+              value: "${AC_AWS_REGION}"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

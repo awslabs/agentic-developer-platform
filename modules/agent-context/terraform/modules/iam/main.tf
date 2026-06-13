@@ -126,6 +126,27 @@ resource "aws_iam_role_policy" "secrets" {
   })
 }
 
+# --- RDS IAM Auth (rds-db:connect for migration + stage_tracker) ---
+
+resource "aws_iam_role_policy" "rds_connect" {
+  name = "${var.name_prefix}-rds-connect"
+  role = aws_iam_role.agent_context.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "RDSIAMConnect"
+        Effect = "Allow"
+        Action = ["rds-db:connect"]
+        Resource = [
+          "arn:${local.partition}:rds-db:${var.aws_region}:${var.account_id}:dbuser:*/${var.rds_username}",
+        ]
+      }
+    ]
+  })
+}
+
 # --- Resource Explorer + Tag API (for discover-infra.py) ---
 
 resource "aws_iam_role_policy" "resource_explorer" {

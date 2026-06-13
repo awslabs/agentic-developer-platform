@@ -41,7 +41,14 @@ RUN pip install --no-cache-dir \
     markitdown \
     PyJWT[crypto] \
     pydantic-settings \
-    psycopg2-binary
+    psycopg2-binary \
+    alembic \
+    sqlalchemy \
+    asyncpg
+
+# Download RDS CA bundle for IAM auth TLS verification
+RUN curl -sSfL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+    -o /etc/ssl/certs/rds-global-bundle.pem
 
 # Install Playwright browsers for crawl4ai JS rendering
 RUN crawl4ai-setup || echo "crawl4ai-setup not available or optional — continuing"
@@ -59,6 +66,12 @@ COPY github-app-token.py /app/github-app-token.py
 # Git credential helper for authenticated cloning (GIT_ASKPASS)
 COPY git-credential-helper.sh /app/git-credential-helper.sh
 RUN chmod +x /app/git-credential-helper.sh
+
+# Package alembic config + migrations for in-cluster migration Jobs (#1437)
+COPY alembic/alembic.ini /app/alembic/alembic.ini
+COPY alembic/env.py /app/alembic/env.py
+COPY alembic/script.py.mako /app/alembic/script.py.mako
+COPY alembic/versions/ /app/alembic/versions/
 
 WORKDIR /app
 

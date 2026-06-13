@@ -11,6 +11,7 @@ on:
       - 'modules/agent-context/images/codegraph-context/**'
       - 'modules/agent-context/images/litellm-proxy/**'
       - 'modules/agent-context/images/deepwiki/**'
+      - 'modules/agent-context/alembic/**'
       - 'codebuild/bs-agent-context-image.yml'
       - '.github/workflows/agent-context-images-build.yml'
   workflow_dispatch:

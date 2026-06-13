@@ -15,6 +15,15 @@ phases:
       - IMAGE_TAG="${IMAGE_TAG:-${CODEBUILD_RESOLVED_SOURCE_VERSION:-$(date -u +%Y%m%d%H%M%S)}}"
       - SHORT_TAG="${IMAGE_TAG:0:7}"
       - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REPO"
+      # Stage out-of-context dependencies into the build dir.
+      # The ingestion image needs alembic/ from the module root for in-cluster
+      # migration Jobs (#1437). Other images have no alembic/ — cp is a no-op.
+      - |
+        MODULE_ROOT="${BUILD_DIR%%/images/*}"
+        if [ -d "${MODULE_ROOT}/alembic" ] && [ -d "${BUILD_DIR}" ]; then
+          cp -r "${MODULE_ROOT}/alembic" "${BUILD_DIR}/alembic"
+          echo "Staged ${MODULE_ROOT}/alembic → ${BUILD_DIR}/alembic"
+        fi
 
   build:
     commands:

@@ -108,6 +108,7 @@ module "iam" {
   namespace         = var.namespace
   service_account   = var.service_account
   bucket_name       = local.bucket_name
+  rds_username      = "agent_context_svc"
   graphrag_enabled  = var.graphrag_enabled
 }
 
@@ -245,4 +246,26 @@ module "rds_bootstrap" {
   oidc_issuer            = local.oidc_issuer
   rds_instance_id        = local.rds_instance_id
   common_tags            = var.tags
+}
+
+# =============================================================================
+# SSM Parameter: RDS Endpoint (Issue #1437)
+# =============================================================================
+# Publishes the RDS host to SSM so the deploy workflow's migration Job can
+# discover it without needing local Terraform state. The deploy workflow reads
+# /adp/<env>/rds/endpoint; this makes that reliable.
+
+resource "aws_ssm_parameter" "rds_endpoint" {
+  count = var.rds_enabled ? 1 : 0
+
+  name  = "/adp/${var.environment}/rds/endpoint"
+  type  = "String"
+  value = local.rds_host
+
+  description = "RDS endpoint for agent-context migrations and workloads"
+
+  tags = merge(var.tags, {
+    ManagedBy = "terraform"
+    Module    = "agent-context"
+  })
 }

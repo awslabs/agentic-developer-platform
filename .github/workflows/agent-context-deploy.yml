@@ -136,45 +136,84 @@ jobs:
           template_file manifests/ingestion-rbac.yaml | kubectl apply -f -
           echo "RBAC: ${RUNNER_NAMESPACE}:${RUNNER_SERVICE_ACCOUNT} → ingestion-pipeline-role"
 
-      - name: Run DB migrations (alembic upgrade head)
+      - name: Run DB migrations (in-cluster Job)
         if: ${{ inputs.skip_migrations != true }}
         run: |
           set -e
           cd modules/agent-context
+          source scripts/_common.sh
+          load_config "$(pwd)"
 
-          # Resolve RDS host from Terraform output or SSM
-          RDS_HOST=""
-          if [ -d terraform/.terraform ]; then
-            RDS_HOST=$(cd terraform && terraform output -raw ac_rds_host 2>/dev/null || echo "")
-          fi
+          # Resolve RDS host from SSM (published by infra-apply)
+          RDS_HOST=$(aws ssm get-parameter \
+            --name "/adp/${{ env.ENVIRONMENT }}/rds/endpoint" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'Parameter.Value' --output text 2>/dev/null || echo "")
           if [ -z "$RDS_HOST" ]; then
-            # Fallback: query SSM parameter (set by infra-apply)
-            RDS_HOST=$(aws ssm get-parameter \
-              --name "/adp/${{ env.ENVIRONMENT }}/rds/endpoint" \
-              --region "${{ env.AWS_REGION }}" \
-              --query 'Parameter.Value' --output text 2>/dev/null || echo "")
-          fi
-          if [ -z "$RDS_HOST" ]; then
-            echo "::warning::RDS host not found — skipping migrations. Run infra-apply first."
-            exit 0
+            echo "::error::RDS host not found in SSM (/adp/${{ env.ENVIRONMENT }}/rds/endpoint). Run infra-apply first."
+            exit 1
           fi
 
-          # Install alembic + async postgres driver
-          pip install --quiet alembic sqlalchemy asyncpg boto3
+          # Determine ingestion image (same logic as CronJob step)
+          INGESTION_REPO="adp-${{ env.ENVIRONMENT }}-agent-context-ingestion"
+          INPUT_TAG="${{ inputs.ingestion_image_tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            MIGRATION_IMAGE="${{ env.ECR_REGISTRY }}/${INGESTION_REPO}:${INPUT_TAG}"
+          else
+            LATEST_TAG=$(aws ecr describe-images --repository-name "${INGESTION_REPO}" \
+              --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
+              --output text 2>/dev/null || echo "")
+            if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "None" ]; then
+              MIGRATION_IMAGE="${{ env.ECR_REGISTRY }}/${INGESTION_REPO}:${LATEST_TAG}"
+            else
+              echo "::error::No ingestion image found in ECR. Run images-build first."
+              exit 1
+            fi
+          fi
 
-          # Run migrations with IAM auth
-          export AC_RDS_IAM_AUTH=true
+          # Generate unique Job ID (short git SHA + timestamp)
+          MIGRATION_JOB_ID="$(date +%s)-$(echo $GITHUB_SHA | head -c 7)"
+
+          # Template and apply migration Job
+          export NAMESPACE="${{ env.NAMESPACE }}"
+          export SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-agent-context-sa}"
+          export INGESTION_IMAGE="$MIGRATION_IMAGE"
           export AC_RDS_HOST="$RDS_HOST"
-          export AC_RDS_PORT=5432
-          export AC_RDS_USERNAME=agent_context_svc
-          export AC_RDS_DBNAME=agent_context
+          export AC_RDS_PORT="5432"
+          export AC_RDS_USERNAME="agent_context_svc"
+          export AC_RDS_DBNAME="agent_context"
           export AC_AWS_REGION="${{ env.AWS_REGION }}"
+          export MIGRATION_JOB_ID
 
-          echo "Running alembic upgrade head against ${AC_RDS_HOST}..."
-          cd alembic
-          alembic upgrade head
-          echo "✅ Migrations applied successfully"
-          alembic current
+          echo "Launching migration Job (image: ${MIGRATION_IMAGE})..."
+          echo "  RDS host: ${RDS_HOST}"
+          template_file manifests/migration-job.yaml | kubectl apply -f -
+
+          # Wait for Job completion (blocking — deploy fails if migration fails)
+          JOB_NAME="agent-context-migration-${MIGRATION_JOB_ID}"
+          echo "Waiting for Job ${JOB_NAME} to complete..."
+          if ! kubectl wait --for=condition=complete "job/${JOB_NAME}" \
+            -n ${{ env.NAMESPACE }} --timeout=240s 2>/dev/null; then
+            # Check if it failed (not just timed out)
+            JOB_STATUS=$(kubectl get job "${JOB_NAME}" -n ${{ env.NAMESPACE }} \
+              -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || echo "")
+            if [ "$JOB_STATUS" = "True" ]; then
+              echo "::error::Migration Job FAILED. Logs:"
+              kubectl logs "job/${JOB_NAME}" -n ${{ env.NAMESPACE }} --tail=50 || true
+              exit 1
+            fi
+            # Timed out — check once more
+            COMPLETE=$(kubectl get job "${JOB_NAME}" -n ${{ env.NAMESPACE }} \
+              -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || echo "")
+            if [ "$COMPLETE" != "True" ]; then
+              echo "::error::Migration Job timed out (240s). Logs:"
+              kubectl logs "job/${JOB_NAME}" -n ${{ env.NAMESPACE }} --tail=50 || true
+              exit 1
+            fi
+          fi
+
+          echo "✅ Migration Job completed successfully"
+          kubectl logs "job/${JOB_NAME}" -n ${{ env.NAMESPACE }} --tail=20 || true
 
       - name: Create ServiceAccount (IRSA)
         run: |

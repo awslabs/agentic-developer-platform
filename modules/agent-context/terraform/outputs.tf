@@ -80,6 +80,13 @@ output "ac_rds_host" {
   value       = local.rds_host
 }
 
+# --- SSM ---
+
+output "rds_endpoint_ssm_parameter" {
+  description = "SSM parameter name storing the RDS endpoint"
+  value       = var.rds_enabled ? aws_ssm_parameter.rds_endpoint[0].name : ""
+}
+
 # --- SQS + DynamoDB ---
 
 output "ingestion_queue_url" {

@@ -45,6 +45,12 @@ variable "bucket_name" {
   type        = string
 }
 
+variable "rds_username" {
+  description = "RDS username for IAM auth (rds-db:connect)"
+  type        = string
+  default     = "agent_context_svc"
+}
+
 variable "graphrag_enabled" {
   description = "Enable GraphRAG-related IAM policies (Neptune + OpenSearch Serverless)"
   type        = bool
