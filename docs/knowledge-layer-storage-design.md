@@ -285,6 +285,45 @@ All five flavors compete on **retrieval quality** — how well the agent *finds*
 
 ---
 
+## 13. Compute platform: serverless target + portability posture
+
+Two related strategic stances, recorded so future work preserves them rather than accidentally welding the solution to EKS or to the ADP platform.
+
+### 13.1 We are already ~70% serverless
+
+The **storage + data plane is entirely serverless** (a deliberate choice in the redesign): S3, **S3 Vectors**, SQS, DynamoDB, Bedrock — all pay-per-use, no idle. RDS is the one provisioned store (and is serverless-capable). Ingestion already runs as **KEDA scale-to-zero** jobs. What is *not* serverless is the standing compute: the MCP server, litellm-proxy, deepwiki, and zoekt.
+
+### 13.2 Per-component serverless verdict
+
+| Component | Fit | Target form |
+|---|---|---|
+| **MCP server** (the verb surface, #1417) | ✅ excellent — stateless request/response | **Build serverless from the start** — Lambda + API Gateway, or Fargate. Not built yet, so nothing to migrate. |
+| **litellm-proxy** | ✅ good — stateless Bedrock passthrough | Fargate, or drop it and call Bedrock directly (it is just routing). |
+| **ingestion** | ✅ already scale-to-zero (KEDA) | Fargate tasks (NOT Lambda — big repos exceed the 15-min limit; the cloned tree is large). |
+| **deepwiki** | ⚠️ borderline — bursty LLM generation | Fargate task, scale-to-zero. Workable. |
+| **zoekt** | ❌ **the one real misfit** — serves a search index from a mounted volume as a persistent daemon; cold-start-per-query reloads the index = bad latency | **The one deliberate decision** — see 13.3. |
+
+### 13.3 The zoekt decision = the §12 decision
+
+The single obstacle to "fully serverless" is zoekt-as-a-daemon. But §12 already surfaced the alternative: **Probe's model — no index server at all** (a binary the agent invokes per-query: ripgrep + AST over the cloned tree, milliseconds, no daemon). That is *inherently* serverless-compatible (a Lambda/Fargate invocation, not a standing pod). So **"go fully serverless" and §12's "structural/AST over a persistent semantic index" are the same move** — the thing blocking serverless (the zoekt daemon) is the thing §12 questioned. Resolve them together: keep zoekt as the one standing service, or adopt per-query structural execution. A real evaluation, not a default.
+
+### 13.4 Portability posture (standalone-able, don't fork yet)
+
+The context solution is **architecturally separable** from the ADP platform and should stay that way — serverless reinforces this (handing someone "Lambdas + Fargate + S3/DynamoDB via one Terraform module" beats "stand up an EKS cluster"). Clean seams to **protect**:
+- **Identity is header-based and pluggable** (`acl.py` trusts `X-GitHub-Login`/`X-GitHub-Teams` set by *a* dispatch layer — ADP's webhook or any other caller). Do not hard-wire ADP Cognito into the verbs.
+- **Runtime talks to AWS services, not the platform** (S3 / S3 Vectors / Bedrock / Postgres — not the gateway or agent-factory). Keep it that way.
+
+Explicit couplings to keep **swappable** (config inputs, not assumptions):
+- Terraform **remote-state** lookups (VPC/EKS/ECR) → accept direct inputs for a standalone deploy.
+- The `agent_context` DB on the **shared gateway RDS** → a toggle for its own instance (already noted as a dump/restore, not a redesign).
+- The **vuln-remediation loop needs an agent fleet** — standalone, this is "bring your own agent": expose the SBOM inventory + MCP verbs; the auto-fix is an ADP integration, not a core dependency.
+
+### 13.5 Sequencing — don't re-platform before it works once
+
+**Target serverless as the end state; do not migrate compute now.** It is not deployed cleanly even once (empty S3, the verify-after-write gap #1423). Fix the logic on the current stack first; *then* the serverless migration is mechanical, because the storage/data plane is already serverless and will not change. Concretely: build the MCP server (#1417) serverless from day one; migrate litellm/deepwiki/ingestion to Fargate after the pipeline works; make the zoekt-vs-Probe call (13.3) as its own decision. Preserve the portability seams (13.4) in everything built between now and then.
+
+---
+
 ## 11. One-paragraph summary
 
 We're replacing two fragile, partly-license-encumbered tools (Sourcebot, OpenViking) with a simpler design on plain AWS services. Each repo is cloned once on a temporary disk, then indexed four ways — exact search (Zoekt), meaning search (S3 Vectors), a structure map, and a dependency bill-of-materials — with the finished results stored durably in S3, S3 Vectors, and PostgreSQL. Work is spread across many machines in parallel so hundreds of repos index quickly. Every answer an agent gets is filtered by GitHub-mirrored permissions at the MCP server. The bill-of-materials is the standout new capability: by recording which repos use which dependencies (and making that instantly searchable), ADP can detect a new vulnerability, find every affected repo, hand the fix to its existing developer agents, and verify the fix with tests — turning ADP from a code-search tool into an autonomous vulnerability-management-and-remediation platform.
