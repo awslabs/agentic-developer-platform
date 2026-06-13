@@ -50,12 +50,30 @@ jobs:
 
       - name: Trigger ingestion Job
         if: ${{ inputs.verify_only != true }}
+        env:
+          FULL_REINDEX: ${{ inputs.full_reindex }}
         run: |
           JOB_NAME="manual-refresh-${GITHUB_SHA::8}"
           echo "Creating ingestion job: $JOB_NAME"
-          kubectl create job "$JOB_NAME" \
-            --from=cronjob/ingestion-refresh \
-            -n agent-context
+
+          if [ "$FULL_REINDEX" = "true" ]; then
+            echo "full_reindex=true — injecting FORCE_REINDEX env var"
+            # Export the CronJob's job template, inject env var, and apply
+            kubectl get cronjob ingestion-refresh -n agent-context -o json \
+              | jq --arg name "$JOB_NAME" '
+                .spec.jobTemplate
+                | .metadata.name = $name
+                | .metadata.namespace = "agent-context"
+                | .apiVersion = "batch/v1"
+                | .kind = "Job"
+                | .spec.template.spec.containers[0].env += [{"name": "FORCE_REINDEX", "value": "true"}]
+              ' \
+              | kubectl apply -f -
+          else
+            kubectl create job "$JOB_NAME" \
+              --from=cronjob/ingestion-refresh \
+              -n agent-context
+          fi
 
       - name: Wait for Job completion
         if: ${{ inputs.verify_only != true }}

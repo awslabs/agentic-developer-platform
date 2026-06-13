@@ -586,7 +586,12 @@ def upload_wiki_to_s3(wiki: str, org_repo: str) -> bool:
     safe_name = org_repo.replace("/", "-")
     success = store.put_content(f"wikis/{safe_name}-wiki.md", wiki)
     if success:
-        log.info("Uploaded wiki for %s -> s3://.../%s/wikis/%s-wiki.md", org_repo, settings.s3_content_prefix, safe_name)
+        log.info(
+            "Uploaded wiki for %s -> s3://.../%s/wikis/%s-wiki.md",
+            org_repo,
+            settings.s3_content_prefix,
+            safe_name,
+        )
     else:
         log.warning("Wiki upload to S3 failed for %s", org_repo)
     return success
@@ -693,6 +698,11 @@ def main():
     parser.add_argument("--repos-only", action="store_true", help="Only refresh repos")
     parser.add_argument("--urls-only", action="store_true", help="Only refresh URLs")
     args = parser.parse_args()
+
+    # Support FORCE_REINDEX env var (set by agent-context-ingest.yml workflow)
+    if not args.force and os.environ.get("FORCE_REINDEX", "").lower() in ("true", "1", "yes"):
+        log.info("FORCE_REINDEX env var detected — enabling force mode")
+        args.force = True
 
     # --- SQS Publisher Mode ---
     # When SQS_QUEUE_URL is configured, delegate to publish-ingestion.py
