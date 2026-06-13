@@ -72,6 +72,7 @@ S3_VECTORS_SHARD_COUNT = settings.s3_vectors_shard_count
 # ---------------------------------------------------------------------------
 
 from s3_store import S3ContentStore
+from stage_tracker import StageTracker
 from wiki_store import store_wiki, store_code_index_to_s3
 
 
@@ -1061,6 +1062,31 @@ def _detect_dockerfiles(clone_path: str, org_repo: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _get_commit_sha(clone_path: str) -> str | None:
+    """Get the HEAD commit SHA from a clone. Returns None if unavailable."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=clone_path,
+            capture_output=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.decode().strip()
+    except Exception:
+        pass
+    return None
+
+
+def _verify_s3_object(s3_store: S3ContentStore, key: str) -> bool:
+    """Read-back verify an S3 object exists via head_object."""
+    try:
+        s3_store._s3.head_object(Bucket=s3_store.bucket_name, Key=key)
+        return True
+    except Exception:
+        return False
+
+
 def ingest_repo(
     org_repo: str,
     skip_cgc: bool = False,
@@ -1069,6 +1095,8 @@ def ingest_repo(
     """Full ingestion pipeline for one repo.
 
     Returns a result dict with status for each step.
+    Each producer stage follows the verify-after-write contract:
+    attempt -> write row -> produce -> read-back verify -> only-then record verified.
     """
     result: dict[str, Any] = {
         "repo": org_repo,
@@ -1087,6 +1115,22 @@ def ingest_repo(
         region_name=AWS_REGION,
     )
     s3_writer = _S3WriterAdapter(s3_store)
+
+    # --- Stage tracking setup (Postgres) ---
+    # Best-effort: if DB is unavailable, fall back to legacy behavior
+    tracker = None
+    db_conn = None
+    try:
+        import db as stage_db
+
+        db_conn = stage_db.get_connection()
+        repo_id = stage_db.ensure_repo_exists(
+            db_conn, org_repo, f"https://github.com/{org_repo}"
+        )
+    except Exception as e:
+        log.warning("DB unavailable for stage tracking — legacy mode: %s", e)
+        db_conn = None
+        repo_id = None
 
     # Step 1: Clone to persistent storage (S3 Files mount) — shared across enrichment consumers
     # If clone exists, do git fetch instead of full re-clone
@@ -1120,133 +1164,305 @@ def ingest_repo(
     if not clone_ok:
         log.warning("Clone failed for %s — enrichment steps skipped", org_repo)
         result["clone"] = "failed"
+        if db_conn:
+            db_conn.close()
         return result
     result["clone"] = "ok"
 
+    # Get commit SHA for skip logic (must be after clone)
+    commit_sha = _get_commit_sha(clone_path)
+
+    # Initialize the stage tracker now that we have commit_sha
+    if db_conn and repo_id:
+        try:
+            tracker = StageTracker(db_conn, org_repo, repo_id, commit_sha)
+            log.info("Stage tracker initialized: run_id=%s sha=%s", tracker.run_id, commit_sha)
+        except Exception as e:
+            log.warning("Failed to create stage tracker: %s — legacy mode", e)
+            tracker = None
+
+    # Record clone stage as verified (clone_path exists)
+    if tracker:
+        try:
+            with tracker.stage("clone") as ctx:
+                ctx.set_artifact(clone_path)
+                ctx.verify(lambda: os.path.exists(os.path.join(clone_path, ".git")))
+        except Exception as e:
+            log.warning("Clone stage tracking failed: %s", e)
+
     # Step 2: Run cgc -> code-index.json -> filesystem + S3 markdown summary
     if not skip_cgc:
-        try:
-            code_index = cgc_analyze(clone_path, org_repo)
-            if code_index:
-                code_index_json = json.dumps(code_index, indent=2)
-                safe_name = org_repo.replace("/", "-")
+        # Check if we can skip (already verified at this SHA)
+        skip_cgc_stage = tracker and tracker.should_skip("cgc_structural")
+        if skip_cgc_stage:
+            log.info("Skipping cgc_structural for %s — already verified at %s", org_repo, commit_sha)
+            tracker.mark_skipped("cgc_structural", "already verified at current SHA")
+            result["code_index"] = "skipped_verified"
+            result["s3_upload"] = "skipped_verified"
+        else:
+            try:
+                code_index = cgc_analyze(clone_path, org_repo)
+                if code_index:
+                    code_index_json = json.dumps(code_index, indent=2)
+                    safe_name = org_repo.replace("/", "-")
 
-                # Write to filesystem (primary — for programmatic access by MCP server)
-                fs_written = _write_code_index_to_filesystem(code_index_json, safe_name, org_repo)
+                    # Write to filesystem (primary — for programmatic access by MCP server)
+                    fs_written = _write_code_index_to_filesystem(
+                        code_index_json, safe_name, org_repo
+                    )
 
-                # Upload as markdown summary to S3 (for semantic search/understand)
-                code_index_md = _code_index_to_markdown(code_index)
-                s3_key = store_code_index_to_s3(
-                    code_index_md,
-                    org_repo,
-                    s3_writer=s3_writer,
-                    s3_bucket=S3_BUCKET_NAME,
-                    code_index_s3_prefix=CODE_INDEX_S3_PREFIX,
-                )
+                    # Upload as markdown summary to S3 (for semantic search/understand)
+                    code_index_md = _code_index_to_markdown(code_index)
+                    s3_key = store_code_index_to_s3(
+                        code_index_md,
+                        org_repo,
+                        s3_writer=s3_writer,
+                        s3_bucket=S3_BUCKET_NAME,
+                        code_index_s3_prefix=CODE_INDEX_S3_PREFIX,
+                    )
 
-                if s3_key:
-                    result["s3_upload"] = "ok"
-                    log.info("Code-index markdown uploaded to S3: %s", s3_key)
+                    if s3_key:
+                        result["s3_upload"] = "ok"
+                        log.info("Code-index markdown uploaded to S3: %s", s3_key)
+                    else:
+                        result["s3_upload"] = "failed"
+
+                    if fs_written:
+                        result["code_index"] = "written"
+                    else:
+                        result["code_index"] = "fs_write_failed"
+                    log.info(
+                        "Code index for %s: %d symbols, %d files with imports",
+                        org_repo,
+                        len(code_index.get("symbols", [])),
+                        len(code_index.get("imports", {})),
+                    )
+
+                    # Stage tracking: verify the artifact was written
+                    if tracker and s3_key:
+                        try:
+                            with tracker.stage("cgc_structural") as ctx:
+                                ctx.set_artifact(s3_key)
+                                ctx.verify(lambda: _verify_s3_object(s3_store, s3_key))
+                        except Exception as e:
+                            log.warning("cgc_structural stage tracking failed: %s", e)
+                    elif tracker:
+                        try:
+                            with tracker.stage("cgc_structural") as ctx:
+                                ctx.fail("S3 upload returned no key")
+                        except Exception as e:
+                            log.warning("cgc_structural stage tracking failed: %s", e)
                 else:
-                    result["s3_upload"] = "failed"
-
-                # Filesystem is the primary storage for structured code-index data;
-                # Neptune holds the graph representation; S3 gets the markdown summary.
-                if fs_written:
-                    result["code_index"] = "written"
-                else:
-                    result["code_index"] = "fs_write_failed"
-                log.info(
-                    "Code index for %s: %d symbols, %d files with imports",
-                    org_repo,
-                    len(code_index.get("symbols", [])),
-                    len(code_index.get("imports", {})),
-                )
-            else:
-                result["code_index"] = "analysis_failed"
-        except Exception as e:
-            log.warning("cgc failed for %s: %s — continuing without code-index", org_repo, e)
-            result["code_index"] = f"error: {e}"
+                    result["code_index"] = "analysis_failed"
+                    if tracker:
+                        try:
+                            with tracker.stage("cgc_structural") as ctx:
+                                ctx.fail("cgc analysis returned no data")
+                        except Exception as e:
+                            log.warning("cgc_structural stage tracking failed: %s", e)
+            except Exception as e:
+                log.warning("cgc failed for %s: %s — continuing without code-index", org_repo, e)
+                result["code_index"] = f"error: {e}"
+                if tracker:
+                    try:
+                        with tracker.stage("cgc_structural") as ctx:
+                            ctx.fail(str(e))
+                    except Exception:
+                        pass
+    elif tracker:
+        tracker.mark_skipped("cgc_structural", "skip_cgc flag set")
 
     # Step 3: Generate DeepWiki wiki -> upload to S3 + S3 Vectors
     if not skip_deepwiki and DEEPWIKI_ENABLED:
-        try:
-            wiki = deepwiki_generate(org_repo)
-            if wiki:
-                # Extract org_id from org_repo (e.g., "aws-e/adp" -> "aws-e")
-                org_id = org_repo.split("/")[0]
+        skip_deepwiki_stage = tracker and tracker.should_skip("deepwiki")
+        if skip_deepwiki_stage:
+            log.info("Skipping deepwiki for %s — already verified at %s", org_repo, commit_sha)
+            tracker.mark_skipped("deepwiki", "already verified at current SHA")
+            result["deepwiki"] = "skipped_verified"
+        else:
+            try:
+                wiki = deepwiki_generate(org_repo)
+                if wiki:
+                    org_id = org_repo.split("/")[0]
+                    allowed_principals = ["*"]
 
-                # All repos are org-visible by default; the Door ACL filter
-                # refines access at query time.
-                allowed_principals = ["*"]
+                    wiki_result = store_wiki(
+                        wiki_text=wiki,
+                        org_repo=org_repo,
+                        org_id=org_id,
+                        allowed_principals=allowed_principals,
+                        s3_writer=s3_writer,
+                        s3_bucket=S3_BUCKET_NAME,
+                        wiki_s3_prefix=WIKI_S3_PREFIX,
+                        shard_count=S3_VECTORS_SHARD_COUNT,
+                    )
 
-                wiki_result = store_wiki(
-                    wiki_text=wiki,
-                    org_repo=org_repo,
-                    org_id=org_id,
-                    allowed_principals=allowed_principals,
-                    s3_writer=s3_writer,
-                    s3_bucket=S3_BUCKET_NAME,
-                    wiki_s3_prefix=WIKI_S3_PREFIX,
-                    shard_count=S3_VECTORS_SHARD_COUNT,
-                )
+                    if wiki_result.s3_success:
+                        result["deepwiki"] = "uploaded"
+                        if result["s3_upload"] != "ok":
+                            result["s3_upload"] = "ok"
 
-                if wiki_result.s3_success:
-                    result["deepwiki"] = "uploaded"
-                    # Update s3_upload status to reflect wiki upload too
-                    if result["s3_upload"] != "ok":
-                        result["s3_upload"] = "ok"
+                        # Stage tracking: verify wiki artifact
+                        if tracker and wiki_result.s3_key:
+                            wiki_s3_key = wiki_result.s3_key
+                            try:
+                                with tracker.stage("deepwiki") as ctx:
+                                    ctx.set_artifact(wiki_s3_key)
+                                    ctx.verify(
+                                        lambda: _verify_s3_object(s3_store, wiki_s3_key)
+                                    )
+                            except Exception as e:
+                                log.warning("deepwiki stage tracking failed: %s", e)
+                    else:
+                        result["deepwiki"] = "upload_failed"
+                        if tracker:
+                            try:
+                                with tracker.stage("deepwiki") as ctx:
+                                    ctx.fail("wiki S3 upload failed")
+                            except Exception as e:
+                                log.warning("deepwiki stage tracking failed: %s", e)
                 else:
-                    result["deepwiki"] = "upload_failed"
-            else:
-                result["deepwiki"] = "generation_failed"
-        except Exception as e:
-            log.warning("DeepWiki failed for %s: %s — continuing without wiki", org_repo, e)
-            result["deepwiki"] = f"error: {e}"
+                    result["deepwiki"] = "generation_failed"
+                    if tracker:
+                        try:
+                            with tracker.stage("deepwiki") as ctx:
+                                ctx.fail("DeepWiki generation returned no content")
+                        except Exception as e:
+                            log.warning("deepwiki stage tracking failed: %s", e)
+            except Exception as e:
+                log.warning("DeepWiki failed for %s: %s — continuing without wiki", org_repo, e)
+                result["deepwiki"] = f"error: {e}"
+                if tracker:
+                    try:
+                        with tracker.stage("deepwiki") as ctx:
+                            ctx.fail(str(e))
+                    except Exception:
+                        pass
+    else:
+        if tracker:
+            reason = "skip_deepwiki flag" if skip_deepwiki else "deepwiki disabled"
+            tracker.mark_skipped("deepwiki", reason)
 
     # Step 4: GraphRAG extraction — entities and relationships into Neptune
     if GRAPHRAG_ENABLED:
-        try:
-            # Get code_index for GraphRAG if we have it
-            ci_data = None
-            if result.get("code_index") == "written":
-                ci_path = os.path.join(CODE_INDEX_DIR, f"{org_repo.replace('/', '-')}.json")
-                if os.path.isfile(ci_path):
-                    with open(ci_path) as f:
-                        ci_data = json.load(f)
+        skip_graphrag_stage = tracker and tracker.should_skip("graphrag")
+        if skip_graphrag_stage:
+            log.info("Skipping graphrag for %s — already verified at %s", org_repo, commit_sha)
+            tracker.mark_skipped("graphrag", "already verified at current SHA")
+            result["graphrag"] = "skipped_verified"
+        else:
+            try:
+                ci_data = None
+                if result.get("code_index") == "written":
+                    ci_path = os.path.join(CODE_INDEX_DIR, f"{org_repo.replace('/', '-')}.json")
+                    if os.path.isfile(ci_path):
+                        with open(ci_path) as f:
+                            ci_data = json.load(f)
 
-            # Get wiki content if available (re-read from filesystem if DeepWiki succeeded)
-            wiki_content = None
-            if result.get("deepwiki") == "uploaded":
-                wiki_safe = org_repo.replace("/", "-")
-                wiki_path = os.path.join("/platform-data/wikis", f"{wiki_safe}-wiki.md")
-                if os.path.isfile(wiki_path):
+                wiki_content = None
+                if result.get("deepwiki") == "uploaded":
+                    wiki_safe = org_repo.replace("/", "-")
+                    wiki_path = os.path.join("/platform-data/wikis", f"{wiki_safe}-wiki.md")
+                    if os.path.isfile(wiki_path):
+                        try:
+                            with open(wiki_path, "r", encoding="utf-8") as wf:
+                                wiki_content = wf.read()
+                        except OSError:
+                            pass
+
+                graphrag_result = graphrag_extract(clone_path, org_repo, ci_data, wiki_content)
+                if graphrag_result:
+                    result["graphrag"] = (
+                        f"{graphrag_result['entities']} entities,"
+                        f" {graphrag_result['relationships']} relationships"
+                    )
+                    # Stage tracking: GraphRAG doesn't have a simple S3 artifact,
+                    # but we can verify entities were written
+                    if tracker:
+                        try:
+                            with tracker.stage("graphrag") as ctx:
+                                entity_count = graphrag_result.get("entities", 0)
+                                ctx.set_artifact(
+                                    f"neptune:{org_repo}:entities={entity_count}"
+                                )
+                                ctx.verify(lambda: entity_count > 0)
+                        except Exception as e:
+                            log.warning("graphrag stage tracking failed: %s", e)
+                else:
+                    result["graphrag"] = "skipped"
+                    if tracker:
+                        tracker.mark_skipped("graphrag", "no data to extract")
+            except Exception as e:
+                log.warning("GraphRAG failed for %s: %s — continuing", org_repo, e)
+                result["graphrag"] = f"error: {e}"
+                if tracker:
                     try:
-                        with open(wiki_path, "r", encoding="utf-8") as wf:
-                            wiki_content = wf.read()
-                    except OSError:
+                        with tracker.stage("graphrag") as ctx:
+                            ctx.fail(str(e))
+                    except Exception:
                         pass
-
-            graphrag_result = graphrag_extract(clone_path, org_repo, ci_data, wiki_content)
-            if graphrag_result:
-                result["graphrag"] = (
-                    f"{graphrag_result['entities']} entities, {graphrag_result['relationships']} relationships"
-                )
-            else:
-                result["graphrag"] = "skipped"
-        except Exception as e:
-            log.warning("GraphRAG failed for %s: %s — continuing", org_repo, e)
-            result["graphrag"] = f"error: {e}"
+    elif tracker:
+        tracker.mark_skipped("graphrag", "graphrag disabled")
 
     # Step 5b: Source SBOM generation (Rail 1 — #1358)
-    # Run Syft against the cloned directory to produce a CycloneDX JSON SBOM.
-    # Non-blocking: failure does not stop the pipeline.
     if settings.sbom_enabled:
+        skip_sbom_stage = tracker and tracker.should_skip("sbom_source")
+        if skip_sbom_stage:
+            log.info("Skipping sbom_source for %s — already verified at %s", org_repo, commit_sha)
+            tracker.mark_skipped("sbom_source", "already verified at current SHA")
+            result["sbom_source"] = "skipped_verified"
+        else:
+            try:
+                sbom_result = _generate_source_sbom(clone_path, org_repo, s3_store)
+                result["sbom_source"] = sbom_result
+
+                # Stage tracking: verify the SBOM artifact in S3
+                if tracker:
+                    sbom_s3_key = (
+                        f"{settings.sbom_s3_prefix}/repos/{org_repo}/source.cdx.json"
+                    )
+                    try:
+                        if sbom_result == "complete":
+                            with tracker.stage("sbom_source") as ctx:
+                                ctx.set_artifact(sbom_s3_key)
+                                ctx.verify(lambda: _verify_s3_object(s3_store, sbom_s3_key))
+                        else:
+                            with tracker.stage("sbom_source") as ctx:
+                                ctx.fail(f"SBOM generation result: {sbom_result}")
+                    except Exception as e:
+                        log.warning("sbom_source stage tracking failed: %s", e)
+            except Exception as e:
+                log.warning("Source SBOM failed for %s: %s — continuing", org_repo, e)
+                result["sbom_source"] = "failed"
+                if tracker:
+                    try:
+                        with tracker.stage("sbom_source") as ctx:
+                            ctx.fail(str(e))
+                    except Exception:
+                        pass
+    elif tracker:
+        tracker.mark_skipped("sbom_source", "sbom disabled")
+
+    # Finalize the stage tracker (derive overall run status)
+    if tracker:
         try:
-            result["sbom_source"] = _generate_source_sbom(clone_path, org_repo, s3_store)
+            tracker.finalize()
+            result["run_id"] = tracker.run_id
+            log.info(
+                "Index run %s finalized for %s (%d stages tracked)",
+                tracker.run_id,
+                org_repo,
+                len(tracker.results),
+            )
         except Exception as e:
-            log.warning("Source SBOM failed for %s: %s — continuing", org_repo, e)
-            result["sbom_source"] = "failed"
+            log.warning("Stage tracker finalize failed: %s", e)
+
+    # Close DB connection
+    if db_conn:
+        try:
+            db_conn.close()
+        except Exception:
+            pass
 
     # Step 6: Keep clone on persistent storage (S3 Files) — don't delete
     # Clone is reused by GraphRAG, learning artifacts, and daily refresh.

@@ -1,7 +1,8 @@
-"""Postgres connection helper and upsert functions for the dependencies table.
+"""Postgres connection helper, dependency upsert, and index-run stage tracking.
 
-Provides IAM-authenticated connections to the agent_context database and
-batch upsert operations for SBOM dependency rows.
+Provides IAM-authenticated connections to the agent_context database,
+batch upsert operations for SBOM dependency rows, and per-stage indexing
+tracking with verify-after-write (issue #1423).
 
 Design ref: docs/design-notes/1358-dual-rail-sbom-generation.md (section 4)
 """
@@ -10,12 +11,36 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sbom_parser import DependencyRecord
 
 log = logging.getLogger("db")
+
+# Valid stage names for index_run_stages
+VALID_STAGES = frozenset({
+    "clone",
+    "cgc_structural",
+    "embed_vectors",
+    "sbom_source",
+    "sbom_image",
+    "deepwiki",
+    "zoekt_index",
+    "graphrag",
+})
+
+# Valid status values for index_run_stages
+VALID_STATUSES = frozenset({
+    "pending",
+    "running",
+    "succeeded",
+    "failed",
+    "verified",
+    "skipped",
+})
 
 
 def _get_iam_auth_token(host: str, port: int, user: str, region: str) -> str:
@@ -209,5 +234,310 @@ def update_repo_sbom_status(
     try:
         cursor.execute(sql, params)
         conn.commit()
+    finally:
+        cursor.close()
+
+
+# ---------------------------------------------------------------------------
+# Index Run Stage Tracking (issue #1423)
+# ---------------------------------------------------------------------------
+
+
+def create_index_run(conn, repo_id: str, repo: str, commit_sha: str | None = None) -> str:
+    """Create a new index_runs header row. Returns the run_id (UUID).
+
+    This run_id is the canonical spine for all stage rows in this indexing run.
+    """
+    run_id = str(uuid.uuid4())
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO index_runs (id, repo_id, started_at, status, commit_sha)
+            VALUES (%s, %s, NOW(), 'running', %s)
+            """,
+            (run_id, repo_id, commit_sha),
+        )
+        conn.commit()
+        log.info("Created index run %s for repo %s (sha=%s)", run_id, repo, commit_sha)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+    return run_id
+
+
+def start_stage(
+    conn,
+    run_id: str,
+    repo: str,
+    stage: str,
+) -> str:
+    """Mark a stage as running. Returns the stage row id.
+
+    Increments attempts counter. Creates the row if it doesn't exist for this
+    run_id+stage combination, otherwise updates the existing row.
+    """
+    if stage not in VALID_STAGES:
+        raise ValueError(f"Invalid stage: {stage!r}. Must be one of {sorted(VALID_STAGES)}")
+
+    stage_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO index_run_stages (id, run_id, repo, stage, status, attempts, started_at)
+            VALUES (%s, %s, %s, %s, 'running', 1, %s)
+            """,
+            (stage_id, run_id, repo, stage, now),
+        )
+        conn.commit()
+        log.info("Stage %s started for run %s (repo=%s)", stage, run_id, repo)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+    return stage_id
+
+
+def verify_stage(
+    conn,
+    stage_id: str,
+    artifact_ref: str,
+) -> None:
+    """Mark a stage as verified after read-back confirms the artifact exists.
+
+    This is the ONLY path to 'verified' status. Sets verified_at timestamp.
+    """
+    now = datetime.now(timezone.utc)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            UPDATE index_run_stages
+            SET status = 'verified',
+                artifact_ref = %s,
+                verified_at = %s,
+                completed_at = %s
+            WHERE id = %s
+            """,
+            (artifact_ref, now, now, stage_id),
+        )
+        conn.commit()
+        log.info("Stage %s verified (artifact=%s)", stage_id, artifact_ref)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+
+
+def fail_stage(
+    conn,
+    stage_id: str,
+    error: str,
+) -> None:
+    """Mark a stage as failed. Never sets verified_at."""
+    now = datetime.now(timezone.utc)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            UPDATE index_run_stages
+            SET status = 'failed',
+                error = %s,
+                completed_at = %s
+            WHERE id = %s
+            """,
+            (error, now, stage_id),
+        )
+        conn.commit()
+        log.info("Stage %s failed: %s", stage_id, error[:200])
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+
+
+def skip_stage(
+    conn,
+    run_id: str,
+    repo: str,
+    stage: str,
+    reason: str = "disabled",
+) -> str:
+    """Record a stage as skipped (e.g., feature disabled, not applicable).
+
+    Returns the stage row id.
+    """
+    if stage not in VALID_STAGES:
+        raise ValueError(f"Invalid stage: {stage!r}. Must be one of {sorted(VALID_STAGES)}")
+
+    stage_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO index_run_stages
+                (id, run_id, repo, stage, status, error, started_at, completed_at)
+            VALUES (%s, %s, %s, %s, 'skipped', %s, %s, %s)
+            """,
+            (stage_id, run_id, repo, stage, reason, now, now),
+        )
+        conn.commit()
+        log.info("Stage %s skipped for run %s: %s", stage, run_id, reason)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+    return stage_id
+
+
+def should_skip_stage(conn, repo: str, stage: str, commit_sha: str | None = None) -> bool:
+    """Check if a stage should be skipped (already verified at this SHA).
+
+    Skip logic keys off 'verified' status, NOT a SHA alone.
+    A stage re-runs unless its latest row is 'verified' at the current commit SHA.
+    If commit_sha is None, never skip (force re-run).
+    """
+    if commit_sha is None:
+        return False
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT 1 FROM index_run_stages irs
+            JOIN index_runs ir ON ir.id = irs.run_id
+            WHERE irs.repo = %s
+              AND irs.stage = %s
+              AND irs.status = 'verified'
+              AND ir.commit_sha = %s
+            LIMIT 1
+            """,
+            (repo, stage, commit_sha),
+        )
+        row = cursor.fetchone()
+        return row is not None
+    finally:
+        cursor.close()
+
+
+def complete_index_run(conn, run_id: str) -> None:
+    """Mark an index_runs header as complete (all stages done).
+
+    Sets completed_at, duration_ms, and derives overall status from stages:
+    - all verified/skipped → 'complete'
+    - any failed → 'partial'
+    """
+    cursor = conn.cursor()
+    try:
+        # Derive status from stages
+        cursor.execute(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'failed') as failed_count,
+                COUNT(*) FILTER (WHERE status IN ('verified', 'skipped')) as done_count,
+                COUNT(*) as total
+            FROM index_run_stages
+            WHERE run_id = %s
+            """,
+            (run_id,),
+        )
+        row = cursor.fetchone()
+        failed_count, done_count, total = row if row else (0, 0, 0)
+
+        if failed_count > 0:
+            overall_status = "partial"
+        elif done_count == total and total > 0:
+            overall_status = "complete"
+        else:
+            overall_status = "incomplete"
+
+        cursor.execute(
+            """
+            UPDATE index_runs
+            SET status = %s,
+                completed_at = NOW(),
+                duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at))::INT * 1000
+            WHERE id = %s
+            """,
+            (overall_status, run_id),
+        )
+        conn.commit()
+        log.info("Index run %s completed with status=%s", run_id, overall_status)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+
+
+def reconcile_stages(conn, repo: str, verify_fn) -> list[dict]:
+    """Reconciliation: for each verified stage, confirm artifact still exists.
+
+    Calls verify_fn(artifact_ref, stage) for each verified stage row.
+    If verify_fn returns False, marks the stage as 'failed' (drift detected).
+
+    Args:
+        conn: Postgres connection.
+        repo: org/repo to reconcile.
+        verify_fn: callable(artifact_ref: str, stage: str) -> bool
+
+    Returns:
+        List of dicts for stages that drifted: [{stage_id, stage, artifact_ref}]
+    """
+    cursor = conn.cursor()
+    drifted = []
+    try:
+        cursor.execute(
+            """
+            SELECT id, stage, artifact_ref
+            FROM index_run_stages
+            WHERE repo = %s
+              AND status = 'verified'
+              AND artifact_ref IS NOT NULL
+            ORDER BY verified_at DESC
+            """,
+            (repo,),
+        )
+        rows = cursor.fetchall()
+
+        for stage_id, stage, artifact_ref in rows:
+            if not verify_fn(artifact_ref, stage):
+                # Drift detected — mark as failed
+                now = datetime.now(timezone.utc)
+                cursor.execute(
+                    """
+                    UPDATE index_run_stages
+                    SET status = 'failed',
+                        error = 'reconciliation: artifact missing',
+                        completed_at = %s
+                    WHERE id = %s
+                    """,
+                    (now, stage_id),
+                )
+                drifted.append({
+                    "stage_id": stage_id,
+                    "stage": stage,
+                    "artifact_ref": artifact_ref,
+                })
+                log.warning(
+                    "Reconciliation drift: repo=%s stage=%s artifact=%s",
+                    repo, stage, artifact_ref,
+                )
+
+        if drifted:
+            conn.commit()
+        return drifted
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         cursor.close()
