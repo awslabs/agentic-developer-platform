@@ -176,10 +176,14 @@ RUN groupadd -g 1001 agent && \
     mkdir -p /app /work && \
     chown -R agent:agent /app /work
 
-# GIT_ASKPASS reads $GITHUB_TOKEN at every git network call — zero disk persistence,
-# transparent token refresh when the env var rotates. See token-refresh.ts.
-RUN printf '#!/bin/sh\necho "${GITHUB_TOKEN}"\n' > /usr/local/bin/git-askpass-helper && \
-    chmod +x /usr/local/bin/git-askpass-helper && \
+# GIT_ASKPASS helper reads token from a file kept fresh by token-refresh.ts,
+# with env-var fallback for backward compat. gh wrapper does the same for the
+# gh CLI. Both solve the frozen-env problem in SDK subprocesses (issue #1469).
+# Move real gh binary so the wrapper can shadow it at /usr/local/bin/gh.
+RUN mv /usr/local/bin/gh /usr/bin/gh
+COPY --chown=agent:agent modules/agent-factory/agent-worker-image/git-askpass-helper /usr/local/bin/git-askpass-helper
+COPY --chown=agent:agent modules/agent-factory/agent-worker-image/gh-wrapper /usr/local/bin/gh
+RUN chmod +x /usr/local/bin/git-askpass-helper /usr/local/bin/gh && \
     git config --system --add safe.directory /work/repo
 
 # Copy pre-built agent runtime from builder stage

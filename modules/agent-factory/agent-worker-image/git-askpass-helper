@@ -1,0 +1,10 @@
+#!/bin/sh
+# GIT_ASKPASS helper — reads token from file refreshed by agent-worker's
+# TokenManager (issue #1469). Falls back to $GITHUB_TOKEN env var for
+# backward compatibility (e.g., during startup before the file is written).
+TOKEN_FILE="${ADP_TOKEN_FILE:-/tmp/.adp-gh-token}"
+if [ -f "$TOKEN_FILE" ]; then
+  cat "$TOKEN_FILE"
+else
+  echo "${GITHUB_TOKEN}"
+fi

@@ -14,7 +14,7 @@
 
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
-import { initTokenManager, getToken, getTokenStatus } from './token-refresh';
+import { initTokenManager, getToken, getTokenStatus, writeTokenFile } from './token-refresh';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1376,6 +1376,16 @@ async function main(): Promise<void> {
     (global as any).__tokenRefreshInterval = tokenRefreshInterval;
 
     log('INFO', 'Token manager initialized with 30-minute refresh interval');
+
+    // Write the initial token to file BEFORE the SDK query starts, so that
+    // GIT_ASKPASS and the gh wrapper can read it from day one (issue #1469).
+    try {
+      const initialToken = await getToken();
+      writeTokenFile(initialToken);
+      log('INFO', 'Initial token written to token file for SDK subprocess');
+    } catch (err) {
+      log('WARN', `Initial token file write failed: ${(err as Error).message}`);
+    }
   } else {
     log('WARN', 'GitHub App credentials not available — token refresh disabled. Token will expire after ~1 hour.');
   }

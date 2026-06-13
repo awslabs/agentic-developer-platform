@@ -8,6 +8,8 @@
 
 import { createAppAuth } from '@octokit/auth-app';
 import { execFileSync } from 'child_process';
+import { writeFileSync, renameSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 
 // ============================================================================
 // Types
@@ -27,6 +29,35 @@ export interface TokenInfo {
   token: string;
   expiresAt: Date;
   refreshedAt: Date;
+}
+
+// ============================================================================
+// Token File (Option B-hybrid — issue #1469)
+// ============================================================================
+
+/**
+ * Path to the token file read by GIT_ASKPASS and the gh wrapper at command time.
+ * Using /tmp avoids accidental git-add and keeps the token out of the workspace.
+ */
+export const TOKEN_FILE_PATH = process.env.ADP_TOKEN_FILE || '/tmp/.adp-gh-token';
+
+/**
+ * Atomically write the current token to the file read by GIT_ASKPASS and the
+ * gh wrapper. Uses write-to-temp + rename for atomicity (no partial reads).
+ * File mode 0600 — readable only by the owning user.
+ *
+ * Non-fatal: if the write fails, the env-var fallback still works for the
+ * runtime's own commands (only the SDK subprocess path degrades).
+ */
+export function writeTokenFile(token: string): void {
+  const tmpPath = `${TOKEN_FILE_PATH}.tmp`;
+  try {
+    mkdirSync(dirname(TOKEN_FILE_PATH), { recursive: true, mode: 0o700 });
+    writeFileSync(tmpPath, token, { mode: 0o600 });
+    renameSync(tmpPath, TOKEN_FILE_PATH);
+  } catch (err) {
+    console.error(`[TokenManager] Failed to write token file: ${(err as Error).message}`);
+  }
 }
 
 // ============================================================================
@@ -162,12 +193,14 @@ export async function getToken(): Promise<string> {
   if (needsRefresh()) {
     currentToken = await generateNewToken();
 
-    // Update environment variables so child processes use new token.
-    // GIT_ASKPASS reads $GITHUB_TOKEN at each git network call, so
-    // updating the env var is sufficient — no disk persistence needed.
+    // Update environment variables for child processes spawned by the runtime.
     process.env.GH_TOKEN = currentToken.token;
     process.env.GITHUB_TOKEN = currentToken.token;
     process.env.GH_APP_TOKEN = currentToken.token;
+
+    // Write to token file so SDK subprocess GIT_ASKPASS/gh-wrapper read fresh
+    // tokens at command-execution time (issue #1469).
+    writeTokenFile(currentToken.token);
   }
 
   return currentToken!.token;
@@ -185,6 +218,9 @@ export async function forceRefresh(): Promise<string> {
   process.env.GH_TOKEN = currentToken.token;
   process.env.GITHUB_TOKEN = currentToken.token;
   process.env.GH_APP_TOKEN = currentToken.token;
+
+  // Write to token file so SDK subprocess picks up fresh token (issue #1469).
+  writeTokenFile(currentToken.token);
 
   return currentToken.token;
 }

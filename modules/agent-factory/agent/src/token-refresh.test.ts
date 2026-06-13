@@ -13,6 +13,13 @@ jest.mock('child_process', () => ({
   execFileSync: jest.fn(),
 }));
 
+// Mock fs for token file writes (issue #1469)
+jest.mock('fs', () => ({
+  writeFileSync: jest.fn(),
+  renameSync: jest.fn(),
+  mkdirSync: jest.fn(),
+}));
+
 // Mock @octokit/auth-app
 jest.mock('@octokit/auth-app', () => ({
   createAppAuth: jest.fn(() => {

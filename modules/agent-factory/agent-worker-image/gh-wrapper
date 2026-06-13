@@ -1,0 +1,9 @@
+#!/bin/sh
+# gh CLI wrapper — reads fresh token from file before invoking the real gh
+# binary (issue #1469). Installed at /usr/local/bin/gh, shadowing /usr/bin/gh.
+# Falls back to existing GH_TOKEN env var if file does not exist.
+TOKEN_FILE="${ADP_TOKEN_FILE:-/tmp/.adp-gh-token}"
+if [ -f "$TOKEN_FILE" ]; then
+  export GH_TOKEN="$(cat "$TOKEN_FILE")"
+fi
+exec /usr/bin/gh "$@"

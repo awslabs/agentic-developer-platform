@@ -1,5 +1,5 @@
 /**
- * Unit tests for token propagation to environment variables.
+ * Unit tests for token propagation to environment variables and token file.
  *
  * Verifies that when tokens are refreshed (issue #320), the new token is
  * propagated to process.env.GH_TOKEN, GITHUB_TOKEN, GH_APP_TOKEN.
@@ -10,11 +10,22 @@
  * 1. Environment variables are updated on refresh
  * 2. No `git remote set-url` is called (no disk persistence)
  * 3. GIT_ASKPASS is expected to be set in the environment
+ *
+ * After issue #1469: tokens are ALSO written to a file that the GIT_ASKPASS
+ * helper and gh wrapper read at command-execution time. This solves the
+ * frozen-env problem in SDK subprocesses.
  */
 
 // Mock child_process before importing the module under test
 jest.mock('child_process', () => ({
   execFileSync: jest.fn(),
+}));
+
+// Mock fs for token file writes (issue #1469)
+jest.mock('fs', () => ({
+  writeFileSync: jest.fn(),
+  renameSync: jest.fn(),
+  mkdirSync: jest.fn(),
 }));
 
 // Mock @octokit/auth-app
@@ -37,10 +48,17 @@ import {
   forceRefresh,
   setToken,
   needsRefresh,
+  writeTokenFile,
+  TOKEN_FILE_PATH,
 } from './token-refresh';
 
 import { execFileSync } from 'child_process';
 const mockedExecFileSync = execFileSync as jest.MockedFunction<typeof execFileSync>;
+
+import { writeFileSync, renameSync, mkdirSync } from 'fs';
+const mockedWriteFileSync = writeFileSync as jest.MockedFunction<typeof writeFileSync>;
+const mockedRenameSync = renameSync as jest.MockedFunction<typeof renameSync>;
+const mockedMkdirSync = mkdirSync as jest.MockedFunction<typeof mkdirSync>;
 
 describe('token-propagation (issue #320, hardened by #1164)', () => {
   const originalEnv = { ...process.env };
@@ -188,6 +206,103 @@ describe('token-propagation (issue #320, hardened by #1164)', () => {
       expect(token).toBe('still_valid_token');
       expect(process.env.GH_TOKEN).toBe('should_not_change');
       expect(mockedExecFileSync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('token file write on refresh (issue #1469)', () => {
+    beforeEach(() => {
+      mockedWriteFileSync.mockReset();
+      mockedRenameSync.mockReset();
+      mockedMkdirSync.mockReset();
+    });
+
+    it('should write token to file atomically on getToken() refresh', async () => {
+      initTokenManager({
+        appId: '12345',
+        privateKey: 'fake-key',
+        installationId: '67890',
+        owner: 'test-org',
+        repo: 'test-repo',
+      });
+
+      // Set an expired token so getToken triggers a refresh
+      setToken('old_token', -1000);
+      await getToken();
+
+      // Should create parent directory
+      expect(mockedMkdirSync).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ recursive: true, mode: 0o700 })
+      );
+      // Should write to temp file with restrictive permissions
+      expect(mockedWriteFileSync).toHaveBeenCalledWith(
+        `${TOKEN_FILE_PATH}.tmp`,
+        'ghs_refreshed_test_token_123',
+        { mode: 0o600 }
+      );
+      // Should atomically rename
+      expect(mockedRenameSync).toHaveBeenCalledWith(
+        `${TOKEN_FILE_PATH}.tmp`,
+        TOKEN_FILE_PATH
+      );
+    });
+
+    it('should write token to file on forceRefresh()', async () => {
+      initTokenManager({
+        appId: '12345',
+        privateKey: 'fake-key',
+        installationId: '67890',
+        owner: 'test-org',
+        repo: 'test-repo',
+      });
+
+      setToken('valid_but_stale', 60 * 60 * 1000);
+      await forceRefresh();
+
+      expect(mockedWriteFileSync).toHaveBeenCalledWith(
+        `${TOKEN_FILE_PATH}.tmp`,
+        'ghs_refreshed_test_token_123',
+        { mode: 0o600 }
+      );
+      expect(mockedRenameSync).toHaveBeenCalledWith(
+        `${TOKEN_FILE_PATH}.tmp`,
+        TOKEN_FILE_PATH
+      );
+    });
+
+    it('should NOT write token file when token is still valid', async () => {
+      initTokenManager({
+        appId: '12345',
+        privateKey: 'fake-key',
+        owner: 'test-org',
+        repo: 'test-repo',
+      });
+
+      setToken('still_valid_token', 60 * 60 * 1000);
+      await getToken();
+
+      // No file write when token didn't need refresh
+      expect(mockedWriteFileSync).not.toHaveBeenCalled();
+      expect(mockedRenameSync).not.toHaveBeenCalled();
+    });
+
+    it('writeTokenFile uses correct file path from TOKEN_FILE_PATH', () => {
+      writeTokenFile('my_token_value');
+
+      expect(mockedWriteFileSync).toHaveBeenCalledWith(
+        expect.stringContaining('.tmp'),
+        'my_token_value',
+        { mode: 0o600 }
+      );
+    });
+
+    it('should not throw when file write fails (graceful degradation)', () => {
+      mockedMkdirSync.mockImplementation(() => {
+        throw new Error('Permission denied');
+      });
+
+      // Should not throw — logs error but continues
+      expect(() => writeTokenFile('test_token')).not.toThrow();
     });
   });
 });
