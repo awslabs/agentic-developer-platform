@@ -27,7 +27,7 @@ class TestWebhookEventLogger:
             action="labeled",
             installation_id="99887766",
             repo="acme-corp/app",
-            status="accepted",
+            status="webhook_received",
         )
 
         assert item["event_id"] == "delivery-123"
@@ -36,11 +36,12 @@ class TestWebhookEventLogger:
         assert item["channel"] == "github"
         assert item["event_type"] == "issues"
         assert item["action"] == "labeled"
-        assert item["status"] == "accepted"
+        assert item["status"] == "webhook_received"
         assert item["installation_id"] == "99887766"
         assert item["repo"] == "acme-corp/app"
         assert "arrived_at" in item
         assert "expires_at" in item
+        assert "status_updated_at" in item
 
     @mock_aws
     def test_log_event_generates_uuid_when_no_event_id(self, aws_credentials):
@@ -53,7 +54,7 @@ class TestWebhookEventLogger:
             channel="github",
             event_type="pull_request",
             action="opened",
-            status="accepted",
+            status="webhook_received",
         )
 
         assert len(item["event_id"]) == 36  # UUID format
@@ -89,7 +90,7 @@ class TestWebhookEventLogger:
             channel="github",
             event_type="issues",
             action="labeled",
-            status="accepted",
+            status="webhook_received",
             processing_time_ms=42,
         )
 
@@ -125,7 +126,7 @@ class TestWebhookEventLogger:
             channel="github",
             event_type="issues",
             action="labeled",
-            status="accepted",
+            status="webhook_received",
         )
 
         expected_ttl = int(now) + (30 * 24 * 60 * 60)
@@ -145,7 +146,7 @@ class TestWebhookEventLogger:
             channel="github",
             event_type="issues",
             action="labeled",
-            status="accepted",
+            status="webhook_received",
         )
         logger.log_event(
             event_id="t2-ev1",
@@ -153,7 +154,7 @@ class TestWebhookEventLogger:
             channel="github",
             event_type="issues",
             action="labeled",
-            status="accepted",
+            status="webhook_received",
         )
         logger.log_event(
             event_id="t1-ev2",
@@ -161,7 +162,7 @@ class TestWebhookEventLogger:
             channel="github",
             event_type="pull_request",
             action="opened",
-            status="accepted",
+            status="webhook_received",
         )
 
         # Query for tenant-a
@@ -188,7 +189,7 @@ class TestWebhookEventLogger:
             channel="github",
             event_type="issues",
             action="labeled",
-            status="accepted",
+            status="webhook_received",
         )
 
         # Query with a future timestamp — should return nothing
@@ -198,6 +199,142 @@ class TestWebhookEventLogger:
         )
 
         assert len(results) == 0
+
+    # =========================================================================
+    # Phase 1 (Issue #1455) — enriched fields + key contract
+    # =========================================================================
+
+    @mock_aws
+    def test_log_event_with_enriched_fields(self, aws_credentials):
+        """Enriched event includes user_id, persona, topic, source_url, etc."""
+        self._create_table()
+        logger = WebhookEventLogger(table_name="adp-dev-webhook-events")
+
+        item = logger.log_event(
+            event_id="msg-uuid-123",
+            arrived_at="2026-06-13T22:00:00Z",
+            tenant_id="acme-corp",
+            channel="github",
+            event_type="issue_comment",
+            action="created",
+            installation_id="99887766",
+            repo="acme-corp/flagship-app",
+            status="webhook_received",
+            user_id="usr-42",
+            github_login="janedoe",
+            persona="developer",
+            topic="Fix login bug",
+            source_url="https://github.com/acme-corp/flagship-app/issues/99",
+            issue_number=99,
+            correlation_id="corr-abc-123",
+        )
+
+        assert item["event_id"] == "msg-uuid-123"
+        assert item["arrived_at"] == "2026-06-13T22:00:00Z"
+        assert item["user_id"] == "usr-42"
+        assert item["github_login"] == "janedoe"
+        assert item["persona"] == "developer"
+        assert item["topic"] == "Fix login bug"
+        assert item["source_url"] == "https://github.com/acme-corp/flagship-app/issues/99"
+        assert item["issue_number"] == 99
+        assert item["correlation_id"] == "corr-abc-123"
+        assert item["status"] == "webhook_received"
+        assert "status_updated_at" in item
+
+    @mock_aws
+    def test_log_event_unresolved_user_defaults_to_unattributed(self, aws_credentials):
+        """Unresolved sender → row written with user_id='unattributed', not dropped."""
+        self._create_table()
+        logger = WebhookEventLogger(table_name="adp-dev-webhook-events")
+
+        # Default user_id when not provided
+        item = logger.log_event(
+            event_id="unresolved-ev",
+            tenant_id="some-tenant",
+            channel="github",
+            event_type="issues",
+            action="labeled",
+            status="webhook_received",
+        )
+
+        assert item["user_id"] == "unattributed"
+        # Verify it's actually in DDB
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        table = ddb.Table("adp-dev-webhook-events")
+        resp = table.get_item(Key={"event_id": "unresolved-ev", "arrived_at": item["arrived_at"]})
+        assert resp["Item"]["user_id"] == "unattributed"
+
+    @mock_aws
+    def test_log_event_key_contract_uses_envelope_values(self, aws_credentials):
+        """event_id/arrived_at use the provided envelope values (key contract)."""
+        self._create_table()
+        logger = WebhookEventLogger(table_name="adp-dev-webhook-events")
+
+        # THE KEY CONTRACT: values passed in must be stored as-is
+        envelope_message_id = "msg-aaaabbbb-cccc-dddd-eeee-ffffffffffff"
+        envelope_arrived_at = "2026-06-13T22:37:58Z"
+
+        item = logger.log_event(
+            event_id=envelope_message_id,
+            arrived_at=envelope_arrived_at,
+            tenant_id="test-tenant",
+            channel="github",
+            event_type="issue_comment",
+            action="created",
+            status="webhook_received",
+            user_id="usr-99",
+        )
+
+        assert item["event_id"] == envelope_message_id
+        assert item["arrived_at"] == envelope_arrived_at
+
+        # Verify we can retrieve with the exact keys (what the worker will do)
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        table = ddb.Table("adp-dev-webhook-events")
+        resp = table.get_item(
+            Key={"event_id": envelope_message_id, "arrived_at": envelope_arrived_at}
+        )
+        assert "Item" in resp
+        assert resp["Item"]["event_id"] == envelope_message_id
+        assert resp["Item"]["arrived_at"] == envelope_arrived_at
+
+    @mock_aws
+    def test_log_event_topic_truncated_to_120_chars(self, aws_credentials):
+        """Topic is truncated to 120 characters."""
+        self._create_table()
+        logger = WebhookEventLogger(table_name="adp-dev-webhook-events")
+
+        long_topic = "A" * 200
+        item = logger.log_event(
+            event_id="trunc-test",
+            tenant_id="test-tenant",
+            channel="github",
+            event_type="issues",
+            action="labeled",
+            status="webhook_received",
+            topic=long_topic,
+        )
+
+        assert len(item["topic"]) == 120
+
+    @mock_aws
+    def test_log_event_exception_does_not_propagate(self, aws_credentials):
+        """DDB write failure does NOT raise — best-effort capture."""
+        # Use a non-existent table to trigger an error
+        logger = WebhookEventLogger(table_name="nonexistent-table", region="us-east-1")
+
+        # Should NOT raise
+        item = logger.log_event(
+            event_id="fail-test",
+            tenant_id="test-tenant",
+            channel="github",
+            event_type="issues",
+            action="labeled",
+            status="webhook_received",
+        )
+
+        # Item is still returned (the in-memory dict) even if write failed
+        assert item["event_id"] == "fail-test"
 
     def _create_table(self):
         """Helper to create the webhook-events table in moto."""
@@ -213,6 +350,7 @@ class TestWebhookEventLogger:
                 {"AttributeName": "arrived_at", "AttributeType": "S"},
                 {"AttributeName": "GSI1PK", "AttributeType": "S"},
                 {"AttributeName": "GSI1SK", "AttributeType": "S"},
+                {"AttributeName": "user_id", "AttributeType": "S"},
             ],
             GlobalSecondaryIndexes=[
                 {
@@ -220,6 +358,14 @@ class TestWebhookEventLogger:
                     "KeySchema": [
                         {"AttributeName": "GSI1PK", "KeyType": "HASH"},
                         {"AttributeName": "GSI1SK", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+                {
+                    "IndexName": "user-index",
+                    "KeySchema": [
+                        {"AttributeName": "user_id", "KeyType": "HASH"},
+                        {"AttributeName": "arrived_at", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
                 },

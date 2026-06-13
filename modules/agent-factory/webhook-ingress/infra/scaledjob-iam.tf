@@ -112,6 +112,14 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
         Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-correlation-pointers"
       },
       {
+        Sid    = "DynamoDBWebhookEventsUpdate"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:UpdateItem"
+        ]
+        Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-webhook-events"
+      },
+      {
         Sid    = "ExecuteAPIInvoke"
         Effect = "Allow"
         Action = [

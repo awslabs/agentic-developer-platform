@@ -35,6 +35,7 @@ _identity_mod = None
 _gateway_client_mod = None
 _sqs_mod = None
 _events_log_mod = None
+_webhook_event_logger = None
 
 
 def _get_signature():
@@ -375,6 +376,19 @@ def _get_events_log():
     return _events_log_mod
 
 
+def _get_webhook_event_logger():
+    """Lazy-init WebhookEventLogger for DynamoDB capture."""
+    global _webhook_event_logger
+    if _webhook_event_logger is None:
+        table_name = os.environ.get("EVENTS_TABLE", "")
+        if table_name:
+            from common.webhook_events import WebhookEventLogger
+
+            region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+            _webhook_event_logger = WebhookEventLogger(table_name=table_name, region=region)
+    return _webhook_event_logger
+
+
 def handler(event: dict, context) -> dict:
     """Lambda entry point for GitHub webhook processing.
 
@@ -556,6 +570,20 @@ def handler(event: dict, context) -> dict:
             outcome="rate_limited",
             start_time=start_time,
         )
+        _capture_invocation_event(
+            envelope=None,
+            tenant_id=tenant_id,
+            user_id=resolved.user_id,
+            github_login=sender.get("login", ""),
+            event_type=event_type,
+            action=action,
+            installation_id=installation_id,
+            repo=repo,
+            persona=None,
+            payload=payload,
+            correlation_id=None,
+            status="rate_limited",
+        )
         return _response(
             429, {"error": "Rate limited", "retry_after": retry_after}, retry_after=retry_after
         )
@@ -593,6 +621,20 @@ def handler(event: dict, context) -> dict:
             persona=None,
             outcome="no_op",
             start_time=start_time,
+        )
+        _capture_invocation_event(
+            envelope=None,
+            tenant_id=tenant_id,
+            user_id=resolved.user_id,
+            github_login=sender.get("login", ""),
+            event_type=event_type,
+            action=action,
+            installation_id=installation_id,
+            repo=repo,
+            persona=None,
+            payload=payload,
+            correlation_id=correlation_ctx["correlation_id"] if correlation_ctx else None,
+            status="no_op",
         )
         return _response(200, {"status": "no_op"})
 
@@ -710,8 +752,92 @@ def handler(event: dict, context) -> dict:
         start_time=start_time,
     )
 
+    # 14b. Capture invocation event to DynamoDB (best-effort)
+    _capture_invocation_event(
+        envelope=envelope,
+        tenant_id=tenant_id,
+        user_id=resolved.user_id,
+        github_login=sender.get("login", ""),
+        event_type=event_type,
+        action=action,
+        installation_id=installation_id,
+        repo=repo,
+        persona=intent.persona,
+        payload=payload,
+        correlation_id=correlation_ctx["correlation_id"] if correlation_ctx else None,
+        status="webhook_received",
+    )
+
     # 15. Return 202
     return _response(202, {"status": "accepted", "message_id": message_id})
+
+
+def _capture_invocation_event(
+    *,
+    envelope: dict | None,
+    tenant_id: str,
+    user_id: str,
+    github_login: str,
+    event_type: str,
+    action: str,
+    installation_id: int,
+    repo: str,
+    persona: str | None,
+    payload: dict,
+    correlation_id: str | None,
+    status: str,
+) -> None:
+    """Write enriched invocation row to DynamoDB (best-effort).
+
+    Uses envelope's message_id/arrived_at as keys so the worker can UpdateItem
+    on the same row. For terminal-at-ingress statuses (rate_limited, no_op),
+    envelope is None and keys are auto-generated.
+    """
+    try:
+        event_logger = _get_webhook_event_logger()
+        if event_logger is None:
+            return
+
+        # Extract keys from envelope (THE KEY CONTRACT)
+        event_id = envelope["message_id"] if envelope else None
+        arrived_at = envelope["arrived_at"] if envelope else None
+
+        # Derive topic from issue/PR title
+        issue_title = payload.get("issue", {}).get("title", "")
+        pr_title = payload.get("pull_request", {}).get("title", "")
+        topic = (issue_title or pr_title or "(untitled)")[:120]
+
+        # Derive source_url
+        issue_url = payload.get("issue", {}).get("html_url", "")
+        pr_url = payload.get("pull_request", {}).get("html_url", "")
+        source_url = issue_url or pr_url or None
+
+        # Derive issue_number
+        issue_number = payload.get("issue", {}).get("number")
+        if issue_number is None:
+            issue_number = payload.get("pull_request", {}).get("number")
+
+        event_logger.log_event(
+            event_id=event_id,
+            arrived_at=arrived_at,
+            tenant_id=tenant_id,
+            channel="github",
+            event_type=event_type,
+            action=action,
+            installation_id=str(installation_id),
+            repo=repo,
+            status=status,
+            user_id=user_id or "unattributed",
+            github_login=github_login or None,
+            persona=persona,
+            topic=topic,
+            source_url=source_url,
+            issue_number=issue_number,
+            correlation_id=correlation_id,
+        )
+    except Exception as e:
+        # Best-effort — never block the webhook response
+        logger.warning("Failed to capture invocation event: %s", e)
 
 
 def _response(status_code: int, body: dict, *, retry_after: int = 0) -> dict:

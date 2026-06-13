@@ -58,9 +58,21 @@ resource "aws_dynamodb_table" "webhook_events" {
     type = "S"
   }
 
+  attribute {
+    name = "user_id"
+    type = "S"
+  }
+
   global_secondary_index {
     name            = "tenant-index"
     hash_key        = "tenant_id"
+    range_key       = "arrived_at"
+    projection_type = "ALL"
+  }
+
+  global_secondary_index {
+    name            = "user-index"
+    hash_key        = "user_id"
     range_key       = "arrived_at"
     projection_type = "ALL"
   }

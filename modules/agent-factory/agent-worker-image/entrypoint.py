@@ -28,6 +28,7 @@ import boto3
 from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import write_pointer
+from lib.invocation_status import update_status as update_invocation_status
 from lib.gateway_credential_client import GatewayCredentialClient, GatewayCredentialError
 from lib.github_token import mint_installation_token
 from lib.provenance_client import post_provenance
@@ -125,6 +126,7 @@ def main() -> int:
     repo = source["repo"]
     issue = source["issue"]
     message_id = envelope.get("message_id", "")
+    arrived_at = envelope.get("arrived_at", "")
     actor = envelope.get("actor", {})
 
     # Read correlation context from SQS envelope (Phase 2-c adds these fields)
@@ -451,8 +453,11 @@ def main() -> int:
     proxy_process: subprocess.Popen | None = None
 
     if bedrock_via == "gateway":
-        proxy_env = {k: v for k, v in os.environ.items()
-                     if k not in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")}
+        proxy_env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
+        }
         proxy_process = _start_sigv4_proxy(proxy_env, tenant_id)
         if proxy_process is None:
             logger.warning("sigv4-proxy failed to start; falling back to ADP_BEDROCK_VIA=direct")
@@ -512,6 +517,10 @@ def main() -> int:
             bedrock_via,
         )
 
+    # Update invocation status to in_progress (best-effort)
+    _keda_job_name = os.environ.get("JOB_NAME", os.environ.get("HOSTNAME", ""))
+    update_invocation_status(message_id, arrived_at, "in_progress", run_id=_keda_job_name)
+
     logger.info("Execing agent-worker.js with persona=%s branch=%s", persona, branch_name)
     result = subprocess.run(
         ["node", AGENT_BINARY],
@@ -525,10 +534,12 @@ def main() -> int:
 
     # Step 11/12: Post-agent actions
     if result.returncode == 0:
-        exit_code = _handle_success(repo, issue, branch_name, persona, message_id, check_run_url)
+        exit_code = _handle_success(
+            repo, issue, branch_name, persona, message_id, arrived_at, check_run_url
+        )
     else:
         exit_code = _handle_failure(
-            repo, issue, persona, message_id, result.returncode, check_run_url
+            repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url
         )
 
     # Finalize the Check Run (best-effort — must NOT affect pod exit code)
@@ -765,7 +776,13 @@ def _stage_personas_and_skills() -> None:
 
 
 def _handle_success(
-    repo: str, issue: int, branch: str, persona: str, message_id: str, check_run_url: str = ""
+    repo: str,
+    issue: int,
+    branch: str,
+    persona: str,
+    message_id: str,
+    arrived_at: str,
+    check_run_url: str = "",
 ) -> int:
     """Step 11: Commit remaining changes, push branch, create PR if needed."""
     try:
@@ -804,6 +821,12 @@ def _handle_success(
                 "completed",
                 f"Agent `{persona}` finished — no changes needed.",
                 check_run_url,
+            )
+            update_invocation_status(
+                message_id,
+                arrived_at,
+                "complete",
+                summary=f"{persona} — no changes needed",
             )
             return 0
 
@@ -862,18 +885,42 @@ def _handle_success(
             f"Agent `{persona}` completed. PR opened on branch `{branch}`.",
             check_run_url,
         )
+        update_invocation_status(
+            message_id,
+            arrived_at,
+            "complete",
+            summary=f"{persona} — completed, PR on {branch}",
+        )
     except subprocess.CalledProcessError as exc:
         logger.error("Post-agent git/PR step failed: %s", exc.stderr or exc)
+        update_invocation_status(
+            message_id,
+            arrived_at,
+            "failed",
+            summary=f"{persona} — post-agent step failed",
+        )
         return 1
     return 0
 
 
 def _handle_failure(
-    repo: str, issue: int, persona: str, message_id: str, exit_code: int, check_run_url: str = ""
+    repo: str,
+    issue: int,
+    persona: str,
+    message_id: str,
+    arrived_at: str,
+    exit_code: int,
+    check_run_url: str = "",
 ) -> int:
     """Step 12: Post failure comment, exit nonzero."""
     summary = f"Agent `{persona}` failed with exit code {exit_code}."
     _post_comment(repo, issue, message_id, "failed", summary, check_run_url)
+    update_invocation_status(
+        message_id,
+        arrived_at,
+        "failed",
+        summary=summary,
+    )
     return exit_code
 
 

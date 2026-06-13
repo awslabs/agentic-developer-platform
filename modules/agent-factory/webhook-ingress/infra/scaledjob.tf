@@ -133,6 +133,8 @@ locals {
                     value: ${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}/agent
                   - name: SIGV4_PROXY_PORT
                     value: "9090"
+                  - name: WEBHOOK_EVENTS_TABLE
+                    value: ${aws_dynamodb_table.webhook_events.name}
                 resources:
                   requests:
                     cpu: "1"
