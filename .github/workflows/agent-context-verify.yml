@@ -7,37 +7,74 @@ on:
 
 jobs:
   verify:
-    name: Verify agent-context artifacts
+    name: Verify agent-context artifacts (asserting thresholds)
     runs-on: arc-runner-org
     timeout-minutes: 10
     steps:
-      - name: Configure AWS + kubectl
+      - name: Account guard
         run: |
-          aws sts get-caller-identity
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "AWS Account: $ACCOUNT_ID"
+          if [ "$ACCOUNT_ID" != "879318057152" ]; then
+            echo "❌ FATAL: Expected account 879318057152 (embark1), got $ACCOUNT_ID"
+            exit 1
+          fi
+          echo "✅ Account guard passed: 879318057152"
+
+      - name: Configure kubectl
+        run: |
           aws eks update-kubeconfig --name adp-dev-eks-cluster --region us-east-1
 
-      - name: Check S3 artifacts
+      - name: Assert S3 thresholds
         run: |
+          BUCKET="agent-context-platform-data-879318057152"
+          REGION="us-east-1"
+          PASS=true
+
           echo "=== S3: wikis ==="
-          aws s3 ls s3://agent-context-platform-data-879318057152/content/wikis/ --region us-east-1 | head -20
-          WIKI_COUNT=$(aws s3 ls s3://agent-context-platform-data-879318057152/content/wikis/ --region us-east-1 | wc -l)
-          echo "Wiki count: $WIKI_COUNT"
+          WIKI_COUNT=$(aws s3 ls "s3://${BUCKET}/content/wikis/" --region "$REGION" | wc -l)
+          echo "Wiki count: $WIKI_COUNT (threshold: >= 15)"
+          if [ "$WIKI_COUNT" -lt 15 ]; then
+            echo "❌ FAIL: wikis count $WIKI_COUNT < 15"
+            PASS=false
+          else
+            echo "✅ PASS: wikis"
+          fi
 
           echo ""
           echo "=== S3: code-indexes ==="
-          aws s3 ls s3://agent-context-platform-data-879318057152/content/code-indexes/ --region us-east-1 | head -20
-          INDEX_COUNT=$(aws s3 ls s3://agent-context-platform-data-879318057152/content/code-indexes/ --region us-east-1 | wc -l)
-          echo "Code-index count: $INDEX_COUNT"
+          INDEX_COUNT=$(aws s3 ls "s3://${BUCKET}/content/code-indexes/" --region "$REGION" | wc -l)
+          echo "Code-index count: $INDEX_COUNT (threshold: >= 15)"
+          if [ "$INDEX_COUNT" -lt 15 ]; then
+            echo "❌ FAIL: code-indexes count $INDEX_COUNT < 15"
+            PASS=false
+          else
+            echo "✅ PASS: code-indexes"
+          fi
 
           echo ""
-          echo "=== S3: sbom ==="
-          aws s3 ls s3://agent-context-platform-data-879318057152/sbom/ --recursive --region us-east-1 | head -20
-          SBOM_COUNT=$(aws s3 ls s3://agent-context-platform-data-879318057152/sbom/ --recursive --region us-east-1 | wc -l)
-          echo "SBOM count: $SBOM_COUNT"
+          echo "=== S3: sbom (recursive, excluding prefix markers) ==="
+          # Count actual objects (lines with a date prefix), not directory markers
+          SBOM_COUNT=$(aws s3 ls "s3://${BUCKET}/sbom/" --recursive --region "$REGION" | grep -c "^[0-9]" || true)
+          echo "SBOM count: $SBOM_COUNT (threshold: >= 15)"
+          if [ "$SBOM_COUNT" -lt 15 ]; then
+            echo "❌ FAIL: sbom count $SBOM_COUNT < 15"
+            PASS=false
+          else
+            echo "✅ PASS: sbom"
+          fi
 
           echo ""
-          echo "=== Summary ==="
+          echo "=== S3 Summary ==="
           echo "Wikis: $WIKI_COUNT | Code-indexes: $INDEX_COUNT | SBOMs: $SBOM_COUNT"
+
+          if [ "$PASS" = "false" ]; then
+            echo ""
+            echo "❌ S3 THRESHOLD CHECK FAILED"
+            exit 1
+          fi
+          echo ""
+          echo "✅ All S3 thresholds met"
 
       - name: Check pod status + image tags
         run: |
@@ -50,15 +87,18 @@ jobs:
           echo "=== Recent Jobs ==="
           kubectl get jobs -n agent-context --sort-by='.metadata.creationTimestamp' | tail -5
           echo ""
-          echo "=== Latest ingestion Job logs ==="
-          LATEST_JOB=$(kubectl get jobs -n agent-context --sort-by='.metadata.creationTimestamp' -o jsonpath='{.items[-1].metadata.name}')
-          echo "Job: $LATEST_JOB"
-          kubectl logs "job/$LATEST_JOB" -n agent-context --tail=80 || echo "(logs unavailable)"
+          echo "=== Latest ingestion Job logs (last 80 lines) ==="
+          LATEST_JOB=$(kubectl get jobs -n agent-context --sort-by='.metadata.creationTimestamp' -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$LATEST_JOB" ]; then
+            echo "Job: $LATEST_JOB"
+            kubectl logs "job/$LATEST_JOB" -n agent-context --tail=80 || echo "(logs unavailable)"
+          else
+            echo "(no jobs found)"
+          fi
 
-      - name: Check Postgres (via in-cluster pod)
+      - name: Assert Postgres thresholds
         run: |
-          echo "=== Postgres verification ==="
-          # Run a quick psql check using the migration image
+          echo "=== Postgres verification (asserting thresholds) ==="
           kubectl run verify-db-$(date +%s) \
             --image=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:e62ae2c4f721159f2e47bb62ef3813c56bdbebda \
             --restart=Never \
@@ -66,43 +106,101 @@ jobs:
             --overrides='{"spec":{"serviceAccountName":"agent-context-sa"}}' \
             -n agent-context \
             --command -- python3 -c "
-import os, sys
-sys.path.insert(0, '/app')
-os.environ.setdefault('DB_HOST', 'bedrockgw-dev-postgres.civhekhiupfe.us-east-1.rds.amazonaws.com')
-os.environ.setdefault('DB_NAME', 'agent_context')
-os.environ.setdefault('DB_PORT', '5432')
-os.environ.setdefault('DB_USER', 'agent_context_svc')
-os.environ.setdefault('DB_USE_IAM_AUTH', 'true')
-try:
-    import db
-    conn = db.get_connection()
-    cur = conn.cursor()
-    # Check tables exist
-    cur.execute(\"SELECT to_regclass('index_run_stages')\")
-    print(f'index_run_stages exists: {cur.fetchone()[0]}')
-    cur.execute(\"SELECT to_regclass('index_runs')\")
-    print(f'index_runs exists: {cur.fetchone()[0]}')
-    # Check stage counts
-    cur.execute('SELECT stage, status, count(*) FROM index_run_stages GROUP BY 1, 2 ORDER BY 1, 2')
-    rows = cur.fetchall()
-    print(f'\\n=== Stage status summary ({len(rows)} rows) ===')
-    for row in rows:
-        print(f'  {row[0]:20s} | {row[1]:12s} | {row[2]}')
-    # Check dependencies
-    cur.execute('SELECT count(*) FROM dependencies')
-    dep_count = cur.fetchone()[0]
-    print(f'\\nDependency rows: {dep_count}')
-    # Check index_runs
-    cur.execute('SELECT count(*) FROM index_runs')
-    run_count = cur.fetchone()[0]
-    print(f'Index runs: {run_count}')
-    # Sample run
-    cur.execute('SELECT id, repo, status FROM index_runs ORDER BY started_at DESC LIMIT 5')
-    print('\\n=== Recent index runs ===')
-    for row in cur.fetchall():
-        print(f'  {row[0][:8]}... | {row[1]:40s} | {row[2]}')
-    conn.close()
-except Exception as e:
-    print(f'DB verification failed: {e}')
-    sys.exit(1)
-" 2>&1 || echo "DB check pod failed (may need retry)"
+          import os, sys
+          sys.path.insert(0, '/app')
+          os.environ.setdefault('DB_HOST', 'bedrockgw-dev-postgres.civhekhiupfe.us-east-1.rds.amazonaws.com')
+          os.environ.setdefault('DB_NAME', 'agent_context')
+          os.environ.setdefault('DB_PORT', '5432')
+          os.environ.setdefault('DB_USER', 'agent_context_svc')
+          os.environ.setdefault('DB_USE_IAM_AUTH', 'true')
+
+          THRESHOLDS = {
+              'index_runs': 1,
+              'verified_stages': 15,
+              'dependencies': 1,
+          }
+          failures = []
+
+          try:
+              import db
+              conn = db.get_connection()
+              cur = conn.cursor()
+
+              # Check index_runs count
+              cur.execute('SELECT count(*) FROM index_runs')
+              run_count = cur.fetchone()[0]
+              print(f'index_runs count: {run_count} (threshold: >= {THRESHOLDS[\"index_runs\"]})')
+              if run_count < THRESHOLDS['index_runs']:
+                  failures.append(f'index_runs: {run_count} < {THRESHOLDS[\"index_runs\"]}')
+                  print('  ❌ FAIL')
+              else:
+                  print('  ✅ PASS')
+
+              # Check verified stages
+              cur.execute(\"SELECT count(*) FROM index_run_stages WHERE status='verified'\")
+              verified_count = cur.fetchone()[0]
+              print(f'verified stages count: {verified_count} (threshold: >= {THRESHOLDS[\"verified_stages\"]})')
+              if verified_count < THRESHOLDS['verified_stages']:
+                  failures.append(f'verified_stages: {verified_count} < {THRESHOLDS[\"verified_stages\"]}')
+                  print('  ❌ FAIL')
+              else:
+                  print('  ✅ PASS')
+
+              # Check dependencies
+              cur.execute('SELECT count(*) FROM dependencies')
+              dep_count = cur.fetchone()[0]
+              print(f'dependencies count: {dep_count} (threshold: >= {THRESHOLDS[\"dependencies\"]})')
+              if dep_count < THRESHOLDS['dependencies']:
+                  failures.append(f'dependencies: {dep_count} < {THRESHOLDS[\"dependencies\"]}')
+                  print('  ❌ FAIL')
+              else:
+                  print('  ✅ PASS')
+
+              # Print diagnostic info
+              print()
+              print('=== Stage status summary ===')
+              cur.execute('SELECT stage, status, count(*) FROM index_run_stages GROUP BY 1, 2 ORDER BY 1, 2')
+              for row in cur.fetchall():
+                  print(f'  {row[0]:20s} | {row[1]:12s} | {row[2]}')
+
+              print()
+              print('=== Recent index runs ===')
+              cur.execute('SELECT id, repo, status FROM index_runs ORDER BY started_at DESC LIMIT 5')
+              for row in cur.fetchall():
+                  print(f'  {row[0][:8]}... | {row[1]:40s} | {row[2]}')
+
+              conn.close()
+
+              # Final verdict
+              print()
+              if failures:
+                  print('❌ POSTGRES THRESHOLD CHECK FAILED:')
+                  for f in failures:
+                      print(f'  - {f}')
+                  sys.exit(1)
+              else:
+                  print('✅ All Postgres thresholds met')
+
+          except Exception as e:
+              print(f'❌ FATAL: DB verification failed: {e}')
+              sys.exit(1)
+          "
+
+      - name: Final verdict
+        if: always()
+        run: |
+          echo ""
+          echo "============================================"
+          echo " AGENT-CONTEXT VERIFY — FINAL RESULT"
+          echo "============================================"
+          echo ""
+          # This step runs even if prior steps failed.
+          # The workflow's overall exit code is determined by prior step failures.
+          # If we reach here without prior failures, all thresholds passed.
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "✅ ALL THRESHOLDS MET — VERIFICATION PASSED"
+          else
+            echo "❌ VERIFICATION FAILED — one or more thresholds unmet"
+            echo "See step logs above for details."
+            exit 1
+          fi
