@@ -1,0 +1,100 @@
+name: Agent Context Verify (Dispatch)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Verify agent-context artifacts
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    steps:
+      - name: Configure AWS + kubectl
+        run: |
+          aws sts get-caller-identity
+          aws eks update-kubeconfig --name adp-dev-eks-cluster --region us-east-1
+
+      - name: Check S3 artifacts
+        run: |
+          echo "=== S3: wikis ==="
+          aws s3 ls s3://agent-context-platform-data-879318057152/content/wikis/ --region us-east-1 | head -20
+          WIKI_COUNT=$(aws s3 ls s3://agent-context-platform-data-879318057152/content/wikis/ --region us-east-1 | wc -l)
+          echo "Wiki count: $WIKI_COUNT"
+
+          echo ""
+          echo "=== S3: code-indexes ==="
+          aws s3 ls s3://agent-context-platform-data-879318057152/content/code-indexes/ --region us-east-1 | head -20
+          INDEX_COUNT=$(aws s3 ls s3://agent-context-platform-data-879318057152/content/code-indexes/ --region us-east-1 | wc -l)
+          echo "Code-index count: $INDEX_COUNT"
+
+          echo ""
+          echo "=== S3: sbom ==="
+          aws s3 ls s3://agent-context-platform-data-879318057152/sbom/ --recursive --region us-east-1 | head -20
+          SBOM_COUNT=$(aws s3 ls s3://agent-context-platform-data-879318057152/sbom/ --recursive --region us-east-1 | wc -l)
+          echo "SBOM count: $SBOM_COUNT"
+
+          echo ""
+          echo "=== Summary ==="
+          echo "Wikis: $WIKI_COUNT | Code-indexes: $INDEX_COUNT | SBOMs: $SBOM_COUNT"
+
+      - name: Check pod status + image tags
+        run: |
+          echo "=== Pods ==="
+          kubectl get pods -n agent-context -o wide
+          echo ""
+          echo "=== Images ==="
+          kubectl get pods -n agent-context -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].image}{"\n"}{end}'
+          echo ""
+          echo "=== Recent Jobs ==="
+          kubectl get jobs -n agent-context --sort-by='.metadata.creationTimestamp' | tail -5
+          echo ""
+          echo "=== Latest ingestion Job logs ==="
+          LATEST_JOB=$(kubectl get jobs -n agent-context --sort-by='.metadata.creationTimestamp' -o jsonpath='{.items[-1].metadata.name}')
+          echo "Job: $LATEST_JOB"
+          kubectl logs "job/$LATEST_JOB" -n agent-context --tail=80 || echo "(logs unavailable)"
+
+      - name: Check Postgres (via in-cluster pod)
+        run: |
+          echo "=== Postgres verification ==="
+          kubectl run verify-db-$(date +%s) \
+            --image=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:e62ae2c4f721159f2e47bb62ef3813c56bdbebda \
+            --restart=Never \
+            --rm -i \
+            --overrides='{"spec":{"serviceAccountName":"agent-context-sa"}}' \
+            -n agent-context \
+            --command -- python3 -c "
+import os, sys
+sys.path.insert(0, '/app')
+os.environ.setdefault('DB_HOST', 'bedrockgw-dev-postgres.civhekhiupfe.us-east-1.rds.amazonaws.com')
+os.environ.setdefault('DB_NAME', 'agent_context')
+os.environ.setdefault('DB_PORT', '5432')
+os.environ.setdefault('DB_USER', 'agent_context_svc')
+os.environ.setdefault('DB_USE_IAM_AUTH', 'true')
+try:
+    import db
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute(\"SELECT to_regclass('index_run_stages')\")
+    print(f'index_run_stages exists: {cur.fetchone()[0]}')
+    cur.execute(\"SELECT to_regclass('index_runs')\")
+    print(f'index_runs exists: {cur.fetchone()[0]}')
+    cur.execute('SELECT stage, status, count(*) FROM index_run_stages GROUP BY 1, 2 ORDER BY 1, 2')
+    rows = cur.fetchall()
+    print(f'\n=== Stage status summary ({len(rows)} rows) ===')
+    for row in rows:
+        print(f'  {row[0]:20s} | {row[1]:12s} | {row[2]}')
+    cur.execute('SELECT count(*) FROM dependencies')
+    dep_count = cur.fetchone()[0]
+    print(f'\nDependency rows: {dep_count}')
+    cur.execute('SELECT count(*) FROM index_runs')
+    run_count = cur.fetchone()[0]
+    print(f'Index runs: {run_count}')
+    cur.execute('SELECT id, repo, status FROM index_runs ORDER BY started_at DESC LIMIT 5')
+    print('\n=== Recent index runs ===')
+    for row in cur.fetchall():
+        print(f'  {row[0][:8]}... | {row[1]:40s} | {row[2]}')
+    conn.close()
+except Exception as e:
+    print(f'DB verification failed: {e}')
+    sys.exit(1)
+" 2>&1 || echo "DB check pod failed (may need retry)"
