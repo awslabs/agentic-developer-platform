@@ -2,6 +2,8 @@ name: Agent Context Verify
 
 on:
   workflow_dispatch:
+  repository_dispatch:
+    types: [verify-agent-context]
 
 jobs:
   verify:
