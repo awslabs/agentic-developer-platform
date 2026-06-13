@@ -15,12 +15,36 @@ name: Agent Context Deploy
 on:
   workflow_dispatch:
     inputs:
+      customer_account_id:
+        description: 'Target AWS account ID (12 digits). Overrides config file.'
+        required: false
+        default: ''
+        type: string
+      customer_aws_label:
+        description: 'Vaulted credential label for the target account.'
+        required: false
+        default: ''
+        type: string
+      customer_user_id:
+        description: 'ADP users.id UUID for the linked-account owner.'
+        required: false
+        default: ''
+        type: string
+      environment:
+        description: 'Deployment environment (dev/staging/prod). Overrides config.'
+        required: false
+        default: ''
+        type: string
       skip_litellm_verify:
         description: 'Skip LiteLLM endpoint verification (faster, for re-deploys)'
         type: boolean
         default: false
       skip_deepwiki:
         description: 'Skip DeepWiki deployment'
+        type: boolean
+        default: false
+      skip_migrations:
+        description: 'Skip DB migrations (alembic upgrade head)'
         type: boolean
         default: false
       ingestion_image_tag:
@@ -33,11 +57,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AWS_REGION: us-east-1
-  ENVIRONMENT: dev
-  EKS_CLUSTER: adp-dev-eks-cluster
   NAMESPACE: agent-context
-  ECR_REGISTRY: 879318057152.dkr.ecr.us-east-1.amazonaws.com
 
 jobs:
   deploy:
@@ -48,9 +68,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          account_id: ${{ inputs.customer_account_id }}
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+
+      - name: Set derived variables
+        run: |
+          echo "ECR_REGISTRY=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_ENV"
+          echo "EKS_CLUSTER=adp-${ENVIRONMENT}-eks-cluster" >> "$GITHUB_ENV"
+
       - name: Configure kubectl
         run: |
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+          aws eks update-kubeconfig --name "${{ env.EKS_CLUSTER }}" --region "${{ env.AWS_REGION }}"
           echo "Cluster access configured:"
           kubectl cluster-info 2>/dev/null | head -2 || true
 
@@ -58,8 +92,8 @@ jobs:
         run: |
           ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
           echo "Account: $ACCOUNT"
-          if [ "$ACCOUNT" != "879318057152" ]; then
-            echo "::error::Wrong AWS account! Expected 879318057152, got $ACCOUNT"
+          if [ "$ACCOUNT" != "${{ env.ACCOUNT_ID }}" ]; then
+            echo "::error::Wrong AWS account! Expected ${{ env.ACCOUNT_ID }}, got $ACCOUNT"
             exit 1
           fi
 
@@ -102,6 +136,46 @@ jobs:
           template_file manifests/ingestion-rbac.yaml | kubectl apply -f -
           echo "RBAC: ${RUNNER_NAMESPACE}:${RUNNER_SERVICE_ACCOUNT} → ingestion-pipeline-role"
 
+      - name: Run DB migrations (alembic upgrade head)
+        if: ${{ inputs.skip_migrations != true }}
+        run: |
+          set -e
+          cd modules/agent-context
+
+          # Resolve RDS host from Terraform output or SSM
+          RDS_HOST=""
+          if [ -d terraform/.terraform ]; then
+            RDS_HOST=$(cd terraform && terraform output -raw ac_rds_host 2>/dev/null || echo "")
+          fi
+          if [ -z "$RDS_HOST" ]; then
+            # Fallback: query SSM parameter (set by infra-apply)
+            RDS_HOST=$(aws ssm get-parameter \
+              --name "/adp/${{ env.ENVIRONMENT }}/rds/endpoint" \
+              --region "${{ env.AWS_REGION }}" \
+              --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+          fi
+          if [ -z "$RDS_HOST" ]; then
+            echo "::warning::RDS host not found — skipping migrations. Run infra-apply first."
+            exit 0
+          fi
+
+          # Install alembic + async postgres driver
+          pip install --quiet alembic sqlalchemy asyncpg boto3
+
+          # Run migrations with IAM auth
+          export AC_RDS_IAM_AUTH=true
+          export AC_RDS_HOST="$RDS_HOST"
+          export AC_RDS_PORT=5432
+          export AC_RDS_USERNAME=agent_context_svc
+          export AC_RDS_DBNAME=agent_context
+          export AC_AWS_REGION="${{ env.AWS_REGION }}"
+
+          echo "Running alembic upgrade head against ${AC_RDS_HOST}..."
+          cd alembic
+          alembic upgrade head
+          echo "✅ Migrations applied successfully"
+          alembic current
+
       - name: Create ServiceAccount (IRSA)
         run: |
           cd modules/agent-context
@@ -113,9 +187,9 @@ jobs:
           if [ -d terraform/.terraform ]; then
             IRSA_ROLE_ARN=$(cd terraform && terraform output -raw irsa_role_arn 2>/dev/null || echo "")
           fi
-          # Fallback: construct from naming convention
+          # Fallback: construct from naming convention using resolved inputs
           if [ -z "$IRSA_ROLE_ARN" ]; then
-            IRSA_ROLE_ARN="arn:aws:iam::879318057152:role/adp-dev-agent-context-irsa"
+            IRSA_ROLE_ARN="arn:aws:iam::${{ env.ACCOUNT_ID }}:role/adp-${{ env.ENVIRONMENT }}-agent-context-irsa"
           fi
           export IRSA_ROLE_ARN
 
@@ -175,9 +249,10 @@ jobs:
           export SERVICE_ACCOUNT LITELLM_PORT LITELLM_IMAGE
 
           # Determine image: use ECR-built image if available, else default
-          LITELLM_ECR="${ECR_REGISTRY}/adp-dev-agent-context-litellm-proxy"
+          LITELLM_REPO="adp-${ENVIRONMENT}-agent-context-litellm-proxy"
+          LITELLM_ECR="${ECR_REGISTRY}/${LITELLM_REPO}"
           # Check for latest tag in ECR
-          LATEST_TAG=$(aws ecr describe-images --repository-name adp-dev-agent-context-litellm-proxy \
+          LATEST_TAG=$(aws ecr describe-images --repository-name "${LITELLM_REPO}" \
             --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
             --output text 2>/dev/null || echo "")
           if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "None" ]; then
@@ -228,16 +303,17 @@ jobs:
           load_config "$(pwd)"
 
           # Determine ingestion image
+          INGESTION_REPO="adp-${ENVIRONMENT}-agent-context-ingestion"
           INPUT_TAG="${{ inputs.ingestion_image_tag }}"
           if [ -n "$INPUT_TAG" ]; then
-            INGESTION_IMAGE="${ECR_REGISTRY}/adp-dev-agent-context-ingestion:${INPUT_TAG}"
+            INGESTION_IMAGE="${ECR_REGISTRY}/${INGESTION_REPO}:${INPUT_TAG}"
           else
             # Get latest built tag
-            LATEST_TAG=$(aws ecr describe-images --repository-name adp-dev-agent-context-ingestion \
+            LATEST_TAG=$(aws ecr describe-images --repository-name "${INGESTION_REPO}" \
               --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
               --output text 2>/dev/null || echo "")
             if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "None" ]; then
-              INGESTION_IMAGE="${ECR_REGISTRY}/adp-dev-agent-context-ingestion:${LATEST_TAG}"
+              INGESTION_IMAGE="${ECR_REGISTRY}/${INGESTION_REPO}:${LATEST_TAG}"
             fi
           fi
           export INGESTION_IMAGE
