@@ -257,6 +257,34 @@ Most of this already exists. We are mostly *rewiring*, not building from scratch
 
 ---
 
+## 12. Where we sit in the 2026 agentic-search spectrum (positioning + tier-priority revision)
+
+By 2026 "agent-as-retriever" has fragmented into five recognised flavors. Placing ourselves honestly against them changes which tiers we should prioritise.
+
+| Flavor (poster product) | Us? |
+|---|---|
+| **8.1 Pure agentic** — LLM drives grep/read/bash in a loop, no index (Claude Code, Devin) | ✅ This is our **agent-factory** (developer/ops agents). Already built and running. |
+| **8.2 Hybrid lexical + semantic** — grep for symbols, embeddings for concepts, agent picks (Cursor, Sourcegraph Amp) | ✅ Our Knowledge layer as designed: **Zoekt + S3 Vectors**. "The path most enterprise tools converge on." |
+| **8.3 Structural / AST-aware** — tree-sitter parses code, agent searches by structure; returns whole functions, not broken chunks (Cline, Probe, ast-grep) | ✅ Our **structural tier** (cgc/tree-sitter `code-index.json` + `understand`/`impact`). Cline's exact three-tier stack (ripgrep + fuzzy + AST) is what we designed. |
+| **8.4 Specialised retrieval models** (Windsurf SWE-grep, Chroma Context-1) | ❌ Not us — general agents + indexes, no trained retrieval model. |
+| **8.5 RL-trained retrieval policies** (Search-R1, CoSearch) | ❌ Not us — but our **Experience layer is the nearest cousin**: it learns *what worked* over time, via verified events + golden paths rather than RL. |
+
+So our architecture is a **2 + 3 hybrid with an 8.1 loop on top** — the mainstream-convergent shape, not an outlier.
+
+### 12.1 Course-correction: structural is under-built, semantic-for-code is over-bet
+
+Two honest revisions to the tier priorities in §2/§5, prompted by the spectrum **and** by our own first deploy:
+
+1. **Double down on the structural/AST tier (8.3) — it's our strongest, least-built bet.** The frontier consensus is that AST-aware structural search is where the leverage is for *code* (it returns whole functions/classes, not chunks that break mid-function). We designed it but it is the **least deployed** part — the first eval skipped `understand`/`impact` entirely because no MCP/Door server exists yet. We over-invested in semantic and under-invested in structural. Build the Door + the structural backends next.
+
+2. **Re-examine the semantic/embedding tier for code — don't reflexively repair it.** Probe's production argument: *embeddings exist to solve a vocabulary-mismatch problem that an LLM-driven agent already handles* — the agent translates intent into precise boolean/structural queries, so a capable agent + grep + AST may make the embedding tier redundant for code (no index, no embed cost, millisecond results). Our own first eval is direct evidence: **S3 Vectors came up empty/broken, yet exact search scored 63% and browse 93% — the system worked without the semantic tier.** Before filing "fix the empty S3 Vectors index," answer the prior question: *should it exist for code at all, or is it better reserved for docs/wikis/NL queries (the genuine vocabulary-mismatch cases) — see §5c's "embed summaries, not raw code"?* This may be a tier to de-scope for code, not repair.
+
+### 12.2 The moat is outside the spectrum
+
+All five flavors compete on **retrieval quality** — how well the agent *finds* things. None of them (Probe, Cline, SWE-grep, even the RL policies) have a **verified Experience layer**: an agent that remembers what actually *worked*, with substrate proof (CI/tests/deploy outcomes), and matures proven procedures into materialised workflows. That dimension is orthogonal to the whole taxonomy. Our defensible position is therefore **not** "best code retrieval flavor" (Cursor/Probe are ahead on raw retrieval) but **"outcome-verified experience on top of a competent hybrid+structural retriever."** Retrieval flavor is becoming commodity; verified experience is not. Prioritise accordingly.
+
+---
+
 ## 11. One-paragraph summary
 
 We're replacing two fragile, partly-license-encumbered tools (Sourcebot, OpenViking) with a simpler design on plain AWS services. Each repo is cloned once on a temporary disk, then indexed four ways — exact search (Zoekt), meaning search (S3 Vectors), a structure map, and a dependency bill-of-materials — with the finished results stored durably in S3, S3 Vectors, and PostgreSQL. Work is spread across many machines in parallel so hundreds of repos index quickly. Every answer an agent gets is filtered by GitHub-mirrored permissions at the front door. The bill-of-materials is the standout new capability: by recording which repos use which dependencies (and making that instantly searchable), ADP can detect a new vulnerability, find every affected repo, hand the fix to its existing developer agents, and verify the fix with tests — turning ADP from a code-search tool into an autonomous vulnerability-management-and-remediation platform.
