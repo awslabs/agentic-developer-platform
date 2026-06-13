@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Knowledge Layer — C4 Architecture</title>
+<style>
+  :root{
+    --bg:#0e1014; --panel:#161922; --panel2:#1c2030; --ink:#e9ecf3; --mut:#97a0b2;
+    --line:#2a3040; --accent:#5b8cff; --green:#37c794; --amber:#ffc24a; --red:#e5604d;
+    --purple:#9a8cf0; --teal:#3fb6c4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#0c0e13,#11141c);color:var(--ink);
+    font:14.5px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;padding:30px 20px 70px}
+  .wrap{max-width:1120px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 3px} .sub{color:var(--mut);margin:0 0 16px;font-size:13.5px}
+  .tabs{display:flex;gap:6px;margin-bottom:8px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .tab{background:none;border:none;color:var(--mut);font:inherit;font-weight:600;font-size:13.5px;
+    padding:10px 15px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tab:hover{color:var(--ink)} .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+  .lvl{font-size:11px;color:var(--mut);opacity:.7}
+  .crumb{color:var(--mut);font-size:12px;margin:14px 0 18px}
+  .crumb b{color:var(--ink)}
+  .view{display:none} .view.active{display:block}
+  /* C4 elements */
+  .sys{background:var(--panel);border:2px solid var(--accent);border-radius:14px;padding:18px 20px;margin:0 auto;max-width:520px;text-align:center}
+  .sys h3{margin:0 0 5px;font-size:16px} .sys .type{font-size:10.5px;color:var(--accent);text-transform:uppercase;letter-spacing:1px} .sys p{margin:6px 0 0;color:var(--mut);font-size:12.5px}
+  .actors{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin:16px 0}
+  .actor{background:var(--panel2);border:1px solid var(--line);border-radius:30px;padding:9px 16px;font-size:12.5px;color:var(--ink)}
+  .actor .r{color:var(--mut);font-size:10.5px;display:block}
+  .rel{text-align:center;color:var(--mut);font-size:12px;margin:8px 0}
+  .rel b{color:var(--accent)}
+  .down{text-align:center;color:var(--accent);font-size:22px;margin:2px 0}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  @media(max-width:840px){.grid{grid-template-columns:repeat(2,1fr)}}
+  .c{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:13px 15px;border-top:3px solid var(--accent)}
+  .c.green{border-top-color:var(--green)} .c.purple{border-top-color:var(--purple)} .c.teal{border-top-color:var(--teal)} .c.amber{border-top-color:var(--amber)} .c.red{border-top-color:var(--red)} .c.gray{border-top-color:var(--mut)}
+  .c h4{margin:0 0 4px;font-size:13.5px} .c .tech{font-size:10.5px;color:var(--mut);font-family:ui-monospace,monospace} .c p{margin:6px 0 0;color:var(--mut);font-size:12px}
+  .tag{display:inline-block;font-size:9.5px;font-weight:700;padding:1px 6px;border-radius:4px;margin-top:7px}
+  .t-ephem{background:rgba(255,194,74,.16);color:var(--amber)} .t-always{background:rgba(91,140,255,.16);color:var(--accent)} .t-mgd{background:rgba(55,199,148,.14);color:var(--green)}
+  .grouphdr{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--mut);margin:20px 0 9px}
+  .note{background:rgba(91,140,255,.08);border:1px solid rgba(91,140,255,.28);border-radius:9px;padding:10px 14px;color:#c8d4f0;font-size:12.5px;margin:16px 0}
+  .note.green{background:rgba(55,199,148,.08);border-color:rgba(55,199,148,.3);color:#bfe9d6}
+  code{background:#0b0e15;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:11.5px;color:#bcd0ff}
+  .foot{margin-top:24px;color:#69728a;font-size:11.5px;border-top:1px solid var(--line);padding-top:12px}
+  .flowrow{display:flex;gap:8px;flex-wrap:wrap;align-items:stretch}
+  .flowrow .c{flex:1;min-width:130px}
+  .ar{align-self:center;color:var(--accent);font-size:18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Knowledge Layer — C4 Architecture</h1>
+  <p class="sub">Progressive zoom: Context → Containers → Components. Each level is standalone — start broad, click in for detail. · EPIC #1345</p>
+
+  <div class="tabs">
+    <button class="tab active" onclick="c4(0)">① System Context <span class="lvl">who uses it</span></button>
+    <button class="tab" onclick="c4(1)">② Containers <span class="lvl">what runs</span></button>
+    <button class="tab" onclick="c4(2)">③ Components <span class="lvl">inside the worker</span></button>
+  </div>
+
+  <!-- ===== LEVEL 1: CONTEXT ===== -->
+  <div class="view active" id="c0">
+    <div class="crumb"><b>Level 1 · System Context</b> — the one-box view: what the system is and who/what it talks to. For anyone.</div>
+
+    <div class="actors">
+      <div class="actor">🤖 ADP agents<span class="r">ask for code context (verbs)</span></div>
+      <div class="actor">👤 Platform admins<span class="r">watch indexing status</span></div>
+    </div>
+    <div class="rel">↓ use ↓</div>
+
+    <div class="sys">
+      <div class="type">Software System</div>
+      <h3>Knowledge Layer</h3>
+      <p>Indexes code repositories and answers questions about them (search, understand, impact, browse), and drives autonomous vulnerability remediation.</p>
+    </div>
+
+    <div class="rel">↑ reads / calls ↑</div>
+    <div class="actors">
+      <div class="actor">📦 GitHub repos<span class="r">source code (cloned)</span></div>
+      <div class="actor">🧠 Amazon Bedrock<span class="r">embeddings + LLM</span></div>
+      <div class="actor">🛠 Agent-factory<span class="r">developer agents (vuln fixes)</span></div>
+      <div class="actor">🔐 Gateway (Cognito)<span class="r">identity for the admin UI</span></div>
+    </div>
+
+    <div class="note">One sentence: <b>agents and admins use the Knowledge Layer; it pulls code from GitHub, uses Bedrock for AI, hands fixes to the agent-factory, and borrows the gateway's identity for its admin screen.</b> Everything else is detail in the next levels.</div>
+  </div>
+
+  <!-- ===== LEVEL 2: CONTAINERS ===== -->
+  <div class="view" id="c1">
+    <div class="crumb"><b>Level 2 · Containers</b> — the runnable/deployable units inside the system, and how they're hosted. For architects &amp; ops. <span class="t-ephem tag">ephemeral</span> <span class="t-always tag">always-on</span> <span class="t-mgd tag">managed/serverless</span></div>
+
+    <div class="grouphdr">Compute — in the EKS cluster</div>
+    <div class="grid">
+      <div class="c amber"><h4>Ingestion worker</h4><div class="tech">KEDA ScaledJob · ingestion image</div><p>1 pod per repo; runs the indexing stages; owns the run id.</p><span class="tag t-ephem">ephemeral · 0→50</span></div>
+      <div class="c accent"><h4>Context MCP server</h4><div class="tech">FastAPI · :5100</div><p>Serves the verbs to agents; applies the permission filter.</p><span class="tag t-always">always-on</span></div>
+      <div class="c green"><h4>Zoekt</h4><div class="tech">Apache-2.0 · EBS volume</div><p>Exact/keyword code search server.</p><span class="tag t-always">always-on</span></div>
+      <div class="c amber"><h4>DeepWiki</h4><div class="tech">MIT upstream image</div><p>Generates a per-repo architecture wiki.</p><span class="tag t-always">always-on*</span></div>
+      <div class="c amber"><h4>LiteLLM proxy</h4><div class="tech">Bedrock router</div><p>Embeddings + LLM calls during indexing.</p><span class="tag t-always">always-on*</span></div>
+      <div class="c gray"><h4>CronJobs</h4><div class="tech">refresh · synthesis</div><p>Scheduled refresh + learning synthesis.</p><span class="tag t-ephem">ephemeral</span></div>
+    </div>
+
+    <div class="grouphdr">Data &amp; storage — managed AWS</div>
+    <div class="grid">
+      <div class="c green"><h4>S3 (Mountpoint)</h4><div class="tech">write-once objects</div><p>code-index.json, wikis, SBOMs, zoekt shard artifacts.</p><span class="tag t-mgd">managed</span></div>
+      <div class="c purple"><h4>S3 Vectors</h4><div class="tech">pay-per-use</div><p>Meaning fingerprints for semantic search.</p><span class="tag t-mgd">managed</span></div>
+      <div class="c teal"><h4>PostgreSQL</h4><div class="tech">agent_context DB on shared RDS</div><p>Catalog, permissions, dependency reverse-index, run/stage tracking.</p><span class="tag t-mgd">managed</span></div>
+      <div class="c gray"><h4>SQS + KEDA</h4><div class="tech">queue → fan-out</div><p>Drives the per-repo worker spawn.</p><span class="tag t-mgd">managed</span></div>
+      <div class="c gray"><h4>EBS (zoekt)</h4><div class="tech">block volume</div><p>Zoekt's live serving index (S3 can't serve a live index).</p><span class="tag t-always">attached</span></div>
+      <div class="c gray"><h4>Worker scratch</h4><div class="tech">ephemeral EBS</div><p>git clone + in-progress build; discarded.</p><span class="tag t-ephem">ephemeral</span></div>
+    </div>
+
+    <div class="grouphdr">Admin surface</div>
+    <div class="grid">
+      <div class="c"><h4>Indexing status UI</h4><div class="tech">React (gateway frontend)</div><p>Runs table → per-stage detail. Routes <b>defined in agent-context, mounted by the gateway</b> (feature-flagged), reusing Cognito.</p></div>
+    </div>
+
+    <div class="note">Containers talk over <b>in-cluster HTTP to Kubernetes Service DNS names</b>. <span style="color:var(--amber)">*Idle-cost target (§13): only Zoekt should stay always-on; make DeepWiki scale-to-zero, drop LiteLLM (boto3→Bedrock).</span> agent-context talks to AWS services, not the gateway, at runtime → independently deployable.</div>
+  </div>
+
+  <!-- ===== LEVEL 3: COMPONENTS ===== -->
+  <div class="view" id="c2">
+    <div class="crumb"><b>Level 3 · Components</b> — inside the <b>Ingestion worker</b> container: the indexing stages and how they're tracked. For developers.</div>
+
+    <div class="flowrow">
+      <div class="c"><h4>1 · Clone</h4><div class="tech">git, App token</div><p>One clone → scratch. All stages read it.</p></div>
+      <span class="ar">→</span>
+      <div class="c green"><h4>2 · Structural</h4><div class="tech">cgc → code-index.json</div><p>Symbols + call graph → S3.</p></div>
+      <span class="ar">→</span>
+      <div class="c purple"><h4>3 · Vectors</h4><div class="tech">chunk+embed → S3 Vectors</div><p>calls LiteLLM → Bedrock.</p></div>
+    </div>
+    <div class="flowrow" style="margin-top:10px">
+      <div class="c amber"><h4>4 · SBOM</h4><div class="tech">Syft → S3 + Postgres</div><p>dependency inventory.</p></div>
+      <span class="ar">→</span>
+      <div class="c teal"><h4>5 · Wiki</h4><div class="tech">calls DeepWiki → S3 + S3 Vectors</div><p>NL architecture summary.</p></div>
+      <span class="ar">→</span>
+      <div class="c green"><h4>6 · Zoekt index</h4><div class="tech">zoekt-index → S3 shard</div><p>exact-search shard.</p></div>
+    </div>
+
+    <div class="grouphdr">Cross-cutting components (in the worker)</div>
+    <div class="grid">
+      <div class="c"><h4>StageTracker</h4><div class="tech">stage_tracker.py</div><p>Creates the run_id header; wraps each stage: <code>attempt → write → verify → record</code>. Writes index_runs / index_run_stages.</p></div>
+      <div class="c red"><h4>ACL filter</h4><div class="tech">door/acl.py</div><p>Derives allowed_principals from GitHub; the MCP server applies it fail-closed on every result.</p></div>
+      <div class="c"><h4>Config</h4><div class="tech">config.py (pydantic)</div><p>Single typed settings source; per-task model tiering.</p></div>
+    </div>
+
+    <div class="note green"><b>The verify-after-write contract:</b> a stage is marked <code>verified</code> only after a read-back confirms the artifact actually exists (S3 head_object / vector count&gt;0 / Postgres rows). Skip/retry keys off <code>verified</code>, never a SHA — so "status says done, store empty" can't recur. <i>(Caveat: tracking only writes if the worker has a live DB connection — the migration must have applied.)</i></div>
+  </div>
+
+  <p class="foot">C4 model (Simon Brown): Context · Container · Component · (Code). Each level = one audience, one zoom. Self-contained HTML · 2026-06-13.</p>
+</div>
+<script>
+function c4(i){
+  document.querySelectorAll('.tab').forEach((t,n)=>t.classList.toggle('active',n===i));
+  document.querySelectorAll('.view').forEach((v,n)=>v.classList.toggle('active',n===i));
+}
+</script>
+</body>
+</html>
