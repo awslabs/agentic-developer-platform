@@ -88,8 +88,8 @@ spec:
           failureThreshold: 10
       volumes:
       - name: wiki-cache
-        persistentVolumeClaim:
-          claimName: platform-data
+        emptyDir:
+          sizeLimit: 2Gi
       - name: deepwiki-config
         configMap:
           name: deepwiki-config
