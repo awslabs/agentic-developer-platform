@@ -37,7 +37,7 @@ We index each repository three different ways, because agents ask three differen
    STORED IN PLAIN AWS SERVICES (S3, S3 Vectors, PostgreSQL)
         │
         ▼
-   AGENTS ASK QUESTIONS through one door, and every answer is
+   AGENTS ASK QUESTIONS through one MCP server, and every answer is
    permission-checked (you only see repos you're allowed to see).
 ```
 
@@ -210,7 +210,7 @@ Once we know which repos use which dependencies, ADP can run the whole security 
 
 ## 8. How permissions work (who can see what)
 
-Short version: **the search engines don't enforce permissions — we do, at the front door.**
+Short version: **the search engines don't enforce permissions — we do, at the MCP server (the single query surface).**
 
 None of the storage tools (Zoekt, S3 Vectors) have built-in "this user can see this document" rules. So instead:
 
@@ -242,7 +242,7 @@ Most of this already exists. We are mostly *rewiring*, not building from scratch
 | Storing meaning-fingerprints in S3 Vectors | **New** — replaces OpenViking's fragile storage |
 | Breaking code into pieces + fingerprinting | **New** — a few hundred lines (was OpenViking's job) |
 | Reverse dependency lookup | **New** — new Postgres tables + an index on the package coordinate |
-| Permission filtering at the door | **New** — the security gate |
+| Permission filtering at the MCP server | **New** — the security gate |
 
 ---
 
@@ -275,7 +275,7 @@ So our architecture is a **2 + 3 hybrid with an 8.1 loop on top** — the mainst
 
 Two honest revisions to the tier priorities in §2/§5, prompted by the spectrum **and** by our own first deploy:
 
-1. **Double down on the structural/AST tier (8.3) — it's our strongest, least-built bet.** The frontier consensus is that AST-aware structural search is where the leverage is for *code* (it returns whole functions/classes, not chunks that break mid-function). We designed it but it is the **least deployed** part — the first eval skipped `understand`/`impact` entirely because no MCP/Door server exists yet. We over-invested in semantic and under-invested in structural. Build the Door + the structural backends next.
+1. **Double down on the structural/AST tier (8.3) — it's our strongest, least-built bet.** The frontier consensus is that AST-aware structural search is where the leverage is for *code* (it returns whole functions/classes, not chunks that break mid-function). We designed it but it is the **least deployed** part — the first eval skipped `understand`/`impact` entirely because no MCP server exists yet. We over-invested in semantic and under-invested in structural. Build the MCP server + the structural backends next.
 
 2. **Re-examine the semantic/embedding tier for code — don't reflexively repair it.** Probe's production argument: *embeddings exist to solve a vocabulary-mismatch problem that an LLM-driven agent already handles* — the agent translates intent into precise boolean/structural queries, so a capable agent + grep + AST may make the embedding tier redundant for code (no index, no embed cost, millisecond results). Our own first eval is direct evidence: **S3 Vectors came up empty/broken, yet exact search scored 63% and browse 93% — the system worked without the semantic tier.** Before filing "fix the empty S3 Vectors index," answer the prior question: *should it exist for code at all, or is it better reserved for docs/wikis/NL queries (the genuine vocabulary-mismatch cases) — see §5c's "embed summaries, not raw code"?* This may be a tier to de-scope for code, not repair.
 
@@ -287,4 +287,4 @@ All five flavors compete on **retrieval quality** — how well the agent *finds*
 
 ## 11. One-paragraph summary
 
-We're replacing two fragile, partly-license-encumbered tools (Sourcebot, OpenViking) with a simpler design on plain AWS services. Each repo is cloned once on a temporary disk, then indexed four ways — exact search (Zoekt), meaning search (S3 Vectors), a structure map, and a dependency bill-of-materials — with the finished results stored durably in S3, S3 Vectors, and PostgreSQL. Work is spread across many machines in parallel so hundreds of repos index quickly. Every answer an agent gets is filtered by GitHub-mirrored permissions at the front door. The bill-of-materials is the standout new capability: by recording which repos use which dependencies (and making that instantly searchable), ADP can detect a new vulnerability, find every affected repo, hand the fix to its existing developer agents, and verify the fix with tests — turning ADP from a code-search tool into an autonomous vulnerability-management-and-remediation platform.
+We're replacing two fragile, partly-license-encumbered tools (Sourcebot, OpenViking) with a simpler design on plain AWS services. Each repo is cloned once on a temporary disk, then indexed four ways — exact search (Zoekt), meaning search (S3 Vectors), a structure map, and a dependency bill-of-materials — with the finished results stored durably in S3, S3 Vectors, and PostgreSQL. Work is spread across many machines in parallel so hundreds of repos index quickly. Every answer an agent gets is filtered by GitHub-mirrored permissions at the MCP server. The bill-of-materials is the standout new capability: by recording which repos use which dependencies (and making that instantly searchable), ADP can detect a new vulnerability, find every affected repo, hand the fix to its existing developer agents, and verify the fix with tests — turning ADP from a code-search tool into an autonomous vulnerability-management-and-remediation platform.
