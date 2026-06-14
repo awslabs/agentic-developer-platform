@@ -25,6 +25,7 @@ from channels.slack import SlackAdapter
 from channels.webchat import WebChatAdapter
 from classifier import classify_message
 from github_dispatch import create_issue_and_dispatch, label_existing_issue
+from invocation_logger import log_invocation
 from user_resolver import (
     ENABLE_USER_IDENTITIES,
     ResolvedUser,
@@ -41,6 +42,8 @@ SESSIONS_TABLE = os.environ["SESSIONS_TABLE_NAME"]
 REGION = os.environ.get("AWS_REGION_NAME", "us-east-1")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 SLACK_BOT_USER_ID = os.environ.get("SLACK_BOT_USER_ID", "")
+# Phase 4 (#1458): Invocation logging for non-GitHub channels
+WEBHOOK_EVENTS_TABLE = os.environ.get("WEBHOOK_EVENTS_TABLE", "")
 # Stage C (#186): artifact bucket and catalog table for user uploads
 ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET", "")
 ARTIFACTS_TABLE = os.environ.get("ARTIFACTS_TABLE", "")
@@ -678,6 +681,11 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
     # the adapter are ignored here (they use a different upload path).
     attachment_ids = message.platform_data.get("attachment_ids", [])
 
+    # Phase 4 (#1458): Include message_id and arrived_at in the SQS envelope
+    # so the worker can advance invocation status using the same key contract
+    # as Phase 1 (event_id=message_id, arrived_at=ISO timestamp).
+    arrived_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
     sqs_body: dict[str, Any] = {
         "task_id": task_id, "session_id": session_id, "thread_id": thread_id,
         "connection_id": connection_id, "channel": message.channel.value,
@@ -686,6 +694,7 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
         "repo_owner": (classification.repo or "").split("/")[0] if classification.repo and "/" in classification.repo else "",
         "repo_name": (classification.repo or "").split("/")[1] if classification.repo and "/" in classification.repo else "",
         "message": message.text, "platform_data": message.platform_data, "enqueued_at": now,
+        "message_id": message.message_id, "arrived_at": arrived_at,
         **identity_fields,
     }
     if attachment_ids:
@@ -699,6 +708,28 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
         send_kwargs["MessageGroupId"] = session_id
         send_kwargs["MessageDeduplicationId"] = task_id
     sqs.send_message(**send_kwargs)
+
+    # Phase 4 (#1458): Best-effort invocation row for Slack + WebChat.
+    # Written AFTER SQS publish (unlike Phase 1 which writes before) because
+    # the chat worker does not yet advance status — rows stay at
+    # webhook_received for v1. Never blocks the message handling path.
+    if WEBHOOK_EVENTS_TABLE and message.channel.value in ("slack", "webchat"):
+        try:
+            topic = (message.text[:120] if message.text else "(untitled)") or "(untitled)"
+            log_invocation(
+                WEBHOOK_EVENTS_TABLE,
+                event_id=message.message_id,
+                arrived_at=arrived_at,
+                user_id=message.user_id or "unattributed",
+                channel=message.channel.value,
+                topic=topic,
+                persona=classification.persona,
+                status="webhook_received",
+                tenant_id=pd.get("tenant_id", ""),
+                region=REGION,
+            )
+        except Exception as e:
+            logger.warning("Invocation capture failed (non-fatal): %s", e)
 
     # Always send an acknowledgement. The classifier prompt asks for
     # escalation_note on non-direct paths, but LLMs occasionally omit it —
