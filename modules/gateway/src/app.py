@@ -38,6 +38,7 @@ UNIT_MODULES = [
     "src.budget.routes",
     "src.ratelimit.routes",
     "src.usage.routes",
+    "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)
 ]
 
 
