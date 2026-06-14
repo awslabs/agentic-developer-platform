@@ -2,10 +2,9 @@
  * Tests for the AgentActivity page.
  *
  * Issue #1457: Phase 3 — Frontend "Agent Activity" page.
- * Issue #1459: Phase 5 — Row detail + polish.
+ * Issue #1461: Phase 6 — Trigger badge + chain view.
  * Validates: pagination with cursor/last_key, status rendering, link column,
- * admin toggle visibility, error/retry UI, row click → detail modal,
- * distinct empty states (no activity vs no filter matches).
+ * admin toggle visibility, error/retry UI, trigger badges, chain view.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -19,6 +18,8 @@ import type { InvocationItem, InvocationListResponse } from '@/types/activity';
 vi.mock('@/services/activity', () => ({
   getMyInvocations: vi.fn(),
   getAllInvocations: vi.fn(),
+  getMyInvocationChain: vi.fn(),
+  getAdminInvocationChain: vi.fn(),
 }));
 
 // Mock the permissions hook
@@ -26,11 +27,12 @@ vi.mock('@/hooks/usePermissions', () => ({
   usePermissions: vi.fn(),
 }));
 
-import { getMyInvocations, getAllInvocations } from '@/services/activity';
+import { getMyInvocations, getAllInvocations, getMyInvocationChain } from '@/services/activity';
 import { usePermissions } from '@/hooks/usePermissions';
 
 const mockGetMine = getMyInvocations as ReturnType<typeof vi.fn>;
 const mockGetAll = getAllInvocations as ReturnType<typeof vi.fn>;
+const mockGetMyChain = getMyInvocationChain as ReturnType<typeof vi.fn>;
 const mockUsePermissions = usePermissions as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
@@ -51,10 +53,13 @@ function makeInvocation(overrides: Partial<InvocationItem> = {}): InvocationItem
     issue_number: 1457,
     invoked_at: '2026-06-14T10:00:00Z',
     completed_at: '2026-06-14T10:30:00Z',
-    status_updated_at: '2026-06-14T10:30:00Z',
-    correlation_id: 'corr-abc12345',
-    run_id: '81286554630',
-    error_message: null,
+    // Phase 6 lineage defaults
+    trigger_kind: 'human',
+    triggered_by_invocation_id: null,
+    triggered_by_topic: null,
+    root_human_id: 'user-001',
+    is_human_rooted: true,
+    correlation_id: 'chain-001',
     ...overrides,
   };
 }
@@ -169,6 +174,14 @@ describe('AgentActivity Page', () => {
     setupNonAdmin();
     mockGetMine.mockResolvedValue(mockResponse);
     mockGetAll.mockResolvedValue(mockResponse);
+    mockGetMyChain.mockResolvedValue({
+      correlation_id: 'chain-001',
+      root_human_id: 'user-001',
+      is_human_rooted: true,
+      items: [],
+      total_count: 0,
+      depth_capped: false,
+    });
   });
 
   it('renders date-desc rows from mocked /me/agent-invocations', async () => {
@@ -247,13 +260,12 @@ describe('AgentActivity Page', () => {
       expect(screen.getByText('Webhook recv')).toBeInTheDocument();
     });
 
-    // Use getAllByText because status labels also appear in filter dropdown options
-    expect(screen.getAllByText('In progress').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('Complete').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('Failed').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('Rejected').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('Rate limited').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('No-op').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('In progress')).toBeInTheDocument();
+    expect(screen.getByText('Complete')).toBeInTheDocument();
+    expect(screen.getByText('Failed')).toBeInTheDocument();
+    expect(screen.getByText('Rejected')).toBeInTheDocument();
+    expect(screen.getByText('Rate limited')).toBeInTheDocument();
+    expect(screen.getByText('No-op')).toBeInTheDocument();
   });
 
   it('renders source_url as clickable repo#N link; null shows "(no external link)"', async () => {
@@ -372,87 +384,125 @@ describe('AgentActivity Page', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Phase 5: Row detail + polish tests
+  // Phase 6 trigger badge tests (#1461)
   // ---------------------------------------------------------------------------
 
-  it('row click opens detail modal with correlation_id, run_id, status', async () => {
-    const user = userEvent.setup();
+  it('shows "Started by you" badge for human-triggered invocations', async () => {
     const items: InvocationItem[] = [
       makeInvocation({
-        invocation_id: 'inv-detail-1',
-        correlation_id: 'corr-xyz789',
-        run_id: '99887766',
-        status: 'complete',
-        topic: 'Detail test topic',
+        invocation_id: 'inv-human',
+        trigger_kind: 'human',
+        topic: 'Human task',
       }),
     ];
+
     mockGetMine.mockResolvedValue({ items, last_key: null });
 
     renderAgentActivity();
 
     await waitFor(() => {
-      expect(screen.getByText('Detail test topic')).toBeInTheDocument();
+      expect(screen.getByTestId('trigger-badge-human')).toBeInTheDocument();
     });
 
-    // Click the row
-    const row = screen.getByRole('button', { name: /View details for invocation: Detail test topic/ });
-    await user.click(row);
-
-    // Modal should open with detail fields
-    await waitFor(() => {
-      expect(screen.getByText('Invocation Detail')).toBeInTheDocument();
-    });
-    expect(screen.getByText('corr-xyz789')).toBeInTheDocument();
-    expect(screen.getByText('99887766')).toBeInTheDocument();
+    expect(screen.getByText('Started by you')).toBeInTheDocument();
   });
 
-  it('shows distinct empty state for "no matches" vs "no activity" based on active filters', async () => {
-    const user = userEvent.setup();
-    mockGetMine.mockResolvedValue({ items: [], last_key: null });
-
-    renderAgentActivity();
-
-    // No filters → "No agent activity yet"
-    await waitFor(() => {
-      expect(screen.getByText('No agent activity yet')).toBeInTheDocument();
-    });
-    expect(screen.getByText('Agent invocations will appear here once triggered.')).toBeInTheDocument();
-
-    // Apply a status filter → "No matching results for the current filters"
-    const statusSelect = screen.getByLabelText('Filter by status');
-    await user.selectOptions(statusSelect, 'failed');
-
-    await waitFor(() => {
-      expect(screen.getByText('No matching results for the current filters')).toBeInTheDocument();
-    });
-    expect(screen.getByText('Try adjusting your filters to see more results.')).toBeInTheDocument();
-    expect(screen.queryByText('No agent activity yet')).not.toBeInTheDocument();
-  });
-
-  it('row is keyboard-accessible (Enter key opens detail)', async () => {
-    const user = userEvent.setup();
+  it('shows "Agent-triggered" badge with parent topic for agent-triggered invocations', async () => {
     const items: InvocationItem[] = [
       makeInvocation({
-        invocation_id: 'inv-kb-1',
-        topic: 'Keyboard test',
+        invocation_id: 'inv-agent',
+        trigger_kind: 'agent',
+        triggered_by_invocation_id: 'inv-parent',
+        triggered_by_topic: 'Deploy infrastructure',
+        topic: 'Agent child task',
       }),
     ];
+
     mockGetMine.mockResolvedValue({ items, last_key: null });
 
     renderAgentActivity();
 
     await waitFor(() => {
-      expect(screen.getByText('Keyboard test')).toBeInTheDocument();
+      expect(screen.getByTestId('trigger-badge-agent')).toBeInTheDocument();
     });
 
-    // Focus the row and press Enter
-    const row = screen.getByRole('button', { name: /View details for invocation: Keyboard test/ });
-    row.focus();
-    await user.keyboard('{Enter}');
+    expect(screen.getByText('Agent-triggered')).toBeInTheDocument();
+    // Shows parent topic
+    expect(screen.getByText(/Deploy infrastructure/)).toBeInTheDocument();
+  });
 
-    // Modal should open
+  it('shows "Agent-initiated" badge for bot-rooted invocations', async () => {
+    const items: InvocationItem[] = [
+      makeInvocation({
+        invocation_id: 'inv-bot',
+        trigger_kind: 'bot',
+        is_human_rooted: false,
+        root_human_id: null,
+        topic: 'Cron job',
+      }),
+    ];
+
+    mockGetMine.mockResolvedValue({ items, last_key: null });
+
+    renderAgentActivity();
+
     await waitFor(() => {
-      expect(screen.getByText('Invocation Detail')).toBeInTheDocument();
+      expect(screen.getByTestId('trigger-badge-bot')).toBeInTheDocument();
     });
+
+    expect(screen.getByText('Agent-initiated')).toBeInTheDocument();
+  });
+
+  it('shows "View chain" link when correlation_id is present', async () => {
+    const items: InvocationItem[] = [
+      makeInvocation({
+        invocation_id: 'inv-with-chain',
+        correlation_id: 'chain-abc',
+        topic: 'Chained task',
+      }),
+    ];
+
+    mockGetMine.mockResolvedValue({ items, last_key: null });
+
+    renderAgentActivity();
+
+    await waitFor(() => {
+      expect(screen.getByText('View chain')).toBeInTheDocument();
+    });
+  });
+
+  it('Trigger column header is present in table', async () => {
+    renderAgentActivity();
+
+    await waitFor(() => {
+      expect(screen.getByText('Trigger')).toBeInTheDocument();
+    });
+  });
+
+  it('flat list still works when lineage fields absent (pre-feature rows)', async () => {
+    // Simulate pre-feature data that doesn't have lineage fields
+    const items: InvocationItem[] = [
+      makeInvocation({
+        invocation_id: 'inv-old',
+        trigger_kind: 'human',
+        triggered_by_invocation_id: null,
+        triggered_by_topic: null,
+        correlation_id: null,
+        topic: 'Old style invocation',
+      }),
+    ];
+
+    mockGetMine.mockResolvedValue({ items, last_key: null });
+
+    renderAgentActivity();
+
+    await waitFor(() => {
+      expect(screen.getByText('Old style invocation')).toBeInTheDocument();
+    });
+
+    // Should show "Started by you" as default
+    expect(screen.getByTestId('trigger-badge-human')).toBeInTheDocument();
+    // No "View chain" link when correlation_id is null
+    expect(screen.queryByText('View chain')).not.toBeInTheDocument();
   });
 });

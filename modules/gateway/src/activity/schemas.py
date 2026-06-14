@@ -13,9 +13,21 @@ Contract rules (baked into this module — Phase 3 client must follow):
    the page_size read. A page can return fewer than page_size items — or zero —
    while more matches exist. The client MUST keep following `last_key` until it
    is null; do not stop on a short/empty page.
+
+Phase 6 additions (issue #1461):
+- `trigger_kind` (human|agent|bot) — derived from provenance is_human_rooted +
+  parent_invocation_id presence.
+- `triggered_by_invocation_id` / `triggered_by_topic` — parent run link.
+- `root_human_id` / `is_human_rooted` — chain root info.
+- `InvocationChainResponse` — tree/flat chain for the chain view.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+# Trigger kind: human (user-initiated), agent (spawned by another run), bot (cron/automated, not human-rooted)
+TriggerKind = Literal["human", "agent", "bot"]
 
 
 class InvocationItem(BaseModel):
@@ -34,7 +46,60 @@ class InvocationItem(BaseModel):
     issue_number: int | None = None
     correlation_id: str | None = None
     run_id: str | None = None
-    error_message: str | None = None
+
+    # Phase 6 lineage fields (#1461)
+    trigger_kind: TriggerKind = Field(
+        default="human",
+        description="How this invocation was triggered: human (user request), agent (spawned by another run), bot (cron/automated).",
+    )
+    triggered_by_invocation_id: str | None = Field(
+        default=None,
+        description="The parent invocation ID that triggered this run (null for root/human-initiated).",
+    )
+    triggered_by_topic: str | None = Field(
+        default=None,
+        description="Topic of the parent invocation (for display: 'triggered by {topic}').",
+    )
+    root_human_id: str | None = Field(
+        default=None,
+        description="The originating human user who started this chain.",
+    )
+    is_human_rooted: bool = Field(
+        default=True,
+        description="Whether this chain traces back to a human request (false = bot/cron-initiated).",
+    )
+
+
+class InvocationChainItem(BaseModel):
+    """A node in the invocation chain tree."""
+
+    invocation_id: str
+    invoked_at: str
+    channel: str | None = None
+    status: str | None = None
+    topic: str | None = None
+    persona: str | None = None
+    parent_invocation_id: str | None = None
+    children: list["InvocationChainItem"] = Field(default_factory=list)
+
+
+class InvocationChainResponse(BaseModel):
+    """Chain view: all invocations sharing a correlation_id, rendered as a tree.
+
+    Falls back to flat date-ordered list when parent edges are null (pre-feature rows).
+    """
+
+    correlation_id: str
+    root_human_id: str | None = None
+    is_human_rooted: bool = True
+    items: list[InvocationChainItem] = Field(
+        description="Tree of invocations. Root nodes have parent_invocation_id=null; children nested.",
+    )
+    total_count: int = Field(description="Total invocations in this chain (may be capped at depth limit).")
+    depth_capped: bool = Field(
+        default=False,
+        description="True if the chain exceeded the depth cap and was truncated.",
+    )
 
 
 class InvocationListResponse(BaseModel):

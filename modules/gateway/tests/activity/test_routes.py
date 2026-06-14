@@ -7,6 +7,7 @@ Covers:
 - Cursor round-trip; bad cursor → 400
 - /admin/agent-invocations returns 403 for non-admin without USAGE_READ permission
 - Org admin is scoped to own tenant_id; platform admin can pass tenant_id
+- Phase 6 (#1461): chain endpoints scoped by user/tenant
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -16,7 +17,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.activity.routes import get_access_control, get_activity_service, router
-from src.activity.schemas import InvocationItem, InvocationListResponse
+from src.activity.schemas import (
+    InvocationChainItem,
+    InvocationChainResponse,
+    InvocationItem,
+    InvocationListResponse,
+)
 from src.activity.service import ActivityService
 from src.admin.access_control import AccessControl
 from src.admin.exceptions import AccessDeniedError
@@ -37,6 +43,16 @@ def mock_service():
     service = MagicMock(spec=ActivityService)
     service.query_by_user = MagicMock(return_value=InvocationListResponse(items=[], count=0, last_key=None))
     service.query_by_tenant = MagicMock(return_value=InvocationListResponse(items=[], count=0, last_key=None))
+    service.get_chain = MagicMock(
+        return_value=InvocationChainResponse(
+            correlation_id="chain-001",
+            root_human_id=None,
+            is_human_rooted=True,
+            items=[],
+            total_count=0,
+            depth_capped=False,
+        )
+    )
     return service
 
 
@@ -160,6 +176,36 @@ class TestGetMyInvocations:
         assert item["channel"] == "github"
         assert item["issue_number"] == 1320
 
+    def test_returns_lineage_fields(self, client, mock_service):
+        """Response includes Phase 6 lineage fields."""
+        mock_service.query_by_user.return_value = InvocationListResponse(
+            items=[
+                InvocationItem(
+                    invocation_id="inv-child",
+                    invoked_at="2026-06-14T10:05:00Z",
+                    channel="github",
+                    status="in_progress",
+                    topic="Child task",
+                    trigger_kind="agent",
+                    triggered_by_invocation_id="inv-parent",
+                    triggered_by_topic="Parent task",
+                    root_human_id="user-abc-123",
+                    is_human_rooted=True,
+                    correlation_id="chain-001",
+                )
+            ],
+            count=1,
+            last_key=None,
+        )
+        resp = client.get("/me/agent-invocations")
+        assert resp.status_code == 200
+        item = resp.json()["items"][0]
+        assert item["trigger_kind"] == "agent"
+        assert item["triggered_by_invocation_id"] == "inv-parent"
+        assert item["triggered_by_topic"] == "Parent task"
+        assert item["root_human_id"] == "user-abc-123"
+        assert item["is_human_rooted"] is True
+
     def test_page_size_passed_to_service(self, client, mock_service):
         """page_size query param is forwarded to service."""
         client.get("/me/agent-invocations?page_size=50")
@@ -267,3 +313,127 @@ class TestGetAdminInvocations:
         mock_service.query_by_tenant.side_effect = ValueError("Invalid cursor: ...")
         resp = admin_client.get("/admin/agent-invocations?last_key=bad!")
         assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 chain endpoint tests (#1461)
+# ---------------------------------------------------------------------------
+
+
+class TestGetMyInvocationChain:
+    """/me/agent-invocations/chain/{correlation_id} endpoint tests."""
+
+    def test_returns_chain_for_user(self, client, mock_service, regular_user):
+        """Chain endpoint calls service with user_id from token."""
+        mock_service.get_chain.return_value = InvocationChainResponse(
+            correlation_id="chain-001",
+            root_human_id=regular_user.user_id,
+            is_human_rooted=True,
+            items=[
+                InvocationChainItem(
+                    invocation_id="inv-A",
+                    invoked_at="2026-06-14T10:00:00Z",
+                    status="complete",
+                    topic="Root task",
+                    children=[
+                        InvocationChainItem(
+                            invocation_id="inv-B",
+                            invoked_at="2026-06-14T10:05:00Z",
+                            status="in_progress",
+                            topic="Child task",
+                            parent_invocation_id="inv-A",
+                            children=[],
+                        )
+                    ],
+                )
+            ],
+            total_count=2,
+            depth_capped=False,
+        )
+
+        resp = client.get("/me/agent-invocations/chain/chain-001")
+        assert resp.status_code == 200
+
+        # Service called with user_id from token
+        mock_service.get_chain.assert_called_once_with(
+            correlation_id="chain-001",
+            user_id=regular_user.user_id,
+        )
+
+        data = resp.json()
+        assert data["correlation_id"] == "chain-001"
+        assert data["total_count"] == 2
+        assert data["is_human_rooted"] is True
+        assert len(data["items"]) == 1
+        assert data["items"][0]["invocation_id"] == "inv-A"
+        assert len(data["items"][0]["children"]) == 1
+        assert data["items"][0]["children"][0]["invocation_id"] == "inv-B"
+
+    def test_empty_chain_returns_200(self, client, mock_service):
+        """Empty chain returns 200 with empty items (not 404)."""
+        mock_service.get_chain.return_value = InvocationChainResponse(
+            correlation_id="chain-nonexistent",
+            items=[],
+            total_count=0,
+            depth_capped=False,
+        )
+
+        resp = client.get("/me/agent-invocations/chain/chain-nonexistent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["items"] == []
+        assert data["total_count"] == 0
+
+    def test_depth_capped_flag(self, client, mock_service):
+        """Depth-capped chain sets flag in response."""
+        mock_service.get_chain.return_value = InvocationChainResponse(
+            correlation_id="chain-deep",
+            items=[InvocationChainItem(invocation_id="inv-1", invoked_at="2026-06-14T10:00:00Z", children=[])],
+            total_count=50,
+            depth_capped=True,
+        )
+
+        resp = client.get("/me/agent-invocations/chain/chain-deep")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["depth_capped"] is True
+        assert data["total_count"] == 50
+
+
+class TestGetAdminInvocationChain:
+    """/admin/agent-invocations/chain/{correlation_id} endpoint tests."""
+
+    def test_admin_chain_uses_tenant_scope(self, admin_client, mock_service, admin_user):
+        """Admin chain endpoint uses tenant_id scope."""
+        resp = admin_client.get("/admin/agent-invocations/chain/chain-001?tenant_id=org-xyz")
+        assert resp.status_code == 200
+
+        mock_service.get_chain.assert_called_once_with(
+            correlation_id="chain-001",
+            tenant_id="org-xyz",
+        )
+
+    def test_org_admin_chain_scoped_to_own_org(self, app, mock_service, mock_access, org_admin_user):
+        """Org admin chain is scoped to their own org_id."""
+
+        async def override_current_user():
+            return org_admin_user
+
+        def override_service():
+            return mock_service
+
+        async def override_access():
+            return mock_access
+
+        app.dependency_overrides[get_current_user] = override_current_user
+        app.dependency_overrides[get_activity_service] = override_service
+        app.dependency_overrides[get_access_control] = override_access
+
+        test_client = TestClient(app)
+        resp = test_client.get("/admin/agent-invocations/chain/chain-001")
+        assert resp.status_code == 200
+
+        mock_service.get_chain.assert_called_once_with(
+            correlation_id="chain-001",
+            tenant_id=org_admin_user.org_id,
+        )

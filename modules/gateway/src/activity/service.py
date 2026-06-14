@@ -8,6 +8,12 @@ Key design decisions:
 - Table name resolved from env var WEBHOOK_EVENTS_TABLE (set via SSM in prod).
 - Missing GSI/table → returns empty result with a warning log, never 500.
 - Cursor is base64(json(LastEvaluatedKey)), opaque to client.
+
+Phase 6 additions (issue #1461):
+- Lineage enrichment: map parent_invocation_id, trigger_kind, root_human_id,
+  is_human_rooted from DynamoDB item fields (written by webhook-ingress).
+- Chain query: retrieve all invocations sharing a correlation_id, build a tree
+  by parent_invocation_id, with depth cap and user/tenant scoping.
 """
 
 import base64
@@ -19,12 +25,21 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
-from src.activity.schemas import InvocationItem, InvocationListResponse
+from src.activity.schemas import (
+    InvocationChainItem,
+    InvocationChainResponse,
+    InvocationItem,
+    InvocationListResponse,
+    TriggerKind,
+)
 
 logger = logging.getLogger("bedrockgateway.activity")
 
 # Default table name; overridden via env or constructor arg for testability.
 _DEFAULT_TABLE_NAME = "adp-dev-webhook-events"
+
+# Maximum number of items to retrieve for a chain view (prevents unbounded reads).
+_CHAIN_DEPTH_CAP = 50
 
 
 def _get_table_name() -> str:
@@ -252,8 +267,160 @@ class ActivityService:
             issue_number=_safe_int(item.get("issue_number")),
             correlation_id=item.get("correlation_id"),
             run_id=item.get("run_id"),
-            error_message=item.get("error_message"),
+            # Phase 6 lineage fields (#1461)
+            trigger_kind=_derive_trigger_kind(item),
+            triggered_by_invocation_id=item.get("parent_invocation_id"),
+            triggered_by_topic=item.get("parent_topic"),
+            root_human_id=item.get("root_human_id"),
+            is_human_rooted=item.get("is_human_rooted", True),
         )
+
+    def get_chain(
+        self,
+        correlation_id: str,
+        *,
+        user_id: str | None = None,
+        tenant_id: str | None = None,
+        depth_cap: int = _CHAIN_DEPTH_CAP,
+    ) -> InvocationChainResponse:
+        """Retrieve all invocations sharing a correlation_id and build a tree.
+
+        Scoping: filters by user_id (for /me/) or tenant_id (for /admin/).
+        If both are None, returns empty (safety: never return unscoped data).
+
+        Depth cap: returns at most `depth_cap` items. If more exist, sets
+        `depth_capped=True` in the response.
+
+        Tree construction: builds by parent_invocation_id. Items without a
+        parent are roots. Falls back to flat date-ordered list if no parent
+        edges exist (pre-feature rows).
+        """
+        if not user_id and not tenant_id:
+            return InvocationChainResponse(
+                correlation_id=correlation_id,
+                items=[],
+                total_count=0,
+                depth_capped=False,
+            )
+
+        # Query all items with this correlation_id using a scan + filter.
+        # In production with a correlation-index GSI this would be a query;
+        # here we use a scan with FilterExpression as a safe fallback.
+        filter_expr = Attr("correlation_id").eq(correlation_id)
+        if user_id:
+            filter_expr = filter_expr & Attr("user_id").eq(user_id)
+        elif tenant_id:
+            filter_expr = filter_expr & Attr("tenant_id").eq(tenant_id)
+
+        all_items: list[dict] = []
+        depth_capped = False
+
+        try:
+            scan_kwargs: dict = {
+                "FilterExpression": filter_expr,
+                "Limit": 500,  # Read up to 500 raw items per scan page
+            }
+
+            while True:
+                response = self._table.scan(**scan_kwargs)
+                all_items.extend(response.get("Items", []))
+
+                if len(all_items) >= depth_cap:
+                    all_items = all_items[:depth_cap]
+                    depth_capped = True
+                    break
+
+                if "LastEvaluatedKey" not in response:
+                    break
+                scan_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code in ("ValidationException", "ResourceNotFoundException"):
+                logger.warning(
+                    "DynamoDB scan failed (chain query) — returning empty",
+                    extra={"correlation_id": correlation_id, "error_code": error_code},
+                )
+                return InvocationChainResponse(
+                    correlation_id=correlation_id,
+                    items=[],
+                    total_count=0,
+                    depth_capped=False,
+                )
+            raise
+
+        # Sort by arrived_at ascending (chain order)
+        all_items.sort(key=lambda x: x.get("arrived_at", ""))
+
+        # Determine root_human_id and is_human_rooted from first item with those fields
+        root_human_id = None
+        is_human_rooted = True
+        for item in all_items:
+            if item.get("root_human_id"):
+                root_human_id = item["root_human_id"]
+                is_human_rooted = item.get("is_human_rooted", True)
+                break
+
+        # Build tree
+        chain_items = _build_chain_tree(all_items)
+
+        return InvocationChainResponse(
+            correlation_id=correlation_id,
+            root_human_id=root_human_id,
+            is_human_rooted=is_human_rooted,
+            items=chain_items,
+            total_count=len(all_items),
+            depth_capped=depth_capped,
+        )
+
+
+def _derive_trigger_kind(item: dict) -> TriggerKind:
+    """Derive the trigger kind from DynamoDB item fields.
+
+    Logic:
+    - Has parent_invocation_id → "agent" (spawned by another run)
+    - No parent + is_human_rooted=False → "bot" (cron/automated)
+    - Otherwise → "human" (user-initiated)
+    """
+    if item.get("parent_invocation_id"):
+        return "agent"
+    if not item.get("is_human_rooted", True):
+        return "bot"
+    return "human"
+
+
+def _build_chain_tree(items: list[dict]) -> list[InvocationChainItem]:
+    """Build a tree of InvocationChainItem from flat DynamoDB items.
+
+    Items with parent_invocation_id are nested under their parent.
+    Items without a parent (or whose parent isn't in the list) are roots.
+    Falls back to flat list if no parent edges exist.
+    """
+    # Create nodes
+    nodes: dict[str, InvocationChainItem] = {}
+    for item in items:
+        inv_id = item.get("invocation_id", item.get("pk", ""))
+        nodes[inv_id] = InvocationChainItem(
+            invocation_id=inv_id,
+            invoked_at=item.get("arrived_at", ""),
+            channel=item.get("channel"),
+            status=item.get("status"),
+            topic=item.get("topic"),
+            persona=item.get("persona"),
+            parent_invocation_id=item.get("parent_invocation_id"),
+            children=[],
+        )
+
+    # Build parent→children relationships
+    roots: list[InvocationChainItem] = []
+    for node in nodes.values():
+        parent_id = node.parent_invocation_id
+        if parent_id and parent_id in nodes:
+            nodes[parent_id].children.append(node)
+        else:
+            roots.append(node)
+
+    return roots
 
 
 def _safe_int(value) -> int | None:

@@ -2,12 +2,13 @@
  * MSW handlers for Agent Activity endpoints.
  *
  * Issue #1457: Phase 3 — Frontend "Agent Activity" page.
+ * Issue #1461: Phase 6 — Chain view endpoint for lineage.
  * Simulates cursor-based pagination with DynamoDB-style last_key.
  */
 
 import { http, HttpResponse } from 'msw';
 import { mockInvocations } from '../data/activity';
-import type { InvocationItem } from '@/types/activity';
+import type { InvocationItem, InvocationChainItem, InvocationChainResponse } from '@/types/activity';
 
 function filterAndPaginate(request: Request, items: InvocationItem[]) {
   const url = new URL(request.url);
@@ -60,6 +61,48 @@ function filterAndPaginate(request: Request, items: InvocationItem[]) {
   });
 }
 
+function buildChainResponse(correlationId: string, items: InvocationItem[]): InvocationChainResponse {
+  // Find all items with this correlation_id
+  const chainItems = items.filter((inv) => inv.correlation_id === correlationId);
+
+  // Build tree structure
+  const nodes: Map<string, InvocationChainItem> = new Map();
+  for (const item of chainItems) {
+    nodes.set(item.invocation_id, {
+      invocation_id: item.invocation_id,
+      invoked_at: item.invoked_at,
+      channel: item.channel,
+      status: item.status,
+      topic: item.topic,
+      persona: item.persona,
+      parent_invocation_id: item.triggered_by_invocation_id,
+      children: [],
+    });
+  }
+
+  // Link children to parents
+  const roots: InvocationChainItem[] = [];
+  for (const node of nodes.values()) {
+    if (node.parent_invocation_id && nodes.has(node.parent_invocation_id)) {
+      nodes.get(node.parent_invocation_id)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  // Determine root_human_id from first human-rooted item
+  const firstHumanRooted = chainItems.find((i) => i.is_human_rooted);
+
+  return {
+    correlation_id: correlationId,
+    root_human_id: firstHumanRooted?.root_human_id ?? null,
+    is_human_rooted: firstHumanRooted?.is_human_rooted ?? false,
+    items: roots,
+    total_count: chainItems.length,
+    depth_capped: false,
+  };
+}
+
 export const activityHandlers = [
   // User's own invocations
   http.get('/api/me/agent-invocations', ({ request }) => {
@@ -71,5 +114,18 @@ export const activityHandlers = [
   // Admin: all invocations
   http.get('/api/admin/agent-invocations', ({ request }) => {
     return filterAndPaginate(request, mockInvocations);
+  }),
+
+  // User's chain view
+  http.get('/api/me/agent-invocations/chain/:correlationId', ({ params }) => {
+    const correlationId = params.correlationId as string;
+    const myItems = mockInvocations.filter((inv) => inv.user_id === 'user-001');
+    return HttpResponse.json(buildChainResponse(correlationId, myItems));
+  }),
+
+  // Admin chain view
+  http.get('/api/admin/agent-invocations/chain/:correlationId', ({ params }) => {
+    const correlationId = params.correlationId as string;
+    return HttpResponse.json(buildChainResponse(correlationId, mockInvocations));
   }),
 ];

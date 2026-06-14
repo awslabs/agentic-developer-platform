@@ -2,8 +2,7 @@
  * Agent Activity page — paginated list of agent invocations.
  *
  * Issue #1457: Phase 3 of Agent Activity rollout.
- * Issue #1459: Phase 5 — Row detail + polish (row click → detail modal,
- * improved empty states, a11y).
+ * Issue #1461: Phase 6 — lineage (trigger badge + chain view).
  *
  * Key behaviors:
  * - Default view = "mine" (GET /me/agent-invocations)
@@ -13,14 +12,15 @@
  * - Status rendering with glyphs
  * - source_url → "repo#issue ↗" link (or "(no external link)")
  * - Relative date with absolute on hover
- * - Row click → detail modal (Phase 5)
+ * - Trigger badge: human/agent/bot indicator with parent link
+ * - Chain view: click correlation chain to see indented tree
  */
 
 import { useState, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Alert, Button, Input, Select } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
-import { InvocationDetail } from '@/components/InvocationDetail';
+import InvocationChain from '@/components/InvocationChain';
 import { usePermissions } from '@/hooks/usePermissions';
 import { getMyInvocations, getAllInvocations } from '@/services/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
@@ -29,6 +29,7 @@ import type {
   InvocationStatus,
   InvocationChannel,
   InvocationQueryParams,
+  TriggerKind,
 } from '@/types/activity';
 
 // ---------------------------------------------------------------------------
@@ -52,6 +53,54 @@ function StatusBadge({ status }: { status: InvocationStatus }) {
       <span aria-hidden="true">{config.glyph}</span>
       <span>{config.label}</span>
     </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Trigger badge rendering (Phase 6)
+// ---------------------------------------------------------------------------
+
+const TRIGGER_CONFIG: Record<TriggerKind, { label: string; colorClass: string; icon: string }> = {
+  human: { label: 'Started by you', colorClass: 'text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/20', icon: '👤' },
+  agent: { label: 'Agent-triggered', colorClass: 'text-purple-700 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20', icon: '🤖' },
+  bot: { label: 'Agent-initiated', colorClass: 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20', icon: '⚙️' },
+};
+
+interface TriggerBadgeProps {
+  item: InvocationItem;
+  onViewChain?: (correlationId: string) => void;
+}
+
+function TriggerBadge({ item, onViewChain }: TriggerBadgeProps) {
+  const triggerKind: TriggerKind = item.trigger_kind || 'human';
+  const config = TRIGGER_CONFIG[triggerKind];
+
+  return (
+    <div className="flex flex-col gap-1">
+      <span
+        className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${config.colorClass}`}
+        data-testid={`trigger-badge-${triggerKind}`}
+      >
+        <span aria-hidden="true">{config.icon}</span>
+        <span>{config.label}</span>
+      </span>
+      {/* Show parent link for agent-triggered runs */}
+      {triggerKind === 'agent' && item.triggered_by_topic && (
+        <span className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-[150px]">
+          ← {item.triggered_by_topic}
+        </span>
+      )}
+      {/* Chain link */}
+      {item.correlation_id && onViewChain && (
+        <button
+          onClick={() => onViewChain(item.correlation_id!)}
+          className="text-xs text-blue-600 dark:text-blue-400 hover:underline text-left"
+          title="View invocation chain"
+        >
+          View chain
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -119,11 +168,12 @@ export default function AgentActivity() {
   const { isPlatformAdmin, isOrgAdmin } = usePermissions();
   const isAdmin = isPlatformAdmin() || isOrgAdmin();
 
-  // Detail modal state (Phase 5)
-  const [selectedItem, setSelectedItem] = useState<InvocationItem | null>(null);
-
   // View toggle: "mine" or "all" (admin only)
   const [viewMode, setViewMode] = useState<'mine' | 'all'>('mine');
+
+  // Chain view state
+  const [activeChainId, setActiveChainId] = useState<string | null>(null);
+  const [chainHighlightId, setChainHighlightId] = useState<string | undefined>(undefined);
 
   // Filters
   const [statusFilter, setStatusFilter] = useState('');
@@ -230,22 +280,21 @@ export default function AgentActivity() {
     [resetPagination],
   );
 
-  // Row click → detail (Phase 5)
-  const handleRowClick = useCallback((item: InvocationItem) => {
-    setSelectedItem(item);
+  // Chain view handler
+  const handleViewChain = useCallback((correlationId: string, invocationId?: string) => {
+    setActiveChainId(correlationId);
+    setChainHighlightId(invocationId);
   }, []);
 
-  const handleDetailClose = useCallback(() => {
-    setSelectedItem(null);
+  const handleCloseChain = useCallback(() => {
+    setActiveChainId(null);
+    setChainHighlightId(undefined);
   }, []);
 
   // Determine pagination state
   const hasNextPage = data?.last_key != null;
   const hasPrevPage = cursorStack.length > 0;
   const pageNumber = cursorStack.length + 1;
-
-  // Determine which empty state to show (Phase 5 polish)
-  const hasActiveFilters = !!(statusFilter || channelFilter || personaFilter || startDate || endDate);
 
   return (
     <div className="space-y-6">
@@ -351,6 +400,16 @@ export default function AgentActivity() {
         </div>
       </div>
 
+      {/* Chain view (shown when a chain is selected) */}
+      {activeChainId && (
+        <InvocationChain
+          correlationId={activeChainId}
+          isAdmin={viewMode === 'all' && isAdmin}
+          highlightInvocationId={chainHighlightId}
+          onClose={handleCloseChain}
+        />
+      )}
+
       {/* Error state */}
       {error && (
         <Alert variant="error" title="Failed to load agent activity">
@@ -380,6 +439,9 @@ export default function AgentActivity() {
                         Date
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Trigger
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Event Source
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -400,23 +462,19 @@ export default function AgentActivity() {
                     {data.items.map((item: InvocationItem) => (
                       <tr
                         key={item.invocation_id}
-                        className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer focus:outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20"
-                        onClick={() => handleRowClick(item)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            handleRowClick(item);
-                          }
-                        }}
-                        tabIndex={0}
-                        role="button"
-                        aria-label={`View details for invocation: ${item.topic || item.invocation_id}`}
+                        className="hover:bg-gray-50 dark:hover:bg-gray-700"
                       >
                         <td
                           className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white"
                           title={formatDateTime(item.invoked_at)}
                         >
                           {formatRelativeTime(item.invoked_at)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <TriggerBadge
+                            item={item}
+                            onViewChain={(cid) => handleViewChain(cid, item.invocation_id)}
+                          />
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                           <span className="capitalize">{item.channel}</span>
@@ -471,25 +529,9 @@ export default function AgentActivity() {
             </>
           ) : !isLoading && data && data.items.length === 0 && !hasNextPage ? (
             <div className="text-center py-12">
-              {hasActiveFilters ? (
-                <>
-                  <p className="text-gray-500 dark:text-gray-400">
-                    No matching results for the current filters
-                  </p>
-                  <p className="text-gray-400 dark:text-gray-500 text-sm mt-1">
-                    Try adjusting your filters to see more results.
-                  </p>
-                </>
-              ) : (
-                <>
-                  <p className="text-gray-500 dark:text-gray-400">
-                    No agent activity yet
-                  </p>
-                  <p className="text-gray-400 dark:text-gray-500 text-sm mt-1">
-                    Agent invocations will appear here once triggered.
-                  </p>
-                </>
-              )}
+              <p className="text-gray-500 dark:text-gray-400">
+                No agent activity yet
+              </p>
             </div>
           ) : !isLoading && data && data.items.length === 0 && hasNextPage ? (
             /* Empty page with non-null last_key — more results exist beyond this cursor */
@@ -504,13 +546,6 @@ export default function AgentActivity() {
           ) : null}
         </div>
       )}
-
-      {/* Detail modal (Phase 5) */}
-      <InvocationDetail
-        item={selectedItem}
-        isOpen={selectedItem !== null}
-        onClose={handleDetailClose}
-      />
     </div>
   );
 }

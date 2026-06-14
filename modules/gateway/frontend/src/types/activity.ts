@@ -2,7 +2,7 @@
  * Types for the Agent Activity page.
  *
  * Issue #1457: Frontend "Agent Activity" page — Phase 3 of Agent Activity rollout.
- * Issue #1459: Phase 5 — Row detail + polish. Added detail fields.
+ * Issue #1461: Phase 6 — lineage fields (trigger_kind, parent, chain view).
  * Mirrors the Phase 2 read API response contract.
  */
 
@@ -19,6 +19,9 @@ export type InvocationStatus =
 /** Channel through which the invocation was triggered. */
 export type InvocationChannel = 'github' | 'slack' | 'api' | 'manual';
 
+/** How the invocation was triggered (Phase 6 lineage). */
+export type TriggerKind = 'human' | 'agent' | 'bot';
+
 /** A single agent invocation row from the API. */
 export interface InvocationItem {
   invocation_id: string;
@@ -33,20 +36,41 @@ export interface InvocationItem {
   issue_number: number | null;
   invoked_at: string;
   completed_at: string | null;
-  /** ISO 8601 timestamp of the last status transition. */
-  status_updated_at: string | null;
-  /** Correlation ID linking related invocations/events. */
+  // Phase 6 lineage fields (#1461)
+  trigger_kind: TriggerKind;
+  triggered_by_invocation_id: string | null;
+  triggered_by_topic: string | null;
+  root_human_id: string | null;
+  is_human_rooted: boolean;
   correlation_id: string | null;
-  /** GitHub Actions run ID or job ID (if applicable). */
-  run_id: string | null;
-  /** Error message for failed invocations (sanitized for end users). */
-  error_message: string | null;
 }
 
 /** Cursor-paginated response from GET /me/agent-invocations or /admin/agent-invocations. */
 export interface InvocationListResponse {
   items: InvocationItem[];
   last_key: string | null;
+}
+
+/** A node in the invocation chain tree. */
+export interface InvocationChainItem {
+  invocation_id: string;
+  invoked_at: string;
+  channel: string | null;
+  status: string | null;
+  topic: string | null;
+  persona: string | null;
+  parent_invocation_id: string | null;
+  children: InvocationChainItem[];
+}
+
+/** Response from GET /me/agent-invocations/chain/{correlation_id}. */
+export interface InvocationChainResponse {
+  correlation_id: string;
+  root_human_id: string | null;
+  is_human_rooted: boolean;
+  items: InvocationChainItem[];
+  total_count: number;
+  depth_capped: boolean;
 }
 
 /** Query parameters for fetching invocations. */

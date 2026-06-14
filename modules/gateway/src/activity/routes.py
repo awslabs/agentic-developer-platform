@@ -1,17 +1,19 @@
 """Activity REST API routes — agent invocation read endpoints.
 
-Two endpoints:
+Endpoints:
 - GET /me/agent-invocations — caller's own invocations (user-index GSI)
 - GET /admin/agent-invocations — org/tenant-scoped (tenant-index GSI, admin only)
+- GET /me/agent-invocations/chain/{correlation_id} — chain view for a correlation
+- GET /admin/agent-invocations/chain/{correlation_id} — admin chain view
 """
 
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.activity.schemas import InvocationListResponse
+from src.activity.schemas import InvocationChainResponse, InvocationListResponse
 from src.activity.service import ActivityService
 from src.admin.access_control import AccessControl
 from src.admin.config import Permission
@@ -129,3 +131,56 @@ async def get_admin_invocations(
     except ValueError as exc:
         # Bad cursor
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# GET /me/agent-invocations/chain/{correlation_id} — user chain view
+# ---------------------------------------------------------------------------
+
+
+@router.get("/me/agent-invocations/chain/{correlation_id}", response_model=InvocationChainResponse)
+async def get_my_invocation_chain(
+    correlation_id: Annotated[str, Path(description="Correlation ID of the chain to view")],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    service: Annotated[ActivityService, Depends(get_activity_service)],
+) -> InvocationChainResponse:
+    """Get the chain view for a specific correlation_id.
+
+    Scoping: only returns invocations the caller owns (user_id from token).
+    Shows the entire chain the caller roots or participates in.
+    """
+    return service.get_chain(
+        correlation_id=correlation_id,
+        user_id=current_user.user_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/agent-invocations/chain/{correlation_id} — admin chain view
+# ---------------------------------------------------------------------------
+
+
+@router.get("/admin/agent-invocations/chain/{correlation_id}", response_model=InvocationChainResponse)
+async def get_admin_invocation_chain(
+    correlation_id: Annotated[str, Path(description="Correlation ID of the chain to view")],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    service: Annotated[ActivityService, Depends(get_activity_service)],
+    tenant_id: Annotated[str | None, Query()] = None,
+) -> InvocationChainResponse:
+    """Get the chain view for a specific correlation_id (admin).
+
+    Scoping: org admins see chains within their tenant; platform admins
+    can specify any tenant_id.
+    """
+    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
+
+    if current_user.is_admin and tenant_id:
+        effective_tenant_id = tenant_id
+    else:
+        effective_tenant_id = current_user.org_id
+
+    return service.get_chain(
+        correlation_id=correlation_id,
+        tenant_id=effective_tenant_id,
+    )

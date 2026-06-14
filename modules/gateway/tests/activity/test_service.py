@@ -6,12 +6,19 @@ Covers:
 - Cursor encode/decode round-trip; bad cursor → ValueError
 - FilterExpression short-page: zero items + non-null last_key is valid
 - user_id comes from argument (token), never from query params
+- Phase 6 (#1461): trigger_kind derivation, chain query, depth cap
 """
 
 import pytest
 from botocore.exceptions import ClientError
 
-from src.activity.service import ActivityService, _decode_cursor, _encode_cursor
+from src.activity.service import (
+    ActivityService,
+    _build_chain_tree,
+    _decode_cursor,
+    _derive_trigger_kind,
+    _encode_cursor,
+)
 
 
 class TestCursorEncodeDecode:
@@ -236,3 +243,363 @@ class TestQueryByTenant:
 
         call_kwargs = mock_dynamodb_table.query.call_args[1]
         assert "FilterExpression" in call_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 tests (#1461): Lineage enrichment + chain query
+# ---------------------------------------------------------------------------
+
+
+class TestTriggerKindDerivation:
+    """Tests for _derive_trigger_kind — the logic that maps DDB fields to trigger_kind."""
+
+    def test_human_triggered_no_parent(self):
+        """No parent_invocation_id + is_human_rooted=True → 'human'."""
+        item = {"is_human_rooted": True}
+        assert _derive_trigger_kind(item) == "human"
+
+    def test_human_triggered_default(self):
+        """Missing fields default to 'human'."""
+        item = {}
+        assert _derive_trigger_kind(item) == "human"
+
+    def test_agent_triggered_has_parent(self):
+        """Has parent_invocation_id → 'agent' regardless of is_human_rooted."""
+        item = {"parent_invocation_id": "inv-parent-001", "is_human_rooted": True}
+        assert _derive_trigger_kind(item) == "agent"
+
+    def test_agent_triggered_non_human_parent(self):
+        """Has parent_invocation_id + is_human_rooted=False → still 'agent' (parent wins)."""
+        item = {"parent_invocation_id": "inv-parent-002", "is_human_rooted": False}
+        assert _derive_trigger_kind(item) == "agent"
+
+    def test_bot_no_parent_not_human_rooted(self):
+        """No parent + is_human_rooted=False → 'bot'."""
+        item = {"is_human_rooted": False}
+        assert _derive_trigger_kind(item) == "bot"
+
+    def test_bot_explicit_false(self):
+        """Explicit is_human_rooted=False without parent → 'bot'."""
+        item = {"is_human_rooted": False, "parent_invocation_id": None}
+        assert _derive_trigger_kind(item) == "bot"
+
+
+class TestLineageFieldMapping:
+    """Tests that lineage fields are correctly mapped from DDB items."""
+
+    def test_human_triggered_item(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Human-triggered item has correct lineage fields."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-root",
+                    "arrived_at": "2026-06-14T10:00:00Z",
+                    "channel": "github",
+                    "status": "complete",
+                    "user_id": "user-1",
+                    "is_human_rooted": True,
+                    "root_human_id": "user-1",
+                    "correlation_id": "chain-001",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        item = result.items[0]
+        assert item.trigger_kind == "human"
+        assert item.triggered_by_invocation_id is None
+        assert item.triggered_by_topic is None
+        assert item.root_human_id == "user-1"
+        assert item.is_human_rooted is True
+
+    def test_agent_triggered_item(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Agent-triggered item shows parent link."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-child",
+                    "arrived_at": "2026-06-14T10:05:00Z",
+                    "channel": "github",
+                    "status": "in_progress",
+                    "user_id": "user-1",
+                    "parent_invocation_id": "inv-root",
+                    "parent_topic": "Deploy infrastructure",
+                    "is_human_rooted": True,
+                    "root_human_id": "user-1",
+                    "correlation_id": "chain-001",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        item = result.items[0]
+        assert item.trigger_kind == "agent"
+        assert item.triggered_by_invocation_id == "inv-root"
+        assert item.triggered_by_topic == "Deploy infrastructure"
+        assert item.root_human_id == "user-1"
+        assert item.is_human_rooted is True
+
+    def test_bot_triggered_item(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Bot-triggered item (not human-rooted, no parent)."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-cron",
+                    "arrived_at": "2026-06-14T00:00:00Z",
+                    "channel": "api",
+                    "status": "complete",
+                    "user_id": "user-bot",
+                    "is_human_rooted": False,
+                    "correlation_id": "chain-bot-001",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-bot")
+
+        item = result.items[0]
+        assert item.trigger_kind == "bot"
+        assert item.triggered_by_invocation_id is None
+        assert item.root_human_id is None
+        assert item.is_human_rooted is False
+
+    def test_pre_feature_rows_default_human(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Pre-feature rows (no lineage fields) default to human trigger."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-old",
+                    "arrived_at": "2026-05-01T10:00:00Z",
+                    "channel": "github",
+                    "status": "complete",
+                    "user_id": "user-1",
+                    # No lineage fields at all
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        item = result.items[0]
+        assert item.trigger_kind == "human"
+        assert item.triggered_by_invocation_id is None
+        assert item.triggered_by_topic is None
+        assert item.root_human_id is None
+        assert item.is_human_rooted is True
+
+
+class TestChainQuery:
+    """Tests for get_chain — the chain view query."""
+
+    def test_returns_empty_without_scope(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Chain query without user_id or tenant_id returns empty (safety)."""
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain("chain-001")
+
+        assert result.items == []
+        assert result.total_count == 0
+        assert result.depth_capped is False
+
+    def test_chain_with_user_scope(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Chain query with user_id returns items for that user."""
+        mock_dynamodb_table.scan.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-A",
+                    "arrived_at": "2026-06-14T10:00:00Z",
+                    "channel": "github",
+                    "status": "complete",
+                    "topic": "Root task",
+                    "user_id": "user-1",
+                    "correlation_id": "chain-001",
+                    "is_human_rooted": True,
+                    "root_human_id": "user-1",
+                },
+                {
+                    "invocation_id": "inv-B",
+                    "arrived_at": "2026-06-14T10:05:00Z",
+                    "channel": "github",
+                    "status": "in_progress",
+                    "topic": "Child task",
+                    "user_id": "user-1",
+                    "correlation_id": "chain-001",
+                    "parent_invocation_id": "inv-A",
+                    "is_human_rooted": True,
+                    "root_human_id": "user-1",
+                },
+            ],
+            "Count": 2,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain("chain-001", user_id="user-1")
+
+        assert result.correlation_id == "chain-001"
+        assert result.total_count == 2
+        assert result.root_human_id == "user-1"
+        assert result.is_human_rooted is True
+        assert result.depth_capped is False
+        # Tree: A is root, B is child
+        assert len(result.items) == 1  # One root node
+        assert result.items[0].invocation_id == "inv-A"
+        assert len(result.items[0].children) == 1
+        assert result.items[0].children[0].invocation_id == "inv-B"
+
+    def test_chain_with_tenant_scope(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Chain query with tenant_id returns items for that tenant."""
+        mock_dynamodb_table.scan.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-T1",
+                    "arrived_at": "2026-06-14T10:00:00Z",
+                    "channel": "github",
+                    "status": "complete",
+                    "topic": "Tenant task",
+                    "tenant_id": "org-001",
+                    "correlation_id": "chain-002",
+                    "is_human_rooted": True,
+                    "root_human_id": "user-admin",
+                },
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain("chain-002", tenant_id="org-001")
+
+        assert result.total_count == 1
+        assert result.items[0].invocation_id == "inv-T1"
+
+    def test_chain_depth_cap(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Chain query respects depth cap and sets depth_capped=True."""
+        # Generate more items than the depth cap
+        items = [
+            {
+                "invocation_id": f"inv-{i:03d}",
+                "arrived_at": f"2026-06-14T{10 + i}:00:00Z",
+                "channel": "github",
+                "status": "complete",
+                "user_id": "user-1",
+                "correlation_id": "chain-deep",
+            }
+            for i in range(10)
+        ]
+        mock_dynamodb_table.scan.return_value = {"Items": items, "Count": 10}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain("chain-deep", user_id="user-1", depth_cap=5)
+
+        assert result.total_count == 5
+        assert result.depth_capped is True
+
+    def test_chain_missing_table_returns_empty(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Chain query with missing table returns empty gracefully."""
+        mock_dynamodb_table.scan.side_effect = ClientError(
+            {"Error": {"Code": "ResourceNotFoundException", "Message": "Table not found"}},
+            "Scan",
+        )
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain("chain-001", user_id="user-1")
+
+        assert result.items == []
+        assert result.total_count == 0
+
+    def test_chain_flat_fallback_no_parent_edges(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Chain with no parent edges renders as flat list (all roots)."""
+        mock_dynamodb_table.scan.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-X",
+                    "arrived_at": "2026-06-14T10:00:00Z",
+                    "status": "complete",
+                    "topic": "Task X",
+                    "user_id": "user-1",
+                    "correlation_id": "chain-flat",
+                },
+                {
+                    "invocation_id": "inv-Y",
+                    "arrived_at": "2026-06-14T10:05:00Z",
+                    "status": "complete",
+                    "topic": "Task Y",
+                    "user_id": "user-1",
+                    "correlation_id": "chain-flat",
+                },
+            ],
+            "Count": 2,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain("chain-flat", user_id="user-1")
+
+        # Without parent edges, all items are roots (flat)
+        assert len(result.items) == 2
+        assert all(len(node.children) == 0 for node in result.items)
+
+
+class TestBuildChainTree:
+    """Tests for _build_chain_tree helper."""
+
+    def test_linear_chain_abc(self):
+        """A→B→C builds correctly nested tree."""
+        items = [
+            {"invocation_id": "A", "arrived_at": "2026-06-14T10:00:00Z", "status": "complete", "topic": "Root"},
+            {"invocation_id": "B", "arrived_at": "2026-06-14T10:01:00Z", "status": "complete", "topic": "Child", "parent_invocation_id": "A"},
+            {"invocation_id": "C", "arrived_at": "2026-06-14T10:02:00Z", "status": "complete", "topic": "Grandchild", "parent_invocation_id": "B"},
+        ]
+
+        tree = _build_chain_tree(items)
+
+        assert len(tree) == 1  # One root (A)
+        assert tree[0].invocation_id == "A"
+        assert len(tree[0].children) == 1  # A has one child (B)
+        assert tree[0].children[0].invocation_id == "B"
+        assert len(tree[0].children[0].children) == 1  # B has one child (C)
+        assert tree[0].children[0].children[0].invocation_id == "C"
+
+    def test_branching_tree(self):
+        """A→B, A→C builds tree with two children under A."""
+        items = [
+            {"invocation_id": "A", "arrived_at": "2026-06-14T10:00:00Z", "status": "complete", "topic": "Root"},
+            {"invocation_id": "B", "arrived_at": "2026-06-14T10:01:00Z", "status": "complete", "topic": "Branch 1", "parent_invocation_id": "A"},
+            {"invocation_id": "C", "arrived_at": "2026-06-14T10:02:00Z", "status": "complete", "topic": "Branch 2", "parent_invocation_id": "A"},
+        ]
+
+        tree = _build_chain_tree(items)
+
+        assert len(tree) == 1
+        assert tree[0].invocation_id == "A"
+        assert len(tree[0].children) == 2
+        child_ids = {c.invocation_id for c in tree[0].children}
+        assert child_ids == {"B", "C"}
+
+    def test_orphan_becomes_root(self):
+        """Item whose parent is not in the list becomes a root."""
+        items = [
+            {
+                "invocation_id": "B",
+                "arrived_at": "2026-06-14T10:01:00Z",
+                "status": "complete",
+                "topic": "Orphan",
+                "parent_invocation_id": "missing-parent",
+            },
+        ]
+
+        tree = _build_chain_tree(items)
+
+        assert len(tree) == 1
+        assert tree[0].invocation_id == "B"
+
+    def test_empty_items(self):
+        """Empty input returns empty tree."""
+        assert _build_chain_tree([]) == []

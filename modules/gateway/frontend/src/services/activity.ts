@@ -2,11 +2,13 @@
  * API client for Agent Activity (invocation history).
  *
  * Issue #1457: Phase 3 — Frontend "Agent Activity" page.
+ * Issue #1461: Phase 6 — Chain view endpoint for lineage.
  * Mirrors the pattern in services/logs.ts.
  */
 
 import { apiClient, buildQueryString } from './api';
 import type {
+  InvocationChainResponse,
   InvocationListResponse,
   InvocationQueryParams,
 } from '@/types/activity';
@@ -63,4 +65,30 @@ export async function getAllInvocations(
     items: Array.isArray(response?.items) ? response.items : [],
     last_key: response?.last_key ?? null,
   };
+}
+
+/**
+ * Fetch the chain view for a correlation_id (user's own invocations).
+ */
+export async function getMyInvocationChain(
+  correlationId: string,
+): Promise<InvocationChainResponse> {
+  const response = await apiClient.get<InvocationChainResponse>(
+    `/me/agent-invocations/chain/${encodeURIComponent(correlationId)}`,
+  );
+  return response;
+}
+
+/**
+ * Fetch the chain view for a correlation_id (admin view).
+ */
+export async function getAdminInvocationChain(
+  correlationId: string,
+  tenantId?: string,
+): Promise<InvocationChainResponse> {
+  const query = tenantId ? buildQueryString({ tenant_id: tenantId }) : '';
+  const response = await apiClient.get<InvocationChainResponse>(
+    `/admin/agent-invocations/chain/${encodeURIComponent(correlationId)}${query}`,
+  );
+  return response;
 }
