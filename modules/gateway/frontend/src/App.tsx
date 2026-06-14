@@ -29,6 +29,7 @@ const Pending = lazy(() => import('./pages/onboarding/Pending')); // Issue #545
 const Denied = lazy(() => import('./pages/onboarding/Denied')); // Issue #545
 const AccessRequests = lazy(() => import('./pages/admin/AccessRequests')); // Issue #545
 const IndexingStatus = lazy(() => import('./pages/admin/IndexingStatus')); // Issue #1424
+const AgentActivity = lazy(() => import('./pages/AgentActivity')); // Issue #1457
 const NotFound = lazy(() => import('./pages/NotFound'));
 
 function App() {
@@ -82,6 +83,7 @@ function App() {
               <Route path="/settings/credentials/aws/connect" element={<ConnectAws />} /> {/* Issue #562 */}
               <Route path="/admin/access-requests" element={<AccessRequests />} /> {/* Issue #545 */}
               <Route path="/admin/indexing" element={<IndexingStatus />} /> {/* Issue #1424 */}
+              <Route path="/activity" element={<AgentActivity />} /> {/* Issue #1457 */}
             </Route>
           </Route>
 
