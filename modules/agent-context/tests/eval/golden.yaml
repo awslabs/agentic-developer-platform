@@ -718,3 +718,421 @@ questions:
       files: ["README.md"]
       content: ["Capsulecorp Pentest"]
     pass_criterion: "Capsulecorp Pentest entry found in top 3 results"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RELEVANCE EVALUATION: expected_substance for a representative subset
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# These entries provide substance descriptions and grounding for the LLM judge.
+# They are used only in --mode relevance (not presence mode).
+# Format: question_id -> expected_substance + grounding_snippet + pass_threshold
+#
+# Start with 20 questions spanning all 5 verbs. Expand as the methodology matures.
+
+relevance_annotations:
+  # --- search_exact (4 questions) ---
+  agent-skills-01:
+    expected_substance: |
+      The response should return the doubt-driven-development skill file/directory
+      as the top result or near the top. The returned snippet should show content
+      from the actual skill definition, not just match the filename.
+    grounding_snippet: |
+      File: skills/doubt-driven-development/skill.toml
+      Contains a skill definition for systematic doubt-driven development methodology.
+    pass_threshold: 2
+
+  superpowers-01:
+    expected_substance: |
+      The subagent-driven-development skill directory/file must be the top result.
+      The snippet should contain content relating to delegating work to sub-agents.
+    grounding_snippet: |
+      File: skills/subagent-driven-development
+      A skill definition for driving development through sub-agent delegation patterns.
+    pass_threshold: 2
+
+  awesome-hacking-01:
+    expected_substance: |
+      The GTFOBins reference in README.md should be found. The relevant snippet
+      should mention Unix binaries that can be used for bypassing local security
+      restrictions, not just any mention of the word GTFOBins.
+    grounding_snippet: |
+      README.md section: "## Tools" or similar category listing GTFOBins
+      as "Unix binaries that can be used to bypass local security restrictions"
+    pass_threshold: 2
+
+  awesome-hacking-05:
+    expected_substance: |
+      Capsulecorp Pentest should be returned as a precise match. The snippet
+      must reference the actual pentest environment/lab description, not an
+      incidental mention.
+    grounding_snippet: |
+      README.md entry: Capsulecorp Pentest - a small virtual network managed
+      by Vagrant and Ansible for practicing penetration testing techniques.
+    pass_threshold: 2
+
+  # --- search_semantic (4 questions) ---
+  agent-skills-02:
+    expected_substance: |
+      Despite the vocabulary mismatch (query says "automated code quality review
+      before merging", repo uses "review" and "code-review"), the response should
+      return review.toml or the code-review skill. The content should be about
+      automated review workflows, not generic file listings.
+    grounding_snippet: |
+      commands/review.toml: defines a code review command workflow.
+      skills/code-review/: skill for performing automated code reviews.
+    pass_threshold: 2
+
+  superpowers-02:
+    expected_substance: |
+      Query uses "running multiple independent coding tasks simultaneously" but
+      repo uses "dispatching-parallel-agents" and "using-git-worktrees". The
+      response should return the parallel-agents or worktrees skill with content
+      about concurrent/parallel execution patterns.
+    grounding_snippet: |
+      skills/dispatching-parallel-agents: patterns for running multiple agents
+      in parallel on independent tasks.
+      skills/using-git-worktrees: using git worktrees for concurrent work.
+    pass_threshold: 2
+
+  awesome-hacking-02:
+    expected_substance: |
+      Query says "exploiting legitimate system utilities to bypass security controls"
+      — a semantic match to GTFOBins/LOLBAS. Response should surface GTFOBins
+      (Unix binaries for bypassing security restrictions) with relevant context.
+    grounding_snippet: |
+      README.md: GTFOBins - curated list of Unix binaries that can be used to
+      bypass local security restrictions in misconfigured systems.
+    pass_threshold: 2
+
+  awesome-hacking-04:
+    expected_substance: |
+      Query says "machine learning and artificial intelligence for network defense"
+      — should find the awesome-rl-for-cybersecurity or Reinforcement Learning
+      entries. Content should relate to ML/AI applied to cybersecurity defense.
+    grounding_snippet: |
+      README.md: awesome-rl-for-cybersecurity - Reinforcement Learning for
+      Cyber Security research and resources.
+    pass_threshold: 2
+
+  # --- understand (4 questions) ---
+  agent-skills-04:
+    expected_substance: |
+      A correct explanation of plugin.json must describe: it defines the
+      agent-skills plugin metadata (name, version), and declares the structure
+      pointing to a "commands" directory (TOML command definitions) and a "skills"
+      directory (skill implementations). Must NOT just say "this is a JSON file."
+    grounding_snippet: |
+      {"name": "agent-skills", "version": "1.0.0", "commands": "commands/",
+       "skills": "skills/", "description": "A curated set of agent skills"}
+    pass_threshold: 2
+
+  superpowers-04:
+    expected_substance: |
+      Explanation of the superpowers plugin structure should describe that it is
+      a skill collection with specific capabilities (parallel agents, worktrees,
+      subagents). Must reference actual structural elements, not generic platitudes.
+    grounding_snippet: |
+      Plugin structure: skills/ directory containing parallel-agents, worktrees,
+      subagent-driven-development, and other capability definitions.
+    pass_threshold: 2
+
+  headroom-04:
+    expected_substance: |
+      The understand response for headroom must describe its actual purpose as a
+      code project (JavaScript/TypeScript), not hallucinate features. Should
+      reference real module structure visible in the repo.
+    grounding_snippet: |
+      headroom: a JavaScript/TypeScript project. Real structural elements include
+      package.json, src/ directory, configuration files.
+    pass_threshold: 2
+
+  copilotkit-04:
+    expected_substance: |
+      Must describe CopilotKit's actual purpose as an open-source framework for
+      building AI copilots in React applications. Should reference real packages,
+      components, or architectural elements from the repo.
+    grounding_snippet: |
+      CopilotKit: open-source framework for building in-app AI copilots.
+      Key packages: @copilotkit/react-core, @copilotkit/react-textarea,
+      @copilotkit/backend. Monorepo structure with packages/ directory.
+    pass_threshold: 2
+
+  # --- impact (4 questions) ---
+  headroom-05:
+    expected_substance: |
+      Impact analysis must name specific callers/dependents of the queried target
+      in the headroom repo. Must include both the files that import/require it
+      AND what would break. Missing a real caller is a dangerous false-negative.
+    grounding_snippet: |
+      The target's callers can be verified from import/require statements in
+      the headroom codebase. Correct response lists actual file paths.
+    pass_threshold: 2
+
+  copilotkit-05:
+    expected_substance: |
+      Impact analysis for the CopilotKit target must identify real dependents
+      from the monorepo. The response should show cross-package dependencies
+      and internal callers, not just re-state the target name.
+    grounding_snippet: |
+      CopilotKit monorepo: packages depend on each other. Impact should trace
+      through package.json dependencies and import statements.
+    pass_threshold: 2
+
+  agent-reach-05:
+    expected_substance: |
+      Impact for Agent-Reach target must show actual Python callers (import
+      statements, function calls). Response must list specific file paths
+      where the target is used, not generic descriptions.
+    grounding_snippet: |
+      Agent-Reach: Python project. Callers identified via import statements
+      and function call references in the codebase.
+    pass_threshold: 2
+
+  codegraph-05:
+    expected_substance: |
+      Impact for the codegraph target must trace TypeScript/JavaScript
+      imports and show which modules depend on the queried symbol.
+      Must be verifiable against actual import/require statements.
+    grounding_snippet: |
+      codegraph: TypeScript project. Dependencies traceable through
+      import statements in src/ files.
+    pass_threshold: 2
+
+  # --- browse (4 questions) ---
+  agent-skills-03:
+    expected_substance: |
+      Browse of /agent-skills/commands should list the actual TOML command files
+      that exist in the directory. Must include real filenames (build.toml,
+      review.toml, spec.toml, test.toml, ship.toml). An incomplete or wrong
+      listing is unhelpful — an agent needs the real directory contents.
+    grounding_snippet: |
+      commands/ directory contains: build.toml, review.toml, spec.toml,
+      test.toml, ship.toml (and possibly others).
+    pass_threshold: 2
+
+  superpowers-03:
+    expected_substance: |
+      Browse must return the actual directory structure of the superpowers
+      repo at the queried path. Entries should match real files/directories.
+      A partial or fabricated listing is unhelpful for navigation.
+    grounding_snippet: |
+      superpowers/ top-level or skills/ directory with actual skill
+      subdirectories visible.
+    pass_threshold: 2
+
+  awesome-selfhosted-03:
+    expected_substance: |
+      Browse of awesome-selfhosted must return the real file/directory listing.
+      Should show README.md and any other top-level files. Must be accurate
+      enough for an agent to navigate the repo.
+    grounding_snippet: |
+      awesome-selfhosted: top-level contains README.md, CONTRIBUTING.md,
+      and possibly other documentation/config files.
+    pass_threshold: 2
+
+  awesome-hacking-03:
+    expected_substance: |
+      Browse of /Awesome-Hacking must show the real top-level contents
+      including README.md. The listing should be complete enough to orient
+      an agent exploring the repository structure.
+    grounding_snippet: |
+      Awesome-Hacking: top-level contains README.md, contributing.md.
+    pass_threshold: 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CALIBRATION SET: known-good, known-bad, and known-echo answers
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# The judge MUST score these correctly or the eval run is invalid.
+# Rules:
+#   - Each actual score must be within +/- 1 of expected_score
+#   - All "echo" items must score <= 1
+#
+# Categories: "good" (expected 3), "bad" (expected 0), "echo" (expected <= 1)
+
+calibration:
+  - id: cal-good-01
+    category: good
+    verb: understand
+    query: "agent-skills/plugin.json"
+    response:
+      definitions:
+        - symbol: "plugin.json"
+          file: "plugin.json"
+          kind: "config"
+          signature: ""
+          content: "Defines the agent-skills plugin: name='agent-skills', version='1.0.0'. Declares a commands/ directory with TOML command definitions (build, review, spec, test, ship) and a skills/ directory containing skill implementations (doubt-driven-development, code-review, idea-refine). Acts as the manifest that tooling uses to discover available commands and skills."
+          callers: []
+          callees: ["commands/", "skills/"]
+    expected_substance: |
+      Must explain that plugin.json defines the agent-skills plugin metadata
+      (name, version), and declares commands/ and skills/ directories.
+    grounding_snippet: |
+      {"name": "agent-skills", "version": "1.0.0", "commands": "commands/",
+       "skills": "skills/", "description": "A curated set of agent skills"}
+    expected_score: 3
+
+  - id: cal-good-02
+    category: good
+    verb: impact
+    query: "copilotkit/packages/react-core/src/hooks/useCopilotChat.ts"
+    response:
+      affected:
+        - file: "packages/react-textarea/src/components/ChatArea.tsx"
+          symbol: "ChatArea"
+          content: "import { useCopilotChat } from '@copilotkit/react-core'"
+          caller: "ChatArea"
+        - file: "packages/react-ui/src/components/CopilotPanel.tsx"
+          symbol: "CopilotPanel"
+          content: "import { useCopilotChat } from '@copilotkit/react-core'"
+          caller: "CopilotPanel"
+        - file: "examples/next-app/src/app/page.tsx"
+          symbol: "HomePage"
+          content: "const { messages, sendMessage } = useCopilotChat()"
+          caller: "HomePage"
+    expected_substance: |
+      Must list real callers of useCopilotChat from the CopilotKit monorepo:
+      ChatArea, CopilotPanel, and example usage.
+    grounding_snippet: |
+      useCopilotChat is imported by ChatArea (react-textarea), CopilotPanel
+      (react-ui), and example pages. These are the real dependents.
+    expected_score: 3
+
+  - id: cal-bad-01
+    category: bad
+    verb: understand
+    query: "agent-skills/plugin.json"
+    response:
+      definitions:
+        - symbol: "plugin.json"
+          file: "plugin.json"
+          kind: "config"
+          signature: ""
+          content: "This is a React component that renders a virtual DOM tree with server-side hydration support. It manages WebSocket connections for real-time collaborative editing and integrates with PostgreSQL for data persistence."
+          callers: ["ReactDOM.render"]
+          callees: ["WebSocket", "pg.Pool"]
+    expected_substance: |
+      Must explain that plugin.json defines the agent-skills plugin metadata
+      (name, version), and declares commands/ and skills/ directories.
+    grounding_snippet: |
+      {"name": "agent-skills", "version": "1.0.0", "commands": "commands/",
+       "skills": "skills/", "description": "A curated set of agent skills"}
+    expected_score: 0
+
+  - id: cal-bad-02
+    category: bad
+    verb: impact
+    query: "headroom/src/utils/logger.js"
+    response:
+      affected:
+        - file: "packages/kubernetes-operator/helm/values.yaml"
+          symbol: "helmRelease"
+          content: "apiVersion: helm.toolkit.fluxcd.io/v2beta1"
+          caller: "FluxCD"
+        - file: "terraform/modules/vpc/main.tf"
+          symbol: "aws_vpc"
+          content: "resource 'aws_vpc' 'main'"
+          caller: "TerraformPlan"
+    expected_substance: |
+      Must list JavaScript/TypeScript files in the headroom repo that import
+      or use the logger utility.
+    grounding_snippet: |
+      headroom: JavaScript project. Logger callers would be in src/ files
+      that import from utils/logger.
+    expected_score: 0
+
+  - id: cal-echo-01
+    category: echo
+    verb: understand
+    query: "agent-skills/plugin.json"
+    response:
+      definitions:
+        - symbol: "plugin.json"
+          file: "plugin.json"
+          kind: "file"
+          signature: ""
+          content: "plugin.json - agent-skills/plugin.json"
+          callers: []
+          callees: []
+    expected_substance: |
+      Must explain that plugin.json defines the agent-skills plugin metadata
+      (name, version), and declares commands/ and skills/ directories.
+    grounding_snippet: |
+      {"name": "agent-skills", "version": "1.0.0", "commands": "commands/",
+       "skills": "skills/", "description": "A curated set of agent skills"}
+    expected_score: 0
+
+  - id: cal-echo-02
+    category: echo
+    verb: impact
+    query: "copilotkit/packages/react-core/src/hooks/useCopilotChat.ts"
+    response:
+      target: "copilotkit/packages/react-core/src/hooks/useCopilotChat.ts"
+      affected:
+        - file: "packages/react-core/src/hooks/useCopilotChat.ts"
+          symbol: "useCopilotChat"
+          content: "useCopilotChat"
+          caller: "useCopilotChat"
+    expected_substance: |
+      Must list real callers of useCopilotChat: components that import and
+      use this hook from other packages.
+    grounding_snippet: |
+      useCopilotChat is imported by ChatArea (react-textarea), CopilotPanel
+      (react-ui), and example pages. These are the real dependents.
+    expected_score: 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# END-TO-END TASK SCENARIOS: chained verb evaluations
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# These test whether combined answers from multiple verbs would actually
+# unblock an agent task. The judge grades the combined output.
+
+tasks:
+  - id: task-01
+    description: "Find where review commands are defined and explain the review workflow"
+    repo: agent-skills
+    steps:
+      - verb: search_exact
+        query: "review"
+      - verb: understand
+        query: "agent-skills/commands/review.toml"
+    expected_substance: |
+      The combined answer should: (1) locate review.toml in commands/, and
+      (2) explain what the review command does — its trigger, steps, and
+      purpose in the agent workflow. An agent receiving this should be able
+      to invoke or modify the review command without further research.
+    pass_threshold: 2
+
+  - id: task-02
+    description: "Identify all parallel execution capabilities and their dependencies"
+    repo: superpowers
+    steps:
+      - verb: search_semantic
+        query: "running tasks in parallel"
+      - verb: impact
+        query: "superpowers/skills/dispatching-parallel-agents"
+    expected_substance: |
+      The combined answer should: (1) find the parallel-agents and worktrees
+      skills via semantic search, and (2) show what depends on the parallel-agents
+      skill (what breaks if it changes). An agent should understand both the
+      capability AND its integration surface.
+    pass_threshold: 2
+
+  - id: task-03
+    description: "Navigate the CopilotKit monorepo and understand the core hook"
+    repo: CopilotKit
+    steps:
+      - verb: browse
+        query: "/CopilotKit/packages"
+      - verb: understand
+        query: "CopilotKit/packages/react-core/src/hooks/useCopilotChat.ts"
+    expected_substance: |
+      The combined answer should: (1) show the packages directory structure
+      (react-core, react-textarea, react-ui, backend, etc.), and (2) explain
+      what useCopilotChat does — it's a React hook that provides chat message
+      state and a sendMessage function. An agent should understand the monorepo
+      layout AND the core hook's API.
+    pass_threshold: 2

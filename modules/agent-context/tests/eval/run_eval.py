@@ -879,12 +879,386 @@ def _print_json_report(report: EvalReport) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Relevance evaluation (LLM-as-judge mode)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RelevanceReport:
+    """Aggregated relevance evaluation report."""
+
+    calibration_passed: bool = False
+    calibration_details: list[dict] = field(default_factory=list)
+    total: int = 0
+    by_verb: dict[str, dict[str, Any]] = field(default_factory=dict)
+    results: list[dict] = field(default_factory=list)
+    tasks: list[dict] = field(default_factory=list)
+
+    @property
+    def overall_mean_score(self) -> float:
+        if not self.results:
+            return 0.0
+        return sum(r["score"] for r in self.results) / len(self.results)
+
+    def worst_n(self, n: int = 5) -> list[dict]:
+        """Return the N lowest-scoring results with justifications."""
+        return sorted(self.results, key=lambda r: r["score"])[:n]
+
+
+def _load_relevance_annotations(golden_data: dict) -> dict[str, dict[str, Any]]:
+    """Load relevance_annotations from golden.yaml."""
+    return golden_data.get("relevance_annotations", {})
+
+
+def _load_calibration(golden_data: dict) -> list[dict]:
+    """Load calibration items from golden.yaml."""
+    return golden_data.get("calibration", [])
+
+
+def _load_tasks(golden_data: dict) -> list[dict]:
+    """Load end-to-end task scenarios from golden.yaml."""
+    return golden_data.get("tasks", [])
+
+
+def run_relevance_evaluation(config: EvalConfig) -> RelevanceReport:
+    """Run the relevance evaluation: calibrate judge → grade answers → report.
+
+    This mode uses an LLM-as-judge to score answer quality (0-3) rather than
+    just checking presence/hit-rate.
+    """
+    from .judge import CalibrationItem, RelevanceJudge
+
+    # Load data
+    with open(GOLDEN_FILE) as f:
+        golden_data = yaml.safe_load(f)
+
+    golden = load_golden()
+    corpus = load_corpus()
+    annotations = _load_relevance_annotations(golden_data)
+    calibration_data = _load_calibration(golden_data)
+    tasks_data = _load_tasks(golden_data)
+
+    report = RelevanceReport()
+
+    # Phase 1: Calibration — judge must prove itself trustworthy
+    log.info("Phase 1: Running judge calibration (%d items)...", len(calibration_data))
+    judge = RelevanceJudge()
+
+    calibration_items = [
+        CalibrationItem(
+            id=item["id"],
+            verb=item["verb"],
+            query=item["query"],
+            response=item["response"],
+            expected_substance=item["expected_substance"],
+            grounding_snippet=item.get("grounding_snippet", ""),
+            expected_score=item["expected_score"],
+            category=item.get("category", ""),
+        )
+        for item in calibration_data
+    ]
+
+    cal_result = judge.run_calibration(calibration_items)
+    report.calibration_passed = cal_result.passed
+    report.calibration_details = cal_result.details
+
+    if not cal_result.passed:
+        log.error(
+            "CALIBRATION FAILED — judge is not trustworthy. Relevance scores will NOT be reported."
+        )
+        if not cal_result.echo_guard_passed:
+            log.error("ECHO GUARD FAILED: judge scored echo-answers > 1")
+        return report
+
+    log.info("Calibration PASSED. Proceeding with relevance grading.")
+
+    # Phase 2: Check ingestion
+    log.info("Phase 2: Checking ingestion status...")
+    ingestion_status = check_ingestion(config, corpus)
+    not_indexed = [name for name, status in ingestion_status.items() if not status]
+
+    # Phase 3: Grade each annotated question
+    annotated_questions = [q for q in golden if q.id in annotations]
+    log.info("Phase 3: Grading %d annotated questions...", len(annotated_questions))
+
+    for question in annotated_questions:
+        if question.repo in not_indexed:
+            log.info("Skipping %s (repo %s not indexed)", question.id, question.repo)
+            continue
+
+        annotation = annotations[question.id]
+        report.total += 1
+
+        try:
+            arguments = build_query_arguments(question)
+            if config.eval_mode == "direct":
+                response = query_direct(config, question.verb, arguments)
+            else:
+                response = query_mcp(config, question.verb, arguments)
+
+            judge_result = judge.grade(
+                query=question.query,
+                verb=question.verb,
+                response=response,
+                expected_substance=annotation["expected_substance"],
+                grounding_snippet=annotation.get("grounding_snippet", ""),
+            )
+
+            result_entry = {
+                "id": question.id,
+                "repo": question.repo,
+                "verb": question.verb,
+                "query": question.query,
+                "score": judge_result.score,
+                "justification": judge_result.justification,
+                "precision": judge_result.precision,
+                "recall": judge_result.recall,
+                "pass_threshold": annotation.get("pass_threshold", 2),
+                "passed": judge_result.score >= annotation.get("pass_threshold", 2),
+                "error": judge_result.error,
+            }
+            report.results.append(result_entry)
+
+            # Per-verb aggregation
+            verb_stats = report.by_verb.setdefault(
+                question.verb,
+                {"scores": [], "passed": 0, "failed": 0, "precisions": [], "recalls": []},
+            )
+            verb_stats["scores"].append(judge_result.score)
+            if result_entry["passed"]:
+                verb_stats["passed"] += 1
+            else:
+                verb_stats["failed"] += 1
+            if judge_result.precision is not None:
+                verb_stats["precisions"].append(judge_result.precision)
+            if judge_result.recall is not None:
+                verb_stats["recalls"].append(judge_result.recall)
+
+        except Exception as e:
+            log.error("Error grading %s: %s", question.id, e)
+            report.results.append(
+                {
+                    "id": question.id,
+                    "repo": question.repo,
+                    "verb": question.verb,
+                    "query": question.query,
+                    "score": 0,
+                    "justification": "",
+                    "precision": None,
+                    "recall": None,
+                    "pass_threshold": annotation.get("pass_threshold", 2),
+                    "passed": False,
+                    "error": str(e),
+                }
+            )
+
+    # Phase 4: Task scenarios
+    log.info("Phase 4: Running %d end-to-end task scenarios...", len(tasks_data))
+    for task in tasks_data:
+        if task["repo"] in not_indexed:
+            log.info("Skipping task %s (repo %s not indexed)", task["id"], task["repo"])
+            continue
+
+        combined_responses: list[dict] = []
+        task_error = ""
+
+        for step in task["steps"]:
+            try:
+                # Build a minimal GoldenQuestion-like object for argument building
+                step_question = GoldenQuestion(
+                    id=f"{task['id']}-{step['verb']}",
+                    repo=task["repo"],
+                    verb=step["verb"],
+                    query=step["query"],
+                    expected={},
+                    pass_criterion="",
+                )
+                arguments = build_query_arguments(step_question)
+                if config.eval_mode == "direct":
+                    resp = query_direct(config, step["verb"], arguments)
+                else:
+                    resp = query_mcp(config, step["verb"], arguments)
+                combined_responses.append({"verb": step["verb"], "response": resp})
+            except Exception as e:
+                task_error = f"Step {step['verb']} failed: {e}"
+                break
+
+        if task_error:
+            report.tasks.append(
+                {
+                    "id": task["id"],
+                    "description": task["description"],
+                    "score": 0,
+                    "justification": "",
+                    "passed": False,
+                    "error": task_error,
+                }
+            )
+            continue
+
+        # Judge the combined responses
+        combined_text = json.dumps(combined_responses, indent=2, default=str)
+        judge_result = judge.grade(
+            query=task["description"],
+            verb="task",
+            response=combined_text,
+            expected_substance=task["expected_substance"],
+            grounding_snippet="",
+        )
+
+        report.tasks.append(
+            {
+                "id": task["id"],
+                "description": task["description"],
+                "score": judge_result.score,
+                "justification": judge_result.justification,
+                "passed": judge_result.score >= task.get("pass_threshold", 2),
+                "error": judge_result.error,
+            }
+        )
+
+    return report
+
+
+def print_relevance_report(report: RelevanceReport, format: str = "text") -> None:
+    """Print the relevance evaluation report."""
+    if format == "json":
+        _print_relevance_json(report)
+    else:
+        _print_relevance_text(report)
+
+
+def _print_relevance_text(report: RelevanceReport) -> None:
+    """Print a human-readable relevance report."""
+    print("\n" + "=" * 70)
+    print("  KNOWLEDGE LAYER RELEVANCE EVALUATION REPORT")
+    print("=" * 70)
+
+    # Calibration status
+    cal_status = "PASSED" if report.calibration_passed else "FAILED"
+    print(f"\n  Calibration: {cal_status}")
+    if not report.calibration_passed:
+        print("  *** EVAL INVALID — judge failed calibration ***")
+        for detail in report.calibration_details:
+            status = "OK" if detail["within_tolerance"] else "FAIL"
+            print(
+                f"    [{detail['id']}] ({detail['category']}): "
+                f"expected={detail['expected_score']}, actual={detail['actual_score']} [{status}]"
+            )
+        print("=" * 70 + "\n")
+        return
+
+    for detail in report.calibration_details:
+        status = "OK" if detail["within_tolerance"] else "FAIL"
+        print(
+            f"    [{detail['id']}] ({detail['category']}): "
+            f"expected={detail['expected_score']}, actual={detail['actual_score']} [{status}]"
+        )
+
+    # Overall stats
+    print(f"\n  Total graded:      {report.total}")
+    print(f"  Mean score:        {report.overall_mean_score:.2f} / 3.0")
+    passed_count = sum(1 for r in report.results if r["passed"])
+    print(f"  Pass rate (>= threshold): {passed_count}/{report.total}")
+    print()
+
+    # Per-verb breakdown
+    print("  Per-verb scores:")
+    print("  " + "-" * 60)
+    for verb in sorted(report.by_verb.keys()):
+        stats = report.by_verb[verb]
+        scores = stats["scores"]
+        mean = sum(scores) / len(scores) if scores else 0.0
+        pass_rate = (
+            stats["passed"] / (stats["passed"] + stats["failed"])
+            if (stats["passed"] + stats["failed"]) > 0
+            else 0.0
+        )
+        line = f"    {verb:<20} mean={mean:.2f}  pass_rate={pass_rate:.0%}"
+        if stats["precisions"]:
+            avg_prec = sum(stats["precisions"]) / len(stats["precisions"])
+            line += f"  precision={avg_prec:.2f}"
+        if stats["recalls"]:
+            avg_rec = sum(stats["recalls"]) / len(stats["recalls"])
+            line += f"  recall={avg_rec:.2f}"
+        print(line)
+    print()
+
+    # Worst 5
+    worst = report.worst_n(5)
+    if worst:
+        print("  Worst 5 scores (actionable failures):")
+        print("  " + "-" * 60)
+        for r in worst:
+            print(f"    [{r['id']}] score={r['score']} | {r['verb']} | {r['repo']}")
+            if r["justification"]:
+                # Truncate long justifications
+                justification = r["justification"][:120]
+                print(f"      Judge: {justification}")
+            print()
+
+    # Task scenarios
+    if report.tasks:
+        print("  End-to-end task scenarios:")
+        print("  " + "-" * 60)
+        for task in report.tasks:
+            status = "PASS" if task["passed"] else "FAIL"
+            print(f"    [{task['id']}] {status} (score={task['score']})")
+            print(f"      {task['description']}")
+            print()
+
+    print("=" * 70 + "\n")
+
+
+def _print_relevance_json(report: RelevanceReport) -> None:
+    """Print a machine-readable JSON relevance report."""
+    # Compute per-verb summaries
+    by_verb_summary = {}
+    for verb, stats in report.by_verb.items():
+        scores = stats["scores"]
+        by_verb_summary[verb] = {
+            "mean_score": sum(scores) / len(scores) if scores else 0.0,
+            "pass_rate": stats["passed"] / (stats["passed"] + stats["failed"])
+            if (stats["passed"] + stats["failed"]) > 0
+            else 0.0,
+            "n": len(scores),
+            "passed": stats["passed"],
+            "failed": stats["failed"],
+        }
+        if stats["precisions"]:
+            by_verb_summary[verb]["mean_precision"] = sum(stats["precisions"]) / len(
+                stats["precisions"]
+            )
+        if stats["recalls"]:
+            by_verb_summary[verb]["mean_recall"] = sum(stats["recalls"]) / len(stats["recalls"])
+
+    output = {
+        "relevance": {
+            "calibration_passed": report.calibration_passed,
+            "calibration_details": report.calibration_details,
+            "total": report.total,
+            "overall_mean_score": report.overall_mean_score,
+            "by_verb": by_verb_summary,
+            "worst_5": report.worst_n(5),
+            "tasks": report.tasks,
+            "results": report.results,
+        }
+    }
+    print(json.dumps(output, indent=2, default=str))
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 
 def main() -> int:
-    """Run the evaluation harness."""
+    """Run the evaluation harness.
+
+    Modes:
+      --mode presence   (default) Hit-rate / retrievability scoring
+      --mode relevance  LLM-as-judge quality grading (0-3)
+    """
     import os
 
     logging.basicConfig(
@@ -901,21 +1275,54 @@ def main() -> int:
         )
         return 1
 
+    # Parse --mode argument
+    eval_mode = "presence"
+    if "--mode" in sys.argv:
+        idx = sys.argv.index("--mode")
+        if idx + 1 < len(sys.argv):
+            eval_mode = sys.argv[idx + 1]
+
     config = EvalConfig.from_env()
-    log.info("Eval config: mode=%s, mcp_url=%s", config.eval_mode, config.mcp_url)
+    log.info(
+        "Eval config: mode=%s, eval_mode=%s, mcp_url=%s",
+        eval_mode,
+        config.eval_mode,
+        config.mcp_url,
+    )
 
-    report = run_evaluation(config)
-    print_report(report, config.report_format)
+    if eval_mode == "relevance":
+        report = run_relevance_evaluation(config)
+        print_relevance_report(report, config.report_format)
 
-    # Exit code: 0 if pass rate >= 50% (configurable threshold)
-    threshold = float(os.environ.get("EVAL_PASS_THRESHOLD", "0.5"))
-    if report.pass_rate < threshold:
-        log.warning(
-            "Pass rate %.1f%% below threshold %.1f%%", report.pass_rate * 100, threshold * 100
-        )
-        return 1
+        if not report.calibration_passed:
+            log.error("Relevance eval INVALID: calibration failed")
+            return 1
 
-    return 0
+        # Exit code: 0 if overall mean score >= 1.5 (configurable)
+        threshold = float(os.environ.get("EVAL_RELEVANCE_THRESHOLD", "1.5"))
+        if report.overall_mean_score < threshold:
+            log.warning(
+                "Mean relevance score %.2f below threshold %.2f",
+                report.overall_mean_score,
+                threshold,
+            )
+            return 1
+        return 0
+
+    else:
+        # Default: presence/hit-rate mode (existing behavior)
+        report = run_evaluation(config)
+        print_report(report, config.report_format)
+
+        threshold = float(os.environ.get("EVAL_PASS_THRESHOLD", "0.5"))
+        if report.pass_rate < threshold:
+            log.warning(
+                "Pass rate %.1f%% below threshold %.1f%%",
+                report.pass_rate * 100,
+                threshold * 100,
+            )
+            return 1
+        return 0
 
 
 if __name__ == "__main__":
