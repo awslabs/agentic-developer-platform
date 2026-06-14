@@ -11,6 +11,7 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.activity.schemas import InvocationChainResponse, InvocationListResponse
@@ -19,6 +20,7 @@ from src.admin.access_control import AccessControl
 from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
+from src.shared.models.organization import User
 from src.shared.schemas.auth import TokenContext
 
 logger = logging.getLogger("bedrockgateway.activity")
@@ -36,6 +38,34 @@ async def get_access_control(db: Annotated[AsyncSession, Depends(get_db)]) -> Ac
     return AccessControl(db)
 
 
+async def _resolve_canonical_user_id(db: AsyncSession, token: TokenContext) -> str:
+    """Resolve the caller's Cognito sub (TokenContext.user_id) to the canonical
+    ADP user_id (`users.id`).
+
+    Invocation rows in the webhook-events table are stored under the canonical
+    `users.id` (the UUID that the webhook-ingress identity resolver maps every
+    provider identity — GitHub sender, Cognito sub — to). But the gateway's
+    JWT middleware sets `TokenContext.user_id = claims.sub` (the raw Cognito
+    sub), which is a *provider* identity, NOT the canonical id. Querying the
+    `user-index` GSI with the raw sub therefore matches nothing and the screen
+    shows an empty "mine" view even when the user has invocations (issue: a
+    logged-in user sees no agent activity).
+
+    This mirrors the established `select(User).where(User.cognito_sub == sub)`
+    pattern used across the gateway (e.g. auth/org_id_resolver.py). If no
+    matching user row exists, fall back to the raw token value so behavior is
+    unchanged for identities that aren't (yet) provisioned in Postgres.
+    """
+    canonical = await db.scalar(select(User.id).where(User.cognito_sub == token.user_id))
+    if canonical:
+        return canonical
+    logger.warning(
+        "No users row for cognito_sub=%s; falling back to raw token user_id for activity query",
+        token.user_id,
+    )
+    return token.user_id
+
+
 # ---------------------------------------------------------------------------
 # GET /me/agent-invocations — user's own invocations
 # ---------------------------------------------------------------------------
@@ -45,6 +75,7 @@ async def get_access_control(db: Annotated[AsyncSession, Depends(get_db)]) -> Ac
 async def get_my_invocations(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     service: Annotated[ActivityService, Depends(get_activity_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     last_key: Annotated[str | None, Query()] = None,
     status: Annotated[str | None, Query()] = None,
@@ -55,15 +86,17 @@ async def get_my_invocations(
 ) -> InvocationListResponse:
     """Get the authenticated user's own agent invocations.
 
-    Scoping: uses `user_id` from the JWT token ONLY — ignores any user_id param.
-    Queries the `user-index` GSI (PK=user_id, SK=arrived_at desc).
+    Scoping: derives the canonical user_id from the JWT token ONLY (the Cognito
+    sub is resolved to `users.id`) — ignores any user_id param. Queries the
+    `user-index` GSI (PK=user_id, SK=arrived_at desc).
 
     Pagination note: filtered pages may be short/empty with a non-null
     `last_key`. Keep following until `last_key` is null.
     """
+    canonical_user_id = await _resolve_canonical_user_id(db, current_user)
     try:
         return service.query_by_user(
-            user_id=current_user.user_id,
+            user_id=canonical_user_id,
             page_size=page_size,
             last_key=last_key,
             status=status,
@@ -143,15 +176,18 @@ async def get_my_invocation_chain(
     correlation_id: Annotated[str, Path(description="Correlation ID of the chain to view")],
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     service: Annotated[ActivityService, Depends(get_activity_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> InvocationChainResponse:
     """Get the chain view for a specific correlation_id.
 
-    Scoping: only returns invocations the caller owns (user_id from token).
-    Shows the entire chain the caller roots or participates in.
+    Scoping: only returns invocations the caller owns (canonical user_id derived
+    from the token's Cognito sub). Shows the entire chain the caller roots or
+    participates in.
     """
+    canonical_user_id = await _resolve_canonical_user_id(db, current_user)
     return service.get_chain(
         correlation_id=correlation_id,
-        user_id=current_user.user_id,
+        user_id=canonical_user_id,
     )
 
 

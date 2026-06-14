@@ -27,6 +27,11 @@ from src.activity.service import ActivityService
 from src.admin.access_control import AccessControl
 from src.admin.exceptions import AccessDeniedError
 from src.auth.dependencies import get_current_user
+from src.shared.database import get_db
+
+# The canonical users.id that the regular_user's Cognito sub (token.user_id)
+# resolves to. Invocation rows are stored under this canonical id, not the sub.
+CANONICAL_USER_ID = "canonical-abc-999"
 
 
 @pytest.fixture
@@ -35,6 +40,15 @@ def app():
     app = FastAPI()
     app.include_router(router)
     return app
+
+
+@pytest.fixture
+def mock_db():
+    """Mock AsyncSession whose scalar() resolves any cognito_sub to the
+    canonical users.id (mirrors `select(User.id).where(User.cognito_sub == sub)`)."""
+    db = MagicMock()
+    db.scalar = AsyncMock(return_value=CANONICAL_USER_ID)
+    return db
 
 
 @pytest.fixture
@@ -66,7 +80,7 @@ def mock_access():
 
 
 @pytest.fixture
-def client(app, mock_service, mock_access, regular_user):
+def client(app, mock_service, mock_access, mock_db, regular_user):
     """Create a test client with regular user auth."""
 
     async def override_current_user():
@@ -78,14 +92,18 @@ def client(app, mock_service, mock_access, regular_user):
     async def override_access():
         return mock_access
 
+    async def override_db():
+        return mock_db
+
     app.dependency_overrides[get_current_user] = override_current_user
     app.dependency_overrides[get_activity_service] = override_service
     app.dependency_overrides[get_access_control] = override_access
+    app.dependency_overrides[get_db] = override_db
     return TestClient(app)
 
 
 @pytest.fixture
-def admin_client(app, mock_service, mock_access, admin_user):
+def admin_client(app, mock_service, mock_access, mock_db, admin_user):
     """Create a test client with platform admin auth."""
 
     async def override_current_user():
@@ -97,9 +115,13 @@ def admin_client(app, mock_service, mock_access, admin_user):
     async def override_access():
         return mock_access
 
+    async def override_db():
+        return mock_db
+
     app.dependency_overrides[get_current_user] = override_current_user
     app.dependency_overrides[get_activity_service] = override_service
     app.dependency_overrides[get_access_control] = override_access
+    app.dependency_overrides[get_db] = override_db
     return TestClient(app)
 
 
@@ -107,16 +129,43 @@ class TestGetMyInvocations:
     """/me/agent-invocations endpoint tests."""
 
     def test_uses_token_user_id_not_param(self, client, mock_service, regular_user):
-        """The endpoint uses user_id from token, ignoring any user_id query param."""
+        """The endpoint resolves the token's Cognito sub to the canonical user_id,
+        ignoring any user_id query param (privacy)."""
         resp = client.get("/me/agent-invocations?user_id=attacker-id")
         assert resp.status_code == 200
 
-        # Service was called with the TOKEN's user_id, not the param
+        # Service was called with the CANONICAL user_id resolved from the token's
+        # sub — NOT the raw sub and NOT the attacker-supplied param.
         mock_service.query_by_user.assert_called_once()
         call_kwargs = mock_service.query_by_user.call_args[1]
-        assert call_kwargs["user_id"] == regular_user.user_id
-        # user_id param should NOT be forwarded
+        assert call_kwargs["user_id"] == CANONICAL_USER_ID
+        # neither the attacker param nor the raw sub is forwarded
         assert "attacker-id" not in str(call_kwargs)
+        assert call_kwargs["user_id"] != regular_user.user_id
+
+    def test_falls_back_to_token_sub_when_no_users_row(self, app, mock_service, mock_access, regular_user):
+        """If no users row maps the Cognito sub to a canonical id (unprovisioned
+        identity), fall back to the raw token user_id so behavior is unchanged."""
+
+        async def override_current_user():
+            return regular_user
+
+        unresolved_db = MagicMock()
+        unresolved_db.scalar = AsyncMock(return_value=None)  # no matching users row
+
+        async def override_db():
+            return unresolved_db
+
+        app.dependency_overrides[get_current_user] = override_current_user
+        app.dependency_overrides[get_activity_service] = lambda: mock_service
+        app.dependency_overrides[get_access_control] = lambda: mock_access
+        app.dependency_overrides[get_db] = override_db
+        client = TestClient(app)
+
+        resp = client.get("/me/agent-invocations")
+        assert resp.status_code == 200
+        call_kwargs = mock_service.query_by_user.call_args[1]
+        assert call_kwargs["user_id"] == regular_user.user_id
 
     def test_missing_gsi_returns_empty_200(self, client, mock_service):
         """When service returns empty (GSI missing), endpoint returns 200 with empty items."""
@@ -354,10 +403,10 @@ class TestGetMyInvocationChain:
         resp = client.get("/me/agent-invocations/chain/chain-001")
         assert resp.status_code == 200
 
-        # Service called with user_id from token
+        # Service called with the canonical user_id resolved from the token sub
         mock_service.get_chain.assert_called_once_with(
             correlation_id="chain-001",
-            user_id=regular_user.user_id,
+            user_id=CANONICAL_USER_ID,
         )
 
         data = resp.json()
