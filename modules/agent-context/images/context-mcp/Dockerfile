@@ -13,9 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY ../../door/ ./door/
-COPY ../../personal_context/ ./personal_context/
+# Copy application code (staged into build dir by bs-agent-context-image.yml pre_build)
+COPY door/ ./door/
+COPY personal_context/ ./personal_context/
 
 # Expose MCP port
 EXPOSE 5100

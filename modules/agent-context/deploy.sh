@@ -158,6 +158,33 @@ echo "============================================"
 echo ""
 bash "${SCRIPT_DIR}/scripts/deploy-litellm-proxy.sh"
 
+# Deploy Context MCP Server (the Door — verb surface for the Knowledge Layer)
+# Deployed in BOTH modes (full stack + personal-context-only) since it serves
+# remember/experience verbs used by personal context, and all 6 verbs in full mode.
+echo ""
+echo "Deploying Context MCP Server (Door)..."
+source "${SCRIPT_DIR}/scripts/_common.sh"
+
+# Resolve image: use ECR-built image if available, else default from config.env
+if [ -z "${CONTEXT_MCP_IMAGE:-}" ] || [ "${CONTEXT_MCP_IMAGE}" = "python:3.11-slim" ]; then
+  CONTEXT_MCP_REPO="adp-${ENVIRONMENT:-dev}-agent-context-context-mcp"
+  CONTEXT_MCP_ECR="${ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo '')}.dkr.ecr.${AWS_REGION}.amazonaws.com/${CONTEXT_MCP_REPO}"
+  LATEST_TAG=$(aws ecr describe-images --repository-name "${CONTEXT_MCP_REPO}" \
+    --region "${AWS_REGION}" --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
+    --output text 2>/dev/null || echo "")
+  if [ -n "${LATEST_TAG}" ] && [ "${LATEST_TAG}" != "None" ]; then
+    CONTEXT_MCP_IMAGE="${CONTEXT_MCP_ECR}:${LATEST_TAG}"
+    echo "  Using ECR image: ${CONTEXT_MCP_IMAGE}"
+  else
+    echo "  WARNING: No ECR image found for context-mcp. Using default: ${CONTEXT_MCP_IMAGE}"
+    echo "  Run the images-build workflow first to build the context-mcp image."
+  fi
+fi
+export CONTEXT_MCP_IMAGE NAMESPACE SERVICE_ACCOUNT
+template_file "${SCRIPT_DIR}/manifests/context-mcp.yaml" | kubectl apply -f -
+echo "  Context MCP Server deployed (image: ${CONTEXT_MCP_IMAGE})"
+echo "  Endpoint: http://context-mcp.${NAMESPACE}.svc.cluster.local:5100"
+
 # NOTE: OpenViking removed (Issue #1383). Semantic search now uses S3 Vectors.
 # Personal context AGFS entries use S3 directly. No pod needed.
 
@@ -321,11 +348,12 @@ echo "Deployment complete!"
 echo "============================================"
 echo ""
 if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
-  echo "Mode: PERSONAL-CONTEXT-ONLY (lean stack, ~\$80/mo)"
+  echo "Mode: PERSONAL-CONTEXT-ONLY (lean stack, ~\$280/mo)"
   echo ""
   echo "Services:"
   echo "  S3 Vectors:    adp-${ENVIRONMENT:-dev}-code-vectors (semantic search)"
   echo "  LiteLLM Proxy: http://litellm-proxy.${NAMESPACE}.svc.cluster.local:${LITELLM_PORT}"
+  echo "  Context MCP:   http://context-mcp.${NAMESPACE}.svc.cluster.local:${CONTEXT_MCP_PORT:-5100}"
   if [ "${SYNTHESIS_ENABLED:-true}" = "true" ]; then
     echo "  Synthesis:     CronJob personal-context-synthesis (${SYNTHESIS_SCHEDULE:-0 3 * * *})"
   fi
@@ -336,11 +364,12 @@ if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
   echo "Skipped (not needed for personal context):"
   echo "  DeepWiki, Ingestion pipeline, OpenSearch, KEDA workers"
 else
-  echo "Mode: FULL STACK (~\$600/mo)"
+  echo "Mode: FULL STACK (~\$800/mo)"
   echo ""
   echo "Services:"
   echo "  S3 Vectors:    adp-${ENVIRONMENT:-dev}-code-vectors (semantic search)"
   echo "  LiteLLM Proxy: http://litellm-proxy.${NAMESPACE}.svc.cluster.local:${LITELLM_PORT}"
+  echo "  Context MCP:   http://context-mcp.${NAMESPACE}.svc.cluster.local:${CONTEXT_MCP_PORT:-5100}"
   if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
     echo "  DeepWiki:      http://deepwiki.${NAMESPACE}.svc.cluster.local:${DEEPWIKI_PORT}"
   fi

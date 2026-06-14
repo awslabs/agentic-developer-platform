@@ -11,6 +11,9 @@ on:
       - 'modules/agent-context/images/codegraph-context/**'
       - 'modules/agent-context/images/litellm-proxy/**'
       - 'modules/agent-context/images/deepwiki/**'
+      - 'modules/agent-context/images/context-mcp/**'
+      - 'modules/agent-context/door/**'
+      - 'modules/agent-context/personal_context/**'
       - 'modules/agent-context/alembic/**'
       - 'codebuild/bs-agent-context-image.yml'
       - '.github/workflows/agent-context-images-build.yml'
@@ -27,6 +30,7 @@ on:
           - codegraph-context
           - litellm-proxy
           - deepwiki
+          - context-mcp
 
 env:
   AWS_REGION: us-east-1
@@ -52,7 +56,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             INPUT="${{ inputs.image }}"
             if [ "$INPUT" = "all" ]; then
-              echo 'matrix={"image":["ingestion","codegraph-context","litellm-proxy","deepwiki"]}' >> "$GITHUB_OUTPUT"
+              echo 'matrix={"image":["ingestion","codegraph-context","litellm-proxy","deepwiki","context-mcp"]}' >> "$GITHUB_OUTPUT"
             else
               echo "matrix={\"image\":[\"$INPUT\"]}" >> "$GITHUB_OUTPUT"
             fi
@@ -66,11 +70,17 @@ jobs:
               | jq -sc .)
             # If buildspec or workflow changed, rebuild all
             if git diff --name-only HEAD^ HEAD | grep -qE '(codebuild/bs-agent-context-image\.yml|\.github/workflows/agent-context-images-build\.yml)'; then
-              echo 'matrix={"image":["ingestion","codegraph-context","litellm-proxy","deepwiki"]}' >> "$GITHUB_OUTPUT"
-            elif [ "$CHANGED" = "[]" ] || [ -z "$CHANGED" ]; then
-              echo 'matrix={"image":[]}' >> "$GITHUB_OUTPUT"
+              echo 'matrix={"image":["ingestion","codegraph-context","litellm-proxy","deepwiki","context-mcp"]}' >> "$GITHUB_OUTPUT"
             else
-              echo "matrix={\"image\":$CHANGED}" >> "$GITHUB_OUTPUT"
+              # If door/ or personal_context/ changed, include context-mcp (its source deps)
+              if git diff --name-only HEAD^ HEAD | grep -qE '^modules/agent-context/(door|personal_context)/'; then
+                CHANGED=$(echo "$CHANGED" | jq -c '. + ["context-mcp"] | unique')
+              fi
+              if [ "$CHANGED" = "[]" ] || [ -z "$CHANGED" ]; then
+                echo 'matrix={"image":[]}' >> "$GITHUB_OUTPUT"
+              else
+                echo "matrix={\"image\":$CHANGED}" >> "$GITHUB_OUTPUT"
+              fi
             fi
           fi
 

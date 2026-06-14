@@ -1,12 +1,12 @@
 # =============================================================================
 # Agent Context Images Build — ECR + CodeBuild
 # =============================================================================
-# Creates ECR repositories and CodeBuild projects for the 4 agent-context
+# Creates ECR repositories and CodeBuild projects for the 5 agent-context
 # Docker images. Follows the per-module ownership pattern established by
 # modules/domain-apps/cyber/infra/ecr.tf.
 #
 # A single parameterized buildspec (codebuild/bs-agent-context-image.yml) is
-# shared across all 4 projects; per-project differences come from CodeBuild
+# shared across all 5 projects; per-project differences come from CodeBuild
 # environment variables (BUILD_DIR, ECR_REPO, AWS_REGION).
 # =============================================================================
 
@@ -16,6 +16,7 @@ locals {
     "codegraph-context" = { build_dir = "modules/agent-context/images/codegraph-context" }
     "litellm-proxy"     = { build_dir = "modules/agent-context/images/litellm-proxy" }
     "deepwiki"          = { build_dir = "modules/agent-context/images/deepwiki" }
+    "context-mcp"       = { build_dir = "modules/agent-context/images/context-mcp" }
   }
 }
 

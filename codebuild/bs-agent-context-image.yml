@@ -17,12 +17,21 @@ phases:
       - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REPO"
       # Stage out-of-context dependencies into the build dir.
       # The ingestion image needs alembic/ from the module root for in-cluster
-      # migration Jobs (#1437). Other images have no alembic/ — cp is a no-op.
+      # migration Jobs (#1437). The context-mcp image needs door/ and
+      # personal_context/ from the module root (#1489).
       - |
         MODULE_ROOT="${BUILD_DIR%%/images/*}"
         if [ -d "${MODULE_ROOT}/alembic" ] && [ -d "${BUILD_DIR}" ]; then
           cp -r "${MODULE_ROOT}/alembic" "${BUILD_DIR}/alembic"
           echo "Staged ${MODULE_ROOT}/alembic → ${BUILD_DIR}/alembic"
+        fi
+        if [ -d "${MODULE_ROOT}/door" ] && [ -d "${BUILD_DIR}" ]; then
+          cp -r "${MODULE_ROOT}/door" "${BUILD_DIR}/door"
+          echo "Staged ${MODULE_ROOT}/door → ${BUILD_DIR}/door"
+        fi
+        if [ -d "${MODULE_ROOT}/personal_context" ] && [ -d "${BUILD_DIR}" ]; then
+          cp -r "${MODULE_ROOT}/personal_context" "${BUILD_DIR}/personal_context"
+          echo "Staged ${MODULE_ROOT}/personal_context → ${BUILD_DIR}/personal_context"
         fi
 
   build:

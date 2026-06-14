@@ -335,6 +335,30 @@ jobs:
             echo "DeepWiki disabled (DEEPWIKI_ENABLED=false)"
           fi
 
+      - name: Deploy Context MCP Server (Door)
+        run: |
+          cd modules/agent-context
+          source scripts/_common.sh
+          load_config "$(pwd)"
+
+          # Resolve context-mcp image from ECR (same pattern as LiteLLM)
+          CONTEXT_MCP_REPO="adp-${ENVIRONMENT}-agent-context-context-mcp"
+          CONTEXT_MCP_ECR="${ECR_REGISTRY}/${CONTEXT_MCP_REPO}"
+          LATEST_TAG=$(aws ecr describe-images --repository-name "${CONTEXT_MCP_REPO}" \
+            --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
+            --output text 2>/dev/null || echo "")
+          if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "None" ]; then
+            export CONTEXT_MCP_IMAGE="${CONTEXT_MCP_ECR}:${LATEST_TAG}"
+            echo "Using ECR image: ${CONTEXT_MCP_IMAGE}"
+          else
+            echo "::warning::No ECR image found for context-mcp. Using default: ${CONTEXT_MCP_IMAGE}"
+            echo "Run the images-build workflow to build the context-mcp image first."
+          fi
+
+          export NAMESPACE SERVICE_ACCOUNT CONTEXT_MCP_IMAGE
+          template_file manifests/context-mcp.yaml | kubectl apply -f -
+          echo "Context MCP Server deployed"
+
       - name: Deploy Ingestion CronJob + KEDA ScaledJob
         run: |
           cd modules/agent-context
@@ -386,6 +410,7 @@ jobs:
           echo "Waiting for deployments to be ready..."
           kubectl rollout status deploy/zoekt-webserver -n ${{ env.NAMESPACE }} --timeout=180s || echo "WARNING: Zoekt not ready"
           kubectl rollout status deploy/litellm-proxy -n ${{ env.NAMESPACE }} --timeout=300s || echo "WARNING: LiteLLM not ready"
+          kubectl rollout status deploy/context-mcp -n ${{ env.NAMESPACE }} --timeout=180s || echo "WARNING: Context MCP not ready"
 
       - name: Verify deployment
         run: |
@@ -424,6 +449,7 @@ jobs:
             echo "| Namespace | $(kubectl get ns ${{ env.NAMESPACE }} -o jsonpath='{.status.phase}' 2>/dev/null || echo 'MISSING') |"
             echo "| Zoekt | $(kubectl get deploy zoekt-webserver -n ${{ env.NAMESPACE }} -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo 'N/A') |"
             echo "| LiteLLM | $(kubectl get deploy litellm-proxy -n ${{ env.NAMESPACE }} -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo 'N/A') |"
+            echo "| Context MCP | $(kubectl get deploy context-mcp -n ${{ env.NAMESPACE }} -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo 'N/A') |"
             echo "| PVC | $(kubectl get pvc platform-data -n ${{ env.NAMESPACE }} -o jsonpath='{.status.phase}' 2>/dev/null || echo 'N/A') |"
             echo "| Ingestion CronJob | $(kubectl get cronjob ingestion-refresh -n ${{ env.NAMESPACE }} -o jsonpath='{.spec.schedule}' 2>/dev/null || echo 'N/A') |"
             echo ""

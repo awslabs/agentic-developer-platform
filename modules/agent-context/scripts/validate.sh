@@ -27,7 +27,7 @@ check_warn() { echo "  [WARN] $1"; WARN=$((WARN + 1)); }
 echo ""
 echo "--- Check 1: Pod Status ---"
 
-EXPECTED_DEPLOYS="litellm-proxy openviking-server"
+EXPECTED_DEPLOYS="litellm-proxy context-mcp"
 for DEPLOY in ${EXPECTED_DEPLOYS}; do
   READY=$(kubectl get deploy "${DEPLOY}" -n "${NAMESPACE}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
   if [ "${READY:-0}" -ge 1 ]; then
@@ -130,46 +130,47 @@ else
   check_warn "LiteLLM model list: VLM model not found in ${MODELS_LIST:0:200}"
 fi
 
-# ─── Check 3: OpenViking ────────────────────────────────────────────────────
+# ─── Check 3: Context MCP Server (Door) ─────────────────────────────────────
 echo ""
-echo "--- Check 3: OpenViking ---"
+echo "--- Check 3: Context MCP Server ---"
 
-OV_HEALTH=$(kubectl exec deploy/openviking-server -n "${NAMESPACE}" -c openviking -- python3 -c "
+MCP_READY=$(kubectl get deploy context-mcp -n "${NAMESPACE}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+if [ "${MCP_READY:-0}" -ge 1 ]; then
+  check_pass "Context MCP deployment: ${MCP_READY} replica(s) ready"
+else
+  MCP_STATUS=$(kubectl get deploy context-mcp -n "${NAMESPACE}" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "NotFound")
+  check_fail "Context MCP deployment: not ready (status: ${MCP_STATUS})"
+fi
+
+MCP_HEALTH=$(kubectl exec deploy/context-mcp -n "${NAMESPACE}" -- python3 -c "
 import urllib.request
-r = urllib.request.urlopen('http://localhost:1933/health', timeout=5)
-print(r.read().decode())
+try:
+    r = urllib.request.urlopen('http://localhost:5100/health', timeout=5)
+    print(r.read().decode())
+except Exception as e:
+    print(f'UNREACHABLE: {e}')
 " 2>/dev/null || echo "UNREACHABLE")
-if echo "${OV_HEALTH}" | grep -q '"healthy":true'; then
-  check_pass "OpenViking /health: ${OV_HEALTH}"
+if echo "${MCP_HEALTH}" | grep -qiE "ok|healthy|alive"; then
+  check_pass "Context MCP /health: responsive"
 else
-  check_fail "OpenViking /health: ${OV_HEALTH:0:100}"
+  check_fail "Context MCP /health: ${MCP_HEALTH:0:100}"
 fi
 
-# Check that embedding config points to LiteLLM proxy
-OV_CONFIG=$(kubectl get configmap openviking-config -n "${NAMESPACE}" -o jsonpath='{.data.ov\.conf}' 2>/dev/null || echo "{}")
-if echo "${OV_CONFIG}" | grep -q "litellm-proxy"; then
-  check_pass "OpenViking config: embedding points to LiteLLM proxy"
+# Check tool listing (confirms the 6 verbs are registered)
+MCP_TOOLS=$(kubectl exec deploy/context-mcp -n "${NAMESPACE}" -- python3 -c "
+import urllib.request, json
+try:
+    r = urllib.request.urlopen('http://localhost:5100/tools', timeout=5)
+    tools = json.loads(r.read())
+    names = [t['name'] for t in tools]
+    print(','.join(names))
+except Exception as e:
+    print(f'FAILED: {e}')
+" 2>/dev/null || echo "FAILED")
+if echo "${MCP_TOOLS}" | grep -q "search"; then
+  check_pass "Context MCP /tools: verbs registered (${MCP_TOOLS})"
 else
-  check_warn "OpenViking config: embedding may not be configured for LiteLLM proxy"
-fi
-
-# Check VLM section in OpenViking config
-if echo "${OV_CONFIG}" | grep -q '"vlm"'; then
-  check_pass "OpenViking config: VLM section present"
-  VLM_MODEL_CFG=$(echo "${OV_CONFIG}" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('vlm',{}).get('model',''))" 2>/dev/null || echo "")
-  if echo "${VLM_MODEL_CFG}" | grep -q "${BEDROCK_VLM_MODEL:-sonnet}"; then
-    check_pass "OpenViking VLM model: ${VLM_MODEL_CFG}"
-  else
-    check_warn "OpenViking VLM model: unexpected value '${VLM_MODEL_CFG}'"
-  fi
-  VLM_BASE_CFG=$(echo "${OV_CONFIG}" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('vlm',{}).get('api_base',''))" 2>/dev/null || echo "")
-  if echo "${VLM_BASE_CFG}" | grep -q "litellm-proxy"; then
-    check_pass "OpenViking VLM api_base: routed through LiteLLM proxy"
-  else
-    check_warn "OpenViking VLM api_base: may not be routed through proxy (${VLM_BASE_CFG})"
-  fi
-else
-  check_fail "OpenViking config: VLM section missing"
+  check_warn "Context MCP /tools: could not verify tool listing"
 fi
 
 # ─── Check 4: Ingestion Refresh CronJob ──────────────────────────────────────
