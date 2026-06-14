@@ -32,10 +32,13 @@ jobs:
           PASS=true
 
           echo "=== S3: wikis ==="
+          # Threshold is 14 (not 15) because CopilotKit/CopilotKit (743MB) is
+          # deliberately skipped by the >600MB guard in refresh-repos.py (#1479).
+          # 15 repos - 1 skipped = 14 achievable wikis.
           WIKI_COUNT=$(aws s3 ls "s3://${BUCKET}/content/wikis/" --region "$REGION" | wc -l)
-          echo "Wiki count: $WIKI_COUNT (threshold: >= 15)"
-          if [ "$WIKI_COUNT" -lt 15 ]; then
-            echo "❌ FAIL: wikis count $WIKI_COUNT < 15"
+          echo "Wiki count: $WIKI_COUNT (threshold: >= 14)"
+          if [ "$WIKI_COUNT" -lt 14 ]; then
+            echo "❌ FAIL: wikis count $WIKI_COUNT < 14"
             PASS=false
           else
             echo "✅ PASS: wikis"
