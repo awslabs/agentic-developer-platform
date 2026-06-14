@@ -571,38 +571,56 @@ def refresh_url(url: str, state: dict[str, Any], force: bool = False) -> bool:
 
 
 def deepwiki_generate(org_repo: str) -> str | None:
-    """Call DeepWiki API to generate a wiki for a repo. Returns markdown or None."""
+    """Call DeepWiki streaming API to generate a wiki for a repo.
+
+    Uses /chat/completions/stream — the correct DeepWiki endpoint.
+    The old /api/wiki/generate endpoint does not exist (returns 404).
+    """
     try:
         resp = requests.post(
-            f"{DEEPWIKI_URL}/api/wiki/generate",
+            f"{DEEPWIKI_URL}/chat/completions/stream",
             json={
                 "repo_url": f"https://github.com/{org_repo}",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Generate a comprehensive architecture wiki. "
+                            "Cover: overview, architecture, key components, "
+                            "code organization, patterns, dependencies."
+                        ),
+                    }
+                ],
                 "provider": "openai",
-                "model": "bedrock/global.anthropic.claude-sonnet-4-6",
+                "model": LLM_MODEL,
+                "language": "en",
+                "type": "github",
             },
-            timeout=600,
+            timeout=900,  # Wiki generation can take 5-15 minutes
+            stream=False,  # Get full response (not SSE chunks)
         )
         if resp.status_code < 300:
-            data = resp.json()
-            pages = data.get("pages", [])
-            if pages:
-                wiki_parts = [f"# {org_repo} — Architecture Wiki\n"]
-                for page in pages:
-                    title = page.get("title", "")
-                    content = page.get("content", "")
-                    if title:
-                        wiki_parts.append(f"\n## {title}\n")
-                    if content:
-                        wiki_parts.append(content)
-                return "\n".join(wiki_parts)
-            return data.get("content", data.get("wiki", ""))
+            wiki_text = resp.text.strip()
+            if len(wiki_text) < 500:
+                log.warning(
+                    "DeepWiki wiki too short for %s (%d chars)",
+                    org_repo,
+                    len(wiki_text),
+                )
+                return None
+            log.info(
+                "DeepWiki generated wiki for %s (%d chars)",
+                org_repo,
+                len(wiki_text),
+            )
+            return wiki_text
         else:
             log.warning(
                 "DeepWiki returned HTTP %d for %s: %s", resp.status_code, org_repo, resp.text[:200]
             )
             return None
     except requests.Timeout:
-        log.warning("DeepWiki timed out for %s", org_repo)
+        log.warning("DeepWiki timed out for %s (15 min limit)", org_repo)
         return None
     except Exception as e:
         log.warning("DeepWiki failed for %s: %s", org_repo, e)

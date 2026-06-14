@@ -27,7 +27,7 @@ on:
 jobs:
   trigger-ingestion:
     runs-on: arc-runner-org
-    timeout-minutes: 30
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -79,11 +79,11 @@ jobs:
         if: ${{ inputs.verify_only != true }}
         run: |
           JOB_NAME="manual-refresh-${GITHUB_SHA::8}"
-          echo "Waiting for job $JOB_NAME to complete (timeout: 25m)..."
+          echo "Waiting for job $JOB_NAME to complete (timeout: 75m)..."
           kubectl wait --for=condition=complete \
             "job/$JOB_NAME" \
             -n agent-context \
-            --timeout=1500s || {
+            --timeout=4500s || {
               echo "Job did not complete in time. Checking status..."
               kubectl describe "job/$JOB_NAME" -n agent-context
               kubectl logs "job/$JOB_NAME" -n agent-context --tail=50 || true
