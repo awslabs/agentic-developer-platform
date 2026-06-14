@@ -120,6 +120,24 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
         Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-webhook-events"
       },
       {
+        # The webhook-events (and correlation-pointers) tables are encrypted
+        # with the customer-managed CMK aws_kms_key.dynamodb. Writing to a
+        # CMK-encrypted table requires kms:Decrypt + kms:GenerateDataKey on the
+        # key, not just the dynamodb action. Without this, the worker's
+        # UpdateItem (lib/invocation_status.update_status) fails with
+        # KMS AccessDeniedException, which is swallowed fail-soft, leaving the
+        # invocation row frozen at webhook_received (issue #1455 Gate failure).
+        # Mirrors the lambda role grant in iam.tf.
+        Sid    = "DynamoDBKMSDecrypt"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = aws_kms_key.dynamodb.arn
+      },
+      {
         Sid    = "ExecuteAPIInvoke"
         Effect = "Allow"
         Action = [
