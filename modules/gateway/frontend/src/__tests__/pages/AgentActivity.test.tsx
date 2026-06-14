@@ -2,8 +2,10 @@
  * Tests for the AgentActivity page.
  *
  * Issue #1457: Phase 3 — Frontend "Agent Activity" page.
+ * Issue #1459: Phase 5 — Row detail + polish.
  * Validates: pagination with cursor/last_key, status rendering, link column,
- * admin toggle visibility, error/retry UI.
+ * admin toggle visibility, error/retry UI, row click → detail modal,
+ * distinct empty states (no activity vs no filter matches).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -49,6 +51,10 @@ function makeInvocation(overrides: Partial<InvocationItem> = {}): InvocationItem
     issue_number: 1457,
     invoked_at: '2026-06-14T10:00:00Z',
     completed_at: '2026-06-14T10:30:00Z',
+    status_updated_at: '2026-06-14T10:30:00Z',
+    correlation_id: 'corr-abc12345',
+    run_id: '81286554630',
+    error_message: null,
     ...overrides,
   };
 }
@@ -241,12 +247,13 @@ describe('AgentActivity Page', () => {
       expect(screen.getByText('Webhook recv')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('In progress')).toBeInTheDocument();
-    expect(screen.getByText('Complete')).toBeInTheDocument();
-    expect(screen.getByText('Failed')).toBeInTheDocument();
-    expect(screen.getByText('Rejected')).toBeInTheDocument();
-    expect(screen.getByText('Rate limited')).toBeInTheDocument();
-    expect(screen.getByText('No-op')).toBeInTheDocument();
+    // Use getAllByText because status labels also appear in filter dropdown options
+    expect(screen.getAllByText('In progress').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Complete').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Failed').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Rejected').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Rate limited').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('No-op').length).toBeGreaterThanOrEqual(1);
   });
 
   it('renders source_url as clickable repo#N link; null shows "(no external link)"', async () => {
@@ -361,6 +368,91 @@ describe('AgentActivity Page', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Your agent invocations')).toBeInTheDocument();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Phase 5: Row detail + polish tests
+  // ---------------------------------------------------------------------------
+
+  it('row click opens detail modal with correlation_id, run_id, status', async () => {
+    const user = userEvent.setup();
+    const items: InvocationItem[] = [
+      makeInvocation({
+        invocation_id: 'inv-detail-1',
+        correlation_id: 'corr-xyz789',
+        run_id: '99887766',
+        status: 'complete',
+        topic: 'Detail test topic',
+      }),
+    ];
+    mockGetMine.mockResolvedValue({ items, last_key: null });
+
+    renderAgentActivity();
+
+    await waitFor(() => {
+      expect(screen.getByText('Detail test topic')).toBeInTheDocument();
+    });
+
+    // Click the row
+    const row = screen.getByRole('button', { name: /View details for invocation: Detail test topic/ });
+    await user.click(row);
+
+    // Modal should open with detail fields
+    await waitFor(() => {
+      expect(screen.getByText('Invocation Detail')).toBeInTheDocument();
+    });
+    expect(screen.getByText('corr-xyz789')).toBeInTheDocument();
+    expect(screen.getByText('99887766')).toBeInTheDocument();
+  });
+
+  it('shows distinct empty state for "no matches" vs "no activity" based on active filters', async () => {
+    const user = userEvent.setup();
+    mockGetMine.mockResolvedValue({ items: [], last_key: null });
+
+    renderAgentActivity();
+
+    // No filters → "No agent activity yet"
+    await waitFor(() => {
+      expect(screen.getByText('No agent activity yet')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Agent invocations will appear here once triggered.')).toBeInTheDocument();
+
+    // Apply a status filter → "No matching results for the current filters"
+    const statusSelect = screen.getByLabelText('Filter by status');
+    await user.selectOptions(statusSelect, 'failed');
+
+    await waitFor(() => {
+      expect(screen.getByText('No matching results for the current filters')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Try adjusting your filters to see more results.')).toBeInTheDocument();
+    expect(screen.queryByText('No agent activity yet')).not.toBeInTheDocument();
+  });
+
+  it('row is keyboard-accessible (Enter key opens detail)', async () => {
+    const user = userEvent.setup();
+    const items: InvocationItem[] = [
+      makeInvocation({
+        invocation_id: 'inv-kb-1',
+        topic: 'Keyboard test',
+      }),
+    ];
+    mockGetMine.mockResolvedValue({ items, last_key: null });
+
+    renderAgentActivity();
+
+    await waitFor(() => {
+      expect(screen.getByText('Keyboard test')).toBeInTheDocument();
+    });
+
+    // Focus the row and press Enter
+    const row = screen.getByRole('button', { name: /View details for invocation: Keyboard test/ });
+    row.focus();
+    await user.keyboard('{Enter}');
+
+    // Modal should open
+    await waitFor(() => {
+      expect(screen.getByText('Invocation Detail')).toBeInTheDocument();
     });
   });
 });

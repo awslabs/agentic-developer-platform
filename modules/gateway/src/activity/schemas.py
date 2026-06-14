@@ -34,6 +34,7 @@ class InvocationItem(BaseModel):
     issue_number: int | None = None
     correlation_id: str | None = None
     run_id: str | None = None
+    error_message: str | None = None
 
 
 class InvocationListResponse(BaseModel):

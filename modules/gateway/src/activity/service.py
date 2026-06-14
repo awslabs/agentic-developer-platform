@@ -252,6 +252,7 @@ class ActivityService:
             issue_number=_safe_int(item.get("issue_number")),
             correlation_id=item.get("correlation_id"),
             run_id=item.get("run_id"),
+            error_message=item.get("error_message"),
         )
 
 

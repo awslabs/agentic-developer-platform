@@ -2,6 +2,8 @@
  * Agent Activity page — paginated list of agent invocations.
  *
  * Issue #1457: Phase 3 of Agent Activity rollout.
+ * Issue #1459: Phase 5 — Row detail + polish (row click → detail modal,
+ * improved empty states, a11y).
  *
  * Key behaviors:
  * - Default view = "mine" (GET /me/agent-invocations)
@@ -11,12 +13,14 @@
  * - Status rendering with glyphs
  * - source_url → "repo#issue ↗" link (or "(no external link)")
  * - Relative date with absolute on hover
+ * - Row click → detail modal (Phase 5)
  */
 
 import { useState, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Alert, Button, Input, Select } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
+import { InvocationDetail } from '@/components/InvocationDetail';
 import { usePermissions } from '@/hooks/usePermissions';
 import { getMyInvocations, getAllInvocations } from '@/services/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
@@ -114,6 +118,9 @@ const PERSONA_OPTIONS = [
 export default function AgentActivity() {
   const { isPlatformAdmin, isOrgAdmin } = usePermissions();
   const isAdmin = isPlatformAdmin() || isOrgAdmin();
+
+  // Detail modal state (Phase 5)
+  const [selectedItem, setSelectedItem] = useState<InvocationItem | null>(null);
 
   // View toggle: "mine" or "all" (admin only)
   const [viewMode, setViewMode] = useState<'mine' | 'all'>('mine');
@@ -223,10 +230,22 @@ export default function AgentActivity() {
     [resetPagination],
   );
 
+  // Row click → detail (Phase 5)
+  const handleRowClick = useCallback((item: InvocationItem) => {
+    setSelectedItem(item);
+  }, []);
+
+  const handleDetailClose = useCallback(() => {
+    setSelectedItem(null);
+  }, []);
+
   // Determine pagination state
   const hasNextPage = data?.last_key != null;
   const hasPrevPage = cursorStack.length > 0;
   const pageNumber = cursorStack.length + 1;
+
+  // Determine which empty state to show (Phase 5 polish)
+  const hasActiveFilters = !!(statusFilter || channelFilter || personaFilter || startDate || endDate);
 
   return (
     <div className="space-y-6">
@@ -381,7 +400,17 @@ export default function AgentActivity() {
                     {data.items.map((item: InvocationItem) => (
                       <tr
                         key={item.invocation_id}
-                        className="hover:bg-gray-50 dark:hover:bg-gray-700"
+                        className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer focus:outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20"
+                        onClick={() => handleRowClick(item)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            handleRowClick(item);
+                          }
+                        }}
+                        tabIndex={0}
+                        role="button"
+                        aria-label={`View details for invocation: ${item.topic || item.invocation_id}`}
                       >
                         <td
                           className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white"
@@ -442,9 +471,25 @@ export default function AgentActivity() {
             </>
           ) : !isLoading && data && data.items.length === 0 && !hasNextPage ? (
             <div className="text-center py-12">
-              <p className="text-gray-500 dark:text-gray-400">
-                No agent activity yet
-              </p>
+              {hasActiveFilters ? (
+                <>
+                  <p className="text-gray-500 dark:text-gray-400">
+                    No matching results for the current filters
+                  </p>
+                  <p className="text-gray-400 dark:text-gray-500 text-sm mt-1">
+                    Try adjusting your filters to see more results.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-gray-500 dark:text-gray-400">
+                    No agent activity yet
+                  </p>
+                  <p className="text-gray-400 dark:text-gray-500 text-sm mt-1">
+                    Agent invocations will appear here once triggered.
+                  </p>
+                </>
+              )}
             </div>
           ) : !isLoading && data && data.items.length === 0 && hasNextPage ? (
             /* Empty page with non-null last_key — more results exist beyond this cursor */
@@ -459,6 +504,13 @@ export default function AgentActivity() {
           ) : null}
         </div>
       )}
+
+      {/* Detail modal (Phase 5) */}
+      <InvocationDetail
+        item={selectedItem}
+        isOpen={selectedItem !== null}
+        onClose={handleDetailClose}
+      />
     </div>
   );
 }
