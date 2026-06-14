@@ -1928,3 +1928,210 @@ class TestBedrockViaGateway:
         # Proxy was attempted but not stopped (it never started)
         mock_start_proxy.assert_called_once()
         mock_stop_proxy.assert_not_called()
+
+
+# --- Test: GH_APP_ID / GH_APP_PRIVATE_KEY exported for token refresh (#1502) ---
+
+
+class TestGhAppCredentialsExported:
+    """Verify entrypoint exports GH_APP_ID and GH_APP_PRIVATE_KEY into the agent env.
+
+    Without these, the TokenManager in agent-worker.ts silently disables itself
+    and long-running agents die at ~1 hour with 401 Bad credentials.
+    """
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_env_vars_contain_gh_app_credentials(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """GH_APP_ID and GH_APP_PRIVATE_KEY must be present in agent subprocess env."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-app-creds")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {
+            "app_id": "99001",
+            "private_key": "-----BEGIN RSA PRIVATE KEY-----\nfake-key-content\n-----END RSA PRIVATE KEY-----",
+        }
+        mock_mint.return_value = "ghs_test_token"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Extract the env passed to the agent subprocess (the node call)
+        call_kwargs = mock_subprocess_run.call_args
+        agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
+
+        assert agent_env["GH_APP_ID"] == "99001"
+        assert agent_env["GH_APP_PRIVATE_KEY"] == (
+            "-----BEGIN RSA PRIVATE KEY-----\nfake-key-content\n-----END RSA PRIVATE KEY-----"
+        )
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_gh_app_credentials_survive_bedrock_via_user_mode(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """GH_APP_* vars must NOT be stripped by the ADP_BEDROCK_VIA=user agent_env assembly."""
+        from entrypoint import main
+        import entrypoint
+
+        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123:role/irsa")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-app-survive")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {
+            "app_id": "77788",
+            "private_key": "secret-private-key-pem",
+        }
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
+            mock_gw = MagicMock()
+            mock_gw_cls.return_value = mock_gw
+            mock_gw.is_configured = True
+            mock_gw.assume_role.return_value = {
+                "profile_name": "p",
+                "access_key_id": "AKUSER",
+                "secret_access_key": "SKUSER",
+                "session_token": "STUSER",
+                "expiration": "2026-06-14T22:00:00Z",
+                "region": "us-east-1",
+                "provenance_id": "prov",
+            }
+            main()
+
+        agent_env = mock_subprocess_run.call_args.kwargs.get(
+            "env"
+        ) or mock_subprocess_run.call_args[1].get("env")
+
+        # GH_APP_* must survive the user-mode IRSA stripping (which only pops AWS_* vars)
+        assert agent_env["GH_APP_ID"] == "77788"
+        assert agent_env["GH_APP_PRIVATE_KEY"] == "secret-private-key-pem"
+        # Confirm IRSA was stripped (user mode works as designed)
+        assert "AWS_ROLE_ARN" not in agent_env
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_private_key_not_logged(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+        caplog,
+    ):
+        """The private key value must NEVER appear in log output (security)."""
+        import logging
+        from entrypoint import main
+        import entrypoint
+
+        secret_key = "-----BEGIN RSA PRIVATE KEY-----\nSUPER_SECRET_DO_NOT_LOG\n-----END RSA PRIVATE KEY-----"
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-log-safety")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {
+            "app_id": "12345",
+            "private_key": secret_key,
+        }
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with caplog.at_level(logging.DEBUG):
+            main()
+
+        # Assert the secret key material never appears in any log record
+        all_log_output = "\n".join(record.message for record in caplog.records)
+        assert "SUPER_SECRET_DO_NOT_LOG" not in all_log_output
+        assert "BEGIN RSA PRIVATE KEY" not in all_log_output

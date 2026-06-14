@@ -191,6 +191,11 @@ def main() -> int:
         "TENANT_ID": tenant_id,
         "CLAUDE_CODE_USE_BEDROCK": "1",
         "ANTHROPIC_MODEL": os.environ.get("ANTHROPIC_MODEL", "us.anthropic.claude-opus-4-6-v1"),
+        # GitHub App credentials for token refresh (#1502). The agent-worker.ts
+        # TokenManager requires these to re-mint installation tokens before the
+        # 1-hour expiry. Without them, long-running agents die with 401.
+        "GH_APP_ID": str(app_id),
+        "GH_APP_PRIVATE_KEY": private_key,
     }
 
     # Vault credential context for adp-cred CLI (#137).
