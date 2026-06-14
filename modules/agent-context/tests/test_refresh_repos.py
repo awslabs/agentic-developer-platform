@@ -340,3 +340,144 @@ class TestBackfillDeepwikiSelection:
 
         assert "org/force-cleared" in repos_needing_wiki
         assert "org/untouched" not in repos_needing_wiki
+
+
+# ---------------------------------------------------------------------------
+# Backfill size-sort and skip-threshold tests
+#
+# Mirrors the sorting/skipping logic added to backfill_deepwiki_wikis() to
+# fix OOM issues with large repos (#1478).
+# ---------------------------------------------------------------------------
+
+DEEPWIKI_SKIP_SIZE_MB = 600  # Must stay in sync with refresh-repos.py
+
+
+def _backfill_sort_and_filter(
+    repos_needing_wiki: list[str], repo_sizes: dict[str, int]
+) -> tuple[list[str], list[str]]:
+    """Re-declaration of the sort/filter logic from backfill_deepwiki_wikis().
+
+    Returns (repos_to_process sorted by size asc, repos_to_skip).
+    Must stay in sync with refresh-repos.py.
+    """
+    repos_to_skip = [
+        repo for repo in repos_needing_wiki if repo_sizes[repo] > DEEPWIKI_SKIP_SIZE_MB
+    ]
+    repos_to_process = [
+        repo for repo in repos_needing_wiki if repo_sizes[repo] <= DEEPWIKI_SKIP_SIZE_MB
+    ]
+    repos_to_process.sort(key=lambda r: repo_sizes[r])
+    return repos_to_process, repos_to_skip
+
+
+class TestBackfillSortOrder:
+    """Verify repos are processed smallest-to-largest in backfill."""
+
+    def test_repos_sorted_by_size_ascending(self):
+        """Repos should be processed from smallest to largest."""
+        repos_needing_wiki = ["org/large", "org/tiny", "org/medium"]
+        repo_sizes = {"org/large": 400, "org/tiny": 10, "org/medium": 150}
+
+        repos_to_process, _ = _backfill_sort_and_filter(repos_needing_wiki, repo_sizes)
+
+        assert repos_to_process == ["org/tiny", "org/medium", "org/large"]
+
+    def test_repos_with_same_size_maintain_stable_order(self):
+        """Repos with equal size should not crash or reorder unpredictably."""
+        repos_needing_wiki = ["org/repo-a", "org/repo-b", "org/repo-c"]
+        repo_sizes = {"org/repo-a": 50, "org/repo-b": 50, "org/repo-c": 50}
+
+        repos_to_process, _ = _backfill_sort_and_filter(repos_needing_wiki, repo_sizes)
+
+        # All repos should be present (stable sort, no crashes)
+        assert set(repos_to_process) == {"org/repo-a", "org/repo-b", "org/repo-c"}
+
+    def test_zero_size_repos_processed_first(self):
+        """Repos with size 0 (API lookup failed) should be processed first."""
+        repos_needing_wiki = ["org/known-size", "org/unknown-size"]
+        repo_sizes = {"org/known-size": 200, "org/unknown-size": 0}
+
+        repos_to_process, _ = _backfill_sort_and_filter(repos_needing_wiki, repo_sizes)
+
+        assert repos_to_process[0] == "org/unknown-size"
+
+
+class TestBackfillSkipThreshold:
+    """Verify repos exceeding the size threshold are skipped."""
+
+    def test_repos_above_threshold_are_skipped(self):
+        """Repos > 600MB should be skipped entirely."""
+        repos_needing_wiki = ["org/huge-repo", "org/small-repo"]
+        repo_sizes = {"org/huge-repo": 743, "org/small-repo": 50}
+
+        repos_to_process, repos_to_skip = _backfill_sort_and_filter(repos_needing_wiki, repo_sizes)
+
+        assert "org/huge-repo" in repos_to_skip
+        assert "org/huge-repo" not in repos_to_process
+        assert "org/small-repo" in repos_to_process
+
+    def test_repos_at_exact_threshold_are_not_skipped(self):
+        """Repos at exactly 600MB should NOT be skipped (only > 600)."""
+        repos_needing_wiki = ["org/boundary-repo"]
+        repo_sizes = {"org/boundary-repo": 600}
+
+        repos_to_process, repos_to_skip = _backfill_sort_and_filter(repos_needing_wiki, repo_sizes)
+
+        assert "org/boundary-repo" in repos_to_process
+        assert repos_to_skip == []
+
+    def test_repos_just_above_threshold_are_skipped(self):
+        """Repos at 601MB should be skipped."""
+        repos_needing_wiki = ["org/just-over"]
+        repo_sizes = {"org/just-over": 601}
+
+        repos_to_process, repos_to_skip = _backfill_sort_and_filter(repos_needing_wiki, repo_sizes)
+
+        assert "org/just-over" in repos_to_skip
+        assert repos_to_process == []
+
+    def test_all_repos_too_large(self):
+        """When all repos exceed threshold, repos_to_process should be empty."""
+        repos_needing_wiki = ["org/giant-a", "org/giant-b"]
+        repo_sizes = {"org/giant-a": 800, "org/giant-b": 1200}
+
+        repos_to_process, repos_to_skip = _backfill_sort_and_filter(repos_needing_wiki, repo_sizes)
+
+        assert repos_to_process == []
+        assert set(repos_to_skip) == {"org/giant-a", "org/giant-b"}
+
+
+class TestBackfillSkipStateUpdate:
+    """Verify skipped repos get the correct sentinel value in state."""
+
+    def test_skipped_repo_gets_skip_too_large_sentinel(self):
+        """Repos skipped for being too large should get deepwiki_sha='skip_too_large'."""
+        repo_state = {
+            "org/huge-repo": {"last_sha": "abc123", "deepwiki_sha": None},
+            "org/small-repo": {"last_sha": "def456", "deepwiki_sha": None},
+        }
+        repo_sizes = {"org/huge-repo": 743, "org/small-repo": 50}
+
+        # Simulate the skip logic from backfill_deepwiki_wikis()
+        repos_to_skip = [
+            repo
+            for repo in repo_state
+            if not repo_state[repo].get("deepwiki_sha")
+            and repo_sizes.get(repo, 0) > DEEPWIKI_SKIP_SIZE_MB
+        ]
+        for repo in repos_to_skip:
+            repo_state[repo]["deepwiki_sha"] = "skip_too_large"
+
+        assert repo_state["org/huge-repo"]["deepwiki_sha"] == "skip_too_large"
+        assert repo_state["org/small-repo"]["deepwiki_sha"] is None
+
+    def test_skip_too_large_is_truthy_excludes_from_future_backfill(self):
+        """The 'skip_too_large' sentinel should be truthy, preventing future backfill attempts."""
+        repo_state = {
+            "org/huge-repo": {"last_sha": "abc123", "deepwiki_sha": "skip_too_large"},
+        }
+
+        # This mirrors the selection logic — 'skip_too_large' is truthy
+        repos_needing_wiki = [repo for repo, st in repo_state.items() if not st.get("deepwiki_sha")]
+
+        assert "org/huge-repo" not in repos_needing_wiki

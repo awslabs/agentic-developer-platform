@@ -674,11 +674,16 @@ def _repo_size_mb(org_repo: str) -> int:
 LARGE_REPO_TIMEOUT = 1800  # 30 minutes for repos > 500 MB
 
 
+DEEPWIKI_SKIP_SIZE_MB = 600  # Skip repos larger than this — they reliably OOM DeepWiki
+
+
 def backfill_deepwiki_wikis(repo_state: dict[str, Any]) -> int:
     """Generate DeepWiki wikis for repos that don't have them yet.
 
     Caps at MAX_WIKIS_PER_RUN to stay within rate limits.
     Uses an extended timeout (1800s) for repos > 500 MB.
+    Skips repos > DEEPWIKI_SKIP_SIZE_MB (they OOM DeepWiki).
+    Processes smallest repos first to maximize successful wiki generation.
     Returns the number of wikis generated.
     """
     repos_needing_wiki = [
@@ -695,14 +700,49 @@ def backfill_deepwiki_wikis(repo_state: dict[str, Any]) -> int:
         MAX_WIKIS_PER_RUN,
     )
 
+    # Fetch sizes and skip repos that are too large (they OOM DeepWiki)
+    repo_sizes: dict[str, int] = {}
+    for repo in repos_needing_wiki:
+        repo_sizes[repo] = _repo_size_mb(repo)
+
+    repos_to_skip = [
+        repo for repo in repos_needing_wiki if repo_sizes[repo] > DEEPWIKI_SKIP_SIZE_MB
+    ]
+    for repo in repos_to_skip:
+        log.warning(
+            "Skipping %s (%d MB) — exceeds %d MB threshold, would OOM DeepWiki",
+            repo,
+            repo_sizes[repo],
+            DEEPWIKI_SKIP_SIZE_MB,
+        )
+        repo_state[repo]["deepwiki_sha"] = "skip_too_large"
+
+    repos_to_process = [
+        repo for repo in repos_needing_wiki if repo_sizes[repo] <= DEEPWIKI_SKIP_SIZE_MB
+    ]
+
+    # Sort by size ascending — process smallest repos first to maximize success
+    # before any large repo risks destabilizing DeepWiki
+    repos_to_process.sort(key=lambda r: repo_sizes[r])
+
+    if not repos_to_process:
+        log.info("No repos to process after filtering (all too large)")
+        return 0
+
+    log.info(
+        "Processing %d repos (smallest first), skipped %d (too large)",
+        len(repos_to_process),
+        len(repos_to_skip),
+    )
+
     wikis_generated = 0
-    for repo in repos_needing_wiki[:MAX_WIKIS_PER_RUN]:
+    for repo in repos_to_process[:MAX_WIKIS_PER_RUN]:
         log.info(
             "Generating DeepWiki wiki for %s (%d/%d)", repo, wikis_generated + 1, MAX_WIKIS_PER_RUN
         )
 
         # Use extended timeout for large repos (> 500 MB)
-        size_mb = _repo_size_mb(repo)
+        size_mb = repo_sizes[repo]
         timeout = LARGE_REPO_TIMEOUT if size_mb > 500 else 900
         if size_mb > 500:
             log.info(
