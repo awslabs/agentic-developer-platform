@@ -17,8 +17,9 @@ class TestUpdateStatus:
     """Tests for update_status()."""
 
     def setup_method(self):
-        # Reset the module-level client between tests
+        # Reset the module-level client and cached table name between tests
         invocation_status._ddb = None
+        invocation_status._table_name = ""
 
     @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": ""})
     def test_no_op_when_table_not_configured(self):
@@ -62,6 +63,7 @@ class TestUpdateStatus:
             run_id="agent-scaledjob-xyz-12345",
         )
 
+        # in_progress gets 1 call on success (no retry needed)
         mock_client.update_item.assert_called_once()
         call_kwargs = mock_client.update_item.call_args[1]
         assert call_kwargs["TableName"] == "test-table"
@@ -129,12 +131,13 @@ class TestUpdateStatus:
         assert ":summary" in expr_values
         assert expr_values[":summary"] == {"S": "developer — exit code 1"}
 
+    @patch("lib.invocation_status.time.sleep")
     @patch("lib.invocation_status._get_client")
     @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
-    def test_conditional_check_failed_does_not_raise(self, mock_get_client):
-        """Missing row (ConditionalCheckFailed) → caught, no raise."""
+    def test_conditional_check_failed_retries_for_in_progress(self, mock_get_client, mock_sleep):
+        """in_progress status retries once on ConditionalCheckFailed before giving up."""
         mock_client = MagicMock()
-        # Simulate ConditionalCheckFailedException
+        # Simulate ConditionalCheckFailedException on all attempts
         error_response = {"Error": {"Code": "ConditionalCheckFailedException"}}
         from botocore.exceptions import ClientError
 
@@ -146,12 +149,39 @@ class TestUpdateStatus:
         )
         mock_get_client.return_value = mock_client
 
-        # Should NOT raise
+        # Should NOT raise — retries once then gives up silently
         invocation_status.update_status(
             event_id="nonexistent-msg",
             arrived_at="2026-06-13T22:00:00Z",
             status="in_progress",
         )
+        # in_progress gets 2 attempts (1 initial + 1 retry)
+        assert mock_client.update_item.call_count == 2
+        mock_sleep.assert_called_once_with(2)
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_conditional_check_failed_no_retry_for_complete(self, mock_get_client):
+        """complete status does NOT retry on ConditionalCheckFailed."""
+        mock_client = MagicMock()
+        error_response = {"Error": {"Code": "ConditionalCheckFailedException"}}
+        from botocore.exceptions import ClientError
+
+        mock_client.exceptions.ConditionalCheckFailedException = type(
+            "ConditionalCheckFailedException", (ClientError,), {}
+        )
+        mock_client.update_item.side_effect = (
+            mock_client.exceptions.ConditionalCheckFailedException(error_response, "UpdateItem")
+        )
+        mock_get_client.return_value = mock_client
+
+        # Should NOT raise — gives up after 1 attempt (no retry for non-in_progress)
+        invocation_status.update_status(
+            event_id="nonexistent-msg",
+            arrived_at="2026-06-13T22:00:00Z",
+            status="complete",
+        )
+        mock_client.update_item.assert_called_once()
 
     @patch("lib.invocation_status._get_client")
     @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})

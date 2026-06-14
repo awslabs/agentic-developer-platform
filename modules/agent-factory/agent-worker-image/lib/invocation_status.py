@@ -77,24 +77,42 @@ def update_status(
 
         update_expr = "SET " + ", ".join(expr_parts)
 
-        _get_client().update_item(
-            TableName=table,
-            Key={
-                "event_id": {"S": event_id},
-                "arrived_at": {"S": arrived_at},
-            },
-            UpdateExpression=update_expr,
-            ExpressionAttributeNames=expr_names,
-            ExpressionAttributeValues=expr_values,
-            # Only update if row exists — prevents orphan creates
-            ConditionExpression="attribute_exists(event_id)",
-        )
-        logger.info("Updated invocation status: event_id=%s status=%s", event_id, status)
-    except _get_client().exceptions.ConditionalCheckFailedException:
-        # Row doesn't exist (capture write failed or was skipped) — no-op
-        logger.debug(
-            "Invocation row not found for status update (event_id=%s) — skipping",
-            event_id,
-        )
+        # Retry once on ConditionalCheckFailedException for the "in_progress"
+        # transition. The Lambda now writes DDB before SQS publish (handler.py
+        # reorder, #1463), so this should rarely fire. The retry is defense-in-
+        # depth for transient DDB eventual-consistency windows.
+        max_attempts = 2 if status == "in_progress" else 1
+        for attempt in range(max_attempts):
+            try:
+                _get_client().update_item(
+                    TableName=table,
+                    Key={
+                        "event_id": {"S": event_id},
+                        "arrived_at": {"S": arrived_at},
+                    },
+                    UpdateExpression=update_expr,
+                    ExpressionAttributeNames=expr_names,
+                    ExpressionAttributeValues=expr_values,
+                    # Only update if row exists — prevents orphan creates
+                    ConditionExpression="attribute_exists(event_id)",
+                )
+                logger.info("Updated invocation status: event_id=%s status=%s", event_id, status)
+                return
+            except _get_client().exceptions.ConditionalCheckFailedException:
+                if attempt < max_attempts - 1:
+                    logger.info(
+                        "Row not yet visible for event_id=%s, retrying in 2s (attempt %d/%d)",
+                        event_id,
+                        attempt + 1,
+                        max_attempts,
+                    )
+                    time.sleep(2)
+                else:
+                    # Row doesn't exist after retries — capture write failed or was skipped
+                    logger.warning(
+                        "Invocation row not found for status update (event_id=%s) after %d attempts — skipping",
+                        event_id,
+                        max_attempts,
+                    )
     except Exception as exc:
         logger.warning("Failed to update invocation status (non-fatal): %s", exc)

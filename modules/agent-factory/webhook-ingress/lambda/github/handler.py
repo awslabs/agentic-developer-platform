@@ -724,6 +724,29 @@ def handler(event: dict, context) -> dict:
         f"DBG handler:publish_attempt message_id={envelope['message_id']} persona={intent.persona}"
     )
 
+    # 14b. Capture invocation event to DynamoDB BEFORE SQS publish.
+    # The worker uses ConditionExpression("attribute_exists(event_id)") on
+    # UpdateItem, so the row MUST exist before the worker receives the message.
+    # Writing DDB first eliminates the race where KEDA dispatches the SQS
+    # message faster than the Lambda can write the row (issue #1463 Gate #1455
+    # diagnosed this: every event stayed frozen at webhook_received because the
+    # worker's UpdateItem hit ConditionalCheckFailedException on a not-yet-
+    # written row, then silently swallowed the error).
+    _capture_invocation_event(
+        envelope=envelope,
+        tenant_id=tenant_id,
+        user_id=resolved.user_id,
+        github_login=sender.get("login", ""),
+        event_type=event_type,
+        action=action,
+        installation_id=installation_id,
+        repo=repo,
+        persona=intent.persona,
+        payload=payload,
+        correlation_id=correlation_ctx["correlation_id"] if correlation_ctx else None,
+        status="webhook_received",
+    )
+
     message_id = _get_sqs_publisher().publish_envelope(envelope)
     print(f"DBG handler:publish_result sqs_message_id={message_id!r}")
     if not message_id:
@@ -750,22 +773,6 @@ def handler(event: dict, context) -> dict:
         persona=intent.persona,
         outcome="published",
         start_time=start_time,
-    )
-
-    # 14b. Capture invocation event to DynamoDB (best-effort)
-    _capture_invocation_event(
-        envelope=envelope,
-        tenant_id=tenant_id,
-        user_id=resolved.user_id,
-        github_login=sender.get("login", ""),
-        event_type=event_type,
-        action=action,
-        installation_id=installation_id,
-        repo=repo,
-        persona=intent.persona,
-        payload=payload,
-        correlation_id=correlation_ctx["correlation_id"] if correlation_ctx else None,
-        status="webhook_received",
     )
 
     # 15. Return 202
