@@ -570,11 +570,15 @@ def refresh_url(url: str, state: dict[str, Any], force: bool = False) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def deepwiki_generate(org_repo: str) -> str | None:
+def deepwiki_generate(org_repo: str, timeout: int = 900) -> str | None:
     """Call DeepWiki streaming API to generate a wiki for a repo.
 
     Uses /chat/completions/stream — the correct DeepWiki endpoint.
     The old /api/wiki/generate endpoint does not exist (returns 404).
+
+    Args:
+        org_repo: GitHub org/repo name.
+        timeout: Request timeout in seconds (default 900s, use 1800s for large repos).
     """
     try:
         resp = requests.post(
@@ -596,7 +600,7 @@ def deepwiki_generate(org_repo: str) -> str | None:
                 "language": "en",
                 "type": "github",
             },
-            timeout=900,  # Wiki generation can take 5-15 minutes
+            timeout=timeout,
             stream=False,  # Get full response (not SSE chunks)
         )
         if resp.status_code < 300:
@@ -616,11 +620,14 @@ def deepwiki_generate(org_repo: str) -> str | None:
             return wiki_text
         else:
             log.warning(
-                "DeepWiki returned HTTP %d for %s: %s", resp.status_code, org_repo, resp.text[:200]
+                "DeepWiki returned HTTP %d for %s — response body: %s",
+                resp.status_code,
+                org_repo,
+                resp.text[:2000],
             )
             return None
     except requests.Timeout:
-        log.warning("DeepWiki timed out for %s (15 min limit)", org_repo)
+        log.warning("DeepWiki timed out for %s (timeout=%ds)", org_repo, timeout)
         return None
     except Exception as e:
         log.warning("DeepWiki failed for %s: %s", org_repo, e)
@@ -643,10 +650,35 @@ def upload_wiki_to_s3(wiki: str, org_repo: str) -> bool:
     return success
 
 
+def _repo_size_mb(org_repo: str) -> int:
+    """Estimate repo size in MB via GitHub API (unauthenticated, best-effort).
+
+    Returns 0 on failure — callers should use the default timeout in that case.
+    """
+    try:
+        resp = requests.get(
+            f"https://api.github.com/repos/{org_repo}",
+            headers={"Accept": "application/vnd.github.v3+json"},
+            timeout=10,
+        )
+        if resp.status_code < 300:
+            # GitHub API returns size in KB
+            return resp.json().get("size", 0) // 1024
+    except Exception:
+        pass
+    return 0
+
+
+# Repos known to exceed the 900s timeout consistently.
+# Add entries here with a comment explaining why.
+LARGE_REPO_TIMEOUT = 1800  # 30 minutes for repos > 500 MB
+
+
 def backfill_deepwiki_wikis(repo_state: dict[str, Any]) -> int:
     """Generate DeepWiki wikis for repos that don't have them yet.
 
     Caps at MAX_WIKIS_PER_RUN to stay within rate limits.
+    Uses an extended timeout (1800s) for repos > 500 MB.
     Returns the number of wikis generated.
     """
     repos_needing_wiki = [
@@ -668,7 +700,16 @@ def backfill_deepwiki_wikis(repo_state: dict[str, Any]) -> int:
         log.info(
             "Generating DeepWiki wiki for %s (%d/%d)", repo, wikis_generated + 1, MAX_WIKIS_PER_RUN
         )
-        wiki = deepwiki_generate(repo)
+
+        # Use extended timeout for large repos (> 500 MB)
+        size_mb = _repo_size_mb(repo)
+        timeout = LARGE_REPO_TIMEOUT if size_mb > 500 else 900
+        if size_mb > 500:
+            log.info(
+                "Repo %s is large (%d MB) — using extended timeout (%ds)", repo, size_mb, timeout
+            )
+
+        wiki = deepwiki_generate(repo, timeout=timeout)
         if wiki:
             uploaded = upload_wiki_to_s3(wiki, repo)
             if uploaded:

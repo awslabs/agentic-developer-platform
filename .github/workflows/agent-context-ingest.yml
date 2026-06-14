@@ -48,6 +48,12 @@ jobs:
             --from-file=accounts.txt=modules/agent-context/index_content/accounts.txt \
             -n agent-context --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Clean up previous job (idempotent)
+        if: ${{ inputs.verify_only != true }}
+        run: |
+          JOB_NAME="manual-refresh-${GITHUB_SHA::8}"
+          kubectl delete job "$JOB_NAME" -n agent-context --ignore-not-found
+
       - name: Trigger ingestion Job
         if: ${{ inputs.verify_only != true }}
         env:

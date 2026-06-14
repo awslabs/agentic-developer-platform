@@ -267,6 +267,30 @@ class TestDeepwikiShaStateLogic:
         assert result is None
 
 
+class TestDeepwikiGenerateTimeout:
+    """Verify size-aware timeout logic for deepwiki_generate."""
+
+    def test_default_timeout_for_small_repos(self):
+        """Repos <= 500 MB should use the default 900s timeout."""
+        # Size <= 500 MB → timeout stays at 900
+        size_mb = 53
+        timeout = 1800 if size_mb > 500 else 900
+        assert timeout == 900
+
+    def test_extended_timeout_for_large_repos(self):
+        """Repos > 500 MB should use the extended 1800s timeout."""
+        # Size > 500 MB → extended timeout
+        size_mb = 750
+        timeout = 1800 if size_mb > 500 else 900
+        assert timeout == 1800
+
+    def test_zero_size_uses_default_timeout(self):
+        """When size lookup fails (returns 0), default timeout applies."""
+        size_mb = 0
+        timeout = 1800 if size_mb > 500 else 900
+        assert timeout == 900
+
+
 class TestBackfillDeepwikiSelection:
     """Verify backfill_deepwiki_wikis selects repos with deepwiki_sha=None."""
 

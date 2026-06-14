@@ -89,7 +89,7 @@ spec:
       volumes:
       - name: wiki-cache
         emptyDir:
-          sizeLimit: 2Gi
+          sizeLimit: 10Gi
       - name: deepwiki-config
         configMap:
           name: deepwiki-config
