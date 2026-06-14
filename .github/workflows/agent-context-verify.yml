@@ -159,30 +159,34 @@ jobs:
               else:
                   print('  ✅ PASS')
 
-              # Print diagnostic info
-              print()
-              print('=== Stage status summary ===')
-              cur.execute('SELECT stage, status, count(*) FROM index_run_stages GROUP BY 1, 2 ORDER BY 1, 2')
-              for row in cur.fetchall():
-                  print(f'  {row[0]:20s} | {row[1]:12s} | {row[2]}')
-
-              print()
-              print('=== Recent index runs ===')
-              cur.execute('SELECT id, repo, status FROM index_runs ORDER BY started_at DESC LIMIT 5')
-              for row in cur.fetchall():
-                  print(f'  {row[0][:8]}... | {row[1]:40s} | {row[2]}')
-
-              conn.close()
-
-              # Final verdict
+              # Final verdict (before diagnostic queries that might fail)
               print()
               if failures:
                   print('❌ POSTGRES THRESHOLD CHECK FAILED:')
                   for f in failures:
                       print(f'  - {f}')
+                  conn.close()
                   sys.exit(1)
               else:
                   print('✅ All Postgres thresholds met')
+
+              # Print diagnostic info (non-fatal)
+              try:
+                  print()
+                  print('=== Stage status summary ===')
+                  cur.execute('SELECT stage, status, count(*) FROM index_run_stages GROUP BY 1, 2 ORDER BY 1, 2')
+                  for row in cur.fetchall():
+                      print(f'  {row[0]:20s} | {row[1]:12s} | {row[2]}')
+
+                  print()
+                  print('=== Recent index runs ===')
+                  cur.execute('SELECT id, repo_id, status FROM index_runs ORDER BY started_at DESC LIMIT 5')
+                  for row in cur.fetchall():
+                      print(f'  {row[0][:8]}... | {str(row[1])[:36]:36s} | {row[2]}')
+              except Exception as diag_err:
+                  print(f'  (diagnostic query failed: {diag_err})')
+
+              conn.close()
 
           except Exception as e:
               print(f'❌ FATAL: DB verification failed: {e}')
