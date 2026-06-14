@@ -63,7 +63,7 @@ jobs:
               | awk -F/ '{print $4}' \
               | sort -u \
               | jq -R . \
-              | jq -s .)
+              | jq -sc .)
             # If buildspec or workflow changed, rebuild all
             if git diff --name-only HEAD^ HEAD | grep -qE '(codebuild/bs-agent-context-image\.yml|\.github/workflows/agent-context-images-build\.yml)'; then
               echo 'matrix={"image":["ingestion","codegraph-context","litellm-proxy","deepwiki"]}' >> "$GITHUB_OUTPUT"
