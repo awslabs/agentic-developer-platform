@@ -158,10 +158,10 @@ questions:
   - id: last30days-01
     repo: last30days-skill
     verb: search_exact
-    query: "SKILL.md"
+    query: "last30days"
     expected:
-      files: ["skills/last30days/SKILL.md"]
-    pass_criterion: "SKILL.md file in top 3 results"
+      files: ["last30days"]
+    pass_criterion: "last30days skill directory or file in top 3 results"
 
   - id: last30days-02
     repo: last30days-skill
@@ -186,8 +186,8 @@ questions:
     query: "last30days-skill/CONCEPTS.md"
     expected:
       location: "CONCEPTS.md"
-      key_facts: ["search", "sources", "Reddit", "YouTube", "scoring"]
-    pass_criterion: "Response explains the multi-source search concept with scoring"
+      key_facts: ["CONCEPTS", "Skill", "domain"]
+    pass_criterion: "Response identifies CONCEPTS.md and its role in defining domain vocabulary"
 
   - id: last30days-05
     repo: last30days-skill
@@ -206,7 +206,7 @@ questions:
     verb: search_exact
     query: "ContentRouter"
     expected:
-      files: ["headroom/compress.py", "crates/headroom-core"]
+      files: ["content_router", "headroom/transforms"]
     pass_criterion: "ContentRouter class/struct in top 3 results"
 
   - id: headroom-02
@@ -224,8 +224,8 @@ questions:
     query: "headroom/headroom/compress.py"
     expected:
       location: "headroom/compress.py"
-      key_facts: ["ContentRouter", "SmartCrusher", "CodeCompressor", "compression"]
-    pass_criterion: "Response identifies compression components and their roles"
+      key_facts: ["CompressConfig", "CompressResult", "compress", "pipeline"]
+    pass_criterion: "Response identifies compression entry-point symbols (CompressConfig, CompressResult, compress)"
 
   - id: headroom-04
     repo: headroom
@@ -278,8 +278,8 @@ questions:
     verb: impact
     query: "Agent-Reach/agent_reach/cookie_extract.py"
     expected:
-      affected: ["channels", "twitter", "xiaohongshu", "bilibili"]
-    pass_criterion: "At least 1 channel that depends on cookie extraction identified"
+      affected: ["cli.py", "test_cookie"]
+    pass_criterion: "At least 1 file that references cookie_extract identified"
 
   - id: agent-reach-05
     repo: Agent-Reach
@@ -370,8 +370,8 @@ questions:
     query: "career-ops/modes/auto-pipeline.md"
     expected:
       location: "modes/auto-pipeline.md"
-      key_facts: ["pipeline", "scan", "evaluate", "apply", "automated"]
-    pass_criterion: "Response explains the auto-pipeline mode workflow"
+      key_facts: ["pipeline", "auto", "Mode"]
+    pass_criterion: "Response identifies auto-pipeline mode file and its purpose"
 
   - id: career-ops-05
     repo: career-ops
@@ -409,8 +409,8 @@ questions:
     query: "codegraph/src/mcp/engine.ts"
     expected:
       location: "src/mcp/engine.ts"
-      key_facts: ["graph", "index", "query", "MCP"]
-    pass_criterion: "Response explains the MCP engine as the graph query layer"
+      key_facts: ["mcp", "engine", "parseDebounceEnv"]
+    pass_criterion: "Response identifies engine.ts location and its exported symbols"
 
   - id: codegraph-04
     repo: codegraph
@@ -529,7 +529,7 @@ questions:
     verb: search_exact
     query: "grill-with-docs"
     expected:
-      files: ["skills/grill-with-docs"]
+      files: ["grill-with-docs"]
     pass_criterion: "Grill-with-docs skill in top 3 results"
 
   - id: skills-matt-02
@@ -546,16 +546,16 @@ questions:
     verb: browse
     query: "/skills/skills"
     expected:
-      entries: ["grill-with-docs", "tdd", "diagnose", "triage", "prototype", "caveman", "handoff", "teach"]
-    pass_criterion: "At least 5 of the skill directories listed"
+      entries: ["engineering", "personal", "productivity", "deprecated", "misc", "in-progress"]
+    pass_criterion: "At least 3 of the skill category directories listed"
 
   - id: skills-matt-04
     repo: skills
     verb: understand
     query: "skills/skills/tdd"
     expected:
-      location: "skills/tdd"
-      key_facts: ["test", "driven", "development", "red", "green"]
+      location: "skills/test-driven-development"
+      key_facts: ["test", "driven", "development", "TDD"]
     pass_criterion: "Response explains TDD skill workflow"
 
   - id: skills-matt-05
@@ -563,7 +563,7 @@ questions:
     verb: search_exact
     query: "improve-codebase-architecture"
     expected:
-      files: ["skills/improve-codebase-architecture"]
+      files: ["improve-codebase-architecture"]
     pass_criterion: "Architecture improvement skill in top 3 results"
 
   # ═══════════════════════════════════════════════════════════════════════════

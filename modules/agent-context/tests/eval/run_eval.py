@@ -231,12 +231,18 @@ def check_ingestion(config: EvalConfig, corpus: list[Repo]) -> dict[str, bool]:
                     results[repo.name] = False
             else:
                 # Use browse verb to check if repo is indexed
+                headers = {
+                    "Content-Type": "application/json",
+                    "X-GitHub-Login": "eval-harness",
+                    "X-GitHub-Teams": "platform-team",
+                }
                 resp = httpx.post(
                     f"{config.mcp_url}/call",
                     json={
                         "name": "browse",
                         "arguments": {"action": "ls", "uri": f"/{repo.name}"},
                     },
+                    headers=headers,
                     timeout=config.timeout,
                 )
                 if resp.status_code == 200:
@@ -265,9 +271,17 @@ def query_mcp(config: EvalConfig, verb: str, arguments: dict[str, Any]) -> dict[
     if verb in ("search_exact", "search_semantic"):
         tool_name = "search"
 
+    # Auth headers required by the Door's ACL (fail-closed without them)
+    headers = {
+        "Content-Type": "application/json",
+        "X-GitHub-Login": "eval-harness",
+        "X-GitHub-Teams": "platform-team",
+    }
+
     resp = httpx.post(
         f"{config.mcp_url}/call",
         json={"name": tool_name, "arguments": arguments},
+        headers=headers,
         timeout=config.timeout,
     )
     resp.raise_for_status()
@@ -459,28 +473,44 @@ def score_result(
 def _score_search(
     question: GoldenQuestion, response: dict[str, Any], config: EvalConfig
 ) -> EvalResult:
-    """Score a search result: expected file in top-K."""
+    """Score a search result: expected file in top-K FileMatches.
+
+    HARDENED: Deduplicates results to file-level (one entry per unique file
+    path) before scoring. Handles both file path formats:
+    - Zoekt via Door: "path/to/file.py" (repo_id is separate)
+    - Direct Zoekt: "org/repo/path/to/file.py"
+    """
     results = response.get("results", [])
     expected_files = question.expected.get("files", [])
     expected_content = question.expected.get("content", [])
 
-    # Check if any expected file appears in top-K results
+    # Dedup results to one per file (Door already does this but be safe)
+    seen_files: set[str] = set()
+    deduped_results: list[dict[str, Any]] = []
+    for result in results:
+        file_key = result.get("file", "") or result.get("path", "")
+        if file_key and file_key not in seen_files:
+            seen_files.add(file_key)
+            deduped_results.append(result)
+
+    # Check if any expected file appears in top-K deduped results
     found = False
-    for result in results[: config.top_k]:
+    for result in deduped_results[: config.top_k]:
         result_file = result.get("file", "") or result.get("path", "")
         result_content = result.get("content", "")
 
-        # File match
+        # File match (substring: expected may be a partial path)
         for exp_file in expected_files:
             if exp_file in result_file:
                 found = True
                 break
 
-        # Content match (for cases where we expect specific text)
-        for exp_content in expected_content:
-            if exp_content.lower() in result_content.lower():
-                found = True
-                break
+        # Content match (for cases where we expect specific text in the line)
+        if not found:
+            for exp_content in expected_content:
+                if exp_content.lower() in result_content.lower():
+                    found = True
+                    break
 
         if found:
             break
@@ -492,31 +522,59 @@ def _score_search(
         query=question.query,
         passed=found,
         score=1.0 if found else 0.0,
-        response=results[:3],  # store top 3 for review
+        response=deduped_results[:3],  # store top 3 for review
     )
 
 
 def _score_understand(
     question: GoldenQuestion, response: dict[str, Any], config: EvalConfig
 ) -> EvalResult:
-    """Score an understand result: key facts present in response."""
+    """Score an understand result: key facts present in structural data.
+
+    HARDENED: Only checks the 'definitions' array content (symbols, files,
+    signatures from the structural index loaded from S3). Does NOT check the
+    full JSON response (which would allow false positives from echoed
+    query/target strings or debug fields).
+    """
     expected_facts = question.expected.get("key_facts", [])
     expected_location = question.expected.get("location", "")
 
-    response_text = json.dumps(response).lower()
+    # Extract ONLY the structural data fields from definitions
+    # (this is what actually came from S3 code-index.json)
+    definitions = response.get("definitions", [])
 
-    # Check location mentioned
-    location_found = not expected_location or expected_location.lower() in response_text
+    # Build searchable text from structural fields only:
+    # symbol names, file paths, kinds, signatures, callers, callees
+    structural_parts: list[str] = []
+    for defn in definitions:
+        structural_parts.append(defn.get("symbol", ""))
+        structural_parts.append(defn.get("file", ""))
+        structural_parts.append(defn.get("kind", ""))
+        structural_parts.append(defn.get("signature", ""))
+        structural_parts.append(defn.get("content", ""))
+        # Include caller/callee names if present
+        for caller in defn.get("callers", []):
+            structural_parts.append(caller)
+        for callee in defn.get("callees", []):
+            structural_parts.append(callee)
 
-    # Check key facts
+    structural_text = " ".join(structural_parts).lower()
+
+    # Also check if definitions reference the expected location file
+    definition_files = [d.get("file", "") for d in definitions]
+    location_found = not expected_location or any(
+        expected_location.lower() in f.lower() for f in definition_files
+    )
+
+    # Check key facts against structural text only
     facts_found = 0
     for fact in expected_facts:
-        if fact.lower() in response_text:
+        if fact.lower() in structural_text:
             facts_found += 1
 
-    # Pass if location found AND majority of facts found
+    # Pass if location found AND majority of facts found in actual structural data
     min_facts = max(1, len(expected_facts) // 2)
-    passed = location_found and facts_found >= min_facts
+    passed = location_found and facts_found >= min_facts and len(definitions) > 0
     score = (
         facts_found / len(expected_facts) if expected_facts else (1.0 if location_found else 0.0)
     )
@@ -528,26 +586,44 @@ def _score_understand(
         query=question.query,
         passed=passed,
         score=score,
-        response=response,
+        response=definitions[:5],  # store top 5 for review
     )
 
 
 def _score_impact(
     question: GoldenQuestion, response: dict[str, Any], config: EvalConfig
 ) -> EvalResult:
-    """Score an impact result: expected callers/dependents in result set."""
+    """Score an impact result: expected callers/dependents in result set.
+
+    HARDENED: Checks the 'file' and 'symbol' fields of each affected entry
+    (which come from S3 call-graph data or Zoekt reference search). Does
+    NOT match against the full JSON (which would false-positive on the
+    echoed 'target' field).
+    """
     expected_affected = question.expected.get("affected", [])
 
     affected_results = response.get("affected", [])
-    response_text = json.dumps(affected_results).lower()
+
+    # Build searchable text from structural fields only:
+    # file paths, symbols, relationships — NOT the 'target' field (which echoes the query)
+    structural_parts: list[str] = []
+    for entry in affected_results:
+        structural_parts.append(entry.get("file", ""))
+        structural_parts.append(entry.get("symbol", ""))
+        structural_parts.append(entry.get("content", ""))
+        # Include caller reference if present
+        if "caller" in entry:
+            structural_parts.append(entry["caller"])
+
+    structural_text = " ".join(structural_parts).lower()
 
     found = 0
     for expected in expected_affected:
-        if expected.lower() in response_text:
+        if expected.lower() in structural_text:
             found += 1
 
     min_expected = max(1, len(expected_affected) // 2)
-    passed = found >= min_expected
+    passed = found >= min_expected and len(affected_results) > 0
     score = found / len(expected_affected) if expected_affected else 0.0
 
     return EvalResult(

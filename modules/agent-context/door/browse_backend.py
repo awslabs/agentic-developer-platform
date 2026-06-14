@@ -1,13 +1,16 @@
 """Browse backend — navigate indexed content (browse verb).
 
-Lists indexed repos from the Postgres catalog and S3 content objects.
+Lists indexed repos from the Postgres catalog/S3 and source files from Zoekt.
 Provides importable functions for the Context MCP server.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
+
+import httpx
 
 from .acl import SearchHit
 
@@ -23,6 +26,7 @@ async def browse(
     bucket: str = "",
     content_prefix: str = "content",
     depth: int = 1,
+    zoekt_url: str = "",
 ) -> list[SearchHit]:
     """Navigate the indexed content filesystem.
 
@@ -32,7 +36,7 @@ async def browse(
         Action to perform: "ls" (list), "tree" (recursive list), "info" (metadata).
     uri:
         URI path to browse. Root "/" lists repos, "/repo-name" lists content types,
-        "/repo-name/wikis" lists wiki files, etc.
+        "/repo-name/path" lists files via Zoekt.
     db_pool:
         Database connection pool for catalog queries.
     s3_client:
@@ -43,6 +47,8 @@ async def browse(
         S3 key prefix for content objects.
     depth:
         How many levels deep to list (default 1).
+    zoekt_url:
+        Zoekt webserver URL for file-level browsing.
 
     Returns
     -------
@@ -58,6 +64,7 @@ async def browse(
             bucket=bucket,
             content_prefix=content_prefix,
             depth=depth,
+            zoekt_url=zoekt_url,
         )
     elif action == "tree":
         return await _list_path(
@@ -67,6 +74,7 @@ async def browse(
             bucket=bucket,
             content_prefix=content_prefix,
             depth=min(depth, 3),
+            zoekt_url=zoekt_url,
         )
     elif action == "info":
         return await _get_info(
@@ -89,65 +97,116 @@ async def _list_path(
     bucket: str,
     content_prefix: str,
     depth: int,
+    zoekt_url: str = "",
 ) -> list[SearchHit]:
-    """List contents at a URI path."""
+    """List contents at a URI path.
+
+    For URIs with >1 path components (e.g., /repo-name/subdir), uses Zoekt to
+    list files in the repo's directory tree — Zoekt is the source of truth for
+    indexed source files.
+    """
     parts = [p for p in uri.split("/") if p]
 
-    # Root level: list all indexed repos from catalog
+    # Root level: list all indexed repos from catalog (or S3 fallback)
     if not parts:
-        return await _list_repos(db_pool)
+        return await _list_repos(db_pool, s3_client=s3_client, bucket=bucket)
 
     repo_name = parts[0]
 
-    # Repo level: list content types available
+    # Repo level with no sub-path: list top-level directories from Zoekt
     if len(parts) == 1:
+        if zoekt_url:
+            return await _list_zoekt_files(repo_name, "", zoekt_url=zoekt_url)
         return _list_repo_content_types(repo_name)
 
-    # Deeper: list S3 objects under the content path
-    content_type = parts[1]  # e.g., "wikis", "code-indexes", etc.
-    sub_path = "/".join(parts[2:]) if len(parts) > 2 else ""
+    # Deeper paths: use Zoekt to list files at that directory
+    sub_path = "/".join(parts[1:])
 
+    if zoekt_url:
+        return await _list_zoekt_files(repo_name, sub_path, zoekt_url=zoekt_url)
+
+    # Fall back to S3 content listing if Zoekt unavailable
+    content_type = parts[1]
+    sub_path_s3 = "/".join(parts[2:]) if len(parts) > 2 else ""
     return await _list_s3_content(
         repo_name,
         content_type,
-        sub_path,
+        sub_path_s3,
         s3_client=s3_client,
         bucket=bucket,
         content_prefix=content_prefix,
     )
 
 
-async def _list_repos(db_pool: Any | None) -> list[SearchHit]:
-    """List all indexed repos from the catalog (Postgres)."""
-    if db_pool is None:
-        log.debug("No db_pool — returning empty repo list")
-        return []
+async def _list_repos(
+    db_pool: Any | None, s3_client: Any | None = None, bucket: str = ""
+) -> list[SearchHit]:
+    """List all indexed repos from the catalog (Postgres) or S3 fallback.
 
-    try:
-        conn = db_pool.getconn()
+    When Postgres is unavailable (rds_enabled=false), discovers repos from the
+    code-indexes/ S3 prefix — each file is named {org}-{repo}.json.
+    """
+    # Try Postgres first (authoritative catalog)
+    if db_pool is not None:
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT repo_name, description FROM repositories ORDER BY repo_name LIMIT 200"
-                )
-                rows = cur.fetchall()
-                return [
-                    SearchHit(
-                        repo_name=row[0],
-                        data={
-                            "repo_id": row[0],
-                            "type": "repository",
-                            "description": row[1] or "",
-                            "entry_type": "directory",
-                        },
+            conn = db_pool.getconn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT repo_name, description FROM repositories ORDER BY repo_name LIMIT 200"
                     )
-                    for row in rows
-                ]
-        finally:
-            db_pool.putconn(conn)
-    except Exception:
-        log.warning("Failed to list repos from catalog", exc_info=True)
-        return []
+                    rows = cur.fetchall()
+                    if rows:
+                        return [
+                            SearchHit(
+                                repo_name=row[0],
+                                data={
+                                    "repo_id": row[0],
+                                    "type": "repository",
+                                    "description": row[1] or "",
+                                    "entry_type": "directory",
+                                },
+                            )
+                            for row in rows
+                        ]
+            finally:
+                db_pool.putconn(conn)
+        except Exception:
+            log.warning("Failed to list repos from catalog", exc_info=True)
+
+    # S3 fallback: discover repos from code-indexes/ prefix
+    if s3_client is not None and bucket:
+        try:
+            response = s3_client.list_objects_v2(
+                Bucket=bucket, Prefix="code-indexes/", Delimiter="/"
+            )
+            results: list[SearchHit] = []
+            for obj in response.get("Contents", []):
+                key = obj["Key"]
+                # code-indexes/{org}-{repo}.json → extract repo name
+                filename = key.split("/")[-1]
+                if filename.endswith(".json") and filename != "":
+                    # Convert org-repo.json back to a display name
+                    repo_name = filename.removesuffix(".json")
+                    results.append(
+                        SearchHit(
+                            repo_name=repo_name,
+                            data={
+                                "repo_id": repo_name,
+                                "type": "repository",
+                                "description": "",
+                                "entry_type": "directory",
+                            },
+                        )
+                    )
+            if results:
+                log.debug("Listed %d repos from S3 code-indexes/ fallback", len(results))
+                return results
+        except Exception:
+            log.warning("S3 fallback for repo listing failed", exc_info=True)
+
+    log.debug("No repos found (no db_pool and no S3 fallback)")
+    return []
 
 
 def _list_repo_content_types(repo_name: str) -> list[SearchHit]:
@@ -169,6 +228,105 @@ def _list_repo_content_types(repo_name: str) -> list[SearchHit]:
         )
         for name, desc in types
     ]
+
+
+async def _list_zoekt_files(
+    repo_name: str,
+    path_prefix: str,
+    *,
+    zoekt_url: str,
+) -> list[SearchHit]:
+    """List files/directories in a repo at a given path using Zoekt.
+
+    Queries Zoekt for files matching repo + path prefix, then extracts unique
+    entries at the next directory level (simulating ls behavior).
+    """
+    if not zoekt_url:
+        return []
+
+    # Build Zoekt query to find files in this repo under the path
+    # Use "f:" filter to match file paths, "r:" to scope to repo
+    # Anchor repo name with / prefix and $ suffix to avoid matching substrings
+    # e.g., "skills" should match "github.com/mattpocock/skills" but not "agent-skills"
+    escaped_name = re.escape(repo_name)
+    repo_filter = f"/{escaped_name}$"
+    if path_prefix:
+        query = f"r:{repo_filter} f:^{path_prefix}/"
+    else:
+        query = f"r:{repo_filter} f:."
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{zoekt_url}/api/search",
+                json={"q": query, "num": 500},
+            )
+            if resp.status_code != 200:
+                log.warning(
+                    "Zoekt browse returned HTTP %d for repo %s", resp.status_code, repo_name
+                )
+                return []
+            data = resp.json()
+    except Exception:
+        log.warning("Zoekt browse failed for %s/%s", repo_name, path_prefix, exc_info=True)
+        return []
+
+    # Parse results and extract unique entries at the next level
+    result_data = data.get("Result", {})
+    file_matches = result_data.get("FileMatches") or result_data.get("Files") or []
+
+    entries: dict[str, str] = {}  # name → entry_type
+    for file_match in file_matches:
+        file_name = file_match.get("FileName", "")
+        if not file_name:
+            continue
+
+        # Get relative path from the prefix
+        if path_prefix:
+            if file_name.startswith(path_prefix + "/"):
+                relative = file_name[len(path_prefix) + 1 :]
+            elif file_name.startswith(path_prefix):
+                relative = file_name[len(path_prefix) :]
+                if relative.startswith("/"):
+                    relative = relative[1:]
+            else:
+                continue
+        else:
+            relative = file_name
+
+        if not relative:
+            continue
+
+        # Take the first path component
+        components = relative.split("/")
+        first = components[0]
+        if not first:
+            continue
+
+        # Determine type: if there are more components, it's a directory
+        if len(components) > 1:
+            entries.setdefault(first, "directory")
+        else:
+            entries[first] = "file"
+
+    # Convert to SearchHit list
+    results: list[SearchHit] = []
+    for name in sorted(entries.keys()):
+        entry_type = entries[name]
+        full_path = f"{path_prefix}/{name}" if path_prefix else name
+        results.append(
+            SearchHit(
+                repo_name=repo_name,
+                data={
+                    "repo_id": repo_name,
+                    "name": name,
+                    "path": full_path,
+                    "entry_type": entry_type,
+                },
+            )
+        )
+
+    return results
 
 
 async def _list_s3_content(

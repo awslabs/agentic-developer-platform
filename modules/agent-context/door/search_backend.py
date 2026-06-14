@@ -87,19 +87,24 @@ class ZoektSearchBackend:
     ) -> list[SearchHit]:
         """Query Zoekt and return results as SearchHit objects.
 
+        Uses POST /api/search (required by Zoekt v16+; GET returns 405).
         Returns empty list on timeout/error (fail-safe: search unavailability
         should not crash the Door — it degrades to no exact-search results).
         """
-        params: dict[str, Any] = {"q": query, "num": str(limit)}
-
-        # Scope to specific repos using Zoekt's repo filter syntax
+        # Build the Zoekt query string with optional repo filter
+        zoekt_query = query
         if repo_ids:
             repo_filter = _build_repo_filter(repo_ids)
-            params["repos"] = repo_filter
+            zoekt_query = f"({query}) r:{repo_filter}"
+
+        payload: dict[str, Any] = {"q": zoekt_query, "num": limit}
 
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.get(f"{self._base_url}/api/search", params=params)
+                resp = await client.post(
+                    f"{self._base_url}/api/search",
+                    json=payload,
+                )
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.TimeoutException:

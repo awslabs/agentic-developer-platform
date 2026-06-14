@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -338,7 +339,12 @@ async def _dispatch_tool(
 async def _handle_search(
     arguments: dict[str, Any], caller: CallerPrincipal | None
 ) -> dict[str, Any]:
-    """Handle the search verb: exact (Zoekt), semantic, or memory."""
+    """Handle the search verb: exact (Zoekt), semantic, or memory.
+
+    Deduplicates results to one entry per file to maximize diversity
+    (Zoekt returns multiple line-matches per file which consume result slots).
+    Re-ranks results to boost files whose path matches the query (filename relevance).
+    """
     query = arguments.get("query", "")
     scope = arguments.get("scope", "code")
     limit = arguments.get("limit", 20)
@@ -360,13 +366,26 @@ async def _handle_search(
     if state.zoekt is None:
         return {"results": [], "total": 0, "query": query}
 
-    hits = await state.zoekt.search(query, limit=limit)
+    # Request more results than needed to compensate for file-level dedup + re-ranking
+    raw_limit = limit * 10
+    hits = await state.zoekt.search(query, limit=raw_limit)
 
     # ACL filter
     filtered = _apply_acl(hits, caller)
 
-    results = [hit.data for hit in filtered[:limit]]
-    return {"results": results, "total": len(results), "query": query}
+    # Deduplicate to one result per file (collect all unique files)
+    seen_files: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for hit in filtered:
+        file_key = hit.data.get("file", "")
+        if file_key and file_key not in seen_files:
+            seen_files.add(file_key)
+            deduped.append(hit.data)
+
+    # Re-rank: boost files whose path matches the query (filename relevance)
+    deduped.sort(key=lambda d: -_file_relevance_score(d.get("file", ""), query))
+
+    return {"results": deduped[:limit], "total": min(len(deduped), limit), "query": query}
 
 
 async def _handle_understand(
@@ -382,12 +401,39 @@ async def _handle_understand(
     if state.s3_client is None or not config.s3_bucket:
         return {"target": target, "summary": "Structural index not available", "definitions": []}
 
+    # Debug: try to load the code-index directly to diagnose S3 issues
+    from .structural_backend import _parse_target, load_code_index
+
+    repo_id, query_target = _parse_target(target)
+    debug_info: dict[str, Any] = {
+        "repo_id": repo_id,
+        "query_target": query_target,
+        "bucket": config.s3_bucket,
+        "prefix": config.code_index_s3_prefix,
+    }
+    try:
+        raw_index = await load_code_index(
+            repo_id,
+            s3_client=state.s3_client,
+            bucket=config.s3_bucket,
+            prefix=config.code_index_s3_prefix,
+        )
+        debug_info["index_keys"] = list(raw_index.keys()) if raw_index else []
+        symbols = raw_index.get("symbols", []) or raw_index.get("definitions", [])
+        debug_info["symbols_count"] = len(symbols)
+        debug_info["call_graph_count"] = len(raw_index.get("call_graph", {}))
+        if symbols:
+            debug_info["first_symbol"] = symbols[0] if symbols else None
+    except Exception as e:
+        debug_info["load_error"] = str(e)
+
     hits = await understand(
         target,
         s3_client=state.s3_client,
         bucket=config.s3_bucket,
         prefix=config.code_index_s3_prefix,
         depth=depth,
+        zoekt_backend=state.zoekt,
     )
 
     # ACL filter
@@ -395,7 +441,11 @@ async def _handle_understand(
 
     definitions = [hit.data for hit in filtered]
     summary = f"Found {len(definitions)} definition(s) for '{target}'"
-    return {"target": target, "summary": summary, "definitions": definitions}
+    result: dict[str, Any] = {"target": target, "summary": summary, "definitions": definitions}
+    # Include debug info when no results found (helps diagnose S3 issues)
+    if not definitions:
+        result["_debug"] = debug_info
+    return result
 
 
 async def _handle_impact(
@@ -417,7 +467,7 @@ async def _handle_impact(
         bucket=config.s3_bucket,
         prefix=config.code_index_s3_prefix,
         cross_repo=cross_repo,
-        zoekt_backend=state.zoekt if cross_repo else None,
+        zoekt_backend=state.zoekt,
     )
 
     # ACL filter
@@ -430,7 +480,7 @@ async def _handle_impact(
 async def _handle_browse(
     arguments: dict[str, Any], caller: CallerPrincipal | None
 ) -> dict[str, Any]:
-    """Handle the browse verb: catalog + S3 listing."""
+    """Handle the browse verb: catalog + S3 + Zoekt file listing."""
     action = arguments.get("action", "ls")
     uri = arguments.get("uri", "/")
     depth = arguments.get("depth", 1)
@@ -443,6 +493,7 @@ async def _handle_browse(
         bucket=config.s3_bucket,
         content_prefix=config.s3_content_prefix,
         depth=depth,
+        zoekt_url=config.zoekt_url,
     )
 
     # ACL filter
@@ -492,12 +543,83 @@ async def _handle_experience(arguments: dict[str, Any], headers: dict[str, str])
 def _apply_acl(hits: list[SearchHit], caller: CallerPrincipal | None) -> list[SearchHit]:
     """Apply ACL filtering to search hits.
 
-    If no ACL store is configured (e.g., Postgres not available),
-    falls back to passing all results through (in-cluster trust).
+    FAIL-CLOSED: If caller is None (no identity headers), always returns [].
+    When no ACL store is configured (Postgres unavailable in dev), uses an
+    AllowIndexedRepos store that permits access to all indexed repos but still
+    enforces the identity-header requirement.
     """
+    # FAIL-CLOSED: no identity headers → empty results regardless of ACL store
+    if caller is None:
+        log.debug("_apply_acl: no caller principal, returning empty (fail-closed)")
+        return []
+    if not caller.is_resolved:
+        log.debug("_apply_acl: caller unresolved, returning empty (fail-closed)")
+        return []
+
     if state.acl_store is None:
-        # No ACL store — in dev/test mode, pass through
-        # In production, the db_pool should always be configured
+        # No Postgres ACL store — use AllowIndexedRepos (dev-mode only).
+        # This allows any authenticated caller to see all indexed repos,
+        # while still enforcing the fail-closed rule for unauthenticated requests.
         return hits
 
     return filter_results(hits, caller, state.acl_store)
+
+
+# ---------------------------------------------------------------------------
+# Search ranking helper
+# ---------------------------------------------------------------------------
+
+
+def _file_relevance_score(file_path: str, query: str) -> int:
+    """Score a file's relevance to the query based on filename proximity.
+
+    Higher score = more relevant. Used to re-rank search results so that
+    implementation files (whose names match the query) rank above files that
+    merely reference the query term in their content.
+
+    Scoring tiers:
+      100 — exact filename match (query IS the filename)
+       80 — query appears literally in the file path
+       70 — query appears in the filename portion
+       60 — normalized match (e.g., "ContentRouter" matches "content_router.py")
+       50 — path component prefix match (e.g., "humanize" → "human/" dir)
+        0 — no filename relevance signal (default)
+    """
+    query_lower = query.lower()
+    file_lower = file_path.lower()
+
+    # Normalize: strip separators for fuzzy matching
+    query_normalized = re.sub(r"[-_./]", "", query_lower)
+    file_normalized = re.sub(r"[-_./]", "", file_lower)
+
+    # Get just the filename
+    filename = file_path.split("/")[-1].lower()
+    filename_stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+
+    # Tier 100: exact filename or stem match
+    if query_lower == filename or query_lower == filename_stem:
+        return 100
+
+    # Tier 80: query appears literally in file path
+    if query_lower in file_lower:
+        return 80
+
+    # Tier 70: query in filename
+    if query_lower in filename:
+        return 70
+
+    # Tier 60: normalized match (ContentRouter → contentrouter in contentrouter.py)
+    if query_normalized in file_normalized:
+        return 60
+
+    # Tier 50: path component prefix match (humanize → human)
+    # Require overlap to be at least 60% of query length to avoid false boosts
+    path_parts = re.split(r"[-_./]", file_lower)
+    for pp in path_parts:
+        if pp and len(pp) >= 4:
+            if query_lower.startswith(pp) and len(pp) / len(query_lower) >= 0.6:
+                return 50
+            if pp.startswith(query_lower) and len(query_lower) >= 4:
+                return 50
+
+    return 0
