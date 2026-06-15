@@ -33,6 +33,33 @@ data "terraform_remote_state" "platform" {
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
+# ---------------------------------------------------------------------------
+# Neptune subnet selection (multi-AZ, capacity-aware)
+#
+# The platform's private_subnet_ids output can include subnets that are
+# IP-exhausted (e.g. EKS-consumed) or that collapse to a single AZ. Neptune
+# requires a subnet group spanning >= 2 AZs with free IPs. Discover ALL private
+# subnets in the VPC that have available IPs, then pick one per AZ so the
+# subnet group always satisfies the multi-AZ requirement.
+# ---------------------------------------------------------------------------
+data "aws_subnets" "private_all" {
+  count = var.neptune_enabled ? 1 : 0
+
+  filter {
+    name   = "vpc-id"
+    values = [local.vpc_id]
+  }
+  filter {
+    name   = "tag:kubernetes.io/role/internal-elb"
+    values = ["1"]
+  }
+}
+
+data "aws_subnet" "neptune_candidates" {
+  for_each = var.neptune_enabled ? toset(data.aws_subnets.private_all[0].ids) : toset([])
+  id       = each.value
+}
+
 locals {
   cluster_name           = data.terraform_remote_state.platform.outputs.eks_cluster_name
   vpc_id                 = data.terraform_remote_state.platform.outputs.vpc_id
@@ -50,6 +77,18 @@ locals {
   rds_host              = var.rds_enabled ? data.terraform_remote_state.gateway[0].outputs.rds_instance_address : ""
   rds_instance_id       = var.rds_enabled ? data.terraform_remote_state.gateway[0].outputs.rds_instance_id : ""
   rds_master_secret_arn = var.rds_enabled ? data.terraform_remote_state.gateway[0].outputs.rds_master_user_secret_arn : ""
+
+  # Neptune subnet selection: from all private subnets in the VPC, keep only
+  # those with free IPs, then pick ONE per AZ. Guarantees the subnet group
+  # spans every AZ that has capacity — satisfying Neptune's >= 2-AZ requirement
+  # even when the platform's default subnet list is single-AZ or IP-exhausted.
+  _neptune_subnets_with_ips = var.neptune_enabled ? {
+    for s in data.aws_subnet.neptune_candidates : s.availability_zone => s.id...
+    if s.available_ip_address_count > 0
+  } : {}
+
+  # First subnet id per AZ (one per AZ).
+  neptune_subnet_ids = [for az, ids in local._neptune_subnets_with_ips : ids[0]]
 }
 
 # =============================================================================
@@ -140,7 +179,7 @@ module "neptune_serverless" {
   aws_region             = var.aws_region
   namespace              = var.namespace
   vpc_id                 = local.vpc_id
-  subnet_ids             = local.private_subnets
+  subnet_ids             = local.neptune_subnet_ids
   node_security_group_id = local.node_security_group_id
   oidc_provider_url      = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
   min_capacity           = var.neptune_min_capacity
