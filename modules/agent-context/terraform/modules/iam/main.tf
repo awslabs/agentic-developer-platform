@@ -193,10 +193,10 @@ resource "aws_iam_role_policy" "opensearch" {
   })
 }
 
-# --- Neptune (conditional on graphrag_enabled) ---
+# --- Neptune (conditional on neptune_enabled — independent of OpenSearch/GraphRAG) ---
 
 resource "aws_iam_role_policy" "neptune" {
-  count = var.graphrag_enabled ? 1 : 0
+  count = var.neptune_enabled ? 1 : 0
   name  = "${var.name_prefix}-neptune"
   role  = aws_iam_role.agent_context.id
 

@@ -52,7 +52,13 @@ variable "rds_username" {
 }
 
 variable "graphrag_enabled" {
-  description = "Enable GraphRAG-related IAM policies (Neptune + OpenSearch Serverless)"
+  description = "Enable OpenSearch Serverless IAM policy (full GraphRAG). Neptune IAM is gated separately via neptune_enabled."
+  type        = bool
+  default     = false
+}
+
+variable "neptune_enabled" {
+  description = "Enable the Neptune IAM policy independently of OpenSearch/GraphRAG."
   type        = bool
   default     = false
 }

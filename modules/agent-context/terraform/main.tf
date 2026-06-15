@@ -110,6 +110,7 @@ module "iam" {
   bucket_name       = local.bucket_name
   rds_username      = "agent_context_svc"
   graphrag_enabled  = var.graphrag_enabled
+  neptune_enabled   = var.neptune_enabled
 }
 
 # =============================================================================
@@ -133,7 +134,7 @@ module "s3_files" {
 
 module "neptune_serverless" {
   source = "./modules/neptune-serverless"
-  count  = var.graphrag_enabled ? 1 : 0
+  count  = var.neptune_enabled ? 1 : 0
 
   cluster_name           = local.cluster_name
   aws_region             = var.aws_region

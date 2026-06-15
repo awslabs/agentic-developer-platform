@@ -35,17 +35,17 @@ output "s3_csi_role_arn" {
 
 output "neptune_endpoint" {
   description = "Neptune Serverless cluster endpoint"
-  value       = var.graphrag_enabled ? module.neptune_serverless[0].cluster_endpoint : ""
+  value       = var.neptune_enabled ? module.neptune_serverless[0].cluster_endpoint : ""
 }
 
 output "neptune_port" {
   description = "Neptune Serverless cluster port"
-  value       = var.graphrag_enabled ? module.neptune_serverless[0].cluster_port : 0
+  value       = var.neptune_enabled ? module.neptune_serverless[0].cluster_port : 0
 }
 
 output "neptune_access_role_arn" {
   description = "IAM role ARN for Neptune access"
-  value       = var.graphrag_enabled ? module.neptune_serverless[0].access_role_arn : ""
+  value       = var.neptune_enabled ? module.neptune_serverless[0].access_role_arn : ""
 }
 
 output "opensearch_collection_endpoint" {

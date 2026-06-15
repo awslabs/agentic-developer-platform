@@ -40,7 +40,13 @@ variable "tags" {
 # --- GraphRAG (Neptune + OpenSearch Serverless) ------------------------------
 
 variable "graphrag_enabled" {
-  description = "Enable GraphRAG infrastructure (Neptune Serverless + OpenSearch Serverless). WARNING: expensive."
+  description = "Enable full GraphRAG infrastructure (OpenSearch Serverless for entity embeddings, ~$700/mo). Neptune is gated separately via neptune_enabled. WARNING: expensive."
+  type        = bool
+  default     = false
+}
+
+variable "neptune_enabled" {
+  description = "Enable Neptune Serverless graph DB (the code call-graph store, ~$105/mo). Independent of graphrag_enabled so Neptune can be provisioned WITHOUT OpenSearch."
   type        = bool
   default     = false
 }

@@ -78,22 +78,28 @@ jobs:
           if [ -z "$GRAPHRAG_ENABLED" ]; then
             GRAPHRAG_ENABLED=$(grep 'graphrag_enabled' "${{ env.VAR_FILE }}" | sed 's/.*=\s*//' | tr -d ' "' || echo "false")
           fi
-          echo "graphrag_enabled=$GRAPHRAG_ENABLED"
-          if [ "$GRAPHRAG_ENABLED" = "true" ]; then
-            echo "## :warning: GraphRAG Cost Warning" >> "$GITHUB_STEP_SUMMARY"
+          # Check effective neptune_enabled value (TF_VAR overrides tfvars).
+          # Neptune is gated separately from OpenSearch/GraphRAG but still costs money,
+          # so it shares the same CONFIRM_GRAPHRAG_COST guard.
+          NEPTUNE_ENABLED="${TF_VAR_neptune_enabled:-}"
+          if [ -z "$NEPTUNE_ENABLED" ]; then
+            NEPTUNE_ENABLED=$(grep 'neptune_enabled' "${{ env.VAR_FILE }}" | sed 's/.*=\s*//' | tr -d ' "' || echo "false")
+          fi
+          echo "graphrag_enabled=$GRAPHRAG_ENABLED neptune_enabled=$NEPTUNE_ENABLED"
+          if [ "$GRAPHRAG_ENABLED" = "true" ] || [ "$NEPTUNE_ENABLED" = "true" ]; then
+            echo "## :warning: Graph Infrastructure Cost Warning" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "**graphrag_enabled=true** — this adds ~\$800/month idle cost." >> "$GITHUB_STEP_SUMMARY"
-            echo "- Neptune Serverless: ~\$105/month" >> "$GITHUB_STEP_SUMMARY"
-            echo "- OpenSearch Serverless: ~\$700/month" >> "$GITHUB_STEP_SUMMARY"
+            [ "$NEPTUNE_ENABLED" = "true" ] && echo "- **neptune_enabled=true** — Neptune Serverless: ~\$105/month idle" >> "$GITHUB_STEP_SUMMARY"
+            [ "$GRAPHRAG_ENABLED" = "true" ] && echo "- **graphrag_enabled=true** — OpenSearch Serverless: ~\$700/month idle" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            # Check for CONFIRM_GRAPHRAG_COST repo variable
+            # Check for CONFIRM_GRAPHRAG_COST repo variable (covers both Neptune and OpenSearch)
             CONFIRM="${{ vars.CONFIRM_GRAPHRAG_COST }}"
             if [ "$CONFIRM" != "yes" ]; then
-              echo "::error::graphrag_enabled=true but the repo variable CONFIRM_GRAPHRAG_COST is not set to 'yes'."
-              echo "Either set the repo variable via Settings -> Secrets and variables -> Actions -> Variables -> CONFIRM_GRAPHRAG_COST=yes, OR set graphrag_enabled=false in ${{ env.VAR_FILE }}."
+              echo "::error::neptune_enabled and/or graphrag_enabled is true but repo variable CONFIRM_GRAPHRAG_COST is not 'yes'."
+              echo "Set the repo variable (Settings -> Secrets and variables -> Actions -> Variables -> CONFIRM_GRAPHRAG_COST=yes), OR set the flags false in ${{ env.VAR_FILE }}."
               exit 1
             fi
-            echo "CONFIRM_GRAPHRAG_COST=yes confirmed. Proceeding with GraphRAG resources." >> "$GITHUB_STEP_SUMMARY"
+            echo "CONFIRM_GRAPHRAG_COST=yes confirmed. Proceeding with graph infrastructure." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Terraform Init
