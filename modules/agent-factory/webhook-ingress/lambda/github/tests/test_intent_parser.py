@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from intent_parser import (
     LABEL_TO_PERSONA,
+    MENTION_TO_PERSONA,
     extract_intent,
 )
 
@@ -164,6 +165,43 @@ class TestIssueCommentEvents:
         assert result.persona == "architect"
         assert result.trigger == "mentioned"
 
+    def test_mention_product(self):
+        """@agent-product mention resolves to product persona."""
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-product please groom this epic"},
+            "issue": {"number": 42},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issue_comment", payload)
+        assert result is not None
+        assert result.persona == "product"
+        assert result.trigger == "mentioned"
+
+    def test_mention_product_no_collision_with_pm(self):
+        """@agent-product and @agent-pm are distinct — no substring collision."""
+        payload_product = {
+            "action": "created",
+            "comment": {"body": "Hey @agent-product can you write acceptance criteria?"},
+            "issue": {"number": 10},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        payload_pm = {
+            "action": "created",
+            "comment": {"body": "Hey @agent-pm can you triage this?"},
+            "issue": {"number": 10},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result_product = extract_intent("issue_comment", payload_product)
+        result_pm = extract_intent("issue_comment", payload_pm)
+        assert result_product is not None
+        assert result_product.persona == "product"
+        assert result_pm is not None
+        assert result_pm.persona == "pm"
+
     def test_no_mention_returns_none(self):
         payload = {
             "action": "created",
@@ -193,6 +231,22 @@ class TestIssueCommentEvents:
         }
         result = extract_intent("issue_comment", payload)
         assert result is None
+
+    def test_all_mention_mappings(self):
+        """Every mention in MENTION_TO_PERSONA should produce the expected persona."""
+        for mention, expected_persona in MENTION_TO_PERSONA.items():
+            payload = {
+                "action": "created",
+                "comment": {"body": f"{mention} please handle this"},
+                "issue": {"number": 10},
+                "sender": {"login": "user", "id": 1, "type": "User"},
+                "installation": {"id": 123},
+            }
+            result = extract_intent("issue_comment", payload)
+            assert result is not None, f"Mention '{mention}' should produce intent"
+            assert result.persona == expected_persona, (
+                f"Mention '{mention}' should resolve to '{expected_persona}', got '{result.persona}'"
+            )
 
     def test_first_mention_wins(self):
         """When multiple mentions exist, first match should win."""
