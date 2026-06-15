@@ -1,9 +1,12 @@
 # Neo4j Deep Code Graph — Canonical Design Document
 
-> **Status**: LOCKED (Design Authority for EPIC #1512)
+> **Status**: SUPERSEDED (2026-06-15)
+> **Superseded by**: [`neptune-deep-graph-design.md`](neptune-deep-graph-design.md) (EPIC #1529)
+> **Reason**: Neo4j Community Edition is GPLv3 — violates parent #1345's permissive-license mandate. Replaced by Amazon Neptune Serverless (managed, no copyleft).
+> **Original Status**: LOCKED (Design Authority for EPIC #1512)
 > **Author**: @agent-architect
 > **Date**: 2026-06-15
-> **Blocks**: #1513, #1514, #1515, #1516, #1517, #1518
+> **Blocks**: #1513, #1514, #1515, #1516, #1517, #1518 (all CLOSED — superseded by #1529 children)
 
 This document is the **single source of truth** for the Neo4j deep-code-graph effort.
 All six implementation stories MUST implement against the decisions below — no developer
