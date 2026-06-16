@@ -38,15 +38,15 @@ RUN npm install -g \
     @sourcegraph/scip-typescript@0.4.0 \
     && npm cache clean --force
 
-# Go 1.22 (for scip-go install, kept for dep resolution of Go repos)
-ARG GO_VERSION=1.22.4
+# Go 1.25+ (scip-go v0.2.7 requires go >= 1.25; kept for dep resolution of Go repos)
+ARG GO_VERSION=1.25.4
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
     | tar -xz -C /usr/local
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
 ENV GOPATH="/root/go"
 
-# scip-go (installed via go install)
-RUN go install github.com/sourcegraph/scip-go@v0.2.7
+# scip-go (module moved to github.com/scip-code/scip-go — see neptune-deep-graph-design.md)
+RUN go install github.com/scip-code/scip-go@v0.2.7
 
 # Ruby + Sorbet (for scip-ruby — best-effort on untyped repos)
 RUN apt-get update && \
