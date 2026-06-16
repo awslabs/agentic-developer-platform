@@ -26,16 +26,16 @@ RUN apt-get update && \
 # SCIP indexer toolchain (Phase 1 + Phase 2 languages)
 # ---------------------------------------------------------------------------
 
-# Node.js 20.x (required for scip-python, scip-typescript, scip-java)
+# Node.js 20.x (required for scip-python, scip-typescript)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # SCIP indexers via npm (global install)
+# Note: scip-java deferred — not in current corpus (D7 in neptune-deep-graph-design.md)
 RUN npm install -g \
     @sourcegraph/scip-python@0.6.6 \
     @sourcegraph/scip-typescript@0.4.0 \
-    @sourcegraph/scip-java@0.9.0 \
     && npm cache clean --force
 
 # Go 1.22 (for scip-go install, kept for dep resolution of Go repos)
@@ -59,10 +59,8 @@ RUN curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 -
     ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet || true
 ENV DOTNET_ROOT="/usr/share/dotnet"
 
-# JVM (for scip-java — Gradle/Maven dep resolution)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends default-jdk-headless maven && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+# JVM deferred — scip-java not in current corpus (D7 in neptune-deep-graph-design.md)
+# When Java support is added, install: default-jdk-headless maven
 
 # Install Syft for SBOM generation (dual-rail #1358)
 ARG SYFT_VERSION=1.11.1

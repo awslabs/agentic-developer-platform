@@ -7,9 +7,11 @@ Supported languages (Phase 1 + Phase 2):
   - Python: scip-python (npm @sourcegraph/scip-python)
   - TypeScript/JavaScript: scip-typescript (npm @sourcegraph/scip-typescript)
   - Go: scip-go (go install)
-  - Java/Kotlin/Scala: scip-java (npm @sourcegraph/scip-java)
   - Ruby: scip-ruby (native binary)
   - C#: scip-dotnet (dotnet tool)
+
+Deferred (not in current corpus — D7):
+  - Java/Kotlin/Scala: scip-java (JVM binary, not npm)
 
 Design points:
   - Dep resolution is MANDATORY — without it monikers degrade to `local`
