@@ -45,8 +45,8 @@ RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
 ENV GOPATH="/root/go"
 
-# scip-go (module moved to github.com/scip-code/scip-go — see neptune-deep-graph-design.md)
-RUN go install github.com/scip-code/scip-go@v0.2.7
+# scip-go (module at github.com/scip-code/scip-go, binary in cmd/scip-go)
+RUN go install github.com/scip-code/scip-go/cmd/scip-go@v0.2.7
 
 # Ruby + Sorbet (for scip-ruby — best-effort on untyped repos)
 RUN apt-get update && \
