@@ -1,8 +1,10 @@
 # ═══════════════════════════════════════════
-# Knowledge Layer — EVALUATION CORPUS (15 repos)
+# Knowledge Layer — EVALUATION CORPUS (14 repos)
 # Source of truth: modules/agent-context/tests/eval/corpus.yaml
 # Temporarily replaces the prior 123-repo AWS/OSS list (recoverable from git history)
 # so ingestion indexes exactly the eval corpus for the #1402 golden-answer eval.
+#
+# CopilotKit/CopilotKit EXCLUDED — >600MB repo OOM-kills DeepWiki (#1564).
 # ═══════════════════════════════════════════
 
 # --- Skill / agent collections ---
@@ -14,7 +16,6 @@ mattpocock/skills
 Imbad0202/academic-research-skills
 
 # --- Real codebases (structural / impact queries) ---
-CopilotKit/CopilotKit
 colbymchenry/codegraph
 CloakHQ/CloakBrowser
 chopratejas/headroom

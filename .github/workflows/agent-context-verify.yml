@@ -32,9 +32,7 @@ jobs:
           PASS=true
 
           echo "=== S3: wikis ==="
-          # Threshold is 14 (not 15) because CopilotKit/CopilotKit (743MB) is
-          # deliberately skipped by the >600MB guard in refresh-repos.py (#1479).
-          # 15 repos - 1 skipped = 14 achievable wikis.
+          # Threshold is 14 — corpus is 14 repos (CopilotKit excluded, #1564).
           WIKI_COUNT=$(aws s3 ls "s3://${BUCKET}/content/wikis/" --region "$REGION" | wc -l)
           echo "Wiki count: $WIKI_COUNT (threshold: >= 14)"
           if [ "$WIKI_COUNT" -lt 14 ]; then
@@ -46,10 +44,11 @@ jobs:
 
           echo ""
           echo "=== S3: code-indexes ==="
+          # Threshold is 14 — corpus is 14 repos (CopilotKit excluded, #1564).
           INDEX_COUNT=$(aws s3 ls "s3://${BUCKET}/content/code-indexes/" --region "$REGION" | wc -l)
-          echo "Code-index count: $INDEX_COUNT (threshold: >= 15)"
-          if [ "$INDEX_COUNT" -lt 15 ]; then
-            echo "❌ FAIL: code-indexes count $INDEX_COUNT < 15"
+          echo "Code-index count: $INDEX_COUNT (threshold: >= 14)"
+          if [ "$INDEX_COUNT" -lt 14 ]; then
+            echo "❌ FAIL: code-indexes count $INDEX_COUNT < 14"
             PASS=false
           else
             echo "✅ PASS: code-indexes"
@@ -58,10 +57,11 @@ jobs:
           echo ""
           echo "=== S3: sbom (recursive, excluding prefix markers) ==="
           # Count actual objects (lines with a date prefix), not directory markers
+          # Threshold is 14 — corpus is 14 repos (CopilotKit excluded, #1564).
           SBOM_COUNT=$(aws s3 ls "s3://${BUCKET}/sbom/" --recursive --region "$REGION" | grep -c "^[0-9]" || true)
-          echo "SBOM count: $SBOM_COUNT (threshold: >= 15)"
-          if [ "$SBOM_COUNT" -lt 15 ]; then
-            echo "❌ FAIL: sbom count $SBOM_COUNT < 15"
+          echo "SBOM count: $SBOM_COUNT (threshold: >= 14)"
+          if [ "$SBOM_COUNT" -lt 14 ]; then
+            echo "❌ FAIL: sbom count $SBOM_COUNT < 14"
             PASS=false
           else
             echo "✅ PASS: sbom"
@@ -119,7 +119,7 @@ jobs:
 
           THRESHOLDS = {
               'index_runs': 1,
-              'verified_stages': 15,
+              'verified_stages': 14,
               'dependencies': 1,
           }
           failures = []
