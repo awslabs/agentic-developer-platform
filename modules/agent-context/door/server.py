@@ -122,6 +122,7 @@ class AppState:
         self.db_pool: Any = None
         self.experience_tool: Any = None
         self.acl_store: Any = None
+        self.neptune_driver: Any = None
 
 
 state = AppState()
@@ -152,6 +153,19 @@ async def lifespan(app: FastAPI):
         from .acl import PostgresACLStore
 
         state.acl_store = PostgresACLStore(state.db_pool)
+
+    # Neptune driver (for structural queries — impact/understand)
+    if config.neptune_enabled:
+        try:
+            from .neptune_client import get_neptune_driver
+
+            state.neptune_driver = get_neptune_driver()
+            if state.neptune_driver:
+                log.info("Neptune driver initialized (endpoint: %s)", config.neptune_endpoint)
+            else:
+                log.warning("Neptune enabled but driver not created (no endpoint?)")
+        except Exception:
+            log.warning("Failed to initialize Neptune driver", exc_info=True)
 
     # Experience tool (for remember + experience verbs)
     _init_experience_tool()

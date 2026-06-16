@@ -51,19 +51,33 @@ def mock_s3_client(code_index_fixture):
 
 class TestParseTarget:
     def test_symbol_reference(self):
-        repo, target = _parse_target("org/repo::connect_db")
-        assert repo == "org/repo"
+        # Short-name format: first component is repo_id (eval corpus pattern)
+        repo, target = _parse_target("myrepo::connect_db")
+        assert repo == "myrepo"
         assert target == "connect_db"
 
+    def test_symbol_reference_with_path(self):
+        # "org/repo::symbol" — first component is repo, rest includes ::
+        repo, target = _parse_target("org/repo::connect_db")
+        assert repo == "org"
+        assert target == "repo::connect_db"
+
     def test_file_path(self):
-        repo, target = _parse_target("org/repo/src/db.py")
-        assert repo == "org/repo"
+        # First component is repo_id, rest is the path
+        repo, target = _parse_target("myrepo/src/db.py")
+        assert repo == "myrepo"
         assert target == "src/db.py"
 
     def test_file_and_symbol(self):
-        repo, target = _parse_target("org/repo/src/db.py::connect_db")
-        assert repo == "org/repo"
+        repo, target = _parse_target("myrepo/src/db.py::connect_db")
+        assert repo == "myrepo"
         assert target == "src/db.py::connect_db"
+
+    def test_domain_prefix(self):
+        # Domain-like first component uses 3 parts as repo_id
+        repo, target = _parse_target("github.com/org/repo/src/db.py")
+        assert repo == "github.com/org/repo"
+        assert target == "src/db.py"
 
     def test_empty(self):
         repo, target = _parse_target("")
@@ -71,8 +85,9 @@ class TestParseTarget:
         assert target == ""
 
     def test_single_component(self):
+        # Single component = repo-level target (FIX for #1535: understand("codegraph") bug)
         repo, target = _parse_target("just-a-name")
-        assert repo == ""
+        assert repo == "just-a-name"
         assert target == ""
 
 
@@ -96,6 +111,9 @@ class TestMatchesTarget:
 
     def test_no_match(self):
         assert not _matches_target("nonexistent", "connect_db", "src/db.py")
+
+    def test_empty_target_returns_false(self):
+        assert not _matches_target("", "connect_db", "src/db.py")
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +174,9 @@ class TestLoadCodeIndex:
 class TestUnderstand:
     @pytest.mark.asyncio
     async def test_understand_symbol(self, mock_s3_client):
+        # Short-name format: "repo::symbol"
         hits = await understand(
-            "org/fixture-repo::connect_db",
+            "fixture-repo::connect_db",
             s3_client=mock_s3_client,
             bucket="test-bucket",
             prefix="content/code-indexes",
@@ -169,8 +188,9 @@ class TestUnderstand:
 
     @pytest.mark.asyncio
     async def test_understand_file(self, mock_s3_client):
+        # Short-name format: "repo/path"
         hits = await understand(
-            "org/fixture-repo/src/db.py",
+            "fixture-repo/src/db.py",
             s3_client=mock_s3_client,
             bucket="test-bucket",
             prefix="content/code-indexes",
@@ -190,6 +210,22 @@ class TestUnderstand:
         )
         assert hits == []
 
+    @pytest.mark.asyncio
+    async def test_understand_repo_level_target(self, mock_s3_client):
+        """FIX #1535: understand("repo-name") should return definitions, not empty."""
+        hits = await understand(
+            "fixture-repo",
+            s3_client=mock_s3_client,
+            bucket="test-bucket",
+            prefix="content/code-indexes",
+        )
+        # With Neptune disabled, falls back to code-index; repo-level returns all defs
+        assert len(hits) > 0
+        # All hits should have source = "code-index-fallback"
+        for hit in hits:
+            assert hit.data.get("source") == "code-index-fallback"
+            assert hit.data.get("repo_id") == "fixture-repo"
+
 
 # ---------------------------------------------------------------------------
 # impact verb tests
@@ -200,7 +236,7 @@ class TestImpact:
     @pytest.mark.asyncio
     async def test_impact_symbol_with_callers(self, mock_s3_client):
         hits = await impact(
-            "org/fixture-repo::handle_request",
+            "fixture-repo::handle_request",
             s3_client=mock_s3_client,
             bucket="test-bucket",
             prefix="content/code-indexes",
@@ -214,7 +250,7 @@ class TestImpact:
     async def test_impact_leaf_symbol(self, mock_s3_client):
         # connect_db has no callers in the fixture
         hits = await impact(
-            "org/fixture-repo::connect_db",
+            "fixture-repo::connect_db",
             s3_client=mock_s3_client,
             bucket="test-bucket",
             prefix="content/code-indexes",

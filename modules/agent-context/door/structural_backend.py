@@ -1,9 +1,8 @@
 """Structural backend — read side for code-index.json (understand + impact verbs).
 
-Reads pre-computed structural indexes from S3 (written by the ingestion pipeline's
-cgc analyze step). Each repo has a code-index.json containing:
-- definitions: list of symbols (function, class, etc.) with file/line/kind/signature
-- call_graph: map of symbol → list of callers
+Primary path: Neptune openCypher queries (bounded transitive call-graph for impact,
+symbol neighborhood for understand). Falls back to code-index.json from S3 when
+Neptune is unreachable or disabled.
 
 This module provides importable functions (not welded to the server) so it can
 later route through the AgentCore Gateway as a packaging change.
@@ -123,6 +122,9 @@ async def understand(
 ) -> list[SearchHit]:
     """Understand a symbol, file, or module from the structural index.
 
+    Primary path: Neptune openCypher (symbol neighborhood, module topology).
+    Fallback: code-index.json from S3 when Neptune is unreachable or disabled.
+
     Parameters
     ----------
     target:
@@ -145,6 +147,161 @@ async def understand(
     if not repo_id:
         return []
 
+    # --- Neptune path (primary) ---
+    neptune_results = await _understand_via_neptune(repo_id, query_target, depth)
+    if neptune_results is not None:
+        return neptune_results
+
+    # --- Fallback: code-index.json from S3 ---
+    return await _understand_via_code_index(
+        repo_id,
+        query_target,
+        target,
+        depth,
+        s3_client=s3_client,
+        bucket=bucket,
+        prefix=prefix,
+        zoekt_backend=zoekt_backend,
+    )
+
+
+async def _understand_via_neptune(
+    repo_id: str, query_target: str, depth: str
+) -> list[SearchHit] | None:
+    """Attempt understand via Neptune. Returns None if Neptune unavailable.
+
+    Returns a list of SearchHit on success, or None to signal fallback.
+    """
+    from . import neptune_client
+
+    if not neptune_client.neptune_enabled():
+        return None
+
+    if not neptune_client.neptune_available():
+        return None
+
+    results: list[SearchHit] = []
+
+    # Determine target type: repo-level, file, directory, or symbol
+    if not query_target:
+        # Repo-level target (e.g., understand("codegraph"))
+        records = neptune_client.query_repo_topology(repo_id)
+        if not records:
+            return None  # Fall back if Neptune has no data for this repo
+        for rec in records:
+            data: dict[str, Any] = {
+                "repo_id": repo_id,
+                "module": rec.get("module_path", ""),
+                "files": rec.get("files", []),
+                "symbol_count": rec.get("symbol_count", 0),
+                "kind": "module",
+                "source": "neptune",
+            }
+            results.append(SearchHit(repo_name=repo_id, data=data))
+        return results
+
+    # Symbol reference (contains ::)
+    if "::" in query_target:
+        file_part, symbol_name = query_target.rsplit("::", 1)
+        file_path = file_part if file_part else ""
+        records = neptune_client.query_understand(repo_id, file_path, symbol_name)
+        if not records:
+            return None  # Fall back
+        for rec in records:
+            # Filter out null entries from collect() aggregations
+            callees = _filter_null_collect(rec.get("callees", []))
+            callers = _filter_null_collect(rec.get("callers", []))
+            parents = _filter_null_collect(rec.get("parents", []))
+            owners = _filter_null_collect(rec.get("owners", []))
+            data = {
+                "repo_id": repo_id,
+                "file": rec.get("symbol_file", file_path),
+                "symbol": rec.get("symbol_name", symbol_name),
+                "kind": rec.get("symbol_kind", ""),
+                "signature": rec.get("signature", ""),
+                "callers": callers if depth == "detailed" else callers[:3],
+                "callees": callees if depth == "detailed" else callees[:3],
+                "parents": parents,
+                "owners": owners,
+                "source": "neptune",
+            }
+            results.append(SearchHit(repo_name=repo_id, data=data))
+        return results
+
+    # File path target
+    if "." in query_target.split("/")[-1] if "/" in query_target else False:
+        records = neptune_client.query_file_symbols(repo_id, query_target)
+        if not records:
+            return None  # Fall back
+        for rec in records:
+            data = {
+                "repo_id": repo_id,
+                "file": query_target,
+                "symbol": rec.get("name", ""),
+                "kind": rec.get("kind", ""),
+                "line": rec.get("line", 0),
+                "signature": rec.get("signature", ""),
+                "source": "neptune",
+            }
+            results.append(SearchHit(repo_name=repo_id, data=data))
+        return results
+
+    # Directory path target (contains / but no file extension in last part)
+    if "/" in query_target:
+        records = neptune_client.query_dir_symbols(repo_id, query_target)
+        if not records:
+            return None  # Fall back
+        for rec in records:
+            data = {
+                "repo_id": repo_id,
+                "file": rec.get("file", ""),
+                "symbol": rec.get("name", ""),
+                "kind": rec.get("kind", ""),
+                "line": rec.get("line", 0),
+                "source": "neptune",
+            }
+            results.append(SearchHit(repo_name=repo_id, data=data))
+        return results
+
+    # Bare symbol name (no :: separator, no path separators)
+    # Try as a symbol name with empty file (Neptune will match on name alone)
+    records = neptune_client.query_understand(repo_id, "", query_target)
+    if records:
+        for rec in records:
+            callees = _filter_null_collect(rec.get("callees", []))
+            callers = _filter_null_collect(rec.get("callers", []))
+            parents = _filter_null_collect(rec.get("parents", []))
+            owners = _filter_null_collect(rec.get("owners", []))
+            data = {
+                "repo_id": repo_id,
+                "file": rec.get("symbol_file", ""),
+                "symbol": rec.get("symbol_name", query_target),
+                "kind": rec.get("symbol_kind", ""),
+                "signature": rec.get("signature", ""),
+                "callers": callers if depth == "detailed" else callers[:3],
+                "callees": callees if depth == "detailed" else callees[:3],
+                "parents": parents,
+                "owners": owners,
+                "source": "neptune",
+            }
+            results.append(SearchHit(repo_name=repo_id, data=data))
+        return results
+
+    return None  # Fall back
+
+
+async def _understand_via_code_index(
+    repo_id: str,
+    query_target: str,
+    target: str,
+    depth: str,
+    *,
+    s3_client: Any,
+    bucket: str,
+    prefix: str,
+    zoekt_backend: Any | None = None,
+) -> list[SearchHit]:
+    """Understand via code-index.json fallback (original implementation)."""
     index = await load_code_index(repo_id, s3_client=s3_client, bucket=bucket, prefix=prefix)
     if not index:
         return []
@@ -154,6 +311,21 @@ async def understand(
     call_graph = index.get("call_graph", {})
 
     results: list[SearchHit] = []
+
+    # FIX: Repo-level target (empty query_target) — return all definitions as overview
+    if not query_target:
+        for defn in definitions[:50]:  # Cap at 50 for overview
+            data: dict[str, Any] = {
+                "repo_id": repo_id,
+                "file": defn["file"],
+                "line": defn["line"],
+                "symbol": defn["symbol"],
+                "kind": defn["kind"],
+                "signature": defn["signature"],
+                "source": "code-index-fallback",
+            }
+            results.append(SearchHit(repo_name=repo_id, data=data))
+        return results
 
     # Search definitions matching the target
     for defn in definitions:
@@ -166,7 +338,7 @@ async def understand(
             callees = call_graph.get(full_key, [])
             callers = _find_callers(full_key, call_graph)
 
-            data: dict[str, Any] = {
+            data = {
                 "repo_id": repo_id,
                 "file": file_path,
                 "line": defn["line"],
@@ -175,6 +347,7 @@ async def understand(
                 "signature": defn["signature"],
                 "callers": callers if depth == "detailed" else callers[:3],
                 "callees": callees if depth == "detailed" else callees[:3],
+                "source": "code-index-fallback",
             }
             results.append(SearchHit(repo_name=repo_id, data=data))
 
@@ -195,6 +368,7 @@ async def understand(
                 "symbol": defn["symbol"],
                 "kind": defn["kind"],
                 "signature": defn["signature"],
+                "source": "code-index-fallback",
             }
             results.append(SearchHit(repo_name=repo_id, data=data))
 
@@ -267,6 +441,9 @@ async def impact(
 ) -> list[SearchHit]:
     """Analyse what would be affected by changing a symbol, file, or pattern.
 
+    Primary path: Neptune openCypher (transitive callers via [:CALLS*1..4]).
+    Fallback: code-index.json from S3 when Neptune is unreachable or disabled.
+
     Parameters
     ----------
     target:
@@ -290,6 +467,114 @@ async def impact(
     if not repo_id:
         return []
 
+    # --- Neptune path (primary) ---
+    neptune_results = await _impact_via_neptune(repo_id, query_target)
+    if neptune_results is not None:
+        # Cross-repo via Zoekt even when Neptune is primary (Neptune handles same-repo)
+        if cross_repo and zoekt_backend and query_target:
+            symbol_name = query_target.split("::")[-1] if "::" in query_target else query_target
+            try:
+                xrepo_hits = await zoekt_backend.search(symbol_name, limit=20)
+                for hit in xrepo_hits:
+                    if hit.repo_name != repo_id:
+                        hit.data["relationship"] = "cross_repo_reference"
+                        neptune_results.append(hit)
+            except Exception:
+                log.warning("Cross-repo search failed for %s", target, exc_info=True)
+        return neptune_results
+
+    # --- Fallback: code-index.json from S3 ---
+    return await _impact_via_code_index(
+        repo_id,
+        query_target,
+        target,
+        s3_client=s3_client,
+        bucket=bucket,
+        prefix=prefix,
+        cross_repo=cross_repo,
+        zoekt_backend=zoekt_backend,
+    )
+
+
+async def _impact_via_neptune(repo_id: str, query_target: str) -> list[SearchHit] | None:
+    """Attempt impact analysis via Neptune. Returns None if Neptune unavailable."""
+    from . import neptune_client
+
+    if not neptune_client.neptune_enabled():
+        return None
+
+    if not neptune_client.neptune_available():
+        return None
+
+    # Parse symbol reference
+    if "::" in query_target:
+        file_part, symbol_name = query_target.rsplit("::", 1)
+    elif "/" in query_target:
+        # File path — impact on a file means impact on all symbols in it
+        # For now, query Neptune for symbols in the file and aggregate callers
+        file_part = query_target
+        symbol_name = ""
+    else:
+        # Bare symbol name
+        file_part = ""
+        symbol_name = query_target
+
+    if not symbol_name:
+        # File-level impact: get symbols in file, then query callers for each
+        file_symbols = neptune_client.query_file_symbols(repo_id, file_part)
+        if not file_symbols:
+            return None  # Fall back
+
+        results: list[SearchHit] = []
+        for sym in file_symbols[:10]:  # Cap at 10 symbols to avoid explosion
+            records = neptune_client.query_impact(repo_id, file_part, sym.get("name", ""))
+            for rec in records:
+                data: dict[str, Any] = {
+                    "repo_id": rec.get("caller_repo", repo_id),
+                    "file": rec.get("caller_file", ""),
+                    "symbol": rec.get("caller_name", ""),
+                    "kind": rec.get("caller_kind", ""),
+                    "relationship": "calls",
+                    "distance": rec.get("distance", 1),
+                    "target": f"{file_part}::{sym.get('name', '')}",
+                    "source": "neptune",
+                }
+                results.append(SearchHit(repo_name=rec.get("caller_repo", repo_id), data=data))
+        return results if results else None
+
+    # Symbol-level impact query
+    records = neptune_client.query_impact(repo_id, file_part, symbol_name)
+    if not records:
+        return None  # Fall back
+
+    results = []
+    for rec in records:
+        data = {
+            "repo_id": rec.get("caller_repo", repo_id),
+            "file": rec.get("caller_file", ""),
+            "symbol": rec.get("caller_name", ""),
+            "kind": rec.get("caller_kind", ""),
+            "relationship": "calls",
+            "distance": rec.get("distance", 1),
+            "target": f"{file_part}::{symbol_name}",
+            "source": "neptune",
+        }
+        results.append(SearchHit(repo_name=rec.get("caller_repo", repo_id), data=data))
+    return results
+
+
+async def _impact_via_code_index(
+    repo_id: str,
+    query_target: str,
+    target: str,
+    *,
+    s3_client: Any,
+    bucket: str,
+    prefix: str,
+    cross_repo: bool = False,
+    zoekt_backend: Any | None = None,
+) -> list[SearchHit]:
+    """Impact analysis via code-index.json fallback (original implementation)."""
     index = await load_code_index(repo_id, s3_client=s3_client, bucket=bucket, prefix=prefix)
     if not index:
         return []
@@ -329,6 +614,7 @@ async def impact(
                 "symbol": caller_symbol,
                 "relationship": "calls",
                 "target": key,
+                "source": "code-index-fallback",
             }
             results.append(SearchHit(repo_name=repo_id, data=data))
 
@@ -394,6 +680,15 @@ async def impact(
             log.warning("Cross-repo search failed for %s", target, exc_info=True)
 
     return results
+
+
+def _filter_null_collect(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter out null/empty entries from Neptune collect() results.
+
+    Neptune's OPTIONAL MATCH + collect(DISTINCT ...) can produce entries
+    where all values are None (when no match exists). Remove those.
+    """
+    return [item for item in items if item and any(v is not None for v in item.values())]
 
 
 def _parse_target(target: str) -> tuple[str, str]:

@@ -42,6 +42,14 @@ class ServerConfig:
         # Postgres (catalog for browse + ACL store)
         self.database_url: str = os.environ.get("DATABASE_URL", "")
 
+        # Neptune (graph database for structural queries)
+        self.neptune_endpoint: str = os.environ.get("NEPTUNE_ENDPOINT", "")
+        self.neptune_enabled: bool = os.environ.get("NEPTUNE_ENABLED", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+
         # Server
         self.host: str = os.environ.get("MCP_HOST", "0.0.0.0")
         self.port: int = int(os.environ.get("MCP_PORT", "5100"))
