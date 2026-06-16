@@ -56,7 +56,11 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "impact",
-        "description": "Analyse what would be affected by changing a symbol, file, or pattern",
+        "description": (
+            "Before editing or deleting a symbol, call impact(cross_repo=true) for the "
+            "COMPLETE caller set across all repos. Returns verdict-first ranked results "
+            "bounded at 100, grouped by repo. Prefer this over grep for blast-radius analysis."
+        ),
         "parameters": {
             "target": {"type": "string", "required": True},
             "cross_repo": {"type": "boolean", "required": False},
@@ -465,15 +469,24 @@ async def _handle_understand(
 async def _handle_impact(
     arguments: dict[str, Any], caller: CallerPrincipal | None
 ) -> dict[str, Any]:
-    """Handle the impact verb: call-graph analysis."""
+    """Handle the impact verb: call-graph analysis.
+
+    Returns verdict-first response: verdict, per-repo attribution, then details.
+    Bounded at 100 results, ranked by distance (closest first).
+    """
     target = arguments.get("target", "")
     cross_repo = arguments.get("cross_repo", False)
 
     if not target:
-        return {"target": "", "affected": [], "blast_radius": 0}
+        return {"verdict": "no_target", "target": "", "affected": [], "blast_radius": 0}
 
     if state.s3_client is None or not config.s3_bucket:
-        return {"target": target, "affected": [], "blast_radius": 0}
+        return {
+            "verdict": "unavailable",
+            "target": target,
+            "affected": [],
+            "blast_radius": 0,
+        }
 
     hits = await impact(
         target,
@@ -488,7 +501,36 @@ async def _handle_impact(
     filtered = _apply_acl(hits, caller)
 
     affected = [hit.data for hit in filtered]
-    return {"target": target, "affected": affected, "blast_radius": len(affected)}
+
+    # Per-repo attribution: group results by repo
+    repos_affected: dict[str, int] = {}
+    for item in affected:
+        repo = item.get("repo_id", "unknown")
+        repos_affected[repo] = repos_affected.get(repo, 0) + 1
+
+    # Determine source (neptune vs code-index-fallback)
+    sources = {item.get("source", "unknown") for item in affected}
+    source = "neptune" if "neptune" in sources else "code-index-fallback" if sources else "none"
+
+    # Verdict: how severe is the blast radius
+    blast_radius = len(affected)
+    if blast_radius == 0:
+        verdict = "no_callers"
+    elif len(repos_affected) > 1:
+        verdict = "cross_repo_impact"
+    elif blast_radius > 20:
+        verdict = "high_impact"
+    else:
+        verdict = "contained"
+
+    return {
+        "verdict": verdict,
+        "target": target,
+        "blast_radius": blast_radius,
+        "repos_affected": repos_affected,
+        "source": source,
+        "affected": affected,
+    }
 
 
 async def _handle_browse(

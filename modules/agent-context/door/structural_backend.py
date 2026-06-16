@@ -468,19 +468,8 @@ async def impact(
         return []
 
     # --- Neptune path (primary) ---
-    neptune_results = await _impact_via_neptune(repo_id, query_target)
+    neptune_results = await _impact_via_neptune(repo_id, query_target, cross_repo=cross_repo)
     if neptune_results is not None:
-        # Cross-repo via Zoekt even when Neptune is primary (Neptune handles same-repo)
-        if cross_repo and zoekt_backend and query_target:
-            symbol_name = query_target.split("::")[-1] if "::" in query_target else query_target
-            try:
-                xrepo_hits = await zoekt_backend.search(symbol_name, limit=20)
-                for hit in xrepo_hits:
-                    if hit.repo_name != repo_id:
-                        hit.data["relationship"] = "cross_repo_reference"
-                        neptune_results.append(hit)
-            except Exception:
-                log.warning("Cross-repo search failed for %s", target, exc_info=True)
         return neptune_results
 
     # --- Fallback: code-index.json from S3 ---
@@ -496,7 +485,9 @@ async def impact(
     )
 
 
-async def _impact_via_neptune(repo_id: str, query_target: str) -> list[SearchHit] | None:
+async def _impact_via_neptune(
+    repo_id: str, query_target: str, *, cross_repo: bool = False
+) -> list[SearchHit] | None:
     """Attempt impact analysis via Neptune. Returns None if Neptune unavailable."""
     from . import neptune_client
 
@@ -542,14 +533,14 @@ async def _impact_via_neptune(repo_id: str, query_target: str) -> list[SearchHit
                 results.append(SearchHit(repo_name=rec.get("caller_repo", repo_id), data=data))
         return results if results else None
 
-    # Symbol-level impact query
+    # Symbol-level impact query (same-repo callers)
     records = neptune_client.query_impact(repo_id, file_part, symbol_name)
-    if not records:
+    if not records and not cross_repo:
         return None  # Fall back
 
-    results = []
+    results: list[SearchHit] = []
     for rec in records:
-        data = {
+        data: dict[str, Any] = {
             "repo_id": rec.get("caller_repo", repo_id),
             "file": rec.get("caller_file", ""),
             "symbol": rec.get("caller_name", ""),
@@ -560,7 +551,23 @@ async def _impact_via_neptune(repo_id: str, query_target: str) -> list[SearchHit
             "source": "neptune",
         }
         results.append(SearchHit(repo_name=rec.get("caller_repo", repo_id), data=data))
-    return results
+
+    # Cross-repo impact via symbol_id join (Neptune-native, NOT Zoekt name-match)
+    if cross_repo and symbol_name:
+        xrepo_records = neptune_client.query_cross_repo_impact(repo_id, file_part, symbol_name)
+        for rec in xrepo_records:
+            data = {
+                "repo_id": rec.get("calling_repo", ""),
+                "file": rec.get("calling_file", ""),
+                "symbol": rec.get("calling_symbol", ""),
+                "kind": rec.get("calling_kind", ""),
+                "relationship": "cross_repo_reference",
+                "target": f"{file_part}::{symbol_name}",
+                "source": "neptune",
+            }
+            results.append(SearchHit(repo_name=rec.get("calling_repo", ""), data=data))
+
+    return results if results else None
 
 
 async def _impact_via_code_index(
