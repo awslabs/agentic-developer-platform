@@ -193,6 +193,59 @@ jobs:
               sys.exit(1)
           "
 
+      - name: Assert Neptune call_graph edges
+        run: |
+          echo "=== Neptune CALLS edge verification ==="
+          NEPTUNE_ENDPOINT="adp-dev-eks-cluster-graphrag.cluster-civhekhiupfe.us-east-1.neptune.amazonaws.com"
+
+          python3 -c "
+          import boto3, sys
+          from botocore.config import Config
+
+          endpoint = 'https://${NEPTUNE_ENDPOINT}:8182'
+          client = boto3.client('neptunedata',
+              endpoint_url=endpoint,
+              region_name='us-east-1',
+              config=Config(read_timeout=60, retries={'total_max_attempts': 1}))
+
+          # 1. Total CALLS edges
+          print('--- Total CALLS edges ---')
+          r = client.execute_open_cypher_query(
+              openCypherQuery='MATCH ()-[r:CALLS]->() RETURN count(r) AS cnt')
+          total_edges = r['results'][0]['cnt']
+          print(f'Total CALLS edges: {total_edges}')
+
+          if total_edges == 0:
+              print('❌ FAIL: Neptune has 0 CALLS edges')
+              sys.exit(1)
+          print('✅ PASS: total CALLS edges > 0')
+
+          # 2. Per-repo: code-bearing repos (symbols > 10) with 0 edges
+          print()
+          print('--- Per-repo edge check (code-bearing repos) ---')
+          per_repo_query = (
+              'MATCH (s:Symbol) '
+              'WITH DISTINCT s.repo AS repo, count(s) AS sym_count '
+              'WHERE sym_count > 10 '
+              'OPTIONAL MATCH (:Symbol {repo: repo})-[r:CALLS]->() '
+              'WITH repo, sym_count, count(r) AS edge_count '
+              'WHERE edge_count = 0 '
+              'RETURN repo'
+          )
+          r2 = client.execute_open_cypher_query(openCypherQuery=per_repo_query)
+          repos_without_edges = [row['repo'] for row in r2['results']]
+
+          if repos_without_edges:
+              print(f'❌ FAIL: {len(repos_without_edges)} code-bearing repo(s) have 0 CALLS edges:')
+              for repo in repos_without_edges:
+                  print(f'  - {repo}')
+              sys.exit(1)
+
+          print('✅ PASS: all code-bearing repos have CALLS edges')
+          print()
+          print(f'Summary: {total_edges} total CALLS edges, 0 repos missing edges')
+          "
+
       - name: Final verdict
         if: always()
         run: |
