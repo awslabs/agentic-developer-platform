@@ -48,6 +48,50 @@ jobs:
             --from-file=accounts.txt=modules/agent-context/index_content/accounts.txt \
             -n agent-context --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Ensure latest ingestion image on CronJob + ScaledJob
+        if: ${{ inputs.verify_only != true }}
+        env:
+          AWS_REGION: us-east-1
+          ECR_REGISTRY: 879318057152.dkr.ecr.us-east-1.amazonaws.com
+        run: |
+          # Resolve the latest ingestion image tag from ECR
+          REPO="adp-dev-agent-context-ingestion"
+          LATEST_TAG=$(aws ecr describe-images --repository-name "$REPO" \
+            --region $AWS_REGION \
+            --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
+            --output text 2>/dev/null || echo "")
+
+          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "None" ]; then
+            echo "WARNING: Could not resolve latest ECR tag. Using existing image."
+          else
+            NEW_IMAGE="${ECR_REGISTRY}/${REPO}:${LATEST_TAG}"
+            echo "Latest ingestion image: ${NEW_IMAGE}"
+
+            # Patch CronJob to use latest image
+            CURRENT_IMAGE=$(kubectl get cronjob ingestion-refresh -n agent-context \
+              -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
+            echo "Current CronJob image: ${CURRENT_IMAGE}"
+
+            if [ "$CURRENT_IMAGE" != "$NEW_IMAGE" ]; then
+              echo "Updating CronJob image..."
+              kubectl patch cronjob ingestion-refresh -n agent-context \
+                --type='json' \
+                -p="[{\"op\":\"replace\",\"path\":\"/spec/jobTemplate/spec/template/spec/containers/0/image\",\"value\":\"${NEW_IMAGE}\"}]"
+              echo "✅ CronJob image updated to ${NEW_IMAGE}"
+            else
+              echo "CronJob already using latest image"
+            fi
+
+            # Patch ScaledJob to use latest image (if exists)
+            if kubectl get scaledjob ingestion-worker -n agent-context >/dev/null 2>&1; then
+              kubectl patch scaledjob ingestion-worker -n agent-context \
+                --type='json' \
+                -p="[{\"op\":\"replace\",\"path\":\"/spec/jobTargetRef/template/spec/containers/0/image\",\"value\":\"${NEW_IMAGE}\"}]" \
+                && echo "✅ ScaledJob image updated to ${NEW_IMAGE}" \
+                || echo "WARNING: ScaledJob patch failed (may lack RBAC). Workers will use old image."
+            fi
+          fi
+
       - name: Clean up previous job (idempotent)
         if: ${{ inputs.verify_only != true }}
         run: |
