@@ -39,6 +39,9 @@ log = logging.getLogger("ingest-repo")
 # ---------------------------------------------------------------------------
 
 from config import settings
+from scip_indexer import index_repo as scip_index_repo, detect_languages, cleanup_indexing_artifacts
+from scip_ingester import ingest_scip
+from scip_neptune_csv import generate_csv as scip_generate_csv, generate_summary as scip_generate_summary
 
 DEEPWIKI_URL = settings.deepwiki_url
 DEEPWIKI_ENABLED = settings.deepwiki_enabled
@@ -54,6 +57,9 @@ NEPTUNE_PORT = settings.neptune_port
 OPENSEARCH_ENDPOINT = settings.opensearch_endpoint
 LLM_MODEL = settings.model_wiki
 LLM_BASE_URL = settings.llm_base_url
+
+# SCIP structural graph configuration
+SCIP_ENABLED = os.environ.get("SCIP_ENABLED", "true").lower() in ("true", "1", "yes")
 
 # DynamoDB configuration (for state tracking — replaces repo-state.json)
 DYNAMO_TABLE = settings.dynamo_table
@@ -898,6 +904,142 @@ def _write_to_neptune(entities: list[dict], relationships: list[dict], org_repo:
 
 
 # ---------------------------------------------------------------------------
+# SCIP structural graph ingestion (#1532 — Neptune deep graph)
+# ---------------------------------------------------------------------------
+
+
+def scip_structural_ingest(
+    clone_path: str,
+    org_repo: str,
+    s3_store: S3ContentStore,
+) -> dict[str, Any]:
+    """Run SCIP-native structural graph ingestion for a repository.
+
+    Pipeline: detect languages → resolve deps → scip-<lang> index → .scip
+      → decode protobuf → enclosing-scope resolution → graph → Neptune CSV
+      → S3 upload → Neptune load (openCypher UNWIND batch)
+
+    Fail-loud: a code-bearing repo producing 0 edges → ERROR.
+
+    Returns:
+        Dict with status and metrics:
+        - status: "complete", "indexing_failed", "no_languages", "no_edges"
+        - nodes, edges, calls, references counts
+    """
+    import tempfile
+
+    result: dict[str, Any] = {"status": "pending"}
+
+    # Step 1: Detect languages
+    lang_counts = detect_languages(clone_path)
+    if not lang_counts:
+        log.info("No SCIP-supported languages in %s — skipping SCIP indexing", org_repo)
+        result["status"] = "no_languages"
+        return result
+
+    result["languages"] = lang_counts
+    log.info("SCIP indexing %s — languages: %s", org_repo, lang_counts)
+
+    # Step 2: Index repo (dep resolution + scip-<lang>)
+    try:
+        indexing_report = scip_index_repo(clone_path, org_repo)
+    except Exception as e:
+        log.error("SCIP indexing failed for %s: %s", org_repo, e)
+        result["status"] = "indexing_failed"
+        result["error"] = str(e)
+        return result
+
+    if not indexing_report.any_success:
+        errors = [r.error for r in indexing_report.results if r.error]
+        log.error("SCIP indexing produced no .scip for %s: %s", org_repo, errors)
+        result["status"] = "indexing_failed"
+        result["errors"] = errors
+        return result
+
+    scip_path = indexing_report.combined_scip_path
+    result["indexed_language"] = indexing_report.successful_languages[0]
+    result["dep_resolution"] = indexing_report.results[0].dep_resolution
+
+    # Step 3: Decode .scip and build graph
+    try:
+        graph = ingest_scip(scip_path, org_repo)
+    except FileNotFoundError as e:
+        log.error("SCIP file not found for %s: %s", org_repo, e)
+        result["status"] = "indexing_failed"
+        result["error"] = str(e)
+        return result
+
+    # Fail-loud: code-bearing repo with 0 edges → ERROR
+    if graph.edge_count == 0:
+        log.error(
+            "FAIL-LOUD: SCIP produced 0 edges for %s (languages: %s). "
+            "This indicates failed dep resolution or indexer issue.",
+            org_repo, lang_counts,
+        )
+        result["status"] = "no_edges"
+        result["nodes"] = graph.node_count
+        result["edges"] = 0
+        return result
+
+    result["nodes"] = graph.node_count
+    result["edges"] = graph.edge_count
+    result["calls"] = graph.calls_count
+    result["references"] = graph.references_count
+
+    # Step 4: Generate Neptune CSV
+    csv_output_dir = tempfile.mkdtemp(prefix="scip-neptune-")
+    try:
+        csv_output = scip_generate_csv(graph, csv_output_dir)
+
+        # Generate summary
+        summary_path = os.path.join(csv_output_dir, "extraction_summary.json")
+        scip_generate_summary(graph, csv_output, summary_path)
+
+        # Step 5: Upload CSV to S3
+        if S3_BUCKET_NAME:
+            from scip_neptune_loader import upload_csv_to_s3
+
+            s3_result = upload_csv_to_s3(csv_output, S3_BUCKET_NAME, org_repo, AWS_REGION)
+            result["s3_upload"] = s3_result.get("s3_prefix", "")
+
+        # Step 6: Load into Neptune (if endpoint configured)
+        if NEPTUNE_ENDPOINT:
+            from scip_neptune_loader import load_to_neptune
+
+            neptune_ep = f"{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}"
+            load_result = load_to_neptune(csv_output, neptune_ep, AWS_REGION)
+            result["neptune_load"] = load_result
+            if load_result.get("success"):
+                result["status"] = "complete"
+            else:
+                result["status"] = "load_partial"
+                log.warning(
+                    "Neptune load had errors for %s: %s",
+                    org_repo, load_result.get("total_errors", 0),
+                )
+        else:
+            # No Neptune endpoint — CSV + S3 only
+            result["status"] = "complete"
+            log.info(
+                "SCIP graph for %s: %d nodes, %d edges (Neptune not configured — CSV only)",
+                org_repo, graph.node_count, graph.edge_count,
+            )
+    finally:
+        # Clean up temp CSV directory
+        import shutil as _shutil
+        _shutil.rmtree(csv_output_dir, ignore_errors=True)
+
+    # Clean up indexing artifacts from the clone
+    cleanup_indexing_artifacts(clone_path)
+
+    log.info(
+        "SCIP structural ingest complete for %s: %d nodes, %d edges (%d CALLS, %d REFERENCES)",
+        org_repo, graph.node_count, graph.edge_count, graph.calls_count, graph.references_count,
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Source SBOM generation (Rail 1 — #1358)
 # ---------------------------------------------------------------------------
 
@@ -1091,6 +1233,7 @@ def ingest_repo(
     org_repo: str,
     skip_cgc: bool = False,
     skip_deepwiki: bool = False,
+    skip_scip: bool = False,
 ) -> dict[str, Any]:
     """Full ingestion pipeline for one repo.
 
@@ -1105,6 +1248,7 @@ def ingest_repo(
         "code_index": "skipped",
         "deepwiki": "skipped",
         "graphrag": "skipped",
+        "scip_structural": "skipped",
         "sbom_source": "skipped",
     }
 
@@ -1404,6 +1548,57 @@ def ingest_repo(
     elif tracker:
         tracker.mark_skipped("graphrag", "graphrag disabled")
 
+    # Step 5a: SCIP structural graph ingestion (#1532 — Neptune deep graph)
+    if SCIP_ENABLED and not skip_scip:
+        skip_scip_stage = tracker and tracker.should_skip("scip_structural")
+        if skip_scip_stage:
+            log.info("Skipping scip_structural for %s — already verified at %s", org_repo, commit_sha)
+            tracker.mark_skipped("scip_structural", "already verified at current SHA")
+            result["scip_structural"] = "skipped_verified"
+        else:
+            try:
+                scip_result = scip_structural_ingest(clone_path, org_repo, s3_store)
+                result["scip_structural"] = scip_result.get("status", "unknown")
+
+                # Stage tracking
+                if tracker:
+                    try:
+                        scip_status = scip_result.get("status", "")
+                        if scip_status == "complete":
+                            with tracker.stage("scip_structural") as ctx:
+                                edge_count = scip_result.get("edges", 0)
+                                ctx.set_artifact(
+                                    f"neptune:{org_repo}:edges={edge_count}"
+                                )
+                                ctx.verify(lambda: edge_count > 0)
+                        elif scip_status == "no_languages":
+                            tracker.mark_skipped("scip_structural", "no SCIP-supported languages")
+                        elif scip_status == "no_edges":
+                            with tracker.stage("scip_structural") as ctx:
+                                ctx.fail(
+                                    "FAIL-LOUD: code-bearing repo produced 0 edges "
+                                    f"(languages: {scip_result.get('languages', {})})"
+                                )
+                        else:
+                            with tracker.stage("scip_structural") as ctx:
+                                ctx.fail(
+                                    scip_result.get("error", f"status={scip_status}")
+                                )
+                    except Exception as e:
+                        log.warning("scip_structural stage tracking failed: %s", e)
+            except Exception as e:
+                log.warning("SCIP structural ingest failed for %s: %s — continuing", org_repo, e)
+                result["scip_structural"] = f"error: {e}"
+                if tracker:
+                    try:
+                        with tracker.stage("scip_structural") as ctx:
+                            ctx.fail(str(e))
+                    except Exception:
+                        pass
+    elif tracker:
+        reason = "skip_scip flag set" if skip_scip else "scip disabled"
+        tracker.mark_skipped("scip_structural", reason)
+
     # Step 5b: Source SBOM generation (Rail 1 — #1358)
     if settings.sbom_enabled:
         skip_sbom_stage = tracker and tracker.should_skip("sbom_source")
@@ -1484,6 +1679,7 @@ def main():
     parser.add_argument("--skip-cgc", action="store_true", help="Skip code-index generation")
     parser.add_argument("--skip-deepwiki", action="store_true", help="Skip DeepWiki generation")
     parser.add_argument("--skip-graphrag", action="store_true", help="Skip GraphRAG extraction")
+    parser.add_argument("--skip-scip", action="store_true", help="Skip SCIP structural graph ingestion")
     parser.add_argument("--tags", default="{}", help="JSON tags object for metadata")
     args = parser.parse_args()
 
@@ -1496,6 +1692,7 @@ def main():
         org_repo=args.repo,
         skip_cgc=args.skip_cgc,
         skip_deepwiki=args.skip_deepwiki,
+        skip_scip=args.skip_scip,
     )
 
     # Update DynamoDB state (replaces repo-state.json)

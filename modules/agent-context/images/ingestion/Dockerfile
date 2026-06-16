@@ -19,7 +19,50 @@ RUN apt-get update && \
         gcc \
         g++ \
         make \
+        unzip \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# SCIP indexer toolchain (Phase 1 + Phase 2 languages)
+# ---------------------------------------------------------------------------
+
+# Node.js 20.x (required for scip-python, scip-typescript, scip-java)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# SCIP indexers via npm (global install)
+RUN npm install -g \
+    @sourcegraph/scip-python@0.6.6 \
+    @sourcegraph/scip-typescript@0.4.0 \
+    @sourcegraph/scip-java@0.9.0 \
+    && npm cache clean --force
+
+# Go 1.22 (for scip-go install, kept for dep resolution of Go repos)
+ARG GO_VERSION=1.22.4
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+    | tar -xz -C /usr/local
+ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
+ENV GOPATH="/root/go"
+
+# scip-go (installed via go install)
+RUN go install github.com/sourcegraph/scip-go@v0.2.7
+
+# Ruby + Sorbet (for scip-ruby — best-effort on untyped repos)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ruby ruby-dev bundler && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    gem install sorbet-static sorbet --no-document || true
+
+# .NET SDK (for scip-dotnet)
+RUN curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet && \
+    ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet || true
+ENV DOTNET_ROOT="/usr/share/dotnet"
+
+# JVM (for scip-java — Gradle/Maven dep resolution)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends default-jdk-headless maven && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install Syft for SBOM generation (dual-rail #1358)
 ARG SYFT_VERSION=1.11.1
@@ -44,7 +87,8 @@ RUN pip install --no-cache-dir \
     psycopg2-binary \
     alembic \
     sqlalchemy \
-    asyncpg
+    asyncpg \
+    protobuf
 
 # Download RDS CA bundle for IAM auth TLS verification
 RUN curl -sSfL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
@@ -55,6 +99,8 @@ RUN crawl4ai-setup || echo "crawl4ai-setup not available or optional — continu
 
 # Copy pipeline scripts (config.py must be first — all scripts import it)
 COPY config.py s3_store.py wiki_store.py sbom_parser.py db.py stage_tracker.py /app/
+COPY scip_ingester.py scip_indexer.py scip_neptune_csv.py scip_neptune_loader.py /app/
+COPY scip_proto/ /app/scip_proto/
 COPY ingest-repo.py ingest-url.py ingest-doc.py refresh-repos.py \
      discover-infra.py sqs-worker.py publish-ingestion.py \
      correlate.py lint-wiki.py generate-indexes.py \
