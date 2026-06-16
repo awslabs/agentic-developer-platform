@@ -106,23 +106,43 @@ jobs:
           JOB_NAME="manual-refresh-${GITHUB_SHA::8}"
           echo "Creating ingestion job: $JOB_NAME"
 
+          # Neptune endpoint for SCIP graph loading
+          NEPTUNE_EP="adp-dev-eks-cluster-graphrag.cluster-civhekhiupfe.us-east-1.neptune.amazonaws.com"
+
           if [ "$FULL_REINDEX" = "true" ]; then
-            echo "full_reindex=true — injecting FORCE_REINDEX env var"
-            # Export the CronJob's job template, inject env var, and apply
+            echo "full_reindex=true — injecting FORCE_REINDEX + NEPTUNE env vars"
+            # Export the CronJob's job template, inject env vars, and apply
             kubectl get cronjob ingestion-refresh -n agent-context -o json \
-              | jq --arg name "$JOB_NAME" '
+              | jq --arg name "$JOB_NAME" --arg neptune_ep "$NEPTUNE_EP" '
                 .spec.jobTemplate
                 | .metadata.name = $name
                 | .metadata.namespace = "agent-context"
                 | .apiVersion = "batch/v1"
                 | .kind = "Job"
-                | .spec.template.spec.containers[0].env += [{"name": "FORCE_REINDEX", "value": "true"}]
+                | .spec.template.spec.containers[0].env += [
+                    {"name": "FORCE_REINDEX", "value": "true"},
+                    {"name": "NEPTUNE_ENDPOINT", "value": $neptune_ep},
+                    {"name": "NEPTUNE_PORT", "value": "8182"},
+                    {"name": "SCIP_ENABLED", "value": "true"}
+                  ]
               ' \
               | kubectl apply -f -
           else
-            kubectl create job "$JOB_NAME" \
-              --from=cronjob/ingestion-refresh \
-              -n agent-context
+            # Even without full_reindex, inject Neptune endpoint for SCIP loading
+            kubectl get cronjob ingestion-refresh -n agent-context -o json \
+              | jq --arg name "$JOB_NAME" --arg neptune_ep "$NEPTUNE_EP" '
+                .spec.jobTemplate
+                | .metadata.name = $name
+                | .metadata.namespace = "agent-context"
+                | .apiVersion = "batch/v1"
+                | .kind = "Job"
+                | .spec.template.spec.containers[0].env += [
+                    {"name": "NEPTUNE_ENDPOINT", "value": $neptune_ep},
+                    {"name": "NEPTUNE_PORT", "value": "8182"},
+                    {"name": "SCIP_ENABLED", "value": "true"}
+                  ]
+              ' \
+              | kubectl apply -f -
           fi
 
       - name: Wait for Job completion
