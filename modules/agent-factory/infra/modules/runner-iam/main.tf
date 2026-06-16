@@ -82,7 +82,9 @@ resource "aws_iam_policy" "runner_boundary" {
           # CloudTrail
           "cloudtrail:*",
           # S3 Vectors — agent-context code embeddings (Issue #1406)
-          "s3vectors:*"
+          "s3vectors:*",
+          # Neptune — agent-context verify gate queries (Issue #1553)
+          "neptune-db:*"
         ]
         Resource = "*"
       },
@@ -690,6 +692,18 @@ resource "aws_iam_policy" "runner_services" {
           "sts:GetCallerIdentity"
         ]
         Resource = "*"
+      },
+      {
+        Sid    = "NeptuneDataAccess"
+        Effect = "Allow"
+        Action = [
+          "neptune-db:ReadDataViaQuery",
+          "neptune-db:WriteDataViaQuery",
+          "neptune-db:DeleteDataViaQuery",
+          "neptune-db:GetQueryStatus",
+          "neptune-db:CancelQuery"
+        ]
+        Resource = "arn:aws:neptune-db:us-east-1:*:cluster-*/*"
       },
       {
         Sid    = "WAFv2WebACL"
