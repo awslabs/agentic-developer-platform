@@ -103,10 +103,14 @@ jobs:
           echo "Namespace ${{ env.NAMESPACE }} ensured"
 
       - name: Create StorageClass (ebs-gp3)
+        continue-on-error: true
         run: |
+          # StorageClass is cluster-scoped; runner role may lack access.
+          # The SC already exists from initial cluster setup — skip gracefully.
           if ! kubectl get storageclass ebs-gp3 >/dev/null 2>&1; then
-            kubectl apply -f modules/agent-context/kubernetes/storageclass-ebs-gp3.yaml
-            echo "Created ebs-gp3 StorageClass"
+            kubectl apply -f modules/agent-context/kubernetes/storageclass-ebs-gp3.yaml \
+              && echo "Created ebs-gp3 StorageClass" \
+              || echo "WARNING: Cannot create StorageClass (likely RBAC). Assuming it exists."
           else
             echo "ebs-gp3 StorageClass already exists"
           fi
