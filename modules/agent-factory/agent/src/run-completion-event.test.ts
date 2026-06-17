@@ -15,11 +15,15 @@ import {
   buildRunCompletionEvent,
   deriveOutcome,
   scrubField,
+  sanitizeReflection,
+  computeReflectionConsistency,
   emitRunCompletionEvent,
   isRunCompletionEventEnabled,
   getFilesTouched,
   BuildRunCompletionEventInput,
   RunCompletionEvent,
+  RunReflection,
+  ReflectionConsistency,
 } from './run-completion-event';
 
 // ============================================================================
@@ -441,5 +445,408 @@ describe('getFilesTouched', () => {
 
   it('never throws', async () => {
     await expect(getFilesTouched('/nonexistent-dir-12345')).resolves.toBeDefined();
+  });
+});
+
+// ============================================================================
+// Reflection fixtures
+// ============================================================================
+
+function makeBaseReflection(overrides?: Partial<RunReflection>): RunReflection {
+  return {
+    problem: 'RDS connection timeout on fresh EKS deploy',
+    approach: 'Checked security groups, found missing inbound rule for port 5432',
+    failures: [
+      {
+        what: 'kubectl apply failed with connection refused',
+        why: 'Security group did not allow EKS node → RDS traffic',
+        signal: 'Pod CrashLoopBackOff with "connection refused" in logs',
+      },
+    ],
+    recovery: [
+      {
+        from: 'kubectl apply failed with connection refused',
+        fix: 'Added ingress rule for EKS node security group on port 5432',
+      },
+    ],
+    advice: [
+      'Always verify security group rules between EKS and RDS before deploying',
+      'Check kubectl logs with --previous flag for CrashLoopBackOff pods',
+    ],
+    confidence: 'high',
+    reusable: true,
+    ...overrides,
+  };
+}
+
+// ============================================================================
+// sanitizeReflection tests
+// ============================================================================
+
+describe('sanitizeReflection', () => {
+  it('returns sanitized reflection for clean input', () => {
+    const result = sanitizeReflection(makeBaseReflection());
+    expect(result).toBeDefined();
+    expect(result!.problem).toBe('RDS connection timeout on fresh EKS deploy');
+    expect(result!.approach).toContain('security groups');
+    expect(result!.failures).toHaveLength(1);
+    expect(result!.recovery).toHaveLength(1);
+    expect(result!.advice).toHaveLength(2);
+    expect(result!.confidence).toBe('high');
+    expect(result!.reusable).toBe(true);
+  });
+
+  it('returns undefined when problem contains a secret', () => {
+    const result = sanitizeReflection(makeBaseReflection({
+      problem: 'Used key AKIAIOSFODNN7EXAMPLE to connect',
+    }));
+    expect(result).toBeUndefined();
+  });
+
+  it('returns undefined when approach contains a secret', () => {
+    const result = sanitizeReflection(makeBaseReflection({
+      approach: 'Token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij was needed',
+    }));
+    expect(result).toBeUndefined();
+  });
+
+  it('filters out failures with secrets in any sub-field', () => {
+    const result = sanitizeReflection(makeBaseReflection({
+      failures: [
+        { what: 'Normal failure', why: 'Normal cause', signal: 'Normal signal' },
+        { what: 'Token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij expired', why: 'expired', signal: 'auth error' },
+      ],
+    }));
+    expect(result).toBeDefined();
+    expect(result!.failures).toHaveLength(1);
+    expect(result!.failures[0].what).toBe('Normal failure');
+  });
+
+  it('filters out recovery entries with secrets', () => {
+    const result = sanitizeReflection(makeBaseReflection({
+      recovery: [
+        { from: 'Normal', fix: 'Normal fix' },
+        { from: 'Normal', fix: 'Set sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456 as env' },
+      ],
+    }));
+    expect(result).toBeDefined();
+    expect(result!.recovery).toHaveLength(1);
+  });
+
+  it('filters out advice containing secrets', () => {
+    const result = sanitizeReflection(makeBaseReflection({
+      advice: [
+        'Normal advice',
+        'Use token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij for auth',
+      ],
+    }));
+    expect(result).toBeDefined();
+    expect(result!.advice).toHaveLength(1);
+    expect(result!.advice[0]).toBe('Normal advice');
+  });
+
+  it('caps failures at 10 entries', () => {
+    const manyFailures = Array.from({ length: 15 }, (_, i) => ({
+      what: `Failure ${i}`, why: `Cause ${i}`, signal: `Signal ${i}`,
+    }));
+    const result = sanitizeReflection(makeBaseReflection({ failures: manyFailures }));
+    expect(result).toBeDefined();
+    expect(result!.failures).toHaveLength(10);
+  });
+
+  it('caps recovery at 10 entries', () => {
+    const manyRecovery = Array.from({ length: 15 }, (_, i) => ({
+      from: `Failure ${i}`, fix: `Fix ${i}`,
+    }));
+    const result = sanitizeReflection(makeBaseReflection({ recovery: manyRecovery }));
+    expect(result).toBeDefined();
+    expect(result!.recovery).toHaveLength(10);
+  });
+
+  it('caps advice at 10 entries', () => {
+    const manyAdvice = Array.from({ length: 15 }, (_, i) => `Advice ${i}`);
+    const result = sanitizeReflection(makeBaseReflection({ advice: manyAdvice }));
+    expect(result).toBeDefined();
+    expect(result!.advice).toHaveLength(10);
+  });
+
+  it('caps string fields at 300 characters', () => {
+    const result = sanitizeReflection(makeBaseReflection({
+      problem: 'X'.repeat(500),
+      approach: 'Y'.repeat(500),
+    }));
+    expect(result).toBeDefined();
+    expect(result!.problem.length).toBeLessThanOrEqual(300);
+    expect(result!.approach.length).toBeLessThanOrEqual(300);
+  });
+
+  it('defaults invalid confidence to low', () => {
+    const result = sanitizeReflection(makeBaseReflection({
+      confidence: 'invalid' as any,
+    }));
+    expect(result).toBeDefined();
+    expect(result!.confidence).toBe('low');
+  });
+
+  it('coerces reusable to boolean', () => {
+    const result = sanitizeReflection(makeBaseReflection({
+      reusable: 'yes' as any,
+    }));
+    expect(result).toBeDefined();
+    expect(result!.reusable).toBe(true);
+
+    const result2 = sanitizeReflection(makeBaseReflection({
+      reusable: '' as any,
+    }));
+    expect(result2).toBeDefined();
+    expect(result2!.reusable).toBe(false);
+  });
+
+  it('handles empty arrays gracefully', () => {
+    const result = sanitizeReflection(makeBaseReflection({
+      failures: [],
+      recovery: [],
+      advice: [],
+    }));
+    expect(result).toBeDefined();
+    expect(result!.failures).toEqual([]);
+    expect(result!.recovery).toEqual([]);
+    expect(result!.advice).toEqual([]);
+  });
+});
+
+// ============================================================================
+// computeReflectionConsistency tests
+// ============================================================================
+
+describe('computeReflectionConsistency', () => {
+  it('returns consistent when reflection matches objective outcome', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection({ confidence: 'medium' }),
+      outcome: 'success',
+      turns: 14,
+    });
+    expect(result.outcome_mismatch).toBe(false);
+    expect(result.underreported_failures).toBe(false);
+    expect(result.verdict).toBe('consistent');
+  });
+
+  it('returns consistent when failures reported and outcome is failure', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection({ confidence: 'low' }),
+      outcome: 'failure',
+      turns: 50,
+    });
+    // Has failures reported → not underreported
+    expect(result.underreported_failures).toBe(false);
+    expect(result.verdict).toBe('consistent');
+  });
+
+  it('detects outcome_mismatch: no failures + high confidence but outcome is failure', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection({ failures: [], confidence: 'high' }),
+      outcome: 'failure',
+      turns: 10,
+    });
+    expect(result.outcome_mismatch).toBe(true);
+    expect(result.verdict).toBe('optimistic');
+  });
+
+  it('detects outcome_mismatch: no failures + high confidence but outcome is partial', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection({ failures: [], confidence: 'high' }),
+      outcome: 'partial',
+      turns: 10,
+    });
+    expect(result.outcome_mismatch).toBe(true);
+    expect(result.verdict).toBe('optimistic');
+  });
+
+  it('does NOT flag outcome_mismatch when failures are reported (agent is honest)', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection({ confidence: 'high' }),
+      outcome: 'failure',
+      turns: 10,
+    });
+    // Has failures → impliesSuccess is false
+    expect(result.outcome_mismatch).toBe(false);
+  });
+
+  it('does NOT flag outcome_mismatch when confidence is not high', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection({ failures: [], confidence: 'medium' }),
+      outcome: 'failure',
+      turns: 10,
+    });
+    expect(result.outcome_mismatch).toBe(false);
+  });
+
+  it('detects underreported_failures: no failures but high turn count', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection({ failures: [], confidence: 'medium' }),
+      outcome: 'success',
+      turns: 45, // > 40 threshold
+    });
+    expect(result.underreported_failures).toBe(true);
+    expect(result.verdict).toBe('optimistic');
+  });
+
+  it('detects underreported_failures: no failures but tests failed', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection({ failures: [], confidence: 'medium' }),
+      outcome: 'success',
+      turns: 10,
+      testsFailed: 3,
+    });
+    expect(result.underreported_failures).toBe(true);
+    expect(result.verdict).toBe('optimistic');
+  });
+
+  it('does NOT flag underreported when failures ARE reported', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection(), // has 1 failure
+      outcome: 'success',
+      turns: 50,
+      testsFailed: 2,
+    });
+    expect(result.underreported_failures).toBe(false);
+  });
+
+  it('returns unreliable when both outcome_mismatch AND underreported_failures', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection({ failures: [], confidence: 'high' }),
+      outcome: 'failure',
+      turns: 50, // high turns + outcome failure + no failures + high confidence
+    });
+    expect(result.outcome_mismatch).toBe(true);
+    expect(result.underreported_failures).toBe(true);
+    expect(result.verdict).toBe('unreliable');
+  });
+
+  it('handles zero testsFailed (no signal)', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection({ failures: [], confidence: 'medium' }),
+      outcome: 'success',
+      turns: 10,
+      testsFailed: 0,
+    });
+    expect(result.underreported_failures).toBe(false);
+    expect(result.verdict).toBe('consistent');
+  });
+
+  it('handles undefined testsFailed (no test info)', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection({ failures: [], confidence: 'medium' }),
+      outcome: 'success',
+      turns: 10,
+      testsFailed: undefined,
+    });
+    expect(result.underreported_failures).toBe(false);
+  });
+
+  it('boundary: turns exactly at threshold (40) is NOT flagged', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection({ failures: [], confidence: 'medium' }),
+      outcome: 'success',
+      turns: 40,
+    });
+    expect(result.underreported_failures).toBe(false);
+  });
+
+  it('boundary: turns at threshold+1 (41) IS flagged', () => {
+    const result = computeReflectionConsistency({
+      reflection: makeBaseReflection({ failures: [], confidence: 'medium' }),
+      outcome: 'success',
+      turns: 41,
+    });
+    expect(result.underreported_failures).toBe(true);
+  });
+});
+
+// ============================================================================
+// buildRunCompletionEvent — reflection integration tests
+// ============================================================================
+
+describe('buildRunCompletionEvent with reflection', () => {
+  it('includes reflection and consistency when reflection is provided', () => {
+    const event = buildRunCompletionEvent(makeBaseInput({
+      reflection: makeBaseReflection(),
+    }));
+
+    expect(event.reflection).toBeDefined();
+    expect(event.reflection!.problem).toBe('RDS connection timeout on fresh EKS deploy');
+    expect(event.consistency).toBeDefined();
+    expect(event.consistency!.verdict).toBe('consistent');
+  });
+
+  it('omits reflection when not provided', () => {
+    const event = buildRunCompletionEvent(makeBaseInput({ reflection: undefined }));
+    expect(event.reflection).toBeUndefined();
+    expect(event.consistency).toBeUndefined();
+  });
+
+  it('omits reflection when core fields contain secrets', () => {
+    const event = buildRunCompletionEvent(makeBaseInput({
+      reflection: makeBaseReflection({
+        problem: 'Used AKIAIOSFODNN7EXAMPLE to access S3',
+      }),
+    }));
+    expect(event.reflection).toBeUndefined();
+    expect(event.consistency).toBeUndefined();
+  });
+
+  it('computes optimistic verdict for inconsistent reflection', () => {
+    const event = buildRunCompletionEvent(makeBaseInput({
+      agentSucceeded: true,
+      turns: 50,  // high turns
+      reflection: makeBaseReflection({
+        failures: [],       // claims no failures
+        confidence: 'medium',
+      }),
+    }));
+
+    expect(event.consistency).toBeDefined();
+    expect(event.consistency!.underreported_failures).toBe(true);
+    expect(event.consistency!.verdict).toBe('optimistic');
+  });
+
+  it('computes unreliable verdict for highly inconsistent reflection', () => {
+    const event = buildRunCompletionEvent(makeBaseInput({
+      agentSucceeded: false,  // actual failure
+      turns: 50,              // high turns
+      reflection: makeBaseReflection({
+        failures: [],        // claims no failures
+        confidence: 'high',  // claims high confidence
+      }),
+    }));
+
+    expect(event.consistency).toBeDefined();
+    expect(event.consistency!.outcome_mismatch).toBe(true);
+    expect(event.consistency!.underreported_failures).toBe(true);
+    expect(event.consistency!.verdict).toBe('unreliable');
+  });
+
+  it('uses test failure signal for consistency check', () => {
+    const event = buildRunCompletionEvent(makeBaseInput({
+      agentSucceeded: true,
+      turns: 10,
+      tests: { ran: true, passed: 90, failed: 5 },
+      reflection: makeBaseReflection({
+        failures: [],
+        confidence: 'medium',
+      }),
+    }));
+
+    expect(event.consistency).toBeDefined();
+    expect(event.consistency!.underreported_failures).toBe(true);
+    expect(event.consistency!.verdict).toBe('optimistic');
+  });
+
+  it('event with reflection stays under 10KB', () => {
+    const event = buildRunCompletionEvent(makeBaseInput({
+      reflection: makeBaseReflection(),
+    }));
+    const json = JSON.stringify(event);
+    expect(json.length).toBeLessThan(10240);
   });
 });

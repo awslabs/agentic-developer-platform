@@ -75,6 +75,80 @@ export interface TestResults {
   failed?: number;
 }
 
+// ── Reflection (structured self-report, cross-checked) ─────────────────────
+
+/** A failure encountered during the run, as reported by the agent. */
+export interface ReflectionFailure {
+  /** What failed. */
+  what: string;
+  /** Root cause as understood by the agent. */
+  why: string;
+  /** How the agent noticed (error text, test fail, etc.). */
+  signal: string;
+}
+
+/** How the agent recovered from a failure. */
+export interface ReflectionRecovery {
+  /** References a failure (by `what` description). */
+  from: string;
+  /** What actually worked to fix it. */
+  fix: string;
+}
+
+/** Agent's confidence in its own advice. */
+export type ReflectionConfidence = 'high' | 'medium' | 'low';
+
+/**
+ * Structured reflection questionnaire — required output from every run.
+ *
+ * This is self-reported data (the agent fills it), but it is cross-checked
+ * against objective signals via ReflectionConsistency. The questionnaire
+ * captures transferable lessons (failures, recovery, advice) in a structured
+ * format that recall can rank and filter.
+ */
+export interface RunReflection {
+  /** What was actually being solved (one line; the recall key). */
+  problem: string;
+
+  /** What the agent tried, in order. */
+  approach: string;
+
+  /** Failures hit during the run. Highest-value field for future agents. */
+  failures: ReflectionFailure[];
+
+  /** How the agent recovered from each failure. The transferable fix. */
+  recovery: ReflectionRecovery[];
+
+  /** Concrete, imperative advice for the next agent on a similar task. */
+  advice: string[];
+
+  /** Agent's own confidence in this advice. */
+  confidence: ReflectionConfidence;
+
+  /** Is this task-specific, or generally reusable across similar tasks? */
+  reusable: boolean;
+}
+
+/** Consistency verdict for recall ranking. */
+export type ConsistencyVerdict = 'consistent' | 'optimistic' | 'unreliable';
+
+/**
+ * Cross-check result: reflection claims vs objective signals.
+ *
+ * Computed at capture time (NOT by the agent). Used by recall to
+ * down-weight advice from inconsistent runs.
+ */
+export interface ReflectionConsistency {
+  /** Agent claimed success in reflection but objective outcome disagrees. */
+  outcome_mismatch: boolean;
+
+  /** Agent reported no failures but objective signals suggest struggle. */
+  underreported_failures: boolean;
+
+  /** Net consistency verdict for recall ranking. */
+  verdict: ConsistencyVerdict;
+}
+
 /**
  * RunCompletionEvent — emitted once per agent run at the completion block.
  *
@@ -144,6 +218,13 @@ export interface RunCompletionEvent {
 
   /** Learning type classification (optional, heuristic). */
   learning_type?: LearningType;
+
+  // ── Structured reflection (required self-report, cross-checked) ──────────
+  /** Structured reflection questionnaire filled by the agent at completion. */
+  reflection?: RunReflection;
+
+  /** Cross-check: reflection claims vs objective signals. Computed at capture, NOT by the agent. */
+  consistency?: ReflectionConsistency;
 }
 
 // ============================================================================
@@ -164,6 +245,24 @@ const MAX_NARRATIVE_LENGTH = 2000;
 
 /** Maximum characters for run_id. */
 const MAX_RUN_ID_LENGTH = 128;
+
+/** Maximum failures in reflection. */
+const MAX_REFLECTION_FAILURES = 10;
+
+/** Maximum recovery entries in reflection. */
+const MAX_REFLECTION_RECOVERY = 10;
+
+/** Maximum advice items in reflection. */
+const MAX_REFLECTION_ADVICE = 10;
+
+/** Maximum characters per reflection string field. */
+const MAX_REFLECTION_FIELD_LENGTH = 300;
+
+/**
+ * Turn count threshold above which an empty failures array is suspicious.
+ * Calibrated to ~3× median run turns (~15).
+ */
+const HIGH_TURN_THRESHOLD = 40;
 
 // ============================================================================
 // Builder input
@@ -224,6 +323,9 @@ export interface BuildRunCompletionEventInput {
 
   /** Test results (best-effort). */
   tests?: TestResults;
+
+  /** Structured reflection from the agent (parsed from completion output). */
+  reflection?: RunReflection;
 }
 
 // ============================================================================
@@ -257,6 +359,98 @@ export function scrubField(text: string): string {
     return '[REDACTED — contains secret pattern]';
   }
   return text;
+}
+
+/**
+ * Sanitize and cap a reflection object.
+ *
+ * Applies size caps to all array/string fields and scrubs secrets.
+ * Returns undefined if the reflection contains irrecoverable secret patterns
+ * (e.g. the core problem/approach fields are tainted).
+ */
+export function sanitizeReflection(raw: RunReflection): RunReflection | undefined {
+  // Core fields — if they contain secrets, reject the whole reflection
+  const problem = scrubField((raw.problem ?? '').slice(0, MAX_REFLECTION_FIELD_LENGTH));
+  const approach = scrubField((raw.approach ?? '').slice(0, MAX_REFLECTION_FIELD_LENGTH));
+  if (problem.startsWith('[REDACTED') || approach.startsWith('[REDACTED')) {
+    return undefined;
+  }
+
+  // Failures — cap and scrub each sub-field
+  const failures = (raw.failures ?? [])
+    .slice(0, MAX_REFLECTION_FAILURES)
+    .map(f => ({
+      what: scrubField((f.what ?? '').slice(0, MAX_REFLECTION_FIELD_LENGTH)),
+      why: scrubField((f.why ?? '').slice(0, MAX_REFLECTION_FIELD_LENGTH)),
+      signal: scrubField((f.signal ?? '').slice(0, MAX_REFLECTION_FIELD_LENGTH)),
+    }))
+    .filter(f => !f.what.startsWith('[REDACTED') && !f.why.startsWith('[REDACTED') && !f.signal.startsWith('[REDACTED'));
+
+  // Recovery — cap and scrub
+  const recovery = (raw.recovery ?? [])
+    .slice(0, MAX_REFLECTION_RECOVERY)
+    .map(r => ({
+      from: scrubField((r.from ?? '').slice(0, MAX_REFLECTION_FIELD_LENGTH)),
+      fix: scrubField((r.fix ?? '').slice(0, MAX_REFLECTION_FIELD_LENGTH)),
+    }))
+    .filter(r => !r.from.startsWith('[REDACTED') && !r.fix.startsWith('[REDACTED'));
+
+  // Advice — cap, scrub, filter
+  const advice = (raw.advice ?? [])
+    .slice(0, MAX_REFLECTION_ADVICE)
+    .map(a => scrubField((a ?? '').slice(0, MAX_REFLECTION_FIELD_LENGTH)))
+    .filter(a => a.length > 0 && !a.startsWith('[REDACTED'));
+
+  // Validate confidence
+  const validConfidences: ReflectionConfidence[] = ['high', 'medium', 'low'];
+  const confidence = validConfidences.includes(raw.confidence) ? raw.confidence : 'low';
+
+  return {
+    problem,
+    approach,
+    failures,
+    recovery,
+    advice,
+    confidence,
+    reusable: Boolean(raw.reusable),
+  };
+}
+
+/**
+ * Compute reflection consistency by cross-checking the agent's claims
+ * against objective signals.
+ *
+ * This is computed at capture time, NEVER by the agent. Used for recall ranking.
+ */
+export function computeReflectionConsistency(params: {
+  reflection: RunReflection;
+  outcome: RunOutcome;
+  turns: number;
+  testsFailed?: number;
+}): ReflectionConsistency {
+  const { reflection, outcome, turns, testsFailed } = params;
+
+  // Check 1: Agent's reflection implies success but outcome disagrees.
+  // Heuristic: no failures reported + confidence high → implies agent believes it succeeded.
+  const impliesSuccess = reflection.failures.length === 0 && reflection.confidence === 'high';
+  const outcome_mismatch = impliesSuccess && outcome !== 'success';
+
+  // Check 2: Agent reported no failures but objective signals suggest struggle.
+  // Signals: high turn count, test failures
+  const hasStruggleSignals =
+    turns > HIGH_TURN_THRESHOLD ||
+    (testsFailed !== undefined && testsFailed > 0);
+  const underreported_failures = reflection.failures.length === 0 && hasStruggleSignals;
+
+  // Derive verdict
+  let verdict: ConsistencyVerdict = 'consistent';
+  if (outcome_mismatch && underreported_failures) {
+    verdict = 'unreliable';
+  } else if (outcome_mismatch || underreported_failures) {
+    verdict = 'optimistic';
+  }
+
+  return { outcome_mismatch, underreported_failures, verdict };
 }
 
 /**
@@ -339,6 +533,21 @@ export function buildRunCompletionEvent(input: BuildRunCompletionEventInput): Ru
   }
   if (input.tests) event.tests = input.tests;
   if (agentNarrative) event.agent_narrative = agentNarrative;
+
+  // Reflection + consistency (structured self-report, cross-checked)
+  if (input.reflection) {
+    const sanitized = sanitizeReflection(input.reflection);
+    if (sanitized) {
+      event.reflection = sanitized;
+      // Compute consistency from objective signals — never trusting the agent
+      event.consistency = computeReflectionConsistency({
+        reflection: sanitized,
+        outcome,
+        turns: Math.max(0, input.turns),
+        testsFailed: input.tests?.failed,
+      });
+    }
+  }
 
   return event;
 }

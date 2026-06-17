@@ -346,10 +346,105 @@ async function emitRunCompletionEvent(
 
 ---
 
-## 15. Open Questions (for ratification)
+## 15. Structured Reflection Questionnaire (Addendum — Issue #1580 follow-up)
+
+**Added:** 2026-06-17 (follow-up to Comment #16)
+
+### 15.1 Motivation
+
+The merged Phase 1 event captures objective signals well, but reduces the *transferable lesson* to a single optional `agent_narrative` (free prose ≤2000 chars). A free-prose blob is the same wish-driven shape we aimed to fix, just smaller. This addendum adds a **required, structured `reflection` questionnaire** the agent fills at completion, **cross-checked against objective signals** to detect self-report bias.
+
+### 15.2 New Schema: `RunReflection`
+
+```typescript
+interface RunReflection {
+  /** What was actually being solved (one line; the recall key). */
+  problem: string;
+  /** What the agent tried, in order. */
+  approach: string;
+  /** Failures hit during the run. Highest-value field for future agents. */
+  failures: Array<{ what: string; why: string; signal: string }>;
+  /** How the agent recovered from each failure. */
+  recovery: Array<{ from: string; fix: string }>;
+  /** Concrete, imperative advice for the next agent on a similar task. */
+  advice: string[];
+  /** Agent's own confidence in this advice. */
+  confidence: 'high' | 'medium' | 'low';
+  /** Is this task-specific, or generally reusable across similar tasks? */
+  reusable: boolean;
+}
+```
+
+### 15.3 New Schema: `ReflectionConsistency` (derived, NOT agent-authored)
+
+```typescript
+interface ReflectionConsistency {
+  /** Agent claimed success but objective outcome disagrees. */
+  outcome_mismatch: boolean;
+  /** Agent reported no failures but objective signals suggest struggle. */
+  underreported_failures: boolean;
+  /** Net consistency verdict for recall ranking. */
+  verdict: 'consistent' | 'optimistic' | 'unreliable';
+}
+```
+
+### 15.4 Cross-Check Rules
+
+| Check | Condition | Result |
+|---|---|---|
+| `outcome_mismatch` | `failures.length === 0 && confidence === 'high' && outcome !== 'success'` | true |
+| `underreported_failures` | `failures.length === 0 && (turns > 40 \|\| tests.failed > 0)` | true |
+| `verdict = unreliable` | Both mismatch + underreported | `unreliable` |
+| `verdict = optimistic` | Either one | `optimistic` |
+| `verdict = consistent` | Neither | `consistent` |
+
+**Key principle:** The consistency block is computed at capture time from objective signals. The agent NEVER fills it — it cannot influence its own credibility score.
+
+### 15.5 Size Caps (Reflection)
+
+| Field | Cap | Rationale |
+|---|---|---|
+| `problem` / `approach` | 300 chars | Recall key — must be concise |
+| `failures` | 10 entries, 300 chars per sub-field | Covers most runs; prevents dumps |
+| `recovery` | 10 entries, 300 chars per sub-field | Matches failures |
+| `advice` | 10 entries, 300 chars each | Enough for real advice; bounded |
+| `confidence` | enum | Fixed vocabulary |
+| `reusable` | boolean | Fixed vocabulary |
+
+### 15.6 Secret Scrubbing (Reflection)
+
+- `problem` and `approach` are treated as critical — if EITHER contains a secret pattern, the entire reflection is dropped (returns undefined).
+- `failures`, `recovery`, and `advice` entries are individually scrubbed — tainted entries are filtered out; clean ones survive.
+
+### 15.7 How It Fits
+
+```
+RunCompletionEvent (always-on)
+├── Objective spine: persona, issue, outcome, turns, duration, files, pr, beads, skills
+├── Best-effort: errors_encountered, tests, agent_narrative, learning_type
+├── reflection: RunReflection (structured self-report — required at completion)
+└── consistency: ReflectionConsistency (computed at capture from objective signals)
+```
+
+`agent_narrative` remains as a raw prose fallback; `reflection` is the primary structured insight. Both are optional in the TypeScript interface (to support the migration window where reflection parsing isn't yet wired), but the completion contract should require valid reflection JSON once enabled.
+
+### 15.8 Recall Implications (note, not scope)
+
+When a future agent retrieves a reflection for recall:
+- `verdict: 'consistent'` → full weight
+- `verdict: 'optimistic'` → reduced weight, surface with caveat
+- `verdict: 'unreliable'` → minimal weight, flag for human review
+
+This ranking is implemented in the recall side (separate issue), not in the event itself.
+
+---
+
+## 16. Open Questions (for ratification)
 
 1. **Should `files_touched` include the full path or just the module-relative path?** Recommendation: full repo-relative path (matches `git diff` output). Consumers can derive module from prefix.
 
 2. **Should `learning_type` be assigned automatically or left for the sink to classify?** Recommendation: leave as optional/null in Phase 1; let the sink (gbrain/personal-context) classify on ingest. Avoids adding a classifier call to the hot path.
 
 3. **Should the event replace `experience-save-hook.ts` or coexist?** Recommendation: coexist in Phase 1 (both fire); Phase 3 deprecates the hook once event→sink is proven.
+
+4. **Should `reflection` be TypeScript-required or optional?** Decision: optional in the interface (supports migration window), but the completion prompt contract makes it required output from agents. The builder gracefully handles its absence.
