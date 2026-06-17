@@ -180,6 +180,9 @@ async def _understand_via_neptune(
     if not neptune_client.neptune_available():
         return None
 
+    # Resolve short repo name to full org/repo format for Neptune queries
+    repo_id = neptune_client.resolve_repo_name(repo_id)
+
     results: list[SearchHit] = []
 
     # Determine target type: repo-level, file, directory, or symbol
@@ -496,6 +499,9 @@ async def _impact_via_neptune(
 
     if not neptune_client.neptune_available():
         return None
+
+    # Resolve short repo name to full org/repo format for Neptune queries
+    repo_id = neptune_client.resolve_repo_name(repo_id)
 
     # Parse symbol reference
     if "::" in query_target:

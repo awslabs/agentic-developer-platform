@@ -94,10 +94,11 @@ def create_neptune_driver(
     uri = f"bolt+s://{endpoint}:8182"
     auth = get_neptune_auth(endpoint, region)
 
+    # Note: bolt+s:// implies TLS — do NOT pass encrypted/trusted_certificates
+    # (neo4j driver raises ConfigurationError if those are combined with +s scheme)
     return GraphDatabase.driver(
         uri,
         auth=auth,
-        encrypted=True,
         max_connection_pool_size=max_pool,
         connection_acquisition_timeout=acquire_timeout,
         connection_timeout=connection_timeout,

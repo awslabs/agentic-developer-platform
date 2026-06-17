@@ -17,6 +17,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 _driver = None
+_repo_name_cache: dict[str, str] = {}  # short-name → org/repo mapping
 
 
 def get_neptune_driver():
@@ -64,6 +65,55 @@ def neptune_available() -> bool:
     except Exception:
         log.warning("Neptune unreachable - falling back to code-index.json")
         return False
+
+
+def resolve_repo_name(repo: str) -> str:
+    """Resolve a short repo name to full org/repo format used in Neptune.
+
+    The eval golden dataset and MCP callers use short names (e.g. "headroom")
+    while Neptune stores full qualified names (e.g. "chopratejas/headroom").
+    This function maps between the two using a cached Neptune lookup.
+
+    If repo already contains "/" (i.e., is already org/repo), returns it as-is.
+    Returns the original name if no match found in Neptune.
+    """
+    if "/" in repo:
+        return repo  # Already qualified
+
+    if repo in _repo_name_cache:
+        return _repo_name_cache[repo]
+
+    driver = get_neptune_driver()
+    if not driver:
+        return repo
+
+    # Find repos ending with the short name (suffix match)
+    cypher = """
+        MATCH (s:Symbol)
+        WITH DISTINCT s.repo AS repo_name
+        WHERE repo_name ENDS WITH $suffix
+        RETURN repo_name
+        LIMIT 5
+    """
+    try:
+        with driver.session() as session:
+            result = session.run(cypher, {"suffix": f"/{repo}"})
+            matches = [record["repo_name"] for record in result]
+            if len(matches) == 1:
+                _repo_name_cache[repo] = matches[0]
+                log.debug("Resolved repo '%s' → '%s'", repo, matches[0])
+                return matches[0]
+            elif matches:
+                # Multiple matches — prefer shortest (most specific)
+                best = min(matches, key=len)
+                _repo_name_cache[repo] = best
+                log.debug("Resolved repo '%s' → '%s' (from %d candidates)", repo, best, len(matches))
+                return best
+    except Exception:
+        log.debug("Failed to resolve repo name '%s' via Neptune", repo)
+
+    _repo_name_cache[repo] = repo  # Cache miss to avoid repeated queries
+    return repo
 
 
 def query_impact(
