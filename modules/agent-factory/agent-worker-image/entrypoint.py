@@ -157,6 +157,13 @@ def main() -> int:
     # name so the harness doesn't need to know about TENANT_ID vs ADP_TENANT_ID.
     os.environ["ADP_TENANT_ID"] = tenant_id
 
+    # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
+    # Code verbs (search/understand/impact/browse) filter by X-GitHub-Login;
+    # the Door's allowed_principals stores GitHub logins + team slugs.
+    github_login = actor.get("github_login", "")
+    if github_login:
+        os.environ["ADP_GITHUB_LOGIN"] = github_login
+
     repo_owner, repo_name = repo.split("/", 1)
     logger.info(
         "Processing: tenant=%s persona=%s repo=%s issue=#%s correlation=%s",

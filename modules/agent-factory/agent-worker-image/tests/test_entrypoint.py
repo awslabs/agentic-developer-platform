@@ -1680,6 +1680,185 @@ class TestBedrockViaFlag:
         assert any("does not assume customer role" in record.message for record in caplog.records)
 
 
+# --- Test: ADP_GITHUB_LOGIN propagation (Issue #1591) ---
+
+
+class TestGithubLoginPropagation:
+    """Verify ADP_GITHUB_LOGIN is exported from actor.github_login in the envelope.
+
+    This is ADDITIVE to the Cognito identity rail — ADP_OWNER_SUB and
+    ADP_TENANT_ID must remain untouched. The Door's code-verb ACL uses
+    X-GitHub-Login (derived from ADP_GITHUB_LOGIN); personal verbs still
+    use the Cognito identity.
+    """
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_github_login_exported_when_present(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """ADP_GITHUB_LOGIN is set when actor.github_login is present in envelope."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        # SAMPLE_ENVELOPE includes actor.github_login = "jane-dev"
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-gh-login")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # ADP_GITHUB_LOGIN must be set from envelope actor.github_login
+        assert os.environ.get("ADP_GITHUB_LOGIN") == "jane-dev"
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_github_login_not_set_when_absent(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """ADP_GITHUB_LOGIN is NOT set when actor.github_login is missing (webchat path)."""
+        from entrypoint import main
+        import entrypoint
+
+        # Envelope without github_login in actor (simulates webchat path)
+        no_gh_envelope = {
+            **SAMPLE_ENVELOPE,
+            "actor": {"user_id": "cognito-sub-123", "is_bot": False},
+        }
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.delenv("ADP_GITHUB_LOGIN", raising=False)
+
+        mock_receive_msg.return_value = (json.dumps(no_gh_envelope), "receipt-no-gh")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # ADP_GITHUB_LOGIN must NOT be set — fail-closed for code verbs
+        assert os.environ.get("ADP_GITHUB_LOGIN") is None
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_cognito_identity_unchanged_after_github_login_added(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Regression: ADP_OWNER_SUB and ADP_TENANT_ID still set correctly."""
+        from entrypoint import main
+        import entrypoint
+
+        # Envelope with both cognito_sub and github_login
+        envelope_with_both = {
+            **SAMPLE_ENVELOPE,
+            "cognito_sub": "cognito-sub-jane-456",
+        }
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(envelope_with_both), "receipt-regression")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Both identity rails must be present simultaneously
+        assert os.environ.get("ADP_OWNER_SUB") == "cognito-sub-jane-456"
+        assert os.environ.get("ADP_TENANT_ID") == "acme-corp"
+        assert os.environ.get("ADP_GITHUB_LOGIN") == "jane-dev"
+
+
 class TestSanitizeForStsTag:
     r"""Verify task IDs are sanitized for STS session tag values.
 
