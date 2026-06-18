@@ -171,6 +171,8 @@ async def _understand_via_neptune(
     """Attempt understand via Neptune. Returns None if Neptune unavailable.
 
     Returns a list of SearchHit on success, or None to signal fallback.
+    None means "Neptune doesn't have this data, try S3 fallback."
+    Empty list [] means "Neptune handled it but found nothing" (no fallback needed).
     """
     from . import neptune_client
 
@@ -208,6 +210,14 @@ async def _understand_via_neptune(
         file_part, symbol_name = query_target.rsplit("::", 1)
         file_path = file_part if file_part else ""
         records = neptune_client.query_understand(repo_id, file_path, symbol_name)
+        if not records:
+            # Try symbol resolution before giving up
+            resolved = neptune_client.resolve_symbol(repo_id, symbol_name)
+            if resolved:
+                # Re-query with the resolved file
+                records = neptune_client.query_understand(
+                    repo_id, resolved[0]["file"], resolved[0]["name"]
+                )
         if not records:
             return None  # Fall back
         for rec in records:
@@ -253,6 +263,32 @@ async def _understand_via_neptune(
     if "/" in query_target:
         records = neptune_client.query_dir_symbols(repo_id, query_target)
         if not records:
+            # Try interpreting as module-path symbol (e.g. "cli/main")
+            resolved = neptune_client.resolve_symbol(repo_id, query_target)
+            if resolved:
+                records = neptune_client.query_understand(
+                    repo_id, resolved[0]["file"], resolved[0]["name"]
+                )
+                if records:
+                    for rec in records:
+                        callees = _filter_null_collect(rec.get("callees", []))
+                        callers = _filter_null_collect(rec.get("callers", []))
+                        parents = _filter_null_collect(rec.get("parents", []))
+                        owners = _filter_null_collect(rec.get("owners", []))
+                        data = {
+                            "repo_id": repo_id,
+                            "file": rec.get("symbol_file", ""),
+                            "symbol": rec.get("symbol_name", ""),
+                            "kind": rec.get("symbol_kind", ""),
+                            "signature": rec.get("signature", ""),
+                            "callers": callers if depth == "detailed" else callers[:3],
+                            "callees": callees if depth == "detailed" else callees[:3],
+                            "parents": parents,
+                            "owners": owners,
+                            "source": "neptune",
+                        }
+                        results.append(SearchHit(repo_name=repo_id, data=data))
+                    return results
             return None  # Fall back
         for rec in records:
             data = {
@@ -267,7 +303,7 @@ async def _understand_via_neptune(
         return results
 
     # Bare symbol name (no :: separator, no path separators)
-    # Try as a symbol name with empty file (Neptune will match on name alone)
+    # With empty file, query_understand now correctly omits file from MATCH (#1587)
     records = neptune_client.query_understand(repo_id, "", query_target)
     if records:
         for rec in records:
@@ -289,6 +325,31 @@ async def _understand_via_neptune(
             }
             results.append(SearchHit(repo_name=repo_id, data=data))
         return results
+
+    # Last resort: try resolve_symbol for fuzzy/module-path targets
+    resolved = neptune_client.resolve_symbol(repo_id, query_target)
+    if resolved:
+        records = neptune_client.query_understand(repo_id, resolved[0]["file"], resolved[0]["name"])
+        if records:
+            for rec in records:
+                callees = _filter_null_collect(rec.get("callees", []))
+                callers = _filter_null_collect(rec.get("callers", []))
+                parents = _filter_null_collect(rec.get("parents", []))
+                owners = _filter_null_collect(rec.get("owners", []))
+                data = {
+                    "repo_id": repo_id,
+                    "file": rec.get("symbol_file", ""),
+                    "symbol": rec.get("symbol_name", query_target),
+                    "kind": rec.get("symbol_kind", ""),
+                    "signature": rec.get("signature", ""),
+                    "callers": callers if depth == "detailed" else callers[:3],
+                    "callees": callees if depth == "detailed" else callees[:3],
+                    "parents": parents,
+                    "owners": owners,
+                    "source": "neptune",
+                }
+                results.append(SearchHit(repo_name=repo_id, data=data))
+            return results
 
     return None  # Fall back
 
@@ -491,7 +552,13 @@ async def impact(
 async def _impact_via_neptune(
     repo_id: str, query_target: str, *, cross_repo: bool = False
 ) -> list[SearchHit] | None:
-    """Attempt impact analysis via Neptune. Returns None if Neptune unavailable."""
+    """Attempt impact analysis via Neptune. Returns None if Neptune unavailable.
+
+    Return semantics (Bug #1587 Fix — distinguish lookup miss from no callers):
+    - None: Neptune not available OR symbol not found in Neptune → trigger S3 fallback
+    - [] (empty list): symbol EXISTS in Neptune but has zero callers → true negative,
+      do NOT fall back. Response should report source="neptune", verdict="no_callers".
+    """
     from . import neptune_client
 
     if not neptune_client.neptune_enabled():
@@ -508,7 +575,6 @@ async def _impact_via_neptune(
         file_part, symbol_name = query_target.rsplit("::", 1)
     elif "/" in query_target:
         # File path — impact on a file means impact on all symbols in it
-        # For now, query Neptune for symbols in the file and aggregate callers
         file_part = query_target
         symbol_name = ""
     else:
@@ -520,7 +586,7 @@ async def _impact_via_neptune(
         # File-level impact: get symbols in file, then query callers for each
         file_symbols = neptune_client.query_file_symbols(repo_id, file_part)
         if not file_symbols:
-            return None  # Fall back
+            return None  # Fall back — file not in Neptune
 
         results: list[SearchHit] = []
         for sym in file_symbols[:10]:  # Cap at 10 symbols to avoid explosion
@@ -537,12 +603,58 @@ async def _impact_via_neptune(
                     "source": "neptune",
                 }
                 results.append(SearchHit(repo_name=rec.get("caller_repo", repo_id), data=data))
-        return results if results else None
+        # Return results (even empty []) — file exists in Neptune, this is authoritative
+        return results
 
-    # Symbol-level impact query (same-repo callers)
+    # --- Symbol-level impact ---
+    # First try direct query (works when file_part is non-empty or after #1587
+    # fix which handles empty file in query_impact)
     records = neptune_client.query_impact(repo_id, file_part, symbol_name)
-    if not records and not cross_repo:
-        return None  # Fall back
+
+    # If no results and file was empty, try resolve_symbol to find the file
+    if not records and not file_part:
+        resolved = neptune_client.resolve_symbol(repo_id, symbol_name)
+        if resolved:
+            # Re-query with the resolved file path for a precise match
+            file_part = resolved[0]["file"]
+            symbol_name = resolved[0]["name"]
+            records = neptune_client.query_impact(repo_id, file_part, symbol_name)
+
+    # Determine whether the symbol exists at all (distinguishes "not found" from "no callers")
+    if not records:
+        exists = neptune_client.symbol_exists(repo_id, file_part, symbol_name)
+        if not exists:
+            # Symbol not in Neptune at all → fall back to S3
+            log.debug(
+                "impact: symbol %s::%s not found in Neptune repo %s, falling back",
+                file_part,
+                symbol_name,
+                repo_id,
+            )
+            return None
+        # Symbol exists but has no callers — this is a true negative from Neptune.
+        # Return a metadata-only hit (NOT None, NOT empty []) so the server can
+        # correctly report source="neptune" and verdict="no_callers". Bug #1587.
+        log.debug(
+            "impact: symbol %s::%s exists in Neptune repo %s but has no callers",
+            file_part,
+            symbol_name,
+            repo_id,
+        )
+        # Return a sentinel hit that carries source="neptune" and a marker.
+        # The server's verdict logic will see blast_radius=0 + source="neptune"
+        # → verdict="no_callers" (not "symbol_not_found").
+        sentinel_data: dict[str, Any] = {
+            "repo_id": repo_id,
+            "file": file_part,
+            "symbol": symbol_name,
+            "kind": "",
+            "relationship": "none",
+            "target": f"{file_part}::{symbol_name}",
+            "source": "neptune",
+            "_neptune_no_callers": True,
+        }
+        return [SearchHit(repo_name=repo_id, data=sentinel_data)]
 
     results: list[SearchHit] = []
     for rec in records:
@@ -573,7 +685,7 @@ async def _impact_via_neptune(
             }
             results.append(SearchHit(repo_name=rec.get("calling_repo", ""), data=data))
 
-    return results if results else None
+    return results
 
 
 async def _impact_via_code_index(

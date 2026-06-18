@@ -107,13 +107,166 @@ def resolve_repo_name(repo: str) -> str:
                 # Multiple matches — prefer shortest (most specific)
                 best = min(matches, key=len)
                 _repo_name_cache[repo] = best
-                log.debug("Resolved repo '%s' → '%s' (from %d candidates)", repo, best, len(matches))
+                log.debug(
+                    "Resolved repo '%s' → '%s' (from %d candidates)", repo, best, len(matches)
+                )
                 return best
     except Exception:
         log.debug("Failed to resolve repo name '%s' via Neptune", repo)
 
     _repo_name_cache[repo] = repo  # Cache miss to avoid repeated queries
     return repo
+
+
+def resolve_symbol(
+    repo: str,
+    target: str,
+) -> list[dict[str, Any]]:
+    """Resolve a human-friendly target to Neptune Symbol node(s).
+
+    Agents and eval datasets pass targets like "main", "ContentRouter",
+    "cli/main", or "agent_reach.cli/main()." — none of which directly match
+    the stored (repo, file, name) triple. This function maps them.
+
+    Resolution strategies (tried in order):
+    1. Exact name match: MATCH (s:Symbol {repo, name: target})
+    2. Suffix/contains match: WHERE s.name CONTAINS target
+    3. File-stem interpretation: treat "module.sub/func" as file-path hint
+
+    Parameters
+    ----------
+    repo:
+        Repository identifier (already resolved via resolve_repo_name).
+    target:
+        Human-friendly symbol name, bare or with path hints.
+
+    Returns
+    -------
+    List of {name, file, kind, symbol_id} dicts (up to 10 matches).
+    Empty list if nothing found (caller distinguishes from no-callers).
+    """
+    driver = get_neptune_driver()
+    if not driver:
+        return []
+
+    # Clean target: strip trailing dots/parens (SCIP descriptor noise)
+    clean_target = target.rstrip("().")
+
+    # Strategy 1: Exact name match
+    cypher_exact = """
+        MATCH (s:Symbol {repo: $repo, name: $name})
+        RETURN s.name AS name, s.file AS file, s.kind AS kind,
+               s.symbol_id AS symbol_id
+        LIMIT 10
+    """
+    try:
+        with driver.session() as session:
+            result = session.run(cypher_exact, {"repo": repo, "name": clean_target})
+            records = [dict(r) for r in result]
+            if records:
+                return records
+    except Exception:
+        log.debug("resolve_symbol exact match failed for %s in %s", target, repo)
+
+    # Strategy 2: Case-insensitive contains match (for partial names)
+    cypher_contains = """
+        MATCH (s:Symbol {repo: $repo})
+        WHERE toLower(s.name) CONTAINS toLower($name)
+        RETURN s.name AS name, s.file AS file, s.kind AS kind,
+               s.symbol_id AS symbol_id
+        ORDER BY size(s.name) ASC
+        LIMIT 10
+    """
+    try:
+        with driver.session() as session:
+            result = session.run(cypher_contains, {"repo": repo, "name": clean_target})
+            records = [dict(r) for r in result]
+            if records:
+                return records
+    except Exception:
+        log.debug("resolve_symbol contains match failed for %s in %s", target, repo)
+
+    # Strategy 3: If target has "/" or ".", try interpreting as module path
+    # e.g. "agent_reach.cli/main" → file contains "agent_reach/cli" + name="main"
+    if "/" in target or "." in target:
+        # Split on last "/" to get (path_hint, symbol_hint)
+        if "/" in target:
+            path_hint, symbol_hint = target.rsplit("/", 1)
+        else:
+            path_hint, symbol_hint = target.rsplit(".", 1)
+        # Convert dots to path separators for file matching
+        file_hint = path_hint.replace(".", "/")
+        symbol_hint = symbol_hint.rstrip("().")
+
+        if symbol_hint:
+            cypher_path = """
+                MATCH (s:Symbol {repo: $repo})
+                WHERE s.file CONTAINS $file_hint AND s.name = $name
+                RETURN s.name AS name, s.file AS file, s.kind AS kind,
+                       s.symbol_id AS symbol_id
+                LIMIT 10
+            """
+            try:
+                with driver.session() as session:
+                    result = session.run(
+                        cypher_path,
+                        {"repo": repo, "file_hint": file_hint, "name": symbol_hint},
+                    )
+                    records = [dict(r) for r in result]
+                    if records:
+                        return records
+            except Exception:
+                log.debug("resolve_symbol path match failed for %s in %s", target, repo)
+
+    return []
+
+
+def symbol_exists(repo: str, file: str, symbol_name: str) -> bool:
+    """Check whether a symbol exists in Neptune (without querying callers).
+
+    Used to distinguish "symbol not found" (lookup miss) from "symbol found
+    but has no callers" (true negative).
+
+    Parameters
+    ----------
+    repo:
+        Repository identifier.
+    file:
+        File path (may be empty for name-only lookup).
+    symbol_name:
+        Symbol name.
+
+    Returns
+    -------
+    True if at least one matching Symbol node exists.
+    """
+    driver = get_neptune_driver()
+    if not driver:
+        return False
+
+    if file:
+        cypher = """
+            MATCH (s:Symbol {repo: $repo, file: $file, name: $name})
+            RETURN count(s) > 0 AS exists
+            LIMIT 1
+        """
+        params: dict[str, str] = {"repo": repo, "file": file, "name": symbol_name}
+    else:
+        cypher = """
+            MATCH (s:Symbol {repo: $repo, name: $name})
+            RETURN count(s) > 0 AS exists
+            LIMIT 1
+        """
+        params = {"repo": repo, "name": symbol_name}
+
+    try:
+        with driver.session() as session:
+            result = session.run(cypher, params)
+            record = result.single()
+            return bool(record and record["exists"])
+    except Exception:
+        log.debug("symbol_exists check failed for %s::%s in %s", file, symbol_name, repo)
+        return False
 
 
 def query_impact(
@@ -126,12 +279,14 @@ def query_impact(
     Uses bounded variable-length path [:CALLS*1..4], capped at 100 results,
     ordered by distance (closest callers first).
 
+    When file is empty, matches by repo+name only (allows bare symbol queries).
+
     Parameters
     ----------
     repo:
         Repository identifier (e.g. "org/repo").
     file:
-        File path within the repo.
+        File path within the repo. If empty, matches any file.
     symbol_name:
         Symbol name to find callers of.
 
@@ -144,18 +299,34 @@ def query_impact(
     if not driver:
         return []
 
-    cypher = """
-        MATCH (target:Symbol {repo: $repo, file: $file, name: $symbol_name})
-        WITH target
-        MATCH path = (caller:Symbol)-[:CALLS*1..4]->(target)
-        WHERE caller <> target
-        RETURN caller.repo AS caller_repo, caller.file AS caller_file,
-               caller.name AS caller_name, caller.kind AS caller_kind,
-               length(path) AS distance
-        ORDER BY distance ASC, caller_repo, caller_file
-        LIMIT 100
-    """
-    params = {"repo": repo, "file": file, "symbol_name": symbol_name}
+    # When file is empty, omit it from the property match to avoid matching
+    # only symbols with a literal empty-string file property (Bug #1587 Fix 1).
+    if file:
+        cypher = """
+            MATCH (target:Symbol {repo: $repo, file: $file, name: $symbol_name})
+            WITH target
+            MATCH path = (caller:Symbol)-[:CALLS*1..4]->(target)
+            WHERE caller <> target
+            RETURN caller.repo AS caller_repo, caller.file AS caller_file,
+                   caller.name AS caller_name, caller.kind AS caller_kind,
+                   length(path) AS distance
+            ORDER BY distance ASC, caller_repo, caller_file
+            LIMIT 100
+        """
+        params: dict[str, str] = {"repo": repo, "file": file, "symbol_name": symbol_name}
+    else:
+        cypher = """
+            MATCH (target:Symbol {repo: $repo, name: $symbol_name})
+            WITH target
+            MATCH path = (caller:Symbol)-[:CALLS*1..4]->(target)
+            WHERE caller <> target
+            RETURN caller.repo AS caller_repo, caller.file AS caller_file,
+                   caller.name AS caller_name, caller.kind AS caller_kind,
+                   length(path) AS distance
+            ORDER BY distance ASC, caller_repo, caller_file
+            LIMIT 100
+        """
+        params = {"repo": repo, "symbol_name": symbol_name}
 
     try:
         with driver.session() as session:
@@ -183,12 +354,15 @@ def query_understand(
     Returns the symbol plus its callers, callees, parents (inheritance),
     and owners (class membership).
 
+    When file is empty, matches by repo+name only (allows bare symbol queries
+    without knowing the exact file path). Bug #1587 Fix 1.
+
     Parameters
     ----------
     repo:
         Repository identifier.
     file:
-        File path within the repo.
+        File path within the repo. If empty, matches any file.
     symbol_name:
         Symbol name to understand.
 
@@ -202,21 +376,40 @@ def query_understand(
     if not driver:
         return []
 
-    cypher = """
-        MATCH (s:Symbol {repo: $repo, file: $file, name: $symbol_name})
-        OPTIONAL MATCH (s)-[:CALLS]->(callee:Symbol)
-        OPTIONAL MATCH (caller:Symbol)-[:CALLS]->(s)
-        OPTIONAL MATCH (s)-[:INHERITS]->(parent:Symbol)
-        OPTIONAL MATCH (s)-[:MEMBER_OF]->(owner:Symbol)
-        RETURN s.name AS symbol_name, s.kind AS symbol_kind, s.file AS symbol_file,
-               s.signature AS signature,
-               collect(DISTINCT {name: callee.name, file: callee.file, kind: callee.kind}) AS callees,
-               collect(DISTINCT {name: caller.name, file: caller.file, kind: caller.kind}) AS callers,
-               collect(DISTINCT {name: parent.name, file: parent.file}) AS parents,
-               collect(DISTINCT {name: owner.name, file: owner.file}) AS owners
-        LIMIT 50
-    """
-    params = {"repo": repo, "file": file, "symbol_name": symbol_name}
+    # When file is empty, omit it from the property match to avoid matching
+    # only symbols with a literal empty-string file (Bug #1587 Fix 1).
+    if file:
+        cypher = """
+            MATCH (s:Symbol {repo: $repo, file: $file, name: $symbol_name})
+            OPTIONAL MATCH (s)-[:CALLS]->(callee:Symbol)
+            OPTIONAL MATCH (caller:Symbol)-[:CALLS]->(s)
+            OPTIONAL MATCH (s)-[:INHERITS]->(parent:Symbol)
+            OPTIONAL MATCH (s)-[:MEMBER_OF]->(owner:Symbol)
+            RETURN s.name AS symbol_name, s.kind AS symbol_kind, s.file AS symbol_file,
+                   s.signature AS signature,
+                   collect(DISTINCT {name: callee.name, file: callee.file, kind: callee.kind}) AS callees,
+                   collect(DISTINCT {name: caller.name, file: caller.file, kind: caller.kind}) AS callers,
+                   collect(DISTINCT {name: parent.name, file: parent.file}) AS parents,
+                   collect(DISTINCT {name: owner.name, file: owner.file}) AS owners
+            LIMIT 50
+        """
+        params: dict[str, str] = {"repo": repo, "file": file, "symbol_name": symbol_name}
+    else:
+        cypher = """
+            MATCH (s:Symbol {repo: $repo, name: $symbol_name})
+            OPTIONAL MATCH (s)-[:CALLS]->(callee:Symbol)
+            OPTIONAL MATCH (caller:Symbol)-[:CALLS]->(s)
+            OPTIONAL MATCH (s)-[:INHERITS]->(parent:Symbol)
+            OPTIONAL MATCH (s)-[:MEMBER_OF]->(owner:Symbol)
+            RETURN s.name AS symbol_name, s.kind AS symbol_kind, s.file AS symbol_file,
+                   s.signature AS signature,
+                   collect(DISTINCT {name: callee.name, file: callee.file, kind: callee.kind}) AS callees,
+                   collect(DISTINCT {name: caller.name, file: caller.file, kind: caller.kind}) AS callers,
+                   collect(DISTINCT {name: parent.name, file: parent.file}) AS parents,
+                   collect(DISTINCT {name: owner.name, file: owner.file}) AS owners
+            LIMIT 50
+        """
+        params = {"repo": repo, "symbol_name": symbol_name}
 
     try:
         with driver.session() as session:

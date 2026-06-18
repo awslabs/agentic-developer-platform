@@ -500,7 +500,13 @@ async def _handle_impact(
     # ACL filter
     filtered = _apply_acl(hits, caller)
 
-    affected = [hit.data for hit in filtered]
+    all_data = [hit.data for hit in filtered]
+
+    # Separate real results from Neptune "no callers" sentinel (Bug #1587 Fix 2).
+    # The sentinel carries _neptune_no_callers=True and is used only for source
+    # attribution — it's not a real caller and should not be shown to the user.
+    affected = [d for d in all_data if not d.get("_neptune_no_callers")]
+    has_neptune_sentinel = any(d.get("_neptune_no_callers") for d in all_data)
 
     # Per-repo attribution: group results by repo
     repos_affected: dict[str, int] = {}
@@ -508,14 +514,28 @@ async def _handle_impact(
         repo = item.get("repo_id", "unknown")
         repos_affected[repo] = repos_affected.get(repo, 0) + 1
 
-    # Determine source (neptune vs code-index-fallback)
+    # Determine source (neptune vs code-index-fallback).
+    # Bug #1587 Fix 2: use the sentinel to correctly attribute source="neptune"
+    # even when no real callers were found (symbol exists, zero callers).
     sources = {item.get("source", "unknown") for item in affected}
-    source = "neptune" if "neptune" in sources else "code-index-fallback" if sources else "none"
+    if sources:
+        source = "neptune" if "neptune" in sources else "code-index-fallback"
+    elif has_neptune_sentinel:
+        source = "neptune"
+    else:
+        source = "none"
 
-    # Verdict: how severe is the blast radius
+    # Verdict: how severe is the blast radius.
+    # Bug #1587 Fix 2: distinguish "no_callers" (symbol found, zero callers)
+    # from "symbol_not_found" (lookup miss — couldn't resolve target).
     blast_radius = len(affected)
     if blast_radius == 0:
-        verdict = "no_callers"
+        if source == "none":
+            # Couldn't find the symbol in any backend
+            verdict = "symbol_not_found"
+        else:
+            # Backend found the symbol but it has zero callers (true negative)
+            verdict = "no_callers"
     elif len(repos_affected) > 1:
         verdict = "cross_repo_impact"
     elif blast_radius > 20:
