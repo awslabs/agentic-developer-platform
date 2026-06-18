@@ -2,7 +2,13 @@
 # Exposes 6 tools (search, understand, impact, browse, remember, experience)
 # at context-mcp.agent-context.svc.cluster.local:5100.
 #
-# Issue: #1417  Parent: #1345
+# Endpoints:
+#   POST /mcp   — Native MCP (Streamable HTTP, JSON-RPC 2.0) for MCP clients (#1602)
+#   GET  /tools — Legacy REST tool listing (backward-compat)
+#   POST /call  — Legacy REST tool invocation (backward-compat)
+#   GET  /health — Health/readiness probe
+#
+# Issue: #1417, #1602  Parent: #1345
 # Design: docs/knowledge-layer-storage-design.md (§6 read path, §12 structural tier)
 ---
 apiVersion: apps/v1

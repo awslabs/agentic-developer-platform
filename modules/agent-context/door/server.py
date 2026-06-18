@@ -300,7 +300,10 @@ async def call_tool(request: Request) -> Response:
         )
 
     # Extract caller principal from headers (for ACL)
-    headers = dict(request.headers)
+    # Uses shared helper for parity with MCP path (Issue #1602, I1)
+    from .mcp_app import _extract_headers
+
+    headers = _extract_headers(request)
     caller = extract_caller_principal(headers)
 
     # Route to verb handler
@@ -699,3 +702,14 @@ def _file_relevance_score(file_path: str, query: str) -> int:
                 return 50
 
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Mount native MCP (Streamable HTTP) sub-app — Issue #1602
+# ---------------------------------------------------------------------------
+# Placed at module bottom to avoid circular import: mcp_app imports TOOLS and
+# _dispatch_tool from this module, so this module must be fully defined first.
+
+from .mcp_app import get_mcp_app  # noqa: E402
+
+app.mount("/mcp", get_mcp_app())
