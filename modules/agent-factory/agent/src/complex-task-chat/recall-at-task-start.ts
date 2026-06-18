@@ -38,10 +38,11 @@ const RECALL_TIMEOUT_MS = Number(process.env.PERSONAL_CONTEXT_RECALL_TIMEOUT_MS 
 
 /**
  * Context MCP Server URL. Internal K8s service address.
+ * Canonical: context-mcp.agent-context.svc.cluster.local:5100
  */
 const CONTEXT_MCP_URL =
   process.env.CONTEXT_MCP_SERVER_URL ??
-  'http://context-mcp-server.agent-context.svc.cluster.local:8080';
+  'http://context-mcp.agent-context.svc.cluster.local:5100';
 
 /**
  * Maximum number of recall results to request.
