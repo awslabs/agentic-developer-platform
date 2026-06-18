@@ -1,6 +1,6 @@
 # Context MCP Server — verb surface for the Knowledge layer (:5100)
 # Issue: #1417
-FROM python:3.11-slim
+FROM public.ecr.aws/docker/library/python:3.13-slim
 
 WORKDIR /app
 
