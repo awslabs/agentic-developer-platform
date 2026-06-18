@@ -1,7 +1,7 @@
-import { unstable_v2_createSession, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { execSync } from 'child_process';
 import { IssueContext, Plan, PlanStep } from '../types';
 import { Logger } from './Logger';
+import { resilientQuery, SDKStreamMessage } from '../utils/resilientQuery';
 
 interface ContentBlock {
   type: string;
@@ -39,32 +39,33 @@ export class PlanningAgent {
       ? this.buildRevisionPrompt(issueContext, feedback!, previousPlan!, repoContext)
       : this.buildPlanningPrompt(issueContext, repoContext);
     
-    const session = unstable_v2_createSession({
-      model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929',
-    });
-
-    try {
-      await session.send(prompt);
-      
-      let response = '';
-      for await (const msg of session.stream()) {
-        if (msg.type === 'assistant') {
-          response += this.extractText(msg);
-        }
+    let response = '';
+    for await (const msg of resilientQuery({
+      queryParams: {
+        prompt,
+        options: {
+          model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929',
+          maxTurns: 1,
+          permissionMode: 'plan',
+        },
+      },
+      maxRetries: 3,
+      log: (logMsg) => this.logger.info(logMsg, { component: 'PlanningAgent' }),
+    })) {
+      if (msg.type === 'assistant') {
+        response += this.extractText(msg);
       }
-
-      const plan = this.parsePlanResponse(response);
-      console.log(`\n✅ Plan ${isRevision ? 'revised' : 'generated'} with ${plan.steps.length} steps:`);
-      plan.steps.forEach((step, i) => {
-        console.log(`   ${i + 1}. ${step.description.substring(0, 80)}${step.description.length > 80 ? '...' : ''}`);
-      });
-      console.log(`\n📁 Files to create/modify: ${plan.estimatedFiles.join(', ') || 'TBD'}\n`);
-      
-      this.logger.info('Plan generated', { component: 'PlanningAgent', steps: plan.steps.length, isRevision });
-      return plan;
-    } finally {
-      session.close();
     }
+
+    const plan = this.parsePlanResponse(response);
+    console.log(`\n✅ Plan ${isRevision ? 'revised' : 'generated'} with ${plan.steps.length} steps:`);
+    plan.steps.forEach((step, i) => {
+      console.log(`   ${i + 1}. ${step.description.substring(0, 80)}${step.description.length > 80 ? '...' : ''}`);
+    });
+    console.log(`\n📁 Files to create/modify: ${plan.estimatedFiles.join(', ') || 'TBD'}\n`);
+
+    this.logger.info('Plan generated', { component: 'PlanningAgent', steps: plan.steps.length, isRevision });
+    return plan;
   }
 
   private scanRepository(workDir: string): { structure: string; fileCount: number } {
@@ -199,7 +200,7 @@ Respond with a JSON object in this exact format:
 Do NOT include blockers unless there are genuine technical blockers.`;
   }
 
-  private extractText(msg: SDKMessage): string {
+  private extractText(msg: SDKStreamMessage): string {
     if (msg.type === 'assistant' && msg.message?.content) {
       return (msg.message.content as ContentBlock[])
         .filter((block: ContentBlock): block is ContentBlock & { text: string } => block.type === 'text' && typeof block.text === 'string')
