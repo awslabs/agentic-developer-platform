@@ -639,10 +639,11 @@ Neptune's openCypher implementation differs from Neo4j Cypher. Key points for ou
 | Schema constraints | **NO** | YES | Uniqueness via `~id` only (Bulk Loader) |
 | CREATE INDEX | **NO** (automatic) | YES | Neptune auto-indexes; no manual DDL |
 | MERGE (upsert) | YES (limited) | YES | Not used (bulk load handles upserts) |
-| Map literals in RETURN | YES | YES | Used in understand query |
+| Map literals in RETURN | YES (simple) | YES | Simple `RETURN {k: v}` works |
+| Map literals inside collect() | **NO** | YES | `collect({k: v})` crashes Neptune (Bug #1611); use collect(node) + Python projection |
 | Pattern comprehension | YES (1.4+) | YES | Available if needed |
 
-**Our queries validated**: All openCypher patterns used in impact/understand/cross-repo queries are within Neptune's supported subset.
+**Our queries validated**: All openCypher patterns used in impact/understand/cross-repo queries are within Neptune's supported subset. NOTE: inline map literals inside aggregate functions (e.g. `collect(DISTINCT {name: n.name})`) are NOT supported by Neptune and will terminate the connection with an internal error (Bug #1611). Always collect node references and project properties client-side.
 
 ---
 

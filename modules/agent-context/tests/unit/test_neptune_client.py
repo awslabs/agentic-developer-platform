@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # neptune_enabled tests
@@ -150,7 +152,7 @@ class TestQueryImpact:
         assert result[1]["caller_name"] == "start_app"
         assert result[1]["distance"] == 2
 
-    def test_returns_empty_on_exception(self):
+    def test_raises_neptune_query_error_on_exception(self):
         mock_driver = MagicMock()
         mock_session = MagicMock()
         mock_session.run.side_effect = RuntimeError("Neptune timeout")
@@ -158,10 +160,10 @@ class TestQueryImpact:
         mock_driver.session.return_value.__exit__ = lambda s, *a: None
 
         with patch("door.neptune_client.get_neptune_driver", return_value=mock_driver):
-            from door.neptune_client import query_impact
+            from door.neptune_client import NeptuneQueryError, query_impact
 
-            result = query_impact("org/repo", "src/api.py", "handle_request")
-            assert result == []
+            with pytest.raises(NeptuneQueryError):
+                query_impact("org/repo", "src/api.py", "handle_request")
 
     def test_query_uses_correct_parameters(self):
         mock_driver = MagicMock()
@@ -203,16 +205,32 @@ class TestQueryUnderstand:
     def test_returns_neighborhood(self):
         mock_driver = MagicMock()
         mock_session = MagicMock()
+
+        # Bug #1611: query_understand now collects Node objects, not inline maps.
+        # Simulate neo4j Node objects with .get() method.
+        callee_node = MagicMock()
+        callee_node.get = lambda k: {
+            "name": "socket_open",
+            "file": "src/net.py",
+            "kind": "function",
+        }.get(k)
+        caller_node = MagicMock()
+        caller_node.get = lambda k: {"name": "main", "file": "src/app.py", "kind": "function"}.get(
+            k
+        )
+        owner_node = MagicMock()
+        owner_node.get = lambda k: {"name": "Database", "file": "src/db.py"}.get(k)
+
         mock_records = [
             {
                 "symbol_name": "connect",
                 "symbol_kind": "function",
                 "symbol_file": "src/db.py",
                 "signature": "def connect(host: str) -> Connection",
-                "callees": [{"name": "socket_open", "file": "src/net.py", "kind": "function"}],
-                "callers": [{"name": "main", "file": "src/app.py", "kind": "function"}],
-                "parents": [],
-                "owners": [{"name": "Database", "file": "src/db.py"}],
+                "callee_nodes": [callee_node],
+                "caller_nodes": [caller_node],
+                "parent_nodes": [],
+                "owner_nodes": [owner_node],
             }
         ]
         mock_result = MagicMock()
@@ -234,7 +252,7 @@ class TestQueryUnderstand:
         assert len(result[0]["callers"]) == 1
         assert len(result[0]["owners"]) == 1
 
-    def test_returns_empty_on_exception(self):
+    def test_raises_neptune_query_error_on_exception(self):
         mock_driver = MagicMock()
         mock_session = MagicMock()
         mock_session.run.side_effect = RuntimeError("connection refused")
@@ -242,10 +260,10 @@ class TestQueryUnderstand:
         mock_driver.session.return_value.__exit__ = lambda s, *a: None
 
         with patch("door.neptune_client.get_neptune_driver", return_value=mock_driver):
-            from door.neptune_client import query_understand
+            from door.neptune_client import NeptuneQueryError, query_understand
 
-            result = query_understand("org/repo", "src/db.py", "connect")
-            assert result == []
+            with pytest.raises(NeptuneQueryError):
+                query_understand("org/repo", "src/db.py", "connect")
 
 
 # ---------------------------------------------------------------------------

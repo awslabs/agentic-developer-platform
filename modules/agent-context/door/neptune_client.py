@@ -16,6 +16,17 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+
+class NeptuneQueryError(Exception):
+    """Raised when a Neptune query fails due to a server/protocol error.
+
+    Distinct from an empty result set. Callers can catch this to distinguish
+    "query crashed" from "no data found" and log/alert appropriately.
+    """
+
+    pass
+
+
 _driver = None
 _repo_name_cache: dict[str, str] = {}  # short-name → org/repo mapping
 
@@ -333,15 +344,32 @@ def query_impact(
             result = session.run(cypher, params)
             records = [dict(record) for record in result]
             return records
-    except Exception:
-        log.warning(
-            "Neptune impact query failed for %s::%s in %s",
+    except Exception as exc:
+        log.error(
+            "Neptune impact query FAILED for %s::%s in %s",
             file,
             symbol_name,
             repo,
             exc_info=True,
         )
-        return []
+        raise NeptuneQueryError(
+            f"Neptune impact query failed for {file}::{symbol_name} in {repo}"
+        ) from exc
+
+
+def _nodes_to_dicts(nodes: list, keys: list[str]) -> list[dict[str, Any]]:
+    """Project node properties to dicts for collected Neptune nodes.
+
+    Neptune's collect(DISTINCT node) returns Node objects (or None for
+    unmatched OPTIONAL MATCH). This projects them to plain dicts with the
+    specified keys — the same shape the old collect({map}) was intended to
+    produce, but without triggering Neptune's inline-map-in-aggregate crash.
+
+    Bug #1611: Neptune openCypher rejects collect(DISTINCT {inline map literal})
+    with 'Operation terminated (internal error)'. This function is the
+    Python-side projection that replaces the server-side map construction.
+    """
+    return [{k: n.get(k) for k in keys} for n in nodes if n is not None]
 
 
 def query_understand(
@@ -357,6 +385,11 @@ def query_understand(
     When file is empty, matches by repo+name only (allows bare symbol queries
     without knowing the exact file path). Bug #1587 Fix 1.
 
+    Uses WITH-chaining to collect each relationship independently, avoiding
+    cartesian products between OPTIONAL MATCHes. Collects node references
+    (not inline maps) because Neptune openCypher rejects
+    collect(DISTINCT {inline map literal}) with a server error. Bug #1611.
+
     Parameters
     ----------
     repo:
@@ -370,7 +403,12 @@ def query_understand(
     -------
     List of result dicts (typically one row per matched symbol) with keys:
     symbol_name, symbol_kind, symbol_file, signature, callees, callers,
-    parents, owners. Empty list on error or no results.
+    parents, owners.
+
+    Raises
+    ------
+    NeptuneQueryError
+        When the query fails due to a server/protocol error.
     """
     driver = get_neptune_driver()
     if not driver:
@@ -378,19 +416,26 @@ def query_understand(
 
     # When file is empty, omit it from the property match to avoid matching
     # only symbols with a literal empty-string file (Bug #1587 Fix 1).
+    #
+    # Bug #1611 fix: use WITH-chaining + collect(DISTINCT node) instead of
+    # collect(DISTINCT {inline map}). Neptune openCypher does not support
+    # inline map literals inside aggregate functions — it terminates the
+    # connection with "Operation terminated (internal error)".
+    # The node properties are projected to dicts in Python via _nodes_to_dicts.
     if file:
         cypher = """
             MATCH (s:Symbol {repo: $repo, file: $file, name: $symbol_name})
             OPTIONAL MATCH (s)-[:CALLS]->(callee:Symbol)
+            WITH s, collect(DISTINCT callee) AS callee_nodes
             OPTIONAL MATCH (caller:Symbol)-[:CALLS]->(s)
+            WITH s, callee_nodes, collect(DISTINCT caller) AS caller_nodes
             OPTIONAL MATCH (s)-[:INHERITS]->(parent:Symbol)
+            WITH s, callee_nodes, caller_nodes, collect(DISTINCT parent) AS parent_nodes
             OPTIONAL MATCH (s)-[:MEMBER_OF]->(owner:Symbol)
             RETURN s.name AS symbol_name, s.kind AS symbol_kind, s.file AS symbol_file,
                    s.signature AS signature,
-                   collect(DISTINCT {name: callee.name, file: callee.file, kind: callee.kind}) AS callees,
-                   collect(DISTINCT {name: caller.name, file: caller.file, kind: caller.kind}) AS callers,
-                   collect(DISTINCT {name: parent.name, file: parent.file}) AS parents,
-                   collect(DISTINCT {name: owner.name, file: owner.file}) AS owners
+                   callee_nodes, caller_nodes, parent_nodes,
+                   collect(DISTINCT owner) AS owner_nodes
             LIMIT 50
         """
         params: dict[str, str] = {"repo": repo, "file": file, "symbol_name": symbol_name}
@@ -398,15 +443,16 @@ def query_understand(
         cypher = """
             MATCH (s:Symbol {repo: $repo, name: $symbol_name})
             OPTIONAL MATCH (s)-[:CALLS]->(callee:Symbol)
+            WITH s, collect(DISTINCT callee) AS callee_nodes
             OPTIONAL MATCH (caller:Symbol)-[:CALLS]->(s)
+            WITH s, callee_nodes, collect(DISTINCT caller) AS caller_nodes
             OPTIONAL MATCH (s)-[:INHERITS]->(parent:Symbol)
+            WITH s, callee_nodes, caller_nodes, collect(DISTINCT parent) AS parent_nodes
             OPTIONAL MATCH (s)-[:MEMBER_OF]->(owner:Symbol)
             RETURN s.name AS symbol_name, s.kind AS symbol_kind, s.file AS symbol_file,
                    s.signature AS signature,
-                   collect(DISTINCT {name: callee.name, file: callee.file, kind: callee.kind}) AS callees,
-                   collect(DISTINCT {name: caller.name, file: caller.file, kind: caller.kind}) AS callers,
-                   collect(DISTINCT {name: parent.name, file: parent.file}) AS parents,
-                   collect(DISTINCT {name: owner.name, file: owner.file}) AS owners
+                   callee_nodes, caller_nodes, parent_nodes,
+                   collect(DISTINCT owner) AS owner_nodes
             LIMIT 50
         """
         params = {"repo": repo, "symbol_name": symbol_name}
@@ -414,17 +460,31 @@ def query_understand(
     try:
         with driver.session() as session:
             result = session.run(cypher, params)
-            records = [dict(record) for record in result]
+            records = []
+            for record in result:
+                row = dict(record)
+                # Project collected nodes to dicts (Bug #1611 fix)
+                row["callees"] = _nodes_to_dicts(
+                    row.pop("callee_nodes", []), ["name", "file", "kind"]
+                )
+                row["callers"] = _nodes_to_dicts(
+                    row.pop("caller_nodes", []), ["name", "file", "kind"]
+                )
+                row["parents"] = _nodes_to_dicts(row.pop("parent_nodes", []), ["name", "file"])
+                row["owners"] = _nodes_to_dicts(row.pop("owner_nodes", []), ["name", "file"])
+                records.append(row)
             return records
-    except Exception:
-        log.warning(
-            "Neptune understand query failed for %s::%s in %s",
+    except Exception as exc:
+        log.error(
+            "Neptune understand query FAILED for %s::%s in %s",
             file,
             symbol_name,
             repo,
             exc_info=True,
         )
-        return []
+        raise NeptuneQueryError(
+            f"Neptune understand query failed for {file}::{symbol_name} in {repo}"
+        ) from exc
 
 
 def query_repo_topology(repo: str) -> list[dict[str, Any]]:

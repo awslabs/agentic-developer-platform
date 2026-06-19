@@ -173,8 +173,12 @@ async def _understand_via_neptune(
     Returns a list of SearchHit on success, or None to signal fallback.
     None means "Neptune doesn't have this data, try S3 fallback."
     Empty list [] means "Neptune handled it but found nothing" (no fallback needed).
+
+    Catches NeptuneQueryError and falls back to S3 (returns None) so that
+    query failures don't crash the verb handler. Bug #1611.
     """
     from . import neptune_client
+    from .neptune_client import NeptuneQueryError
 
     if not neptune_client.neptune_enabled():
         return None
@@ -184,6 +188,22 @@ async def _understand_via_neptune(
 
     # Resolve short repo name to full org/repo format for Neptune queries
     repo_id = neptune_client.resolve_repo_name(repo_id)
+
+    try:
+        return _understand_neptune_inner(neptune_client, repo_id, query_target, depth)
+    except NeptuneQueryError:
+        log.error(
+            "Neptune understand query error for %s / %s — falling back to S3",
+            repo_id,
+            query_target,
+        )
+        return None
+
+
+def _understand_neptune_inner(
+    neptune_client: Any, repo_id: str, query_target: str, depth: str
+) -> list[SearchHit] | None:
+    """Inner logic for _understand_via_neptune (separated for NeptuneQueryError handling)."""
 
     results: list[SearchHit] = []
 
@@ -558,8 +578,12 @@ async def _impact_via_neptune(
     - None: Neptune not available OR symbol not found in Neptune → trigger S3 fallback
     - [] (empty list): symbol EXISTS in Neptune but has zero callers → true negative,
       do NOT fall back. Response should report source="neptune", verdict="no_callers".
+
+    Catches NeptuneQueryError and falls back to S3 (returns None) so that
+    query failures don't crash the verb handler. Bug #1611.
     """
     from . import neptune_client
+    from .neptune_client import NeptuneQueryError
 
     if not neptune_client.neptune_enabled():
         return None
@@ -569,6 +593,26 @@ async def _impact_via_neptune(
 
     # Resolve short repo name to full org/repo format for Neptune queries
     repo_id = neptune_client.resolve_repo_name(repo_id)
+
+    try:
+        return _impact_neptune_inner(neptune_client, repo_id, query_target, cross_repo=cross_repo)
+    except NeptuneQueryError:
+        log.error(
+            "Neptune impact query error for %s / %s — falling back to S3",
+            repo_id,
+            query_target,
+        )
+        return None
+
+
+def _impact_neptune_inner(
+    neptune_client: Any,
+    repo_id: str,
+    query_target: str,
+    *,
+    cross_repo: bool = False,
+) -> list[SearchHit] | None:
+    """Inner logic for _impact_via_neptune (separated for NeptuneQueryError handling)."""
 
     # Parse symbol reference
     if "::" in query_target:
