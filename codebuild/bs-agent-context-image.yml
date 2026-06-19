@@ -26,19 +26,48 @@ phases:
       # The ingestion image needs alembic/ from the module root for in-cluster
       # migration Jobs (#1437). The context-mcp image needs door/ and
       # personal_context/ from the module root (#1489).
+      #
+      # IMPORTANT: Remove any pre-existing staged dirs BEFORE cp -r.
+      # CodeBuild reuses build-host workspaces — if a prior build left
+      # ${BUILD_DIR}/door/ on disk, `cp -r src/door dst/door` (with dst
+      # existing) merges INTO the existing dir without overwriting files,
+      # leaving stale source that Docker then bakes. Fix: #1627.
       - |
         MODULE_ROOT="${BUILD_DIR%%/images/*}"
         if [ -d "${MODULE_ROOT}/alembic" ] && [ -d "${BUILD_DIR}" ]; then
+          rm -rf "${BUILD_DIR}/alembic"
           cp -r "${MODULE_ROOT}/alembic" "${BUILD_DIR}/alembic"
           echo "Staged ${MODULE_ROOT}/alembic → ${BUILD_DIR}/alembic"
         fi
         if [ -d "${MODULE_ROOT}/door" ] && [ -d "${BUILD_DIR}" ]; then
+          rm -rf "${BUILD_DIR}/door"
           cp -r "${MODULE_ROOT}/door" "${BUILD_DIR}/door"
           echo "Staged ${MODULE_ROOT}/door → ${BUILD_DIR}/door"
         fi
         if [ -d "${MODULE_ROOT}/personal_context" ] && [ -d "${BUILD_DIR}" ]; then
+          rm -rf "${BUILD_DIR}/personal_context"
           cp -r "${MODULE_ROOT}/personal_context" "${BUILD_DIR}/personal_context"
           echo "Staged ${MODULE_ROOT}/personal_context → ${BUILD_DIR}/personal_context"
+        fi
+      # Post-stage integrity assertion: fail loudly if staged source is stale.
+      # Catches workspace-reuse bugs before they silently ship a broken image.
+      - |
+        MODULE_ROOT="${BUILD_DIR%%/images/*}"
+        if [ -f "${BUILD_DIR}/door/neptune_client.py" ]; then
+          SOURCE_SIZE=$(wc -c < "${MODULE_ROOT}/door/neptune_client.py")
+          STAGED_SIZE=$(wc -c < "${BUILD_DIR}/door/neptune_client.py")
+          if [ "$SOURCE_SIZE" != "$STAGED_SIZE" ]; then
+            echo "FATAL: Staged door/neptune_client.py size ($STAGED_SIZE) != source ($SOURCE_SIZE). Stale workspace?" >&2
+            exit 1
+          fi
+        fi
+        if [ -d "${BUILD_DIR}/door" ]; then
+          SOURCE_COUNT=$(find "${MODULE_ROOT}/door" -type f | wc -l)
+          STAGED_COUNT=$(find "${BUILD_DIR}/door" -type f | wc -l)
+          if [ "$SOURCE_COUNT" != "$STAGED_COUNT" ]; then
+            echo "FATAL: Staged door/ file count ($STAGED_COUNT) != source ($SOURCE_COUNT). Stale workspace?" >&2
+            exit 1
+          fi
         fi
 
   build:
