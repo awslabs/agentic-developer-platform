@@ -6,12 +6,16 @@ unavailable or the model_pricing database table is empty. Prices are based
 on AWS Bedrock published rates.
 
 Issue #234: Budget Usage Tracking Lambda
+Issue #1486: Added cache_read_input/cache_creation_input rates and new model IDs
 
 Source: AWS Bedrock pricing page (https://aws.amazon.com/bedrock/pricing/)
 """
 
+import logging
 from decimal import Decimal
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Pricing per 1000 tokens (USD)
 # Source: AWS Bedrock pricing page
@@ -21,23 +25,53 @@ MODEL_PRICING: dict[str, dict[str, Decimal]] = {
     "anthropic.claude-3-5-sonnet-20241022-v2:0": {
         "input": Decimal("0.003"),
         "output": Decimal("0.015"),
+        "cache_read_input": Decimal("0.0003"),
+        "cache_creation_input": Decimal("0.00375"),
     },
     "anthropic.claude-3-5-haiku-20241022-v1:0": {
         "input": Decimal("0.0008"),
         "output": Decimal("0.004"),
+        "cache_read_input": Decimal("0.00008"),
+        "cache_creation_input": Decimal("0.001"),
     },
     # Claude 4 models (2025)
     "anthropic.claude-opus-4-20250514-v1:0": {
         "input": Decimal("0.015"),
         "output": Decimal("0.075"),
+        "cache_read_input": Decimal("0.0015"),
+        "cache_creation_input": Decimal("0.01875"),
     },
     "anthropic.claude-sonnet-4-20250514-v1:0": {
         "input": Decimal("0.003"),
         "output": Decimal("0.015"),
+        "cache_read_input": Decimal("0.0003"),
+        "cache_creation_input": Decimal("0.00375"),
     },
     "anthropic.claude-haiku-4-20250514-v1:0": {
         "input": Decimal("0.0008"),
         "output": Decimal("0.004"),
+        "cache_read_input": Decimal("0.00008"),
+        "cache_creation_input": Decimal("0.001"),
+    },
+    # Claude 4.x updated models (2025-2026) — Issue #1486
+    # These use version-number naming (no date suffix)
+    "anthropic.claude-opus-4-6-v1": {
+        "input": Decimal("0.015"),
+        "output": Decimal("0.075"),
+        "cache_read_input": Decimal("0.0015"),
+        "cache_creation_input": Decimal("0.01875"),
+    },
+    "anthropic.claude-sonnet-4-6-v1": {
+        "input": Decimal("0.003"),
+        "output": Decimal("0.015"),
+        "cache_read_input": Decimal("0.0003"),
+        "cache_creation_input": Decimal("0.00375"),
+    },
+    "anthropic.claude-haiku-4-5-20251001-v1:0": {
+        "input": Decimal("0.0008"),
+        "output": Decimal("0.004"),
+        "cache_read_input": Decimal("0.00008"),
+        "cache_creation_input": Decimal("0.001"),
     },
     # Claude 3 models
     "anthropic.claude-3-opus-20240229-v1:0": {
@@ -213,6 +247,7 @@ def get_model_pricing(model_id: str) -> dict[str, Decimal]:
 
     Returns:
         Dict with 'input' and 'output' prices per 1000 tokens
+        (may also include 'cache_read_input' and 'cache_creation_input')
     """
     resolved_id = resolve_model_id(model_id)
 
@@ -225,7 +260,34 @@ def get_model_pricing(model_id: str) -> dict[str, Decimal]:
         if key.lower() == model_lower:
             return MODEL_PRICING[key]
 
-    # Return default pricing for unknown models
+    # Issue #1486: Unknown model — log a WARNING so this is observable.
+    # Previously this was silent, causing Opus 4.6 to be priced as Sonnet.
+    logger.warning(
+        "Unknown model '%s' (resolved: '%s') — using default pricing. Add this model to MODEL_PRICING in pricing_fallback.py.",
+        model_id,
+        resolved_id,
+    )
+    # Emit a CloudWatch metric for alerting
+    try:
+        import boto3
+
+        cloudwatch = boto3.client("cloudwatch")
+        cloudwatch.put_metric_data(
+            Namespace="ADP/Gateway",
+            MetricData=[
+                {
+                    "MetricName": "UnknownModelPricing",
+                    "Value": 1,
+                    "Unit": "Count",
+                    "Dimensions": [
+                        {"Name": "ModelId", "Value": resolved_id},
+                    ],
+                }
+            ],
+        )
+    except Exception:
+        pass  # Best-effort metric; don't fail pricing on CW issues
+
     return MODEL_PRICING["default"]
 
 
@@ -234,15 +296,25 @@ def calculate_cost(
     input_tokens: int,
     output_tokens: int,
     pricing_table: dict[str, Any] | None = None,
+    cache_read_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
 ) -> Decimal:
     """
-    Calculate total cost for a request.
+    Calculate total cost for a request including prompt-cache token costs.
+
+    Issue #1486: Added cache_read_input_tokens and cache_creation_input_tokens
+    parameters. Per AWS Bedrock prompt-caching docs:
+    - cache_read is charged at ~0.1x the input rate
+    - cache_creation is charged at ~1.25x the input rate
+    - total input tokens = input_tokens + cache_read + cache_creation
 
     Args:
         model_id: Bedrock model ID
-        input_tokens: Number of input tokens
+        input_tokens: Number of non-cached input tokens
         output_tokens: Number of output tokens
         pricing_table: Optional custom pricing table (for database-sourced pricing)
+        cache_read_input_tokens: Tokens served from prompt cache
+        cache_creation_input_tokens: Tokens written to prompt cache
 
     Returns:
         Total cost in USD (Decimal)
@@ -251,15 +323,23 @@ def calculate_cost(
         pricing = pricing_table[model_id]
         input_price = Decimal(str(pricing.get("input", "0.003")))
         output_price = Decimal(str(pricing.get("output", "0.015")))
+        # Cache rates: use explicit if available, else derive from input rate
+        cache_read_price = Decimal(str(pricing.get("cache_read_input", str(input_price * Decimal("0.1")))))
+        cache_creation_price = Decimal(str(pricing.get("cache_creation_input", str(input_price * Decimal("1.25")))))
     else:
         pricing = get_model_pricing(model_id)
         input_price = pricing["input"]
         output_price = pricing["output"]
+        # Cache rates: use explicit if available, else derive from input rate
+        cache_read_price = pricing.get("cache_read_input", input_price * Decimal("0.1"))
+        cache_creation_price = pricing.get("cache_creation_input", input_price * Decimal("1.25"))
 
     input_cost = (Decimal(input_tokens) / Decimal("1000")) * input_price
     output_cost = (Decimal(output_tokens) / Decimal("1000")) * output_price
+    cache_read_cost = (Decimal(cache_read_input_tokens) / Decimal("1000")) * cache_read_price
+    cache_creation_cost = (Decimal(cache_creation_input_tokens) / Decimal("1000")) * cache_creation_price
 
-    total_cost = input_cost + output_cost
+    total_cost = input_cost + output_cost + cache_read_cost + cache_creation_cost
 
     # Round to 6 decimal places for precision
     return round(total_cost, 6)

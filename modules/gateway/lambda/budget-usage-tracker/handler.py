@@ -178,6 +178,10 @@ def parse_chat_log(chat_log: dict[str, Any]) -> dict[str, Any] | None:
         logger.warning("Missing token counts in response.usage")
         return None
 
+    # Issue #1486: Extract prompt-cache token counts for correct cost calculation
+    cache_read_input_tokens = usage.get("cache_read_input_tokens", 0)
+    cache_creation_input_tokens = usage.get("cache_creation_input_tokens", 0)
+
     # Parse timestamp
     timestamp_str = chat_log.get("timestamp")
     if timestamp_str:
@@ -199,6 +203,9 @@ def parse_chat_log(chat_log: dict[str, Any]) -> dict[str, Any] | None:
         "model": chat_log["model"],
         "input_tokens": int(input_tokens),
         "output_tokens": int(output_tokens),
+        # Issue #1486: Prompt-cache token counts for correct cost calculation
+        "cache_read_input_tokens": int(cache_read_input_tokens or 0),
+        "cache_creation_input_tokens": int(cache_creation_input_tokens or 0),
         "timestamp": timestamp,
         # Issue #1016: request_id for bridging cost back to usage_logs
         "request_id": chat_log.get("request_id"),
@@ -327,6 +334,9 @@ def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, An
     model_id = parsed["model"]
     input_tokens = parsed["input_tokens"]
     output_tokens = parsed["output_tokens"]
+    # Issue #1486: Extract prompt-cache token counts
+    cache_read_input_tokens = parsed.get("cache_read_input_tokens", 0)
+    cache_creation_input_tokens = parsed.get("cache_creation_input_tokens", 0)
     timestamp = parsed["timestamp"]
     request_id = parsed.get("request_id")
 
@@ -337,11 +347,24 @@ def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, An
     # Resolve cross-region model ID
     resolved_model_id = resolve_model_id(model_id)
 
-    # Calculate cost
-    cost = calculate_cost(resolved_model_id, input_tokens, output_tokens, pricing_table)
-    total_tokens = input_tokens + output_tokens
+    # Calculate cost (Issue #1486: includes cache token costs)
+    cost = calculate_cost(
+        resolved_model_id,
+        input_tokens,
+        output_tokens,
+        pricing_table,
+        cache_read_input_tokens=cache_read_input_tokens,
+        cache_creation_input_tokens=cache_creation_input_tokens,
+    )
+    # Issue #1486: total_tokens includes cache tokens for accurate consumption tracking
+    total_tokens = input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens
 
-    logger.info(f"Processing: model={model_id}, resolved={resolved_model_id}, input={input_tokens}, output={output_tokens}, cost=${cost}")
+    logger.info(
+        f"Processing: model={model_id}, resolved={resolved_model_id}, "
+        f"input={input_tokens}, output={output_tokens}, "
+        f"cache_read={cache_read_input_tokens}, cache_creation={cache_creation_input_tokens}, "
+        f"cost=${cost}"
+    )
 
     # Issue #1074: Bridge cost to usage_logs for dashboard visibility
     if request_id and cost > 0:

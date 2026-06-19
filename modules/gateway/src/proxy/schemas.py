@@ -246,10 +246,22 @@ class AnthropicResponseContent(BaseModel):
 
 
 class AnthropicUsage(BaseModel):
-    """Anthropic usage statistics."""
+    """Anthropic usage statistics.
+
+    Includes prompt-cache token fields per AWS Bedrock prompt-caching docs:
+    - cache_read_input_tokens: tokens served from cache (charged ~0.1x input rate)
+    - cache_creation_input_tokens: tokens written to cache (charged ~1.25x input rate)
+
+    Issue #1486: Previously only input_tokens/output_tokens were captured,
+    causing ~10x cost undercount when prompt caching was active.
+    """
 
     input_tokens: int
     output_tokens: int
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+
+    model_config = {"extra": "allow"}
 
 
 class AnthropicMessagesResponse(BaseModel):

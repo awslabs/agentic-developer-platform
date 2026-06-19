@@ -318,6 +318,50 @@ class TestChatLogParsing:
         assert result is not None
         assert result["request_id"] is None
 
+    def test_parse_chat_log_extracts_cache_tokens(self):
+        """Issue #1486: cache token fields are extracted from usage."""
+        parse_chat_log = load_handler("budget-usage-tracker").parse_chat_log
+
+        chat_log = {
+            "org_id": "acme",
+            "user_id": "user-123",
+            "model": "us.anthropic.claude-opus-4-6-v1",
+            "response": {
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 4000,
+                    "cache_read_input_tokens": 65000,
+                    "cache_creation_input_tokens": 5000,
+                }
+            },
+        }
+
+        result = parse_chat_log(chat_log)
+        assert result is not None
+        assert result["cache_read_input_tokens"] == 65000
+        assert result["cache_creation_input_tokens"] == 5000
+
+    def test_parse_chat_log_cache_tokens_default_zero(self):
+        """Issue #1486: Missing cache fields default to 0."""
+        parse_chat_log = load_handler("budget-usage-tracker").parse_chat_log
+
+        chat_log = {
+            "org_id": "acme",
+            "user_id": "user-123",
+            "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "response": {
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                }
+            },
+        }
+
+        result = parse_chat_log(chat_log)
+        assert result is not None
+        assert result["cache_read_input_tokens"] == 0
+        assert result["cache_creation_input_tokens"] == 0
+
 
 @pytest.mark.skipif(
     not _has_psycopg2(),

@@ -110,8 +110,9 @@ class ProxyService(IProxyService):
             latency_ms = (time.time() - start_time) * 1000
 
             # Extract token usage from response for metrics
-            tokens_in = getattr(response, "input_tokens", 0) or 0
-            tokens_out = getattr(response, "output_tokens", 0) or 0
+            # Issue #1486: Read from response.usage dict (not top-level attrs)
+            tokens_in = response.usage.get("input_tokens", 0) or 0
+            tokens_out = response.usage.get("output_tokens", 0) or 0
             cost_usd = 0.0  # Cost calculation would be done by budget service
 
             # Emit metrics
@@ -562,8 +563,9 @@ class ProxyService(IProxyService):
         try:
             client = await self._pool_service.get_client()
             bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request)
-            tokens_in = getattr(bedrock_response, "input_tokens", 0) or 0
-            tokens_out = getattr(bedrock_response, "output_tokens", 0) or 0
+            # Issue #1486: Read from response.usage dict (not top-level attrs)
+            tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
+            tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
             return self._translator.bedrock_to_openai(bedrock_response, model)
         except Exception:
             status_code = 500
@@ -651,8 +653,9 @@ class ProxyService(IProxyService):
         try:
             client = await self._pool_service.get_client()
             bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request)
-            tokens_in = getattr(bedrock_response, "input_tokens", 0) or 0
-            tokens_out = getattr(bedrock_response, "output_tokens", 0) or 0
+            # Issue #1486: Read from response.usage dict (not top-level attrs)
+            tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
+            tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
             return self._translator.bedrock_to_anthropic(bedrock_response, model)
         except Exception:
             status_code = 500
@@ -737,8 +740,9 @@ class ProxyService(IProxyService):
         try:
             client = await self._pool_service.get_client()
             bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request)
-            tokens_in = getattr(bedrock_response, "input_tokens", 0) or 0
-            tokens_out = getattr(bedrock_response, "output_tokens", 0) or 0
+            # Issue #1486: Read from response.usage dict (not top-level attrs)
+            tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
+            tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
             return bedrock_response.model_dump()
         except Exception:
             status_code = 500
@@ -806,12 +810,15 @@ class ProxyService(IProxyService):
         """Extract token usage from an SSE chunk and accumulate into usage dict.
 
         Parses the SSE data payload looking for Anthropic/Bedrock usage fields
-        (message_start → input_tokens, message_delta → output_tokens).
+        (message_start → input_tokens + cache tokens, message_delta → output_tokens).
         Failures are silently ignored to avoid disrupting the stream.
+
+        Issue #1486: Also captures cache_read_input_tokens and
+        cache_creation_input_tokens from the message_start event.
 
         Args:
             chunk: Raw SSE bytes (e.g. b'event: ...\\ndata: {...}\\n\\n')
-            usage: Mutable dict to accumulate input_tokens / output_tokens
+            usage: Mutable dict to accumulate token counts
         """
         try:
             chunk_str = chunk.decode("utf-8", errors="ignore")
@@ -819,11 +826,16 @@ class ProxyService(IProxyService):
             for line in chunk_str.split("\n"):
                 if line.startswith("data: ") and line[6:7] == "{":
                     data = json.loads(line[6:])
-                    # message_start carries input_tokens
+                    # message_start carries input_tokens + cache tokens
                     if data.get("type") == "message_start":
                         msg_usage = data.get("message", {}).get("usage", {})
                         if msg_usage.get("input_tokens"):
                             usage["input_tokens"] = msg_usage["input_tokens"]
+                        # Issue #1486: Capture cache token counts
+                        if msg_usage.get("cache_read_input_tokens"):
+                            usage["cache_read_input_tokens"] = msg_usage["cache_read_input_tokens"]
+                        if msg_usage.get("cache_creation_input_tokens"):
+                            usage["cache_creation_input_tokens"] = msg_usage["cache_creation_input_tokens"]
                     # message_delta carries output_tokens
                     elif data.get("type") == "message_delta":
                         delta_usage = data.get("usage", {})

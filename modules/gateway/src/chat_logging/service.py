@@ -308,12 +308,15 @@ class ChatLoggingService:
         )
 
         # Build response schema
+        # Issue #1486: Include cache token fields for correct cost calculation
         usage_data = scrubbed_response.get("usage", {})
         usage = None
         if usage_data:
             usage = UsageInfo(
                 input_tokens=usage_data.get("input_tokens", 0),
                 output_tokens=usage_data.get("output_tokens", 0),
+                cache_read_input_tokens=usage_data.get("cache_read_input_tokens", 0),
+                cache_creation_input_tokens=usage_data.get("cache_creation_input_tokens", 0),
             )
 
         response = ChatLogResponse(

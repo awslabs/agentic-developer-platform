@@ -26,10 +26,16 @@ class ChatLogRequest(BaseModel):
 
 
 class UsageInfo(BaseModel):
-    """Token usage information."""
+    """Token usage information.
+
+    Issue #1486: Includes prompt-cache token fields so the budget-usage-tracker
+    Lambda can price cached traffic correctly.
+    """
 
     input_tokens: int = Field(default=0, description="Number of input tokens")
     output_tokens: int = Field(default=0, description="Number of output tokens")
+    cache_read_input_tokens: int = Field(default=0, description="Tokens served from prompt cache")
+    cache_creation_input_tokens: int = Field(default=0, description="Tokens written to prompt cache")
 
 
 class ChatLogResponse(BaseModel):
