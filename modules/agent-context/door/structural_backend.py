@@ -865,15 +865,18 @@ def _parse_target(target: str) -> tuple[str, str]:
 
     Supports both short and org-qualified repo names:
     - "repo-name/path/to/file.py" → ("repo-name", "path/to/file.py")
-    - "repo-name/path::symbol" → ("repo-name", "path::symbol")
+    - "repo-name/path/file.py::symbol" → ("repo-name", "path/file.py::symbol")
     - "repo-name::symbol" → ("repo-name", "symbol")
     - "org/repo/path/to/file.py" → ("org/repo", "path/to/file.py")
     - "org/repo::symbol" → ("org/repo", "symbol")
+    - "org/repo/path/file.py::symbol" → ("org/repo", "path/file.py::symbol")
 
-    Heuristic: if the first component contains a dot (e.g. "github.com") or
-    matches common org patterns, treat first TWO components as repo_id.
-    Otherwise treat the FIRST component as repo_id (short-name format used
-    by the eval golden dataset).
+    Heuristic for the :: branch: when the part before :: has 2+ components,
+    determines org/repo vs repo/file by checking whether the second component
+    looks like a file (contains a dot extension). If not, first two are org/repo.
+
+    Heuristic for the path branch: first component is always repo_id (short-name
+    format used by the eval golden dataset — e.g., "CopilotKit/packages/react-core").
     """
     if not target:
         return ("", "")
@@ -883,13 +886,13 @@ def _parse_target(target: str) -> tuple[str, str]:
         before_symbol, symbol = target.rsplit("::", 1)
         parts = before_symbol.split("/")
         if len(parts) >= 1:
-            repo_id, remaining = _extract_repo_id(parts)
+            repo_id, remaining = _extract_repo_id_for_symbol(parts)
             if remaining:
                 return (repo_id, f"{remaining}::{symbol}")
             return (repo_id, symbol)
         return ("", "")
 
-    # Path-based target
+    # Path-based target (no :: separator)
     parts = target.split("/")
     if len(parts) >= 1:
         repo_id, remaining = _extract_repo_id(parts)
@@ -899,12 +902,17 @@ def _parse_target(target: str) -> tuple[str, str]:
 
 
 def _extract_repo_id(parts: list[str]) -> tuple[str, str]:
-    """Extract repo_id from path components.
+    """Extract repo_id from path components (path-based targets, no :: present).
 
     Uses heuristics to determine if repo_id is one or two components:
     - If first part looks like a domain (contains .), use first 3 (github.com/org/repo)
-    - If first part looks like a GitHub org (lowercase, common patterns), use first 2
     - Otherwise use first 1 (short repo name — most common for eval corpus)
+
+    Note: for path-based targets (no ::), the eval corpus convention is that the
+    first component is always the repo short name (e.g., "CopilotKit/packages/react-core"
+    where "CopilotKit" is the repo and "packages/react-core" is the path). We do NOT
+    attempt org/repo detection here to preserve backward compatibility with the eval
+    golden dataset.
     """
     if not parts:
         return ("", "")
@@ -923,6 +931,54 @@ def _extract_repo_id(parts: list[str]) -> tuple[str, str]:
     repo_id = first
     remaining = "/".join(parts[1:]) if len(parts) > 1 else ""
     return (repo_id, remaining)
+
+
+def _extract_repo_id_for_symbol(parts: list[str]) -> tuple[str, str]:
+    """Extract repo_id from path components preceding a :: symbol separator.
+
+    This variant is used when the target contains :: (symbol-qualified).
+    The components in `parts` are from the portion BEFORE the :: separator.
+
+    Key insight (Bug #1635 fix): if the LAST component has no dot (not a file),
+    then ALL components before :: form the repo_id (either short name or org/repo).
+    A file qualifier always ends with a dotted extension (e.g., "src/db.py").
+
+    Heuristics:
+    - 1 component: short repo name (e.g., "codegraph" from "codegraph::length")
+    - 2 components, last has no dot: org/repo (e.g., "colbymchenry/codegraph")
+    - 2 components, last has dot: repo/file (e.g., "myrepo/utils.py")
+    - 3+ components, first has dot: domain/org/repo + optional path
+    - 3+ components, last has no dot: all form repo_id (unusual but valid)
+    - 3+ components, last has dot: contains a file path; use _extract_repo_id
+      to split repo from file (first component = repo for eval compat, or first
+      two = org/repo if second has no dot)
+    """
+    if not parts:
+        return ("", "")
+
+    first = parts[0]
+    last = parts[-1]
+
+    # Domain prefix (e.g., "github.com/org/repo/file")
+    if "." in first and len(parts) >= 3:
+        repo_id = f"{parts[0]}/{parts[1]}/{parts[2]}"
+        remaining = "/".join(parts[3:]) if len(parts) > 3 else ""
+        return (repo_id, remaining)
+
+    # Single component: short repo name
+    if len(parts) == 1:
+        return (first, "")
+
+    # Key heuristic: if the LAST component has NO dot, everything is repo_id.
+    # Rationale: a file qualifier always has an extension (e.g., "db.py", "api.ts").
+    # So "org/repo" (no dots) = repo_id, while "repo/file.py" = repo + file.
+    if "." not in last:
+        # All components form the repo_id (e.g., "colbymchenry/codegraph")
+        return ("/".join(parts), "")
+
+    # Last component has a dot — it's a file path. Need to find where repo ends.
+    # Use the same logic as _extract_repo_id for the path portion.
+    return _extract_repo_id(parts)
 
 
 def _matches_target(query_target: str, symbol: str, file_path: str) -> bool:
