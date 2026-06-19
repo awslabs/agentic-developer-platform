@@ -7,7 +7,7 @@
  * admin toggle visibility, error/retry UI, trigger badges, chain view.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -260,12 +260,16 @@ describe('AgentActivity Page', () => {
       expect(screen.getByText('Webhook recv')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('In progress')).toBeInTheDocument();
-    expect(screen.getByText('Complete')).toBeInTheDocument();
-    expect(screen.getByText('Failed')).toBeInTheDocument();
-    expect(screen.getByText('Rejected')).toBeInTheDocument();
-    expect(screen.getByText('Rate limited')).toBeInTheDocument();
-    expect(screen.getByText('No-op')).toBeInTheDocument();
+    // Scope to the results table — the status filter <select> also renders these
+    // labels as <option>s, so a document-wide getByText would match >1 element.
+    const table = within(screen.getByRole('table'));
+    expect(table.getByText('Webhook recv')).toBeInTheDocument();
+    expect(table.getByText('In progress')).toBeInTheDocument();
+    expect(table.getByText('Complete')).toBeInTheDocument();
+    expect(table.getByText('Failed')).toBeInTheDocument();
+    expect(table.getByText('Rejected')).toBeInTheDocument();
+    expect(table.getByText('Rate limited')).toBeInTheDocument();
+    expect(table.getByText('No-op')).toBeInTheDocument();
   });
 
   it('renders source_url as clickable repo#N link; null shows "(no external link)"', async () => {

@@ -83,6 +83,8 @@ export function generateMockInvocations(count: number = 30): InvocationItem[] {
       completed_at: isTerminal
         ? new Date(invokedAt.getTime() + Math.random() * 30 * 60 * 1000).toISOString()
         : null,
+      status_updated_at: new Date(invokedAt.getTime() + Math.random() * 5 * 60 * 1000).toISOString(),
+      run_id: `agent-scaledjob-${String(i + 1).padStart(5, '0')}`,
       // Phase 6 lineage fields
       trigger_kind: triggerKind,
       triggered_by_invocation_id: parentInvocationId,
@@ -90,6 +92,12 @@ export function generateMockInvocations(count: number = 30): InvocationItem[] {
       root_human_id: triggerKind === 'bot' ? null : 'user-001',
       is_human_rooted: triggerKind !== 'bot',
       correlation_id: correlationId,
+      // Issue #1616: per-run cost (present for runs that made model calls)
+      total_cost_usd: isTerminal ? Math.round(Math.random() * 5000) / 1000 : null,
+      total_tokens: isTerminal ? Math.floor(Math.random() * 200000) : null,
+      call_count: isTerminal ? Math.floor(Math.random() * 40) + 1 : null,
+      // Error detail for failed runs (drives the detail view)
+      error_message: status === 'failed' ? 'Model access error: throttled by Bedrock' : null,
     };
   });
 }

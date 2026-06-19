@@ -36,6 +36,8 @@ export interface InvocationItem {
   issue_number: number | null;
   invoked_at: string;
   completed_at: string | null;
+  status_updated_at: string | null;
+  run_id: string | null;
   // Phase 6 lineage fields (#1461)
   trigger_kind: TriggerKind;
   triggered_by_invocation_id: string | null;
@@ -47,6 +49,8 @@ export interface InvocationItem {
   total_cost_usd: number | null;
   total_tokens: number | null;
   call_count: number | null;
+  // Error detail surfaced in the row-detail view for failed invocations
+  error_message: string | null;
 }
 
 /** Cursor-paginated response from GET /me/agent-invocations or /admin/agent-invocations. */
