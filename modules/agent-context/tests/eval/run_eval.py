@@ -141,14 +141,13 @@ class EvalReport:
 
     @property
     def pass_rate(self) -> float:
-        scoreable = self.total - self.manual_review
-        if scoreable == 0:
+        if self.total == 0:
             return 0.0
-        return self.passed / scoreable
+        return self.passed / self.total
 
     def verb_hit_rate(self, verb: str) -> float:
         stats = self.by_verb.get(verb, {})
-        total = stats.get("total", 0) - stats.get("manual_review", 0)
+        total = stats.get("total", 0)
         if total == 0:
             return 0.0
         return stats.get("passed", 0) / total
@@ -741,9 +740,12 @@ def run_evaluation(config: EvalConfig) -> EvalReport:
             )
             report.errors += 1
 
-        # Tally results
+        # Tally results — manual_review is orthogonal to pass/fail.
+        # A result can be both flagged for manual review AND scored as passed.
         if result.manual_review:
             report.manual_review += 1
+        if result.error:
+            pass  # errors already counted above
         elif result.passed:
             report.passed += 1
         else:
@@ -754,16 +756,27 @@ def run_evaluation(config: EvalConfig) -> EvalReport:
             question.verb, {"total": 0, "passed": 0, "failed": 0, "errors": 0, "manual_review": 0}
         )
         verb_stats["total"] += 1
+        if result.manual_review:
+            verb_stats["manual_review"] += 1
         if result.error:
             verb_stats["errors"] += 1
-        elif result.manual_review:
-            verb_stats["manual_review"] += 1
         elif result.passed:
             verb_stats["passed"] += 1
         else:
             verb_stats["failed"] += 1
 
         report.results.append(result)
+
+    # Self-consistency assertion: summary must agree with raw results
+    raw_passed = sum(1 for r in report.results if r.passed)
+    by_verb_passed = sum(stats.get("passed", 0) for stats in report.by_verb.values())
+    if report.passed != raw_passed or report.passed != by_verb_passed:
+        raise AssertionError(
+            f"Summary aggregation disagrees with raw results: "
+            f"report.passed={report.passed}, "
+            f"raw_passed (from results[])={raw_passed}, "
+            f"by_verb sum={by_verb_passed}"
+        )
 
     return report
 
@@ -792,9 +805,8 @@ def _print_text_report(report: EvalReport) -> None:
     print(f"  Failed:            {report.failed}")
     print(f"  Errors:            {report.errors}")
     print(f"  Manual review:     {report.manual_review}")
-    scoreable = report.total - report.manual_review
-    if scoreable > 0:
-        print(f"  Pass rate:         {report.pass_rate:.1%} ({report.passed}/{scoreable})")
+    if report.total > 0:
+        print(f"  Pass rate:         {report.pass_rate:.1%} ({report.passed}/{report.total})")
     print()
 
     # Per-verb breakdown
@@ -803,10 +815,9 @@ def _print_text_report(report: EvalReport) -> None:
     for verb in sorted(report.by_verb.keys()):
         stats = report.by_verb[verb]
         rate = report.verb_hit_rate(verb)
-        scoreable_v = stats["total"] - stats["manual_review"]
         print(
             f"    {verb:<20} {rate:>6.1%}  "
-            f"({stats['passed']}/{scoreable_v} scoreable, "
+            f"({stats['passed']}/{stats['total']}, "
             f"{stats['manual_review']} manual-review)"
         )
     print()
