@@ -156,6 +156,35 @@ variable "agent_image_prepull_enabled" {
   default     = true
 }
 
+# -----------------------------------------------------------------------------
+# OpenTelemetry / Observability (Issue #1630)
+# -----------------------------------------------------------------------------
+
+variable "enable_agent_otel" {
+  description = <<-DESC
+    Enable OpenTelemetry telemetry export from agent-worker pods. When true:
+    - Deploys an ADOT Collector (Deployment + Service) in adp-agents namespace
+    - Adds OTEL_* env vars to the ScaledJob agent-worker container
+    - Creates an IRSA role scoped to CloudWatch + X-Ray write-only
+    Telemetry is fire-and-forget; a misconfigured/down collector does NOT
+    block agent runs. Default false — flip after collector is healthy.
+  DESC
+  type        = bool
+  default     = false
+}
+
+variable "otel_collector_image" {
+  description = "ADOT Collector container image. Use the AWS-maintained public ECR image."
+  type        = string
+  default     = "public.ecr.aws/aws-observability/aws-otel-collector:v0.40.0"
+}
+
+variable "otel_collector_log_group" {
+  description = "CloudWatch Logs group for OTEL log pipeline output. Created by the collector itself (awscloudwatchlogs exporter auto-creates)."
+  type        = string
+  default     = "/adp/dev/agent-factory/otel"
+}
+
 # Issue #575: the gateway's API Gateway invoke URL is resolved at apply time
 # from SSM (published by modules/gateway/infra/) rather than passed in as a
 # tfvar. Keeps new environments repeatable — no per-env hardcoding.

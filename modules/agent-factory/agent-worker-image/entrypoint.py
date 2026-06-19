@@ -219,6 +219,25 @@ def main() -> int:
 
     os.environ.update(env_vars)
 
+    # Step 4b: Compose OTEL_RESOURCE_ATTRIBUTES with per-run dimensions (#1630).
+    # The ScaledJob template sets static attributes (service.namespace,
+    # deployment.environment) and ENABLE_AGENT_OTEL=1 when the flag is on.
+    # Here we append the per-message dimensions (tenant, user, persona) that
+    # are only known at runtime from the SQS envelope.
+    if os.environ.get("ENABLE_AGENT_OTEL") == "1":
+        base_attrs = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
+        runtime_attrs = [
+            f"tenant.id={tenant_id}",
+            f"agent.persona={persona}",
+        ]
+        if user_id:
+            runtime_attrs.append(f"enduser.id={user_id}")
+        if correlation_id:
+            runtime_attrs.append(f"session.id={correlation_id}")
+        # Merge: base (from ScaledJob env) + runtime dimensions
+        merged = ",".join(filter(None, [base_attrs] + runtime_attrs))
+        os.environ["OTEL_RESOURCE_ATTRIBUTES"] = merged
+
     # Step 5: Clone customer repo
     # Username-only URL — GIT_ASKPASS provides the password from $GITHUB_TOKEN
     clone_url = f"https://x-access-token@github.com/{repo}"

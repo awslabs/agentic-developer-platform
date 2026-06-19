@@ -167,3 +167,17 @@ output "keda_operator_role_name" {
   description = "IAM role name for the KEDA operator"
   value       = aws_iam_role.keda_operator.name
 }
+
+# -----------------------------------------------------------------------------
+# ADOT Collector outputs (Issue #1630)
+# -----------------------------------------------------------------------------
+
+output "otel_collector_endpoint" {
+  description = "OTLP gRPC endpoint for the ADOT Collector (empty when disabled)"
+  value       = var.enable_agent_otel ? "http://adot-collector.${kubernetes_namespace.adp_agents.metadata[0].name}.svc.cluster.local:4317" : ""
+}
+
+output "otel_collector_role_arn" {
+  description = "IAM role ARN for the ADOT Collector service account (empty when disabled)"
+  value       = var.enable_agent_otel ? aws_iam_role.otel_collector[0].arn : ""
+}

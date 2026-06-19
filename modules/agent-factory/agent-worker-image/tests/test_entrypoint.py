@@ -2314,3 +2314,137 @@ class TestGhAppCredentialsExported:
         all_log_output = "\n".join(record.message for record in caplog.records)
         assert "SUPER_SECRET_DO_NOT_LOG" not in all_log_output
         assert "BEGIN RSA PRIVATE KEY" not in all_log_output
+
+
+# --- Test: OTEL_RESOURCE_ATTRIBUTES composition (#1630) ---
+
+
+class TestOtelResourceAttributes:
+    """Verify entrypoint composes OTEL_RESOURCE_ATTRIBUTES with per-run dimensions.
+
+    When ENABLE_AGENT_OTEL=1 (set by ScaledJob when the flag is on), the
+    entrypoint appends tenant.id, agent.persona, enduser.id, and session.id
+    to the base attributes from the ScaledJob template.
+    """
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_otel_attrs_composed_when_enabled(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """OTEL_RESOURCE_ATTRIBUTES includes tenant, persona, user, session."""
+        from entrypoint import main
+        import entrypoint
+
+        envelope_with_correlation = {
+            **SAMPLE_ENVELOPE,
+            "correlation_id": "corr-xyz-789",
+        }
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        # Simulate the ScaledJob env vars
+        monkeypatch.setenv("ENABLE_AGENT_OTEL", "1")
+        monkeypatch.setenv(
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "service.namespace=adp-agents,deployment.environment=dev",
+        )
+
+        mock_receive_msg.return_value = (json.dumps(envelope_with_correlation), "receipt-otel")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Verify the composed OTEL_RESOURCE_ATTRIBUTES in os.environ
+        attrs = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
+        # Base attributes from ScaledJob template preserved
+        assert "service.namespace=adp-agents" in attrs
+        assert "deployment.environment=dev" in attrs
+        # Per-run dimensions appended
+        assert "tenant.id=acme-corp" in attrs
+        assert "agent.persona=developer" in attrs
+        assert "enduser.id=cognito-sub-jane-123" in attrs
+        assert "session.id=corr-xyz-789" in attrs
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_otel_attrs_not_set_when_disabled(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """When ENABLE_AGENT_OTEL is unset, OTEL_RESOURCE_ATTRIBUTES is untouched."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        # Explicitly remove the OTEL flag
+        monkeypatch.delenv("ENABLE_AGENT_OTEL", raising=False)
+        monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-no-otel")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # OTEL_RESOURCE_ATTRIBUTES should not exist
+        assert "OTEL_RESOURCE_ATTRIBUTES" not in os.environ

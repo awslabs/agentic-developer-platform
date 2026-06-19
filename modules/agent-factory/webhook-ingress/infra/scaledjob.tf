@@ -60,6 +60,39 @@ resource "kubernetes_service_account" "agent_scaledjob_sa" {
 # -----------------------------------------------------------------------------
 
 locals {
+  # OpenTelemetry env vars for agent-worker container (#1630).
+  # Conditionally included in the ScaledJob YAML when enable_agent_otel=true.
+  # Uses join() to avoid nested heredoc syntax issues in HCL ternary.
+  otel_env_block = var.enable_agent_otel ? join("\n", [
+    "                  # ── OpenTelemetry (Issue #1630) ──────────────────────────────",
+    "                  # Claude Agent SDK telemetry → ADOT Collector → CW/X-Ray.",
+    "                  # Fire-and-forget: export failures never block agent runs.",
+    "                  - name: CLAUDE_CODE_ENABLE_TELEMETRY",
+    "                    value: \"1\"",
+    "                  - name: OTEL_TRACES_EXPORTER",
+    "                    value: otlp",
+    "                  - name: OTEL_METRICS_EXPORTER",
+    "                    value: otlp",
+    "                  - name: OTEL_LOGS_EXPORTER",
+    "                    value: otlp",
+    "                  - name: OTEL_EXPORTER_OTLP_PROTOCOL",
+    "                    value: grpc",
+    "                  - name: OTEL_EXPORTER_OTLP_ENDPOINT",
+    "                    value: http://adot-collector.adp-agents.svc.cluster.local:4317",
+    "                  - name: OTEL_SERVICE_NAME",
+    "                    value: adp-agent-worker",
+    "                  - name: OTEL_BSP_SCHEDULE_DELAY",
+    "                    value: \"5000\"",
+    "                  - name: OTEL_BSP_EXPORT_TIMEOUT",
+    "                    value: \"10000\"",
+    "                  - name: OTEL_METRIC_EXPORT_INTERVAL",
+    "                    value: \"5000\"",
+    "                  - name: OTEL_RESOURCE_ATTRIBUTES",
+    "                    value: service.namespace=adp-agents,deployment.environment=${var.environment}",
+    "                  - name: ENABLE_AGENT_OTEL",
+    "                    value: \"1\"",
+  ]) : ""
+
   keda_trigger_auth_yaml = <<-YAML
     apiVersion: keda.sh/v1alpha1
     kind: TriggerAuthentication
@@ -135,6 +168,7 @@ locals {
                     value: "9090"
                   - name: WEBHOOK_EVENTS_TABLE
                     value: ${aws_dynamodb_table.webhook_events.name}
+${local.otel_env_block}
                 resources:
                   requests:
                     cpu: "1"

@@ -94,5 +94,21 @@ resource "kubernetes_network_policy" "agent_scaledjob_egress" {
         protocol = "TCP"
       }
     }
+
+    # ADOT Collector in-namespace (gRPC on port 4317) — Issue #1630
+    # Allows agent-worker pods to export OTel telemetry to the collector.
+    egress {
+      ports {
+        port     = 4317
+        protocol = "TCP"
+      }
+      to {
+        pod_selector {
+          match_labels = {
+            "app.kubernetes.io/name" = "adot-collector"
+          }
+        }
+      }
+    }
   }
 }
