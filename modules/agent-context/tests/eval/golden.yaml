@@ -136,65 +136,64 @@ questions:
 - id: agent-skills-understand-1
   repo: agent-skills
   verb: understand
-  query: what does the code-review-and-quality skill do
+  query: agent-skills/skills/code-review-and-quality
   expected:
-    location: skills/code-review-and-quality/SKILL.md
+    location: skills/code-review-and-quality
     key_facts:
-    - Reviews code changes for correctness bugs
-    - 'Supports effort levels: low/medium/high'
-    - Can post findings as inline PR comments with --comment flag
-    - Can auto-apply fixes with --fix flag
-    - Invoked via commands/review.toml
-  pass_criterion: Returns location + key facts about review skill functionality and flags
+    - SKILL.md
+    - review
+    - code
+    - quality
+  pass_criterion: Returns structural content of the code-review-and-quality skill directory
+  notes: "Structural target (directory). Original NL query 'what does the code-review-and-quality skill do' moved to search_semantic (#1643)."
 - id: agent-skills-understand-2
   repo: agent-skills
   verb: understand
-  query: how do session-start hooks work
+  query: agent-skills/hooks/hooks.json
   expected:
-    location: hooks/hooks.json and hooks/session-start.sh
+    location: hooks/hooks.json
     key_facts:
-    - hooks.json defines hook registry including session-start
-    - session-start.sh runs at harness initialization
-    - Used to set up environment for SDD cache
-    - 'Pre and post hooks exist: sdd-cache-pre.sh and sdd-cache-post.sh'
-  pass_criterion: Explains hook mechanism and session-start lifecycle
+    - hooks
+    - session-start
+    - sdd-cache
+  pass_criterion: Returns structural info about the hooks registry file
+  notes: "Structural target (file). Original NL query 'how do session-start hooks work' moved to search_semantic (#1643)."
 - id: agent-skills-understand-3
   repo: agent-skills
   verb: understand
-  query: what is spec-driven-development skill
+  query: agent-skills/skills/spec-driven-development
   expected:
-    location: skills/spec-driven-development/SKILL.md
+    location: skills/spec-driven-development
     key_facts:
-    - Write specifications before implementation
-    - Spec defines behavior contract
-    - Implementation must satisfy spec
-    - Invoked via commands/spec.toml
-  pass_criterion: Explains SDD workflow and spec-first approach
+    - SKILL.md
+    - spec
+  pass_criterion: Returns structural content of the spec-driven-development skill directory
+  notes: "Structural target (directory). Original NL query 'what is spec-driven-development skill' moved to search_semantic (#1643)."
 - id: agent-skills-understand-4
   repo: agent-skills
   verb: understand
-  query: what agents are available
+  query: agent-skills/agents
   expected:
-    location: agents/ directory and AGENTS.md
+    location: agents
     key_facts:
-    - 'code-reviewer.md: reviews PRs for bugs and improvements'
-    - 'security-auditor.md: audits code for security issues'
-    - 'test-engineer.md: writes test cases'
-    - 'web-performance-auditor.md: audits web performance'
-    - Agent definitions include model, tools, and instructions
-  pass_criterion: Lists all 4 agents with their purposes
+    - code-reviewer
+    - security-auditor
+    - test-engineer
+    - web-performance-auditor
+  pass_criterion: Returns symbols/files in the agents directory
+  notes: "Structural target (directory). Original NL query 'what agents are available' moved to browse verb (#1643)."
 - id: agent-skills-understand-5
   repo: agent-skills
   verb: understand
-  query: how does validate-skills.js work
+  query: agent-skills/scripts/validate-skills.js
   expected:
     location: scripts/validate-skills.js
     key_facts:
-    - Validates skill directory structure
-    - Checks for required SKILL.md file
-    - Verifies plugin.json references match actual skills
-    - Used in CI to prevent broken skill references
-  pass_criterion: Explains validation logic and CI integration
+    - validate
+    - skills
+    - plugin
+  pass_criterion: Returns structural info about validate-skills.js (symbols, exports)
+  notes: "Structural target (file). Original NL query 'how does validate-skills.js work' moved to search_semantic (#1643)."
 - id: agent-skills-browse-1
   repo: agent-skills
   verb: browse
@@ -383,66 +382,65 @@ questions:
 - id: superpowers-understand-1
   repo: superpowers
   verb: understand
-  query: what does subagent-driven-development do
+  query: superpowers/skills/subagent-driven-development
   expected:
-    location: skills/subagent-driven-development/SKILL.md
+    location: skills/subagent-driven-development
     key_facts:
-    - Breaks complex tasks into subtasks
-    - Spawns implementer subagent per subtask
-    - Uses task-reviewer-prompt.md to verify completion
-    - Includes scripts/task-brief and scripts/review-package
-    - Coordinates parallel work across multiple agents
-  pass_criterion: Explains subagent delegation pattern and reviewer mechanism
+    - SKILL.md
+    - implementer-prompt
+    - task-reviewer-prompt
+    - scripts
+  pass_criterion: Returns structural content of the subagent-driven-development skill directory
+  notes: "Structural target (directory). Original NL query moved to search_semantic (#1643)."
 - id: superpowers-understand-2
   repo: superpowers
   verb: understand
-  query: how does find-polluter.sh work
+  query: superpowers/skills/systematic-debugging/find-polluter.sh
   expected:
     location: skills/systematic-debugging/find-polluter.sh
     key_facts:
-    - Identifies test pollution via binary search
-    - Runs test suite in different orders
-    - Isolates which test pollutes state for another
-    - Part of systematic-debugging skill
-  pass_criterion: Explains binary search approach to finding test pollution
+    - find-polluter
+    - test
+    - binary
+  pass_criterion: Returns structural info about find-polluter.sh
+  notes: "Structural target (file). Original NL query moved to search_semantic (#1643)."
 - id: superpowers-understand-3
   repo: superpowers
   verb: understand
-  query: what is the brainstorming server for
+  query: superpowers/skills/brainstorming/scripts
   expected:
-    location: skills/brainstorming/scripts/server.cjs
+    location: skills/brainstorming/scripts
     key_facts:
-    - Local HTTP server for collaborative brainstorming
-    - Serves frame-template.html for UI
-    - Started via start-server.sh
-    - Stopped via stop-server.sh
-    - Allows agent to interact with HTML forms for idea generation
-  pass_criterion: Explains server purpose and lifecycle
+    - server.cjs
+    - frame-template
+    - start-server
+    - stop-server
+  pass_criterion: Returns files in the brainstorming scripts directory
+  notes: "Structural target (directory). Original NL query moved to search_semantic (#1643)."
 - id: superpowers-understand-4
   repo: superpowers
   verb: understand
-  query: what hooks are available
+  query: superpowers/hooks
   expected:
-    location: hooks/ directory
+    location: hooks
     key_facts:
-    - hooks.json for Claude Code harness
-    - hooks-codex.json for Codex integration
-    - hooks-cursor.json for Cursor integration
-    - session-start runs at harness startup
-    - run-hook.cmd for Windows hook execution
-  pass_criterion: Lists all hook variants and explains multi-harness support
+    - hooks.json
+    - hooks-codex.json
+    - hooks-cursor.json
+    - session-start
+  pass_criterion: Returns structural content of the hooks directory
+  notes: "Structural target (directory). Original NL query moved to search_semantic (#1643)."
 - id: superpowers-understand-5
   repo: superpowers
   verb: understand
-  query: how does verification-before-completion work
+  query: superpowers/skills/verification-before-completion
   expected:
-    location: skills/verification-before-completion/SKILL.md
+    location: skills/verification-before-completion
     key_facts:
-    - Mandates verification step before declaring task complete
-    - Agent must run tests or manual checks
-    - Prevents premature completion claims
-    - Part of quality gate pattern
-  pass_criterion: Explains verification enforcement and quality gate
+    - SKILL.md
+    - verification
+  pass_criterion: Returns structural content of the verification-before-completion skill
+  notes: "Structural target (directory). Original NL query moved to search_semantic (#1643)."
 - id: superpowers-browse-1
   repo: superpowers
   verb: browse
@@ -613,65 +611,67 @@ questions:
 - id: agency-agents-understand-1
   repo: agency-agents
   verb: understand
-  query: what does engineering-code-reviewer do
+  query: agency-agents/engineering/engineering-code-reviewer.md
   expected:
     location: engineering/engineering-code-reviewer.md
     key_facts:
-    - Reviews code changes for correctness and quality
-    - Part of engineering division
-    - Identifies bugs and suggests improvements
-    - Provides feedback on code structure and patterns
-  pass_criterion: Explains code reviewer role and capabilities
+    - code-reviewer
+    - engineering
+    - review
+  pass_criterion: Returns structural info about the engineering-code-reviewer agent definition
+  notes: "Structural target (file). Original NL query moved to search_semantic (#1643)."
 - id: agency-agents-understand-2
   repo: agency-agents
   verb: understand
-  query: what is the nexus-strategy framework
+  query: agency-agents/strategy
   expected:
-    location: strategy/nexus-strategy.md
+    location: strategy
     key_facts:
-    - Multi-phase strategic planning framework
-    - Includes playbooks for phases 0 through 6
-    - Covers discovery, alignment, execution, optimization
-    - Has runbooks and coordination guides
-  pass_criterion: Explains nexus-strategy phases and structure
+    - nexus-strategy
+    - playbook
+    - runbook
+  pass_criterion: Returns structural content of the strategy division directory
+  notes: "Structural target (directory). Original NL query moved to search_semantic (#1643)."
 - id: agency-agents-understand-3
   repo: agency-agents
   verb: understand
-  query: what divisions exist
+  query: agency-agents/divisions.json
   expected:
-    location: divisions.json and top-level directories
+    location: divisions.json
     key_facts:
-    - academic, design, engineering, finance, game-development
-    - gis, integrations, marketing, paid-media, product
-    - project-management, sales, security, spatial-computing
-    - specialized, strategy, support, testing, examples
-    - divisions.json defines the registry
-  pass_criterion: Lists all 19 divisions from directory structure
+    - divisions
+    - engineering
+    - design
+    - security
+  pass_criterion: Returns structural info about the divisions registry file
+  notes: "Structural target (file). Original NL query moved to browse verb (#1643)."
 - id: agency-agents-understand-4
   repo: agency-agents
   verb: understand
-  query: what GIS agents are available
+  query: agency-agents/gis
   expected:
-    location: gis/ directory
+    location: gis
     key_facts:
-    - 'gis-analyst.md: data analysis'
-    - 'gis-cartography-designer.md: map design'
-    - 'gis-3d-scene-developer.md: 3D visualization'
-    - 'gis-spatial-data-scientist.md: spatial analysis'
-    - 'gis-web-gis-developer.md: web mapping apps'
-  pass_criterion: Lists all 5 GIS agents with roles
+    - gis-analyst
+    - gis-cartography-designer
+    - gis-3d-scene-developer
+    - gis-spatial-data-scientist
+    - gis-web-gis-developer
+  pass_criterion: Returns files in the gis division directory
+  notes: "Structural target (directory). Original NL query moved to search_semantic (#1643)."
 - id: agency-agents-understand-5
   repo: agency-agents
   verb: understand
-  query: what integrations are available
+  query: agency-agents/integrations
   expected:
-    location: integrations/ directory
+    location: integrations
     key_facts:
-    - aider, antigravity, claude-code, codex, cursor
-    - gemini-cli, github-copilot, kimi, mcp-memory
-    - openclaw, opencode, qwen, windsurf
-    - Each integration has adapter for that harness
-  pass_criterion: Lists all 14 integration directories
+    - claude-code
+    - cursor
+    - codex
+    - github-copilot
+  pass_criterion: Returns files in the integrations directory
+  notes: "Structural target (directory). Original NL query moved to search_semantic (#1643)."
 - id: agency-agents-browse-1
   repo: agency-agents
   verb: browse
@@ -859,69 +859,67 @@ questions:
 - id: last30days-understand-1
   repo: last30days-skill
   verb: understand
-  query: what does pipeline.py do
+  query: last30days-skill/skills/last30days/scripts/pipeline.py
   expected:
     location: skills/last30days/scripts/pipeline.py
     key_facts:
-    - Orchestrates multi-source data collection
-    - Imports bird_x, bluesky, reddit, github, hackernews, perplexity
-    - Calls fusion.py to merge results
-    - Applies dedupe.py and normalize.py
-    - Exports rerank.py for relevance scoring
-  pass_criterion: Explains pipeline orchestration and module imports
+    - pipeline
+    - bird_x
+    - bluesky
+    - reddit
+    - fusion
+  pass_criterion: Returns structural info about pipeline.py (imports, symbols)
+  notes: "Structural target (file). Original NL query moved to search_semantic (#1643)."
 - id: last30days-understand-2
   repo: last30days-skill
   verb: understand
-  query: how does fusion.py work
+  query: last30days-skill/skills/last30days/scripts/lib/fusion.py
   expected:
     location: skills/last30days/scripts/lib/fusion.py
     key_facts:
-    - Merges results from multiple data sources
-    - Imports schema.py for data structure
-    - Handles deduplication at merge time
-    - Used by pipeline.py after all sources return
-  pass_criterion: Explains fusion merge logic and schema dependency
+    - fusion
+    - merge
+    - schema
+  pass_criterion: Returns structural info about fusion.py (symbols, imports)
+  notes: "Structural target (file). Original NL query moved to search_semantic (#1643)."
 - id: last30days-understand-3
   repo: last30days-skill
   verb: understand
-  query: what social media platforms are supported
+  query: last30days-skill/skills/last30days/scripts/lib
   expected:
-    location: skills/last30days/scripts/lib/
+    location: skills/last30days/scripts/lib
     key_facts:
-    - 'Twitter/X: bird_x.py, xai_x.py, xurl_x.py, xquik.py'
-    - 'Bluesky: bluesky.py'
-    - 'Reddit: reddit.py, reddit_enrich.py, reddit_rss.py, reddit_keyless.py'
-    - 'Instagram: instagram.py'
-    - 'TikTok: tiktok.py'
-    - 'Threads: threads.py'
-    - 'Pinterest: pinterest.py'
-  pass_criterion: Lists all 7 social platforms with module names
+    - bird_x
+    - bluesky
+    - reddit
+    - instagram
+    - tiktok
+  pass_criterion: Returns files in the lib directory (social media modules)
+  notes: "Structural target (directory). Original NL query moved to search_semantic (#1643)."
 - id: last30days-understand-4
   repo: last30days-skill
   verb: understand
-  query: what is the MCP server for
+  query: last30days-skill/mcp/cmd/last30days-pp-mcp
   expected:
-    location: mcp/ directory
+    location: mcp/cmd/last30days-pp-mcp
     key_facts:
-    - Go-based MCP server at cmd/last30days-pp-mcp/main.go
-    - Exposes last30days functionality as MCP tools
-    - internal/engine/ contains core logic
-    - internal/tools/ defines MCP tool interfaces
-    - internal/manifest/ manages tool registration
-  pass_criterion: Explains Go MCP server structure and purpose
+    - main.go
+    - mcp
+    - server
+  pass_criterion: Returns structural content of the MCP server entry point directory
+  notes: "Structural target (directory). Original NL query moved to search_semantic (#1643)."
 - id: last30days-understand-5
   repo: last30days-skill
   verb: understand
-  query: how does the skill handle authentication
+  query: last30days-skill/skills/last30days/scripts/lib/cookie_extract.py
   expected:
-    location: skills/last30days/scripts/lib/
+    location: skills/last30days/scripts/lib/cookie_extract.py
     key_facts:
-    - chrome_cookies.py extracts cookies from Chrome
-    - safari_cookies.py extracts cookies from Safari
-    - cookie_extract.py provides unified interface
-    - reddit_keyless.py allows Reddit without API key
-    - web_fetch_keyless.py and web_search_keyless.py provide keyless web access
-  pass_criterion: Explains cookie extraction and keyless access patterns
+    - cookie
+    - extract
+    - browser
+  pass_criterion: Returns structural info about cookie_extract.py
+  notes: "Structural target (file). Original NL query moved to search_semantic (#1643)."
 - id: last30days-impact-1
   repo: last30days-skill
   verb: impact
@@ -1198,68 +1196,68 @@ questions:
 - id: headroom-understand-1
   repo: headroom
   verb: understand
-  query: what does compute_frozen_count do
+  query: headroom::compute_frozen_count
   expected:
     location: crates/headroom-core/src/lib.rs
     key_facts:
-    - Re-exported from headroom-core
-    - Computes number of tokens to freeze for caching
-    - Used by cache_control module
-    - Part of cache optimization strategy
-  pass_criterion: Explains token freezing for cache optimization
+    - compute_frozen_count
+    - cache
+    - token
+  pass_criterion: Returns symbol definition and callers for compute_frozen_count
+  notes: "Structural target (symbol). Original NL query moved to search_semantic (#1643)."
 - id: headroom-understand-2
   repo: headroom
   verb: understand
-  query: how does the proxy route to Bedrock vs Vertex
+  query: headroom/crates/headroom-proxy/src
   expected:
-    location: crates/headroom-proxy/src/
+    location: crates/headroom-proxy/src
     key_facts:
-    - bedrock.rs handles AWS Bedrock routing
-    - vertex.rs handles GCP Vertex AI routing
-    - proxy.rs orchestrates routing decisions
-    - handlers.rs dispatches to correct backend
-    - config.rs defines backend endpoints
-  pass_criterion: Explains multi-backend routing architecture
+    - bedrock
+    - vertex
+    - proxy
+    - handlers
+    - config
+  pass_criterion: Returns modules/symbols in headroom-proxy src directory
+  notes: "Structural target (directory). Original NL query moved to search_semantic (#1643)."
 - id: headroom-understand-3
   repo: headroom
   verb: understand
-  query: what is headroom-parity for
+  query: headroom/crates/headroom-parity/src/lib.rs
   expected:
     location: crates/headroom-parity/src/lib.rs
     key_facts:
-    - Parity harness for comparing Python vs Rust implementations
-    - Used to verify Rust port matches Python behavior
-    - Testing/validation crate
-  pass_criterion: Explains parity testing between Python and Rust
+    - parity
+    - test
+  pass_criterion: Returns structural info about headroom-parity lib.rs
+  notes: "Structural target (file). Original NL query moved to search_semantic (#1643)."
 - id: headroom-understand-4
   repo: headroom
   verb: understand
-  query: how does SSE streaming work
+  query: headroom/crates/headroom-proxy/src/sse.rs
   expected:
     location: crates/headroom-proxy/src/sse.rs
     key_facts:
-    - Handles server-sent events streaming
-    - Used for streaming LLM responses
-    - Integrates with compression module
-    - Called by handlers for streaming endpoints
-  pass_criterion: Explains SSE streaming for LLM responses
+    - sse
+    - stream
+  pass_criterion: Returns structural info about sse.rs (symbols, exports)
+  notes: "Structural target (file). Original NL query moved to search_semantic (#1643)."
 - id: headroom-understand-5
   repo: headroom
   verb: understand
-  query: what modules does headroom-core export
+  query: headroom/crates/headroom-core/src/lib.rs
   expected:
     location: crates/headroom-core/src/lib.rs
     key_facts:
-    - 'auth_mode: authentication modes'
-    - 'cache_control: cache control logic'
-    - 'ccr: cache control records'
-    - 'compression_policy: compression strategies'
-    - 'relevance: relevance scoring'
-    - 'signals: signal processing'
-    - 'tokenizer: tokenization'
-    - 'transforms: data transformations'
-    - Re-exports compute_frozen_count
-  pass_criterion: Lists all 8 modules plus compute_frozen_count re-export
+    - auth_mode
+    - cache_control
+    - ccr
+    - compression_policy
+    - relevance
+    - signals
+    - tokenizer
+    - transforms
+  pass_criterion: Returns exported modules from headroom-core lib.rs
+  notes: "Structural target (file). Original NL query moved to search_semantic (#1643)."
 - id: headroom-impact-1
   repo: headroom
   verb: impact

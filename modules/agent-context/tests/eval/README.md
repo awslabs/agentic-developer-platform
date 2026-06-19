@@ -225,6 +225,26 @@ Semantic search answers a qualitative question ("is this relevant?") that can't 
 
 The golden dataset honestly notes when a verb doesn't apply rather than forcing it.
 
+## Verb Input Contracts (What Each Verb Accepts)
+
+> Full documentation: `modules/agent-context/docs/verb-contracts.md`
+
+**Critical distinction for golden.yaml authors:**
+
+| Verb | Accepts | Does NOT accept |
+|------|---------|-----------------|
+| `understand` | Structural targets: file paths, directories, symbol refs (`repo/path`, `repo::symbol`) | Natural-language questions ("what does X do", "how does Y work") |
+| `search_exact` | Literal tokens/strings known to exist in code | Vocabulary-mismatched concepts |
+| `search_semantic` | Concept queries, NL questions, vocabulary-gap queries | Structural paths (use understand) |
+| `impact` | Symbol references (same format as understand) | NL questions, directory targets |
+| `browse` | Directory URIs (`/repo/path`) | Questions, symbol refs |
+
+**Decision record (issue #1643, 2026-06-19):** The `understand` verb's contract is
+structural targeting — it calls `_parse_target()` which requires path-like or
+symbol-qualified strings. NL questions passed as `target` cannot be parsed and return
+empty results. Golden questions must always use structural targets for `understand`;
+NL questions belong to `search_semantic`.
+
 ## Files
 
 | File | Purpose |
