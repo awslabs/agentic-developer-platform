@@ -10,6 +10,7 @@ dependencies = [
     "respx>=0.21",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
+    "asgi-lifespan>=2.1",
 ]
 
 [project.optional-dependencies]

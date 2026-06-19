@@ -174,8 +174,17 @@ async def lifespan(app: FastAPI):
     # Experience tool (for remember + experience verbs)
     _init_experience_tool()
 
-    log.info("Context MCP Server started on %s:%d", config.host, config.port)
-    yield
+    # Start the MCP session manager's task group AFTER backends are initialized.
+    # The MCP tool shims reference module-level `state`, so backends must be live
+    # before the session manager accepts requests. The sub-app's own lifespan is
+    # NOT run by the parent (Starlette mount semantics), so we compose it here.
+    # Import inside function body to avoid circular import (mcp_app imports from
+    # this module; this module imports mcp_app at the bottom).
+    from .mcp_app import mcp_server  # noqa: E402
+
+    async with mcp_server.session_manager.run():
+        log.info("Context MCP Server started on %s:%d", config.host, config.port)
+        yield
 
     # Cleanup
     if state.db_pool:
