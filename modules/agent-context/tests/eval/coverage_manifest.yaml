@@ -1,0 +1,291 @@
+# Per-repo verb coverage manifest for the Knowledge Layer evaluation.
+# Documents which verbs are applicable per repo and WHY.
+#
+# Verb applicability depends on repo type:
+#   - search (exact + semantic): ALL repos (all have indexed files)
+#   - browse: ALL repos (all have directory structure)
+#   - understand: Code + skills repos with meaningful source modules
+#   - impact: ONLY code repos with SCIP/Neptune call graphs (~8 repos)
+#
+# This manifest ensures the eval doesn't penalize repos for missing
+# capabilities they structurally cannot support.
+
+repos:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CODE REPOS (have Neptune call graphs → full verb coverage)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: headroom
+    url: https://github.com/chopratejas/headroom
+    type: code
+    languages: [rust, python]
+    neptune_call_graph: true
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: true
+      impact: true
+      browse: true
+    rationale: >
+      Large Rust + Python codebase with crates/, headroom/ package, substantial
+      call graph. Full verb coverage including impact (function-level callers
+      traced through imports in both Rust and Python modules).
+
+  - name: Agent-Reach
+    url: https://github.com/Panniantong/Agent-Reach
+    type: code
+    languages: [python]
+    neptune_call_graph: true
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: true
+      impact: true
+      browse: true
+    rationale: >
+      Python codebase with clear module structure (channels/, cli.py, core.py).
+      Import relationships are explicit and traceable (e.g., cli.py imports
+      cookie_extract.configure_from_browser). Neptune call graph supports impact.
+
+  - name: CopilotKit
+    url: https://github.com/CopilotKit/CopilotKit
+    type: code
+    languages: [typescript, javascript]
+    neptune_call_graph: true
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: true
+      impact: true
+      browse: true
+    rationale: >
+      Large TypeScript monorepo with inter-package dependencies. Note: excluded
+      from DeepWiki (>600MB OOM) but may still have SCIP/code-index data. Cross-
+      package import chains provide rich impact analysis.
+    notes: "Excluded from active corpus due to OOM on DeepWiki; golden questions retained for when re-enabled."
+
+  - name: codegraph
+    url: https://github.com/colbymchenry/codegraph
+    type: code
+    languages: [typescript]
+    neptune_call_graph: true
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: true
+      impact: true
+      browse: true
+    rationale: >
+      TypeScript codebase with clear module boundaries (src/mcp/, src/extraction/,
+      src/graph/). Rich import relationships between modules (e.g., engine.ts is
+      imported by daemon.ts, index.ts, session.ts). SCIP-indexed.
+
+  - name: Understand-Anything
+    url: https://github.com/Egonex-AI/Understand-Anything
+    type: code
+    languages: [typescript]
+    neptune_call_graph: true
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: true
+      impact: true
+      browse: true
+    rationale: >
+      TypeScript project with understand-anything-plugin/src/ containing
+      modules that export and import from each other (context-builder.ts,
+      diff-analyzer.ts, explain-builder.ts, onboard-builder.ts). SCIP-indexed.
+
+  - name: CloakBrowser
+    url: https://github.com/CloakHQ/CloakBrowser
+    type: code
+    languages: [python]
+    neptune_call_graph: true
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: true
+      impact: true
+      browse: true
+    rationale: >
+      Python package with clear import hierarchy: config.py is imported by
+      browser.py, download.py, and geoip.py. Functions/classes well-defined
+      (launch, ensure_binary, ProxySettings, etc.). SCIP-indexed.
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SKILLS REPOS (mixed: some with code, some markdown-only)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: agent-skills
+    url: https://github.com/addyosmani/agent-skills
+    type: skills
+    languages: [markdown, javascript]
+    neptune_call_graph: false
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: true
+      impact: false
+      browse: true
+    rationale: >
+      Primarily markdown skills + TOML command definitions. Has one JS source
+      file (scripts/validate-skills.js) but no meaningful call graph across
+      modules. Understand applies to skill/command structure explanation.
+      No impact — no inter-module call relationships to trace.
+
+  - name: superpowers
+    url: https://github.com/obra/superpowers
+    type: skills
+    languages: [markdown, javascript, typescript]
+    neptune_call_graph: false
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: true
+      impact: false
+      browse: true
+    rationale: >
+      Skills library with thin runtime layers (.opencode/plugins/superpowers.js,
+      .pi/extensions/superpowers.ts). Understand applies to skill explanations.
+      No meaningful cross-module call graph for impact analysis.
+
+  - name: agency-agents
+    url: https://github.com/msitarzewski/agency-agents
+    type: skills
+    languages: [markdown, yaml]
+    neptune_call_graph: false
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: false
+      impact: false
+      browse: true
+    rationale: >
+      Pure agent definition repo (markdown files organized by division).
+      No source code modules to "understand" in a code sense. Browse and
+      search work well for navigating the agent taxonomy structure.
+
+  - name: last30days-skill
+    url: https://github.com/mvanhorn/last30days-skill
+    type: skills
+    languages: [python, markdown]
+    neptune_call_graph: false
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: true
+      impact: false
+      browse: true
+    rationale: >
+      Has skill definitions and configuration files. Understand applies to
+      explaining the skill structure (SKILL.md, CONCEPTS.md). No code-level
+      call graph for impact.
+
+  - name: career-ops
+    url: https://github.com/santifer/career-ops
+    type: skills
+    languages: [javascript, markdown]
+    neptune_call_graph: false
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: true
+      impact: false
+      browse: true
+    rationale: >
+      Job search automation with .mjs scripts and mode definitions. Has
+      substantial code (build-cv-latex.mjs, followup-cadence.mjs, etc.) but
+      .mjs without tsconfig means SCIP cannot index it — no Neptune call graph.
+      Understand applies to mode/script explanations.
+
+  - name: skills
+    url: https://github.com/mattpocock/skills
+    type: skills
+    languages: [markdown, typescript]
+    neptune_call_graph: false
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: true
+      impact: false
+      browse: true
+    rationale: >
+      Matt Pocock's skill collection organized by category (engineering/,
+      personal/, productivity/). Primarily markdown. Understand applies to
+      skill explanation. No code-level call graph.
+
+  - name: academic-research-skills
+    url: https://github.com/Imbad0202/academic-research-skills
+    type: skills
+    languages: [markdown, python]
+    neptune_call_graph: false
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: true
+      impact: false
+      browse: true
+    rationale: >
+      Academic research workflow with commands (ars-plan, ars-reviewer, etc.),
+      multi-agent pipeline definitions, and shared patterns. Understand applies
+      to explaining the pipeline stages. No SCIP-indexable call graph.
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # LIST REPOS (curated markdown lists — most limited verb coverage)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - name: awesome-selfhosted
+    url: https://github.com/awesome-selfhosted/awesome-selfhosted
+    type: list
+    languages: [markdown]
+    neptune_call_graph: false
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: false
+      impact: false
+      browse: true
+    rationale: >
+      Curated markdown list. No code, no modules to "understand" or trace
+      impact for. Search (exact entry names + semantic category matching) and
+      browse (file listing) are the only applicable verbs.
+
+  - name: Awesome-Hacking
+    url: https://github.com/Hack-with-Github/Awesome-Hacking
+    type: list
+    languages: [markdown]
+    neptune_call_graph: false
+    applicable_verbs:
+      search_exact: true
+      search_semantic: true
+      understand: false
+      impact: false
+      browse: true
+    rationale: >
+      Curated markdown list of hacking resources. Same as awesome-selfhosted:
+      only search and browse apply. No code structure for understand/impact.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NON-REPO-GROUNDED VERBS
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# remember / experience: These are session/personal memory verbs, NOT repo-query
+# verbs. They are evaluated with a small round-trip test (store → recall), not
+# per-repo golden answers.
+#
+# Test approach for remember/experience:
+#   1. Store a fact via the remember verb (e.g., "The deploy key is X")
+#   2. Recall it in a subsequent query ("What is the deploy key?")
+#   3. Pass criterion: recalled fact matches stored fact exactly
+#
+# These tests live separately from the repo-grounded golden dataset.
+
+non_repo_verbs:
+  remember:
+    eval_approach: "round-trip store→recall test"
+    applicable_to_repos: false
+    reason: "Session/personal memory; not tied to any specific repo content"
+  experience:
+    eval_approach: "round-trip store→recall test"
+    applicable_to_repos: false
+    reason: "Session memory/experience; not tied to any specific repo content"

@@ -1,5 +1,6 @@
 # Golden-answer evaluation dataset for the Knowledge Layer.
-# ~75 questions (5 per repo) spread across MCP verbs.
+# Per-repo × per-verb grounded questions (5 per applicable verb per repo).
+# Total: 325 questions across 15 repos, grounded in actual GitHub repo source.
 #
 # Verbs:
 #   search_exact    — literal token/symbol/string known to exist
@@ -10,1129 +11,3680 @@
 #
 # Each question has:
 #   id, repo, verb, query, expected (verb-specific), pass_criterion, notes
+#
+# Grounding:
+#   Every expected answer is verified against the actual repo source on GitHub.
+#   Anti-gaming: expected facts are verifiable in code, not echoed from query.
+#
+# Coverage:
+#   - Code repos (6): search_exact, search_semantic, understand, impact, browse
+#   - Skill repos with code (1, last30days-skill): all 5 verbs
+#   - Skill repos without impact (6): search_exact, search_semantic, understand, browse
+#   - List repos (2): search_exact, search_semantic, browse
+#   - remember/experience: NOT repo-grounded (store→recall round-trip test only)
 
 questions:
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 1: agent-skills (addyosmani/agent-skills) — skills/agent
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: agent-skills-01
-    repo: agent-skills
-    verb: search_exact
-    query: "doubt-driven-development"
-    expected:
-      files: ["skills/doubt-driven-development"]
-    pass_criterion: "Expected skill directory/file in top 3 results"
-
-  - id: agent-skills-02
-    repo: agent-skills
-    verb: search_semantic
-    query: "automated code quality review before merging"
-    expected:
-      files: ["commands/review.toml", "skills/code-review"]
-    pass_criterion: "Review-related skill or command file in top 5 results"
-    notes: "Vocabulary mismatch: query says 'merging' and 'quality review', repo uses 'review' command and skill names"
-
-  - id: agent-skills-03
-    repo: agent-skills
-    verb: browse
-    query: "/agent-skills/commands"
-    expected:
-      entries: ["build.toml", "review.toml", "spec.toml", "test.toml", "ship.toml"]
-    pass_criterion: "At least 3 of the 7 TOML command files listed"
-
-  - id: agent-skills-04
-    repo: agent-skills
-    verb: understand
-    query: "agent-skills/plugin.json"
-    expected:
-      location: "plugin.json"
-      key_facts: ["agent-skills", "1.0.0", "commands", "skills"]
-    pass_criterion: "Response mentions plugin name, version, and structure"
-
-  - id: agent-skills-05
-    repo: agent-skills
-    verb: search_semantic
-    query: "breaking down complex features into smaller implementation tasks"
-    expected:
-      files: ["commands/planning.toml", "skills/idea-refine"]
-    pass_criterion: "Planning command or idea-refine skill in top 5 results"
-    notes: "Vocabulary mismatch: query uses 'breaking down' and 'implementation tasks', repo uses 'planning' and 'idea-refine'"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 2: superpowers (obra/superpowers) — skills/agent
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: superpowers-01
-    repo: superpowers
-    verb: search_exact
-    query: "subagent-driven-development"
-    expected:
-      files: ["skills/subagent-driven-development"]
-    pass_criterion: "Subagent-driven-development skill file in top 3 results"
-
-  - id: superpowers-02
-    repo: superpowers
-    verb: search_semantic
-    query: "running multiple independent coding tasks simultaneously"
-    expected:
-      files: ["skills/dispatching-parallel-agents", "skills/using-git-worktrees"]
-    pass_criterion: "Parallel agents or worktrees skill in top 5 results"
-    notes: "Vocabulary mismatch: query says 'simultaneously' and 'independent tasks', repo uses 'dispatching-parallel-agents' and 'worktrees'"
-
-  - id: superpowers-03
-    repo: superpowers
-    verb: browse
-    query: "/superpowers/skills"
-    expected:
-      entries: ["subagent-driven-development", "dispatching-parallel-agents", "using-git-worktrees", "verification-before-completion", "writing-skills"]
-    pass_criterion: "At least 4 of the 14 skill directories listed"
-
-  - id: superpowers-04
-    repo: superpowers
-    verb: understand
-    query: "superpowers/skills/subagent-driven-development"
-    expected:
-      location: "skills/subagent-driven-development"
-      key_facts: ["sub-agent", "spec", "plan", "implement", "TDD"]
-    pass_criterion: "Response explains the subagent workflow with spec/plan/implement phases"
-
-  - id: superpowers-05
-    repo: superpowers
-    verb: search_exact
-    query: "implementer-prompt.md"
-    expected:
-      files: ["skills/subagent-driven-development/implementer-prompt.md"]
-    pass_criterion: "Implementer prompt file found in top 3 results"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 3: agency-agents (msitarzewski/agency-agents) — skills/agent
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: agency-agents-01
-    repo: agency-agents
-    verb: search_exact
-    query: "engineering-solidity-smart-contract-engineer"
-    expected:
-      files: ["engineering/engineering-solidity-smart-contract-engineer.md"]
-    pass_criterion: "Solidity engineer agent file in top 3 results"
-
-  - id: agency-agents-02
-    repo: agency-agents
-    verb: search_semantic
-    query: "geographic information systems mapping and spatial analysis"
-    expected:
-      files: ["gis/"]
-    pass_criterion: "GIS division directory or agent file in top 5 results"
-    notes: "Vocabulary mismatch: query uses 'geographic information systems' and 'spatial analysis', repo uses 'gis' directory name"
-
-  - id: agency-agents-03
-    repo: agency-agents
-    verb: browse
-    query: "/agency-agents"
-    expected:
-      entries: ["engineering", "design", "marketing", "security", "finance", "game-development", "gis", "spatial-computing"]
-    pass_criterion: "At least 5 of the 16+ division directories listed"
-
-  - id: agency-agents-04
-    repo: agency-agents
-    verb: search_semantic
-    query: "virtual reality and augmented reality application development agents"
-    expected:
-      files: ["spatial-computing/"]
-    pass_criterion: "Spatial-computing division in top 5 results"
-    notes: "Vocabulary mismatch: query says 'virtual reality' and 'augmented reality', repo uses 'spatial-computing'"
-
-  - id: agency-agents-05
-    repo: agency-agents
-    verb: search_exact
-    query: "install.sh"
-    expected:
-      files: ["scripts/install.sh"]
-    pass_criterion: "Install script in top 3 results"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 4: last30days-skill (mvanhorn/last30days-skill) — skills
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: last30days-01
-    repo: last30days-skill
-    verb: search_exact
-    query: "last30days"
-    expected:
-      files: ["last30days"]
-    pass_criterion: "last30days skill directory or file in top 3 results"
-
-  - id: last30days-02
-    repo: last30days-skill
-    verb: search_semantic
-    query: "aggregating social media content from multiple platforms with popularity ranking"
-    expected:
-      files: ["skills/last30days/SKILL.md", "README.md"]
-    pass_criterion: "Main skill or README in top 5 results"
-    notes: "Vocabulary mismatch: query says 'aggregating' and 'popularity ranking', repo uses terms like 'upvotes, likes, real money' scoring"
-
-  - id: last30days-03
-    repo: last30days-skill
-    verb: browse
-    query: "/last30days-skill"
-    expected:
-      entries: ["skills", "tests", "fixtures", "hooks", "docs"]
-    pass_criterion: "At least 3 top-level directories listed"
-
-  - id: last30days-04
-    repo: last30days-skill
-    verb: understand
-    query: "last30days-skill/CONCEPTS.md"
-    expected:
-      location: "CONCEPTS.md"
-      key_facts: ["CONCEPTS", "Skill", "domain"]
-    pass_criterion: "Response identifies CONCEPTS.md and its role in defining domain vocabulary"
-
-  - id: last30days-05
-    repo: last30days-skill
-    verb: search_exact
-    query: "HERMES_SETUP"
-    expected:
-      files: ["HERMES_SETUP.md"]
-    pass_criterion: "Hermes setup file in top 3 results"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 5: headroom (chopratejas/headroom) — code
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: headroom-01
-    repo: headroom
-    verb: search_exact
-    query: "ContentRouter"
-    expected:
-      files: ["content_router", "headroom/transforms"]
-    pass_criterion: "ContentRouter class/struct in top 3 results"
-
-  - id: headroom-02
-    repo: headroom
-    verb: search_semantic
-    query: "reducing LLM input token costs while preserving answer accuracy"
-    expected:
-      files: ["headroom/compress.py", "README.md", "headroom/lean_ctx/"]
-    pass_criterion: "Compression module or README in top 5 results"
-    notes: "Vocabulary mismatch: query says 'reducing token costs' and 'preserving accuracy', repo uses 'compression' and 'context' terminology"
-
-  - id: headroom-03
-    repo: headroom
-    verb: understand
-    query: "headroom/headroom/compress.py"
-    expected:
-      location: "headroom/compress.py"
-      key_facts: ["CompressConfig", "CompressResult", "compress", "pipeline"]
-    pass_criterion: "Response identifies compression entry-point symbols (CompressConfig, CompressResult, compress)"
-
-  - id: headroom-04
-    repo: headroom
-    verb: impact
-    query: "headroom/headroom/compress.py::ContentRouter"
-    expected:
-      affected: ["proxy", "mcp_registry", "lean_ctx"]
-    pass_criterion: "At least 1 downstream consumer of ContentRouter identified"
-
-  - id: headroom-05
-    repo: headroom
-    verb: browse
-    query: "/headroom/crates"
-    expected:
-      entries: ["headroom-core", "headroom-parity", "headroom-proxy", "headroom-py"]
-    pass_criterion: "At least 3 of the 4 Rust crates listed"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 6: Agent-Reach (Panniantong/Agent-Reach) — code
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: agent-reach-01
-    repo: Agent-Reach
-    verb: search_exact
-    query: "cookie_extract"
-    expected:
-      files: ["agent_reach/cookie_extract.py"]
-    pass_criterion: "cookie_extract.py in top 3 results"
-
-  - id: agent-reach-02
-    repo: Agent-Reach
-    verb: search_semantic
-    query: "checking connectivity status to external web services"
-    expected:
-      files: ["agent_reach/doctor.py"]
-    pass_criterion: "doctor.py (diagnostic command) in top 5 results"
-    notes: "Vocabulary mismatch: query says 'connectivity status' and 'external web services', repo uses 'doctor' command that checks platform reachability"
-
-  - id: agent-reach-03
-    repo: Agent-Reach
-    verb: understand
-    query: "Agent-Reach/agent_reach/channels"
-    expected:
-      location: "agent_reach/channels"
-      key_facts: ["youtube", "twitter", "reddit", "bilibili", "xiaohongshu"]
-    pass_criterion: "Response lists platform-specific channel modules"
-
-  - id: agent-reach-04
-    repo: Agent-Reach
-    verb: impact
-    query: "Agent-Reach/agent_reach/cookie_extract.py"
-    expected:
-      affected: ["cli.py", "test_cookie"]
-    pass_criterion: "At least 1 file that references cookie_extract identified"
-
-  - id: agent-reach-05
-    repo: Agent-Reach
-    verb: browse
-    query: "/Agent-Reach/agent_reach/channels"
-    expected:
-      entries: ["youtube.py", "twitter.py", "reddit.py", "bilibili.py", "xiaohongshu.py"]
-    pass_criterion: "At least 3 platform channel files listed"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 7: CopilotKit (CopilotKit/CopilotKit) — code
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: copilotkit-01
-    repo: CopilotKit
-    verb: search_exact
-    query: "useCopilotAction"
-    expected:
-      files: ["packages/react-core"]
-    pass_criterion: "useCopilotAction hook definition in react-core package, top 3 results"
-
-  - id: copilotkit-02
-    repo: CopilotKit
-    verb: search_semantic
-    query: "building conversational AI interfaces embedded in web applications"
-    expected:
-      files: ["packages/react-ui", "packages/react-textarea", "README.md"]
-    pass_criterion: "React UI package or README in top 5 results"
-    notes: "Vocabulary mismatch: query says 'conversational AI interfaces embedded in web applications', repo uses 'CopilotKit', 'react-ui', 'react-textarea'"
-
-  - id: copilotkit-03
-    repo: CopilotKit
-    verb: understand
-    query: "CopilotKit/packages/react-core"
-    expected:
-      location: "packages/react-core"
-      key_facts: ["hooks", "CopilotKit", "action", "state", "React"]
-    pass_criterion: "Response explains react-core as the hook/state layer for CopilotKit"
-
-  - id: copilotkit-04
-    repo: CopilotKit
-    verb: impact
-    query: "CopilotKit/packages/react-core"
-    expected:
-      affected: ["react-ui", "react-textarea", "react-native", "angular", "vue"]
-    pass_criterion: "At least 2 downstream packages that depend on react-core identified"
-
-  - id: copilotkit-05
-    repo: CopilotKit
-    verb: browse
-    query: "/CopilotKit/packages"
-    expected:
-      entries: ["react-core", "react-ui", "react-textarea", "runtime", "angular", "vue"]
-    pass_criterion: "At least 4 of the SDK packages listed"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 8: career-ops (santifer/career-ops) — skills
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: career-ops-01
-    repo: career-ops
-    verb: search_exact
-    query: "build-cv-latex.mjs"
-    expected:
-      files: ["build-cv-latex.mjs"]
-    pass_criterion: "CV builder script in top 3 results"
-
-  - id: career-ops-02
-    repo: career-ops
-    verb: search_semantic
-    query: "automated resume generation tailored to specific job postings"
-    expected:
-      files: ["build-cv-latex.mjs", "modes/latex.md", "modes/apply.md"]
-    pass_criterion: "CV/resume generation file in top 5 results"
-    notes: "Vocabulary mismatch: query says 'resume generation tailored to job postings', repo uses 'build-cv-latex' and 'apply' mode"
-
-  - id: career-ops-03
-    repo: career-ops
-    verb: browse
-    query: "/career-ops/modes"
-    expected:
-      entries: ["apply.md", "scan.md", "pipeline.md", "followup.md", "latex.md", "tracker.md"]
-    pass_criterion: "At least 4 of the mode files listed"
-
-  - id: career-ops-04
-    repo: career-ops
-    verb: understand
-    query: "career-ops/modes/auto-pipeline.md"
-    expected:
-      location: "modes/auto-pipeline.md"
-      key_facts: ["pipeline", "auto", "Mode"]
-    pass_criterion: "Response identifies auto-pipeline mode file and its purpose"
-
-  - id: career-ops-05
-    repo: career-ops
-    verb: search_exact
-    query: "followup-cadence"
-    expected:
-      files: ["modes/followup.md"]
-      content: ["followup"]
-    pass_criterion: "Followup cadence concept in top 3 results"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 9: codegraph (colbymchenry/codegraph) — code
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: codegraph-01
-    repo: codegraph
-    verb: search_exact
-    query: "dynamic-boundaries"
-    expected:
-      files: ["src/mcp/dynamic-boundaries.ts"]
-    pass_criterion: "dynamic-boundaries.ts in top 3 results"
-
-  - id: codegraph-02
-    repo: codegraph
-    verb: search_semantic
-    query: "parsing source code structure to understand function relationships"
-    expected:
-      files: ["src/extraction/", "src/mcp/engine.ts"]
-    pass_criterion: "Extraction module or engine in top 5 results"
-    notes: "Vocabulary mismatch: query says 'parsing source code structure' and 'function relationships', repo uses 'extraction' and tree-sitter based graph"
-
-  - id: codegraph-03
-    repo: codegraph
-    verb: understand
-    query: "codegraph/src/mcp/engine.ts"
-    expected:
-      location: "src/mcp/engine.ts"
-      key_facts: ["mcp", "engine", "parseDebounceEnv"]
-    pass_criterion: "Response identifies engine.ts location and its exported symbols"
-
-  - id: codegraph-04
-    repo: codegraph
-    verb: impact
-    query: "codegraph/src/mcp/engine.ts"
-    expected:
-      affected: ["tools.ts", "server-instructions.ts", "daemon.ts"]
-    pass_criterion: "At least 1 MCP module that depends on engine.ts identified"
-
-  - id: codegraph-05
-    repo: codegraph
-    verb: browse
-    query: "/codegraph/src/extraction"
-    expected:
-      entries: ["vue-extractor.ts", "svelte-extractor.ts", "razor-extractor.ts", "liquid-extractor.ts"]
-    pass_criterion: "At least 3 language-specific extractor files listed"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 10: Understand-Anything (Egonex-AI/Understand-Anything) — code
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: understand-anything-01
-    repo: Understand-Anything
-    verb: search_exact
-    query: "understand-dashboard"
-    expected:
-      files: ["understand-anything-plugin/skills/understand-dashboard"]
-    pass_criterion: "Dashboard skill in top 3 results"
-
-  - id: understand-anything-02
-    repo: Understand-Anything
-    verb: search_semantic
-    query: "visualizing code architecture as an interactive graph diagram"
-    expected:
-      files: ["understand-anything-plugin/skills/understand-dashboard", "understand-anything-plugin/skills/understand"]
-    pass_criterion: "Dashboard or understand skill in top 5 results"
-    notes: "Vocabulary mismatch: query says 'interactive graph diagram', repo uses 'knowledge graph' and 'interactive dashboard'"
-
-  - id: understand-anything-03
-    repo: Understand-Anything
-    verb: understand
-    query: "Understand-Anything/understand-anything-plugin/skills"
-    expected:
-      location: "understand-anything-plugin/skills"
-      key_facts: ["understand", "dashboard", "diff", "domain", "knowledge", "onboard"]
-    pass_criterion: "Response lists the available skill commands and their purposes"
-
-  - id: understand-anything-04
-    repo: Understand-Anything
-    verb: impact
-    query: "Understand-Anything/understand-anything-plugin/skills/understand"
-    expected:
-      affected: ["understand-dashboard", "understand-diff", "understand-domain"]
-    pass_criterion: "At least 1 downstream skill that builds on base understand"
-
-  - id: understand-anything-05
-    repo: Understand-Anything
-    verb: browse
-    query: "/Understand-Anything/understand-anything-plugin/skills"
-    expected:
-      entries: ["understand", "understand-chat", "understand-dashboard", "understand-diff", "understand-domain", "understand-explain", "understand-knowledge", "understand-onboard"]
-    pass_criterion: "At least 5 of the 8 skill directories listed"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 11: CloakBrowser (CloakHQ/CloakBrowser) — code
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: cloakbrowser-01
-    repo: CloakBrowser
-    verb: search_exact
-    query: "humanize"
-    expected:
-      files: ["cloakbrowser/human/", "cloakbrowser/browser.py"]
-    pass_criterion: "Humanize module or browser.py in top 3 results"
-
-  - id: cloakbrowser-02
-    repo: CloakBrowser
-    verb: search_semantic
-    query: "evading automated bot detection by mimicking human browsing patterns"
-    expected:
-      files: ["cloakbrowser/human/", "cloakbrowser/browser.py", "tests/test_stealth.py"]
-    pass_criterion: "Human simulation module or stealth test in top 5 results"
-    notes: "Vocabulary mismatch: query says 'evading bot detection' and 'mimicking human patterns', repo uses 'humanize', 'stealth', and C++ fingerprint patches"
-
-  - id: cloakbrowser-03
-    repo: CloakBrowser
-    verb: understand
-    query: "CloakBrowser/cloakbrowser/browser.py"
-    expected:
-      location: "cloakbrowser/browser.py"
-      key_facts: ["launch", "Playwright", "fingerprint", "stealth", "browser"]
-    pass_criterion: "Response explains browser.py as the main entry point with launch() function"
-
-  - id: cloakbrowser-04
-    repo: CloakBrowser
-    verb: impact
-    query: "CloakBrowser/cloakbrowser/config.py"
-    expected:
-      affected: ["browser.py", "download.py", "geoip.py"]
-    pass_criterion: "At least 1 module that imports/uses config identified"
-
-  - id: cloakbrowser-05
-    repo: CloakBrowser
-    verb: browse
-    query: "/CloakBrowser/cloakbrowser"
-    expected:
-      entries: ["browser.py", "config.py", "download.py", "geoip.py", "human", "widevine.py"]
-    pass_criterion: "At least 4 of the package modules listed"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 12: skills (mattpocock/skills) — skills
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: skills-matt-01
-    repo: skills
-    verb: search_exact
-    query: "grill-with-docs"
-    expected:
-      files: ["grill-with-docs"]
-    pass_criterion: "Grill-with-docs skill in top 3 results"
-
-  - id: skills-matt-02
-    repo: skills
-    verb: search_semantic
-    query: "questioning assumptions and challenging design decisions during development"
-    expected:
-      files: ["skills/grill-me", "skills/grill-with-docs"]
-    pass_criterion: "Grill-me or grill-with-docs skill in top 5 results"
-    notes: "Vocabulary mismatch: query says 'questioning assumptions' and 'challenging decisions', repo uses 'grill-me' and 'grill-with-docs'"
-
-  - id: skills-matt-03
-    repo: skills
-    verb: browse
-    query: "/skills/skills"
-    expected:
-      entries: ["engineering", "personal", "productivity", "deprecated", "misc", "in-progress"]
-    pass_criterion: "At least 3 of the skill category directories listed"
-
-  - id: skills-matt-04
-    repo: skills
-    verb: understand
-    query: "skills/skills/tdd"
-    expected:
-      location: "skills/test-driven-development"
-      key_facts: ["test", "driven", "development", "TDD"]
-    pass_criterion: "Response explains TDD skill workflow"
-
-  - id: skills-matt-05
-    repo: skills
-    verb: search_exact
-    query: "improve-codebase-architecture"
-    expected:
-      files: ["improve-codebase-architecture"]
-    pass_criterion: "Architecture improvement skill in top 3 results"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 13: academic-research-skills (Imbad0202/academic-research-skills) — skills
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: academic-research-01
-    repo: academic-research-skills
-    verb: search_exact
-    query: "ars-plan"
-    expected:
-      files: ["commands/"]
-      content: ["ars-plan"]
-    pass_criterion: "ars-plan command reference in top 3 results"
-
-  - id: academic-research-02
-    repo: academic-research-skills
-    verb: search_semantic
-    query: "detecting fabricated citations and verifying reference authenticity"
-    expected:
-      files: ["academic-paper-reviewer/", "shared/ground_truth_isolation_pattern.md"]
-    pass_criterion: "Paper reviewer or ground truth isolation in top 5 results"
-    notes: "Vocabulary mismatch: query says 'fabricated citations' and 'reference authenticity', repo uses 'fabricated-reference' as a HIGH-WARN class and 'ground_truth_isolation_pattern'"
-
-  - id: academic-research-03
-    repo: academic-research-skills
-    verb: browse
-    query: "/academic-research-skills"
-    expected:
-      entries: ["academic-paper", "academic-paper-reviewer", "academic-pipeline", "deep-research", "skills", "commands", "shared"]
-    pass_criterion: "At least 4 of the top-level directories listed"
-
-  - id: academic-research-04
-    repo: academic-research-skills
-    verb: understand
-    query: "academic-research-skills/academic-pipeline"
-    expected:
-      location: "academic-pipeline"
-      key_facts: ["pipeline", "stages", "integrity", "research", "agents"]
-    pass_criterion: "Response explains the 10-stage pipeline orchestrator"
-
-  - id: academic-research-05
-    repo: academic-research-skills
-    verb: search_semantic
-    query: "multi-agent team collaborating on literature review and synthesis"
-    expected:
-      files: ["deep-research/", "academic-paper/"]
-    pass_criterion: "Deep research or academic paper skill in top 5 results"
-    notes: "Vocabulary mismatch: query says 'multi-agent team' and 'literature review', repo uses '13-agent team' for deep-research and '12-agent' for paper writing"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 14: awesome-selfhosted — list
-  # Note: structural/impact verbs don't apply to a curated markdown list.
-  # Leaning toward semantic + browse + content search.
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: awesome-selfhosted-01
-    repo: awesome-selfhosted
-    verb: search_exact
-    query: "Plausible"
-    expected:
-      files: ["README.md"]
-      content: ["Plausible"]
-    pass_criterion: "Plausible Analytics entry found in README, top 3 results"
-
-  - id: awesome-selfhosted-02
-    repo: awesome-selfhosted
-    verb: search_semantic
-    query: "privacy-respecting website visitor counting without cookies"
-    expected:
-      files: ["README.md"]
-      content: ["Plausible", "GoatCounter", "Matomo", "Analytics"]
-    pass_criterion: "Analytics section or privacy-friendly analytics tool in top 5 results"
-    notes: "Vocabulary mismatch: query says 'visitor counting without cookies', repo lists analytics tools by name with license tags"
-
-  - id: awesome-selfhosted-03
-    repo: awesome-selfhosted
-    verb: browse
-    query: "/awesome-selfhosted"
-    expected:
-      entries: ["README.md", "non-free.md"]
-    pass_criterion: "README.md and non-free.md listed"
-
-  - id: awesome-selfhosted-04
-    repo: awesome-selfhosted
-    verb: search_semantic
-    query: "open source alternatives to commercial AI chatbot platforms"
-    expected:
-      files: ["README.md"]
-      content: ["Generative Artificial Intelligence", "GenAI"]
-    pass_criterion: "GenAI section or AI-related entries in top 5 results"
-    notes: "Vocabulary mismatch: query says 'AI chatbot platforms', repo uses category 'Generative Artificial Intelligence (GenAI)'"
-
-  - id: awesome-selfhosted-05
-    repo: awesome-selfhosted
-    verb: search_exact
-    query: "Community-Supported Agriculture"
-    expected:
-      files: ["README.md"]
-      content: ["Community-Supported Agriculture"]
-    pass_criterion: "CSA section heading found in top 3 results"
-    notes: "Tests exact match on an unusual category name"
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # Repo 15: Awesome-Hacking — list
-  # Note: structural/impact verbs don't apply. Leaning toward
-  # semantic + browse + content search.
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  - id: awesome-hacking-01
-    repo: Awesome-Hacking
-    verb: search_exact
-    query: "GTFOBins"
-    expected:
-      files: ["README.md"]
-      content: ["GTFOBins"]
-    pass_criterion: "GTFOBins entry found in README, top 3 results"
-
-  - id: awesome-hacking-02
-    repo: Awesome-Hacking
-    verb: search_semantic
-    query: "exploiting legitimate system utilities to bypass security controls"
-    expected:
-      files: ["README.md"]
-      content: ["GTFOBins", "Unix binaries"]
-    pass_criterion: "GTFOBins or LOLBAS-related entry in top 5 results"
-    notes: "Vocabulary mismatch: query says 'exploiting legitimate system utilities', repo lists GTFOBins as 'Unix binaries for bypassing security restrictions'"
-
-  - id: awesome-hacking-03
-    repo: Awesome-Hacking
-    verb: browse
-    query: "/Awesome-Hacking"
-    expected:
-      entries: ["README.md", "contributing.md"]
-    pass_criterion: "README.md listed in browse results"
-
-  - id: awesome-hacking-04
-    repo: Awesome-Hacking
-    verb: search_semantic
-    query: "using machine learning and artificial intelligence for network defense"
-    expected:
-      files: ["README.md"]
-      content: ["awesome-rl-for-cybersecurity", "Reinforcement Learning"]
-    pass_criterion: "RL for cybersecurity or AI-security list in top 5 results"
-    notes: "Vocabulary mismatch: query says 'machine learning for network defense', repo lists 'awesome-rl-for-cybersecurity' about Reinforcement Learning for Cyber Security"
-
-  - id: awesome-hacking-05
-    repo: Awesome-Hacking
-    verb: search_exact
-    query: "Capsulecorp Pentest"
-    expected:
-      files: ["README.md"]
-      content: ["Capsulecorp Pentest"]
-    pass_criterion: "Capsulecorp Pentest entry found in top 3 results"
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# RELEVANCE EVALUATION: expected_substance for a representative subset
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# These entries provide substance descriptions and grounding for the LLM judge.
-# They are used only in --mode relevance (not presence mode).
-# Format: question_id -> expected_substance + grounding_snippet + pass_threshold
-#
-# Start with 20 questions spanning all 5 verbs. Expand as the methodology matures.
-
-relevance_annotations:
-  # --- search_exact (4 questions) ---
-  agent-skills-01:
-    expected_substance: |
-      The response should return the doubt-driven-development skill file/directory
-      as the top result or near the top. The returned snippet should show content
-      from the actual skill definition, not just match the filename.
-    grounding_snippet: |
-      File: skills/doubt-driven-development/skill.toml
-      Contains a skill definition for systematic doubt-driven development methodology.
-    pass_threshold: 2
-
-  superpowers-01:
-    expected_substance: |
-      The subagent-driven-development skill directory/file must be the top result.
-      The snippet should contain content relating to delegating work to sub-agents.
-    grounding_snippet: |
-      File: skills/subagent-driven-development
-      A skill definition for driving development through sub-agent delegation patterns.
-    pass_threshold: 2
-
-  awesome-hacking-01:
-    expected_substance: |
-      The GTFOBins reference in README.md should be found. The relevant snippet
-      should mention Unix binaries that can be used for bypassing local security
-      restrictions, not just any mention of the word GTFOBins.
-    grounding_snippet: |
-      README.md section: "## Tools" or similar category listing GTFOBins
-      as "Unix binaries that can be used to bypass local security restrictions"
-    pass_threshold: 2
-
-  awesome-hacking-05:
-    expected_substance: |
-      Capsulecorp Pentest should be returned as a precise match. The snippet
-      must reference the actual pentest environment/lab description, not an
-      incidental mention.
-    grounding_snippet: |
-      README.md entry: Capsulecorp Pentest - a small virtual network managed
-      by Vagrant and Ansible for practicing penetration testing techniques.
-    pass_threshold: 2
-
-  # --- search_semantic (4 questions) ---
-  agent-skills-02:
-    expected_substance: |
-      Despite the vocabulary mismatch (query says "automated code quality review
-      before merging", repo uses "review" and "code-review"), the response should
-      return review.toml or the code-review skill. The content should be about
-      automated review workflows, not generic file listings.
-    grounding_snippet: |
-      commands/review.toml: defines a code review command workflow.
-      skills/code-review/: skill for performing automated code reviews.
-    pass_threshold: 2
-
-  superpowers-02:
-    expected_substance: |
-      Query uses "running multiple independent coding tasks simultaneously" but
-      repo uses "dispatching-parallel-agents" and "using-git-worktrees". The
-      response should return the parallel-agents or worktrees skill with content
-      about concurrent/parallel execution patterns.
-    grounding_snippet: |
-      skills/dispatching-parallel-agents: patterns for running multiple agents
-      in parallel on independent tasks.
-      skills/using-git-worktrees: using git worktrees for concurrent work.
-    pass_threshold: 2
-
-  awesome-hacking-02:
-    expected_substance: |
-      Query says "exploiting legitimate system utilities to bypass security controls"
-      — a semantic match to GTFOBins/LOLBAS. Response should surface GTFOBins
-      (Unix binaries for bypassing security restrictions) with relevant context.
-    grounding_snippet: |
-      README.md: GTFOBins - curated list of Unix binaries that can be used to
-      bypass local security restrictions in misconfigured systems.
-    pass_threshold: 2
-
-  awesome-hacking-04:
-    expected_substance: |
-      Query says "machine learning and artificial intelligence for network defense"
-      — should find the awesome-rl-for-cybersecurity or Reinforcement Learning
-      entries. Content should relate to ML/AI applied to cybersecurity defense.
-    grounding_snippet: |
-      README.md: awesome-rl-for-cybersecurity - Reinforcement Learning for
-      Cyber Security research and resources.
-    pass_threshold: 2
-
-  # --- understand (4 questions) ---
-  agent-skills-04:
-    expected_substance: |
-      A correct explanation of plugin.json must describe: it defines the
-      agent-skills plugin metadata (name, version), and declares the structure
-      pointing to a "commands" directory (TOML command definitions) and a "skills"
-      directory (skill implementations). Must NOT just say "this is a JSON file."
-    grounding_snippet: |
-      {"name": "agent-skills", "version": "1.0.0", "commands": "commands/",
-       "skills": "skills/", "description": "A curated set of agent skills"}
-    pass_threshold: 2
-
-  superpowers-04:
-    expected_substance: |
-      Explanation of the superpowers plugin structure should describe that it is
-      a skill collection with specific capabilities (parallel agents, worktrees,
-      subagents). Must reference actual structural elements, not generic platitudes.
-    grounding_snippet: |
-      Plugin structure: skills/ directory containing parallel-agents, worktrees,
-      subagent-driven-development, and other capability definitions.
-    pass_threshold: 2
-
-  headroom-04:
-    expected_substance: |
-      The understand response for headroom must describe its actual purpose as a
-      code project (JavaScript/TypeScript), not hallucinate features. Should
-      reference real module structure visible in the repo.
-    grounding_snippet: |
-      headroom: a JavaScript/TypeScript project. Real structural elements include
-      package.json, src/ directory, configuration files.
-    pass_threshold: 2
-
-  copilotkit-04:
-    expected_substance: |
-      Must describe CopilotKit's actual purpose as an open-source framework for
-      building AI copilots in React applications. Should reference real packages,
-      components, or architectural elements from the repo.
-    grounding_snippet: |
-      CopilotKit: open-source framework for building in-app AI copilots.
-      Key packages: @copilotkit/react-core, @copilotkit/react-textarea,
-      @copilotkit/backend. Monorepo structure with packages/ directory.
-    pass_threshold: 2
-
-  # --- impact (4 questions) ---
-  headroom-05:
-    expected_substance: |
-      Impact analysis must name specific callers/dependents of the queried target
-      in the headroom repo. Must include both the files that import/require it
-      AND what would break. Missing a real caller is a dangerous false-negative.
-    grounding_snippet: |
-      The target's callers can be verified from import/require statements in
-      the headroom codebase. Correct response lists actual file paths.
-    pass_threshold: 2
-
-  copilotkit-05:
-    expected_substance: |
-      Impact analysis for the CopilotKit target must identify real dependents
-      from the monorepo. The response should show cross-package dependencies
-      and internal callers, not just re-state the target name.
-    grounding_snippet: |
-      CopilotKit monorepo: packages depend on each other. Impact should trace
-      through package.json dependencies and import statements.
-    pass_threshold: 2
-
-  agent-reach-05:
-    expected_substance: |
-      Impact for Agent-Reach target must show actual Python callers (import
-      statements, function calls). Response must list specific file paths
-      where the target is used, not generic descriptions.
-    grounding_snippet: |
-      Agent-Reach: Python project. Callers identified via import statements
-      and function call references in the codebase.
-    pass_threshold: 2
-
-  codegraph-05:
-    expected_substance: |
-      Impact for the codegraph target must trace TypeScript/JavaScript
-      imports and show which modules depend on the queried symbol.
-      Must be verifiable against actual import/require statements.
-    grounding_snippet: |
-      codegraph: TypeScript project. Dependencies traceable through
-      import statements in src/ files.
-    pass_threshold: 2
-
-  # --- browse (4 questions) ---
-  agent-skills-03:
-    expected_substance: |
-      Browse of /agent-skills/commands should list the actual TOML command files
-      that exist in the directory. Must include real filenames (build.toml,
-      review.toml, spec.toml, test.toml, ship.toml). An incomplete or wrong
-      listing is unhelpful — an agent needs the real directory contents.
-    grounding_snippet: |
-      commands/ directory contains: build.toml, review.toml, spec.toml,
-      test.toml, ship.toml (and possibly others).
-    pass_threshold: 2
-
-  superpowers-03:
-    expected_substance: |
-      Browse must return the actual directory structure of the superpowers
-      repo at the queried path. Entries should match real files/directories.
-      A partial or fabricated listing is unhelpful for navigation.
-    grounding_snippet: |
-      superpowers/ top-level or skills/ directory with actual skill
-      subdirectories visible.
-    pass_threshold: 2
-
-  awesome-selfhosted-03:
-    expected_substance: |
-      Browse of awesome-selfhosted must return the real file/directory listing.
-      Should show README.md and any other top-level files. Must be accurate
-      enough for an agent to navigate the repo.
-    grounding_snippet: |
-      awesome-selfhosted: top-level contains README.md, CONTRIBUTING.md,
-      and possibly other documentation/config files.
-    pass_threshold: 2
-
-  awesome-hacking-03:
-    expected_substance: |
-      Browse of /Awesome-Hacking must show the real top-level contents
-      including README.md. The listing should be complete enough to orient
-      an agent exploring the repository structure.
-    grounding_snippet: |
-      Awesome-Hacking: top-level contains README.md, contributing.md.
-    pass_threshold: 2
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CALIBRATION SET: known-good, known-bad, and known-echo answers
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# The judge MUST score these correctly or the eval run is invalid.
-# Rules:
-#   - Each actual score must be within +/- 1 of expected_score
-#   - All "echo" items must score <= 1
-#
-# Categories: "good" (expected 3), "bad" (expected 0), "echo" (expected <= 1)
-
-calibration:
-  - id: cal-good-01
-    category: good
-    verb: understand
-    query: "agent-skills/plugin.json"
-    response:
-      definitions:
-        - symbol: "plugin.json"
-          file: "plugin.json"
-          kind: "config"
-          signature: ""
-          content: "Defines the agent-skills plugin: name='agent-skills', version='1.0.0'. Declares a commands/ directory with TOML command definitions (build, review, spec, test, ship) and a skills/ directory containing skill implementations (doubt-driven-development, code-review, idea-refine). Acts as the manifest that tooling uses to discover available commands and skills."
-          callers: []
-          callees: ["commands/", "skills/"]
-    expected_substance: |
-      Must explain that plugin.json defines the agent-skills plugin metadata
-      (name, version), and declares commands/ and skills/ directories.
-    grounding_snippet: |
-      {"name": "agent-skills", "version": "1.0.0", "commands": "commands/",
-       "skills": "skills/", "description": "A curated set of agent skills"}
-    expected_score: 3
-
-  - id: cal-good-02
-    category: good
-    verb: impact
-    query: "copilotkit/packages/react-core/src/hooks/useCopilotChat.ts"
-    response:
-      affected:
-        - file: "packages/react-textarea/src/components/ChatArea.tsx"
-          symbol: "ChatArea"
-          content: "import { useCopilotChat } from '@copilotkit/react-core'"
-          caller: "ChatArea"
-        - file: "packages/react-ui/src/components/CopilotPanel.tsx"
-          symbol: "CopilotPanel"
-          content: "import { useCopilotChat } from '@copilotkit/react-core'"
-          caller: "CopilotPanel"
-        - file: "examples/next-app/src/app/page.tsx"
-          symbol: "HomePage"
-          content: "const { messages, sendMessage } = useCopilotChat()"
-          caller: "HomePage"
-    expected_substance: |
-      Must list real callers of useCopilotChat from the CopilotKit monorepo:
-      ChatArea, CopilotPanel, and example usage.
-    grounding_snippet: |
-      useCopilotChat is imported by ChatArea (react-textarea), CopilotPanel
-      (react-ui), and example pages. These are the real dependents.
-    expected_score: 3
-
-  - id: cal-bad-01
-    category: bad
-    verb: understand
-    query: "agent-skills/plugin.json"
-    response:
-      definitions:
-        - symbol: "plugin.json"
-          file: "plugin.json"
-          kind: "config"
-          signature: ""
-          content: "This is a React component that renders a virtual DOM tree with server-side hydration support. It manages WebSocket connections for real-time collaborative editing and integrates with PostgreSQL for data persistence."
-          callers: ["ReactDOM.render"]
-          callees: ["WebSocket", "pg.Pool"]
-    expected_substance: |
-      Must explain that plugin.json defines the agent-skills plugin metadata
-      (name, version), and declares commands/ and skills/ directories.
-    grounding_snippet: |
-      {"name": "agent-skills", "version": "1.0.0", "commands": "commands/",
-       "skills": "skills/", "description": "A curated set of agent skills"}
-    expected_score: 0
-
-  - id: cal-bad-02
-    category: bad
-    verb: impact
-    query: "headroom/src/utils/logger.js"
-    response:
-      affected:
-        - file: "packages/kubernetes-operator/helm/values.yaml"
-          symbol: "helmRelease"
-          content: "apiVersion: helm.toolkit.fluxcd.io/v2beta1"
-          caller: "FluxCD"
-        - file: "terraform/modules/vpc/main.tf"
-          symbol: "aws_vpc"
-          content: "resource 'aws_vpc' 'main'"
-          caller: "TerraformPlan"
-    expected_substance: |
-      Must list JavaScript/TypeScript files in the headroom repo that import
-      or use the logger utility.
-    grounding_snippet: |
-      headroom: JavaScript project. Logger callers would be in src/ files
-      that import from utils/logger.
-    expected_score: 0
-
-  - id: cal-echo-01
-    category: echo
-    verb: understand
-    query: "agent-skills/plugin.json"
-    response:
-      definitions:
-        - symbol: "plugin.json"
-          file: "plugin.json"
-          kind: "file"
-          signature: ""
-          content: "plugin.json - agent-skills/plugin.json"
-          callers: []
-          callees: []
-    expected_substance: |
-      Must explain that plugin.json defines the agent-skills plugin metadata
-      (name, version), and declares commands/ and skills/ directories.
-    grounding_snippet: |
-      {"name": "agent-skills", "version": "1.0.0", "commands": "commands/",
-       "skills": "skills/", "description": "A curated set of agent skills"}
-    expected_score: 0
-
-  - id: cal-echo-02
-    category: echo
-    verb: impact
-    query: "copilotkit/packages/react-core/src/hooks/useCopilotChat.ts"
-    response:
-      target: "copilotkit/packages/react-core/src/hooks/useCopilotChat.ts"
-      affected:
-        - file: "packages/react-core/src/hooks/useCopilotChat.ts"
-          symbol: "useCopilotChat"
-          content: "useCopilotChat"
-          caller: "useCopilotChat"
-    expected_substance: |
-      Must list real callers of useCopilotChat: components that import and
-      use this hook from other packages.
-    grounding_snippet: |
-      useCopilotChat is imported by ChatArea (react-textarea), CopilotPanel
-      (react-ui), and example pages. These are the real dependents.
-    expected_score: 0
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# END-TO-END TASK SCENARIOS: chained verb evaluations
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# These test whether combined answers from multiple verbs would actually
-# unblock an agent task. The judge grades the combined output.
-
-tasks:
-  - id: task-01
-    description: "Find where review commands are defined and explain the review workflow"
-    repo: agent-skills
-    steps:
-      - verb: search_exact
-        query: "review"
-      - verb: understand
-        query: "agent-skills/commands/review.toml"
-    expected_substance: |
-      The combined answer should: (1) locate review.toml in commands/, and
-      (2) explain what the review command does — its trigger, steps, and
-      purpose in the agent workflow. An agent receiving this should be able
-      to invoke or modify the review command without further research.
-    pass_threshold: 2
-
-  - id: task-02
-    description: "Identify all parallel execution capabilities and their dependencies"
-    repo: superpowers
-    steps:
-      - verb: search_semantic
-        query: "running tasks in parallel"
-      - verb: impact
-        query: "superpowers/skills/dispatching-parallel-agents"
-    expected_substance: |
-      The combined answer should: (1) find the parallel-agents and worktrees
-      skills via semantic search, and (2) show what depends on the parallel-agents
-      skill (what breaks if it changes). An agent should understand both the
-      capability AND its integration surface.
-    pass_threshold: 2
-
-  - id: task-03
-    description: "Navigate the CopilotKit monorepo and understand the core hook"
-    repo: CopilotKit
-    steps:
-      - verb: browse
-        query: "/CopilotKit/packages"
-      - verb: understand
-        query: "CopilotKit/packages/react-core/src/hooks/useCopilotChat.ts"
-    expected_substance: |
-      The combined answer should: (1) show the packages directory structure
-      (react-core, react-textarea, react-ui, backend, etc.), and (2) explain
-      what useCopilotChat does — it's a React hook that provides chat message
-      state and a sendMessage function. An agent should understand the monorepo
-      layout AND the core hook's API.
-    pass_threshold: 2
+- id: agent-skills-search_exact-1
+  repo: agent-skills
+  verb: search_exact
+  query: code review checklist
+  expected:
+    files:
+    - skills/code-review-and-quality/SKILL.md
+    - commands/review.toml
+    - references/security-checklist.md
+    content:
+    - code review
+    - checklist
+  pass_criterion: Returns skills/code-review-and-quality/SKILL.md and commands/review.toml as top results
+- id: agent-skills-search_exact-2
+  repo: agent-skills
+  verb: search_exact
+  query: performance optimization webperf
+  expected:
+    files:
+    - skills/performance-optimization/SKILL.md
+    - commands/webperf.toml
+    - references/performance-checklist.md
+    - agents/web-performance-auditor.md
+  pass_criterion: Returns all performance-related files including webperf.toml and performance-optimization skill
+- id: agent-skills-search_exact-3
+  repo: agent-skills
+  verb: search_exact
+  query: hooks.json session-start
+  expected:
+    files:
+    - hooks/hooks.json
+    - hooks/session-start.sh
+    - hooks/sdd-cache-pre.sh
+  pass_criterion: Returns hooks/hooks.json and hooks/session-start.sh
+- id: agent-skills-search_exact-4
+  repo: agent-skills
+  verb: search_exact
+  query: test driven development TDD
+  expected:
+    files:
+    - skills/test-driven-development/SKILL.md
+    - commands/test.toml
+    - references/testing-patterns.md
+  pass_criterion: Returns skills/test-driven-development/SKILL.md and references/testing-patterns.md
+- id: agent-skills-search_exact-5
+  repo: agent-skills
+  verb: search_exact
+  query: plugin.json validate-skills
+  expected:
+    files:
+    - plugin.json
+    - scripts/validate-skills.js
+  pass_criterion: Returns plugin.json and scripts/validate-skills.js
+- id: agent-skills-search_semantic-1
+  repo: agent-skills
+  verb: search_semantic
+  query: how to write good tests
+  expected:
+    files:
+    - skills/test-driven-development/SKILL.md
+    - references/testing-patterns.md
+    - agents/test-engineer.md
+    content:
+    - test
+    - quality
+  pass_criterion: Returns TDD skill and testing patterns despite 'good tests' vs 'test-driven-development' vocabulary gap
+  notes: Query uses 'good tests' but files use 'test-driven-development' and 'testing-patterns'
+- id: agent-skills-search_semantic-2
+  repo: agent-skills
+  verb: search_semantic
+  query: making code cleaner and simpler
+  expected:
+    files:
+    - skills/code-simplification/SKILL.md
+    - commands/code-simplify.toml
+  pass_criterion: Returns code-simplification skill despite 'cleaner' vs 'simplification' vocabulary difference
+  notes: Query uses 'cleaner and simpler' but skill is named 'code-simplification'
+- id: agent-skills-search_semantic-3
+  repo: agent-skills
+  verb: search_semantic
+  query: finding security vulnerabilities
+  expected:
+    files:
+    - skills/security-and-hardening/SKILL.md
+    - references/security-checklist.md
+    - agents/security-auditor.md
+  pass_criterion: Returns security skill despite 'vulnerabilities' vs 'hardening' vocabulary gap
+  notes: Query uses 'vulnerabilities' but files use 'security-and-hardening' and 'security-checklist'
+- id: agent-skills-search_semantic-4
+  repo: agent-skills
+  verb: search_semantic
+  query: organizing work into tasks
+  expected:
+    files:
+    - skills/planning-and-task-breakdown/SKILL.md
+    - commands/planning.toml
+  pass_criterion: Returns planning skill despite 'organizing' vs 'planning' vocabulary difference
+  notes: Query uses 'organizing work' but skill is 'planning-and-task-breakdown'
+- id: agent-skills-search_semantic-5
+  repo: agent-skills
+  verb: search_semantic
+  query: running app speed audits
+  expected:
+    files:
+    - skills/performance-optimization/SKILL.md
+    - agents/web-performance-auditor.md
+    - references/performance-checklist.md
+  pass_criterion: Returns performance files despite 'speed audits' vs 'performance optimization' vocabulary gap
+  notes: Query uses 'speed audits' but files use 'performance-optimization' and 'web-performance-auditor'
+- id: agent-skills-understand-1
+  repo: agent-skills
+  verb: understand
+  query: what does the code-review-and-quality skill do
+  expected:
+    location: skills/code-review-and-quality/SKILL.md
+    key_facts:
+    - Reviews code changes for correctness bugs
+    - 'Supports effort levels: low/medium/high'
+    - Can post findings as inline PR comments with --comment flag
+    - Can auto-apply fixes with --fix flag
+    - Invoked via commands/review.toml
+  pass_criterion: Returns location + key facts about review skill functionality and flags
+- id: agent-skills-understand-2
+  repo: agent-skills
+  verb: understand
+  query: how do session-start hooks work
+  expected:
+    location: hooks/hooks.json and hooks/session-start.sh
+    key_facts:
+    - hooks.json defines hook registry including session-start
+    - session-start.sh runs at harness initialization
+    - Used to set up environment for SDD cache
+    - 'Pre and post hooks exist: sdd-cache-pre.sh and sdd-cache-post.sh'
+  pass_criterion: Explains hook mechanism and session-start lifecycle
+- id: agent-skills-understand-3
+  repo: agent-skills
+  verb: understand
+  query: what is spec-driven-development skill
+  expected:
+    location: skills/spec-driven-development/SKILL.md
+    key_facts:
+    - Write specifications before implementation
+    - Spec defines behavior contract
+    - Implementation must satisfy spec
+    - Invoked via commands/spec.toml
+  pass_criterion: Explains SDD workflow and spec-first approach
+- id: agent-skills-understand-4
+  repo: agent-skills
+  verb: understand
+  query: what agents are available
+  expected:
+    location: agents/ directory and AGENTS.md
+    key_facts:
+    - 'code-reviewer.md: reviews PRs for bugs and improvements'
+    - 'security-auditor.md: audits code for security issues'
+    - 'test-engineer.md: writes test cases'
+    - 'web-performance-auditor.md: audits web performance'
+    - Agent definitions include model, tools, and instructions
+  pass_criterion: Lists all 4 agents with their purposes
+- id: agent-skills-understand-5
+  repo: agent-skills
+  verb: understand
+  query: how does validate-skills.js work
+  expected:
+    location: scripts/validate-skills.js
+    key_facts:
+    - Validates skill directory structure
+    - Checks for required SKILL.md file
+    - Verifies plugin.json references match actual skills
+    - Used in CI to prevent broken skill references
+  pass_criterion: Explains validation logic and CI integration
+- id: agent-skills-browse-1
+  repo: agent-skills
+  verb: browse
+  query: list all skills
+  expected:
+    entries:
+    - api-and-interface-design
+    - browser-testing-with-devtools
+    - ci-cd-and-automation
+    - code-review-and-quality
+    - code-simplification
+    - context-engineering
+    - debugging-and-error-recovery
+    - deprecation-and-migration
+    - documentation-and-adrs
+    - doubt-driven-development
+    - frontend-ui-engineering
+    - git-workflow-and-versioning
+    - idea-refine
+    - incremental-implementation
+    - interview-me
+    - observability-and-instrumentation
+    - performance-optimization
+    - planning-and-task-breakdown
+    - security-and-hardening
+    - shipping-and-launch
+    - source-driven-development
+    - spec-driven-development
+    - test-driven-development
+    - using-agent-skills
+  pass_criterion: Returns all 24 skill directories
+- id: agent-skills-browse-2
+  repo: agent-skills
+  verb: browse
+  query: list all commands
+  expected:
+    entries:
+    - build.toml
+    - code-simplify.toml
+    - planning.toml
+    - review.toml
+    - ship.toml
+    - spec.toml
+    - test.toml
+    - webperf.toml
+  pass_criterion: Returns all 8 TOML command files
+- id: agent-skills-browse-3
+  repo: agent-skills
+  verb: browse
+  query: list all reference docs
+  expected:
+    entries:
+    - accessibility-checklist.md
+    - orchestration-patterns.md
+    - performance-checklist.md
+    - security-checklist.md
+    - testing-patterns.md
+  pass_criterion: Returns all 5 reference markdown files
+- id: agent-skills-browse-4
+  repo: agent-skills
+  verb: browse
+  query: list all hooks
+  expected:
+    entries:
+    - hooks.json
+    - sdd-cache-post.sh
+    - sdd-cache-pre.sh
+    - session-start.sh
+  pass_criterion: Returns hooks.json and all 3 hook scripts
+- id: agent-skills-browse-5
+  repo: agent-skills
+  verb: browse
+  query: list top-level documentation files
+  expected:
+    entries:
+    - CLAUDE.md
+    - README.md
+    - AGENTS.md
+    - CONTRIBUTING.md
+    - plugin.json
+  pass_criterion: Returns all top-level documentation and plugin manifest
+- id: superpowers-search_exact-1
+  repo: superpowers
+  verb: search_exact
+  query: subagent-driven-development implementer
+  expected:
+    files:
+    - skills/subagent-driven-development/SKILL.md
+    - skills/subagent-driven-development/implementer-prompt.md
+    - skills/subagent-driven-development/task-reviewer-prompt.md
+  pass_criterion: Returns subagent-driven-development skill and both prompt files
+- id: superpowers-search_exact-2
+  repo: superpowers
+  verb: search_exact
+  query: systematic-debugging find-polluter
+  expected:
+    files:
+    - skills/systematic-debugging/SKILL.md
+    - skills/systematic-debugging/find-polluter.sh
+    - skills/systematic-debugging/root-cause-tracing.md
+  pass_criterion: Returns systematic-debugging skill and find-polluter script
+- id: superpowers-search_exact-3
+  repo: superpowers
+  verb: search_exact
+  query: brainstorming server.cjs frame-template
+  expected:
+    files:
+    - skills/brainstorming/SKILL.md
+    - skills/brainstorming/scripts/server.cjs
+    - skills/brainstorming/scripts/frame-template.html
+    - skills/brainstorming/scripts/start-server.sh
+  pass_criterion: Returns brainstorming skill and server files
+- id: superpowers-search_exact-4
+  repo: superpowers
+  verb: search_exact
+  query: hooks.json session-start
+  expected:
+    files:
+    - hooks/hooks.json
+    - hooks/hooks-codex.json
+    - hooks/hooks-cursor.json
+    - hooks/session-start
+  pass_criterion: Returns all hooks.json variants and session-start script
+- id: superpowers-search_exact-5
+  repo: superpowers
+  verb: search_exact
+  query: verification-before-completion
+  expected:
+    files:
+    - skills/verification-before-completion/SKILL.md
+  pass_criterion: Returns verification-before-completion skill
+- id: superpowers-search_semantic-1
+  repo: superpowers
+  verb: search_semantic
+  query: how to delegate work to parallel agents
+  expected:
+    files:
+    - skills/dispatching-parallel-agents/SKILL.md
+    - skills/subagent-driven-development/SKILL.md
+    content:
+    - parallel
+    - subagent
+  pass_criterion: Returns dispatching-parallel-agents despite 'delegate work' vs 'dispatching' vocabulary gap
+  notes: Query uses 'delegate work' but skill is 'dispatching-parallel-agents'
+- id: superpowers-search_semantic-2
+  repo: superpowers
+  verb: search_semantic
+  query: debugging flaky tests
+  expected:
+    files:
+    - skills/systematic-debugging/SKILL.md
+    - skills/systematic-debugging/find-polluter.sh
+    - skills/systematic-debugging/defense-in-depth.md
+  pass_criterion: Returns systematic-debugging skill despite 'flaky tests' vs 'systematic debugging' vocabulary gap
+  notes: Query uses 'flaky tests' but skill focuses on 'systematic-debugging' and 'find-polluter'
+- id: superpowers-search_semantic-3
+  repo: superpowers
+  verb: search_semantic
+  query: generating ideas collaboratively
+  expected:
+    files:
+    - skills/brainstorming/SKILL.md
+    - skills/brainstorming/scripts/server.cjs
+  pass_criterion: Returns brainstorming skill despite 'generating ideas' vs 'brainstorming' vocabulary difference
+  notes: Query uses 'generating ideas collaboratively' but skill is 'brainstorming'
+- id: superpowers-search_semantic-4
+  repo: superpowers
+  verb: search_semantic
+  query: checking work before declaring done
+  expected:
+    files:
+    - skills/verification-before-completion/SKILL.md
+    - skills/receiving-code-review/SKILL.md
+  pass_criterion: Returns verification-before-completion despite 'checking work' vs 'verification' vocabulary gap
+  notes: Query uses 'checking work before declaring done' but skill is 'verification-before-completion'
+- id: superpowers-search_semantic-5
+  repo: superpowers
+  verb: search_semantic
+  query: working with isolated branches
+  expected:
+    files:
+    - skills/using-git-worktrees/SKILL.md
+    - skills/finishing-a-development-branch/SKILL.md
+  pass_criterion: Returns git-worktrees skill despite 'isolated branches' vs 'worktrees' vocabulary gap
+  notes: Query uses 'isolated branches' but skill is 'using-git-worktrees'
+- id: superpowers-understand-1
+  repo: superpowers
+  verb: understand
+  query: what does subagent-driven-development do
+  expected:
+    location: skills/subagent-driven-development/SKILL.md
+    key_facts:
+    - Breaks complex tasks into subtasks
+    - Spawns implementer subagent per subtask
+    - Uses task-reviewer-prompt.md to verify completion
+    - Includes scripts/task-brief and scripts/review-package
+    - Coordinates parallel work across multiple agents
+  pass_criterion: Explains subagent delegation pattern and reviewer mechanism
+- id: superpowers-understand-2
+  repo: superpowers
+  verb: understand
+  query: how does find-polluter.sh work
+  expected:
+    location: skills/systematic-debugging/find-polluter.sh
+    key_facts:
+    - Identifies test pollution via binary search
+    - Runs test suite in different orders
+    - Isolates which test pollutes state for another
+    - Part of systematic-debugging skill
+  pass_criterion: Explains binary search approach to finding test pollution
+- id: superpowers-understand-3
+  repo: superpowers
+  verb: understand
+  query: what is the brainstorming server for
+  expected:
+    location: skills/brainstorming/scripts/server.cjs
+    key_facts:
+    - Local HTTP server for collaborative brainstorming
+    - Serves frame-template.html for UI
+    - Started via start-server.sh
+    - Stopped via stop-server.sh
+    - Allows agent to interact with HTML forms for idea generation
+  pass_criterion: Explains server purpose and lifecycle
+- id: superpowers-understand-4
+  repo: superpowers
+  verb: understand
+  query: what hooks are available
+  expected:
+    location: hooks/ directory
+    key_facts:
+    - hooks.json for Claude Code harness
+    - hooks-codex.json for Codex integration
+    - hooks-cursor.json for Cursor integration
+    - session-start runs at harness startup
+    - run-hook.cmd for Windows hook execution
+  pass_criterion: Lists all hook variants and explains multi-harness support
+- id: superpowers-understand-5
+  repo: superpowers
+  verb: understand
+  query: how does verification-before-completion work
+  expected:
+    location: skills/verification-before-completion/SKILL.md
+    key_facts:
+    - Mandates verification step before declaring task complete
+    - Agent must run tests or manual checks
+    - Prevents premature completion claims
+    - Part of quality gate pattern
+  pass_criterion: Explains verification enforcement and quality gate
+- id: superpowers-browse-1
+  repo: superpowers
+  verb: browse
+  query: list all skills
+  expected:
+    entries:
+    - brainstorming
+    - dispatching-parallel-agents
+    - executing-plans
+    - finishing-a-development-branch
+    - receiving-code-review
+    - requesting-code-review
+    - subagent-driven-development
+    - systematic-debugging
+    - test-driven-development
+    - using-git-worktrees
+    - using-superpowers
+    - verification-before-completion
+    - writing-plans
+    - writing-skills
+  pass_criterion: Returns all 14 skill directories
+- id: superpowers-browse-2
+  repo: superpowers
+  verb: browse
+  query: list all hooks files
+  expected:
+    entries:
+    - hooks.json
+    - hooks-codex.json
+    - hooks-cursor.json
+    - session-start
+    - session-start-codex
+    - run-hook.cmd
+  pass_criterion: Returns all hook configuration and script files
+- id: superpowers-browse-3
+  repo: superpowers
+  verb: browse
+  query: list systematic-debugging reference docs
+  expected:
+    entries:
+    - condition-based-waiting.md
+    - defense-in-depth.md
+    - root-cause-tracing.md
+    - find-polluter.sh
+  pass_criterion: Returns all systematic-debugging reference files and scripts
+- id: superpowers-browse-4
+  repo: superpowers
+  verb: browse
+  query: list scripts in repo root
+  expected:
+    entries:
+    - bump-version.sh
+    - lint-shell.sh
+    - sync-to-codex-plugin.sh
+  pass_criterion: Returns all 3 top-level scripts
+- id: superpowers-browse-5
+  repo: superpowers
+  verb: browse
+  query: list all docs under docs/
+  expected:
+    entries:
+    - testing.md
+    - porting-to-a-new-harness.md
+    - plans/
+    - specs/
+  pass_criterion: Returns docs/ top-level entries including subdirectories
+- id: agency-agents-search_exact-1
+  repo: agency-agents
+  verb: search_exact
+  query: engineering-code-reviewer
+  expected:
+    files:
+    - engineering/engineering-code-reviewer.md
+  pass_criterion: Returns engineering-code-reviewer.md
+- id: agency-agents-search_exact-2
+  repo: agency-agents
+  verb: search_exact
+  query: gis-analyst spatial-data-scientist
+  expected:
+    files:
+    - gis/gis-analyst.md
+    - gis/gis-spatial-data-scientist.md
+    - gis/gis-cartography-designer.md
+  pass_criterion: Returns GIS-related agent files
+- id: agency-agents-search_exact-3
+  repo: agency-agents
+  verb: search_exact
+  query: nexus-strategy playbooks phase-0
+  expected:
+    files:
+    - strategy/nexus-strategy.md
+    - strategy/playbooks/phase-0-discovery.md
+  pass_criterion: Returns nexus-strategy and phase playbooks
+- id: agency-agents-search_exact-4
+  repo: agency-agents
+  verb: search_exact
+  query: spatial-computing visionos-spatial-engineer
+  expected:
+    files:
+    - spatial-computing/visionos-spatial-engineer.md
+    - spatial-computing/xr-immersive-developer.md
+    - spatial-computing/xr-interface-architect.md
+  pass_criterion: Returns spatial-computing agent files
+- id: agency-agents-search_exact-5
+  repo: agency-agents
+  verb: search_exact
+  query: divisions.json integrations claude-code
+  expected:
+    files:
+    - divisions.json
+    - integrations/claude-code/
+  pass_criterion: Returns divisions.json and claude-code integration
+- id: agency-agents-search_semantic-1
+  repo: agency-agents
+  verb: search_semantic
+  query: reviewing pull requests for bugs
+  expected:
+    files:
+    - engineering/engineering-code-reviewer.md
+    - testing/testing-qa-automation-engineer.md
+  pass_criterion: Returns engineering-code-reviewer despite 'pull requests' vs 'code-reviewer' vocabulary gap
+  notes: Query uses 'reviewing pull requests' but agent is 'engineering-code-reviewer'
+- id: agency-agents-search_semantic-2
+  repo: agency-agents
+  verb: search_semantic
+  query: building AR and VR experiences
+  expected:
+    files:
+    - spatial-computing/xr-immersive-developer.md
+    - spatial-computing/xr-interface-architect.md
+    - spatial-computing/visionos-spatial-engineer.md
+  pass_criterion: Returns spatial-computing agents despite 'AR and VR' vs 'XR' vocabulary gap
+  notes: Query uses 'AR and VR' but agents use 'XR' (extended reality)
+- id: agency-agents-search_semantic-3
+  repo: agency-agents
+  verb: search_semantic
+  query: mapping and location data analysis
+  expected:
+    files:
+    - gis/gis-analyst.md
+    - gis/gis-spatial-data-scientist.md
+    - gis/gis-web-gis-developer.md
+  pass_criterion: Returns GIS agents despite 'mapping and location' vs 'GIS' vocabulary gap
+  notes: Query uses 'mapping and location data' but division is 'gis' (geographic information systems)
+- id: agency-agents-search_semantic-4
+  repo: agency-agents
+  verb: search_semantic
+  query: securing cloud infrastructure
+  expected:
+    files:
+    - security/security-architect.md
+    - security/security-devops-automator.md
+    - engineering/engineering-sre.md
+  pass_criterion: Returns security and SRE agents despite 'securing' vs 'security-architect' vocabulary gap
+  notes: Query uses 'securing cloud infrastructure' but agents are 'security-architect' and 'security-devops-automator'
+- id: agency-agents-search_semantic-5
+  repo: agency-agents
+  verb: search_semantic
+  query: planning product strategy phases
+  expected:
+    files:
+    - strategy/nexus-strategy.md
+    - strategy/playbooks/phase-0-discovery.md
+    - strategy/playbooks/phase-1-alignment.md
+    - product/product-manager.md
+  pass_criterion: Returns strategy playbooks despite 'planning' vs 'nexus-strategy' vocabulary gap
+  notes: Query uses 'planning product strategy' but files are 'nexus-strategy' and 'playbooks'
+- id: agency-agents-understand-1
+  repo: agency-agents
+  verb: understand
+  query: what does engineering-code-reviewer do
+  expected:
+    location: engineering/engineering-code-reviewer.md
+    key_facts:
+    - Reviews code changes for correctness and quality
+    - Part of engineering division
+    - Identifies bugs and suggests improvements
+    - Provides feedback on code structure and patterns
+  pass_criterion: Explains code reviewer role and capabilities
+- id: agency-agents-understand-2
+  repo: agency-agents
+  verb: understand
+  query: what is the nexus-strategy framework
+  expected:
+    location: strategy/nexus-strategy.md
+    key_facts:
+    - Multi-phase strategic planning framework
+    - Includes playbooks for phases 0 through 6
+    - Covers discovery, alignment, execution, optimization
+    - Has runbooks and coordination guides
+  pass_criterion: Explains nexus-strategy phases and structure
+- id: agency-agents-understand-3
+  repo: agency-agents
+  verb: understand
+  query: what divisions exist
+  expected:
+    location: divisions.json and top-level directories
+    key_facts:
+    - academic, design, engineering, finance, game-development
+    - gis, integrations, marketing, paid-media, product
+    - project-management, sales, security, spatial-computing
+    - specialized, strategy, support, testing, examples
+    - divisions.json defines the registry
+  pass_criterion: Lists all 19 divisions from directory structure
+- id: agency-agents-understand-4
+  repo: agency-agents
+  verb: understand
+  query: what GIS agents are available
+  expected:
+    location: gis/ directory
+    key_facts:
+    - 'gis-analyst.md: data analysis'
+    - 'gis-cartography-designer.md: map design'
+    - 'gis-3d-scene-developer.md: 3D visualization'
+    - 'gis-spatial-data-scientist.md: spatial analysis'
+    - 'gis-web-gis-developer.md: web mapping apps'
+  pass_criterion: Lists all 5 GIS agents with roles
+- id: agency-agents-understand-5
+  repo: agency-agents
+  verb: understand
+  query: what integrations are available
+  expected:
+    location: integrations/ directory
+    key_facts:
+    - aider, antigravity, claude-code, codex, cursor
+    - gemini-cli, github-copilot, kimi, mcp-memory
+    - openclaw, opencode, qwen, windsurf
+    - Each integration has adapter for that harness
+  pass_criterion: Lists all 14 integration directories
+- id: agency-agents-browse-1
+  repo: agency-agents
+  verb: browse
+  query: list all divisions
+  expected:
+    entries:
+    - academic
+    - design
+    - engineering
+    - finance
+    - game-development
+    - gis
+    - integrations
+    - marketing
+    - paid-media
+    - product
+    - project-management
+    - sales
+    - security
+    - spatial-computing
+    - specialized
+    - strategy
+    - support
+    - testing
+    - examples
+  pass_criterion: Returns all 19 division directories
+- id: agency-agents-browse-2
+  repo: agency-agents
+  verb: browse
+  query: list all engineering agents
+  expected:
+    entries:
+    - engineering-ai-engineer.md
+    - engineering-backend-architect.md
+    - engineering-code-reviewer.md
+    - engineering-devops-automator.md
+    - engineering-prompt-engineer.md
+    - engineering-software-architect.md
+    - engineering-solidity-smart-contract-engineer.md
+    - engineering-sre.md
+  pass_criterion: Returns engineering agent markdown files
+- id: agency-agents-browse-3
+  repo: agency-agents
+  verb: browse
+  query: list all spatial-computing agents
+  expected:
+    entries:
+    - visionos-spatial-engineer.md
+    - xr-immersive-developer.md
+    - xr-interface-architect.md
+    - macos-spatial-metal-engineer.md
+    - terminal-integration-specialist.md
+  pass_criterion: Returns all 5 spatial-computing agent files
+- id: agency-agents-browse-4
+  repo: agency-agents
+  verb: browse
+  query: list strategy playbooks
+  expected:
+    entries:
+    - phase-0-discovery.md
+    - phase-1-alignment.md
+    - phase-2-planning.md
+    - phase-3-execution.md
+    - phase-4-optimization.md
+    - phase-5-scaling.md
+    - phase-6-transformation.md
+  pass_criterion: Returns all 7 phase playbooks
+- id: agency-agents-browse-5
+  repo: agency-agents
+  verb: browse
+  query: list all scripts
+  expected:
+    entries:
+    - install.sh
+    - lib.sh
+    - lint-agents.sh
+    - check-divisions.sh
+    - check-agent-originality.sh
+    - convert.sh
+  pass_criterion: Returns all scripts from scripts/ directory
+- id: last30days-search_exact-1
+  repo: last30days-skill
+  verb: search_exact
+  query: pipeline.py fusion dedupe
+  expected:
+    files:
+    - skills/last30days/scripts/pipeline.py
+    - skills/last30days/scripts/lib/fusion.py
+    - skills/last30days/scripts/lib/dedupe.py
+  pass_criterion: Returns pipeline.py and lib modules fusion and dedupe
+- id: last30days-search_exact-2
+  repo: last30days-skill
+  verb: search_exact
+  query: reddit_enrich reddit_rss
+  expected:
+    files:
+    - skills/last30days/scripts/lib/reddit_enrich.py
+    - skills/last30days/scripts/lib/reddit_rss.py
+    - skills/last30days/scripts/lib/reddit_keyless.py
+  pass_criterion: Returns reddit enrichment and RSS modules
+- id: last30days-search_exact-3
+  repo: last30days-skill
+  verb: search_exact
+  query: bird_x xai_x bluesky
+  expected:
+    files:
+    - skills/last30days/scripts/lib/bird_x.py
+    - skills/last30days/scripts/lib/xai_x.py
+    - skills/last30days/scripts/lib/bluesky.py
+  pass_criterion: Returns social media integration modules
+- id: last30days-search_exact-4
+  repo: last30days-skill
+  verb: search_exact
+  query: mcp main.go internal/engine
+  expected:
+    files:
+    - mcp/cmd/last30days-pp-mcp/main.go
+    - mcp/internal/engine/
+    - mcp/internal/tools/
+  pass_criterion: Returns Go MCP server entry point and internal packages
+- id: last30days-search_exact-5
+  repo: last30days-skill
+  verb: search_exact
+  query: test_pipeline_v3 test_reddit test_bird_x
+  expected:
+    files:
+    - tests/test_pipeline_v3.py
+    - tests/test_reddit.py
+    - tests/test_bird_x.py
+  pass_criterion: Returns test files for pipeline and integrations
+- id: last30days-search_semantic-1
+  repo: last30days-skill
+  verb: search_semantic
+  query: merging results from multiple sources
+  expected:
+    files:
+    - skills/last30days/scripts/lib/fusion.py
+    - skills/last30days/scripts/lib/dedupe.py
+    - skills/last30days/scripts/pipeline.py
+  pass_criterion: Returns fusion.py despite 'merging results' vs 'fusion' vocabulary gap
+  notes: Query uses 'merging results from multiple sources' but module is 'fusion.py'
+- id: last30days-search_semantic-2
+  repo: last30days-skill
+  verb: search_semantic
+  query: scraping twitter data
+  expected:
+    files:
+    - skills/last30days/scripts/lib/bird_x.py
+    - skills/last30days/scripts/lib/xai_x.py
+    - skills/last30days/scripts/lib/xurl_x.py
+  pass_criterion: Returns bird_x modules despite 'twitter' vs 'bird_x' vocabulary gap
+  notes: Query uses 'twitter' but modules use 'bird_x' and 'xai_x' (Twitter rebranding)
+- id: last30days-search_semantic-3
+  repo: last30days-skill
+  verb: search_semantic
+  query: ranking search results by relevance
+  expected:
+    files:
+    - skills/last30days/scripts/lib/rerank.py
+    - skills/last30days/scripts/lib/relevance.py
+    - skills/last30days/scripts/lib/normalize.py
+  pass_criterion: Returns rerank.py despite 'ranking' vs 'rerank' vocabulary gap
+  notes: Query uses 'ranking search results' but module is 'rerank.py'
+- id: last30days-search_semantic-4
+  repo: last30days-skill
+  verb: search_semantic
+  query: extracting entities from text
+  expected:
+    files:
+    - skills/last30days/scripts/lib/entity_extract.py
+    - skills/last30days/scripts/lib/grounding.py
+  pass_criterion: Returns entity_extract.py despite 'extracting' vs 'entity_extract' vocabulary difference
+  notes: Query uses 'extracting entities' but module is 'entity_extract.py'
+- id: last30days-search_semantic-5
+  repo: last30days-skill
+  verb: search_semantic
+  query: getting browser cookies for authentication
+  expected:
+    files:
+    - skills/last30days/scripts/lib/chrome_cookies.py
+    - skills/last30days/scripts/lib/safari_cookies.py
+    - skills/last30days/scripts/lib/cookie_extract.py
+  pass_criterion: Returns cookie modules despite 'getting browser cookies' vs 'chrome_cookies' vocabulary gap
+  notes: Query uses 'getting browser cookies' but modules are 'chrome_cookies.py' and 'safari_cookies.py'
+- id: last30days-understand-1
+  repo: last30days-skill
+  verb: understand
+  query: what does pipeline.py do
+  expected:
+    location: skills/last30days/scripts/pipeline.py
+    key_facts:
+    - Orchestrates multi-source data collection
+    - Imports bird_x, bluesky, reddit, github, hackernews, perplexity
+    - Calls fusion.py to merge results
+    - Applies dedupe.py and normalize.py
+    - Exports rerank.py for relevance scoring
+  pass_criterion: Explains pipeline orchestration and module imports
+- id: last30days-understand-2
+  repo: last30days-skill
+  verb: understand
+  query: how does fusion.py work
+  expected:
+    location: skills/last30days/scripts/lib/fusion.py
+    key_facts:
+    - Merges results from multiple data sources
+    - Imports schema.py for data structure
+    - Handles deduplication at merge time
+    - Used by pipeline.py after all sources return
+  pass_criterion: Explains fusion merge logic and schema dependency
+- id: last30days-understand-3
+  repo: last30days-skill
+  verb: understand
+  query: what social media platforms are supported
+  expected:
+    location: skills/last30days/scripts/lib/
+    key_facts:
+    - 'Twitter/X: bird_x.py, xai_x.py, xurl_x.py, xquik.py'
+    - 'Bluesky: bluesky.py'
+    - 'Reddit: reddit.py, reddit_enrich.py, reddit_rss.py, reddit_keyless.py'
+    - 'Instagram: instagram.py'
+    - 'TikTok: tiktok.py'
+    - 'Threads: threads.py'
+    - 'Pinterest: pinterest.py'
+  pass_criterion: Lists all 7 social platforms with module names
+- id: last30days-understand-4
+  repo: last30days-skill
+  verb: understand
+  query: what is the MCP server for
+  expected:
+    location: mcp/ directory
+    key_facts:
+    - Go-based MCP server at cmd/last30days-pp-mcp/main.go
+    - Exposes last30days functionality as MCP tools
+    - internal/engine/ contains core logic
+    - internal/tools/ defines MCP tool interfaces
+    - internal/manifest/ manages tool registration
+  pass_criterion: Explains Go MCP server structure and purpose
+- id: last30days-understand-5
+  repo: last30days-skill
+  verb: understand
+  query: how does the skill handle authentication
+  expected:
+    location: skills/last30days/scripts/lib/
+    key_facts:
+    - chrome_cookies.py extracts cookies from Chrome
+    - safari_cookies.py extracts cookies from Safari
+    - cookie_extract.py provides unified interface
+    - reddit_keyless.py allows Reddit without API key
+    - web_fetch_keyless.py and web_search_keyless.py provide keyless web access
+  pass_criterion: Explains cookie extraction and keyless access patterns
+- id: last30days-impact-1
+  repo: last30days-skill
+  verb: impact
+  query: what uses schema.py
+  expected:
+    affected:
+    - skills/last30days/scripts/lib/fusion.py
+    - skills/last30days/scripts/pipeline.py
+    - skills/last30days/scripts/lib/normalize.py
+  pass_criterion: Returns fusion.py as direct importer (from . import schema)
+- id: last30days-impact-2
+  repo: last30days-skill
+  verb: impact
+  query: what depends on bird_x.py
+  expected:
+    affected:
+    - skills/last30days/scripts/pipeline.py
+    - tests/test_bird_x.py
+  pass_criterion: Returns pipeline.py (imports bird_x) and test_bird_x.py
+- id: last30days-impact-3
+  repo: last30days-skill
+  verb: impact
+  query: what calls reddit_enrich.py
+  expected:
+    affected:
+    - skills/last30days/scripts/pipeline.py
+    - skills/last30days/scripts/lib/reddit.py
+  pass_criterion: Returns callers that import reddit_enrich
+- id: last30days-impact-4
+  repo: last30days-skill
+  verb: impact
+  query: what uses entity_extract.py
+  expected:
+    affected:
+    - skills/last30days/scripts/pipeline.py
+    - skills/last30days/scripts/lib/grounding.py
+  pass_criterion: Returns pipeline.py (imports entity_extract)
+- id: last30days-impact-5
+  repo: last30days-skill
+  verb: impact
+  query: what depends on cookie_extract.py
+  expected:
+    affected:
+    - skills/last30days/scripts/lib/chrome_cookies.py
+    - skills/last30days/scripts/lib/safari_cookies.py
+    - skills/last30days/scripts/lib/reddit_keyless.py
+  pass_criterion: Returns browser cookie modules that import cookie_extract
+- id: last30days-browse-1
+  repo: last30days-skill
+  verb: browse
+  query: list all lib modules
+  expected:
+    entries:
+    - pipeline.py
+    - schema.py
+    - fusion.py
+    - dedupe.py
+    - normalize.py
+    - rerank.py
+    - relevance.py
+    - query.py
+    - render.py
+    - env.py
+    - dates.py
+    - log.py
+    - http.py
+    - signals.py
+    - grounding.py
+    - entity_extract.py
+    - hackernews.py
+    - reddit.py
+    - reddit_enrich.py
+    - reddit_keyless.py
+    - reddit_rss.py
+    - bird_x.py
+    - xai_x.py
+    - xurl_x.py
+    - bluesky.py
+    - digg.py
+    - github.py
+    - instagram.py
+    - pinterest.py
+    - tiktok.py
+    - youtube_yt.py
+    - threads.py
+    - perplexity.py
+    - jobs.py
+    - hiring_signals.py
+    - competitors.py
+    - fanout.py
+    - planner.py
+    - cluster.py
+    - categories.py
+    - snippet.py
+    - ui.py
+    - skill_meta.py
+    - preflight.py
+    - health.py
+    - resolve.py
+    - providers.py
+    - quality_nudge.py
+    - web_search_keyless.py
+    - web_fetch_keyless.py
+    - html_render.py
+    - subproc.py
+    - cjk.py
+    - chrome_cookies.py
+    - safari_cookies.py
+    - cookie_extract.py
+    - setup_wizard.py
+    - transcribe.py
+    - xiaohongshu_api.py
+  pass_criterion: Returns comprehensive list of lib modules (50+)
+- id: last30days-browse-2
+  repo: last30days-skill
+  verb: browse
+  query: list all test files
+  expected:
+    entries:
+    - test_pipeline_v3.py
+    - test_reddit.py
+    - test_bird_x.py
+    - test_bluesky.py
+    - test_dedupe.py
+    - test_fusion.py
+    - test_entity_extract.py
+    - test_relevance.py
+  pass_criterion: Returns test files from tests/ directory
+- id: last30days-browse-3
+  repo: last30days-skill
+  verb: browse
+  query: list top-level scripts
+  expected:
+    entries:
+    - briefing.py
+    - last30days.py
+    - store.py
+    - watchlist.py
+    - evaluate_search_quality.py
+    - verify_v3.py
+    - build-skill.sh
+    - compare.sh
+    - setup-keychain.sh
+    - setup-pass.sh
+  pass_criterion: Returns scripts from skills/last30days/scripts/
+- id: last30days-browse-4
+  repo: last30days-skill
+  verb: browse
+  query: list MCP internal packages
+  expected:
+    entries:
+    - engine/
+    - tools/
+    - manifest/
+  pass_criterion: Returns mcp/internal/ subdirectories
+- id: last30days-browse-5
+  repo: last30days-skill
+  verb: browse
+  query: list documentation files
+  expected:
+    entries:
+    - README.md
+    - CLAUDE.md
+    - CONCEPTS.md
+    - CONFIGURATION.md
+    - HERMES_SETUP.md
+    - CHANGELOG.md
+  pass_criterion: Returns all top-level documentation markdown files
+- id: headroom-search_exact-1
+  repo: headroom
+  verb: search_exact
+  query: compute_frozen_count cache_control
+  expected:
+    files:
+    - crates/headroom-core/src/lib.rs
+    - crates/headroom-core/src/cache_control.rs
+    - crates/headroom-proxy/src/lib.rs
+  pass_criterion: Returns headroom-core lib.rs and cache_control module
+- id: headroom-search_exact-2
+  repo: headroom
+  verb: search_exact
+  query: bedrock vertex proxy handlers
+  expected:
+    files:
+    - crates/headroom-proxy/src/bedrock.rs
+    - crates/headroom-proxy/src/vertex.rs
+    - crates/headroom-proxy/src/handlers.rs
+    - crates/headroom-proxy/src/proxy.rs
+  pass_criterion: Returns bedrock, vertex, handlers, and proxy modules
+- id: headroom-search_exact-3
+  repo: headroom
+  verb: search_exact
+  query: main.rs CliArgs Config
+  expected:
+    files:
+    - crates/headroom-proxy/src/main.rs
+    - crates/headroom-proxy/src/config.rs
+  pass_criterion: Returns main.rs and config.rs from headroom-proxy
+- id: headroom-search_exact-4
+  repo: headroom
+  verb: search_exact
+  query: compression sse websocket
+  expected:
+    files:
+    - crates/headroom-proxy/src/compression.rs
+    - crates/headroom-proxy/src/sse.rs
+    - crates/headroom-proxy/src/websocket.rs
+  pass_criterion: Returns compression, sse, and websocket modules
+- id: headroom-search_exact-5
+  repo: headroom
+  verb: search_exact
+  query: Cargo.toml workspace crates
+  expected:
+    files:
+    - Cargo.toml
+    - crates/headroom-core/Cargo.toml
+    - crates/headroom-proxy/Cargo.toml
+    - crates/headroom-parity/Cargo.toml
+    - crates/headroom-py/Cargo.toml
+  pass_criterion: Returns workspace Cargo.toml and all crate Cargo.toml files
+- id: headroom-search_semantic-1
+  repo: headroom
+  verb: search_semantic
+  query: counting tokens and freezing cache
+  expected:
+    files:
+    - crates/headroom-core/src/lib.rs
+    - crates/headroom-core/src/cache_control.rs
+    - crates/headroom-core/src/ccr.rs
+  pass_criterion: Returns compute_frozen_count and cache_control despite 'counting tokens' vs 'compute_frozen_count' vocabulary
+    gap
+  notes: Query uses 'counting tokens and freezing' but function is 'compute_frozen_count'
+- id: headroom-search_semantic-2
+  repo: headroom
+  verb: search_semantic
+  query: compressing response payloads
+  expected:
+    files:
+    - crates/headroom-proxy/src/compression.rs
+    - crates/headroom-core/src/compression_policy.rs
+  pass_criterion: Returns compression modules despite 'compressing response payloads' vs 'compression' vocabulary gap
+  notes: Query uses 'compressing response payloads' but modules are 'compression.rs' and 'compression_policy.rs'
+- id: headroom-search_semantic-3
+  repo: headroom
+  verb: search_semantic
+  query: streaming server-sent events
+  expected:
+    files:
+    - crates/headroom-proxy/src/sse.rs
+    - crates/headroom-proxy/src/handlers.rs
+  pass_criterion: Returns sse.rs despite 'streaming server-sent events' vs 'sse' vocabulary gap
+  notes: Query uses 'streaming server-sent events' but module is 'sse.rs' (SSE abbreviation)
+- id: headroom-search_semantic-4
+  repo: headroom
+  verb: search_semantic
+  query: routing requests to AWS Bedrock
+  expected:
+    files:
+    - crates/headroom-proxy/src/bedrock.rs
+    - crates/headroom-proxy/src/proxy.rs
+    - crates/headroom-proxy/src/handlers.rs
+  pass_criterion: Returns bedrock module despite 'routing requests to AWS Bedrock' vs 'bedrock' vocabulary gap
+  notes: Query uses 'routing requests to AWS Bedrock' but module is 'bedrock.rs'
+- id: headroom-search_semantic-5
+  repo: headroom
+  verb: search_semantic
+  query: Python bindings for Rust library
+  expected:
+    files:
+    - crates/headroom-py/src/lib.rs
+    - crates/headroom-py/Cargo.toml
+  pass_criterion: Returns headroom-py crate despite 'Python bindings' vs 'headroom-py' vocabulary gap
+  notes: Query uses 'Python bindings' but crate is 'headroom-py'
+- id: headroom-understand-1
+  repo: headroom
+  verb: understand
+  query: what does compute_frozen_count do
+  expected:
+    location: crates/headroom-core/src/lib.rs
+    key_facts:
+    - Re-exported from headroom-core
+    - Computes number of tokens to freeze for caching
+    - Used by cache_control module
+    - Part of cache optimization strategy
+  pass_criterion: Explains token freezing for cache optimization
+- id: headroom-understand-2
+  repo: headroom
+  verb: understand
+  query: how does the proxy route to Bedrock vs Vertex
+  expected:
+    location: crates/headroom-proxy/src/
+    key_facts:
+    - bedrock.rs handles AWS Bedrock routing
+    - vertex.rs handles GCP Vertex AI routing
+    - proxy.rs orchestrates routing decisions
+    - handlers.rs dispatches to correct backend
+    - config.rs defines backend endpoints
+  pass_criterion: Explains multi-backend routing architecture
+- id: headroom-understand-3
+  repo: headroom
+  verb: understand
+  query: what is headroom-parity for
+  expected:
+    location: crates/headroom-parity/src/lib.rs
+    key_facts:
+    - Parity harness for comparing Python vs Rust implementations
+    - Used to verify Rust port matches Python behavior
+    - Testing/validation crate
+  pass_criterion: Explains parity testing between Python and Rust
+- id: headroom-understand-4
+  repo: headroom
+  verb: understand
+  query: how does SSE streaming work
+  expected:
+    location: crates/headroom-proxy/src/sse.rs
+    key_facts:
+    - Handles server-sent events streaming
+    - Used for streaming LLM responses
+    - Integrates with compression module
+    - Called by handlers for streaming endpoints
+  pass_criterion: Explains SSE streaming for LLM responses
+- id: headroom-understand-5
+  repo: headroom
+  verb: understand
+  query: what modules does headroom-core export
+  expected:
+    location: crates/headroom-core/src/lib.rs
+    key_facts:
+    - 'auth_mode: authentication modes'
+    - 'cache_control: cache control logic'
+    - 'ccr: cache control records'
+    - 'compression_policy: compression strategies'
+    - 'relevance: relevance scoring'
+    - 'signals: signal processing'
+    - 'tokenizer: tokenization'
+    - 'transforms: data transformations'
+    - Re-exports compute_frozen_count
+  pass_criterion: Lists all 8 modules plus compute_frozen_count re-export
+- id: headroom-impact-1
+  repo: headroom
+  verb: impact
+  query: what uses headroom_core::compute_frozen_count
+  expected:
+    affected:
+    - crates/headroom-proxy/src/lib.rs
+    - crates/headroom-proxy/src/cache_stabilization.rs
+  pass_criterion: Returns headroom-proxy modules that import compute_frozen_count
+- id: headroom-impact-2
+  repo: headroom
+  verb: impact
+  query: what depends on headroom-proxy config module
+  expected:
+    affected:
+    - crates/headroom-proxy/src/main.rs
+    - crates/headroom-proxy/src/proxy.rs
+    - crates/headroom-proxy/src/handlers.rs
+  pass_criterion: Returns main.rs (uses CliArgs and Config) and other config consumers
+- id: headroom-impact-3
+  repo: headroom
+  verb: impact
+  query: what calls bedrock.rs
+  expected:
+    affected:
+    - crates/headroom-proxy/src/proxy.rs
+    - crates/headroom-proxy/src/handlers.rs
+  pass_criterion: Returns proxy and handlers modules that route to Bedrock
+- id: headroom-impact-4
+  repo: headroom
+  verb: impact
+  query: what uses compression module
+  expected:
+    affected:
+    - crates/headroom-proxy/src/sse.rs
+    - crates/headroom-proxy/src/handlers.rs
+    - crates/headroom-proxy/src/responses_items.rs
+  pass_criterion: Returns modules that apply compression to responses
+- id: headroom-impact-5
+  repo: headroom
+  verb: impact
+  query: what depends on cache_control.rs
+  expected:
+    affected:
+    - crates/headroom-core/src/lib.rs
+    - crates/headroom-proxy/src/cache_stabilization.rs
+  pass_criterion: Returns lib.rs (re-exports module) and cache_stabilization (uses cache_control logic)
+- id: headroom-browse-1
+  repo: headroom
+  verb: browse
+  query: list all crates
+  expected:
+    entries:
+    - headroom-core
+    - headroom-proxy
+    - headroom-parity
+    - headroom-py
+  pass_criterion: Returns all 4 workspace crates
+- id: headroom-browse-2
+  repo: headroom
+  verb: browse
+  query: list headroom-core modules
+  expected:
+    entries:
+    - auth_mode
+    - cache_control
+    - ccr
+    - compression_policy
+    - relevance
+    - signals
+    - tokenizer
+    - transforms
+  pass_criterion: Returns all 8 modules from headroom-core/src/
+- id: headroom-browse-3
+  repo: headroom
+  verb: browse
+  query: list headroom-proxy modules
+  expected:
+    entries:
+    - bedrock
+    - cache_stabilization
+    - compression
+    - config
+    - error
+    - handlers
+    - headers
+    - health
+    - observability
+    - proxy
+    - responses_items
+    - sse
+    - vertex
+    - websocket
+  pass_criterion: Returns all 14 modules from headroom-proxy/src/
+- id: headroom-browse-4
+  repo: headroom
+  verb: browse
+  query: list GitHub workflow files
+  expected:
+    entries:
+    - ci.yml
+    - rust.yml
+    - release.yml
+    - docker.yml
+    - publish.yml
+    - eval.yml
+  pass_criterion: Returns workflow files from .github/workflows/
+- id: headroom-browse-5
+  repo: headroom
+  verb: browse
+  query: list top-level documentation
+  expected:
+    entries:
+    - README.md
+    - CONTRIBUTING.md
+    - ENTERPRISE.md
+    - PR.md
+  pass_criterion: Returns all top-level markdown documentation files
+- id: agent-reach-search_exact-1
+  repo: Agent-Reach
+  verb: search_exact
+  query: cookie_extract
+  expected:
+    files:
+    - agent_reach/cookie_extract.py
+  pass_criterion: cookie_extract.py in top 3 results
+- id: agent-reach-search_exact-2
+  repo: Agent-Reach
+  verb: search_exact
+  query: mcp_server.py
+  expected:
+    files:
+    - agent_reach/integrations/mcp_server.py
+  pass_criterion: MCP server file in top 3 results
+- id: agent-reach-search_exact-3
+  repo: Agent-Reach
+  verb: search_exact
+  query: get_all_channels
+  expected:
+    files:
+    - agent_reach/channels/__init__.py
+    - agent_reach/doctor.py
+  pass_criterion: channels/__init__.py and doctor.py in top 5 results
+- id: agent-reach-search_exact-4
+  repo: Agent-Reach
+  verb: search_exact
+  query: transcribe_xiaoyuzhou.sh
+  expected:
+    files:
+    - agent_reach/scripts/transcribe_xiaoyuzhou.sh
+  pass_criterion: transcribe script in top 3 results
+- id: agent-reach-search_exact-5
+  repo: Agent-Reach
+  verb: search_exact
+  query: opencli.py
+  expected:
+    files:
+    - agent_reach/backends/opencli.py
+  pass_criterion: opencli backend file in top 3 results
+- id: agent-reach-search_semantic-1
+  repo: Agent-Reach
+  verb: search_semantic
+  query: checking connectivity status to external web services
+  expected:
+    files:
+    - agent_reach/doctor.py
+  pass_criterion: doctor.py (diagnostic command) in top 5 results
+  notes: 'Vocabulary mismatch: query says ''connectivity status'', repo uses ''doctor'' command that checks platform reachability'
+- id: agent-reach-search_semantic-2
+  repo: Agent-Reach
+  verb: search_semantic
+  query: extracting browser authentication tokens
+  expected:
+    files:
+    - agent_reach/cookie_extract.py
+    - tests/test_cookie_extract_perms.py
+  pass_criterion: cookie_extract module in top 5 results
+  notes: Query says 'browser authentication tokens', repo uses 'cookie_extract'
+- id: agent-reach-search_semantic-3
+  repo: Agent-Reach
+  verb: search_semantic
+  query: Chinese social media platform integration
+  expected:
+    files:
+    - agent_reach/channels/xiaohongshu.py
+    - agent_reach/channels/bilibili.py
+    - agent_reach/channels/xueqiu.py
+    - agent_reach/channels/v2ex.py
+  pass_criterion: At least 2 Chinese platform channels in top 5
+  notes: Query says 'Chinese social media', repo uses specific platform names (xiaohongshu, bilibili, xueqiu, v2ex)
+- id: agent-reach-search_semantic-4
+  repo: Agent-Reach
+  verb: search_semantic
+  query: audio content from podcast feeds
+  expected:
+    files:
+    - agent_reach/channels/xiaoyuzhou.py
+    - agent_reach/transcribe.py
+  pass_criterion: xiaoyuzhou channel or transcribe module in top 5
+  notes: Query says 'podcast feeds', repo uses 'xiaoyuzhou' (a Chinese podcast platform) and 'transcribe'
+- id: agent-reach-search_semantic-5
+  repo: Agent-Reach
+  verb: search_semantic
+  query: multi-platform content aggregation tool
+  expected:
+    files:
+    - agent_reach/core.py
+    - agent_reach/channels/base.py
+  pass_criterion: core.py or base.py in top 5 results
+  notes: Query says 'multi-platform aggregation', repo uses 'AgentReach' class in core.py with channel architecture
+- id: agent-reach-understand-1
+  repo: Agent-Reach
+  verb: understand
+  query: Agent-Reach/agent_reach/channels
+  expected:
+    location: agent_reach/channels
+    key_facts:
+    - base
+    - youtube
+    - twitter
+    - reddit
+    - bilibili
+    - xiaohongshu
+  pass_criterion: Response lists platform-specific channel modules
+- id: agent-reach-understand-2
+  repo: Agent-Reach
+  verb: understand
+  query: Agent-Reach/agent_reach/doctor.py
+  expected:
+    location: agent_reach/doctor.py
+    key_facts:
+    - check_all
+    - Config
+    - get_all_channels
+    - health
+    - status
+  pass_criterion: Response explains doctor.py as a health-check utility importing Config and channels
+- id: agent-reach-understand-3
+  repo: Agent-Reach
+  verb: understand
+  query: Agent-Reach/agent_reach/config.py
+  expected:
+    location: agent_reach/config.py
+    key_facts:
+    - Config
+    - configuration
+    - settings
+  pass_criterion: Response identifies Config class as central configuration manager
+- id: agent-reach-understand-4
+  repo: Agent-Reach
+  verb: understand
+  query: Agent-Reach/agent_reach/integrations/mcp_server.py
+  expected:
+    location: agent_reach/integrations/mcp_server.py
+    key_facts:
+    - MCP
+    - server
+    - tool
+    - protocol
+  pass_criterion: Response explains MCP server integration for AI agent tools
+- id: agent-reach-understand-5
+  repo: Agent-Reach
+  verb: understand
+  query: Agent-Reach/agent_reach/core.py
+  expected:
+    location: agent_reach/core.py
+    key_facts:
+    - AgentReach
+    - Config
+    - doctor
+    - health
+  pass_criterion: Response explains AgentReach class as the main entry point
+- id: agent-reach-impact-1
+  repo: Agent-Reach
+  verb: impact
+  query: Agent-Reach/agent_reach/config.py
+  expected:
+    affected:
+    - core.py
+    - doctor.py
+    - cli.py
+  pass_criterion: At least 2 files that import Config identified
+- id: agent-reach-impact-2
+  repo: Agent-Reach
+  verb: impact
+  query: Agent-Reach/agent_reach/channels/base.py
+  expected:
+    affected:
+    - twitter.py
+    - youtube.py
+    - reddit.py
+    - bilibili.py
+    - xiaohongshu.py
+  pass_criterion: At least 3 channel implementations that subclass BaseChannel identified
+- id: agent-reach-impact-3
+  repo: Agent-Reach
+  verb: impact
+  query: Agent-Reach/agent_reach/cookie_extract.py
+  expected:
+    affected:
+    - cli.py
+    - test_cookie_extract
+  pass_criterion: At least 1 file that references cookie_extract identified
+- id: agent-reach-impact-4
+  repo: Agent-Reach
+  verb: impact
+  query: Agent-Reach/agent_reach/channels/__init__.py
+  expected:
+    affected:
+    - doctor.py
+    - core.py
+  pass_criterion: doctor.py identified as caller of get_all_channels
+- id: agent-reach-impact-5
+  repo: Agent-Reach
+  verb: impact
+  query: Agent-Reach/agent_reach/utils/text.py
+  expected:
+    affected:
+    - channels
+    - core.py
+  pass_criterion: At least 1 module that uses text utilities identified
+- id: agent-reach-browse-1
+  repo: Agent-Reach
+  verb: browse
+  query: /Agent-Reach/agent_reach/channels
+  expected:
+    entries:
+    - __init__.py
+    - base.py
+    - bilibili.py
+    - exa_search.py
+    - github.py
+    - linkedin.py
+    - reddit.py
+    - rss.py
+    - twitter.py
+    - v2ex.py
+    - web.py
+    - xiaohongshu.py
+    - xiaoyuzhou.py
+    - xueqiu.py
+    - youtube.py
+  pass_criterion: At least 8 channel files listed
+- id: agent-reach-browse-2
+  repo: Agent-Reach
+  verb: browse
+  query: /Agent-Reach/agent_reach
+  expected:
+    entries:
+    - __init__.py
+    - cli.py
+    - config.py
+    - core.py
+    - doctor.py
+    - cookie_extract.py
+    - probe.py
+    - transcribe.py
+    - channels
+    - backends
+    - integrations
+    - utils
+    - guides
+    - skill
+    - scripts
+  pass_criterion: At least 6 of the top-level package entries listed
+- id: agent-reach-browse-3
+  repo: Agent-Reach
+  verb: browse
+  query: /Agent-Reach/agent_reach/guides
+  expected:
+    entries:
+    - setup-exa.md
+    - setup-groq.md
+    - setup-reddit.md
+    - setup-twitter.md
+    - setup-xiaohongshu.md
+  pass_criterion: At least 3 setup guide files listed
+- id: agent-reach-browse-4
+  repo: Agent-Reach
+  verb: browse
+  query: /Agent-Reach/tests
+  expected:
+    entries:
+    - test_channel_contracts.py
+    - test_channels.py
+    - test_cli.py
+    - test_config.py
+    - test_core.py
+    - test_doctor.py
+  pass_criterion: At least 5 test files listed
+- id: agent-reach-browse-5
+  repo: Agent-Reach
+  verb: browse
+  query: /Agent-Reach/agent_reach/utils
+  expected:
+    entries:
+    - paths.py
+    - process.py
+    - text.py
+  pass_criterion: All 3 utility modules listed
+- id: copilotkit-search_exact-1
+  repo: CopilotKit
+  verb: search_exact
+  query: useCopilotAction
+  expected:
+    files:
+    - packages/react-core
+  pass_criterion: useCopilotAction hook definition in react-core package, top 3 results
+- id: copilotkit-search_exact-2
+  repo: CopilotKit
+  verb: search_exact
+  query: CopilotTextarea
+  expected:
+    files:
+    - packages/react-textarea
+  pass_criterion: CopilotTextarea component file in top 3 results
+- id: copilotkit-search_exact-3
+  repo: CopilotKit
+  verb: search_exact
+  query: CopilotRuntime
+  expected:
+    files:
+    - packages/runtime
+  pass_criterion: CopilotRuntime class in runtime package, top 3
+- id: copilotkit-search_exact-4
+  repo: CopilotKit
+  verb: search_exact
+  query: useCopilotReadable
+  expected:
+    files:
+    - packages/react-core
+  pass_criterion: useCopilotReadable hook in react-core, top 3
+- id: copilotkit-search_exact-5
+  repo: CopilotKit
+  verb: search_exact
+  query: CopilotSidebar
+  expected:
+    files:
+    - packages/react-ui
+  pass_criterion: CopilotSidebar in react-ui package, top 3
+- id: copilotkit-search_semantic-1
+  repo: CopilotKit
+  verb: search_semantic
+  query: building conversational AI interfaces embedded in web applications
+  expected:
+    files:
+    - packages/react-ui
+    - packages/react-textarea
+    - README.md
+  pass_criterion: React UI package or README in top 5 results
+  notes: Query says 'conversational AI interfaces', repo uses 'CopilotKit', 'react-ui', 'react-textarea'
+- id: copilotkit-search_semantic-2
+  repo: CopilotKit
+  verb: search_semantic
+  query: making application state visible to AI assistants
+  expected:
+    files:
+    - packages/react-core
+  pass_criterion: react-core package (useCopilotReadable) in top 5
+  notes: Query says 'making state visible', repo uses 'useCopilotReadable' hook
+- id: copilotkit-search_semantic-3
+  repo: CopilotKit
+  verb: search_semantic
+  query: AI-powered text completion in input fields
+  expected:
+    files:
+    - packages/react-textarea
+  pass_criterion: react-textarea package in top 5
+  notes: Query says 'text completion in input fields', repo uses 'CopilotTextarea'
+- id: copilotkit-search_semantic-4
+  repo: CopilotKit
+  verb: search_semantic
+  query: server-side LLM request handling
+  expected:
+    files:
+    - packages/runtime
+  pass_criterion: runtime package in top 5 results
+  notes: Query says 'server-side LLM handling', repo uses 'CopilotRuntime'
+- id: copilotkit-search_semantic-5
+  repo: CopilotKit
+  verb: search_semantic
+  query: registering custom actions the AI can execute
+  expected:
+    files:
+    - packages/react-core
+  pass_criterion: react-core package (useCopilotAction) in top 5
+  notes: Query says 'registering custom actions', repo uses 'useCopilotAction' hook
+- id: copilotkit-understand-1
+  repo: CopilotKit
+  verb: understand
+  query: CopilotKit/packages/react-core
+  expected:
+    location: packages/react-core
+    key_facts:
+    - hooks
+    - CopilotKit
+    - action
+    - readable
+    - state
+    - React
+  pass_criterion: Response explains react-core as the hook/state layer for CopilotKit
+- id: copilotkit-understand-2
+  repo: CopilotKit
+  verb: understand
+  query: CopilotKit/packages/runtime
+  expected:
+    location: packages/runtime
+    key_facts:
+    - runtime
+    - server
+    - LLM
+    - backend
+  pass_criterion: Response explains runtime as the backend server for LLM communication
+- id: copilotkit-understand-3
+  repo: CopilotKit
+  verb: understand
+  query: CopilotKit/packages/react-ui
+  expected:
+    location: packages/react-ui
+    key_facts:
+    - chat
+    - UI
+    - panel
+    - sidebar
+    - components
+  pass_criterion: Response explains react-ui as pre-built chat UI components
+- id: copilotkit-understand-4
+  repo: CopilotKit
+  verb: understand
+  query: CopilotKit/packages/react-textarea
+  expected:
+    location: packages/react-textarea
+    key_facts:
+    - textarea
+    - autocomplete
+    - suggestion
+    - input
+  pass_criterion: Response explains react-textarea as AI-powered text input with autocomplete
+- id: copilotkit-understand-5
+  repo: CopilotKit
+  verb: understand
+  query: CopilotKit/README.md
+  expected:
+    location: README.md
+    key_facts:
+    - open-source
+    - AI
+    - copilot
+    - React
+    - framework
+  pass_criterion: Response identifies CopilotKit as open-source AI copilot framework for React
+- id: copilotkit-impact-1
+  repo: CopilotKit
+  verb: impact
+  query: CopilotKit/packages/react-core
+  expected:
+    affected:
+    - react-ui
+    - react-textarea
+  pass_criterion: At least 2 downstream packages that depend on react-core identified
+- id: copilotkit-impact-2
+  repo: CopilotKit
+  verb: impact
+  query: CopilotKit/packages/runtime
+  expected:
+    affected:
+    - react-core
+    - examples
+  pass_criterion: react-core or examples identified as runtime consumers
+- id: copilotkit-impact-3
+  repo: CopilotKit
+  verb: impact
+  query: CopilotKit/packages/react-textarea
+  expected:
+    affected:
+    - examples
+  pass_criterion: Example apps using CopilotTextarea identified
+- id: copilotkit-impact-4
+  repo: CopilotKit
+  verb: impact
+  query: CopilotKit/packages/react-ui
+  expected:
+    affected:
+    - examples
+  pass_criterion: Example apps using react-ui components identified
+- id: copilotkit-impact-5
+  repo: CopilotKit
+  verb: impact
+  query: CopilotKit/packages/react-core/src/hooks
+  expected:
+    affected:
+    - react-ui
+    - react-textarea
+    - examples
+  pass_criterion: At least 2 consumers of core hooks identified
+- id: copilotkit-browse-1
+  repo: CopilotKit
+  verb: browse
+  query: /CopilotKit/packages
+  expected:
+    entries:
+    - react-core
+    - react-ui
+    - react-textarea
+    - runtime
+  pass_criterion: At least 4 of the SDK packages listed
+- id: copilotkit-browse-2
+  repo: CopilotKit
+  verb: browse
+  query: /CopilotKit
+  expected:
+    entries:
+    - packages
+    - examples
+    - README.md
+    - LICENSE
+  pass_criterion: packages and examples directories listed
+- id: copilotkit-browse-3
+  repo: CopilotKit
+  verb: browse
+  query: /CopilotKit/packages/react-core
+  expected:
+    entries:
+    - src
+    - package.json
+    - README.md
+  pass_criterion: src directory and package.json listed
+- id: copilotkit-browse-4
+  repo: CopilotKit
+  verb: browse
+  query: /CopilotKit/packages/react-ui
+  expected:
+    entries:
+    - src
+    - package.json
+  pass_criterion: src directory listed
+- id: copilotkit-browse-5
+  repo: CopilotKit
+  verb: browse
+  query: /CopilotKit/packages/runtime
+  expected:
+    entries:
+    - src
+    - package.json
+  pass_criterion: src directory listed
+- id: career-ops-search_exact-1
+  repo: career-ops
+  verb: search_exact
+  query: build-cv-latex.mjs
+  expected:
+    files:
+    - build-cv-latex.mjs
+  pass_criterion: CV builder script in top 3 results
+- id: career-ops-search_exact-2
+  repo: career-ops
+  verb: search_exact
+  query: greenhouse.mjs
+  expected:
+    files:
+    - providers/greenhouse.mjs
+  pass_criterion: Greenhouse provider in top 3 results
+- id: career-ops-search_exact-3
+  repo: career-ops
+  verb: search_exact
+  query: followup-cadence.mjs
+  expected:
+    files:
+    - followup-cadence.mjs
+  pass_criterion: Followup cadence script in top 3 results
+- id: career-ops-search_exact-4
+  repo: career-ops
+  verb: search_exact
+  query: auto-pipeline.md
+  expected:
+    files:
+    - modes/auto-pipeline.md
+  pass_criterion: Auto-pipeline mode file in top 3 results
+- id: career-ops-search_exact-5
+  repo: career-ops
+  verb: search_exact
+  query: scan-ats-full.mjs
+  expected:
+    files:
+    - scan-ats-full.mjs
+  pass_criterion: ATS scanner script in top 3 results
+- id: career-ops-search_semantic-1
+  repo: career-ops
+  verb: search_semantic
+  query: automated resume generation tailored to specific job postings
+  expected:
+    files:
+    - build-cv-latex.mjs
+    - modes/latex.md
+    - modes/apply.md
+  pass_criterion: CV/resume generation file in top 5 results
+  notes: Query says 'resume generation tailored to job postings', repo uses 'build-cv-latex' and 'apply' mode
+- id: career-ops-search_semantic-2
+  repo: career-ops
+  verb: search_semantic
+  query: tracking application status across multiple companies
+  expected:
+    files:
+    - tracker.mjs
+    - modes/tracker.md
+    - modes/pipeline.md
+  pass_criterion: Tracker or pipeline files in top 5
+  notes: Query says 'tracking application status', repo uses 'tracker.mjs' and 'pipeline' mode
+- id: career-ops-search_semantic-3
+  repo: career-ops
+  verb: search_semantic
+  query: supported applicant tracking systems for job scraping
+  expected:
+    files:
+    - providers/greenhouse.mjs
+    - providers/lever.mjs
+    - providers/workday.mjs
+    - providers/ashby.mjs
+  pass_criterion: At least 2 ATS providers in top 5
+  notes: Query says 'applicant tracking systems', repo uses specific provider names
+- id: career-ops-search_semantic-4
+  repo: career-ops
+  verb: search_semantic
+  query: multilingual job search support
+  expected:
+    files:
+    - modes/ar/
+    - modes/de/
+    - modes/fr/
+    - modes/ja/
+    - modes/zh/
+  pass_criterion: At least 2 i18n mode directories in top 5
+  notes: Query says 'multilingual', repo has language-specific mode directories
+- id: career-ops-search_semantic-5
+  repo: career-ops
+  verb: search_semantic
+  query: terminal dashboard for pipeline visualization
+  expected:
+    files:
+    - dashboard/main.go
+    - dashboard/internal/ui/
+  pass_criterion: Dashboard Go files in top 5
+  notes: Query says 'terminal dashboard', repo has Go TUI in dashboard/ directory
+- id: career-ops-understand-1
+  repo: career-ops
+  verb: understand
+  query: career-ops/modes/auto-pipeline.md
+  expected:
+    location: modes/auto-pipeline.md
+    key_facts:
+    - pipeline
+    - auto
+    - scan
+    - apply
+  pass_criterion: Response identifies auto-pipeline mode and its workflow
+- id: career-ops-understand-2
+  repo: career-ops
+  verb: understand
+  query: career-ops/providers
+  expected:
+    location: providers/
+    key_facts:
+    - greenhouse
+    - lever
+    - workday
+    - ashby
+    - ATS
+    - job
+  pass_criterion: Response explains providers as ATS integration modules
+- id: career-ops-understand-3
+  repo: career-ops
+  verb: understand
+  query: career-ops/dashboard
+  expected:
+    location: dashboard/
+    key_facts:
+    - Go
+    - TUI
+    - pipeline
+    - viewer
+  pass_criterion: Response identifies dashboard as Go terminal UI for pipeline viewing
+- id: career-ops-understand-4
+  repo: career-ops
+  verb: understand
+  query: career-ops/modes
+  expected:
+    location: modes/
+    key_facts:
+    - apply
+    - scan
+    - pipeline
+    - interview
+    - followup
+    - latex
+  pass_criterion: Response lists major workflow modes
+- id: career-ops-understand-5
+  repo: career-ops
+  verb: understand
+  query: career-ops/build-cv-latex.mjs
+  expected:
+    location: build-cv-latex.mjs
+    key_facts:
+    - CV
+    - LaTeX
+    - build
+    - template
+  pass_criterion: Response explains CV builder script using LaTeX templates
+- id: career-ops-browse-1
+  repo: career-ops
+  verb: browse
+  query: /career-ops/modes
+  expected:
+    entries:
+    - apply.md
+    - scan.md
+    - pipeline.md
+    - followup.md
+    - latex.md
+    - tracker.md
+    - auto-pipeline.md
+    - interview.md
+    - interview-prep.md
+  pass_criterion: At least 6 of the mode files listed
+- id: career-ops-browse-2
+  repo: career-ops
+  verb: browse
+  query: /career-ops/providers
+  expected:
+    entries:
+    - greenhouse.mjs
+    - lever.mjs
+    - workday.mjs
+    - ashby.mjs
+    - workable.mjs
+    - remoteok.mjs
+    - _http.mjs
+    - _types.js
+  pass_criterion: At least 5 provider files listed
+- id: career-ops-browse-3
+  repo: career-ops
+  verb: browse
+  query: /career-ops/templates
+  expected:
+    entries:
+    - cv-template.html
+    - cv-template.tex
+    - cover-letter-template.html
+    - portals.example.yml
+    - states.yml
+  pass_criterion: At least 3 template files listed
+- id: career-ops-browse-4
+  repo: career-ops
+  verb: browse
+  query: /career-ops/dashboard/internal
+  expected:
+    entries:
+    - data
+    - model
+    - theme
+    - ui
+  pass_criterion: All 4 internal Go packages listed
+- id: career-ops-browse-5
+  repo: career-ops
+  verb: browse
+  query: /career-ops
+  expected:
+    entries:
+    - modes
+    - providers
+    - dashboard
+    - templates
+    - batch
+    - examples
+    - docs
+    - build-cv-latex.mjs
+    - tracker.mjs
+    - scan.mjs
+  pass_criterion: At least 6 top-level entries listed
+- id: codegraph-search_exact-1
+  repo: codegraph
+  verb: search_exact
+  query: dynamic-boundaries
+  expected:
+    files:
+    - src/mcp/dynamic-boundaries.ts
+  pass_criterion: dynamic-boundaries.ts in top 3 results
+- id: codegraph-search_exact-2
+  repo: codegraph
+  verb: search_exact
+  query: ToolHandler
+  expected:
+    files:
+    - src/mcp/tools.ts
+  pass_criterion: tools.ts containing ToolHandler class in top 3
+- id: codegraph-search_exact-3
+  repo: codegraph
+  verb: search_exact
+  query: import-resolver.ts
+  expected:
+    files:
+    - src/resolution/import-resolver.ts
+  pass_criterion: import-resolver.ts in top 3 results
+- id: codegraph-search_exact-4
+  repo: codegraph
+  verb: search_exact
+  query: sqlite-adapter
+  expected:
+    files:
+    - src/db/sqlite-adapter.ts
+  pass_criterion: sqlite-adapter.ts in top 3 results
+- id: codegraph-search_exact-5
+  repo: codegraph
+  verb: search_exact
+  query: liveness-watchdog
+  expected:
+    files:
+    - src/mcp/liveness-watchdog.ts
+  pass_criterion: liveness-watchdog.ts in top 3 results
+- id: codegraph-search_semantic-1
+  repo: codegraph
+  verb: search_semantic
+  query: parsing source code structure to understand function relationships
+  expected:
+    files:
+    - src/extraction/
+    - src/mcp/engine.ts
+  pass_criterion: Extraction module or engine in top 5 results
+  notes: Query says 'parsing source code structure' and 'function relationships', repo uses 'extraction' and tree-sitter based
+    graph
+- id: codegraph-search_semantic-2
+  repo: codegraph
+  verb: search_semantic
+  query: resolving module import paths across monorepos
+  expected:
+    files:
+    - src/resolution/import-resolver.ts
+    - src/resolution/workspace-packages.ts
+    - src/resolution/path-aliases.ts
+  pass_criterion: resolution modules in top 5
+  notes: Query says 'resolving module imports', repo uses 'resolution' directory with import-resolver
+- id: codegraph-search_semantic-3
+  repo: codegraph
+  verb: search_semantic
+  query: detecting generated or auto-created files to exclude
+  expected:
+    files:
+    - src/extraction/generated-detection.ts
+  pass_criterion: generated-detection.ts in top 5
+  notes: Query says 'detecting generated files', repo uses 'generated-detection' module
+- id: codegraph-search_semantic-4
+  repo: codegraph
+  verb: search_semantic
+  query: shared daemon process for multiple IDE sessions
+  expected:
+    files:
+    - src/mcp/daemon.ts
+    - src/mcp/daemon-manager.ts
+    - src/mcp/daemon-registry.ts
+  pass_criterion: daemon files in top 5
+  notes: Query says 'shared daemon for IDE sessions', repo uses daemon.ts for shared MCP server
+- id: codegraph-search_semantic-5
+  repo: codegraph
+  verb: search_semantic
+  query: installing as IDE extension for different editors
+  expected:
+    files:
+    - src/installer/targets/claude.ts
+    - src/installer/targets/cursor.ts
+    - src/installer/targets/codex.ts
+  pass_criterion: installer target files in top 5
+  notes: Query says 'IDE extension', repo uses 'installer/targets' for each editor
+- id: codegraph-understand-1
+  repo: codegraph
+  verb: understand
+  query: codegraph/src/mcp/engine.ts
+  expected:
+    location: src/mcp/engine.ts
+    key_facts:
+    - MCPEngine
+    - CodeGraph
+    - ToolHandler
+    - project
+    - session
+  pass_criterion: Response identifies MCPEngine as shared state for MCP server sessions
+- id: codegraph-understand-2
+  repo: codegraph
+  verb: understand
+  query: codegraph/src/mcp/tools.ts
+  expected:
+    location: src/mcp/tools.ts
+    key_facts:
+    - ToolHandler
+    - NotIndexedError
+    - PathRefusalError
+    - scanDynamicDispatch
+  pass_criterion: Response explains ToolHandler and error classes
+- id: codegraph-understand-3
+  repo: codegraph
+  verb: understand
+  query: codegraph/src/extraction
+  expected:
+    location: src/extraction
+    key_facts:
+    - tree-sitter
+    - languages
+    - vue-extractor
+    - svelte-extractor
+    - grammars
+  pass_criterion: Response explains extraction as tree-sitter based code parsing
+- id: codegraph-understand-4
+  repo: codegraph
+  verb: understand
+  query: codegraph/src/resolution
+  expected:
+    location: src/resolution
+    key_facts:
+    - import-resolver
+    - frameworks
+    - path-aliases
+    - workspace-packages
+  pass_criterion: Response explains resolution as import path resolution system
+- id: codegraph-understand-5
+  repo: codegraph
+  verb: understand
+  query: codegraph/src/mcp/daemon.ts
+  expected:
+    location: src/mcp/daemon.ts
+    key_facts:
+    - daemon
+    - socket
+    - session
+    - shared
+    - detached
+  pass_criterion: Response explains daemon as shared detached MCP server process
+- id: codegraph-impact-1
+  repo: codegraph
+  verb: impact
+  query: codegraph/src/mcp/engine.ts
+  expected:
+    affected:
+    - tools.ts
+    - daemon.ts
+    - session.ts
+  pass_criterion: At least 2 MCP modules that depend on engine.ts identified
+- id: codegraph-impact-2
+  repo: codegraph
+  verb: impact
+  query: codegraph/src/extraction/tree-sitter.ts
+  expected:
+    affected:
+    - extraction/languages
+    - extraction/index.ts
+    - graph
+  pass_criterion: At least 1 extraction consumer identified
+- id: codegraph-impact-3
+  repo: codegraph
+  verb: impact
+  query: codegraph/src/db/schema.sql
+  expected:
+    affected:
+    - db/queries.ts
+    - db/migrations.ts
+    - db/sqlite-adapter.ts
+  pass_criterion: At least 2 DB modules that depend on schema identified
+- id: codegraph-impact-4
+  repo: codegraph
+  verb: impact
+  query: codegraph/src/mcp/tools.ts
+  expected:
+    affected:
+    - engine.ts
+    - server-instructions.ts
+  pass_criterion: engine.ts identified as importer of ToolHandler
+- id: codegraph-impact-5
+  repo: codegraph
+  verb: impact
+  query: codegraph/src/types.ts
+  expected:
+    affected:
+    - mcp/tools.ts
+    - graph/
+    - extraction/
+  pass_criterion: At least 2 modules importing from types.ts identified
+- id: codegraph-browse-1
+  repo: codegraph
+  verb: browse
+  query: /codegraph/src/mcp
+  expected:
+    entries:
+    - engine.ts
+    - tools.ts
+    - daemon.ts
+    - daemon-manager.ts
+    - dynamic-boundaries.ts
+    - index.ts
+    - proxy.ts
+    - session.ts
+  pass_criterion: At least 5 MCP module files listed
+- id: codegraph-browse-2
+  repo: codegraph
+  verb: browse
+  query: /codegraph/src/extraction/languages
+  expected:
+    entries:
+    - c-cpp.ts
+    - go.ts
+    - java.ts
+    - javascript.ts
+    - python.ts
+    - rust.ts
+    - swift.ts
+    - typescript.ts
+  pass_criterion: At least 6 language extractor files listed
+- id: codegraph-browse-3
+  repo: codegraph
+  verb: browse
+  query: /codegraph/src/resolution
+  expected:
+    entries:
+    - import-resolver.ts
+    - frameworks
+    - path-aliases.ts
+    - workspace-packages.ts
+    - lru-cache.ts
+  pass_criterion: At least 4 resolution module files listed
+- id: codegraph-browse-4
+  repo: codegraph
+  verb: browse
+  query: /codegraph/src/db
+  expected:
+    entries:
+    - index.ts
+    - migrations.ts
+    - queries.ts
+    - schema.sql
+    - sqlite-adapter.ts
+  pass_criterion: All 5 database files listed
+- id: codegraph-browse-5
+  repo: codegraph
+  verb: browse
+  query: /codegraph/src/installer/targets
+  expected:
+    entries:
+    - claude.ts
+    - cursor.ts
+    - codex.ts
+    - gemini.ts
+    - hermes.ts
+    - kiro.ts
+    - opencode.ts
+  pass_criterion: At least 5 installer target files listed
+- id: understand-anything-search_exact-1
+  repo: Understand-Anything
+  verb: search_exact
+  query: graph-builder.ts
+  expected:
+    files:
+    - understand-anything-plugin/packages/core/src/analyzer/graph-builder.ts
+  pass_criterion: graph-builder.ts in top 3 results
+- id: understand-anything-search_exact-2
+  repo: Understand-Anything
+  verb: search_exact
+  query: language-registry
+  expected:
+    files:
+    - understand-anything-plugin/packages/core/src/languages/language-registry.ts
+  pass_criterion: language-registry.ts in top 3 results
+- id: understand-anything-search_exact-3
+  repo: Understand-Anything
+  verb: search_exact
+  query: scan-project.mjs
+  expected:
+    files:
+    - understand-anything-plugin/skills/understand/scan-project.mjs
+  pass_criterion: scan-project.mjs in top 3 results
+- id: understand-anything-search_exact-4
+  repo: Understand-Anything
+  verb: search_exact
+  query: onboard-builder.ts
+  expected:
+    files:
+    - understand-anything-plugin/src/onboard-builder.ts
+  pass_criterion: onboard-builder.ts in top 3 results
+- id: understand-anything-search_exact-5
+  repo: Understand-Anything
+  verb: search_exact
+  query: framework-registry.ts
+  expected:
+    files:
+    - understand-anything-plugin/packages/core/src/languages/framework-registry.ts
+  pass_criterion: framework-registry.ts in top 3 results
+- id: understand-anything-search_semantic-1
+  repo: Understand-Anything
+  verb: search_semantic
+  query: visualizing code architecture as an interactive graph diagram
+  expected:
+    files:
+    - understand-anything-plugin/packages/dashboard/src/components/GraphView.tsx
+    - understand-anything-plugin/skills/understand-dashboard
+  pass_criterion: Dashboard or graph visualization in top 5 results
+  notes: Query says 'interactive graph diagram', repo uses 'dashboard' with 'GraphView' component
+- id: understand-anything-search_semantic-2
+  repo: Understand-Anything
+  verb: search_semantic
+  query: onboarding new developers to unfamiliar codebases
+  expected:
+    files:
+    - understand-anything-plugin/src/onboard-builder.ts
+    - understand-anything-plugin/skills/understand-onboard
+  pass_criterion: onboard-builder or understand-onboard in top 5
+  notes: Query says 'onboarding developers', repo uses 'onboard-builder' and 'understand-onboard' skill
+- id: understand-anything-search_semantic-3
+  repo: Understand-Anything
+  verb: search_semantic
+  query: detecting what programming language a file uses
+  expected:
+    files:
+    - understand-anything-plugin/packages/core/src/languages/language-registry.ts
+    - understand-anything-plugin/packages/core/src/languages/configs/
+  pass_criterion: language-registry or configs in top 5
+  notes: Query says 'detecting programming language', repo uses 'language-registry' and 'configs' directory
+- id: understand-anything-search_semantic-4
+  repo: Understand-Anything
+  verb: search_semantic
+  query: explaining code changes between git commits
+  expected:
+    files:
+    - understand-anything-plugin/src/diff-analyzer.ts
+    - understand-anything-plugin/skills/understand-diff
+  pass_criterion: diff-analyzer or understand-diff in top 5
+  notes: Query says 'code changes between commits', repo uses 'diff-analyzer' and 'understand-diff' skill
+- id: understand-anything-search_semantic-5
+  repo: Understand-Anything
+  verb: search_semantic
+  query: building domain knowledge models from source code
+  expected:
+    files:
+    - understand-anything-plugin/skills/understand-domain
+    - understand-anything-plugin/packages/core/src/analyzer/
+  pass_criterion: understand-domain skill or analyzer in top 5
+  notes: Query says 'domain knowledge models', repo uses 'understand-domain' skill
+- id: understand-anything-understand-1
+  repo: Understand-Anything
+  verb: understand
+  query: Understand-Anything/understand-anything-plugin/skills
+  expected:
+    location: understand-anything-plugin/skills
+    key_facts:
+    - understand
+    - understand-chat
+    - understand-dashboard
+    - understand-diff
+    - understand-domain
+    - understand-onboard
+  pass_criterion: Response lists the available skill commands and their purposes
+- id: understand-anything-understand-2
+  repo: Understand-Anything
+  verb: understand
+  query: Understand-Anything/understand-anything-plugin/packages/core/src/analyzer
+  expected:
+    location: understand-anything-plugin/packages/core/src/analyzer
+    key_facts:
+    - graph-builder
+    - llm-analyzer
+    - layer-detector
+    - tour-generator
+    - normalize-graph
+  pass_criterion: Response lists analyzer modules and their purposes
+- id: understand-anything-understand-3
+  repo: Understand-Anything
+  verb: understand
+  query: Understand-Anything/understand-anything-plugin/packages/dashboard
+  expected:
+    location: understand-anything-plugin/packages/dashboard
+    key_facts:
+    - React
+    - GraphView
+    - DomainGraphView
+    - KnowledgeGraphView
+    - visualization
+  pass_criterion: Response explains dashboard as interactive graph visualization React app
+- id: understand-anything-understand-4
+  repo: Understand-Anything
+  verb: understand
+  query: Understand-Anything/understand-anything-plugin/packages/core/src/languages
+  expected:
+    location: understand-anything-plugin/packages/core/src/languages
+    key_facts:
+    - language-registry
+    - framework-registry
+    - configs
+    - types
+  pass_criterion: Response explains language detection and registry system
+- id: understand-anything-understand-5
+  repo: Understand-Anything
+  verb: understand
+  query: Understand-Anything/understand-anything-plugin/src/diff-analyzer.ts
+  expected:
+    location: understand-anything-plugin/src/diff-analyzer.ts
+    key_facts:
+    - diff
+    - analyze
+    - changes
+    - git
+  pass_criterion: Response explains diff-analyzer as code change analysis module
+- id: understand-anything-impact-1
+  repo: Understand-Anything
+  verb: impact
+  query: Understand-Anything/understand-anything-plugin/packages/core/src/analyzer/graph-builder.ts
+  expected:
+    affected:
+    - skills/understand
+    - src/context-builder.ts
+    - dashboard
+  pass_criterion: At least 1 downstream consumer of graph-builder identified
+- id: understand-anything-impact-2
+  repo: Understand-Anything
+  verb: impact
+  query: Understand-Anything/understand-anything-plugin/packages/core/src/languages/language-registry.ts
+  expected:
+    affected:
+    - analyzer
+    - plugins
+    - scan-project.mjs
+  pass_criterion: At least 1 consumer of language-registry identified
+- id: understand-anything-impact-3
+  repo: Understand-Anything
+  verb: impact
+  query: Understand-Anything/understand-anything-plugin/src/onboard-builder.ts
+  expected:
+    affected:
+    - skills/understand-onboard
+    - index.ts
+  pass_criterion: understand-onboard skill identified as consumer
+- id: understand-anything-impact-4
+  repo: Understand-Anything
+  verb: impact
+  query: Understand-Anything/understand-anything-plugin/packages/core/src/schema.ts
+  expected:
+    affected:
+    - analyzer
+    - languages
+    - types.ts
+  pass_criterion: At least 1 module importing schema identified
+- id: understand-anything-impact-5
+  repo: Understand-Anything
+  verb: impact
+  query: Understand-Anything/understand-anything-plugin/packages/core/src/plugins/registry.ts
+  expected:
+    affected:
+    - extractors
+    - parsers
+    - tree-sitter-plugin.ts
+  pass_criterion: At least 1 plugin module depending on registry identified
+- id: understand-anything-browse-1
+  repo: Understand-Anything
+  verb: browse
+  query: /Understand-Anything/understand-anything-plugin/skills
+  expected:
+    entries:
+    - understand
+    - understand-chat
+    - understand-dashboard
+    - understand-diff
+    - understand-domain
+    - understand-explain
+    - understand-knowledge
+    - understand-onboard
+  pass_criterion: At least 5 of the 8 skill directories listed
+- id: understand-anything-browse-2
+  repo: Understand-Anything
+  verb: browse
+  query: /Understand-Anything/understand-anything-plugin/packages/core/src/analyzer
+  expected:
+    entries:
+    - graph-builder.ts
+    - llm-analyzer.ts
+    - layer-detector.ts
+    - normalize-graph.ts
+    - language-lesson.ts
+    - tour-generator.ts
+  pass_criterion: At least 4 analyzer files listed
+- id: understand-anything-browse-3
+  repo: Understand-Anything
+  verb: browse
+  query: /Understand-Anything/understand-anything-plugin/packages/dashboard/src/components
+  expected:
+    entries:
+    - GraphView.tsx
+    - DomainGraphView.tsx
+    - KnowledgeGraphView.tsx
+    - FileExplorer.tsx
+    - SearchBar.tsx
+  pass_criterion: At least 4 dashboard components listed
+- id: understand-anything-browse-4
+  repo: Understand-Anything
+  verb: browse
+  query: /Understand-Anything/understand-anything-plugin/agents
+  expected:
+    entries:
+    - architecture-analyzer.md
+    - domain-analyzer.md
+    - file-analyzer.md
+    - graph-reviewer.md
+    - project-scanner.md
+    - tour-builder.md
+  pass_criterion: At least 4 agent definition files listed
+- id: understand-anything-browse-5
+  repo: Understand-Anything
+  verb: browse
+  query: /Understand-Anything/understand-anything-plugin/packages/core/src/languages/configs
+  expected:
+    entries:
+    - javascript.ts
+    - typescript.ts
+    - python.ts
+    - go.ts
+    - rust.ts
+    - java.ts
+  pass_criterion: At least 5 language config files listed
+- id: cloakbrowser-search_exact-1
+  repo: CloakBrowser
+  verb: search_exact
+  query: ensure_binary
+  expected:
+    files:
+    - cloakbrowser/download.py
+    - cloakbrowser/browser.py
+  pass_criterion: download.py and browser.py in top 5 results
+- id: cloakbrowser-search_exact-2
+  repo: CloakBrowser
+  verb: search_exact
+  query: HumanPreset
+  expected:
+    files:
+    - cloakbrowser/human/config.py
+    - cloakbrowser/browser.py
+  pass_criterion: human/config.py (definition) in top 3
+- id: cloakbrowser-search_exact-3
+  repo: CloakBrowser
+  verb: search_exact
+  query: seed_widevine_hint
+  expected:
+    files:
+    - cloakbrowser/widevine.py
+    - cloakbrowser/browser.py
+  pass_criterion: widevine.py in top 3 results
+- id: cloakbrowser-search_exact-4
+  repo: CloakBrowser
+  verb: search_exact
+  query: DEFAULT_VIEWPORT
+  expected:
+    files:
+    - cloakbrowser/config.py
+    - cloakbrowser/browser.py
+  pass_criterion: config.py in top 3 results
+- id: cloakbrowser-search_exact-5
+  repo: CloakBrowser
+  verb: search_exact
+  query: actionability_async.py
+  expected:
+    files:
+    - cloakbrowser/human/actionability_async.py
+  pass_criterion: actionability_async.py in top 3 results
+- id: cloakbrowser-search_semantic-1
+  repo: CloakBrowser
+  verb: search_semantic
+  query: evading automated bot detection by mimicking human browsing patterns
+  expected:
+    files:
+    - cloakbrowser/human/
+    - cloakbrowser/browser.py
+  pass_criterion: Human simulation module in top 5 results
+  notes: Query says 'evading bot detection' and 'mimicking human patterns', repo uses 'human/' directory with mouse, keyboard,
+    scroll modules
+- id: cloakbrowser-search_semantic-2
+  repo: CloakBrowser
+  verb: search_semantic
+  query: DRM protected video content playback
+  expected:
+    files:
+    - cloakbrowser/widevine.py
+    - js/src/widevine.ts
+  pass_criterion: widevine module in top 5
+  notes: Query says 'DRM protected video', repo uses 'widevine' module
+- id: cloakbrowser-search_semantic-3
+  repo: CloakBrowser
+  verb: search_semantic
+  query: geographic location spoofing for regional testing
+  expected:
+    files:
+    - cloakbrowser/geoip.py
+    - js/src/geoip.ts
+  pass_criterion: geoip module in top 5
+  notes: Query says 'geographic location spoofing', repo uses 'geoip' module
+- id: cloakbrowser-search_semantic-4
+  repo: CloakBrowser
+  verb: search_semantic
+  query: realistic keyboard typing with natural cadence
+  expected:
+    files:
+    - cloakbrowser/human/keyboard.py
+    - cloakbrowser/human/keyboard_async.py
+  pass_criterion: keyboard humanization module in top 5
+  notes: Query says 'realistic keyboard typing', repo uses 'human/keyboard.py'
+- id: cloakbrowser-search_semantic-5
+  repo: CloakBrowser
+  verb: search_semantic
+  query: AWS Lambda serverless browser automation
+  expected:
+    files:
+    - examples/integrations/aws_lambda/
+  pass_criterion: AWS Lambda example in top 5
+  notes: Query says 'Lambda serverless', repo has 'examples/integrations/aws_lambda/'
+- id: cloakbrowser-understand-1
+  repo: CloakBrowser
+  verb: understand
+  query: CloakBrowser/cloakbrowser/browser.py
+  expected:
+    location: cloakbrowser/browser.py
+    key_facts:
+    - launch
+    - Playwright
+    - config
+    - download
+    - human
+    - widevine
+  pass_criterion: Response explains browser.py as the main entry point importing from config, download, human, widevine
+- id: cloakbrowser-understand-2
+  repo: CloakBrowser
+  verb: understand
+  query: CloakBrowser/cloakbrowser/human
+  expected:
+    location: cloakbrowser/human
+    key_facts:
+    - mouse
+    - keyboard
+    - scroll
+    - actionability
+    - async
+    - config
+  pass_criterion: Response lists humanization modules and their sync/async variants
+- id: cloakbrowser-understand-3
+  repo: CloakBrowser
+  verb: understand
+  query: CloakBrowser/js/src
+  expected:
+    location: js/src
+    key_facts:
+    - playwright
+    - puppeteer
+    - config
+    - download
+    - human
+    - TypeScript
+  pass_criterion: Response explains JS/TS port with Playwright and Puppeteer adapters
+- id: cloakbrowser-understand-4
+  repo: CloakBrowser
+  verb: understand
+  query: CloakBrowser/cloakbrowser/config.py
+  expected:
+    location: cloakbrowser/config.py
+    key_facts:
+    - DEFAULT_VIEWPORT
+    - IGNORE_DEFAULT_ARGS
+    - get_default_stealth_args
+  pass_criterion: Response identifies exported config constants and functions
+- id: cloakbrowser-understand-5
+  repo: CloakBrowser
+  verb: understand
+  query: CloakBrowser/cloakbrowser/download.py
+  expected:
+    location: cloakbrowser/download.py
+    key_facts:
+    - ensure_binary
+    - download
+    - browser
+    - binary
+  pass_criterion: Response explains ensure_binary as browser binary download/management
+- id: cloakbrowser-impact-1
+  repo: CloakBrowser
+  verb: impact
+  query: CloakBrowser/cloakbrowser/config.py
+  expected:
+    affected:
+    - browser.py
+    - human/config.py
+  pass_criterion: browser.py identified as primary importer of config
+- id: cloakbrowser-impact-2
+  repo: CloakBrowser
+  verb: impact
+  query: CloakBrowser/cloakbrowser/download.py
+  expected:
+    affected:
+    - browser.py
+  pass_criterion: browser.py identified as caller of ensure_binary
+- id: cloakbrowser-impact-3
+  repo: CloakBrowser
+  verb: impact
+  query: CloakBrowser/cloakbrowser/widevine.py
+  expected:
+    affected:
+    - browser.py
+  pass_criterion: browser.py identified as importer of seed_widevine_hint
+- id: cloakbrowser-impact-4
+  repo: CloakBrowser
+  verb: impact
+  query: CloakBrowser/cloakbrowser/human/config.py
+  expected:
+    affected:
+    - browser.py
+    - human/mouse.py
+    - human/keyboard.py
+  pass_criterion: browser.py identified as importer of HumanPreset/HumanConfigOverrides
+- id: cloakbrowser-impact-5
+  repo: CloakBrowser
+  verb: impact
+  query: CloakBrowser/cloakbrowser/geoip.py
+  expected:
+    affected:
+    - browser.py
+    - js/src/geoip.ts
+  pass_criterion: At least 1 module using geoip identified
+- id: cloakbrowser-browse-1
+  repo: CloakBrowser
+  verb: browse
+  query: /CloakBrowser/cloakbrowser
+  expected:
+    entries:
+    - __init__.py
+    - browser.py
+    - config.py
+    - download.py
+    - geoip.py
+    - human
+    - widevine.py
+  pass_criterion: At least 5 of the package modules listed
+- id: cloakbrowser-browse-2
+  repo: CloakBrowser
+  verb: browse
+  query: /CloakBrowser/cloakbrowser/human
+  expected:
+    entries:
+    - __init__.py
+    - actionability.py
+    - actionability_async.py
+    - config.py
+    - keyboard.py
+    - keyboard_async.py
+    - mouse.py
+    - mouse_async.py
+    - scroll.py
+    - scroll_async.py
+  pass_criterion: At least 6 human module files listed
+- id: cloakbrowser-browse-3
+  repo: CloakBrowser
+  verb: browse
+  query: /CloakBrowser/js/src
+  expected:
+    entries:
+    - args.ts
+    - cli.ts
+    - config.ts
+    - download.ts
+    - geoip.ts
+    - index.ts
+    - playwright.ts
+    - proxy.ts
+    - puppeteer.ts
+    - types.ts
+    - widevine.ts
+  pass_criterion: At least 7 JS source files listed
+- id: cloakbrowser-browse-4
+  repo: CloakBrowser
+  verb: browse
+  query: /CloakBrowser/examples/integrations
+  expected:
+    entries:
+    - agent_browser.sh
+    - aws_lambda
+    - browser_use_example.py
+    - crawl4ai_example.py
+    - langchain_loader.py
+    - selenium_example.py
+  pass_criterion: At least 4 integration examples listed
+- id: cloakbrowser-browse-5
+  repo: CloakBrowser
+  verb: browse
+  query: /CloakBrowser/tests
+  expected:
+    entries:
+    - test_config.py
+    - test_geoip.py
+    - test_launch.py
+    - test_proxy.py
+    - test_stealth.py
+    - test_widevine.py
+  pass_criterion: At least 5 test files listed
+- id: skills-search_exact-1
+  repo: skills
+  verb: search_exact
+  query: DESIGN-IT-TWICE.md
+  expected:
+    files:
+    - skills/engineering/codebase-design/DESIGN-IT-TWICE.md
+  pass_criterion: DESIGN-IT-TWICE.md in top 3
+- id: skills-search_exact-2
+  repo: skills
+  verb: search_exact
+  query: grill-me
+  expected:
+    files:
+    - skills/productivity/grill-me
+  pass_criterion: grill-me skill in top 3 results
+- id: skills-search_exact-3
+  repo: skills
+  verb: search_exact
+  query: block-dangerous-git.sh
+  expected:
+    files:
+    - skills/misc/git-guardrails-claude-code/scripts/block-dangerous-git.sh
+  pass_criterion: git guardrails script in top 3
+- id: skills-search_exact-4
+  repo: skills
+  verb: search_exact
+  query: ADR-FORMAT.md
+  expected:
+    files:
+    - skills/engineering/domain-modeling/ADR-FORMAT.md
+  pass_criterion: ADR format doc in top 3
+- id: skills-search_exact-5
+  repo: skills
+  verb: search_exact
+  query: improve-codebase-architecture
+  expected:
+    files:
+    - skills/engineering/improve-codebase-architecture
+  pass_criterion: Architecture improvement skill in top 3
+- id: skills-search_semantic-1
+  repo: skills
+  verb: search_semantic
+  query: questioning assumptions and challenging design decisions during development
+  expected:
+    files:
+    - skills/productivity/grill-me
+    - skills/engineering/grill-with-docs
+  pass_criterion: Grill-me or grill-with-docs skill in top 5
+  notes: Query says 'questioning assumptions', repo uses 'grill-me' and 'grill-with-docs'
+- id: skills-search_semantic-2
+  repo: skills
+  verb: search_semantic
+  query: safely resolving conflicting changes from multiple branches
+  expected:
+    files:
+    - skills/engineering/resolving-merge-conflicts
+  pass_criterion: Merge conflicts skill in top 5
+  notes: Query says 'conflicting changes from branches', repo uses 'resolving-merge-conflicts'
+- id: skills-search_semantic-3
+  repo: skills
+  verb: search_semantic
+  query: creating learning materials and tracking student progress
+  expected:
+    files:
+    - skills/productivity/teach
+  pass_criterion: teach skill in top 5
+  notes: Query says 'learning materials' and 'student progress', repo uses 'teach' skill
+- id: skills-search_semantic-4
+  repo: skills
+  verb: search_semantic
+  query: preventing destructive version control commands
+  expected:
+    files:
+    - skills/misc/git-guardrails-claude-code
+  pass_criterion: git-guardrails skill in top 5
+  notes: Query says 'destructive version control', repo uses 'git-guardrails-claude-code'
+- id: skills-search_semantic-5
+  repo: skills
+  verb: search_semantic
+  query: rapidly building throwaway prototypes
+  expected:
+    files:
+    - skills/engineering/prototype
+  pass_criterion: prototype skill in top 5
+  notes: Query says 'throwaway prototypes', repo uses 'prototype' skill with LOGIC.md and UI.md
+- id: skills-understand-1
+  repo: skills
+  verb: understand
+  query: skills/skills/engineering/tdd
+  expected:
+    location: skills/engineering/tdd
+    key_facts:
+    - test
+    - driven
+    - development
+    - mocking
+    - refactoring
+  pass_criterion: Response explains TDD skill workflow with supporting docs
+- id: skills-understand-2
+  repo: skills
+  verb: understand
+  query: skills/skills/engineering/codebase-design
+  expected:
+    location: skills/engineering/codebase-design
+    key_facts:
+    - design
+    - DEEPENING
+    - DESIGN-IT-TWICE
+    - architecture
+  pass_criterion: Response explains design-before-code skill with iterative refinement
+- id: skills-understand-3
+  repo: skills
+  verb: understand
+  query: skills/skills/productivity/teach
+  expected:
+    location: skills/productivity/teach
+    key_facts:
+    - GLOSSARY
+    - LEARNING-RECORD
+    - MISSION
+    - RESOURCES
+  pass_criterion: Response explains teaching skill and its format documents
+- id: skills-understand-4
+  repo: skills
+  verb: understand
+  query: skills/skills/engineering/triage
+  expected:
+    location: skills/engineering/triage
+    key_facts:
+    - triage
+    - AGENT-BRIEF
+    - OUT-OF-SCOPE
+  pass_criterion: Response explains triage skill with agent brief and scope docs
+- id: skills-understand-5
+  repo: skills
+  verb: understand
+  query: skills/skills/engineering/domain-modeling
+  expected:
+    location: skills/engineering/domain-modeling
+    key_facts:
+    - domain
+    - ADR-FORMAT
+    - CONTEXT-FORMAT
+  pass_criterion: Response explains domain modeling with ADR and context formats
+- id: skills-browse-1
+  repo: skills
+  verb: browse
+  query: /skills/skills/engineering
+  expected:
+    entries:
+    - ask-matt
+    - codebase-design
+    - diagnosing-bugs
+    - domain-modeling
+    - grill-with-docs
+    - implement
+    - improve-codebase-architecture
+    - prototype
+    - resolving-merge-conflicts
+    - setup-matt-pocock-skills
+    - tdd
+    - to-issues
+    - to-prd
+    - triage
+  pass_criterion: At least 8 engineering skill directories listed
+- id: skills-browse-2
+  repo: skills
+  verb: browse
+  query: /skills/skills/productivity
+  expected:
+    entries:
+    - grill-me
+    - grilling
+    - handoff
+    - teach
+    - writing-great-skills
+  pass_criterion: At least 4 productivity skills listed
+- id: skills-browse-3
+  repo: skills
+  verb: browse
+  query: /skills/skills/deprecated
+  expected:
+    entries:
+    - design-an-interface
+    - qa
+    - request-refactor-plan
+    - ubiquitous-language
+  pass_criterion: At least 3 deprecated skills listed
+- id: skills-browse-4
+  repo: skills
+  verb: browse
+  query: /skills/skills/misc
+  expected:
+    entries:
+    - git-guardrails-claude-code
+    - migrate-to-shoehorn
+    - scaffold-exercises
+    - setup-pre-commit
+  pass_criterion: At least 3 misc skills listed
+- id: skills-browse-5
+  repo: skills
+  verb: browse
+  query: /skills/skills/engineering/tdd
+  expected:
+    entries:
+    - SKILL.md
+    - mocking.md
+    - refactoring.md
+    - tests.md
+  pass_criterion: All 4 TDD skill files listed
+- id: academic-research-search_exact-1
+  repo: academic-research-skills
+  verb: search_exact
+  query: ground_truth_isolation_pattern
+  expected:
+    files:
+    - shared/ground_truth_isolation_pattern.md
+  pass_criterion: Ground truth pattern file in top 3
+- id: academic-research-search_exact-2
+  repo: academic-research-skills
+  verb: search_exact
+  query: devils_advocate_reviewer_agent
+  expected:
+    files:
+    - academic-paper-reviewer/agents/devils_advocate_reviewer_agent.md
+  pass_criterion: Devil's advocate agent in top 3
+- id: academic-research-search_exact-3
+  repo: academic-research-skills
+  verb: search_exact
+  query: ars-plan
+  expected:
+    files:
+    - commands/
+  pass_criterion: ars-plan command file in top 3
+- id: academic-research-search_exact-4
+  repo: academic-research-skills
+  verb: search_exact
+  query: MODE_REGISTRY
+  expected:
+    files:
+    - MODE_REGISTRY.md
+  pass_criterion: MODE_REGISTRY.md in top 3
+- id: academic-research-search_exact-5
+  repo: academic-research-skills
+  verb: search_exact
+  query: methodology_reviewer_agent
+  expected:
+    files:
+    - academic-paper-reviewer/agents/methodology_reviewer_agent.md
+  pass_criterion: Methodology reviewer in top 3
+- id: academic-research-search_semantic-1
+  repo: academic-research-skills
+  verb: search_semantic
+  query: detecting fabricated citations and verifying reference authenticity
+  expected:
+    files:
+    - academic-paper-reviewer/
+    - shared/ground_truth_isolation_pattern.md
+  pass_criterion: Paper reviewer or ground truth isolation in top 5
+  notes: Query says 'fabricated citations', repo uses 'ground_truth_isolation_pattern'
+- id: academic-research-search_semantic-2
+  repo: academic-research-skills
+  verb: search_semantic
+  query: multi-agent team collaborating on literature review and synthesis
+  expected:
+    files:
+    - deep-research/
+    - academic-paper/
+  pass_criterion: Deep research or academic paper skill in top 5
+  notes: Query says 'multi-agent team' and 'literature review', repo uses multi-agent skills for research
+- id: academic-research-search_semantic-3
+  repo: academic-research-skills
+  verb: search_semantic
+  query: orchestrating research workflows with integrity verification
+  expected:
+    files:
+    - academic-pipeline/
+    - shared/verification_standards.md
+  pass_criterion: Pipeline or verification standards in top 5
+  notes: Query says 'orchestrating workflows with integrity', repo uses 'academic-pipeline' and 'verification_standards'
+- id: academic-research-search_semantic-4
+  repo: academic-research-skills
+  verb: search_semantic
+  query: editorial decision making and paper acceptance criteria
+  expected:
+    files:
+    - academic-paper-reviewer/agents/eic_agent.md
+    - academic-paper-reviewer/agents/editorial_synthesizer_agent.md
+  pass_criterion: EIC or editorial agent in top 5
+  notes: Query says 'editorial decision', repo uses 'eic_agent' (editor-in-chief)
+- id: academic-research-search_semantic-5
+  repo: academic-research-skills
+  verb: search_semantic
+  query: comprehensive deep dive into research topics
+  expected:
+    files:
+    - deep-research/SKILL.md
+  pass_criterion: deep-research skill in top 5
+  notes: Query says 'deep dive into research', repo uses 'deep-research' skill
+- id: academic-research-understand-1
+  repo: academic-research-skills
+  verb: understand
+  query: academic-research-skills/academic-pipeline
+  expected:
+    location: academic-pipeline
+    key_facts:
+    - pipeline
+    - stages
+    - integrity
+    - research
+    - agents
+  pass_criterion: Response explains the staged pipeline orchestrator
+- id: academic-research-understand-2
+  repo: academic-research-skills
+  verb: understand
+  query: academic-research-skills/academic-paper-reviewer
+  expected:
+    location: academic-paper-reviewer
+    key_facts:
+    - reviewer
+    - agents
+    - domain
+    - methodology
+    - editorial
+    - eic
+  pass_criterion: Response explains multi-agent review system with 7 specialized reviewers
+- id: academic-research-understand-3
+  repo: academic-research-skills
+  verb: understand
+  query: academic-research-skills/shared
+  expected:
+    location: shared
+    key_facts:
+    - ground_truth
+    - isolation
+    - verification
+    - standards
+    - integrity
+  pass_criterion: Response explains shared verification and integrity standards
+- id: academic-research-understand-4
+  repo: academic-research-skills
+  verb: understand
+  query: academic-research-skills/deep-research
+  expected:
+    location: deep-research
+    key_facts:
+    - deep
+    - research
+    - agents
+    - synthesis
+    - literature
+  pass_criterion: Response explains deep research as comprehensive literature review
+- id: academic-research-understand-5
+  repo: academic-research-skills
+  verb: understand
+  query: academic-research-skills/commands
+  expected:
+    location: commands
+    key_facts:
+    - ars-plan
+    - ars-review
+    - ars-search
+  pass_criterion: Response lists the three ARS commands
+- id: academic-research-browse-1
+  repo: academic-research-skills
+  verb: browse
+  query: /academic-research-skills
+  expected:
+    entries:
+    - academic-paper
+    - academic-paper-reviewer
+    - academic-pipeline
+    - deep-research
+    - skills
+    - commands
+    - shared
+  pass_criterion: At least 5 of the top-level directories listed
+- id: academic-research-browse-2
+  repo: academic-research-skills
+  verb: browse
+  query: /academic-research-skills/academic-paper-reviewer/agents
+  expected:
+    entries:
+    - devils_advocate_reviewer_agent.md
+    - domain_reviewer_agent.md
+    - editorial_synthesizer_agent.md
+    - eic_agent.md
+    - field_analyst_agent.md
+    - methodology_reviewer_agent.md
+    - perspective_reviewer_agent.md
+  pass_criterion: At least 5 of the 7 reviewer agents listed
+- id: academic-research-browse-3
+  repo: academic-research-skills
+  verb: browse
+  query: /academic-research-skills/shared
+  expected:
+    entries:
+    - ground_truth_isolation_pattern.md
+    - verification_standards.md
+    - integrity
+  pass_criterion: At least 2 shared files listed
+- id: academic-research-browse-4
+  repo: academic-research-skills
+  verb: browse
+  query: /academic-research-skills/commands
+  expected:
+    entries:
+    - ars-plan.md
+    - ars-review.md
+    - ars-search.md
+  pass_criterion: All 3 command files listed
+- id: academic-research-browse-5
+  repo: academic-research-skills
+  verb: browse
+  query: /academic-research-skills/academic-pipeline
+  expected:
+    entries:
+    - SKILL.md
+    - agents
+    - references
+  pass_criterion: SKILL.md and agents directory listed
+- id: awesome-selfhosted-search_exact-1
+  repo: awesome-selfhosted
+  verb: search_exact
+  query: Plausible
+  expected:
+    files:
+    - README.md
+    content:
+    - Plausible
+  pass_criterion: Plausible Analytics entry found in README, top 3 results
+- id: awesome-selfhosted-search_exact-2
+  repo: awesome-selfhosted
+  verb: search_exact
+  query: Jellyfin
+  expected:
+    files:
+    - README.md
+    content:
+    - Jellyfin
+  pass_criterion: Jellyfin media server entry found, top 3
+- id: awesome-selfhosted-search_exact-3
+  repo: awesome-selfhosted
+  verb: search_exact
+  query: Nextcloud
+  expected:
+    files:
+    - README.md
+    content:
+    - Nextcloud
+  pass_criterion: Nextcloud entry found, top 3
+- id: awesome-selfhosted-search_exact-4
+  repo: awesome-selfhosted
+  verb: search_exact
+  query: Community-Supported Agriculture
+  expected:
+    files:
+    - README.md
+    content:
+    - Community-Supported Agriculture
+  pass_criterion: CSA section heading found in top 3
+- id: awesome-selfhosted-search_exact-5
+  repo: awesome-selfhosted
+  verb: search_exact
+  query: non-free.md
+  expected:
+    files:
+    - non-free.md
+  pass_criterion: non-free.md file found in top 3
+- id: awesome-selfhosted-search_semantic-1
+  repo: awesome-selfhosted
+  verb: search_semantic
+  query: privacy-respecting website visitor counting without cookies
+  expected:
+    files:
+    - README.md
+    content:
+    - Plausible
+    - GoatCounter
+    - Analytics
+  pass_criterion: Analytics section or privacy-friendly tool in top 5
+  notes: Query says 'visitor counting without cookies', repo lists analytics tools by name
+- id: awesome-selfhosted-search_semantic-2
+  repo: awesome-selfhosted
+  verb: search_semantic
+  query: open source alternatives to commercial AI chatbot platforms
+  expected:
+    files:
+    - README.md
+    content:
+    - Generative Artificial Intelligence
+  pass_criterion: GenAI section or AI entries in top 5
+  notes: Query says 'AI chatbot platforms', repo uses category 'Generative Artificial Intelligence'
+- id: awesome-selfhosted-search_semantic-3
+  repo: awesome-selfhosted
+  verb: search_semantic
+  query: self-hosted git repository hosting
+  expected:
+    files:
+    - README.md
+    content:
+    - Gitea
+    - Software Development
+  pass_criterion: Software Development section with Gitea in top 5
+  notes: Query says 'git hosting', repo lists under 'Software Development'
+- id: awesome-selfhosted-search_semantic-4
+  repo: awesome-selfhosted
+  verb: search_semantic
+  query: media streaming server for movies
+  expected:
+    files:
+    - README.md
+    content:
+    - Jellyfin
+    - Media Streaming
+  pass_criterion: Media Streaming section in top 5
+  notes: Query says 'media streaming for movies', repo uses 'Media Streaming' category
+- id: awesome-selfhosted-search_semantic-5
+  repo: awesome-selfhosted
+  verb: search_semantic
+  query: secure credential and password vault
+  expected:
+    files:
+    - README.md
+    content:
+    - Password Managers
+    - Bitwarden
+  pass_criterion: Password Managers section in top 5
+  notes: Query says 'credential vault', repo uses 'Password Managers' category
+- id: awesome-selfhosted-browse-1
+  repo: awesome-selfhosted
+  verb: browse
+  query: /awesome-selfhosted
+  expected:
+    entries:
+    - README.md
+    - non-free.md
+  pass_criterion: README.md and non-free.md listed
+- id: awesome-selfhosted-browse-2
+  repo: awesome-selfhosted
+  verb: browse
+  query: /awesome-selfhosted/README.md
+  expected:
+    entries:
+    - Analytics
+    - Communication
+    - Media Streaming
+    - Password Managers
+    - Software Development
+  pass_criterion: At least 3 category sections identifiable
+- id: awesome-selfhosted-browse-3
+  repo: awesome-selfhosted
+  verb: browse
+  query: /awesome-selfhosted/non-free.md
+  expected:
+    entries:
+    - non-free alternatives
+  pass_criterion: Non-free content identifiable
+- id: awesome-selfhosted-browse-4
+  repo: awesome-selfhosted
+  verb: browse
+  query: /awesome-selfhosted/CONTRIBUTING.md
+  expected:
+    entries:
+    - CONTRIBUTING.md
+  pass_criterion: Contributing guide accessible
+- id: awesome-selfhosted-browse-5
+  repo: awesome-selfhosted
+  verb: browse
+  query: /awesome-selfhosted/.github
+  expected:
+    entries:
+    - workflows
+    - ISSUE_TEMPLATE
+  pass_criterion: GitHub config directories listed
+- id: awesome-hacking-search_exact-1
+  repo: Awesome-Hacking
+  verb: search_exact
+  query: GTFOBins
+  expected:
+    files:
+    - README.md
+    content:
+    - GTFOBins
+  pass_criterion: GTFOBins entry found in README, top 3
+- id: awesome-hacking-search_exact-2
+  repo: Awesome-Hacking
+  verb: search_exact
+  query: Capsulecorp Pentest
+  expected:
+    files:
+    - README.md
+    content:
+    - Capsulecorp Pentest
+  pass_criterion: Capsulecorp Pentest entry found in top 3
+- id: awesome-hacking-search_exact-3
+  repo: Awesome-Hacking
+  verb: search_exact
+  query: awesome-rl-for-cybersecurity
+  expected:
+    files:
+    - README.md
+    content:
+    - awesome-rl-for-cybersecurity
+  pass_criterion: RL for cybersecurity entry in top 3
+- id: awesome-hacking-search_exact-4
+  repo: Awesome-Hacking
+  verb: search_exact
+  query: LOLBAS
+  expected:
+    files:
+    - README.md
+    content:
+    - LOLBAS
+  pass_criterion: LOLBAS entry found in top 3
+- id: awesome-hacking-search_exact-5
+  repo: Awesome-Hacking
+  verb: search_exact
+  query: contributing.md
+  expected:
+    files:
+    - contributing.md
+  pass_criterion: contributing.md file in top 3
+- id: awesome-hacking-search_semantic-1
+  repo: Awesome-Hacking
+  verb: search_semantic
+  query: exploiting legitimate system utilities to bypass security controls
+  expected:
+    files:
+    - README.md
+    content:
+    - GTFOBins
+  pass_criterion: GTFOBins or LOLBAS entry in top 5
+  notes: Query says 'exploiting legitimate system utilities', repo lists GTFOBins as Unix binaries for security bypass
+- id: awesome-hacking-search_semantic-2
+  repo: Awesome-Hacking
+  verb: search_semantic
+  query: using machine learning and artificial intelligence for network defense
+  expected:
+    files:
+    - README.md
+    content:
+    - awesome-rl-for-cybersecurity
+    - Reinforcement Learning
+  pass_criterion: RL for cybersecurity in top 5
+  notes: Query says 'machine learning for network defense', repo lists 'awesome-rl-for-cybersecurity'
+- id: awesome-hacking-search_semantic-3
+  repo: Awesome-Hacking
+  verb: search_semantic
+  query: practicing offensive security in isolated lab environments
+  expected:
+    files:
+    - README.md
+    content:
+    - Capsulecorp Pentest
+    - pentest
+  pass_criterion: Capsulecorp or pentest section in top 5
+  notes: Query says 'isolated lab environments', repo has Capsulecorp Pentest (virtual network for practice)
+- id: awesome-hacking-search_semantic-4
+  repo: Awesome-Hacking
+  verb: search_semantic
+  query: decompiling and analyzing malicious software
+  expected:
+    files:
+    - README.md
+    content:
+    - Malware Analysis
+    - Reverse Engineering
+  pass_criterion: Malware Analysis or Reverse Engineering section in top 5
+  notes: Query says 'decompiling malicious software', repo uses 'Malware Analysis' and 'Reverse Engineering'
+- id: awesome-hacking-search_semantic-5
+  repo: Awesome-Hacking
+  verb: search_semantic
+  query: gathering intelligence from publicly available sources
+  expected:
+    files:
+    - README.md
+    content:
+    - OSINT
+  pass_criterion: OSINT section in top 5
+  notes: Query says 'gathering intelligence from public sources', repo uses 'OSINT'
+- id: awesome-hacking-browse-1
+  repo: Awesome-Hacking
+  verb: browse
+  query: /Awesome-Hacking
+  expected:
+    entries:
+    - README.md
+    - contributing.md
+  pass_criterion: README.md listed in browse results
+- id: awesome-hacking-browse-2
+  repo: Awesome-Hacking
+  verb: browse
+  query: /Awesome-Hacking/README.md
+  expected:
+    entries:
+    - Android Security
+    - Bug Bounty
+    - CTF
+    - Malware Analysis
+    - OSINT
+    - Pentest
+    - Reverse Engineering
+    - Web Hacking
+  pass_criterion: At least 5 category sections identifiable
+- id: awesome-hacking-browse-3
+  repo: Awesome-Hacking
+  verb: browse
+  query: /Awesome-Hacking/.github
+  expected:
+    entries:
+    - workflows
+    - ISSUE_TEMPLATE
+  pass_criterion: GitHub config listed
+- id: awesome-hacking-browse-4
+  repo: Awesome-Hacking
+  verb: browse
+  query: /Awesome-Hacking/contributing.md
+  expected:
+    entries:
+    - contributing.md
+  pass_criterion: Contributing guide accessible
+- id: awesome-hacking-browse-5
+  repo: Awesome-Hacking
+  verb: browse
+  query: /Awesome-Hacking/.github/workflows
+  expected:
+    entries:
+    - workflows
+  pass_criterion: Workflows directory accessible
