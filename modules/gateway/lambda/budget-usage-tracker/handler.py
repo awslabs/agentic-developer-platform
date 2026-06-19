@@ -270,7 +270,7 @@ def upsert_budget_usage(
         )
 
 
-def bridge_cost_to_usage_logs(conn, request_id: str, cost: Decimal) -> bool:
+def bridge_cost_to_usage_logs(conn, request_id: str, cost: Decimal, chat_log_s3_key: str | None = None) -> bool:
     """
     Bridge calculated cost back to the usage_logs table.
 
@@ -278,10 +278,15 @@ def bridge_cost_to_usage_logs(conn, request_id: str, cost: Decimal) -> bool:
     the admin dashboard cost tile (which reads SUM(usage_logs.cost_usd)) shows
     real numbers.
 
+    Issue #1616: Also writes chat_log_s3_key (the S3 object key for the
+    request/response payload). Uses COALESCE so the key is written even on
+    retry when cost_usd is already set, but never overwrites an existing key.
+
     Args:
         conn: Database connection
         request_id: The request ID linking the chat log to usage_logs
         cost: Calculated cost in USD
+        chat_log_s3_key: Optional S3 object key for the chat log payload
 
     Returns:
         True if a row was updated, False otherwise
@@ -291,10 +296,11 @@ def bridge_cost_to_usage_logs(conn, request_id: str, cost: Decimal) -> bool:
             cur.execute(
                 """
                 UPDATE usage_logs
-                SET cost_usd = %s
-                WHERE request_id = %s AND cost_usd = 0
+                SET cost_usd = CASE WHEN cost_usd = 0 THEN %s ELSE cost_usd END,
+                    chat_log_s3_key = COALESCE(chat_log_s3_key, %s)
+                WHERE request_id = %s AND (cost_usd = 0 OR chat_log_s3_key IS NULL)
                 """,
-                (float(cost), request_id),
+                (float(cost), chat_log_s3_key, request_id),
             )
             updated = cur.rowcount > 0
             if updated:
@@ -307,7 +313,7 @@ def bridge_cost_to_usage_logs(conn, request_id: str, cost: Decimal) -> bool:
         return False
 
 
-def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, Any]):
+def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, Any], chat_log_s3_key: str | None = None):
     """
     Process a single chat log and record usage.
 
@@ -318,10 +324,13 @@ def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, An
     Issue #1074: Bridges calculated cost back to usage_logs.cost_usd so
     the admin dashboard cost tile shows real spend.
 
+    Issue #1616: Also bridges the S3 object key for per-run traceability.
+
     Args:
         conn: Database connection
         chat_log: Parsed chat log dictionary
         pricing_table: Model pricing table
+        chat_log_s3_key: Optional S3 object key for the chat log payload
     """
     parsed = parse_chat_log(chat_log)
     if not parsed:
@@ -367,8 +376,9 @@ def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, An
     )
 
     # Issue #1074: Bridge cost to usage_logs for dashboard visibility
-    if request_id and cost > 0:
-        bridge_cost_to_usage_logs(conn, request_id, cost)
+    # Issue #1616: Also bridge the S3 key for per-run traceability
+    if request_id and (cost > 0 or chat_log_s3_key):
+        bridge_cost_to_usage_logs(conn, request_id, cost, chat_log_s3_key=chat_log_s3_key)
 
     # Get period starts
     periods = get_period_starts(timestamp)
@@ -453,8 +463,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     body = response["Body"].read().decode("utf-8")
                     chat_log = json.loads(body)
 
-                    # Process the chat log
-                    process_chat_log(conn, chat_log, pricing_table)
+                    # Process the chat log (issue #1616: pass S3 key for traceability)
+                    process_chat_log(conn, chat_log, pricing_table, chat_log_s3_key=key)
                     processed_count += 1
 
                 except json.JSONDecodeError as e:

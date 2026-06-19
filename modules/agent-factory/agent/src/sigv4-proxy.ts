@@ -32,6 +32,8 @@ const TARGET    = get('--target', process.env.SIGV4_PROXY_TARGET || '');
 const PORT      = parseInt(get('--port', process.env.SIGV4_PROXY_PORT || '8080'), 10);
 const REGION    = get('--region', process.env.AWS_REGION || 'us-east-1');
 const TENANT_ID = process.env.TENANT_ID || '';
+const AGENT_RUN_ID = process.env.ADP_MESSAGE_ID || '';
+const AGENT_CORRELATION_ID = process.env.ADP_CORRELATION_ID || '';
 
 if (!TARGET) { console.error('ERROR: --target is required'); process.exit(1); }
 
@@ -77,6 +79,14 @@ const server = http.createServer(async (req, res) => {
   // Inject tenant identity header (Phase 2, issue #747)
   if (TENANT_ID) {
     headers['x-agent-orgid'] = TENANT_ID;
+  }
+
+  // Inject agent run identity headers (issue #1616: per-run cost traceability)
+  if (AGENT_RUN_ID) {
+    headers['x-agent-runid'] = AGENT_RUN_ID;
+  }
+  if (AGENT_CORRELATION_ID) {
+    headers['x-agent-correlationid'] = AGENT_CORRELATION_ID;
   }
 
   // Re-sign with execute-api

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.activity.cost_service import get_cost_by_run_ids
 from src.activity.schemas import InvocationChainResponse, InvocationListResponse
 from src.activity.service import ActivityService
 from src.admin.access_control import AccessControl
@@ -66,6 +67,39 @@ async def _resolve_canonical_user_id(db: AsyncSession, token: TokenContext) -> s
     return token.user_id
 
 
+async def _enrich_with_cost(db: AsyncSession, response: InvocationListResponse) -> InvocationListResponse:
+    """Enrich invocation items with per-run cost data from Postgres.
+
+    Issue #1616: Batched Postgres query to avoid N+1. Uses invocation_id as the
+    agent_run_id join key. Graceful degradation: if Postgres query fails, items
+    are returned with null cost fields (no 500).
+    """
+    if not response.items:
+        return response
+
+    # Collect invocation IDs for batch query
+    run_ids = [item.invocation_id for item in response.items]
+
+    try:
+        cost_map = await get_cost_by_run_ids(db, run_ids)
+    except Exception as exc:
+        logger.warning(
+            "Failed to enrich activity with cost data — returning items without cost",
+            extra={"error": str(exc)},
+        )
+        return response
+
+    # Merge cost data into items
+    for item in response.items:
+        cost_data = cost_map.get(item.invocation_id)
+        if cost_data:
+            item.total_cost_usd = cost_data["total_cost_usd"]
+            item.total_tokens = cost_data["total_tokens"]
+            item.call_count = cost_data["call_count"]
+
+    return response
+
+
 # ---------------------------------------------------------------------------
 # GET /me/agent-invocations — user's own invocations
 # ---------------------------------------------------------------------------
@@ -95,7 +129,7 @@ async def get_my_invocations(
     """
     canonical_user_id = await _resolve_canonical_user_id(db, current_user)
     try:
-        return service.query_by_user(
+        result = service.query_by_user(
             user_id=canonical_user_id,
             page_size=page_size,
             last_key=last_key,
@@ -105,6 +139,8 @@ async def get_my_invocations(
             since=since,
             until=until,
         )
+        # Issue #1616: Enrich with per-run cost from Postgres
+        return await _enrich_with_cost(db, result)
     except ValueError as exc:
         # Bad cursor
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -120,6 +156,7 @@ async def get_admin_invocations(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     access: Annotated[AccessControl, Depends(get_access_control)],
     service: Annotated[ActivityService, Depends(get_activity_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     last_key: Annotated[str | None, Query()] = None,
     status: Annotated[str | None, Query()] = None,
@@ -150,7 +187,7 @@ async def get_admin_invocations(
         effective_tenant_id = current_user.org_id
 
     try:
-        return service.query_by_tenant(
+        result = service.query_by_tenant(
             tenant_id=effective_tenant_id,
             page_size=page_size,
             last_key=last_key,
@@ -161,6 +198,8 @@ async def get_admin_invocations(
             until=until,
             user_id=user_id,
         )
+        # Issue #1616: Enrich with per-run cost from Postgres
+        return await _enrich_with_cost(db, result)
     except ValueError as exc:
         # Bad cursor
         raise HTTPException(status_code=400, detail=str(exc)) from exc

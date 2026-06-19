@@ -668,6 +668,9 @@ def _start_sigv4_proxy(env: dict, tenant_id: str) -> subprocess.Popen | None:
     proxy_env["SIGV4_PROXY_TARGET"] = proxy_target
     proxy_env["SIGV4_PROXY_PORT"] = proxy_port
     proxy_env["TENANT_ID"] = tenant_id
+    # Issue #1616: Pass run identity to proxy for per-run cost traceability
+    proxy_env["ADP_MESSAGE_ID"] = os.environ.get("ADP_MESSAGE_ID", "")
+    proxy_env["ADP_CORRELATION_ID"] = os.environ.get("ADP_CORRELATION_ID", "")
 
     try:
         proc = subprocess.Popen(

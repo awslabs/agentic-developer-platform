@@ -50,6 +50,7 @@ class UsageService(IUsageService):
         status_code: int,
         request_id: str | None = None,
         bedrock_account_id: str | None = None,
+        agent_run_id: str | None = None,
     ) -> None:
         """
         Log a Bedrock API request.
@@ -64,6 +65,7 @@ class UsageService(IUsageService):
             status_code: HTTP status code
             request_id: Optional request ID
             bedrock_account_id: Optional Bedrock account ID used
+            agent_run_id: Optional agent run/invocation ID (issue #1616)
         """
         log_entry = UsageLog(
             org_id=context.org_id,
@@ -79,6 +81,7 @@ class UsageService(IUsageService):
             status_code=status_code,
             request_id=request_id,
             bedrock_account_id=bedrock_account_id,
+            agent_run_id=agent_run_id,
         )
 
         self.db.add(log_entry)

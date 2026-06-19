@@ -303,6 +303,9 @@ API_GATEWAY_HEADER_SCOPE = "X-Agent-Scope"
 API_GATEWAY_HEADER_BUDGET_CONFIG_ID = "X-Agent-BudgetConfigId"
 API_GATEWAY_HEADER_ALLOWED_MODELS = "X-Agent-AllowedModels"
 API_GATEWAY_HEADER_DEPARTMENT_ID = "X-Agent-DepartmentId"
+# Issue #1616: Agent run identity headers (set by worker sigv4-proxy, not Lambda authorizer)
+API_GATEWAY_HEADER_RUN_ID = "X-Agent-RunId"
+API_GATEWAY_HEADER_CORRELATION_ID = "X-Agent-CorrelationId"
 
 # =============================================================================
 # Issue #260: AWS_IAM Auth Headers from API Gateway

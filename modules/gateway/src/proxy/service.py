@@ -39,6 +39,10 @@ logger = get_logger(__name__)
 # propagate it to usage_logs without threading through every signature.
 _current_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("_current_request_id", default=None)
 
+# Issue #1616: Context variable for agent_run_id (from X-Agent-RunId header)
+# so _log_usage can write it to usage_logs for per-run cost traceability.
+_current_agent_run_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("_current_agent_run_id", default=None)
+
 
 class ProxyService(IProxyService):
     """Service for proxying requests to Bedrock.
@@ -345,11 +349,17 @@ class ProxyService(IProxyService):
         so the budget-usage-tracker Lambda can bridge calculated cost back to
         usage_logs.cost_usd.
 
+        Issue #1616: Now includes agent_run_id (from contextvar, set by route
+        handler from X-Agent-RunId header) for per-run cost traceability.
+
         Failures are swallowed to avoid impacting the proxy hot path.
         """
         # Issue #1074: Use contextvar if no explicit request_id provided
         if request_id is None:
             request_id = _current_request_id.get()
+
+        # Issue #1616: Pick up agent_run_id from contextvar
+        agent_run_id = _current_agent_run_id.get()
 
         try:
             session_factory = get_session_factory()
@@ -364,6 +374,7 @@ class ProxyService(IProxyService):
                     latency_ms=latency_ms,
                     status_code=status_code,
                     request_id=request_id,
+                    agent_run_id=agent_run_id,
                 )
         except Exception as exc:
             logger.warning(

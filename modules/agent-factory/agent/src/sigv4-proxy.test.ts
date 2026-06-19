@@ -142,6 +142,94 @@ describe('sigv4-proxy tenant header injection', () => {
  * needing real AWS credentials or signing — they validate the defensive
  * patterns around Node.js stream/socket behavior.
  */
+describe('sigv4-proxy agent run identity header injection (issue #1616)', () => {
+  it('injects X-Agent-RunId header when ADP_MESSAGE_ID is set', () => {
+    const AGENT_RUN_ID = 'inv-abc-12345';
+    const AGENT_CORRELATION_ID = 'corr-xyz-67890';
+
+    const headers: Record<string, string> = { host: 'example.com' };
+    const incomingHeaders: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+
+    const STRIP = new Set([
+      'authorization', 'x-amz-security-token', 'x-amz-date',
+      'x-amz-content-sha256', 'host',
+    ]);
+
+    for (const [k, v] of Object.entries(incomingHeaders)) {
+      if (!STRIP.has(k.toLowerCase()) && typeof v === 'string') {
+        headers[k.toLowerCase()] = v;
+      }
+    }
+
+    // Inject headers (same logic as sigv4-proxy.ts)
+    if (AGENT_RUN_ID) {
+      headers['x-agent-runid'] = AGENT_RUN_ID;
+    }
+    if (AGENT_CORRELATION_ID) {
+      headers['x-agent-correlationid'] = AGENT_CORRELATION_ID;
+    }
+
+    expect(headers['x-agent-runid']).toBe('inv-abc-12345');
+    expect(headers['x-agent-correlationid']).toBe('corr-xyz-67890');
+  });
+
+  it('does not inject X-Agent-RunId when ADP_MESSAGE_ID is empty', () => {
+    const AGENT_RUN_ID = '';
+    const AGENT_CORRELATION_ID = '';
+
+    const headers: Record<string, string> = { host: 'example.com' };
+
+    if (AGENT_RUN_ID) {
+      headers['x-agent-runid'] = AGENT_RUN_ID;
+    }
+    if (AGENT_CORRELATION_ID) {
+      headers['x-agent-correlationid'] = AGENT_CORRELATION_ID;
+    }
+
+    expect(headers['x-agent-runid']).toBeUndefined();
+    expect(headers['x-agent-correlationid']).toBeUndefined();
+  });
+
+  it('X-Agent-RunId is included in headers passed to signer (included in SignedHeaders)', () => {
+    // SignatureV4.sign() includes ALL headers passed to it in SignedHeaders.
+    // This test verifies the header is present in the headers dict that gets signed.
+    const AGENT_RUN_ID = 'inv-run-001';
+    const TENANT_ID = 'org-tenant-001';
+
+    const headers: Record<string, string> = { host: 'gateway.example.com' };
+    const incomingHeaders: Record<string, string> = {
+      'content-type': 'application/json',
+    };
+
+    const STRIP = new Set([
+      'authorization', 'x-amz-security-token', 'x-amz-date',
+      'x-amz-content-sha256', 'host',
+    ]);
+
+    for (const [k, v] of Object.entries(incomingHeaders)) {
+      if (!STRIP.has(k.toLowerCase()) && typeof v === 'string') {
+        headers[k.toLowerCase()] = v;
+      }
+    }
+
+    if (TENANT_ID) {
+      headers['x-agent-orgid'] = TENANT_ID;
+    }
+    if (AGENT_RUN_ID) {
+      headers['x-agent-runid'] = AGENT_RUN_ID;
+    }
+
+    // The signer receives this headers dict — all keys will be in SignedHeaders
+    const headersToSign = Object.keys(headers);
+    expect(headersToSign).toContain('x-agent-runid');
+    expect(headersToSign).toContain('x-agent-orgid');
+    expect(headersToSign).toContain('host');
+    expect(headersToSign).toContain('content-type');
+  });
+});
+
 describe('sigv4-proxy idle timeout and error handling (issue #1223)', () => {
   it('error handler guards on res.headersSent — does not throw ERR_HTTP_HEADERS_SENT', () => {
     // Simulate the error handler logic from sigv4-proxy.ts:

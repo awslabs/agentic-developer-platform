@@ -44,7 +44,7 @@ from src.proxy.schemas import (
     OpenAIChatCompletionRequest,
     OpenAIChatCompletionResponse,
 )
-from src.proxy.service import ProxyService
+from src.proxy.service import ProxyService, _current_agent_run_id
 from src.shared.config import get_settings
 from src.shared.exceptions import BedrockGatewayError, ModelNotAllowedError
 from src.shared.schemas.auth import TokenContext
@@ -108,6 +108,22 @@ def set_chat_logging_service(service: ChatLoggingService) -> None:
     """Set the chat logging service instance (for dependency injection)."""
     global _chat_logging_service
     _chat_logging_service = service
+
+
+def set_agent_run_id_from_header(request: Request) -> str | None:
+    """Extract X-Agent-RunId header and set the contextvar for _log_usage.
+
+    Issue #1616: The agent-worker sigv4-proxy injects this header on every
+    Bedrock call so we can attribute usage_logs rows to the originating run.
+    Returns the value (or None) for transparency; the contextvar side-effect
+    is what matters.
+    """
+    agent_run_id = request.headers.get("x-agent-runid")
+    if agent_run_id:
+        _current_agent_run_id.set(agent_run_id)
+    else:
+        _current_agent_run_id.set(None)
+    return agent_run_id
 
 
 async def get_token_context(
@@ -230,6 +246,7 @@ async def create_chat_completion(
     request: OpenAIChatCompletionRequest,
     context: Annotated[TokenContext, Depends(get_token_context)],
     proxy_service: Annotated[ProxyService, Depends(get_proxy_service)],
+    _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> Response:
     """Create a chat completion (OpenAI-compatible).
@@ -292,6 +309,7 @@ async def create_message(
     request: AnthropicMessagesRequest,
     context: Annotated[TokenContext, Depends(get_token_context)],
     proxy_service: Annotated[ProxyService, Depends(get_proxy_service)],
+    _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
     authorization: Annotated[str | None, Header()] = None,
     x_api_key: Annotated[str | None, Header(alias="X-Api-Key")] = None,
     anthropic_version: Annotated[str | None, Header(alias="anthropic-version")] = None,
@@ -433,6 +451,7 @@ async def invoke_model(
     request: Request,
     context: Annotated[TokenContext, Depends(get_token_context)],
     proxy_service: Annotated[ProxyService, Depends(get_proxy_service)],
+    _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> Response:
     """Invoke Bedrock model (pass-through).
@@ -471,6 +490,7 @@ async def invoke_model_with_response_stream(
     request: Request,
     context: Annotated[TokenContext, Depends(get_token_context)],
     proxy_service: Annotated[ProxyService, Depends(get_proxy_service)],
+    _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> StreamingResponse:
     """Invoke Bedrock model with streaming response (pass-through).

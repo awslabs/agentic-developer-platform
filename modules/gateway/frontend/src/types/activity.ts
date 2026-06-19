@@ -43,6 +43,10 @@ export interface InvocationItem {
   root_human_id: string | null;
   is_human_rooted: boolean;
   correlation_id: string | null;
+  // Issue #1616: Per-run cost fields
+  total_cost_usd: number | null;
+  total_tokens: number | null;
+  call_count: number | null;
 }
 
 /** Cursor-paginated response from GET /me/agent-invocations or /admin/agent-invocations. */

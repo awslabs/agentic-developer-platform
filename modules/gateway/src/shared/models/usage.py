@@ -24,6 +24,9 @@ class UsageLog(Base, TenantMixin):
     status_code: Mapped[int] = mapped_column(Integer, nullable=False)
     request_id: Mapped[str | None] = mapped_column(String(255))
     bedrock_account_id: Mapped[str | None] = mapped_column(String(12))
+    # Issue #1616: Per-run cost traceability
+    agent_run_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    chat_log_s3_key: Mapped[str | None] = mapped_column(String(1024))
 
 
 class RateLimitConfig(Base, TenantMixin):

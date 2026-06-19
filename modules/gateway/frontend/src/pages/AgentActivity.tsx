@@ -105,6 +105,30 @@ function TriggerBadge({ item, onViewChain }: TriggerBadgeProps) {
 }
 
 // ---------------------------------------------------------------------------
+// Cost rendering (Issue #1616)
+// ---------------------------------------------------------------------------
+
+function CostBadge({ item }: { item: InvocationItem }) {
+  if (item.total_cost_usd === null || item.total_cost_usd === undefined) {
+    // Not metered (non-gateway-mode run) or no usage_logs rows yet
+    return <span className="text-gray-400 dark:text-gray-500 text-sm">—</span>;
+  }
+  if (item.total_cost_usd === 0 && item.status === 'in_progress') {
+    // Run in progress, cost not yet backfilled
+    return <span className="text-gray-400 dark:text-gray-500 text-sm italic">pending</span>;
+  }
+  // Format cost: show 4 decimal places for small amounts, 2 for larger
+  const formatted = item.total_cost_usd < 0.01
+    ? `$${item.total_cost_usd.toFixed(4)}`
+    : `$${item.total_cost_usd.toFixed(2)}`;
+  return (
+    <span className="text-sm text-gray-900 dark:text-white font-mono" title={`${item.call_count ?? 0} calls, ${item.total_tokens ?? 0} tokens`}>
+      {formatted}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Source link rendering
 // ---------------------------------------------------------------------------
 
@@ -453,6 +477,9 @@ export default function AgentActivity() {
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Summary
                       </th>
+                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Cost
+                      </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Link
                       </th>
@@ -492,6 +519,9 @@ export default function AgentActivity() {
                         </td>
                         <td className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400 max-w-xs truncate">
                           {item.summary || <span className="text-gray-400 italic">—</span>}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-right">
+                          <CostBadge item={item} />
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <SourceLink item={item} />

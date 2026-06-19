@@ -389,7 +389,8 @@ class TestBridgeCostToUsageLogs:
         mock_cursor.execute.assert_called_once()
         sql_call = mock_cursor.execute.call_args
         assert "UPDATE usage_logs" in sql_call[0][0]
-        assert sql_call[0][1] == (0.0105, "req-123")
+        # Issue #1616: params now include chat_log_s3_key (None when not provided)
+        assert sql_call[0][1] == (0.0105, None, "req-123")
 
     def test_bridge_no_matching_row(self):
         """Test that bridge returns False when no matching row found."""
@@ -420,3 +421,48 @@ class TestBridgeCostToUsageLogs:
         result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.01"))
 
         assert result is False
+
+    def test_bridge_writes_chat_log_s3_key(self):
+        """Issue #1616: Test that chat_log_s3_key is passed in the UPDATE."""
+        from unittest.mock import MagicMock
+
+        bridge_cost_to_usage_logs = load_handler("budget-usage-tracker").bridge_cost_to_usage_logs
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = 1
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = bridge_cost_to_usage_logs(
+            mock_conn,
+            "req-456",
+            Decimal("0.05"),
+            chat_log_s3_key="acme/user-1/2026/06/19/req-456.json",
+        )
+
+        assert result is True
+        sql_call = mock_cursor.execute.call_args
+        assert "chat_log_s3_key" in sql_call[0][0]
+        assert "COALESCE" in sql_call[0][0]
+        # Params: (cost, s3_key, request_id)
+        assert sql_call[0][1] == (0.05, "acme/user-1/2026/06/19/req-456.json", "req-456")
+
+    def test_bridge_s3_key_none_when_not_provided(self):
+        """Issue #1616: When chat_log_s3_key not provided, passes None."""
+        from unittest.mock import MagicMock
+
+        bridge_cost_to_usage_logs = load_handler("budget-usage-tracker").bridge_cost_to_usage_logs
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = 1
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = bridge_cost_to_usage_logs(mock_conn, "req-789", Decimal("0.03"))
+
+        assert result is True
+        sql_call = mock_cursor.execute.call_args
+        # Params: (cost, None, request_id)
+        assert sql_call[0][1] == (0.03, None, "req-789")

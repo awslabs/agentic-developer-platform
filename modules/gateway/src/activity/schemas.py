@@ -69,6 +69,20 @@ class InvocationItem(BaseModel):
         description="Whether this chain traces back to a human request (false = bot/cron-initiated).",
     )
 
+    # Issue #1616: Per-run cost fields (enriched from Postgres usage_logs)
+    total_cost_usd: float | None = Field(
+        default=None,
+        description="Total cost in USD for this run's Bedrock calls. Null if not metered (non-gateway mode) or cost not yet backfilled.",
+    )
+    total_tokens: int | None = Field(
+        default=None,
+        description="Total tokens (input + output) for this run's Bedrock calls.",
+    )
+    call_count: int | None = Field(
+        default=None,
+        description="Number of Bedrock API calls made during this run.",
+    )
+
 
 class InvocationChainItem(BaseModel):
     """A node in the invocation chain tree."""
