@@ -88,6 +88,36 @@ resource "aws_codebuild_project" "main" {
 }
 
 # -----------------------------------------------------------------------------
+# S3 lifecycle rule — expire per-build source artifacts after 7 days
+# -----------------------------------------------------------------------------
+# Per-build source zips are uploaded to codebuild/src/<sha>-<run_id>.zip by
+# workflows and scripts. This lifecycle rule prevents unbounded storage growth.
+# The state bucket is bootstrap-managed (not TF-managed), so we reference it
+# as a data source to attach the lifecycle configuration.
+# -----------------------------------------------------------------------------
+
+data "aws_s3_bucket" "state" {
+  bucket = var.state_bucket
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "codebuild_source_expiry" {
+  bucket = data.aws_s3_bucket.state.id
+
+  rule {
+    id     = "expire-codebuild-source-artifacts"
+    status = "Enabled"
+
+    filter {
+      prefix = "codebuild/src/"
+    }
+
+    expiration {
+      days = 7
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Scoped S3 grant for security scan SARIF uploads (defense-in-depth — survives
 # future scope-down of AdministratorAccess above)
 # -----------------------------------------------------------------------------

@@ -187,43 +187,26 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Refresh CodeBuild source zip
+      - name: Resolve deploy vars
         run: |
-          # CodeBuild reads a snapshot zip; refresh it before triggering.
-          # Same pattern as gateway-deploy.yml + arc-runner-build.yml use.
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
-          ./platform/scripts/zip-source.sh . /tmp/adp-source.zip
-          aws s3 cp /tmp/adp-source.zip "s3://${STATE_BUCKET}/codebuild/adp-source.zip"
+          echo "STATE_BUCKET=adp-terraform-state-${ACCOUNT_ID}" >> $GITHUB_ENV
+          echo "AWS_REGION=${AWS_REGION:-us-east-1}" >> $GITHUB_ENV
 
-      - name: Trigger CodeBuild
-        run: |
-          BUILD_ID=$(aws codebuild start-build \
-            --project-name adp-${{ env.ENVIRONMENT }}-grype-scan \
-            --environment-variables-override "name=GRYPE_VERSION,value=${{ env.GRYPE_VERSION }},type=PLAINTEXT" \
-            --query 'build.id' --output text)
-          echo "BUILD_ID=${BUILD_ID}" >> $GITHUB_ENV
-          echo "Started: ${BUILD_ID}"
-
-      - name: Wait for CodeBuild
-        run: |
-          while true; do
-            STATUS=$(aws codebuild batch-get-builds --ids "${BUILD_ID}" \
-              --query 'builds[0].buildStatus' --output text)
-            echo "$(date +%H:%M:%S) status=${STATUS}"
-            case "$STATUS" in
-              SUCCEEDED) exit 0 ;;
-              FAILED|FAULT|TIMED_OUT|STOPPED)
-                aws codebuild batch-get-builds --ids "${BUILD_ID}" \
-                  --query 'builds[0].logs.deepLink' --output text
-                exit 1 ;;
-            esac
-            sleep 30
-          done
+      - name: Run grype scan via CodeBuild
+        id: grype_build
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: adp-${{ env.ENVIRONMENT }}-grype-scan
+          region: ${{ env.AWS_REGION }}
+          state_bucket: ${{ env.STATE_BUCKET }}
+          environment_variables: '"name=GRYPE_VERSION,value=${{ env.GRYPE_VERSION }},type=PLAINTEXT"'
+          poll_interval: '30'
 
       - name: Pull SARIFs from S3 for Summary job
         if: always()
         run: |
+          BUILD_ID="${{ steps.grype_build.outputs.build_id }}"
           DATE=$(date -u +%Y/%m/%d)
           BUILD_RUN_ID="${BUILD_ID##*:}"
           mkdir -p grype-findings
@@ -372,42 +355,26 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Refresh CodeBuild source zip
+      - name: Resolve deploy vars
         run: |
-          # CodeBuild reads a snapshot zip; refresh it before triggering.
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
-          ./platform/scripts/zip-source.sh . /tmp/adp-source.zip
-          aws s3 cp /tmp/adp-source.zip "s3://${STATE_BUCKET}/codebuild/adp-source.zip"
+          echo "STATE_BUCKET=adp-terraform-state-${ACCOUNT_ID}" >> $GITHUB_ENV
+          echo "AWS_REGION=${AWS_REGION:-us-east-1}" >> $GITHUB_ENV
 
-      - name: Trigger CodeBuild
-        run: |
-          BUILD_ID=$(aws codebuild start-build \
-            --project-name adp-${{ env.ENVIRONMENT }}-syft-scan \
-            --environment-variables-override "name=SYFT_VERSION,value=${{ env.SYFT_VERSION }},type=PLAINTEXT" \
-            --query 'build.id' --output text)
-          echo "BUILD_ID=${BUILD_ID}" >> $GITHUB_ENV
-          echo "Started: ${BUILD_ID}"
-
-      - name: Wait for CodeBuild
-        run: |
-          while true; do
-            STATUS=$(aws codebuild batch-get-builds --ids "${BUILD_ID}" \
-              --query 'builds[0].buildStatus' --output text)
-            echo "$(date +%H:%M:%S) status=${STATUS}"
-            case "$STATUS" in
-              SUCCEEDED) exit 0 ;;
-              FAILED|FAULT|TIMED_OUT|STOPPED)
-                aws codebuild batch-get-builds --ids "${BUILD_ID}" \
-                  --query 'builds[0].logs.deepLink' --output text
-                exit 1 ;;
-            esac
-            sleep 30
-          done
+      - name: Run syft scan via CodeBuild
+        id: syft_build
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: adp-${{ env.ENVIRONMENT }}-syft-scan
+          region: ${{ env.AWS_REGION }}
+          state_bucket: ${{ env.STATE_BUCKET }}
+          environment_variables: '"name=SYFT_VERSION,value=${{ env.SYFT_VERSION }},type=PLAINTEXT"'
+          poll_interval: '30'
 
       - name: Pull SBOMs from S3
         if: always()
         run: |
+          BUILD_ID="${{ steps.syft_build.outputs.build_id }}"
           DATE=$(date -u +%Y/%m/%d)
           BUILD_RUN_ID="${BUILD_ID##*:}"
           mkdir -p sbom-findings

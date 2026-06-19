@@ -101,47 +101,15 @@ jobs:
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
 
-      - name: Package source and upload to S3
-        run: |
-          bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
-          aws s3 cp /tmp/adp-source.zip \
-            "s3://${STATE_BUCKET}/codebuild/adp-source.zip" \
-            --region "${AWS_REGION}"
-          rm -f /tmp/adp-source.zip
-
-      - name: Trigger CodeBuild and wait
+      - name: Build image via CodeBuild
         id: build
-        run: |
-          PROJECT_NAME="adp-${ENVIRONMENT}-agent-context-${{ matrix.image }}-build"
-          IMAGE_TAG="${{ github.sha }}"
-
-          BUILD_ID=$(aws codebuild start-build \
-            --region "${AWS_REGION}" \
-            --project-name "$PROJECT_NAME" \
-            --environment-variables-override \
-              "name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT" \
-            --query 'build.id' --output text)
-          echo "Started CodeBuild: $BUILD_ID"
-          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
-
-          PHASE=""
-          while true; do
-            RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${AWS_REGION}" \
-              --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
-            STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
-            CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
-            [ "$CUR_PHASE" != "$PHASE" ] && [ -n "$CUR_PHASE" ] && echo "Phase: $CUR_PHASE" && PHASE="$CUR_PHASE"
-            case "$STATUS" in
-              SUCCEEDED) echo "Build succeeded"; break ;;
-              FAILED|FAULT|STOPPED|TIMED_OUT)
-                LOG=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${AWS_REGION}" \
-                  --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
-                echo "Build failed ($STATUS). Logs: $LOG" >&2
-                exit 1
-                ;;
-              *) sleep 30 ;;
-            esac
-          done
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: adp-${{ env.ENVIRONMENT }}-agent-context-${{ matrix.image }}-build
+          region: ${{ env.AWS_REGION }}
+          state_bucket: ${{ env.STATE_BUCKET }}
+          environment_variables: '"name=IMAGE_TAG,value=${{ github.sha }},type=PLAINTEXT"'
+          poll_interval: '30'
 
       - name: Summary
         run: |

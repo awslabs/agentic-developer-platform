@@ -51,16 +51,7 @@ jobs:
           fi
           aws --version
 
-      # ── 1. Package source + upload to S3 ──────────────────────────────
-      - name: Package source and upload to S3
-        run: |
-          bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
-          aws s3 cp /tmp/adp-source.zip \
-            "s3://${STATE_BUCKET}/codebuild/adp-source.zip" \
-            --region "${AWS_REGION}"
-          rm -f /tmp/adp-source.zip
-
-      # ── 2. Ensure CodeBuild project exists ─────────────────────────────
+      # ── 1. Ensure CodeBuild project exists ─────────────────────────────
       - name: Ensure CodeBuild project
         run: |
           CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
@@ -93,59 +84,38 @@ jobs:
             }' \
             --service-role "$SERVICE_ROLE_ARN" > /dev/null
 
-      # ── 3. Build image via CodeBuild ───────────────────────────────────
+      # ── 2. Build image via CodeBuild (per-build isolated source) ───────
       - name: Build image via CodeBuild
         id: build
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: ${{ env.CODEBUILD_PROJECT }}
+          region: ${{ env.AWS_REGION }}
+          state_bucket: ${{ env.STATE_BUCKET }}
+          environment_variables: >-
+            "name=AWS_REGION,value=${{ env.AWS_REGION }}"
+            "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}"
+            "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}"
+            "name=REGISTRY,value=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+            "name=IMAGE_TAG,value=${{ github.sha }}"
+
+      - name: Export build outputs
+        id: build_info
         run: |
           REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-          IMAGE_TAG="${{ github.sha }}"
+          echo "image_tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
 
-          BUILD_ID=$(aws codebuild start-build \
-            --region "${AWS_REGION}" \
-            --project-name "${{ env.CODEBUILD_PROJECT }}" \
-            --environment-variables-override \
-              "name=AWS_REGION,value=${AWS_REGION}" \
-              "name=ENVIRONMENT,value=${ENVIRONMENT}" \
-              "name=ACCOUNT_ID,value=${ACCOUNT_ID}" \
-              "name=REGISTRY,value=${REGISTRY}" \
-              "name=IMAGE_TAG,value=${IMAGE_TAG}" \
-            --query 'build.id' --output text)
-          echo "Started CodeBuild: $BUILD_ID"
-          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
-          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
-          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
-
-          PHASE=""
-          while true; do
-            RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
-              --region "${AWS_REGION}" \
-              --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
-            STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
-            CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
-            [ "$CUR_PHASE" != "$PHASE" ] && [ -n "$CUR_PHASE" ] && echo "Phase: $CUR_PHASE" && PHASE="$CUR_PHASE"
-            case "$STATUS" in
-              SUCCEEDED) echo "Build succeeded"; break ;;
-              FAILED|FAULT|STOPPED|TIMED_OUT)
-                LOG_LINK=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
-                  --region "${AWS_REGION}" \
-                  --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
-                echo "Build failed ($STATUS). Logs: $LOG_LINK" >&2
-                exit 1
-                ;;
-              *) sleep 15 ;;
-            esac
-          done
-
-      # ── 4. Extract and publish manifest to S3 ─────────────────────────
+      # ── 3. Extract and publish manifest to S3 ─────────────────────────
       - name: Extract and publish manifest
         run: |
-          IMAGE_URI="${{ steps.build.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.build.outputs.image_tag }}"
-          IMAGE_TAG="${{ steps.build.outputs.image_tag }}"
+          IMAGE_URI="${{ steps.build_info.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.build_info.outputs.image_tag }}"
+          IMAGE_TAG="${{ steps.build_info.outputs.image_tag }}"
           ASSETS_BUCKET="adp-dev-cape-assets"
 
           # Log in to ECR to pull the image
           aws ecr get-login-password --region "${AWS_REGION}" | \
-            docker login --username AWS --password-stdin "${{ steps.build.outputs.registry }}" 2>/dev/null || true
+            docker login --username AWS --password-stdin "${{ steps.build_info.outputs.registry }}" 2>/dev/null || true
 
           # Extract manifest from built image
           docker run --rm --entrypoint cat "${IMAGE_URI}" /opt/worker-manifest.json > /tmp/worker-manifest.json
@@ -168,7 +138,7 @@ jobs:
       # ── 5. Update SSM parameter with deployed image tag ──────────────
       - name: Update SSM image tag parameter
         run: |
-          IMAGE_TAG="${{ steps.build.outputs.image_tag }}"
+          IMAGE_TAG="${{ steps.build_info.outputs.image_tag }}"
           aws ssm put-parameter \
             --name "/adp/dev/cyber/worker-image-tag" \
             --value "${IMAGE_TAG}" \
@@ -180,6 +150,6 @@ jobs:
       - name: Summary
         run: |
           echo "## Cyber Worker Build" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Image**: ${{ steps.build.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.build.outputs.image_tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image**: ${{ steps.build_info.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.build_info.outputs.image_tag }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **CodeBuild**: ${{ steps.build.outputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Manifest**: s3://adp-dev-cape-assets/worker-manifests/by-tag/${{ steps.build.outputs.image_tag }}.json" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Manifest**: s3://adp-dev-cape-assets/worker-manifests/by-tag/${{ steps.build_info.outputs.image_tag }}.json" >> "$GITHUB_STEP_SUMMARY"

@@ -95,7 +95,10 @@ resource "aws_iam_role_policy" "codebuild_s3_source" {
         "s3:GetObject",
         "s3:GetObjectVersion"
       ]
-      Resource = "arn:aws:s3:::${var.state_bucket}/codebuild/adp-source.zip"
+      Resource = [
+        "arn:aws:s3:::${var.state_bucket}/codebuild/adp-source.zip",
+        "arn:aws:s3:::${var.state_bucket}/codebuild/src/*"
+      ]
     }]
   })
 }

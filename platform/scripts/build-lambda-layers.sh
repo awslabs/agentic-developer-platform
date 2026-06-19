@@ -68,44 +68,16 @@ layer_key() {
 
 echo "build-lambda-layers: region=$REGION env=$ENV_NAME bucket=$STATE_BUCKET layers=${LAYERS[*]}"
 
-# --- Package + upload source once (CodeBuild S3 source) ----------------------
-# The layer CodeBuild projects read their source from
-# s3://<bucket>/codebuild/adp-source.zip. Keep this in sync with deploy-all.sh.
-SRC_ZIP="/tmp/adp-layer-source.$$.zip"
-echo "Packaging repository source..."
-bash "${SCRIPT_DIR}/zip-source.sh" "$ROOT_DIR" "$SRC_ZIP" >/dev/null
-aws s3 cp "$SRC_ZIP" "s3://${STATE_BUCKET}/codebuild/adp-source.zip" --region "$REGION" >/dev/null
-rm -f "$SRC_ZIP"
-echo "Source uploaded to s3://${STATE_BUCKET}/codebuild/adp-source.zip"
-
-# --- Helper: start a CodeBuild build and wait for it -------------------------
+# --- Helper: start a CodeBuild build with per-build isolated source ----------
+# Uses codebuild-run.sh which uploads source to a unique S3 key and passes
+# --source-location-override, eliminating the shared-key race condition.
 run_build() {
   local project="$1"
-  local build_id
-  build_id=$(aws codebuild start-build \
-    --project-name "$project" \
-    --region "$REGION" \
-    --environment-variables-override \
+  STATE_BUCKET="$STATE_BUCKET" AWS_REGION="$REGION" POLL_INTERVAL=10 \
+    bash "${SCRIPT_DIR}/codebuild-run.sh" "$project" \
       "name=AWS_REGION,value=${REGION}" \
       "name=ACCOUNT_ID,value=${ACCOUNT_ID}" \
-      "name=STATE_BUCKET,value=${STATE_BUCKET}" \
-    --query 'build.id' --output text)
-  echo "  $project → build $build_id"
-
-  while true; do
-    local status
-    status=$(aws codebuild batch-get-builds --ids "$build_id" --region "$REGION" \
-      --query 'builds[0].buildStatus' --output text 2>/dev/null || echo "IN_PROGRESS")
-    case "$status" in
-      SUCCEEDED) echo "  $project: SUCCEEDED"; return 0 ;;
-      FAILED|FAULT|STOPPED|TIMED_OUT)
-        echo "  $project: $status" >&2
-        aws codebuild batch-get-builds --ids "$build_id" --region "$REGION" \
-          --query 'builds[0].logs.deepLink' --output text 2>/dev/null >&2 || true
-        return 1 ;;
-      *) sleep 10 ;;
-    esac
-  done
+      "name=STATE_BUCKET,value=${STATE_BUCKET}"
 }
 
 # --- Build each requested layer ----------------------------------------------

@@ -1,0 +1,127 @@
+name: CodeBuild Run
+description: |
+  Upload source to a per-build-unique S3 key and trigger a CodeBuild build
+  with --source-location-override to prevent source-race conditions.
+
+  The source key is: codebuild/src/${sha}-${run_id}.zip
+  This ensures each build reads exactly its own source, regardless of
+  concurrent builds or workflow re-runs.
+
+inputs:
+  project_name:
+    description: CodeBuild project name (e.g. adp-dev-gateway-build)
+    required: true
+  region:
+    description: AWS region
+    required: true
+  state_bucket:
+    description: S3 bucket for source artifacts (e.g. adp-terraform-state-123456789012)
+    required: true
+  environment_variables:
+    description: |
+      Space-separated CodeBuild environment variable overrides.
+      Format: "name=KEY,value=VAL" "name=KEY2,value=VAL2"
+    required: false
+    default: ''
+  poll_interval:
+    description: Seconds between build status polls
+    required: false
+    default: '15'
+
+outputs:
+  build_id:
+    description: CodeBuild build ID
+    value: ${{ steps.start.outputs.build_id }}
+  source_key:
+    description: S3 key used for this build's source
+    value: ${{ steps.upload.outputs.source_key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Upload source to per-build S3 key
+      id: upload
+      shell: bash
+      env:
+        STATE_BUCKET: ${{ inputs.state_bucket }}
+        AWS_REGION: ${{ inputs.region }}
+      run: |
+        set -euo pipefail
+        SHA="${GITHUB_SHA}"
+        RUN_ID="${GITHUB_RUN_ID}"
+        SOURCE_KEY="codebuild/src/${SHA}-${RUN_ID}.zip"
+
+        bash "${GITHUB_WORKSPACE}/platform/scripts/zip-source.sh" \
+          "${GITHUB_WORKSPACE}" /tmp/adp-source-${RUN_ID}.zip
+
+        aws s3 cp "/tmp/adp-source-${RUN_ID}.zip" \
+          "s3://${STATE_BUCKET}/${SOURCE_KEY}" \
+          --region "${AWS_REGION}"
+        rm -f "/tmp/adp-source-${RUN_ID}.zip"
+
+        echo "source_key=${SOURCE_KEY}" >> "$GITHUB_OUTPUT"
+        echo "Uploaded source to s3://${STATE_BUCKET}/${SOURCE_KEY}"
+
+    - name: Start CodeBuild with source override
+      id: start
+      shell: bash
+      env:
+        STATE_BUCKET: ${{ inputs.state_bucket }}
+        AWS_REGION: ${{ inputs.region }}
+        PROJECT_NAME: ${{ inputs.project_name }}
+        SOURCE_KEY: ${{ steps.upload.outputs.source_key }}
+        ENV_VARS: ${{ inputs.environment_variables }}
+      run: |
+        set -euo pipefail
+
+        # Build the start-build command
+        CMD=(aws codebuild start-build
+          --region "${AWS_REGION}"
+          --project-name "${PROJECT_NAME}"
+          --source-location-override "${STATE_BUCKET}/${SOURCE_KEY}"
+          --environment-variables-override
+            "name=ADP_SOURCE_SHA,value=${GITHUB_SHA},type=PLAINTEXT"
+        )
+
+        # Append caller-provided env var overrides
+        if [ -n "${ENV_VARS}" ]; then
+          # ENV_VARS is space-separated quoted entries like:
+          #   "name=FOO,value=bar" "name=BAZ,value=qux"
+          eval "VARS_ARRAY=(${ENV_VARS})"
+          CMD+=("${VARS_ARRAY[@]}")
+        fi
+
+        CMD+=(--query 'build.id' --output text)
+
+        BUILD_ID=$("${CMD[@]}")
+        echo "build_id=${BUILD_ID}" >> "$GITHUB_OUTPUT"
+        echo "Started CodeBuild: ${BUILD_ID} (source: ${SOURCE_KEY})"
+
+    - name: Wait for CodeBuild completion
+      shell: bash
+      env:
+        BUILD_ID: ${{ steps.start.outputs.build_id }}
+        AWS_REGION: ${{ inputs.region }}
+        POLL_INTERVAL: ${{ inputs.poll_interval }}
+      run: |
+        set -euo pipefail
+        PHASE=""
+        while true; do
+          RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+            --region "${AWS_REGION}" \
+            --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
+          STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
+          CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
+          [ "$CUR_PHASE" != "$PHASE" ] && [ -n "$CUR_PHASE" ] && echo "Phase: $CUR_PHASE" && PHASE="$CUR_PHASE"
+          case "$STATUS" in
+            SUCCEEDED) echo "Build succeeded"; exit 0 ;;
+            FAILED|FAULT|STOPPED|TIMED_OUT)
+              LOG=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
+                --region "${AWS_REGION}" \
+                --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
+              echo "Build failed ($STATUS). Logs: $LOG" >&2
+              exit 1
+              ;;
+            *) sleep "${POLL_INTERVAL}" ;;
+          esac
+        done

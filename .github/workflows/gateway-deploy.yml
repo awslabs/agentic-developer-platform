@@ -102,43 +102,31 @@ jobs:
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
 
-      - name: Package source and upload to S3
-        run: |
-          bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
-          aws s3 cp /tmp/adp-source.zip "s3://${STATE_BUCKET}/codebuild/adp-source.zip"
-          rm -f /tmp/adp-source.zip
-
-      - name: Trigger image build in CodeBuild
+      - name: Compute build vars
+        id: vars
         run: |
           EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
-          REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-          BUILD_ID=$(aws codebuild start-build \
-            --project-name adp-${ENVIRONMENT}-gateway-build \
-            --environment-variables-override \
-              "name=AWS_REGION,value=${AWS_REGION}" \
-              "name=ENVIRONMENT,value=${ENVIRONMENT}" \
-              "name=ACCOUNT_ID,value=${EFFECTIVE_ACCOUNT}" \
-              "name=REGISTRY,value=${REGISTRY}" \
-              "name=STATE_BUCKET,value=${STATE_BUCKET}" \
-              "name=EKS_CLUSTER,value=${{ env.EKS_CLUSTER }}" \
-              "name=IMAGE_TAG,value=${{ github.sha }}" \
-            --query 'build.id' --output text)
-          echo "Started build: $BUILD_ID"
-          while true; do
-            STATUS=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
-              --query 'builds[0].buildStatus' --output text)
-            case $STATUS in
-              SUCCEEDED) echo "Build succeeded"; break ;;
-              FAILED|FAULT|STOPPED|TIMED_OUT)
-                LOG_LINK=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
-                  --query 'builds[0].logs.deepLink' --output text)
-                echo "Build failed ($STATUS). Logs: $LOG_LINK"
-                exit 1
-                ;;
-              *) sleep 10 ;;
-            esac
-          done
-          echo "IMAGE_TAG=${{ github.sha }}" >> $GITHUB_ENV
+          echo "registry=${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_OUTPUT"
+          echo "effective_account=${EFFECTIVE_ACCOUNT}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image via CodeBuild
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: adp-${{ env.ENVIRONMENT }}-gateway-build
+          region: ${{ env.AWS_REGION }}
+          state_bucket: ${{ env.STATE_BUCKET }}
+          environment_variables: >-
+            "name=AWS_REGION,value=${{ env.AWS_REGION }}"
+            "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}"
+            "name=ACCOUNT_ID,value=${{ steps.vars.outputs.effective_account }}"
+            "name=REGISTRY,value=${{ steps.vars.outputs.registry }}"
+            "name=STATE_BUCKET,value=${{ env.STATE_BUCKET }}"
+            "name=EKS_CLUSTER,value=${{ env.EKS_CLUSTER }}"
+            "name=IMAGE_TAG,value=${{ github.sha }}"
+          poll_interval: '10'
+
+      - name: Export image tag
+        run: echo "IMAGE_TAG=${{ github.sha }}" >> $GITHUB_ENV
 
       - name: Upload CFN template to S3
         # Issue #562: the AWS connect flow pre-signs a GET URL on this object.

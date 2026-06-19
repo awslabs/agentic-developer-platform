@@ -61,53 +61,23 @@ terraform apply \
 echo "  ✅ Step 1: Terraform apply complete"
 
 # -----------------------------------------------------------------------------
-# Step 2: Trigger CodeBuild to build and push the container image
-# Invariant: CodeBuild sources the standard adp-source.zip from the S3 state
-# bucket (configured in the build module). This is committed main — never a
-# locally hand-edited zip.
+# Step 2: Build and push the container image via CodeBuild
+# Uses codebuild-run.sh which uploads source to a per-build-unique S3 key
+# and passes --source-location-override, eliminating the shared-key race.
 # -----------------------------------------------------------------------------
 echo ""
 echo "--- Step 2: Building container image via CodeBuild..."
 PROJECT=$(terraform output -raw build_project_name)
 echo "  CodeBuild project: ${PROJECT}"
 
-BUILD_ID=$(aws codebuild start-build \
-  --project-name "${PROJECT}" \
-  --region "${AWS_REGION}" \
-  --query 'build.id' --output text)
-echo "  Build started: ${BUILD_ID}"
+# Resolve the repo root for zip-source.sh (4 levels up from terraform/)
+REPO_ROOT="$(cd "${TF_DIR}/../../../.." && pwd)"
 
-# -----------------------------------------------------------------------------
-# Step 3: Poll until build completes
-# -----------------------------------------------------------------------------
-echo ""
-echo "--- Step 3: Waiting for build to complete..."
-while true; do
-  STATUS=$(aws codebuild batch-get-builds \
-    --ids "${BUILD_ID}" \
-    --region "${AWS_REGION}" \
-    --query 'builds[0].buildStatus' --output text)
+STATE_BUCKET="$STATE_BUCKET" AWS_REGION="$AWS_REGION" \
+  SOURCE_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)" \
+  bash "${REPO_ROOT}/platform/scripts/codebuild-run.sh" "${PROJECT}"
 
-  case "${STATUS}" in
-    IN_PROGRESS)
-      echo "  Build in progress..."
-      sleep 15
-      ;;
-    SUCCEEDED)
-      echo "  ✅ Step 3: Build succeeded"
-      break
-      ;;
-    *)
-      echo "  ❌ Step 3: Build failed with status: ${STATUS}"
-      echo "  Fetching logs URL..."
-      aws codebuild batch-get-builds \
-        --ids "${BUILD_ID}" \
-        --region "${AWS_REGION}" \
-        --query 'builds[0].logs.deepLink' --output text
-      exit 1
-      ;;
-  esac
-done
+echo "  ✅ Step 2: Build succeeded"
 
 # -----------------------------------------------------------------------------
 # Step 4: Force new deployment + wait for service to stabilize

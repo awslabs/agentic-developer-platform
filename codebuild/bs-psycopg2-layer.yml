@@ -12,6 +12,12 @@ version: 0.2
 phases:
   pre_build:
     commands:
+      - |
+        if [ -z "${ADP_SOURCE_SHA:-}" ]; then
+          echo "ERROR: ADP_SOURCE_SHA not set. Build was started without --source-location-override." >&2
+          echo "All builds must use codebuild-run.sh or the codebuild-run composite action." >&2
+          exit 1
+        fi
       - STATE_BUCKET="${STATE_BUCKET:-adp-terraform-state-${ACCOUNT_ID}}"
       - LAYER_KEY="lambda-layers/psycopg2-py312.zip"
       - echo "Will upload layer to s3://${STATE_BUCKET}/${LAYER_KEY}"

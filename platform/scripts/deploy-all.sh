@@ -147,24 +147,10 @@ ensure_codebuild_role() {
 }
 
 # =============================================================================
-# Helper: package repo source and upload to S3
-# =============================================================================
-upload_source() {
-  local ZIP_PATH="/tmp/adp-deploy-source.zip"
-  echo "Packaging repository source..."
-  # Use shared zip script to keep excludes in sync with gateway-deploy.yml
-  bash "$SCRIPT_DIR/zip-source.sh" "$ROOT_DIR" "$ZIP_PATH"
-  aws s3 cp "$ZIP_PATH" "s3://${STATE_BUCKET}/codebuild/adp-source.zip" --region "$AWS_REGION" > /dev/null
-  rm -f "$ZIP_PATH"
-  ok "Source uploaded to s3://${STATE_BUCKET}/codebuild/adp-source.zip"
-}
-
-# =============================================================================
 # Helper: run a CodeBuild job (project must already exist via Terraform)
 # =============================================================================
-# The 4 docker-build projects are Terraform-managed in
-# platform/infra/modules/codebuild/. This function only starts builds
-# against existing projects — it no longer creates or updates them.
+# Uses codebuild-run.sh which uploads source to a per-build-unique S3 key
+# and passes --source-location-override, eliminating the shared-key race.
 run_codebuild() {
   local PROJECT_NAME="$1"
   local BUILDSPEC_FILE="$2"  # unused — buildspec is baked into the project
@@ -177,38 +163,17 @@ run_codebuild() {
     fail "CodeBuild project '$PROJECT_NAME' not found. Run 'terraform apply' in platform/infra/ first."
   fi
 
-  # Start build
-  local BUILD_ID
-  BUILD_ID=$(aws codebuild start-build --region "$AWS_REGION" --project-name "$PROJECT_NAME" \
-    --environment-variables-override \
+  # Delegate to codebuild-run.sh for per-build isolated source upload + start + poll
+  STATE_BUCKET="$STATE_BUCKET" AWS_REGION="$AWS_REGION" SOURCE_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)" \
+    bash "$SCRIPT_DIR/codebuild-run.sh" "$PROJECT_NAME" \
       "name=AWS_REGION,value=$AWS_REGION" \
       "name=ENVIRONMENT,value=$ENVIRONMENT" \
       "name=ACCOUNT_ID,value=$ACCOUNT_ID" \
       "name=REGISTRY,value=$REGISTRY" \
       "name=STATE_BUCKET,value=$STATE_BUCKET" \
       "name=EKS_CLUSTER,value=$EKS_CLUSTER" \
-    --query 'build.id' --output text)
-  echo "  Build: $BUILD_ID"
-
-  # Stream-wait for completion
-  local PHASE=""
-  while true; do
-    local RESULT
-    RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "$AWS_REGION" \
-      --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
-    local STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
-    local CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
-    [ "$CUR_PHASE" != "$PHASE" ] && [ -n "$CUR_PHASE" ] && echo "  Phase: $CUR_PHASE" && PHASE="$CUR_PHASE"
-    case "$STATUS" in
-      SUCCEEDED) ok "Build succeeded: $PROJECT_NAME"; return 0 ;;
-      FAILED|FAULT|STOPPED|TIMED_OUT)
-        echo "  Fetching logs..."
-        aws codebuild batch-get-builds --ids "$BUILD_ID" --region "$AWS_REGION" \
-          --query 'builds[0].logs.deepLink' --output text 2>/dev/null || true
-        fail "Build failed ($STATUS): $PROJECT_NAME" ;;
-      *) sleep 15 ;;
-    esac
-  done
+  || fail "Build failed: $PROJECT_NAME"
+  ok "Build succeeded: $PROJECT_NAME"
 }
 
 # =============================================================================
@@ -583,7 +548,6 @@ else
     docker push "$REGISTRY/adp-gateway:latest"
   else
     # Docker build via CodeBuild (Terraform-managed project)
-    upload_source
     run_codebuild "adp-${ENVIRONMENT}-gateway-build" "codebuild/bs-gateway-build.yml"
   fi
 
@@ -790,7 +754,6 @@ EOF
     rm -rf "$BUILD_DIR"
   else
     # Docker build via CodeBuild (Terraform-managed project)
-    upload_source
     run_codebuild "adp-${ENVIRONMENT}-agent-gateway" "codebuild/bs-agent-gateway.yml"
   fi
 

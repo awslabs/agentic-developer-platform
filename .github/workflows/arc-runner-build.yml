@@ -82,14 +82,6 @@ jobs:
           fi
           aws --version
 
-      - name: Package source and upload to S3
-        run: |
-          bash platform/scripts/zip-source.sh . /tmp/adp-source.zip
-          aws s3 cp /tmp/adp-source.zip \
-            "s3://${STATE_BUCKET}/codebuild/adp-source.zip" \
-            --region "${AWS_REGION}"
-          rm -f /tmp/adp-source.zip
-
       - name: Ensure CodeBuild project
         run: |
           CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
@@ -116,44 +108,29 @@ jobs:
 
       - name: Build image via CodeBuild
         id: build
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: ${{ env.CODEBUILD_PROJECT }}
+          region: ${{ env.AWS_REGION }}
+          state_bucket: ${{ env.STATE_BUCKET }}
+          environment_variables: >-
+            "name=AWS_REGION,value=${{ env.AWS_REGION }}"
+            "name=ACCOUNT_ID,value=${{ env.CUSTOMER_ACCOUNT_ID || env.ACCOUNT_ID }}"
+            "name=REGISTRY,value=${{ env.CUSTOMER_ACCOUNT_ID || env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+            "name=IMAGE_TAG,value=${{ github.sha }}"
+
+      - name: Export outputs
+        id: build_outputs
         run: |
           EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
           REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-          IMAGE_TAG="${{ github.sha }}"
-          BUILD_ID=$(aws codebuild start-build \
-            --region "${AWS_REGION}" \
-            --project-name "${{ env.CODEBUILD_PROJECT }}" \
-            --environment-variables-override \
-              "name=AWS_REGION,value=${AWS_REGION}" \
-              "name=ACCOUNT_ID,value=${EFFECTIVE_ACCOUNT}" \
-              "name=REGISTRY,value=${REGISTRY}" \
-              "name=IMAGE_TAG,value=${IMAGE_TAG}" \
-            --query 'build.id' --output text)
-          echo "Started CodeBuild: $BUILD_ID"
-          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
-          echo "image=${REGISTRY}/adp-arc-runner:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-
-          PHASE=""
-          while true; do
-            RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${AWS_REGION}" --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
-            STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
-            CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
-            [ "$CUR_PHASE" != "$PHASE" ] && [ -n "$CUR_PHASE" ] && echo "Phase: $CUR_PHASE" && PHASE="$CUR_PHASE"
-            case "$STATUS" in
-              SUCCEEDED) echo "Build succeeded"; break ;;
-              FAILED|FAULT|STOPPED|TIMED_OUT)
-                LOG=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "${AWS_REGION}" --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
-                echo "Build failed ($STATUS). Logs: $LOG" >&2
-                exit 1
-                ;;
-              *) sleep 15 ;;
-            esac
-          done
+          echo "build_id=${{ steps.build.outputs.build_id }}" >> "$GITHUB_OUTPUT"
+          echo "image=${REGISTRY}/adp-arc-runner:${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
       - name: Summary
         run: |
           echo "## ARC Runner Image Built" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Image**: ${{ steps.build.outputs.image }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image**: ${{ steps.build_outputs.outputs.image }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **CodeBuild**: ${{ steps.build.outputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "To roll out, update the ARC scale set's Helm values to point at this image." >> "$GITHUB_STEP_SUMMARY"
