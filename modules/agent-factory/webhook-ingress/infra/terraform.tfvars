@@ -6,6 +6,12 @@
 environment = "dev"
 aws_region  = "us-east-1"
 
+# Issue #1630: enable Claude Agent SDK OTel telemetry → ADOT Collector →
+# CloudWatch (logs + metrics) + X-Ray (traces). Deploys the collector in
+# adp-agents and adds OTEL_* env to the agent-worker ScaledJob. Non-blocking;
+# content unmasking (prompts/tool I/O) stays OFF (deferred data-governance).
+enable_agent_otel = true
+
 tags = {
   Project   = "adp"
   Module    = "webhook-ingress"
