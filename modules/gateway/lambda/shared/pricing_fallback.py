@@ -53,13 +53,26 @@ MODEL_PRICING: dict[str, dict[str, Decimal]] = {
         "cache_read_input": Decimal("0.00008"),
         "cache_creation_input": Decimal("0.001"),
     },
-    # Claude 4.x updated models (2025-2026) — Issue #1486
+    # Claude 4.x updated models (2025-2026) — Issue #1486, #1622
     # These use version-number naming (no date suffix)
+    # Opus 4.x rate: $5/$25 per MTok (corrected from retired $15/$75 Opus 4.1 rate — #1622)
     "anthropic.claude-opus-4-6-v1": {
-        "input": Decimal("0.015"),
-        "output": Decimal("0.075"),
-        "cache_read_input": Decimal("0.0015"),
-        "cache_creation_input": Decimal("0.01875"),
+        "input": Decimal("0.005"),
+        "output": Decimal("0.025"),
+        "cache_read_input": Decimal("0.0005"),  # 0.1× input
+        "cache_creation_input": Decimal("0.00625"),  # 1.25× input
+    },
+    "anthropic.claude-opus-4-7-v1": {
+        "input": Decimal("0.005"),
+        "output": Decimal("0.025"),
+        "cache_read_input": Decimal("0.0005"),  # 0.1× input
+        "cache_creation_input": Decimal("0.00625"),  # 1.25× input
+    },
+    "anthropic.claude-opus-4-8-v1": {
+        "input": Decimal("0.005"),
+        "output": Decimal("0.025"),
+        "cache_read_input": Decimal("0.0005"),  # 0.1× input
+        "cache_creation_input": Decimal("0.00625"),  # 1.25× input
     },
     "anthropic.claude-sonnet-4-6-v1": {
         "input": Decimal("0.003"),

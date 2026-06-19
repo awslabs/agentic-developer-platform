@@ -31,10 +31,10 @@ class TestOpus46ModelResolution:
         assert resolved == "anthropic.claude-opus-4-6-v1"
 
     def test_opus_46_has_correct_pricing(self):
-        """Opus 4.6 must have Opus rates ($15/M input, $75/M output)."""
+        """Opus 4.6 must have Opus rates ($5/M input, $25/M output) — #1622."""
         pricing = get_model_pricing("us.anthropic.claude-opus-4-6-v1")
-        assert pricing["input"] == Decimal("0.015")
-        assert pricing["output"] == Decimal("0.075")
+        assert pricing["input"] == Decimal("0.005")
+        assert pricing["output"] == Decimal("0.025")
 
     def test_opus_46_not_default_pricing(self):
         """Opus 4.6 must NOT fall back to default (Sonnet) pricing."""
@@ -42,14 +42,50 @@ class TestOpus46ModelResolution:
         assert pricing != MODEL_PRICING["default"]
 
     def test_opus_46_has_cache_rates(self):
-        """Opus 4.6 must have explicit cache pricing rates."""
+        """Opus 4.6 must have explicit cache pricing rates — #1622."""
         pricing = get_model_pricing("us.anthropic.claude-opus-4-6-v1")
         assert "cache_read_input" in pricing
         assert "cache_creation_input" in pricing
-        # Cache read = 0.1x input rate
-        assert pricing["cache_read_input"] == Decimal("0.0015")
-        # Cache creation = 1.25x input rate
-        assert pricing["cache_creation_input"] == Decimal("0.01875")
+        # Cache read = 0.1x input rate ($0.005 × 0.1 = $0.0005)
+        assert pricing["cache_read_input"] == Decimal("0.0005")
+        # Cache creation = 1.25x input rate ($0.005 × 1.25 = $0.00625)
+        assert pricing["cache_creation_input"] == Decimal("0.00625")
+
+    def test_opus_47_resolves_from_us_prefix(self):
+        """us.anthropic.claude-opus-4-7-v1 → anthropic.claude-opus-4-7-v1 — #1622."""
+        resolved = resolve_model_id("us.anthropic.claude-opus-4-7-v1")
+        assert resolved == "anthropic.claude-opus-4-7-v1"
+
+    def test_opus_47_has_correct_pricing(self):
+        """Opus 4.7 must have Opus rates ($5/M input, $25/M output) — #1622."""
+        pricing = get_model_pricing("us.anthropic.claude-opus-4-7-v1")
+        assert pricing["input"] == Decimal("0.005")
+        assert pricing["output"] == Decimal("0.025")
+        assert pricing["cache_read_input"] == Decimal("0.0005")
+        assert pricing["cache_creation_input"] == Decimal("0.00625")
+
+    def test_opus_48_resolves_from_us_prefix(self):
+        """us.anthropic.claude-opus-4-8-v1 → anthropic.claude-opus-4-8-v1 — #1622."""
+        resolved = resolve_model_id("us.anthropic.claude-opus-4-8-v1")
+        assert resolved == "anthropic.claude-opus-4-8-v1"
+
+    def test_opus_48_has_correct_pricing(self):
+        """Opus 4.8 must have Opus rates ($5/M input, $25/M output) — #1622."""
+        pricing = get_model_pricing("us.anthropic.claude-opus-4-8-v1")
+        assert pricing["input"] == Decimal("0.005")
+        assert pricing["output"] == Decimal("0.025")
+        assert pricing["cache_read_input"] == Decimal("0.0005")
+        assert pricing["cache_creation_input"] == Decimal("0.00625")
+
+    def test_opus_47_not_default_pricing(self):
+        """Opus 4.7 must NOT fall back to default (Sonnet) pricing — #1622."""
+        pricing = get_model_pricing("us.anthropic.claude-opus-4-7-v1")
+        assert pricing != MODEL_PRICING["default"]
+
+    def test_opus_48_not_default_pricing(self):
+        """Opus 4.8 must NOT fall back to default (Sonnet) pricing — #1622."""
+        pricing = get_model_pricing("us.anthropic.claude-opus-4-8-v1")
+        assert pricing != MODEL_PRICING["default"]
 
     def test_sonnet_46_resolves_correctly(self):
         """Sonnet 4.6 must resolve and have correct pricing."""
@@ -123,36 +159,37 @@ class TestCalculateCostWithCacheTokens:
         assert cost == Decimal("0.0105")
 
     def test_calculate_cost_with_cache_read_tokens(self):
-        """Cache-read tokens priced at ~0.1x input rate."""
+        """Cache-read tokens priced at ~0.1x input rate — #1622 corrected."""
         cost = calculate_cost(
             "anthropic.claude-opus-4-6-v1",
             input_tokens=1,
             output_tokens=4000,
             cache_read_input_tokens=65000,
         )
-        # input: 1 * 0.015 / 1000 = 0.000015
-        # output: 4000 * 0.075 / 1000 = 0.3
-        # cache_read: 65000 * 0.0015 / 1000 = 0.0975
-        # total: 0.397515
-        expected = Decimal("0.000015") + Decimal("0.3") + Decimal("0.0975")
+        # input: 1 * 0.005 / 1000 = 0.000005
+        # output: 4000 * 0.025 / 1000 = 0.1
+        # cache_read: 65000 * 0.0005 / 1000 = 0.0325
+        # total: 0.132505
+        expected = Decimal("0.000005") + Decimal("0.1") + Decimal("0.0325")
         assert cost == round(expected, 6)
 
     def test_calculate_cost_with_cache_creation_tokens(self):
-        """Cache-creation tokens priced at ~1.25x input rate."""
+        """Cache-creation tokens priced at ~1.25x input rate — #1622 corrected."""
         cost = calculate_cost(
             "anthropic.claude-opus-4-6-v1",
             input_tokens=0,
             output_tokens=0,
             cache_creation_input_tokens=10000,
         )
-        # cache_creation: 10000 * 0.01875 / 1000 = 0.1875
-        assert cost == Decimal("0.1875")
+        # cache_creation: 10000 * 0.00625 / 1000 = 0.0625
+        assert cost == Decimal("0.0625")
 
     def test_calculate_cost_opus_46_hand_computed(self):
-        """Hand-computed Opus 4.6 cost with typical cached agent request.
+        """Hand-computed Opus 4.6 cost with typical cached agent request — #1622 corrected.
 
         Scenario: agent loop turn with ~65K cached input, 1 non-cached token,
         4K output tokens. This is the exact scenario from the issue evidence.
+        At $5/$25 per MTok this should be ~1/3 of the pre-fix ($15/$75) figure.
         """
         cost = calculate_cost(
             "us.anthropic.claude-opus-4-6-v1",
@@ -161,15 +198,18 @@ class TestCalculateCostWithCacheTokens:
             cache_read_input_tokens=65000,
             cache_creation_input_tokens=0,
         )
-        # input: 1 * 0.015 / 1000 = 0.000015
-        # output: 4000 * 0.075 / 1000 = 0.3
-        # cache_read: 65000 * 0.0015 / 1000 = 0.0975
+        # input: 1 * 0.005 / 1000 = 0.000005
+        # output: 4000 * 0.025 / 1000 = 0.1
+        # cache_read: 65000 * 0.0005 / 1000 = 0.0325
         # cache_creation: 0
-        # total: 0.397515
-        assert cost == Decimal("0.397515")
+        # total: 0.132505
+        assert cost == Decimal("0.132505")
+        # Verify this is ~1/3 of the old ($15/$75) figure ($0.397515)
+        old_rate_cost = Decimal("0.397515")
+        assert cost < old_rate_cost / Decimal("2")  # strictly less than half
 
     def test_calculate_cost_with_both_cache_types(self):
-        """Full scenario with both cache-read and cache-creation."""
+        """Full scenario with both cache-read and cache-creation — #1622 corrected."""
         cost = calculate_cost(
             "anthropic.claude-opus-4-6-v1",
             input_tokens=100,
@@ -177,12 +217,12 @@ class TestCalculateCostWithCacheTokens:
             cache_read_input_tokens=50000,
             cache_creation_input_tokens=5000,
         )
-        # input: 100 * 0.015 / 1000 = 0.0015
-        # output: 2000 * 0.075 / 1000 = 0.15
-        # cache_read: 50000 * 0.0015 / 1000 = 0.075
-        # cache_creation: 5000 * 0.01875 / 1000 = 0.09375
-        # total: 0.32025
-        expected = Decimal("0.0015") + Decimal("0.15") + Decimal("0.075") + Decimal("0.09375")
+        # input: 100 * 0.005 / 1000 = 0.0005
+        # output: 2000 * 0.025 / 1000 = 0.05
+        # cache_read: 50000 * 0.0005 / 1000 = 0.025
+        # cache_creation: 5000 * 0.00625 / 1000 = 0.03125
+        # total: 0.10675
+        expected = Decimal("0.0005") + Decimal("0.05") + Decimal("0.025") + Decimal("0.03125")
         assert cost == round(expected, 6)
 
     def test_calculate_cost_cache_defaults_to_zero(self):
