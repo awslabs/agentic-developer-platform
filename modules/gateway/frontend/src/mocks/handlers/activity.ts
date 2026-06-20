@@ -77,6 +77,10 @@ function buildChainResponse(correlationId: string, items: InvocationItem[]): Inv
       persona: item.persona,
       parent_invocation_id: item.triggered_by_invocation_id,
       children: [],
+      // Issue #1653: per-node cost carried from the source item
+      total_cost_usd: item.total_cost_usd,
+      total_tokens: item.total_tokens,
+      call_count: item.call_count,
     });
   }
 
@@ -93,6 +97,11 @@ function buildChainResponse(correlationId: string, items: InvocationItem[]): Inv
   // Determine root_human_id from first human-rooted item
   const firstHumanRooted = chainItems.find((i) => i.is_human_rooted);
 
+  // Issue #1653: chain-wide cost totals (sum across all nodes in the chain)
+  const chainTotalCost = chainItems.reduce((s, i) => s + (i.total_cost_usd ?? 0), 0);
+  const chainTotalTokens = chainItems.reduce((s, i) => s + (i.total_tokens ?? 0), 0);
+  const chainTotalCalls = chainItems.reduce((s, i) => s + (i.call_count ?? 0), 0);
+
   return {
     correlation_id: correlationId,
     root_human_id: firstHumanRooted?.root_human_id ?? null,
@@ -100,6 +109,9 @@ function buildChainResponse(correlationId: string, items: InvocationItem[]): Inv
     items: roots,
     total_count: chainItems.length,
     depth_capped: false,
+    chain_total_cost_usd: chainTotalCost,
+    chain_total_tokens: chainTotalTokens,
+    chain_total_call_count: chainTotalCalls,
   };
 }
 

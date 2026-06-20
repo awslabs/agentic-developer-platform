@@ -98,6 +98,8 @@ export function generateMockInvocations(count: number = 30): InvocationItem[] {
       call_count: isTerminal ? Math.floor(Math.random() * 40) + 1 : null,
       // Error detail for failed runs (drives the detail view)
       error_message: status === 'failed' ? 'Model access error: throttled by Bedrock' : null,
+      // Issue #1653: run log link (Tier 2 — null until worker persists check_run_url)
+      run_log_url: null,
     };
   });
 }
