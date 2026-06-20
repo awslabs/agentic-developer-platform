@@ -28,6 +28,13 @@ import { VaultGatewayClient } from './vault/gateway-client';
 import { createCredsInjector, CredsInjector } from '../aws-creds-injector';
 import { buildPersonalContextIdentity, getPersonalContextEnvVars } from './personal-context-headers';
 import { recallAtTaskStart, RECALL_ENABLED } from './recall-at-task-start';
+import {
+  KNOWLEDGE_LAYER_ENABLED,
+  KNOWLEDGE_LAYER_TOOLS,
+  KNOWLEDGE_LAYER_SERVER_NAME,
+  KNOWLEDGE_LAYER_PROMPT,
+  getKnowledgeLayerMcpConfig,
+} from '../knowledge-layer-config';
 
 const TOKEN_BUDGET = Number(process.env.CONTEXT_TOKEN_BUDGET ?? 150_000);
 
@@ -305,10 +312,14 @@ async function processOne(
       priorExperienceSection = recallResult.promptSection;
     }
 
+    // Issue #1592: Append Knowledge Layer guidance when enabled so the agent
+    // knows when/how to use the registered MCP tools.
+    const knowledgeLayerHint = KNOWLEDGE_LAYER_ENABLED ? '\n\n' + KNOWLEDGE_LAYER_PROMPT : '';
+
     const systemPrompt = composeSystemPrompt({
       base: channelDirective
-        ? channelDirective + '\n\n' + persona.baseSystemPrompt + attachmentBlock + credentialsSummary + awsEnvHint
-        : persona.baseSystemPrompt + attachmentBlock + credentialsSummary + awsEnvHint,
+        ? channelDirective + '\n\n' + persona.baseSystemPrompt + attachmentBlock + credentialsSummary + awsEnvHint + knowledgeLayerHint
+        : persona.baseSystemPrompt + attachmentBlock + credentialsSummary + awsEnvHint + knowledgeLayerHint,
       personaLearnings: persona.learnings,
       memories: memBlock,
       priorExperience: priorExperienceSection,
@@ -384,6 +395,11 @@ async function processOne(
       cwd: '/tmp/workspace',
       env: scopedEnv,
       effort: getChannelEffort(channel ?? ''),
+      // Issue #1592: Knowledge Layer MCP — mount Door as HTTP MCP server.
+      ...(KNOWLEDGE_LAYER_ENABLED ? {
+        additionalMcpServers: { [KNOWLEDGE_LAYER_SERVER_NAME]: getKnowledgeLayerMcpConfig() },
+        additionalAllowedTools: KNOWLEDGE_LAYER_TOOLS,
+      } : {}),
       // Forward mid-turn progress to the user over the same channel as the
       // final reply. Keeps the WebSocket warm (API Gateway's 10-min idle
       // timeout resets on any data frame) and gives the user something to

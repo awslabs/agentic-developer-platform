@@ -48,6 +48,15 @@ import { postProvenance } from './lib/provenanceClient';
 // Check Run Streamer — per-turn live streaming to GitHub Check Run output
 import { CheckRunStreamer } from './components/checkRunStreamer';
 
+// Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
+import {
+  KNOWLEDGE_LAYER_ENABLED,
+  KNOWLEDGE_LAYER_TOOLS,
+  KNOWLEDGE_LAYER_SERVER_NAME,
+  KNOWLEDGE_LAYER_PROMPT,
+  getKnowledgeLayerMcpConfig,
+} from './knowledge-layer-config';
+
 // Beads module - distributed state management for agents
 import {
   configureBeads,
@@ -705,6 +714,10 @@ You have access to skills in \`.claude/skills/\`. Each skill has a \`SKILL.md\` 
 - \`mcp-builder\`: Build custom MCP servers
 
 **IMPORTANT:** If a skill exists that's relevant to your task, USE IT. Read its SKILL.md and follow the instructions.
+${KNOWLEDGE_LAYER_ENABLED ? `
+---
+
+${KNOWLEDGE_LAYER_PROMPT}` : ''}
 
 ---
 
@@ -1106,7 +1119,13 @@ Now, complete the assigned task.`;
           options: {
             model: MODEL,
             cwd: CWD,
-            allowedTools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill'],
+            allowedTools: [
+              'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill',
+              ...(KNOWLEDGE_LAYER_ENABLED ? KNOWLEDGE_LAYER_TOOLS : []),
+            ],
+            ...(KNOWLEDGE_LAYER_ENABLED ? {
+              mcpServers: { [KNOWLEDGE_LAYER_SERVER_NAME]: getKnowledgeLayerMcpConfig() },
+            } : {}),
             settingSources: ['project'],
             permissionMode: 'bypassPermissions',
             persistSession: false,

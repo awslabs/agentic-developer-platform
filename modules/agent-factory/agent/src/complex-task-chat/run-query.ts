@@ -107,6 +107,21 @@ export interface RunQueryInput {
    * main turn. Throttled to at most one event per PROGRESS_MIN_INTERVAL_MS.
    */
   onProgress?: (event: ProgressEvent) => void | Promise<void>;
+  /**
+   * Additional MCP servers to register alongside the in-process chat-agent-tools
+   * server. Used to mount external MCP servers (e.g. Knowledge Layer Door) via
+   * HTTP transport. Keys are server names; values are McpServerConfig objects.
+   *
+   * Issue #1592: Knowledge Layer MCP registration.
+   */
+  additionalMcpServers?: Record<string, unknown>;
+  /**
+   * Additional tool names to add to allowedTools (beyond the base set +
+   * port-provided tools). Used for MCP tools registered via additionalMcpServers.
+   *
+   * Issue #1592: Knowledge Layer tool allowlisting.
+   */
+  additionalAllowedTools?: readonly string[];
 }
 
 export interface RunQueryResult {
@@ -129,6 +144,8 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
     env,
     log = console.log,
     onProgress,
+    additionalMcpServers,
+    additionalAllowedTools,
   } = input;
 
   // 1) Build an MCP server that hosts port-provided tools.
@@ -166,7 +183,11 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
   // 2) Base built-ins (parity with agent-worker.ts:899) + MCP tool names.
   const baseTools = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill'];
   const mcpToolNames = customTools.map(t => `mcp__chat-agent-tools__${t.name}`);
-  const allowedTools = [...baseTools, ...mcpToolNames];
+  const allowedTools = [
+    ...baseTools,
+    ...mcpToolNames,
+    ...(additionalAllowedTools ?? []),
+  ];
 
   log(
     `[run-query] Starting query: model=${model}, history=${history.length}, customTools=${customTools.length}`,
@@ -270,8 +291,17 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
       // node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts (Options.effort).
       streamOptions.effort = effort;
     }
+    // Issue #1592: Merge in-process MCP server (chat-agent-tools) with any
+    // additional HTTP MCP servers (e.g. Knowledge Layer Door).
+    const mergedMcpServers: Record<string, unknown> = {};
     if (mcpServer) {
-      streamOptions.mcpServers = { 'chat-agent-tools': mcpServer };
+      mergedMcpServers['chat-agent-tools'] = mcpServer;
+    }
+    if (additionalMcpServers) {
+      Object.assign(mergedMcpServers, additionalMcpServers);
+    }
+    if (Object.keys(mergedMcpServers).length > 0) {
+      streamOptions.mcpServers = mergedMcpServers;
     }
 
     // Labeled loop so we can break out of the `for await` from inside the
