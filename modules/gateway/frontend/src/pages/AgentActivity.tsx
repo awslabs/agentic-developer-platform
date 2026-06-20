@@ -21,6 +21,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Alert, Button, Input, Select } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
 import InvocationChain from '@/components/InvocationChain';
+import { InvocationDetail } from '@/components/InvocationDetail';
 import { usePermissions } from '@/hooks/usePermissions';
 import { getMyInvocations, getAllInvocations } from '@/services/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
@@ -93,7 +94,10 @@ function TriggerBadge({ item, onViewChain }: TriggerBadgeProps) {
       {/* Chain link */}
       {item.correlation_id && onViewChain && (
         <button
-          onClick={() => onViewChain(item.correlation_id!)}
+          onClick={(e) => {
+            e.stopPropagation(); // don't trigger the row's detail-open click
+            onViewChain(item.correlation_id!);
+          }}
           className="text-xs text-blue-600 dark:text-blue-400 hover:underline text-left"
           title="View invocation chain"
         >
@@ -198,6 +202,9 @@ export default function AgentActivity() {
   // Chain view state
   const [activeChainId, setActiveChainId] = useState<string | null>(null);
   const [chainHighlightId, setChainHighlightId] = useState<string | undefined>(undefined);
+
+  // Detail modal state (#1653): the selected run to show in the detail panel
+  const [detailItem, setDetailItem] = useState<InvocationItem | null>(null);
 
   // Filters
   const [statusFilter, setStatusFilter] = useState('');
@@ -431,8 +438,24 @@ export default function AgentActivity() {
           isAdmin={viewMode === 'all' && isAdmin}
           highlightInvocationId={chainHighlightId}
           onClose={handleCloseChain}
+          onNodeClick={(invocationId) => {
+            // Open the detail modal for a clicked chain node. The node may not
+            // be on the current list page, so find it in the loaded items;
+            // if absent, the modal fetches by id is out of scope here — fall
+            // back to highlighting it in the chain.
+            const found = data?.items.find((i: InvocationItem) => i.invocation_id === invocationId);
+            if (found) setDetailItem(found);
+            else setChainHighlightId(invocationId);
+          }}
         />
       )}
+
+      {/* Run detail modal (#1653) — opened by clicking a list row or chain node */}
+      <InvocationDetail
+        item={detailItem}
+        isOpen={detailItem !== null}
+        onClose={() => setDetailItem(null)}
+      />
 
       {/* Error state */}
       {error && (
@@ -489,7 +512,8 @@ export default function AgentActivity() {
                     {data.items.map((item: InvocationItem) => (
                       <tr
                         key={item.invocation_id}
-                        className="hover:bg-gray-50 dark:hover:bg-gray-700"
+                        className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer"
+                        onClick={() => setDetailItem(item)}
                       >
                         <td
                           className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white"
