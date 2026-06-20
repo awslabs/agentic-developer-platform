@@ -412,7 +412,7 @@ class TestChainQuery:
 
     def test_chain_with_user_scope(self, mock_dynamodb_resource, mock_dynamodb_table):
         """Chain query with user_id returns items for that user."""
-        mock_dynamodb_table.scan.return_value = {
+        mock_dynamodb_table.query.return_value = {
             "Items": [
                 {
                     "invocation_id": "inv-A",
@@ -457,7 +457,7 @@ class TestChainQuery:
 
     def test_chain_with_tenant_scope(self, mock_dynamodb_resource, mock_dynamodb_table):
         """Chain query with tenant_id returns items for that tenant."""
-        mock_dynamodb_table.scan.return_value = {
+        mock_dynamodb_table.query.return_value = {
             "Items": [
                 {
                     "invocation_id": "inv-T1",
@@ -494,7 +494,7 @@ class TestChainQuery:
             }
             for i in range(10)
         ]
-        mock_dynamodb_table.scan.return_value = {"Items": items, "Count": 10}
+        mock_dynamodb_table.query.return_value = {"Items": items, "Count": 10}
 
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
         result = service.get_chain("chain-deep", user_id="user-1", depth_cap=5)
@@ -502,11 +502,38 @@ class TestChainQuery:
         assert result.total_count == 5
         assert result.depth_capped is True
 
+    def test_chain_queries_correlation_index(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Chain query uses the correlation-index GSI (a Query, NOT a Scan)."""
+        mock_dynamodb_table.query.return_value = {"Items": [], "Count": 0}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        service.get_chain("chain-xyz", user_id="user-1")
+
+        # Must be a Query on correlation-index — never a Scan (the bug: Scan
+        # required a dynamodb:Scan grant the gateway role lacks → 500 in the UI).
+        mock_dynamodb_table.query.assert_called()
+        mock_dynamodb_table.scan.assert_not_called()
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        assert call_kwargs["IndexName"] == "correlation-index"
+
     def test_chain_missing_table_returns_empty(self, mock_dynamodb_resource, mock_dynamodb_table):
         """Chain query with missing table returns empty gracefully."""
-        mock_dynamodb_table.scan.side_effect = ClientError(
+        mock_dynamodb_table.query.side_effect = ClientError(
             {"Error": {"Code": "ResourceNotFoundException", "Message": "Table not found"}},
-            "Scan",
+            "Query",
+        )
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain("chain-001", user_id="user-1")
+
+        assert result.items == []
+        assert result.total_count == 0
+
+    def test_chain_access_denied_returns_empty(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """AccessDeniedException (e.g. missing IAM) degrades to empty, not a 500."""
+        mock_dynamodb_table.query.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "not authorized"}},
+            "Query",
         )
 
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
@@ -517,7 +544,7 @@ class TestChainQuery:
 
     def test_chain_flat_fallback_no_parent_edges(self, mock_dynamodb_resource, mock_dynamodb_table):
         """Chain with no parent edges renders as flat list (all roots)."""
-        mock_dynamodb_table.scan.return_value = {
+        mock_dynamodb_table.query.return_value = {
             "Items": [
                 {
                     "invocation_id": "inv-X",

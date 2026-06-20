@@ -303,26 +303,33 @@ class ActivityService:
                 depth_capped=False,
             )
 
-        # Query all items with this correlation_id using a scan + filter.
-        # In production with a correlation-index GSI this would be a query;
-        # here we use a scan with FilterExpression as a safe fallback.
-        filter_expr = Attr("correlation_id").eq(correlation_id)
+        # Query all items sharing this correlation_id via the correlation-index
+        # GSI (PK=correlation_id, SK=arrived_at). A Query is bounded and cheap;
+        # the previous full-table Scan was costly and required a dynamodb:Scan
+        # grant the gateway role does not (and should not) have — which surfaced
+        # as a 500 "failed to load chain" in the UI. Scoping (user_id/tenant_id)
+        # is applied as a post-query FilterExpression; a single chain is small,
+        # so post-filtering a Query page is fine.
+        scope_filter = None
         if user_id:
-            filter_expr = filter_expr & Attr("user_id").eq(user_id)
+            scope_filter = Attr("user_id").eq(user_id)
         elif tenant_id:
-            filter_expr = filter_expr & Attr("tenant_id").eq(tenant_id)
+            scope_filter = Attr("tenant_id").eq(tenant_id)
 
         all_items: list[dict] = []
         depth_capped = False
 
         try:
-            scan_kwargs: dict = {
-                "FilterExpression": filter_expr,
-                "Limit": 500,  # Read up to 500 raw items per scan page
+            query_kwargs: dict = {
+                "IndexName": "correlation-index",
+                "KeyConditionExpression": Key("correlation_id").eq(correlation_id),
+                "ScanIndexForward": True,  # ascending arrived_at = chain order
             }
+            if scope_filter is not None:
+                query_kwargs["FilterExpression"] = scope_filter
 
             while True:
-                response = self._table.scan(**scan_kwargs)
+                response = self._table.query(**query_kwargs)
                 all_items.extend(response.get("Items", []))
 
                 if len(all_items) >= depth_cap:
@@ -332,13 +339,20 @@ class ActivityService:
 
                 if "LastEvaluatedKey" not in response:
                     break
-                scan_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+                query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
         except ClientError as exc:
             error_code = exc.response.get("Error", {}).get("Code", "")
-            if error_code in ("ValidationException", "ResourceNotFoundException"):
+            # Degrade gracefully on any access/availability error (GSI missing
+            # before the migration applies, IAM gap, etc.) — never surface a 500
+            # to the chain view; show an empty chain and log for operators.
+            if error_code in (
+                "ValidationException",
+                "ResourceNotFoundException",
+                "AccessDeniedException",
+            ):
                 logger.warning(
-                    "DynamoDB scan failed (chain query) — returning empty",
+                    "DynamoDB query failed (chain) — returning empty",
                     extra={"correlation_id": correlation_id, "error_code": error_code},
                 )
                 return InvocationChainResponse(

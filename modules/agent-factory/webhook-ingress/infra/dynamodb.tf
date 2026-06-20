@@ -63,6 +63,21 @@ resource "aws_dynamodb_table" "webhook_events" {
     type = "S"
   }
 
+  attribute {
+    name = "correlation_id"
+    type = "S"
+  }
+
+  # correlation-index powers the Agent Activity chain view (#1616): retrieve all
+  # invocations sharing a correlation_id via a Query (was a full-table Scan,
+  # which is costly and required a dynamodb:Scan grant the gateway role lacks).
+  global_secondary_index {
+    name            = "correlation-index"
+    hash_key        = "correlation_id"
+    range_key       = "arrived_at"
+    projection_type = "ALL"
+  }
+
   global_secondary_index {
     name            = "tenant-index"
     hash_key        = "tenant_id"
