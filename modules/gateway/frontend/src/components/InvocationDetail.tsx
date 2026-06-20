@@ -2,17 +2,42 @@
  * InvocationDetail — modal rendering full detail for a single agent invocation.
  *
  * Issue #1459: Phase 5 — Row detail + polish.
+ * Issue #1653: Rich detail — duration, cost, call_count, run_log_url, lineage.
  *
- * Renders: correlation_id, run_id, status + status_updated_at, summary,
- * error (sanitized, truncated with "show more"), source link.
- *
- * No new endpoint needed — data comes from the already-fetched list item.
+ * Renders: status, IDs, timing + duration, cost/calls, summary, error,
+ * source link, run-log link, lineage (triggered by / correlation).
  */
 
 import { useState } from 'react';
 import { Modal } from '@/components/ui';
 import { formatDateTime, formatRelativeTime } from '@/utils/format';
 import type { InvocationItem, InvocationStatus } from '@/types/activity';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Format a duration in milliseconds to a human-readable string (e.g. "2m 14s"). */
+function formatDuration(startIso: string, endIso: string): string {
+  const startMs = new Date(startIso).getTime();
+  const endMs = new Date(endIso).getTime();
+  const diffMs = endMs - startMs;
+  if (diffMs < 0) return '—';
+  const totalSeconds = Math.floor(diffMs / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+/** Format a cost value to a readable string. */
+function formatCost(costUsd: number): string {
+  if (costUsd < 0.01) return `$${costUsd.toFixed(4)}`;
+  return `$${costUsd.toFixed(2)}`;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -171,6 +196,41 @@ export function InvocationDetail({ item, isOpen, onClose }: InvocationDetailProp
           </DetailRow>
         )}
 
+        {/* Duration — Issue #1653 */}
+        {item.completed_at && item.invoked_at && (
+          <DetailRow label="Duration">
+            <span className="font-medium">
+              {formatDuration(item.invoked_at, item.completed_at)}
+            </span>
+          </DetailRow>
+        )}
+        {!item.completed_at && !isTerminal && item.invoked_at && (
+          <DetailRow label="Duration">
+            <span className="text-gray-400 dark:text-gray-500 italic">
+              Running since {formatRelativeTime(item.invoked_at)}
+            </span>
+          </DetailRow>
+        )}
+
+        {/* Cost & Bedrock calls — Issue #1653 */}
+        {(item.call_count != null || item.total_cost_usd != null) && (
+          <DetailRow label="Bedrock usage">
+            <div className="space-y-0.5">
+              {item.call_count != null && (
+                <p>{item.call_count} call{item.call_count !== 1 ? 's' : ''}</p>
+              )}
+              {item.total_cost_usd != null && (
+                <p>{formatCost(item.total_cost_usd)}</p>
+              )}
+              {item.total_tokens != null && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {item.total_tokens.toLocaleString()} tokens
+                </p>
+              )}
+            </div>
+          </DetailRow>
+        )}
+
         {/* Source link */}
         {item.source_url && (
           <DetailRow label="Source">
@@ -185,6 +245,36 @@ export function InvocationDetail({ item, isOpen, onClose }: InvocationDetailProp
                 : item.source_url}{' '}
               ↗
             </a>
+          </DetailRow>
+        )}
+
+        {/* Run log link — Issue #1653 (Tier 2 populates; null until then) */}
+        {item.run_log_url && (
+          <DetailRow label="Run log">
+            <a
+              href={item.run_log_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 hover:underline"
+            >
+              View run log ↗
+            </a>
+          </DetailRow>
+        )}
+
+        {/* Lineage — Issue #1653 */}
+        {item.triggered_by_invocation_id && (
+          <DetailRow label="Triggered by">
+            <div className="space-y-0.5">
+              <code className="text-xs font-mono bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
+                {item.triggered_by_invocation_id}
+              </code>
+              {item.triggered_by_topic && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {item.triggered_by_topic}
+                </p>
+              )}
+            </div>
           </DetailRow>
         )}
 

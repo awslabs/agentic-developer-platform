@@ -462,7 +462,7 @@ class TestGetAdminInvocationChain:
             tenant_id="org-xyz",
         )
 
-    def test_org_admin_chain_scoped_to_own_org(self, app, mock_service, mock_access, org_admin_user):
+    def test_org_admin_chain_scoped_to_own_org(self, app, mock_service, mock_access, mock_db, org_admin_user):
         """Org admin chain is scoped to their own org_id."""
 
         async def override_current_user():
@@ -474,9 +474,13 @@ class TestGetAdminInvocationChain:
         async def override_access():
             return mock_access
 
+        async def override_db():
+            return mock_db
+
         app.dependency_overrides[get_current_user] = override_current_user
         app.dependency_overrides[get_activity_service] = override_service
         app.dependency_overrides[get_access_control] = override_access
+        app.dependency_overrides[get_db] = override_db
 
         test_client = TestClient(app)
         resp = test_client.get("/admin/agent-invocations/chain/chain-001")
@@ -486,3 +490,90 @@ class TestGetAdminInvocationChain:
             correlation_id="chain-001",
             tenant_id=org_admin_user.org_id,
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #1653: Detail endpoint tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetMyInvocationDetail:
+    """/me/agent-invocations/{invocation_id} endpoint tests."""
+
+    def test_returns_item_when_found(self, client, mock_service):
+        """Detail endpoint returns 200 with item when found."""
+        mock_service.get_invocation = MagicMock(
+            return_value=InvocationItem(
+                invocation_id="inv-detail",
+                invoked_at="2026-06-20T10:00:00Z",
+                channel="github",
+                status="complete",
+                topic="Deploy service",
+                completed_at="2026-06-20T10:02:14Z",
+            )
+        )
+
+        resp = client.get("/me/agent-invocations/inv-detail")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["invocation_id"] == "inv-detail"
+        assert data["topic"] == "Deploy service"
+        assert data["completed_at"] == "2026-06-20T10:02:14Z"
+
+    def test_returns_404_when_not_found(self, client, mock_service):
+        """Detail endpoint returns 404 when invocation doesn't exist for user."""
+        mock_service.get_invocation = MagicMock(return_value=None)
+
+        resp = client.get("/me/agent-invocations/inv-nonexistent")
+        assert resp.status_code == 404
+
+    def test_scoped_to_canonical_user_id(self, client, mock_service):
+        """Detail uses canonical user_id from token (not raw param)."""
+        mock_service.get_invocation = MagicMock(return_value=None)
+
+        client.get("/me/agent-invocations/inv-xyz")
+        mock_service.get_invocation.assert_called_once_with("inv-xyz", user_id=CANONICAL_USER_ID)
+
+    def test_does_not_match_chain_route(self, client, mock_service):
+        """Requesting /me/agent-invocations/chain/abc hits chain route, not detail."""
+        # Chain route should be matched, not detail with invocation_id="chain"
+        mock_service.get_chain.return_value = InvocationChainResponse(
+            correlation_id="abc",
+            items=[],
+            total_count=0,
+            depth_capped=False,
+        )
+
+        resp = client.get("/me/agent-invocations/chain/abc")
+        assert resp.status_code == 200
+        # Should have called get_chain, NOT get_invocation
+        mock_service.get_chain.assert_called()
+
+
+class TestGetAdminInvocationDetail:
+    """/admin/agent-invocations/{invocation_id} endpoint tests."""
+
+    def test_returns_item_for_admin(self, admin_client, mock_service):
+        """Admin detail endpoint returns item for specified tenant."""
+        mock_service.get_invocation = MagicMock(
+            return_value=InvocationItem(
+                invocation_id="inv-admin-detail",
+                invoked_at="2026-06-20T10:00:00Z",
+                channel="github",
+                status="failed",
+                error_message="timeout reached",
+            )
+        )
+
+        resp = admin_client.get("/admin/agent-invocations/inv-admin-detail?tenant_id=org-xyz")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["invocation_id"] == "inv-admin-detail"
+        assert data["error_message"] == "timeout reached"
+
+    def test_returns_404_when_not_found(self, admin_client, mock_service):
+        """Admin detail returns 404 for non-existent invocation."""
+        mock_service.get_invocation = MagicMock(return_value=None)
+
+        resp = admin_client.get("/admin/agent-invocations/inv-missing")
+        assert resp.status_code == 404

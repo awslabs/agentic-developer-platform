@@ -9,6 +9,7 @@
 import { apiClient, buildQueryString } from './api';
 import type {
   InvocationChainResponse,
+  InvocationItem,
   InvocationListResponse,
   InvocationQueryParams,
 } from '@/types/activity';
@@ -91,4 +92,30 @@ export async function getAdminInvocationChain(
     `/admin/agent-invocations/chain/${encodeURIComponent(correlationId)}${query}`,
   );
   return response;
+}
+
+/**
+ * Fetch a single invocation detail (user's own).
+ * Issue #1653: Dedicated detail endpoint with full cost enrichment.
+ */
+export async function getMyInvocationDetail(
+  invocationId: string,
+): Promise<InvocationItem> {
+  return apiClient.get<InvocationItem>(
+    `/me/agent-invocations/${encodeURIComponent(invocationId)}`,
+  );
+}
+
+/**
+ * Fetch a single invocation detail (admin view).
+ * Issue #1653: Admin variant with tenant scoping.
+ */
+export async function getAdminInvocationDetail(
+  invocationId: string,
+  tenantId?: string,
+): Promise<InvocationItem> {
+  const query = tenantId ? buildQueryString({ tenant_id: tenantId }) : '';
+  return apiClient.get<InvocationItem>(
+    `/admin/agent-invocations/${encodeURIComponent(invocationId)}${query}`,
+  );
 }

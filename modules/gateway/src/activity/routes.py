@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.activity.cost_service import get_cost_by_run_ids
-from src.activity.schemas import InvocationChainResponse, InvocationListResponse
+from src.activity.schemas import InvocationChainItem, InvocationChainResponse, InvocationItem, InvocationListResponse
 from src.activity.service import ActivityService
 from src.admin.access_control import AccessControl
 from src.admin.config import Permission
@@ -98,6 +98,59 @@ async def _enrich_with_cost(db: AsyncSession, response: InvocationListResponse) 
             item.call_count = cost_data["call_count"]
 
     return response
+
+
+def _collect_chain_ids(nodes: list[InvocationChainItem]) -> list[str]:
+    """Flatten a chain tree into a list of invocation_ids."""
+    ids: list[str] = []
+    for node in nodes:
+        ids.append(node.invocation_id)
+        if node.children:
+            ids.extend(_collect_chain_ids(node.children))
+    return ids
+
+
+def _apply_cost_to_tree(nodes: list[InvocationChainItem], cost_map: dict) -> None:
+    """Walk the chain tree and apply per-node cost from cost_map."""
+    for node in nodes:
+        cost_data = cost_map.get(node.invocation_id)
+        if cost_data:
+            node.total_cost_usd = cost_data["total_cost_usd"]
+            node.total_tokens = cost_data["total_tokens"]
+            node.call_count = cost_data["call_count"]
+        if node.children:
+            _apply_cost_to_tree(node.children, cost_map)
+
+
+async def _enrich_chain_with_cost(db: AsyncSession, chain: InvocationChainResponse) -> InvocationChainResponse:
+    """Enrich chain nodes with per-node cost and compute chain totals.
+
+    Issue #1653: Single batched get_cost_by_run_ids over all chain invocation_ids
+    (no N+1). Chain is capped at 50 items, so the IN clause is bounded.
+    Graceful degradation: if Postgres fails, chain returns with null cost fields.
+    """
+    all_ids = _collect_chain_ids(chain.items)
+    if not all_ids:
+        return chain
+
+    try:
+        cost_map = await get_cost_by_run_ids(db, all_ids)
+    except Exception as exc:
+        logger.warning(
+            "Failed to enrich chain with cost data — returning chain without cost",
+            extra={"correlation_id": chain.correlation_id, "error": str(exc)},
+        )
+        return chain
+
+    _apply_cost_to_tree(chain.items, cost_map)
+
+    # Compute chain totals
+    if cost_map:
+        chain.chain_total_cost_usd = sum(v["total_cost_usd"] for v in cost_map.values())
+        chain.chain_total_tokens = sum(v["total_tokens"] for v in cost_map.values())
+        chain.chain_total_call_count = sum(v["call_count"] for v in cost_map.values())
+
+    return chain
 
 
 # ---------------------------------------------------------------------------
@@ -224,14 +277,61 @@ async def get_my_invocation_chain(
     participates in.
     """
     canonical_user_id = await _resolve_canonical_user_id(db, current_user)
-    return service.get_chain(
+    chain = service.get_chain(
         correlation_id=correlation_id,
         user_id=canonical_user_id,
     )
+    return await _enrich_chain_with_cost(db, chain)
+
+
+# ---------------------------------------------------------------------------
+# GET /me/agent-invocations/{invocation_id} — single-run detail (user)
+# NOTE: Must be defined AFTER /chain/{correlation_id} so FastAPI matches
+# the literal "chain" path segment before the catch-all {invocation_id}.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/me/agent-invocations/{invocation_id}", response_model=InvocationItem)
+async def get_my_invocation_detail(
+    invocation_id: Annotated[str, Path(description="The invocation ID to fetch detail for")],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    service: Annotated[ActivityService, Depends(get_activity_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> InvocationItem:
+    """Get a single invocation's full detail.
+
+    Issue #1653: Dedicated detail endpoint. Uses query-based lookup on
+    user-index GSI with FilterExpression on event_id (cannot use GetItem
+    because it requires both PK and SK, and the endpoint only has event_id).
+
+    Returns 404 (not 403) if the run doesn't belong to the caller (existence-hiding).
+    """
+    canonical_user_id = await _resolve_canonical_user_id(db, current_user)
+    item = service.get_invocation(invocation_id, user_id=canonical_user_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Invocation not found")
+
+    # Enrich with cost data
+    try:
+        cost_map = await get_cost_by_run_ids(db, [item.invocation_id])
+        cost_data = cost_map.get(item.invocation_id)
+        if cost_data:
+            item.total_cost_usd = cost_data["total_cost_usd"]
+            item.total_tokens = cost_data["total_tokens"]
+            item.call_count = cost_data["call_count"]
+    except Exception as exc:
+        logger.warning(
+            "Failed to enrich detail with cost data",
+            extra={"invocation_id": invocation_id, "error": str(exc)},
+        )
+
+    return item
 
 
 # ---------------------------------------------------------------------------
 # GET /admin/agent-invocations/chain/{correlation_id} — admin chain view
+# NOTE: Must be defined BEFORE /admin/agent-invocations/{invocation_id} so
+# FastAPI matches the literal "chain" segment before the catch-all.
 # ---------------------------------------------------------------------------
 
 
@@ -241,6 +341,7 @@ async def get_admin_invocation_chain(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     access: Annotated[AccessControl, Depends(get_access_control)],
     service: Annotated[ActivityService, Depends(get_activity_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
     tenant_id: Annotated[str | None, Query()] = None,
 ) -> InvocationChainResponse:
     """Get the chain view for a specific correlation_id (admin).
@@ -255,7 +356,54 @@ async def get_admin_invocation_chain(
     else:
         effective_tenant_id = current_user.org_id
 
-    return service.get_chain(
+    chain = service.get_chain(
         correlation_id=correlation_id,
         tenant_id=effective_tenant_id,
     )
+    return await _enrich_chain_with_cost(db, chain)
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/agent-invocations/{invocation_id} — single-run detail (admin)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/admin/agent-invocations/{invocation_id}", response_model=InvocationItem)
+async def get_admin_invocation_detail(
+    invocation_id: Annotated[str, Path(description="The invocation ID to fetch detail for")],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    service: Annotated[ActivityService, Depends(get_activity_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    tenant_id: Annotated[str | None, Query()] = None,
+) -> InvocationItem:
+    """Get a single invocation's full detail (admin).
+
+    Issue #1653: Admin variant scoped by tenant_id.
+    """
+    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
+
+    if current_user.is_admin and tenant_id:
+        effective_tenant_id = tenant_id
+    else:
+        effective_tenant_id = current_user.org_id
+
+    item = service.get_invocation(invocation_id, tenant_id=effective_tenant_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Invocation not found")
+
+    # Enrich with cost data
+    try:
+        cost_map = await get_cost_by_run_ids(db, [item.invocation_id])
+        cost_data = cost_map.get(item.invocation_id)
+        if cost_data:
+            item.total_cost_usd = cost_data["total_cost_usd"]
+            item.total_tokens = cost_data["total_tokens"]
+            item.call_count = cost_data["call_count"]
+    except Exception as exc:
+        logger.warning(
+            "Failed to enrich admin detail with cost data",
+            extra={"invocation_id": invocation_id, "error": str(exc)},
+        )
+
+    return item

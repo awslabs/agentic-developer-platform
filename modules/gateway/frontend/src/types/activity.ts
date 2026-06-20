@@ -51,6 +51,8 @@ export interface InvocationItem {
   call_count: number | null;
   // Error detail surfaced in the row-detail view for failed invocations
   error_message: string | null;
+  // Issue #1653: Run log link (Tier 2 — null until worker persists it)
+  run_log_url: string | null;
 }
 
 /** Cursor-paginated response from GET /me/agent-invocations or /admin/agent-invocations. */
@@ -69,6 +71,10 @@ export interface InvocationChainItem {
   persona: string | null;
   parent_invocation_id: string | null;
   children: InvocationChainItem[];
+  // Issue #1653: Per-node cost
+  total_cost_usd: number | null;
+  total_tokens: number | null;
+  call_count: number | null;
 }
 
 /** Response from GET /me/agent-invocations/chain/{correlation_id}. */
@@ -79,6 +85,10 @@ export interface InvocationChainResponse {
   items: InvocationChainItem[];
   total_count: number;
   depth_capped: boolean;
+  // Issue #1653: Chain-wide cost totals
+  chain_total_cost_usd: number | null;
+  chain_total_tokens: number | null;
+  chain_total_call_count: number | null;
 }
 
 /** Query parameters for fetching invocations. */

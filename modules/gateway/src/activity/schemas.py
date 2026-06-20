@@ -69,6 +69,20 @@ class InvocationItem(BaseModel):
         description="Whether this chain traces back to a human request (false = bot/cron-initiated).",
     )
 
+    # Issue #1653: Rich detail fields
+    error_message: str | None = Field(
+        default=None,
+        description="Error message for failed invocations. Written to DDB by webhook-ingress.",
+    )
+    completed_at: str | None = Field(
+        default=None,
+        description="ISO 8601 completion timestamp (= status_updated_at when status is terminal). Null for in-progress runs.",
+    )
+    run_log_url: str | None = Field(
+        default=None,
+        description="URL to the agent run log (GitHub check-run link). Null until Tier 2 worker persists it.",
+    )
+
     # Issue #1616: Per-run cost fields (enriched from Postgres usage_logs)
     total_cost_usd: float | None = Field(
         default=None,
@@ -96,6 +110,11 @@ class InvocationChainItem(BaseModel):
     parent_invocation_id: str | None = None
     children: list["InvocationChainItem"] = Field(default_factory=list)
 
+    # Issue #1653: Per-node cost (enriched from Postgres usage_logs)
+    total_cost_usd: float | None = None
+    total_tokens: int | None = None
+    call_count: int | None = None
+
 
 class InvocationChainResponse(BaseModel):
     """Chain view: all invocations sharing a correlation_id, rendered as a tree.
@@ -113,6 +132,20 @@ class InvocationChainResponse(BaseModel):
     depth_capped: bool = Field(
         default=False,
         description="True if the chain exceeded the depth cap and was truncated.",
+    )
+
+    # Issue #1653: Chain-wide cost totals
+    chain_total_cost_usd: float | None = Field(
+        default=None,
+        description="Sum of cost across all nodes in the chain.",
+    )
+    chain_total_tokens: int | None = Field(
+        default=None,
+        description="Sum of tokens across all nodes in the chain.",
+    )
+    chain_total_call_count: int | None = Field(
+        default=None,
+        description="Sum of Bedrock calls across all nodes in the chain.",
     )
 
 

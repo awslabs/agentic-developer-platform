@@ -37,21 +37,25 @@ interface ChainNodeProps {
   node: InvocationChainItem;
   depth: number;
   highlightId?: string;
+  onNodeClick?: (invocationId: string) => void;
 }
 
-function ChainNode({ node, depth, highlightId }: ChainNodeProps) {
+function ChainNode({ node, depth, highlightId, onNodeClick }: ChainNodeProps) {
   const statusConfig = STATUS_GLYPHS[node.status ?? ''] ?? STATUS_GLYPHS.no_op;
   const isHighlighted = node.invocation_id === highlightId;
 
   return (
     <div data-testid={`chain-node-${node.invocation_id}`}>
-      <div
-        className={`flex items-center gap-2 py-2 px-3 rounded-md ${
+      <button
+        type="button"
+        onClick={() => onNodeClick?.(node.invocation_id)}
+        className={`w-full text-left flex items-center gap-2 py-2 px-3 rounded-md cursor-pointer transition-colors ${
           isHighlighted
             ? 'bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700'
             : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
         }`}
         style={{ marginLeft: `${depth * 24}px` }}
+        title={`View detail for ${node.invocation_id}`}
       >
         {/* Indent connector */}
         {depth > 0 && (
@@ -70,6 +74,13 @@ function ChainNode({ node, depth, highlightId }: ChainNodeProps) {
           {node.topic || <span className="italic text-gray-400">untitled</span>}
         </span>
 
+        {/* Per-node cost badge — Issue #1653 */}
+        {node.total_cost_usd != null && (
+          <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">
+            ${node.total_cost_usd < 0.01 ? node.total_cost_usd.toFixed(4) : node.total_cost_usd.toFixed(2)}
+          </span>
+        )}
+
         {/* Persona badge */}
         {node.persona && (
           <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded">
@@ -84,7 +95,7 @@ function ChainNode({ node, depth, highlightId }: ChainNodeProps) {
         >
           {formatRelativeTime(node.invoked_at)}
         </span>
-      </div>
+      </button>
 
       {/* Render children recursively */}
       {node.children.map((child) => (
@@ -93,6 +104,7 @@ function ChainNode({ node, depth, highlightId }: ChainNodeProps) {
           node={child}
           depth={depth + 1}
           highlightId={highlightId}
+          onNodeClick={onNodeClick}
         />
       ))}
     </div>
@@ -114,6 +126,8 @@ export interface InvocationChainProps {
   highlightInvocationId?: string;
   /** Callback when user closes the chain view. */
   onClose?: () => void;
+  /** Callback when a chain node is clicked (for recursive detail navigation). Issue #1653. */
+  onNodeClick?: (invocationId: string) => void;
 }
 
 export default function InvocationChain({
@@ -122,6 +136,7 @@ export default function InvocationChain({
   tenantId,
   highlightInvocationId,
   onClose,
+  onNodeClick,
 }: InvocationChainProps) {
   const {
     data,
@@ -214,9 +229,27 @@ export default function InvocationChain({
             node={node}
             depth={0}
             highlightId={highlightInvocationId}
+            onNodeClick={onNodeClick}
           />
         ))}
       </div>
+
+      {/* Chain cost totals — Issue #1653 */}
+      {data.chain_total_cost_usd != null && (
+        <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-700 flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
+          <span>
+            Chain total: <span className="font-medium font-mono">
+              ${data.chain_total_cost_usd < 0.01 ? data.chain_total_cost_usd.toFixed(4) : data.chain_total_cost_usd.toFixed(2)}
+            </span>
+          </span>
+          {data.chain_total_call_count != null && (
+            <span>{data.chain_total_call_count} call{data.chain_total_call_count !== 1 ? 's' : ''}</span>
+          )}
+          {data.chain_total_tokens != null && (
+            <span>{data.chain_total_tokens.toLocaleString()} tokens</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

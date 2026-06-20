@@ -630,3 +630,287 @@ class TestBuildChainTree:
     def test_empty_items(self):
         """Empty input returns empty tree."""
         assert _build_chain_tree([]) == []
+
+
+# ---------------------------------------------------------------------------
+# Issue #1653 tests: error_message, completed_at, run_log_url, get_invocation
+# ---------------------------------------------------------------------------
+
+
+class TestErrorMessageMapping:
+    """Tests that error_message is correctly mapped from DDB items."""
+
+    def test_error_message_mapped(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """error_message in DDB item is mapped to InvocationItem."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-fail",
+                    "arrived_at": "2026-06-20T10:00:00Z",
+                    "channel": "github",
+                    "status": "failed",
+                    "status_updated_at": "2026-06-20T10:02:00Z",
+                    "error_message": "RuntimeError: agent crashed",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        item = result.items[0]
+        assert item.error_message == "RuntimeError: agent crashed"
+
+    def test_error_message_none_when_absent(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Missing error_message in DDB item maps to None."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-ok",
+                    "arrived_at": "2026-06-20T10:00:00Z",
+                    "channel": "github",
+                    "status": "complete",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        assert result.items[0].error_message is None
+
+
+class TestCompletedAtDerivation:
+    """Tests that completed_at is derived from status_updated_at for terminal statuses."""
+
+    def test_terminal_status_has_completed_at(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Terminal status (complete) derives completed_at from status_updated_at."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-done",
+                    "arrived_at": "2026-06-20T10:00:00Z",
+                    "status": "complete",
+                    "status_updated_at": "2026-06-20T10:02:14Z",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        assert result.items[0].completed_at == "2026-06-20T10:02:14Z"
+
+    def test_failed_status_has_completed_at(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Failed status also derives completed_at (it's terminal)."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-fail",
+                    "arrived_at": "2026-06-20T10:00:00Z",
+                    "status": "failed",
+                    "status_updated_at": "2026-06-20T10:01:30Z",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        assert result.items[0].completed_at == "2026-06-20T10:01:30Z"
+
+    def test_in_progress_has_no_completed_at(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """In-progress status does NOT have completed_at (non-terminal)."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-running",
+                    "arrived_at": "2026-06-20T10:00:00Z",
+                    "status": "in_progress",
+                    "status_updated_at": "2026-06-20T10:00:05Z",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        assert result.items[0].completed_at is None
+
+    def test_webhook_received_has_no_completed_at(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """webhook_received status does NOT have completed_at."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-queued",
+                    "arrived_at": "2026-06-20T10:00:00Z",
+                    "status": "webhook_received",
+                    "status_updated_at": "2026-06-20T10:00:00Z",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        assert result.items[0].completed_at is None
+
+
+class TestRunLogUrlMapping:
+    """Tests that run_log_url is mapped from check_run_url DDB field."""
+
+    def test_check_run_url_mapped_to_run_log_url(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """check_run_url in DDB item maps to run_log_url on InvocationItem."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-with-log",
+                    "arrived_at": "2026-06-20T10:00:00Z",
+                    "status": "complete",
+                    "check_run_url": "https://github.com/org/repo/runs/12345",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        assert result.items[0].run_log_url == "https://github.com/org/repo/runs/12345"
+
+    def test_missing_check_run_url_maps_to_none(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Missing check_run_url → run_log_url is None (Tier 2 not yet deployed)."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-no-log",
+                    "arrived_at": "2026-06-20T10:00:00Z",
+                    "status": "complete",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        assert result.items[0].run_log_url is None
+
+
+class TestGetInvocation:
+    """Tests for get_invocation — single-item lookup by event_id."""
+
+    def test_returns_item_when_found(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """get_invocation returns InvocationItem when event_id matches."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-target",
+                    "invocation_id": "inv-target",
+                    "arrived_at": "2026-06-20T10:00:00Z",
+                    "channel": "github",
+                    "status": "complete",
+                    "status_updated_at": "2026-06-20T10:02:00Z",
+                    "user_id": "user-1",
+                    "topic": "Deploy service",
+                }
+            ],
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.get_invocation("inv-target", user_id="user-1")
+
+        assert item is not None
+        assert item.invocation_id == "inv-target"
+        assert item.topic == "Deploy service"
+        assert item.completed_at == "2026-06-20T10:02:00Z"
+
+    def test_returns_none_when_not_found(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """get_invocation returns None when no item matches (user doesn't own it)."""
+        mock_dynamodb_table.query.return_value = {"Items": []}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.get_invocation("inv-nonexistent", user_id="user-1")
+
+        assert item is None
+
+    def test_returns_none_without_scope(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """get_invocation returns None if neither user_id nor tenant_id provided (safety)."""
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.get_invocation("inv-123")
+
+        assert item is None
+        mock_dynamodb_table.query.assert_not_called()
+
+    def test_uses_user_index_for_user_scope(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """get_invocation queries user-index when user_id is provided."""
+        mock_dynamodb_table.query.return_value = {"Items": []}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        service.get_invocation("inv-123", user_id="user-abc")
+
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        assert call_kwargs["IndexName"] == "user-index"
+
+    def test_uses_tenant_index_for_admin_scope(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """get_invocation queries tenant-index when tenant_id is provided."""
+        mock_dynamodb_table.query.return_value = {"Items": []}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        service.get_invocation("inv-123", tenant_id="org-001")
+
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        assert call_kwargs["IndexName"] == "tenant-index"
+
+    def test_paginates_when_not_found_on_first_page(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """get_invocation paginates internally (up to 5 pages) to find the item."""
+        # First page: no match, has more pages
+        # Second page: match found
+        mock_dynamodb_table.query.side_effect = [
+            {"Items": [], "LastEvaluatedKey": {"pk": "x", "arrived_at": "y", "user_id": "z"}},
+            {
+                "Items": [
+                    {
+                        "event_id": "inv-deep",
+                        "invocation_id": "inv-deep",
+                        "arrived_at": "2026-06-01T00:00:00Z",
+                        "status": "complete",
+                        "status_updated_at": "2026-06-01T00:05:00Z",
+                        "user_id": "user-1",
+                    }
+                ],
+            },
+        ]
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.get_invocation("inv-deep", user_id="user-1")
+
+        assert item is not None
+        assert item.invocation_id == "inv-deep"
+        assert mock_dynamodb_table.query.call_count == 2
+
+    def test_graceful_degradation_on_error(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """get_invocation returns None on ValidationException (missing GSI)."""
+        mock_dynamodb_table.query.side_effect = ClientError(
+            {"Error": {"Code": "ValidationException", "Message": "Index not found"}},
+            "Query",
+        )
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.get_invocation("inv-123", user_id="user-1")
+
+        assert item is None

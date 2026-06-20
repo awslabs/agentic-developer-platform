@@ -253,11 +253,16 @@ class ActivityService:
     @staticmethod
     def _map_item(item: dict) -> InvocationItem:
         """Map a raw DynamoDB item to the InvocationItem schema."""
+        # Issue #1653: Derive completed_at from status_updated_at for terminal statuses
+        status = item.get("status")
+        terminal_statuses = {"complete", "failed", "rejected", "rate_limited", "no_op"}
+        completed_at = item.get("status_updated_at") if status in terminal_statuses else None
+
         return InvocationItem(
             invocation_id=item.get("invocation_id", item.get("pk", "")),
             invoked_at=item.get("arrived_at", ""),
             channel=item.get("channel"),
-            status=item.get("status"),
+            status=status,
             status_updated_at=item.get("status_updated_at"),
             topic=item.get("topic"),
             persona=item.get("persona"),
@@ -267,6 +272,10 @@ class ActivityService:
             issue_number=_safe_int(item.get("issue_number")),
             correlation_id=item.get("correlation_id"),
             run_id=item.get("run_id"),
+            # Issue #1653: error_message, completed_at, run_log_url
+            error_message=item.get("error_message"),
+            completed_at=completed_at,
+            run_log_url=item.get("check_run_url"),
             # Phase 6 lineage fields (#1461)
             trigger_kind=_derive_trigger_kind(item),
             triggered_by_invocation_id=item.get("parent_invocation_id"),
@@ -386,6 +395,68 @@ class ActivityService:
             total_count=len(all_items),
             depth_capped=depth_capped,
         )
+
+    def get_invocation(
+        self,
+        invocation_id: str,
+        *,
+        user_id: str | None = None,
+        tenant_id: str | None = None,
+    ) -> InvocationItem | None:
+        """Fetch a single invocation by event_id, scoped to user or tenant.
+
+        Uses a Query on the user-index or tenant-index GSI with a FilterExpression
+        on event_id (the DDB PK). This is necessary because GetItem would require
+        both event_id (PK) AND arrived_at (SK), but the detail endpoint only has
+        the invocation_id.
+
+        Returns None if not found (caller should return 404 — existence-hiding).
+
+        Paginates internally (up to 5 pages / ~5 MB read) to find the item in the
+        user's partition. This is acceptable for a user-initiated detail page load.
+        """
+        if not user_id and not tenant_id:
+            return None
+
+        if user_id:
+            index_name = "user-index"
+            pk_name = "user_id"
+            pk_value = user_id
+        else:
+            index_name = "tenant-index"
+            pk_name = "tenant_id"
+            pk_value = tenant_id
+
+        filter_expr = Attr("event_id").eq(invocation_id)
+
+        query_kwargs: dict = {
+            "IndexName": index_name,
+            "KeyConditionExpression": Key(pk_name).eq(pk_value),
+            "FilterExpression": filter_expr,
+            "ScanIndexForward": False,
+        }
+
+        max_pages = 5
+        try:
+            for _ in range(max_pages):
+                response = self._table.query(**query_kwargs)
+                items = response.get("Items", [])
+                if items:
+                    return self._map_item(items[0])
+                if "LastEvaluatedKey" not in response:
+                    break
+                query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code in ("ValidationException", "ResourceNotFoundException", "AccessDeniedException"):
+                logger.warning(
+                    "DynamoDB query failed (get_invocation) — returning None",
+                    extra={"invocation_id": invocation_id, "error_code": error_code},
+                )
+                return None
+            raise
+
+        return None
 
 
 def _derive_trigger_kind(item: dict) -> TriggerKind:
