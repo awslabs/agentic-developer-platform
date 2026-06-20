@@ -29,6 +29,7 @@ export async function getMyInvocations(
     end_date: params?.end_date,
     limit: params?.limit || 20,
     last_key: params?.last_key,
+    include_non_triggering: params?.include_non_triggering,
   });
 
   const response = await apiClient.get<InvocationListResponse>(
@@ -56,6 +57,7 @@ export async function getAllInvocations(
     end_date: params?.end_date,
     limit: params?.limit || 20,
     last_key: params?.last_key,
+    include_non_triggering: params?.include_non_triggering,
   });
 
   const response = await apiClient.get<InvocationListResponse>(

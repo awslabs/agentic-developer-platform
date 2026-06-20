@@ -213,11 +213,18 @@ export default function AgentActivity() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
 
+  // Issue #1658: "Show all events" toggle — when off (default), non-triggering
+  // statuses (no_op, webhook_received) are hidden from the board.
+  const [showAllEvents, setShowAllEvents] = useState(false);
+
   // Cursor-based pagination state
   const [cursorStack, setCursorStack] = useState<string[]>([]);
   const [currentCursor, setCurrentCursor] = useState<string | undefined>(undefined);
 
   // Build query params
+  // Issue #1658: An explicit status filter takes precedence — if the user
+  // selects a specific status (including no_op), send include_non_triggering=true
+  // so the backend doesn't exclude it. Otherwise, respect the toggle.
   const queryParams: InvocationQueryParams = {
     status: (statusFilter || undefined) as InvocationStatus | undefined,
     channel: (channelFilter || undefined) as InvocationChannel | undefined,
@@ -226,6 +233,7 @@ export default function AgentActivity() {
     end_date: endDate || undefined,
     limit: 20,
     last_key: currentCursor,
+    include_non_triggering: (statusFilter || showAllEvents) ? true : undefined,
   };
 
   const fetchFn = viewMode === 'all' && isAdmin ? getAllInvocations : getMyInvocations;
@@ -306,6 +314,15 @@ export default function AgentActivity() {
   const handleEndDateChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       setEndDate(e.target.value);
+      resetPagination();
+    },
+    [resetPagination],
+  );
+
+  // Issue #1658: "Show all events" toggle handler
+  const handleShowAllEventsChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setShowAllEvents(e.target.checked);
       resetPagination();
     },
     [resetPagination],
@@ -428,6 +445,21 @@ export default function AgentActivity() {
               onChange={handleEndDateChange}
             />
           </div>
+        </div>
+        {/* Issue #1658: Show all events toggle */}
+        <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+          <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={showAllEvents}
+              onChange={handleShowAllEventsChange}
+              className="rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500"
+            />
+            Show all events
+            <span className="text-gray-500 dark:text-gray-400 text-xs">
+              (include no-op &amp; webhook-received)
+            </span>
+          </label>
         </div>
       </div>
 

@@ -91,6 +91,7 @@ class ActivityService:
         persona: str | None = None,
         since: str | None = None,
         until: str | None = None,
+        include_non_triggering: bool = False,
     ) -> InvocationListResponse:
         """Query invocations for a specific user via user-index GSI.
 
@@ -103,6 +104,9 @@ class ActivityService:
             persona: Optional filter on persona.
             since: ISO 8601 lower-bound on arrived_at (inclusive).
             until: ISO 8601 upper-bound on arrived_at (inclusive).
+            include_non_triggering: If False (default), exclude no_op and
+                webhook_received rows. Ignored when an explicit status filter
+                is provided.
 
         Returns:
             InvocationListResponse with items, count, and optional next cursor.
@@ -118,6 +122,7 @@ class ActivityService:
             persona=persona,
             since=since,
             until=until,
+            include_non_triggering=include_non_triggering,
         )
 
     def query_by_tenant(
@@ -132,6 +137,7 @@ class ActivityService:
         since: str | None = None,
         until: str | None = None,
         user_id: str | None = None,
+        include_non_triggering: bool = False,
     ) -> InvocationListResponse:
         """Query invocations for a tenant via tenant-index GSI.
 
@@ -145,6 +151,9 @@ class ActivityService:
             since: ISO 8601 lower-bound on arrived_at (inclusive).
             until: ISO 8601 upper-bound on arrived_at (inclusive).
             user_id: Optional admin filter to a single user within tenant.
+            include_non_triggering: If False (default), exclude no_op and
+                webhook_received rows. Ignored when an explicit status filter
+                is provided.
 
         Returns:
             InvocationListResponse with items, count, and optional next cursor.
@@ -161,6 +170,7 @@ class ActivityService:
             since=since,
             until=until,
             extra_filter_user_id=user_id,
+            include_non_triggering=include_non_triggering,
         )
 
     def _execute_query(
@@ -177,6 +187,7 @@ class ActivityService:
         since: str | None,
         until: str | None,
         extra_filter_user_id: str | None = None,
+        include_non_triggering: bool = False,
     ) -> InvocationListResponse:
         """Execute a DynamoDB Query with shared logic for both endpoints.
 
@@ -201,6 +212,13 @@ class ActivityService:
         filter_expression = None
         if status:
             filter_expression = Attr("status").eq(status)
+        elif not include_non_triggering:
+            # Default: exclude non-triggering statuses (no_op, webhook_received)
+            # so the board shows only actual agent runs. An explicit status filter
+            # takes precedence (the user chose to see that specific status).
+            _non_triggering = ["no_op", "webhook_received"]
+            cond = ~Attr("status").is_in(_non_triggering)
+            filter_expression = cond
         if channel:
             cond = Attr("channel").eq(channel)
             filter_expression = (filter_expression & cond) if filter_expression else cond

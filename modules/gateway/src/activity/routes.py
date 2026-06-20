@@ -170,6 +170,7 @@ async def get_my_invocations(
     persona: Annotated[str | None, Query()] = None,
     since: Annotated[str | None, Query()] = None,
     until: Annotated[str | None, Query()] = None,
+    include_non_triggering: Annotated[bool, Query()] = False,
 ) -> InvocationListResponse:
     """Get the authenticated user's own agent invocations.
 
@@ -179,6 +180,11 @@ async def get_my_invocations(
 
     Pagination note: filtered pages may be short/empty with a non-null
     `last_key`. Keep following until `last_key` is null.
+
+    Issue #1658: When include_non_triggering is False (default), rows with
+    status no_op or webhook_received are excluded from results. An explicit
+    status filter takes precedence (selecting status=no_op will still return
+    those rows regardless of this flag).
     """
     canonical_user_id = await _resolve_canonical_user_id(db, current_user)
     try:
@@ -191,6 +197,7 @@ async def get_my_invocations(
             persona=persona,
             since=since,
             until=until,
+            include_non_triggering=include_non_triggering,
         )
         # Issue #1616: Enrich with per-run cost from Postgres
         return await _enrich_with_cost(db, result)
@@ -219,6 +226,7 @@ async def get_admin_invocations(
     until: Annotated[str | None, Query()] = None,
     user_id: Annotated[str | None, Query()] = None,
     tenant_id: Annotated[str | None, Query()] = None,
+    include_non_triggering: Annotated[bool, Query()] = False,
 ) -> InvocationListResponse:
     """Get agent invocations for the caller's tenant (admin only).
 
@@ -227,6 +235,10 @@ async def get_admin_invocations(
     - Platform admins: may pass an explicit `tenant_id` to view any tenant.
 
     The `user_id` param filters to a specific user within the tenant (admin use).
+
+    Issue #1658: When include_non_triggering is False (default), rows with
+    status no_op or webhook_received are excluded. An explicit status filter
+    takes precedence.
     """
     # Permission check — reuses USAGE_READ which all admin roles have
     await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
@@ -250,6 +262,7 @@ async def get_admin_invocations(
             since=since,
             until=until,
             user_id=user_id,
+            include_non_triggering=include_non_triggering,
         )
         # Issue #1616: Enrich with per-run cost from Postgres
         return await _enrich_with_cost(db, result)

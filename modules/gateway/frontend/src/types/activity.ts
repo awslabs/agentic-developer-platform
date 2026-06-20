@@ -100,4 +100,6 @@ export interface InvocationQueryParams {
   end_date?: string;
   limit?: number;
   last_key?: string;
+  /** Issue #1658: When false (default), exclude no_op and webhook_received rows. */
+  include_non_triggering?: boolean;
 }

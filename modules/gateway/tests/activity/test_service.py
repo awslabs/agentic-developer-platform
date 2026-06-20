@@ -914,3 +914,141 @@ class TestGetInvocation:
         item = service.get_invocation("inv-123", user_id="user-1")
 
         assert item is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #1658 tests: include_non_triggering filter
+# ---------------------------------------------------------------------------
+
+
+class TestIncludeNonTriggering:
+    """Tests for the include_non_triggering filter (issue #1658).
+
+    Default behavior (include_non_triggering=False): excludes no_op and
+    webhook_received rows. When True, shows all statuses. An explicit
+    status filter always takes precedence.
+    """
+
+    def test_default_excludes_non_triggering(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Default (include_non_triggering=False) adds a NOT-IN filter for no_op/webhook_received."""
+        mock_dynamodb_table.query.return_value = {"Items": [], "Count": 0}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        service.query_by_user(user_id="user-1")
+
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        # Should have a FilterExpression excluding non-triggering statuses
+        assert "FilterExpression" in call_kwargs
+
+    def test_include_non_triggering_true_no_exclusion_filter(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """include_non_triggering=True does NOT add the exclusion filter."""
+        mock_dynamodb_table.query.return_value = {"Items": [], "Count": 0}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        service.query_by_user(user_id="user-1", include_non_triggering=True)
+
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        # No filter expression when showing all and no other filters
+        assert "FilterExpression" not in call_kwargs
+
+    def test_explicit_status_overrides_exclusion(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Explicit status=no_op returns no_op even with include_non_triggering=False."""
+        mock_dynamodb_table.query.return_value = {"Items": [], "Count": 0}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        service.query_by_user(user_id="user-1", status="no_op", include_non_triggering=False)
+
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        # Filter should be an equality check for no_op, not the exclusion
+        assert "FilterExpression" in call_kwargs
+        # The filter is Attr("status").eq("no_op") — it includes no_op, not excludes it
+
+    def test_rejected_shown_by_default(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """rejected status is NOT excluded by the default filter (it's a run status)."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-rejected",
+                    "arrived_at": "2026-06-20T10:00:00Z",
+                    "channel": "github",
+                    "status": "rejected",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        # rejected is not excluded — it should appear in results
+        assert result.count == 1
+        assert result.items[0].status == "rejected"
+
+    def test_rate_limited_shown_by_default(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """rate_limited status is NOT excluded by the default filter."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-ratelimit",
+                    "arrived_at": "2026-06-20T10:00:00Z",
+                    "channel": "github",
+                    "status": "rate_limited",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        assert result.count == 1
+        assert result.items[0].status == "rate_limited"
+
+    def test_tenant_query_default_excludes_non_triggering(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """query_by_tenant also excludes non-triggering by default."""
+        mock_dynamodb_table.query.return_value = {"Items": [], "Count": 0}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        service.query_by_tenant(tenant_id="org-001")
+
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        assert "FilterExpression" in call_kwargs
+
+    def test_tenant_query_include_non_triggering_true(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """query_by_tenant with include_non_triggering=True shows all."""
+        mock_dynamodb_table.query.return_value = {"Items": [], "Count": 0}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        service.query_by_tenant(tenant_id="org-001", include_non_triggering=True)
+
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        assert "FilterExpression" not in call_kwargs
+
+    def test_default_filter_combines_with_channel_filter(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Default exclusion filter AND a channel filter both apply together."""
+        mock_dynamodb_table.query.return_value = {"Items": [], "Count": 0}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        service.query_by_user(user_id="user-1", channel="github")
+
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        # Should have both the non-triggering exclusion AND the channel filter
+        assert "FilterExpression" in call_kwargs
+
+    def test_pagination_with_exclusion_filter(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Short page with non-null last_key still works with the exclusion filter."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [],
+            "Count": 0,
+            "LastEvaluatedKey": {"pk": "inv-050", "arrived_at": "2026-06-01T00:00:00Z", "user_id": "u1"},
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="u1")
+
+        # Respects the filtered-pagination contract: 0 items but cursor present
+        assert result.items == []
+        assert result.count == 0
+        assert result.last_key is not None

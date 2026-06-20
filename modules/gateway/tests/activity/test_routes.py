@@ -577,3 +577,50 @@ class TestGetAdminInvocationDetail:
 
         resp = admin_client.get("/admin/agent-invocations/inv-missing")
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Issue #1658: include_non_triggering query param tests
+# ---------------------------------------------------------------------------
+
+
+class TestIncludeNonTriggeringParam:
+    """Tests for the include_non_triggering query param on list endpoints."""
+
+    def test_me_default_excludes_non_triggering(self, client, mock_service):
+        """/me default (no param) passes include_non_triggering=False to service."""
+        client.get("/me/agent-invocations")
+        call_kwargs = mock_service.query_by_user.call_args[1]
+        assert call_kwargs["include_non_triggering"] is False
+
+    def test_me_include_non_triggering_true(self, client, mock_service):
+        """/me with include_non_triggering=true passes True to service."""
+        client.get("/me/agent-invocations?include_non_triggering=true")
+        call_kwargs = mock_service.query_by_user.call_args[1]
+        assert call_kwargs["include_non_triggering"] is True
+
+    def test_me_include_non_triggering_false_explicit(self, client, mock_service):
+        """/me with include_non_triggering=false passes False to service."""
+        client.get("/me/agent-invocations?include_non_triggering=false")
+        call_kwargs = mock_service.query_by_user.call_args[1]
+        assert call_kwargs["include_non_triggering"] is False
+
+    def test_me_explicit_status_with_default_toggle(self, client, mock_service):
+        """Explicit status=no_op is passed through even with default toggle off."""
+        client.get("/me/agent-invocations?status=no_op")
+        call_kwargs = mock_service.query_by_user.call_args[1]
+        assert call_kwargs["status"] == "no_op"
+        # The toggle is still False — backend handles the precedence logic
+        assert call_kwargs["include_non_triggering"] is False
+
+    def test_admin_default_excludes_non_triggering(self, admin_client, mock_service):
+        """/admin default (no param) passes include_non_triggering=False."""
+        admin_client.get("/admin/agent-invocations")
+        call_kwargs = mock_service.query_by_tenant.call_args[1]
+        assert call_kwargs["include_non_triggering"] is False
+
+    def test_admin_include_non_triggering_true(self, admin_client, mock_service):
+        """/admin with include_non_triggering=true passes True."""
+        admin_client.get("/admin/agent-invocations?include_non_triggering=true")
+        call_kwargs = mock_service.query_by_tenant.call_args[1]
+        assert call_kwargs["include_non_triggering"] is True
