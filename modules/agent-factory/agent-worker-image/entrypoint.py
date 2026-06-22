@@ -129,10 +129,13 @@ def main() -> int:
     arrived_at = envelope.get("arrived_at", "")
     actor = envelope.get("actor", {})
 
-    # Read correlation context from SQS envelope (Phase 2-c adds these fields)
-    correlation_id = envelope.get("correlation_id", "")
-    root_human_id = envelope.get("root_human_id", "")
-    is_human_rooted = envelope.get("is_human_rooted", False)
+    # Read correlation context from SQS envelope.
+    # ENVELOPE CONTRACT: handler.py publishes correlation fields NESTED under
+    # envelope["correlation"] (see handler.py:711-718). Do NOT read them top-level.
+    corr_ctx = envelope.get("correlation", {}) or {}
+    correlation_id = corr_ctx.get("correlation_id", "")
+    root_human_id = corr_ctx.get("root_human_id", "")
+    is_human_rooted = corr_ctx.get("is_human_rooted", False)
 
     # Expose correlation context as env vars for the Node agent runtime
     if correlation_id:

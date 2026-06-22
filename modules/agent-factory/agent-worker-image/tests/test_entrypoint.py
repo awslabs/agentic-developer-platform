@@ -2356,7 +2356,12 @@ class TestOtelResourceAttributes:
 
         envelope_with_correlation = {
             **SAMPLE_ENVELOPE,
-            "correlation_id": "corr-xyz-789",
+            "correlation": {
+                "correlation_id": "corr-xyz-789",
+                "root_human_id": "user-human-1",
+                "is_human_rooted": True,
+                "parent_invocation_id": None,
+            },
         }
 
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
