@@ -25,6 +25,7 @@ from pathlib import Path
 
 import boto3
 
+from lib.bootstrap_logger import BootstrapLogger
 from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
@@ -117,8 +118,33 @@ def main() -> int:
         logger.info("No message available after long-poll; exiting cleanly")
         return 0
 
+    # --- Bootstrap Logger: initialized after first parse to get correlation_id ---
+    # We do a lightweight pre-parse to extract correlation_id before the full
+    # parse_envelope call, so the logger can key the stream by correlation_id.
+    _pre = {}
+    try:
+        _pre = json.loads(raw_message) if isinstance(raw_message, str) else {}
+    except (json.JSONDecodeError, TypeError):
+        pass
+    _corr_pre = (_pre.get("correlation") or {}).get("correlation_id", "")
+    _msg_id_pre = _pre.get("message_id", "")
+    _env_name = os.environ.get("ENVIRONMENT", os.environ.get("ENV", "dev"))
+
+    bootstrap_log = BootstrapLogger(
+        environment=_env_name,
+        correlation_id=_corr_pre,
+        region=region,
+        message_id=_msg_id_pre,
+    )
+
     # Step 1: Parse envelope
-    envelope = parse_envelope(raw_message)
+    bootstrap_log.step_start(1, "parse_envelope", message_id=_msg_id_pre)
+    try:
+        envelope = parse_envelope(raw_message)
+    except Exception as exc:
+        bootstrap_log.step_error(1, "parse_envelope", exc)
+        bootstrap_log.close()
+        raise
     tenant_id = envelope["tenant_id"]
     persona = envelope["persona"]
     source = envelope["source_ref"]
@@ -168,6 +194,14 @@ def main() -> int:
         os.environ["ADP_GITHUB_LOGIN"] = github_login
 
     repo_owner, repo_name = repo.split("/", 1)
+    bootstrap_log.step_success(
+        1,
+        "parse_envelope",
+        tenant_id=tenant_id,
+        persona=persona,
+        repo=repo,
+        issue=issue,
+    )
     logger.info(
         "Processing: tenant=%s persona=%s repo=%s issue=#%s correlation=%s",
         tenant_id,
@@ -178,15 +212,30 @@ def main() -> int:
     )
 
     # Step 2: Fetch GitHub App credentials from vault
-    vault = VaultClient(region=os.environ.get("AWS_REGION", "us-east-1"))
-    app_creds = vault.get_secret(f"tenants/{tenant_id}/github-app")
-    app_id = app_creds["app_id"]
-    private_key = app_creds["private_key"]
+    bootstrap_log.step_start(2, "vault_fetch", secret=f"tenants/{tenant_id}/github-app")
+    try:
+        vault = VaultClient(region=os.environ.get("AWS_REGION", "us-east-1"))
+        app_creds = vault.get_secret(f"tenants/{tenant_id}/github-app")
+        app_id = app_creds["app_id"]
+        private_key = app_creds["private_key"]
+    except Exception as exc:
+        bootstrap_log.step_error(2, "vault_fetch", exc)
+        bootstrap_log.close()
+        raise
+    bootstrap_log.step_success(2, "vault_fetch", app_id=app_id)
 
     # Step 3: Mint installation token
-    token = mint_installation_token(str(app_id), private_key, installation_id)
+    bootstrap_log.step_start(3, "mint_token", app_id=app_id, installation_id=installation_id)
+    try:
+        token = mint_installation_token(str(app_id), private_key, installation_id)
+    except Exception as exc:
+        bootstrap_log.step_error(3, "mint_token", exc)
+        bootstrap_log.close()
+        raise
+    bootstrap_log.step_success(3, "mint_token")
 
     # Step 4: Set environment variables
+    bootstrap_log.step_start(4, "set_env")
     env_vars = {
         "GITHUB_TOKEN": token,
         "GH_TOKEN": token,
@@ -222,6 +271,8 @@ def main() -> int:
 
     os.environ.update(env_vars)
 
+    bootstrap_log.step_success(4, "set_env")
+
     # Step 4b: Compose OTEL_RESOURCE_ATTRIBUTES with per-run dimensions (#1630).
     # The ScaledJob template sets static attributes (service.namespace,
     # deployment.environment) and ENABLE_AGENT_OTEL=1 when the flag is on.
@@ -242,20 +293,31 @@ def main() -> int:
         os.environ["OTEL_RESOURCE_ATTRIBUTES"] = merged
 
     # Step 5: Clone customer repo
+    bootstrap_log.step_start(5, "clone", repo=repo)
     # Username-only URL — GIT_ASKPASS provides the password from $GITHUB_TOKEN
     clone_url = f"https://x-access-token@github.com/{repo}"
     WORK_DIR.parent.mkdir(parents=True, exist_ok=True)
     if WORK_DIR.exists():
         shutil.rmtree(WORK_DIR)
-    run_cmd(["git", "clone", "--depth=20", clone_url, str(WORK_DIR)])
+    try:
+        run_cmd(["git", "clone", "--depth=20", clone_url, str(WORK_DIR)])
+    except Exception as exc:
+        bootstrap_log.step_error(5, "clone", exc)
+        bootstrap_log.close()
+        raise
+    bootstrap_log.step_success(5, "clone", target=str(WORK_DIR))
     logger.info("Cloned %s to %s", repo, WORK_DIR)
 
     # Step 6: Configure git identity (must come BEFORE WIP branch creation)
+    bootstrap_log.step_start(6, "git_config")
     bot_email = f"{app_id}+adp-agent[bot]@users.noreply.github.com"
     run_cmd(["git", "config", "user.email", bot_email], cwd=WORK_DIR)
     run_cmd(["git", "config", "user.name", "adp-agent[bot]"], cwd=WORK_DIR)
+    bootstrap_log.step_success(6, "git_config")
 
-    # Step 6b: Create or reset the agent branch + WIP commit BEFORE exec so that:
+    # Step 6b: Create or reset the agent branch + WIP commit BEFORE exec
+    bootstrap_log.step_start(7, "wip_branch", branch=f"agent/issue-{issue}")
+    # Create or reset the agent branch + WIP commit BEFORE exec so that:
     #   1. The Check Run attaches to the branch SHA (not default-branch HEAD).
     #   2. Users see a "WIP" commit immediately on the branch.
     #   3. Real agent commits stack cleanly on top.
@@ -350,8 +412,10 @@ def main() -> int:
         run_cmd(["git", "push", "-u", "origin", branch_name], cwd=WORK_DIR)
         sha_result = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR)
         wip_sha = sha_result.stdout.strip()
+        bootstrap_log.step_success(7, "wip_branch", sha=wip_sha[:7])
         logger.info("WIP branch %s created; sha=%s", branch_name, wip_sha[:7])
     except Exception as exc:
+        bootstrap_log.step_error(7, "wip_branch", exc)
         logger.warning("WIP branch creation failed (non-fatal): %s", exc)
         # Fall back to default-branch HEAD sha for the Check Run
         try:
@@ -554,6 +618,11 @@ def main() -> int:
     # Update invocation status to in_progress (best-effort)
     _keda_job_name = os.environ.get("JOB_NAME", os.environ.get("HOSTNAME", ""))
     update_invocation_status(message_id, arrived_at, "in_progress", run_id=_keda_job_name)
+
+    # Flush bootstrap logs to CloudWatch before entering the agent phase.
+    # From here on, the Node agent SDK / OTEL handles observability.
+    bootstrap_log.step_success(8, "bootstrap_complete")
+    bootstrap_log.close()
 
     logger.info("Execing agent-worker.js with persona=%s branch=%s", persona, branch_name)
     result = subprocess.run(

@@ -444,6 +444,36 @@ resource "kubernetes_config_map" "agent_gateway_config" {
 # routes on the gateway's REST API Gateway.
 # =============================================================================
 
+# =============================================================================
+# Gateway Agent: CloudWatch Logs for durable bootstrap logging (#1690)
+# =============================================================================
+# The entrypoint writes step-level bootstrap logs directly to CloudWatch so
+# Setup failures are diagnosable after the pod is GC'd by KEDA.
+# =============================================================================
+
+resource "aws_iam_role_policy" "gateway_agent_bootstrap_logs" {
+  name = "bootstrap-cloudwatch-logs"
+  role = aws_iam_role.gateway_agent.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "BootstrapLogging"
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:PutRetentionPolicy"
+      ]
+      Resource = [
+        "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/adp/*/agent-factory/bootstrap",
+        "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/adp/*/agent-factory/bootstrap:*"
+      ]
+    }]
+  })
+}
+
 resource "aws_iam_role_policy" "gateway_agent_execute_api" {
   name = "execute-api-invoke"
   role = aws_iam_role.gateway_agent.id
