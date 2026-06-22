@@ -347,6 +347,7 @@ def git_ls_remote(repo: str) -> str | None:
             ["git", "ls-remote", f"https://github.com/{repo}", "HEAD"],
             capture_output=True,
             timeout=30,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
         if result.returncode == 0 and result.stdout:
             sha = result.stdout.decode().split()[0]
@@ -364,7 +365,7 @@ def refresh_repo(repo: str, state: dict[str, Any], force: bool = False) -> bool:
     """
     current_sha = git_ls_remote(repo)
     if not current_sha:
-        log.warning("Could not get SHA for %s — skipping", repo)
+        log.error("Could not get SHA for %s — skipping (auth/network failure?)", repo)
         return False
 
     prev_state = state.get(repo, {})

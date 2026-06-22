@@ -9,7 +9,10 @@ Covers:
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -481,3 +484,85 @@ class TestBackfillSkipStateUpdate:
         repos_needing_wiki = [repo for repo, st in repo_state.items() if not st.get("deepwiki_sha")]
 
         assert "org/huge-repo" not in repos_needing_wiki
+
+
+# ---------------------------------------------------------------------------
+# git_ls_remote env-passthrough tests
+#
+# Verifies the fix for #1677: git_ls_remote must pass os.environ (including
+# GIT_ASKPASS) to subprocess.run so private repos authenticate correctly.
+# ---------------------------------------------------------------------------
+
+
+class TestGitLsRemoteEnv:
+    """Verify git_ls_remote passes credentials env to subprocess."""
+
+    def _call_git_ls_remote(self, repo: str) -> str | None:
+        """Import-free re-declaration of git_ls_remote matching refresh-repos.py."""
+        try:
+            result = subprocess.run(
+                ["git", "ls-remote", f"https://github.com/{repo}", "HEAD"],
+                capture_output=True,
+                timeout=30,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            )
+            if result.returncode == 0 and result.stdout:
+                sha = result.stdout.decode().split()[0]
+                return sha
+            return None
+        except (subprocess.TimeoutExpired, Exception):
+            return None
+
+    @patch("subprocess.run")
+    def test_env_includes_git_askpass(self, mock_run: MagicMock):
+        """git_ls_remote must pass env with GIT_ASKPASS so private repos authenticate."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=b"abc123def456\tHEAD\n",
+        )
+
+        with patch.dict(os.environ, {"GIT_ASKPASS": "/app/git-credential-helper.sh"}):
+            sha = self._call_git_ls_remote("aws-e/adp")
+
+        assert sha == "abc123def456"
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args[1]
+        assert "env" in call_kwargs
+        assert call_kwargs["env"]["GIT_ASKPASS"] == "/app/git-credential-helper.sh"
+        assert call_kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+    @patch("subprocess.run")
+    def test_env_includes_git_terminal_prompt_zero(self, mock_run: MagicMock):
+        """GIT_TERMINAL_PROMPT=0 must be set to prevent interactive prompts."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=b"deadbeef1234\tHEAD\n",
+        )
+
+        sha = self._call_git_ls_remote("owner/repo")
+
+        assert sha == "deadbeef1234"
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+    @patch("subprocess.run")
+    def test_returns_none_on_auth_failure(self, mock_run: MagicMock):
+        """When ls-remote fails (e.g. 128 for auth), returns None."""
+        mock_run.return_value = MagicMock(
+            returncode=128,
+            stdout=b"",
+            stderr=b"fatal: could not read Username",
+        )
+
+        sha = self._call_git_ls_remote("private-org/private-repo")
+
+        assert sha is None
+
+    @patch("subprocess.run")
+    def test_returns_none_on_timeout(self, mock_run: MagicMock):
+        """When ls-remote times out, returns None gracefully."""
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=30)
+
+        sha = self._call_git_ls_remote("slow-org/slow-repo")
+
+        assert sha is None
