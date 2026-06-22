@@ -494,3 +494,142 @@ class TestUnderstandNeptuneTargetParsing:
         assert results is not None
         assert len(results) == 1
         assert results[0].data["source"] == "neptune"
+
+    @pytest.mark.asyncio
+    async def test_bare_symbol_end_to_end_understand(self):
+        """Bug #1698: understand("aws-e/adp::event_type") must return neptune results.
+
+        Full end-to-end: _parse_target strips :: → bare symbol "event_type" →
+        _understand_neptune_inner bare-symbol branch → query_understand(repo, "", symbol).
+        """
+        from unittest.mock import patch
+
+        understand_records = [
+            {
+                "symbol_name": "event_type",
+                "symbol_kind": "function",
+                "symbol_file": "src/models/events.py",
+                "signature": "def event_type(self) -> str",
+                "callees": [{"name": "validate", "file": "src/validators.py"}],
+                "callers": [{"name": "process_event", "file": "src/handlers.py"}],
+                "parents": [],
+                "owners": [],
+            }
+        ]
+
+        mock_s3 = MagicMock()
+
+        with (
+            patch("door.neptune_client.neptune_enabled", return_value=True),
+            patch("door.neptune_client.neptune_available", return_value=True),
+            patch("door.neptune_client.resolve_repo_name", return_value="aws-e/adp"),
+            patch(
+                "door.neptune_client.query_understand", return_value=understand_records
+            ) as mock_qu,
+        ):
+            hits = await understand(
+                "aws-e/adp::event_type",
+                s3_client=mock_s3,
+                bucket="test-bucket",
+                prefix="content/code-indexes",
+            )
+
+        # Must call query_understand with file="" (bare symbol after :: stripped by _parse_target)
+        mock_qu.assert_called_once_with("aws-e/adp", "", "event_type")
+        # Must return non-empty results from Neptune, NOT fall back to S3
+        assert len(hits) == 1
+        assert hits[0].data["source"] == "neptune"
+        assert hits[0].data["symbol"] == "event_type"
+        assert hits[0].data["file"] == "src/models/events.py"
+        # S3 should never be touched
+        mock_s3.get_object.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bare_symbol_resolve_fallback_understand(self):
+        """Bug #1698: bare symbol uses resolve_symbol when query_understand returns empty."""
+        from unittest.mock import patch
+
+        from door.structural_backend import _understand_via_neptune
+
+        resolved_records = [
+            {
+                "symbol_name": "event_type",
+                "symbol_kind": "function",
+                "symbol_file": "src/models/events.py",
+                "signature": "def event_type(self) -> str",
+                "callees": [],
+                "callers": [],
+                "parents": [],
+                "owners": [],
+            }
+        ]
+
+        with (
+            patch("door.neptune_client.neptune_enabled", return_value=True),
+            patch("door.neptune_client.neptune_available", return_value=True),
+            patch("door.neptune_client.resolve_repo_name", return_value="aws-e/adp"),
+            patch("door.neptune_client.query_understand", side_effect=[[], resolved_records]),
+            patch(
+                "door.neptune_client.resolve_symbol",
+                return_value=[{"file": "src/models/events.py", "name": "event_type"}],
+            ) as mock_resolve,
+        ):
+            results = await _understand_via_neptune("aws-e/adp", "event_type", "overview")
+
+        # When query_understand with file="" returns nothing, resolve_symbol is tried
+        mock_resolve.assert_called_once_with("aws-e/adp", "event_type")
+        assert results is not None
+        assert len(results) == 1
+        assert results[0].data["source"] == "neptune"
+
+    @pytest.mark.asyncio
+    async def test_bare_symbol_end_to_end_impact(self):
+        """Bug #1698: impact("aws-e/adp::event_type") must return neptune results.
+
+        Full end-to-end: _parse_target strips :: → bare symbol "event_type" →
+        _impact_neptune_inner bare-symbol branch → query_impact(repo, "", symbol).
+        """
+        from unittest.mock import patch
+
+        caller_records = [
+            {
+                "caller_repo": "aws-e/adp",
+                "caller_file": "src/handlers.py",
+                "caller_name": "process_event",
+                "caller_kind": "function",
+                "distance": 1,
+            },
+            {
+                "caller_repo": "aws-e/adp",
+                "caller_file": "src/api/routes.py",
+                "caller_name": "handle_webhook",
+                "caller_kind": "function",
+                "distance": 2,
+            },
+        ]
+
+        mock_s3 = MagicMock()
+
+        with (
+            patch("door.neptune_client.neptune_enabled", return_value=True),
+            patch("door.neptune_client.neptune_available", return_value=True),
+            patch("door.neptune_client.resolve_repo_name", return_value="aws-e/adp"),
+            patch("door.neptune_client.query_impact", return_value=caller_records) as mock_qi,
+        ):
+            hits = await impact(
+                "aws-e/adp::event_type",
+                s3_client=mock_s3,
+                bucket="test-bucket",
+                prefix="content/code-indexes",
+            )
+
+        # Must call query_impact with file="" (bare symbol)
+        mock_qi.assert_called_once_with("aws-e/adp", "", "event_type")
+        # Must return non-empty results from Neptune
+        assert len(hits) == 2
+        for hit in hits:
+            assert hit.data["source"] == "neptune"
+        assert hits[0].data["symbol"] == "process_event"
+        assert hits[1].data["symbol"] == "handle_webhook"
+        # S3 should never be touched
+        mock_s3.get_object.assert_not_called()
