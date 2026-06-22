@@ -15,8 +15,12 @@ import argparse
 import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 logging.basicConfig(
@@ -27,6 +31,7 @@ logging.basicConfig(
 log = logging.getLogger("discover-infra")
 
 from config import settings
+from github_auth import mint_github_token
 from iac_neptune_csv import IaCCSVOutput, generate_csv, get_infra_delete_queries
 from iac_terraform_parser import parse_terraform
 from s3_store import S3ContentStore
@@ -530,6 +535,44 @@ def parse_and_load_iac(
 
 
 # ---------------------------------------------------------------------------
+# Repo cloning helpers (ephemeral — works on S3 Mountpoint FUSE volumes)
+# ---------------------------------------------------------------------------
+
+
+def _parse_repos_file(path: str) -> list[str]:
+    """Parse repos.txt, returning list of org/repo strings."""
+    repos: list[str] = []
+    if not os.path.exists(path):
+        log.warning("Repos file not found: %s", path)
+        return repos
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                repos.append(line)
+    return repos
+
+
+def _clone_repo(repo: str, dest: str) -> bool:
+    """Shallow-clone a repo for IaC parsing. Returns True on success."""
+    Path(dest).parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        subprocess.run(
+            ["git", "clone", "--depth=1", f"https://github.com/{repo}", dest],
+            check=True,
+            capture_output=True,
+            timeout=300,
+            env=env,
+        )
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        log.warning("IaC clone failed for %s: %s", repo, str(e)[:200])
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -599,44 +642,54 @@ def main():
             json.dumps(deploy_data, indent=2),
         )
 
-    # Step 4: Parse Terraform from cloned repos into Neptune graph
+    # Step 4: Parse Terraform from repos into Neptune graph
     # (IAC-1: #1647 — IaC dependency graph)
+    #
+    # Clone repos from repos.txt to ephemeral temp dirs (the /platform-data volume
+    # is S3 Mountpoint FUSE which doesn't reliably support git — persistent clones
+    # are not available here). Each repo is cloned, parsed, then cleaned up.
+    repos_list = _parse_repos_file(settings.repos_file)
     iac_results: list[dict[str, Any]] = []
-    clone_base = settings.clone_base
-    if os.path.isdir(clone_base):
-        for org_name in os.listdir(clone_base):
-            org_path = os.path.join(clone_base, org_name)
-            if not os.path.isdir(org_path):
-                continue
-            for repo_name in os.listdir(org_path):
-                repo_dir = os.path.join(org_path, repo_name)
-                if not os.path.isdir(repo_dir):
-                    continue
-                # Check if repo has .tf files before parsing
-                has_tf = any(
-                    f.endswith(".tf")
-                    for root, _dirs, files in os.walk(repo_dir)
-                    for f in files
-                    if ".terraform" not in root
-                )
-                if not has_tf:
-                    continue
 
-                repo_id = f"{org_name}/{repo_name}"
-                try:
-                    result = parse_and_load_iac(repo_dir, repo_id)
-                    iac_results.append(result)
-                except Exception as e:
-                    log.error("IaC parse failed for %s: %s", repo_id, str(e)[:300])
-                    iac_results.append({"repo": repo_id, "status": "error", "error": str(e)[:300]})
+    if repos_list:
+        # Mint GitHub token for private repo access (non-fatal if unavailable)
+        mint_github_token()
+
+    for repo_id in repos_list:
+        clone_dir = tempfile.mkdtemp(prefix="iac-clone-")
+        repo_dir = os.path.join(clone_dir, repo_id)
+        try:
+            if not _clone_repo(repo_id, repo_dir):
+                continue
+
+            # Check if repo has .tf files before parsing
+            has_tf = any(
+                f.endswith(".tf")
+                for root, _dirs, files in os.walk(repo_dir)
+                for f in files
+                if ".terraform" not in root
+            )
+            if not has_tf:
+                log.info("No .tf files in %s — skipping IaC parse", repo_id)
+                continue
+
+            result = parse_and_load_iac(repo_dir, repo_id)
+            iac_results.append(result)
+        except Exception as e:
+            log.error("IaC parse failed for %s: %s", repo_id, str(e)[:300])
+            iac_results.append({"repo": repo_id, "status": "error", "error": str(e)[:300]})
+        finally:
+            shutil.rmtree(clone_dir, ignore_errors=True)
 
     loaded_count = sum(1 for r in iac_results if r.get("status") == "loaded")
+    skipped_count = sum(1 for r in iac_results if r.get("status") == "skipped")
     log.info(
-        "Infrastructure discovery complete: %d accounts, %d repos with IaC, "
-        "%d repos with workflows, %d repos with Neptune graph loaded",
+        "Infrastructure discovery complete: %d accounts, %d repos with IaC (S3 maps), "
+        "%d repos with workflows, %d repos parsed for IaC, %d loaded to Neptune",
         len(accounts),
         len(iac_map),
         len(deploy_map),
+        len(iac_results) - skipped_count,
         loaded_count,
     )
 
