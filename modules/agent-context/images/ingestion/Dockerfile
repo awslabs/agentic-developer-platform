@@ -70,6 +70,7 @@ RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
 # Python deps
 RUN pip install --no-cache-dir \
     codegraphcontext \
+    python-hcl2 \
     tree-sitter \
     tree-sitter-python \
     tree-sitter-typescript \
@@ -98,6 +99,7 @@ RUN crawl4ai-setup || echo "crawl4ai-setup not available or optional — continu
 # Copy pipeline scripts (config.py must be first — all scripts import it)
 COPY config.py s3_store.py wiki_store.py sbom_parser.py db.py stage_tracker.py /app/
 COPY scip_ingester.py scip_indexer.py scip_neptune_csv.py scip_neptune_loader.py /app/
+COPY iac_terraform_parser.py iac_neptune_csv.py /app/
 COPY scip_proto/ /app/scip_proto/
 COPY ingest-repo.py ingest-url.py ingest-doc.py refresh-repos.py \
      discover-infra.py sqs-worker.py publish-ingestion.py \
