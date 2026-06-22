@@ -26,3 +26,11 @@ Egonex-AI/Understand-Anything
 # --- Large curated-list / markdown repos (browse / semantic) ---
 awesome-selfhosted/awesome-selfhosted
 Hack-with-Github/Awesome-Hacking
+
+# --- Internal / private repos (NOT part of the eval corpus) ---
+# First private repo indexed — cloned via the ops GitHub App (adp/aws-e/gh-app-ops,
+# already installed on aws-e with repo access). Indexing ADP itself makes the
+# Knowledge Layer usable for ADP-centric work (integration / impact / search).
+# Large polyglot repo (Python/TS/HCL/YAML) — first ingestion runs longer than the
+# sample repos; SCIP covers .py/.ts, infra files await the IaC arm (#1647).
+aws-e/adp
