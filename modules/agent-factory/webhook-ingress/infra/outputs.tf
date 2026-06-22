@@ -181,3 +181,12 @@ output "otel_collector_role_arn" {
   description = "IAM role ARN for the ADOT Collector service account (empty when disabled)"
   value       = var.enable_agent_otel ? aws_iam_role.otel_collector[0].arn : ""
 }
+
+# -----------------------------------------------------------------------------
+# Agent Observability Dashboard (Issue #1680)
+# -----------------------------------------------------------------------------
+
+output "agent_observability_dashboard_name" {
+  description = "CloudWatch dashboard name for agent business/application observability (empty when disabled)"
+  value       = var.enable_agent_otel ? aws_cloudwatch_dashboard.agent_observability[0].dashboard_name : ""
+}
