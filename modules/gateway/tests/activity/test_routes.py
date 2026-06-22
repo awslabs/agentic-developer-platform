@@ -18,6 +18,8 @@ from fastapi.testclient import TestClient
 
 from src.activity.routes import get_access_control, get_activity_service, router
 from src.activity.schemas import (
+    ChainListResponse,
+    ChainSummary,
     InvocationChainItem,
     InvocationChainResponse,
     InvocationItem,
@@ -57,6 +59,7 @@ def mock_service():
     service = MagicMock(spec=ActivityService)
     service.query_by_user = MagicMock(return_value=InvocationListResponse(items=[], count=0, last_key=None))
     service.query_by_tenant = MagicMock(return_value=InvocationListResponse(items=[], count=0, last_key=None))
+    service.query_chains_by_user = MagicMock(return_value=ChainListResponse(chains=[], count=0, last_key=None))
     service.get_chain = MagicMock(
         return_value=InvocationChainResponse(
             correlation_id="chain-001",
@@ -624,3 +627,150 @@ class TestIncludeNonTriggeringParam:
         admin_client.get("/admin/agent-invocations?include_non_triggering=true")
         call_kwargs = mock_service.query_by_tenant.call_args[1]
         assert call_kwargs["include_non_triggering"] is True
+
+
+# ---------------------------------------------------------------------------
+# Issue #1662: Chain-grouped view (view=chains) route tests
+# ---------------------------------------------------------------------------
+
+
+class TestViewChainsParam:
+    """Tests for the view=chains query param on /me/agent-invocations."""
+
+    def test_default_view_is_runs(self, client, mock_service):
+        """Default (no view param) calls query_by_user (flat view), not query_chains_by_user."""
+        client.get("/me/agent-invocations")
+        mock_service.query_by_user.assert_called_once()
+        mock_service.query_chains_by_user.assert_not_called()
+
+    def test_view_runs_explicit(self, client, mock_service):
+        """view=runs explicitly calls query_by_user."""
+        client.get("/me/agent-invocations?view=runs")
+        mock_service.query_by_user.assert_called_once()
+        mock_service.query_chains_by_user.assert_not_called()
+
+    def test_view_chains_calls_query_chains_by_user(self, client, mock_service):
+        """view=chains calls query_chains_by_user with canonical user_id."""
+        client.get("/me/agent-invocations?view=chains")
+        mock_service.query_chains_by_user.assert_called_once()
+        mock_service.query_by_user.assert_not_called()
+        call_kwargs = mock_service.query_chains_by_user.call_args[1]
+        assert call_kwargs["user_id"] == CANONICAL_USER_ID
+
+    def test_view_chains_returns_chain_list_response(self, client, mock_service):
+        """view=chains returns ChainListResponse shape."""
+        mock_service.query_chains_by_user.return_value = ChainListResponse(
+            chains=[
+                ChainSummary(
+                    chain_id="corr-001",
+                    root=InvocationItem(
+                        invocation_id="inv-root",
+                        invoked_at="2026-06-22T10:00:00Z",
+                        channel="github",
+                        status="complete",
+                        topic="Deploy ADP",
+                        source_url="https://github.com/aws-e/adp/issues/1320",
+                        repo="aws-e/adp",
+                        issue_number=1320,
+                        correlation_id="corr-001",
+                    ),
+                    descendant_count=2,
+                    descendants=[
+                        InvocationChainItem(
+                            invocation_id="inv-child-1",
+                            invoked_at="2026-06-22T10:05:00Z",
+                            status="complete",
+                            topic="Code review",
+                            persona="reviewer",
+                            children=[],
+                        ),
+                        InvocationChainItem(
+                            invocation_id="inv-child-2",
+                            invoked_at="2026-06-22T10:10:00Z",
+                            status="in_progress",
+                            topic="Deploy follow-up",
+                            persona="ops",
+                            children=[],
+                        ),
+                    ],
+                )
+            ],
+            count=1,
+            last_key=None,
+        )
+
+        resp = client.get("/me/agent-invocations?view=chains")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "chains" in data
+        assert data["count"] == 1
+        assert data["last_key"] is None
+
+        chain = data["chains"][0]
+        assert chain["chain_id"] == "corr-001"
+        assert chain["root"]["invocation_id"] == "inv-root"
+        assert chain["root"]["topic"] == "Deploy ADP"
+        assert chain["root"]["source_url"] == "https://github.com/aws-e/adp/issues/1320"
+        assert chain["descendant_count"] == 2
+        assert len(chain["descendants"]) == 2
+        assert chain["descendants"][0]["invocation_id"] == "inv-child-1"
+        assert chain["descendants"][1]["invocation_id"] == "inv-child-2"
+
+    def test_view_chains_passes_filters(self, client, mock_service):
+        """view=chains passes all filter params to query_chains_by_user."""
+        client.get(
+            "/me/agent-invocations?view=chains&page_size=10&status=complete&channel=github&persona=developer&since=2026-06-01T00:00:00Z&until=2026-06-22T00:00:00Z"
+        )
+        call_kwargs = mock_service.query_chains_by_user.call_args[1]
+        assert call_kwargs["page_size"] == 10
+        assert call_kwargs["status"] == "complete"
+        assert call_kwargs["channel"] == "github"
+        assert call_kwargs["persona"] == "developer"
+        assert call_kwargs["since"] == "2026-06-01T00:00:00Z"
+        assert call_kwargs["until"] == "2026-06-22T00:00:00Z"
+
+    def test_view_chains_passes_include_non_triggering(self, client, mock_service):
+        """view=chains passes include_non_triggering to query_chains_by_user."""
+        client.get("/me/agent-invocations?view=chains&include_non_triggering=true")
+        call_kwargs = mock_service.query_chains_by_user.call_args[1]
+        assert call_kwargs["include_non_triggering"] is True
+
+    def test_view_chains_bad_cursor_returns_400(self, client, mock_service):
+        """view=chains with bad cursor → 400."""
+        mock_service.query_chains_by_user.side_effect = ValueError("Invalid cursor: ...")
+        resp = client.get("/me/agent-invocations?view=chains&last_key=garbage!")
+        assert resp.status_code == 400
+        assert "Invalid cursor" in resp.json()["detail"]
+
+    def test_view_chains_empty_returns_200(self, client, mock_service):
+        """view=chains with no chains returns 200 with empty list."""
+        mock_service.query_chains_by_user.return_value = ChainListResponse(chains=[], count=0, last_key=None)
+        resp = client.get("/me/agent-invocations?view=chains")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["chains"] == []
+        assert data["count"] == 0
+
+    def test_view_chains_pagination_cursor(self, client, mock_service):
+        """view=chains with non-null last_key is returned correctly."""
+        mock_service.query_chains_by_user.return_value = ChainListResponse(
+            chains=[
+                ChainSummary(
+                    chain_id="corr-page1",
+                    root=InvocationItem(
+                        invocation_id="inv-page1",
+                        invoked_at="2026-06-22T10:00:00Z",
+                        status="complete",
+                    ),
+                    descendant_count=0,
+                    descendants=[],
+                )
+            ],
+            count=1,
+            last_key="eyJwayI6ICJpbnYtcGFnZTEifQ==",
+        )
+        resp = client.get("/me/agent-invocations?view=chains")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["last_key"] is not None
+        assert data["count"] == 1

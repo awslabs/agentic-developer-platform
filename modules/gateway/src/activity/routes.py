@@ -8,14 +8,20 @@ Endpoints:
 """
 
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.activity.cost_service import get_cost_by_run_ids
-from src.activity.schemas import InvocationChainItem, InvocationChainResponse, InvocationItem, InvocationListResponse
+from src.activity.schemas import (
+    ChainListResponse,
+    InvocationChainItem,
+    InvocationChainResponse,
+    InvocationItem,
+    InvocationListResponse,
+)
 from src.activity.service import ActivityService
 from src.admin.access_control import AccessControl
 from src.admin.config import Permission
@@ -100,6 +106,63 @@ async def _enrich_with_cost(db: AsyncSession, response: InvocationListResponse) 
     return response
 
 
+async def _enrich_chains_with_cost(db: AsyncSession, response: ChainListResponse) -> ChainListResponse:
+    """Enrich all chains in a ChainListResponse with per-run cost data.
+
+    Issue #1662: Single batched Postgres query across ALL run_ids in ALL chains
+    on the page. Bounded by page_size(20) × chain_depth_cap(50) = max 1000 IDs.
+    Computes per-run cost and chain totals. Graceful degradation on failure.
+    """
+    if not response.chains:
+        return response
+
+    # Collect ALL run_ids across all chains (root + descendants)
+    all_run_ids: list[str] = []
+    for chain in response.chains:
+        all_run_ids.append(chain.root.invocation_id)
+        for desc in chain.descendants:
+            all_run_ids.append(desc.invocation_id)
+
+    if not all_run_ids:
+        return response
+
+    try:
+        cost_map = await get_cost_by_run_ids(db, all_run_ids)
+    except Exception as exc:
+        logger.warning(
+            "Failed to enrich chains with cost data — returning chains without cost",
+            extra={"error": str(exc)},
+        )
+        return response
+
+    # Apply cost to each chain
+    for chain in response.chains:
+        # Enrich root
+        root_cost = cost_map.get(chain.root.invocation_id)
+        if root_cost:
+            chain.root.total_cost_usd = root_cost["total_cost_usd"]
+            chain.root.total_tokens = root_cost["total_tokens"]
+            chain.root.call_count = root_cost["call_count"]
+
+        # Enrich descendants
+        for desc in chain.descendants:
+            desc_cost = cost_map.get(desc.invocation_id)
+            if desc_cost:
+                desc.total_cost_usd = desc_cost["total_cost_usd"]
+                desc.total_tokens = desc_cost["total_tokens"]
+                desc.call_count = desc_cost["call_count"]
+
+        # Compute chain totals (root + descendants)
+        chain_run_ids = [chain.root.invocation_id] + [d.invocation_id for d in chain.descendants]
+        chain_costs = [cost_map[rid] for rid in chain_run_ids if rid in cost_map]
+        if chain_costs:
+            chain.chain_total_cost_usd = sum(c["total_cost_usd"] for c in chain_costs)
+            chain.chain_total_tokens = sum(c["total_tokens"] for c in chain_costs)
+            chain.chain_total_call_count = sum(c["call_count"] for c in chain_costs)
+
+    return response
+
+
 def _collect_chain_ids(nodes: list[InvocationChainItem]) -> list[str]:
     """Flatten a chain tree into a list of invocation_ids."""
     ids: list[str] = []
@@ -158,7 +221,7 @@ async def _enrich_chain_with_cost(db: AsyncSession, chain: InvocationChainRespon
 # ---------------------------------------------------------------------------
 
 
-@router.get("/me/agent-invocations", response_model=InvocationListResponse)
+@router.get("/me/agent-invocations", response_model=InvocationListResponse | ChainListResponse)
 async def get_my_invocations(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     service: Annotated[ActivityService, Depends(get_activity_service)],
@@ -171,7 +234,8 @@ async def get_my_invocations(
     since: Annotated[str | None, Query()] = None,
     until: Annotated[str | None, Query()] = None,
     include_non_triggering: Annotated[bool, Query()] = False,
-) -> InvocationListResponse:
+    view: Annotated[Literal["runs", "chains"], Query()] = "runs",
+) -> InvocationListResponse | ChainListResponse:
     """Get the authenticated user's own agent invocations.
 
     Scoping: derives the canonical user_id from the JWT token ONLY (the Cognito
@@ -185,22 +249,41 @@ async def get_my_invocations(
     status no_op or webhook_received are excluded from results. An explicit
     status filter takes precedence (selecting status=no_op will still return
     those rows regardless of this flag).
+
+    Issue #1662: When view=chains, returns a ChainListResponse — one row per
+    chain (root + descendants inline), paginated over chains by root arrived_at.
+    Default view=runs preserves the flat list behavior.
     """
     canonical_user_id = await _resolve_canonical_user_id(db, current_user)
     try:
-        result = service.query_by_user(
-            user_id=canonical_user_id,
-            page_size=page_size,
-            last_key=last_key,
-            status=status,
-            channel=channel,
-            persona=persona,
-            since=since,
-            until=until,
-            include_non_triggering=include_non_triggering,
-        )
-        # Issue #1616: Enrich with per-run cost from Postgres
-        return await _enrich_with_cost(db, result)
+        if view == "chains":
+            chain_result = service.query_chains_by_user(
+                user_id=canonical_user_id,
+                page_size=page_size,
+                last_key=last_key,
+                status=status,
+                channel=channel,
+                persona=persona,
+                since=since,
+                until=until,
+                include_non_triggering=include_non_triggering,
+            )
+            # Issue #1662: Batch cost enrichment across all chains on the page
+            return await _enrich_chains_with_cost(db, chain_result)
+        else:
+            result = service.query_by_user(
+                user_id=canonical_user_id,
+                page_size=page_size,
+                last_key=last_key,
+                status=status,
+                channel=channel,
+                persona=persona,
+                since=since,
+                until=until,
+                include_non_triggering=include_non_triggering,
+            )
+            # Issue #1616: Enrich with per-run cost from Postgres
+            return await _enrich_with_cost(db, result)
     except ValueError as exc:
         # Bad cursor
         raise HTTPException(status_code=400, detail=str(exc)) from exc

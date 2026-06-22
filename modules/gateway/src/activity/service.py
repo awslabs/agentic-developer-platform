@@ -26,6 +26,8 @@ from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from src.activity.schemas import (
+    ChainListResponse,
+    ChainSummary,
     InvocationChainItem,
     InvocationChainResponse,
     InvocationItem,
@@ -413,6 +415,162 @@ class ActivityService:
             total_count=len(all_items),
             depth_capped=depth_capped,
         )
+
+    def query_chains_by_user(
+        self,
+        user_id: str,
+        *,
+        page_size: int = 20,
+        last_key: str | None = None,
+        status: str | None = None,
+        channel: str | None = None,
+        persona: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        include_non_triggering: bool = False,
+    ) -> ChainListResponse:
+        """Query chains for a specific user via user-index GSI.
+
+        Issue #1662: Chain-grouped board view. For /me, every user-index hit IS
+        a chain root (humans always start a new correlation_id), so pagination
+        is straightforward — same as flat view, but each root is enriched with
+        its chain descendants.
+
+        Steps:
+        1. Query user-index (same as query_by_user) to get the page of roots.
+        2. For each root with a correlation_id, fetch chain members via
+           correlation-index GSI (exclude non-triggering statuses from
+           descendants by default).
+        3. Assemble ChainSummary objects (root + descendants).
+
+        Cost enrichment is handled at the route layer (batched Postgres query).
+        """
+        # Step 1: Get the page of roots (same query as flat view)
+        flat_result = self._execute_query(
+            index_name="user-index",
+            partition_key_name="user_id",
+            partition_key_value=user_id,
+            page_size=page_size,
+            last_key=last_key,
+            status=status,
+            channel=channel,
+            persona=persona,
+            since=since,
+            until=until,
+            include_non_triggering=include_non_triggering,
+        )
+
+        # Step 2: For each root, fetch descendants from correlation-index
+        chains: list[ChainSummary] = []
+        for root_item in flat_result.items:
+            correlation_id = root_item.correlation_id
+            if not correlation_id:
+                # No correlation_id → singleton chain (no descendants possible)
+                chains.append(
+                    ChainSummary(
+                        chain_id=root_item.invocation_id,
+                        root=root_item,
+                        descendant_count=0,
+                        descendants=[],
+                    )
+                )
+                continue
+
+            # Fetch chain members via correlation-index
+            descendants = self._fetch_chain_descendants(
+                correlation_id=correlation_id,
+                root_invocation_id=root_item.invocation_id,
+                include_non_triggering=include_non_triggering,
+            )
+
+            chains.append(
+                ChainSummary(
+                    chain_id=correlation_id,
+                    root=root_item,
+                    descendant_count=len(descendants),
+                    descendants=descendants,
+                )
+            )
+
+        return ChainListResponse(
+            chains=chains,
+            count=len(chains),
+            last_key=flat_result.last_key,
+        )
+
+    def _fetch_chain_descendants(
+        self,
+        correlation_id: str,
+        root_invocation_id: str,
+        *,
+        include_non_triggering: bool = False,
+        depth_cap: int = _CHAIN_DEPTH_CAP,
+    ) -> list[InvocationChainItem]:
+        """Fetch chain descendants (non-root members) for a correlation_id.
+
+        Issue #1662: Uses correlation-index GSI. Excludes the root itself
+        (already shown as the chain row). Filters out no_op/webhook_received
+        descendants by default (consistent with #1658 behavior).
+        """
+        # Non-triggering statuses to exclude from descendants
+        _non_triggering_statuses = {"no_op", "webhook_received"}
+
+        all_items: list[dict] = []
+        try:
+            query_kwargs: dict = {
+                "IndexName": "correlation-index",
+                "KeyConditionExpression": Key("correlation_id").eq(correlation_id),
+                "ScanIndexForward": True,  # ascending arrived_at = chain order
+            }
+
+            while True:
+                response = self._table.query(**query_kwargs)
+                all_items.extend(response.get("Items", []))
+
+                if len(all_items) >= depth_cap:
+                    all_items = all_items[:depth_cap]
+                    break
+
+                if "LastEvaluatedKey" not in response:
+                    break
+                query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code in ("ValidationException", "ResourceNotFoundException", "AccessDeniedException"):
+                logger.warning(
+                    "DynamoDB query failed (chain descendants) — returning empty",
+                    extra={"correlation_id": correlation_id, "error_code": error_code},
+                )
+                return []
+            raise
+
+        # Filter: exclude the root item and optionally non-triggering statuses
+        descendants: list[InvocationChainItem] = []
+        for item in all_items:
+            inv_id = item.get("invocation_id", item.get("pk", ""))
+            if inv_id == root_invocation_id:
+                continue  # Skip the root itself
+
+            # Exclude non-triggering statuses from descendants by default
+            item_status = item.get("status")
+            if not include_non_triggering and item_status in _non_triggering_statuses:
+                continue
+
+            descendants.append(
+                InvocationChainItem(
+                    invocation_id=inv_id,
+                    invoked_at=item.get("arrived_at", ""),
+                    channel=item.get("channel"),
+                    status=item_status,
+                    topic=item.get("topic"),
+                    persona=item.get("persona"),
+                    parent_invocation_id=item.get("parent_invocation_id"),
+                    children=[],
+                )
+            )
+
+        return descendants
 
     def get_invocation(
         self,

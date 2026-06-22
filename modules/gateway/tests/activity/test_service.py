@@ -1052,3 +1052,395 @@ class TestIncludeNonTriggering:
         assert result.items == []
         assert result.count == 0
         assert result.last_key is not None
+
+
+# ---------------------------------------------------------------------------
+# Issue #1662 tests: Chain-grouped board view (query_chains_by_user)
+# ---------------------------------------------------------------------------
+
+
+class TestQueryChainsByUser:
+    """Tests for query_chains_by_user — the chain-grouped board view."""
+
+    def test_singleton_chain_no_correlation_id(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """A root with no correlation_id is a singleton (no descendants, chain_id = invocation_id)."""
+        # user-index query returns one item without correlation_id
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-solo",
+                    "arrived_at": "2026-06-22T10:00:00Z",
+                    "channel": "github",
+                    "status": "complete",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id="user-1")
+
+        assert result.count == 1
+        chain = result.chains[0]
+        assert chain.chain_id == "inv-solo"
+        assert chain.root.invocation_id == "inv-solo"
+        assert chain.descendant_count == 0
+        assert chain.descendants == []
+
+    def test_multi_run_chain_fetches_descendants(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """A root with correlation_id fetches descendants from correlation-index."""
+        # First call: user-index query returns root
+        # Second call: correlation-index query returns root + descendants
+        mock_dynamodb_table.query.side_effect = [
+            # user-index result (root)
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-root",
+                        "arrived_at": "2026-06-22T10:00:00Z",
+                        "channel": "github",
+                        "status": "complete",
+                        "topic": "Deploy ADP",
+                        "persona": "developer",
+                        "source_url": "https://github.com/aws-e/adp/issues/1320",
+                        "repo": "aws-e/adp",
+                        "issue_number": 1320,
+                        "user_id": "user-1",
+                        "correlation_id": "corr-001",
+                        "is_human_rooted": True,
+                        "root_human_id": "user-1",
+                    }
+                ],
+                "Count": 1,
+            },
+            # correlation-index result (root + 2 descendants)
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-root",
+                        "arrived_at": "2026-06-22T10:00:00Z",
+                        "channel": "github",
+                        "status": "complete",
+                        "topic": "Deploy ADP",
+                        "persona": "developer",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-001",
+                    },
+                    {
+                        "invocation_id": "inv-child-1",
+                        "arrived_at": "2026-06-22T10:05:00Z",
+                        "channel": "github",
+                        "status": "complete",
+                        "topic": "Code review",
+                        "persona": "reviewer",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-001",
+                        "parent_invocation_id": "inv-root",
+                    },
+                    {
+                        "invocation_id": "inv-child-2",
+                        "arrived_at": "2026-06-22T10:10:00Z",
+                        "channel": "github",
+                        "status": "in_progress",
+                        "topic": "Deploy follow-up",
+                        "persona": "ops",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-001",
+                        "parent_invocation_id": "inv-root",
+                    },
+                ],
+                "Count": 3,
+            },
+        ]
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id="user-1")
+
+        assert result.count == 1
+        chain = result.chains[0]
+        assert chain.chain_id == "corr-001"
+        assert chain.root.invocation_id == "inv-root"
+        assert chain.root.topic == "Deploy ADP"
+        assert chain.descendant_count == 2
+        assert len(chain.descendants) == 2
+        # Descendants are time-ordered
+        assert chain.descendants[0].invocation_id == "inv-child-1"
+        assert chain.descendants[0].topic == "Code review"
+        assert chain.descendants[0].persona == "reviewer"
+        assert chain.descendants[1].invocation_id == "inv-child-2"
+        assert chain.descendants[1].topic == "Deploy follow-up"
+
+    def test_excludes_non_triggering_descendants_by_default(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """no_op and webhook_received descendants are excluded by default."""
+        mock_dynamodb_table.query.side_effect = [
+            # user-index result
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-root",
+                        "arrived_at": "2026-06-22T10:00:00Z",
+                        "status": "complete",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-002",
+                    }
+                ],
+                "Count": 1,
+            },
+            # correlation-index: root + no_op + webhook_received + real child
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-root",
+                        "arrived_at": "2026-06-22T10:00:00Z",
+                        "status": "complete",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-002",
+                    },
+                    {
+                        "invocation_id": "inv-noop",
+                        "arrived_at": "2026-06-22T10:01:00Z",
+                        "status": "no_op",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-002",
+                    },
+                    {
+                        "invocation_id": "inv-webhook",
+                        "arrived_at": "2026-06-22T10:02:00Z",
+                        "status": "webhook_received",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-002",
+                    },
+                    {
+                        "invocation_id": "inv-real",
+                        "arrived_at": "2026-06-22T10:03:00Z",
+                        "status": "in_progress",
+                        "topic": "Real task",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-002",
+                    },
+                ],
+                "Count": 4,
+            },
+        ]
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id="user-1")
+
+        chain = result.chains[0]
+        # Only the real child should appear (no_op and webhook_received excluded)
+        assert chain.descendant_count == 1
+        assert chain.descendants[0].invocation_id == "inv-real"
+
+    def test_includes_non_triggering_when_flag_set(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """include_non_triggering=True includes no_op/webhook_received descendants."""
+        mock_dynamodb_table.query.side_effect = [
+            # user-index result (include_non_triggering=True doesn't exclude roots)
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-root",
+                        "arrived_at": "2026-06-22T10:00:00Z",
+                        "status": "complete",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-003",
+                    }
+                ],
+                "Count": 1,
+            },
+            # correlation-index: root + no_op descendant
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-root",
+                        "arrived_at": "2026-06-22T10:00:00Z",
+                        "status": "complete",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-003",
+                    },
+                    {
+                        "invocation_id": "inv-noop",
+                        "arrived_at": "2026-06-22T10:01:00Z",
+                        "status": "no_op",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-003",
+                    },
+                ],
+                "Count": 2,
+            },
+        ]
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id="user-1", include_non_triggering=True)
+
+        chain = result.chains[0]
+        assert chain.descendant_count == 1
+        assert chain.descendants[0].invocation_id == "inv-noop"
+
+    def test_pagination_cursor_preserved(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Chain pagination cursor = user-index LastEvaluatedKey."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "invocation_id": "inv-page1",
+                    "arrived_at": "2026-06-22T10:00:00Z",
+                    "status": "complete",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+            "LastEvaluatedKey": {"pk": "inv-page1", "arrived_at": "2026-06-22T10:00:00Z", "user_id": "user-1"},
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id="user-1")
+
+        assert result.last_key is not None
+        assert result.count == 1
+
+    def test_depth_cap_on_descendants(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Chain descendants are capped at the depth limit."""
+        # Generate 60 items (exceeds default cap of 50)
+        many_items = [
+            {
+                "invocation_id": f"inv-{i:03d}",
+                "arrived_at": f"2026-06-22T{10 + (i // 60):02d}:{i % 60:02d}:00Z",
+                "status": "complete",
+                "user_id": "user-1",
+                "correlation_id": "corr-big",
+            }
+            for i in range(60)
+        ]
+
+        mock_dynamodb_table.query.side_effect = [
+            # user-index returns the root
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-000",
+                        "arrived_at": "2026-06-22T10:00:00Z",
+                        "status": "complete",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-big",
+                    }
+                ],
+                "Count": 1,
+            },
+            # correlation-index returns all 60 items
+            {"Items": many_items, "Count": 60},
+        ]
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id="user-1")
+
+        chain = result.chains[0]
+        # Descendants = capped items minus the root itself
+        # Cap is 50 items total from correlation-index, then root excluded = 49
+        assert chain.descendant_count <= 49
+
+    def test_correlation_index_error_returns_empty_descendants(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """If correlation-index query fails, chain has zero descendants (graceful)."""
+        mock_dynamodb_table.query.side_effect = [
+            # user-index returns root
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-root",
+                        "arrived_at": "2026-06-22T10:00:00Z",
+                        "status": "complete",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-fail",
+                    }
+                ],
+                "Count": 1,
+            },
+            # correlation-index fails
+            ClientError(
+                {"Error": {"Code": "ValidationException", "Message": "Index not found"}},
+                "Query",
+            ),
+        ]
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id="user-1")
+
+        assert result.count == 1
+        chain = result.chains[0]
+        assert chain.descendant_count == 0
+        assert chain.descendants == []
+
+    def test_multiple_chains_on_one_page(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Multiple roots on one page each get their own chain with descendants."""
+        mock_dynamodb_table.query.side_effect = [
+            # user-index returns 2 roots
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-A",
+                        "arrived_at": "2026-06-22T11:00:00Z",
+                        "status": "complete",
+                        "topic": "Chain A",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-A",
+                    },
+                    {
+                        "invocation_id": "inv-B",
+                        "arrived_at": "2026-06-22T10:00:00Z",
+                        "status": "in_progress",
+                        "topic": "Chain B",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-B",
+                    },
+                ],
+                "Count": 2,
+            },
+            # correlation-index for corr-A (root + 1 descendant)
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-A",
+                        "arrived_at": "2026-06-22T11:00:00Z",
+                        "status": "complete",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-A",
+                    },
+                    {
+                        "invocation_id": "inv-A-child",
+                        "arrived_at": "2026-06-22T11:05:00Z",
+                        "status": "complete",
+                        "topic": "A child",
+                        "persona": "reviewer",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-A",
+                    },
+                ],
+                "Count": 2,
+            },
+            # correlation-index for corr-B (root only = singleton)
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-B",
+                        "arrived_at": "2026-06-22T10:00:00Z",
+                        "status": "in_progress",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-B",
+                    },
+                ],
+                "Count": 1,
+            },
+        ]
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id="user-1")
+
+        assert result.count == 2
+        # Chain A has 1 descendant
+        chain_a = result.chains[0]
+        assert chain_a.chain_id == "corr-A"
+        assert chain_a.descendant_count == 1
+        assert chain_a.descendants[0].invocation_id == "inv-A-child"
+        # Chain B is singleton
+        chain_b = result.chains[1]
+        assert chain_b.chain_id == "corr-B"
+        assert chain_b.descendant_count == 0

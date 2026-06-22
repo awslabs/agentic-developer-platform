@@ -91,6 +91,24 @@ export interface InvocationChainResponse {
   chain_total_call_count: number | null;
 }
 
+/** Issue #1662: A chain summary — root run + descendants + chain-level aggregates. */
+export interface ChainSummary {
+  chain_id: string;
+  root: InvocationItem;
+  descendant_count: number;
+  descendants: InvocationChainItem[];
+  chain_total_cost_usd: number | null;
+  chain_total_tokens: number | null;
+  chain_total_call_count: number | null;
+}
+
+/** Issue #1662: Paginated list of chains for the chain-grouped board view. */
+export interface ChainListResponse {
+  chains: ChainSummary[];
+  count: number;
+  last_key: string | null;
+}
+
 /** Query parameters for fetching invocations. */
 export interface InvocationQueryParams {
   status?: InvocationStatus;
@@ -102,4 +120,6 @@ export interface InvocationQueryParams {
   last_key?: string;
   /** Issue #1658: When false (default), exclude no_op and webhook_received rows. */
   include_non_triggering?: boolean;
+  /** Issue #1662: View mode — 'runs' (flat list) or 'chains' (grouped by chain). */
+  view?: 'runs' | 'chains';
 }

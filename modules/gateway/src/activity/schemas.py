@@ -168,3 +168,54 @@ class InvocationListResponse(BaseModel):
             "more pages exist — keep paginating."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #1662: Chain-grouped view schemas
+# ---------------------------------------------------------------------------
+
+
+class ChainSummary(BaseModel):
+    """One chain = root run + optional descendants, with chain-level aggregates.
+
+    Issue #1662: Used in the chain-grouped board view. The root is the
+    human-initiated invocation (the issue that started the chain); descendants
+    are the agent runs it spawned.
+    """
+
+    chain_id: str = Field(description="The correlation_id grouping this chain.")
+    root: InvocationItem = Field(description="The root invocation (the human-triggered run that started the chain).")
+    descendant_count: int = Field(description="Number of other runs in the chain (0 = singleton).")
+    descendants: list[InvocationChainItem] = Field(
+        default_factory=list,
+        description="Chain members other than the root (time-ordered). Empty for singletons.",
+    )
+    # Chain-level cost aggregates
+    chain_total_cost_usd: float | None = Field(
+        default=None,
+        description="Sum of cost across all runs in the chain (root + descendants).",
+    )
+    chain_total_tokens: int | None = Field(
+        default=None,
+        description="Sum of tokens across all runs in the chain.",
+    )
+    chain_total_call_count: int | None = Field(
+        default=None,
+        description="Sum of Bedrock calls across all runs in the chain.",
+    )
+
+
+class ChainListResponse(BaseModel):
+    """Paginated list of chains for the chain-grouped board view.
+
+    Issue #1662: Pagination is over chains (by root arrived_at desc), not
+    individual runs. Each chain contains the root + its descendants inline
+    (eager loading — data already fetched for cost totals).
+    """
+
+    chains: list[ChainSummary] = Field(description="Page of chains, newest-root-first.")
+    count: int = Field(description="Number of chains in this page.")
+    last_key: str | None = Field(
+        default=None,
+        description=("Opaque cursor for the next page of chains. Null means no more pages."),
+    )
