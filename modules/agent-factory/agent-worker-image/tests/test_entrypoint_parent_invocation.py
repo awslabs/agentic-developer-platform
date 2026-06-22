@@ -51,6 +51,29 @@ class TestWriteOutboundCorrelationParent:
     @patch.dict(
         os.environ,
         {
+            "ADP_CORRELATION_ID": "corr-789",
+            "ADP_ROOT_HUMAN_ID": "user-human-3",
+            "ADP_IS_HUMAN_ROOTED": "true",
+            "ADP_MESSAGE_ID": "msg-run-xyz",
+            "ADP_USER_ID": "user-bot-3",
+        },
+    )
+    def test_issue_key_uses_canonical_format(self, mock_write, mock_prov):
+        """Issue #1661: channel_key matches webhook format github:repo=X,issue=N."""
+        from entrypoint import _write_outbound_correlation
+
+        _write_outbound_correlation("aws-e/adp", "issue:1320", "comment_post")
+
+        mock_write.assert_called_once()
+        call_kwargs = mock_write.call_args[1]
+        # Must match the webhook-ingress canonical format exactly
+        assert call_kwargs["channel_key"] == "github:repo=aws-e/adp,issue=1320"
+
+    @patch("entrypoint.post_provenance")
+    @patch("entrypoint.write_pointer")
+    @patch.dict(
+        os.environ,
+        {
             "ADP_CORRELATION_ID": "corr-456",
             "ADP_ROOT_HUMAN_ID": "user-human-2",
             "ADP_IS_HUMAN_ROOTED": "false",

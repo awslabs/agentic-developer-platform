@@ -27,7 +27,7 @@ import boto3
 
 from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
-from lib.correlation_store import write_pointer
+from lib.correlation_store import channel_key, write_pointer
 from lib.invocation_status import update_status as update_invocation_status
 from lib.gateway_credential_client import GatewayCredentialClient, GatewayCredentialError
 from lib.github_token import mint_installation_token
@@ -966,6 +966,9 @@ def _write_outbound_correlation(repo: str, channel_suffix: str, action_kind: str
 
     Issue #1460: Records the producing run's message_id as triggering_invocation_id
     on the DDB pointer so the next inbound webhook can set parent_invocation_id.
+
+    Issue #1661: Uses canonical channel_key() format matching the webhook-ingress
+    Lambda so the pointer round-trips correctly.
     """
     corr = os.environ.get("ADP_CORRELATION_ID", "")
     root = os.environ.get("ADP_ROOT_HUMAN_ID", "")
@@ -975,12 +978,19 @@ def _write_outbound_correlation(repo: str, channel_suffix: str, action_kind: str
     if not corr or not root:
         return  # No correlation context — skip silently
 
-    channel_key = f"github:{repo}:{channel_suffix}"
+    # Build canonical channel key matching webhook-ingress format (#1661).
+    # channel_suffix is "issue:{N}" or "pr:{branch}" — parse to extract kind/number.
+    if channel_suffix.startswith("issue:"):
+        issue_number = int(channel_suffix.split(":", 1)[1])
+        key = channel_key("github", repo, "issue", issue_number)
+    else:
+        # PR path: keep legacy format for now (out of scope per #1661 approved design).
+        key = f"github:{repo}:{channel_suffix}"
 
     # DDB pointer write (fail-soft) — includes triggering_invocation_id for lineage
     try:
         write_pointer(
-            channel_key=channel_key,
+            channel_key=key,
             correlation_id=corr,
             root_human_id=root,
             is_human_rooted=rooted,

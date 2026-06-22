@@ -28,6 +28,18 @@ def _get_client():
     return _ddb
 
 
+def channel_key(provider: str, repo: str, kind: str, number: int) -> str:
+    """Build canonical channel key.
+
+    Format follows Phase 2-a spec: 'github:repo=aws-e/adp,issue=783'
+
+    Must produce the EXACT same string as the webhook-ingress Lambda's
+    correlation_store.channel_key() — these are separate deploy bundles with
+    a pinned-string test on both sides ensuring parity (issue #1661).
+    """
+    return f"{provider}:repo={repo},{kind}={number}"
+
+
 def write_pointer(
     channel_key: str,
     correlation_id: str,
@@ -39,7 +51,7 @@ def write_pointer(
     """Write a correlation pointer to DynamoDB. Fail-soft: logs and returns on error.
 
     Args:
-        channel_key: Channel identifier (e.g. "github:org/repo:issue:123").
+        channel_key: Channel identifier (e.g. "github:repo=aws-e/adp,issue=783").
         correlation_id: Active correlation ID for this channel.
         root_human_id: The originating human's user ID.
         is_human_rooted: Whether the chain traces back to a human action.
@@ -56,9 +68,9 @@ def write_pointer(
         now = int(time.time())
         item = {
             "channel_key": {"S": channel_key},
-            "latest_correlation_id": {"S": correlation_id},
-            "latest_root_human_id": {"S": root_human_id},
-            "latest_is_human_rooted": {"BOOL": is_human_rooted},
+            "correlation_id": {"S": correlation_id},
+            "root_human_id": {"S": root_human_id},
+            "is_human_rooted": {"BOOL": is_human_rooted},
             "updated_at": {"N": str(now)},
             "expires_at": {"N": str(now + ttl_days * 86400)},
         }
