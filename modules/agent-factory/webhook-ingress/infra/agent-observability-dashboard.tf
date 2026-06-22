@@ -150,11 +150,11 @@ resource "aws_cloudwatch_dashboard" "agent_observability" {
 
       # -----------------------------------------------------------------
       # Row 5: Per-run detail table (full width) — one row per run with
-      # run id, user (ADP owner UUID), all token buckets, start, duration,
-      # cost, api calls. Clicking a row -> "View in Logs Insights" filters
-      # that session.id, giving the run's full event stream (#1680 req #6).
-      # user_id = ADP enduser.id (GitHub-login enrichment is a follow-up;
-      # the SDK telemetry carries no GitHub id today).
+      # run id, GitHub login, user (ADP owner UUID), all token buckets,
+      # start, duration, cost, api calls. Clicking a row -> "View in Logs
+      # Insights" filters that session.id, giving the run's full event
+      # stream (#1680 req #6).
+      # github_login enrichment: #1695 (resource attr github.login).
       # -----------------------------------------------------------------
       {
         type   = "log"
@@ -164,9 +164,9 @@ resource "aws_cloudwatch_dashboard" "agent_observability" {
         height = 8
         properties = {
           region = var.aws_region
-          title  = "Per-run detail - id, user, tokens, start, duration, cost (click row -> Logs Insights for that run)"
+          title  = "Per-run detail - id, github_login, user, tokens, start, duration, cost (click row -> Logs Insights for that run)"
           view   = "table"
-          query  = "SOURCE '${var.otel_collector_log_group}/logs' | filter @message like /api_request/ | parse @message /\"session.id\":\"(?<run>[^\"]+)\"/ | parse @message /\"enduser.id\":\"(?<user_id>[^\"]+)\"/ | parse @message /\"input_tokens\":(?<inp>[0-9]+)/ | parse @message /\"output_tokens\":(?<out>[0-9]+)/ | parse @message /\"cache_read_tokens\":(?<cr>[0-9]+)/ | parse @message /\"cost_usd\":(?<cost>[0-9.]+)/ | stats earliest(@timestamp) as start_time, (latest(@timestamp)-earliest(@timestamp))/1000 as duration_sec, sum(inp) as input_tokens, sum(out) as output_tokens, sum(cr) as cache_tokens, sum(cost) as cost_usd, count(*) as api_calls by run, user_id | sort cost_usd desc"
+          query  = "SOURCE '${var.otel_collector_log_group}/logs' | filter @message like /api_request/ | parse @message /\"session.id\":\"(?<run>[^\"]+)\"/ | parse @message /\"github.login\":\"(?<github_login>[^\"]+)\"/ | parse @message /\"enduser.id\":\"(?<user_id>[^\"]+)\"/ | parse @message /\"input_tokens\":(?<inp>[0-9]+)/ | parse @message /\"output_tokens\":(?<out>[0-9]+)/ | parse @message /\"cache_read_tokens\":(?<cr>[0-9]+)/ | parse @message /\"cost_usd\":(?<cost>[0-9.]+)/ | stats earliest(@timestamp) as start_time, (latest(@timestamp)-earliest(@timestamp))/1000 as duration_sec, sum(inp) as input_tokens, sum(out) as output_tokens, sum(cr) as cache_tokens, sum(cost) as cost_usd, count(*) as api_calls by run, github_login, user_id | sort cost_usd desc"
         }
       },
 
@@ -180,7 +180,7 @@ resource "aws_cloudwatch_dashboard" "agent_observability" {
         width  = 24
         height = 3
         properties = {
-          markdown = "### View a single run's logs\nClick any row in the **Per-run detail** table above -> **View in Logs Insights**, or paste this to see the full ordered event stream for one run:\n```\nfilter @message like /SESSION_ID/ | sort @timestamp asc\n```\nReplace `SESSION_ID` with the **run** value (session.id). `user_id` is the ADP owner UUID (GitHub-login enrichment is a follow-up — the SDK telemetry carries no GitHub id today). Widen the dashboard time range to see more runs."
+          markdown = "### View a single run's logs\nClick any row in the **Per-run detail** table above -> **View in Logs Insights**, or paste this to see the full ordered event stream for one run:\n```\nfilter @message like /SESSION_ID/ | sort @timestamp asc\n```\nReplace `SESSION_ID` with the **run** value (session.id). `github_login` is the GitHub identity of the triggering user (#1695). `user_id` is the ADP owner UUID (Cognito sub). Bot/cron runs may show an empty `github_login`. Widen the dashboard time range to see more runs."
         }
       },
     ]

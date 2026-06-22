@@ -288,6 +288,13 @@ def main() -> int:
             runtime_attrs.append(f"enduser.id={user_id}")
         if correlation_id:
             runtime_attrs.append(f"session.id={correlation_id}")
+        # Issue #1695: Append GitHub login for human-readable identity on the
+        # dashboard. Guarded: only when non-empty (bot/cron paths may lack it).
+        # GitHub logins are [A-Za-z0-9-] so no encoding needed for the
+        # OTEL_RESOURCE_ATTRIBUTES comma-separated format. Bot suffixes like
+        # "[bot]" contain brackets which are safe (not reserved in OTEL attrs).
+        if github_login:
+            runtime_attrs.append(f"github.login={github_login}")
         # Merge: base (from ScaledJob env) + runtime dimensions
         merged = ",".join(filter(None, [base_attrs] + runtime_attrs))
         os.environ["OTEL_RESOURCE_ATTRIBUTES"] = merged

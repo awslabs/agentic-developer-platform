@@ -2400,6 +2400,85 @@ class TestOtelResourceAttributes:
         assert "agent.persona=developer" in attrs
         assert "enduser.id=cognito-sub-jane-123" in attrs
         assert "session.id=corr-xyz-789" in attrs
+        # Issue #1695: GitHub login enrichment
+        assert "github.login=jane-dev" in attrs
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_otel_attrs_omit_github_login_when_empty(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """github.login is omitted from OTEL attrs when actor.github_login is empty (#1695)."""
+        from entrypoint import main
+        import entrypoint
+
+        # Envelope with empty github_login (simulates bot/cron trigger path)
+        envelope_no_login = {
+            **SAMPLE_ENVELOPE,
+            "actor": {
+                "github_id": 0,
+                "github_login": "",
+                "user_id": "cognito-sub-bot-456",
+                "is_bot": True,
+            },
+            "correlation": {
+                "correlation_id": "corr-bot-001",
+                "root_human_id": "user-human-1",
+                "is_human_rooted": False,
+                "parent_invocation_id": None,
+            },
+        }
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("ENABLE_AGENT_OTEL", "1")
+        monkeypatch.setenv(
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "service.namespace=adp-agents,deployment.environment=dev",
+        )
+
+        mock_receive_msg.return_value = (json.dumps(envelope_no_login), "receipt-no-login")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Verify github.login is NOT in the attributes (empty login = omitted)
+        attrs = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
+        assert "github.login" not in attrs
+        # But other attrs are still present
+        assert "tenant.id=acme-corp" in attrs
+        assert "agent.persona=developer" in attrs
+        assert "enduser.id=cognito-sub-bot-456" in attrs
 
     @patch("entrypoint._receive_one_message")
     @patch("entrypoint._delete_message")
