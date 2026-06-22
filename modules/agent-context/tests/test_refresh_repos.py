@@ -566,3 +566,69 @@ class TestGitLsRemoteEnv:
         sha = self._call_git_ls_remote("slow-org/slow-repo")
 
         assert sha is None
+
+
+# ---------------------------------------------------------------------------
+# Token mint integration tests
+#
+# Verifies the fix for #1682: refresh-repos.py must call mint_github_token()
+# at startup so that GIT_ASKPASS is set before any git ls-remote calls.
+# Without this, the refresh/CronJob path never authenticates and private
+# repos are silently skipped.
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshMintToken:
+    """Verify refresh-repos.py mints a GitHub App token at startup (#1682)."""
+
+    def test_refresh_repos_imports_mint_github_token(self):
+        """refresh-repos.py must import mint_github_token from github_auth."""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "refresh_repos_source",
+            os.path.join(
+                os.path.dirname(__file__), "..", "images", "ingestion", "refresh-repos.py"
+            ),
+        )
+        # Just read the source — don't execute (has heavy deps)
+        with open(spec.origin) as f:
+            source = f.read()
+
+        assert "from github_auth import mint_github_token" in source
+        assert "mint_github_token()" in source
+
+    def test_mint_called_before_refresh_repo_in_main(self):
+        """mint_github_token() must appear in main() BEFORE refresh_repo() calls."""
+        source_path = os.path.join(
+            os.path.dirname(__file__), "..", "images", "ingestion", "refresh-repos.py"
+        )
+        with open(source_path) as f:
+            source = f.read()
+
+        # Extract main() body only (everything after "def main():")
+        main_pos = source.find("def main():")
+        assert main_pos != -1, "def main(): not found"
+        main_body = source[main_pos:]
+
+        # In main(), mint must appear before refresh_repo (which calls git_ls_remote)
+        mint_pos = main_body.find("token_ok = mint_github_token()")
+        refresh_repo_pos = main_body.find("refresh_repo(repo,")
+
+        assert mint_pos != -1, "mint_github_token() call not found in main()"
+        assert refresh_repo_pos != -1, "refresh_repo() call not found in main()"
+        assert mint_pos < refresh_repo_pos, (
+            "mint_github_token must be called before refresh_repo in main()"
+        )
+
+    def test_sqs_worker_uses_shared_helper(self):
+        """sqs-worker.py must import from github_auth (not inline the mint)."""
+        source_path = os.path.join(
+            os.path.dirname(__file__), "..", "images", "ingestion", "sqs-worker.py"
+        )
+        with open(source_path) as f:
+            source = f.read()
+
+        assert "from github_auth import mint_github_token" in source
+        # The _mint_github_token wrapper should delegate to the shared helper
+        assert "return mint_github_token()" in source

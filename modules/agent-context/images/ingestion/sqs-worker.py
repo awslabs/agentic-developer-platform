@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 import sys
 import time
@@ -34,6 +33,7 @@ log = logging.getLogger("sqs-worker")
 # ---------------------------------------------------------------------------
 
 from config import settings
+from github_auth import mint_github_token
 
 AWS_REGION = settings.aws_region
 SQS_QUEUE_URL = settings.sqs_queue_url
@@ -77,7 +77,13 @@ def update_dynamo_status(
     }
 
     # Set per-step status fields based on the overall status
-    for step in ["s3_status", "deepwiki_status", "graphrag_status", "code_index_status", "sbom_source_status"]:
+    for step in [
+        "s3_status",
+        "deepwiki_status",
+        "graphrag_status",
+        "code_index_status",
+        "sbom_source_status",
+    ]:
         if status == "processing":
             update_expr += f", {step} = :pending"
             expr_values[":pending"] = "pending"
@@ -270,58 +276,13 @@ def delete_sqs_message(receipt_handle: str) -> None:
 def _mint_github_token() -> bool:
     """Mint a GitHub App token and write to /tmp/github-token.
 
+    Delegates to the shared github_auth module so sqs-worker and refresh-repos
+    use one implementation (see #1682).
+
     Returns True if token was successfully obtained, False otherwise.
     Failure is non-fatal — anonymous clones still work for public repos.
-
-    Note: GitHub App installation tokens expire after 1 hour (GitHub-enforced).
-    Since each KEDA ScaledJob pod processes one message then exits (backoffLimit=0),
-    and per-repo ingestion takes ≤15 min, mint-per-pod is sufficient.
     """
-    app_id_secret = settings.github_app_id_secret
-    app_key_secret = settings.github_app_key_secret
-
-    if not app_id_secret or not app_key_secret:
-        log.info("No GitHub App secrets configured — using anonymous clones")
-        return False
-
-    owner = settings.github_app_owner
-
-    try:
-        cmd = [
-            sys.executable,
-            "/app/github-app-token.py",
-            "--app-id-secret",
-            app_id_secret,
-            "--app-key-secret",
-            app_key_secret,
-            "--region",
-            AWS_REGION,
-            "--output-file",
-            "/tmp/github-token",
-        ]
-        if owner:
-            cmd.extend(["--owner", owner])
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=30,
-        )
-        if result.returncode == 0:
-            log.info("GitHub App token minted successfully")
-            os.environ["GIT_ASKPASS"] = "/app/git-credential-helper.sh"
-            os.environ["GIT_TERMINAL_PROMPT"] = "0"
-            return True
-        else:
-            stderr = result.stderr.decode()[:200]
-            log.warning("GitHub App token mint failed: %s", stderr)
-            return False
-    except subprocess.TimeoutExpired:
-        log.warning("GitHub App token mint timed out")
-        return False
-    except Exception as e:
-        log.warning("GitHub App token mint error: %s", e)
-        return False
+    return mint_github_token()
 
 
 def main():

@@ -29,6 +29,7 @@ from typing import Any
 import requests
 
 from config import settings
+from github_auth import mint_github_token
 from s3_store import S3ContentStore
 
 # ---------------------------------------------------------------------------
@@ -826,6 +827,16 @@ def main():
     parser.add_argument("--repos-only", action="store_true", help="Only refresh repos")
     parser.add_argument("--urls-only", action="store_true", help="Only refresh URLs")
     args = parser.parse_args()
+
+    # --- Mint GitHub App token (enables private repo access via GIT_ASKPASS) ---
+    # Must happen before any git ls-remote / clone calls.
+    # Without this, private repos silently fail with "Could not get SHA" (#1682).
+    token_ok = mint_github_token()
+    if not token_ok:
+        log.warning(
+            "GitHub App token not available — private repos will be skipped. "
+            "Ensure GITHUB_APP_ID_SECRET and GITHUB_APP_KEY_SECRET are set."
+        )
 
     # Support FORCE_REINDEX env var (set by agent-context-ingest.yml workflow)
     if not args.force and os.environ.get("FORCE_REINDEX", "").lower() in ("true", "1", "yes"):
