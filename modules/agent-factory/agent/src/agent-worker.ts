@@ -334,6 +334,49 @@ async function execCommand(command: string, useAppToken: boolean = false): Promi
  * Refresh the GitHub App installation token and update environment variables.
  * Called before any gh CLI operation to ensure fresh credentials.
  */
+/**
+ * Resolve the GitHub App installation id for this run's target org.
+ *
+ * Resolution order:
+ *   1. GH_APP_INSTALLATION_ID — authoritative, exported by entrypoint.py for the
+ *      exact installation that received the triggering webhook.
+ *   2. /orgs/{REPO_OWNER}/installation then /users/{REPO_OWNER}/installation —
+ *      resolve by the target owner via the App JWT.
+ *   3. Last resort: installations[0] (with a warning) — preserves old behavior
+ *      only when no owner/installation context is available at all.
+ *
+ * Returns the installation id as a string, or null if none could be resolved.
+ */
+async function resolveInstallationId(jwtToken: string): Promise<string | null> {
+  const explicit = process.env.GH_APP_INSTALLATION_ID;
+  if (explicit) return explicit;
+
+  const owner = process.env.REPO_OWNER;
+  const authHeaders = { Authorization: `Bearer ${jwtToken}`, Accept: 'application/vnd.github+json' };
+
+  if (owner) {
+    for (const kind of ['orgs', 'users']) {
+      try {
+        const r = await fetch(`https://api.github.com/${kind}/${owner}/installation`, { headers: authHeaders });
+        if (r.ok) {
+          const data = await r.json() as { id: number };
+          if (data?.id) return String(data.id);
+        }
+      } catch {
+        // try next kind
+      }
+    }
+    log('WARN', `Could not resolve installation for owner ${owner}; falling back to installations[0]`);
+  }
+
+  // Last-resort fallback (legacy behavior) — only when no target context exists.
+  const resp = await fetch('https://api.github.com/app/installations', { headers: authHeaders });
+  const installations = await resp.json() as Array<{ id: number }>;
+  if (!installations.length) return null;
+  log('WARN', 'Using installations[0] as a last resort — REPO_OWNER/GH_APP_INSTALLATION_ID not set');
+  return String(installations[0].id);
+}
+
 async function refreshAppToken(): Promise<void> {
   const appId = process.env.GH_APP_ID;
   const privateKey = process.env.GH_APP_PRIVATE_KEY;
@@ -348,14 +391,17 @@ async function refreshAppToken(): Promise<void> {
       { algorithm: 'RS256' }
     );
 
-    const resp = await fetch('https://api.github.com/app/installations', {
-      headers: { Authorization: `Bearer ${jwtToken}`, Accept: 'application/vnd.github+json' },
-    });
-    const installations = await resp.json() as Array<{ id: number }>;
-    if (!installations.length) return;
+    // Resolve the installation for THIS run's target org. Never blindly use
+    // installations[0]: the GitHub App may be installed on many orgs/users
+    // (one per onboarded tenant), and the API returns them newest-first, so
+    // installations[0] is an arbitrary install — almost never the target. A
+    // token minted for the wrong installation makes every comment/check-run
+    // PATCH return 404 (the resource is invisible outside its installation).
+    const installationId = await resolveInstallationId(jwtToken);
+    if (!installationId) return;
 
     const tokenResp = await fetch(
-      `https://api.github.com/app/installations/${installations[0].id}/access_tokens`,
+      `https://api.github.com/app/installations/${installationId}/access_tokens`,
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${jwtToken}`, Accept: 'application/vnd.github+json' },
@@ -1372,6 +1418,10 @@ async function main(): Promise<void> {
       privateKey: appKey,
       owner: repoOwner,
       repo: REPO_NAME,
+      // Authoritative installation id for this run's target org (exported by
+      // entrypoint.py). Prevents resolving the wrong installation when the App
+      // is installed on many tenants.
+      installationId: process.env.GH_APP_INSTALLATION_ID || undefined,
       workDir: CWD,
       refreshThresholdMs: 15 * 60 * 1000, // Refresh when 15 min remaining
     });

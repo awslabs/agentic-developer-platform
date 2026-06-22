@@ -255,6 +255,12 @@ def main() -> int:
         # 1-hour expiry. Without them, long-running agents die with 401.
         "GH_APP_ID": str(app_id),
         "GH_APP_PRIVATE_KEY": private_key,
+        # Authoritative installation id for THIS run's target org. The JS worker
+        # must re-mint against this installation — NOT installations[0], which is
+        # an arbitrary (newest-first) install and resolves to the wrong org once
+        # more than one tenant is onboarded, causing 404s on comment/check-run
+        # PATCH calls (cross-installation resource access).
+        "GH_APP_INSTALLATION_ID": str(installation_id),
     }
 
     # Vault credential context for adp-cred CLI (#137).
