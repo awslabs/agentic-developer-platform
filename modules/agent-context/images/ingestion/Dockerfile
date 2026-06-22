@@ -97,7 +97,7 @@ RUN curl -sSfL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 RUN crawl4ai-setup || echo "crawl4ai-setup not available or optional — continuing"
 
 # Copy pipeline scripts (config.py must be first — all scripts import it)
-COPY config.py s3_store.py wiki_store.py sbom_parser.py db.py stage_tracker.py /app/
+COPY config.py s3_store.py wiki_store.py sbom_parser.py db.py stage_tracker.py github_auth.py /app/
 COPY scip_ingester.py scip_indexer.py scip_neptune_csv.py scip_neptune_loader.py /app/
 COPY iac_terraform_parser.py iac_neptune_csv.py /app/
 COPY scip_proto/ /app/scip_proto/

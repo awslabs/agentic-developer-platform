@@ -45,13 +45,14 @@ spec:
                 set -euo pipefail
                 echo "=== Ingestion Refresh $(date -u) ==="
 
-                # Step 1: Refresh repos and URLs
+                # Step 1: Refresh repos and URLs (FATAL on failure — downstream
+                # steps depend on repos being cloned; an import crash here means
+                # nothing useful can happen, so fail the Job loudly).
                 echo ""
                 echo "--- Step 1: Repo + URL refresh ---"
                 python /app/refresh-repos.py \
                   --repos-file /config/repos.txt \
-                  --urls-file /config/urls.txt \
-                  || echo "WARNING: refresh-repos.py had errors (non-fatal)"
+                  --urls-file /config/urls.txt
 
                 # Step 2: Infrastructure discovery
                 echo ""
