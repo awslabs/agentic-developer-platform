@@ -83,7 +83,7 @@ jobs:
         with:
           name: checkov-findings
           path: checkov-results.sarif
-          retention-days: 14
+          retention-days: 1
 
   # ---------- Job 2: Semgrep (SAST) ----------
   semgrep:
@@ -133,7 +133,7 @@ jobs:
         with:
           name: semgrep-findings
           path: semgrep-results.sarif
-          retention-days: 14
+          retention-days: 1
 
   # ---------- Job 3: detect-secrets ----------
   detect-secrets:
@@ -173,7 +173,7 @@ jobs:
           path: |
             detect-secrets-results.json
             detect-secrets-audit.json
-          retention-days: 14
+          retention-days: 1
 
   # ---------- Job 4: Grype (CVE scan via CodeBuild) ----------
   grype:
@@ -227,7 +227,7 @@ jobs:
         with:
           name: grype-findings
           path: grype-findings/
-          retention-days: 14
+          retention-days: 1
 
   # ---------- Job 5: Bandit (Python SAST) ----------
   bandit:
@@ -269,7 +269,7 @@ jobs:
         with:
           name: bandit-findings
           path: bandit-results.sarif
-          retention-days: 14
+          retention-days: 1
 
   # ---------- Job 6: cfn-nag (CloudFormation) ----------
   cfn-nag:
@@ -303,7 +303,7 @@ jobs:
         with:
           name: cfn-nag-findings
           path: cfn-nag-results.json
-          retention-days: 14
+          retention-days: 1
 
   # ---------- Job 7: npm audit ----------
   npm-audit:
@@ -341,7 +341,7 @@ jobs:
         with:
           name: npm-audit-findings-${{ steps.name.outputs.name }}
           path: ${{ matrix.package_dir }}/npm-audit-results.json
-          retention-days: 14
+          retention-days: 1
 
   # ---------- Job 8: Syft (SBOM via CodeBuild) ----------
   syft:
@@ -395,7 +395,7 @@ jobs:
         with:
           name: sbom-findings
           path: sbom-findings/
-          retention-days: 14
+          retention-days: 1
 
   # ---------- Summary job ----------
   summary:
