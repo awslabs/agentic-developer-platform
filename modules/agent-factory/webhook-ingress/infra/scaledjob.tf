@@ -168,6 +168,13 @@ locals {
                     value: "9090"
                   - name: WEBHOOK_EVENTS_TABLE
                     value: ${aws_dynamodb_table.webhook_events.name}
+                  # Issue #1679/#1460: without this the worker's write_pointer()
+                  # silently no-ops (correlation_store.py guards on this env var),
+                  # so triggering_invocation_id / parent_invocation_id never persist
+                  # and agent-to-agent lineage is null. The IRSA role already has
+                  # PutItem on this table (scaledjob-iam.tf).
+                  - name: CORRELATION_POINTERS_TABLE
+                    value: ${aws_dynamodb_table.correlation_pointers.name}
 ${local.otel_env_block}
                 resources:
                   requests:
