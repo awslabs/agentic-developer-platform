@@ -94,9 +94,14 @@ resource "aws_cloudwatch_dashboard" "agent_observability" {
         height = 6
         properties = {
           region = var.aws_region
-          title  = "Tokens (in+out) by model"
-          view   = "bar"
-          query  = "SOURCE '${var.otel_collector_log_group}/logs' | filter @message like /api_request/ | parse @message /\"model\":\"(?<model>[^\"]+)\"/ | parse @message /\"input_tokens\":(?<in>[0-9]+)/ | parse @message /\"output_tokens\":(?<out>[0-9]+)/ | stats sum(in) as input_tokens, sum(out) as output_tokens by model"
+          title  = "Tokens by model (all buckets)"
+          view   = "table"
+          # All four token buckets + total. cache_read is typically the bulk
+          # under prompt caching, so input+output alone drastically undercounts.
+          # NOTE: 'output' is a reserved word in Logs Insights -> alias output_tokens.
+          # 'sum(a)+sum(b)' is rejected in stats -> compute per-event total in a
+          # 'fields' step first, then sum that.
+          query = "SOURCE '${var.otel_collector_log_group}/logs' | filter @message like /api_request/ | parse @message /\"model\":\"(?<model>[^\"]+)\"/ | parse @message /\"input_tokens\":(?<inp>[0-9]+)/ | parse @message /\"output_tokens\":(?<out>[0-9]+)/ | parse @message /\"cache_read_tokens\":(?<cr>[0-9]+)/ | parse @message /\"cache_creation_tokens\":(?<cc>[0-9]+)/ | fields (inp+out+cr+cc) as tot | stats sum(inp) as input_tokens, sum(out) as output_tokens, sum(cr) as cache_read_tokens, sum(cc) as cache_create_tokens, sum(tot) as total_tokens by model | sort total_tokens desc"
         }
       },
       {
@@ -140,6 +145,42 @@ resource "aws_cloudwatch_dashboard" "agent_observability" {
           title  = "Tool errors by type"
           view   = "bar"
           query  = "SOURCE '${var.otel_collector_log_group}/logs' | filter @message like /tool_result/ and @message like /error_type/ | parse @message /\"error_type\":\"(?<err>[^\"]+)\"/ | parse @message /\"tool_name\":\"(?<tool>[^\"]+)\"/ | stats count(*) as errors by err, tool | sort errors desc"
+        }
+      },
+
+      # -----------------------------------------------------------------
+      # Row 5: Per-run detail table (full width) — one row per run with
+      # run id, user (ADP owner UUID), all token buckets, start, duration,
+      # cost, api calls. Clicking a row -> "View in Logs Insights" filters
+      # that session.id, giving the run's full event stream (#1680 req #6).
+      # user_id = ADP enduser.id (GitHub-login enrichment is a follow-up;
+      # the SDK telemetry carries no GitHub id today).
+      # -----------------------------------------------------------------
+      {
+        type   = "log"
+        x      = 0
+        y      = 24
+        width  = 24
+        height = 8
+        properties = {
+          region = var.aws_region
+          title  = "Per-run detail - id, user, tokens, start, duration, cost (click row -> Logs Insights for that run)"
+          view   = "table"
+          query  = "SOURCE '${var.otel_collector_log_group}/logs' | filter @message like /api_request/ | parse @message /\"session.id\":\"(?<run>[^\"]+)\"/ | parse @message /\"enduser.id\":\"(?<user_id>[^\"]+)\"/ | parse @message /\"input_tokens\":(?<inp>[0-9]+)/ | parse @message /\"output_tokens\":(?<out>[0-9]+)/ | parse @message /\"cache_read_tokens\":(?<cr>[0-9]+)/ | parse @message /\"cost_usd\":(?<cost>[0-9.]+)/ | stats earliest(@timestamp) as start_time, (latest(@timestamp)-earliest(@timestamp))/1000 as duration_sec, sum(inp) as input_tokens, sum(out) as output_tokens, sum(cr) as cache_tokens, sum(cost) as cost_usd, count(*) as api_calls by run, user_id | sort cost_usd desc"
+        }
+      },
+
+      # -----------------------------------------------------------------
+      # Row 6: helper — how to view a single run's full logs
+      # -----------------------------------------------------------------
+      {
+        type   = "text"
+        x      = 0
+        y      = 32
+        width  = 24
+        height = 3
+        properties = {
+          markdown = "### View a single run's logs\nClick any row in the **Per-run detail** table above -> **View in Logs Insights**, or paste this to see the full ordered event stream for one run:\n```\nfilter @message like /SESSION_ID/ | sort @timestamp asc\n```\nReplace `SESSION_ID` with the **run** value (session.id). `user_id` is the ADP owner UUID (GitHub-login enrichment is a follow-up — the SDK telemetry carries no GitHub id today). Widen the dashboard time range to see more runs."
         }
       },
     ]
