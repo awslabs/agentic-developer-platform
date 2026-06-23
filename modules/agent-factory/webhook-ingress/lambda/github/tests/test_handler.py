@@ -264,7 +264,7 @@ class TestSuccessfulPublish:
 
         payload = {
             "action": "opened",
-            "pull_request": {"number": 15, "head": {"sha": "abc123"}},
+            "pull_request": {"number": 15, "head": {"sha": "abc123", "ref": "agent/issue-42"}},
             "repository": {"full_name": "acme/flagship-app"},
             "sender": {"login": "bob", "id": 1001, "type": "User"},
             "installation": {"id": 99887766},

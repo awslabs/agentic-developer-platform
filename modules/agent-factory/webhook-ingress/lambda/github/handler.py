@@ -271,15 +271,23 @@ def _get_correlation_store():
     return _correlation_store_mod
 
 
-def determine_correlation(payload: dict, resolved_identity, channel_key: str) -> dict[str, Any]:
+def determine_correlation(
+    payload: dict,
+    resolved_identity,
+    channel_key: str,
+    marker_text: str | None = None,
+) -> dict[str, Any]:
     """Determine correlation context for this event (read-only).
 
     For human senders: always starts a new chain (overrides any stale pointer).
-    For bot senders: tries to inherit from DDB pointer, then falls back to
-    starting a new bot-initiated chain.
+    For bot senders: uses pointer-vs-marker precedence (issue #1696):
+      - Pointer exists AND correlation_id matches marker → use pointer
+      - Pointer exists but correlation_id differs from marker → use marker (cross-channel hop)
+      - No pointer → use marker
+      - No marker and no pointer → new chain (fallback)
 
     Returns a dict with: correlation_id, root_human_id, triggered_by,
-    is_human_rooted, is_new_chain.
+    is_human_rooted, is_new_chain, parent_invocation_id, chain_depth.
     """
     # Human senders ALWAYS start a new chain
     if resolved_identity.user_kind == "human":
@@ -290,12 +298,59 @@ def determine_correlation(payload: dict, resolved_identity, channel_key: str) ->
             "is_human_rooted": True,
             "is_new_chain": True,
             "parent_invocation_id": None,
+            "chain_depth": 0,
         }
 
-    # Bot sender: try to inherit from upstream DDB pointer
+    # Bot sender: apply pointer-vs-marker precedence (issue #1696)
     store = _get_correlation_store()
     pointer = store.read_pointer(channel_key)
+
+    # Parse marker from comment/PR body if provided
+    marker = None
+    if marker_text:
+        from common.marker_parse import parse_marker
+
+        marker = parse_marker(marker_text)
+
+    # Precedence resolution for bot senders:
+    # 1. Pointer + marker with SAME correlation_id → pointer wins (authoritative)
+    # 2. Pointer + marker with DIFFERENT correlation_id → marker wins (cross-channel hop)
+    # 3. Pointer only (no marker) → pointer (same-channel continuation)
+    # 4. Marker only (no pointer) → marker (cross-channel first hop)
+    # 5. Neither → new chain
+
+    if pointer and marker:
+        if pointer["correlation_id"] == marker.get("correlation_id"):
+            # Same chain — pointer is authoritative (server-written)
+            pointer_depth = pointer.get("chain_depth")
+            inherited_depth = pointer_depth if pointer_depth is not None else 0
+            return {
+                "correlation_id": pointer["correlation_id"],
+                "root_human_id": pointer["root_human_id"],
+                "triggered_by": resolved_identity.user_id,
+                "is_human_rooted": pointer["is_human_rooted"],
+                "is_new_chain": False,
+                "parent_invocation_id": pointer.get("triggering_invocation_id"),
+                "chain_depth": inherited_depth + 1,
+            }
+        else:
+            # Different correlation — marker represents cross-channel hop
+            marker_depth = marker.get("chain_depth")
+            inherited_depth = marker_depth if marker_depth is not None else 0
+            return {
+                "correlation_id": marker["correlation_id"],
+                "root_human_id": marker.get("root_human_id", resolved_identity.user_id),
+                "triggered_by": resolved_identity.user_id,
+                "is_human_rooted": marker.get("is_human_rooted", False),
+                "is_new_chain": False,
+                "parent_invocation_id": marker.get("invocation_id"),
+                "chain_depth": inherited_depth + 1,
+            }
+
     if pointer:
+        # Pointer only — same-channel continuation
+        pointer_depth = pointer.get("chain_depth")
+        inherited_depth = pointer_depth if pointer_depth is not None else 0
         return {
             "correlation_id": pointer["correlation_id"],
             "root_human_id": pointer["root_human_id"],
@@ -303,9 +358,24 @@ def determine_correlation(payload: dict, resolved_identity, channel_key: str) ->
             "is_human_rooted": pointer["is_human_rooted"],
             "is_new_chain": False,
             "parent_invocation_id": pointer.get("triggering_invocation_id"),
+            "chain_depth": inherited_depth + 1,
         }
 
-    # No pointer found — bot-initiated chain (e.g. cron-like, CI-triggered)
+    if marker:
+        # Marker only — cross-channel first hop
+        marker_depth = marker.get("chain_depth")
+        inherited_depth = marker_depth if marker_depth is not None else 0
+        return {
+            "correlation_id": marker["correlation_id"],
+            "root_human_id": marker.get("root_human_id", resolved_identity.user_id),
+            "triggered_by": resolved_identity.user_id,
+            "is_human_rooted": marker.get("is_human_rooted", False),
+            "is_new_chain": False,
+            "parent_invocation_id": marker.get("invocation_id"),
+            "chain_depth": inherited_depth + 1,
+        }
+
+    # No pointer, no marker — bot-initiated chain (e.g. cron-like, CI-triggered)
     return {
         "correlation_id": str(uuid.uuid4()),
         "root_human_id": resolved_identity.user_id,
@@ -313,6 +383,7 @@ def determine_correlation(payload: dict, resolved_identity, channel_key: str) ->
         "is_human_rooted": False,
         "is_new_chain": True,
         "parent_invocation_id": None,
+        "chain_depth": 0,
     }
 
 
@@ -589,6 +660,9 @@ def handler(event: dict, context) -> dict:
         )
 
     # 9. Determine correlation context (read-only — no DDB writes here)
+    # Issue #1696: Build correlation for BOTH issue_comment AND pull_request events.
+    # For bot senders, pass the comment/PR body as marker_text for cross-channel
+    # lineage inheritance.
     correlation_ctx = None
     channel_key_str = ""
     if event_type == "issue_comment":
@@ -596,7 +670,30 @@ def handler(event: dict, context) -> dict:
         if issue_number and repo:
             store = _get_correlation_store()
             channel_key_str = store.channel_key("github", repo, "issue", issue_number)
-            correlation_ctx = determine_correlation(payload, resolved, channel_key_str)
+            # Extract marker text from comment body for bot senders
+            marker_text = (
+                payload.get("comment", {}).get("body", "")
+                if sender.get("type") == "Bot" or sender.get("login", "").endswith("[bot]")
+                else None
+            )
+            correlation_ctx = determine_correlation(
+                payload, resolved, channel_key_str, marker_text=marker_text
+            )
+    elif event_type == "pull_request":
+        # Issue #1696: PR events use pull_request.number as the channel identifier.
+        pr_number = payload.get("pull_request", {}).get("number")
+        if pr_number and repo:
+            store = _get_correlation_store()
+            channel_key_str = store.channel_key("github", repo, "pr", pr_number)
+            # Extract marker text from PR body for bot senders
+            marker_text = (
+                payload.get("pull_request", {}).get("body", "")
+                if sender.get("type") == "Bot" or sender.get("login", "").endswith("[bot]")
+                else None
+            )
+            correlation_ctx = determine_correlation(
+                payload, resolved, channel_key_str, marker_text=marker_text
+            )
 
     # 10. Parse intent (with correlation context for chain-aware bot logic)
     from intent_parser import extract_intent
@@ -695,7 +792,11 @@ def handler(event: dict, context) -> dict:
         "source_ref": {
             "installation_id": installation_id,
             "repo": repo,
-            "issue": payload.get("issue", {}).get("number") if "issue" in payload else None,
+            # Issue #1696: fall back to pull_request.number when no issue key exists.
+            # This ensures FIFO MessageGroupId serializes per-PR (not …#None).
+            "issue": payload.get("issue", {}).get("number")
+            if "issue" in payload
+            else payload.get("pull_request", {}).get("number"),
             "pr": payload.get("pull_request", {}).get("number")
             if "pull_request" in payload
             else None,
@@ -715,6 +816,7 @@ def handler(event: dict, context) -> dict:
             "parent_invocation_id": correlation_ctx.get("parent_invocation_id")
             if correlation_ctx
             else None,
+            "chain_depth": correlation_ctx.get("chain_depth", 0) if correlation_ctx else 0,
         },
         "payload": payload,
         "arrived_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

@@ -47,6 +47,7 @@ def write_pointer(
     is_human_rooted: bool,
     ttl_days: int = 7,
     triggering_invocation_id: str | None = None,
+    chain_depth: int | None = None,
 ) -> None:
     """Write a correlation pointer to DynamoDB. Fail-soft: logs and returns on error.
 
@@ -58,6 +59,8 @@ def write_pointer(
         ttl_days: TTL in days for the pointer record.
         triggering_invocation_id: The message_id/invocation_id of the producing
             run. Propagated to the next inbound event as parent_invocation_id.
+        chain_depth: Current chain depth of the producing run (issue #1696).
+            Used by the webhook to enforce the depth-only loop guard.
     """
     table = _table_name or os.environ.get("CORRELATION_POINTERS_TABLE", "")
     if not table:
@@ -76,6 +79,8 @@ def write_pointer(
         }
         if triggering_invocation_id:
             item["triggering_invocation_id"] = {"S": triggering_invocation_id}
+        if chain_depth is not None:
+            item["chain_depth"] = {"N": str(chain_depth)}
         _get_client().put_item(
             TableName=table,
             Item=item,

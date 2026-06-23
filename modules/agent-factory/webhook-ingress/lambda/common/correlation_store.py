@@ -61,7 +61,8 @@ def read_pointer(key: str) -> dict | None:
     """Read the correlation pointer for a channel.
 
     Returns {correlation_id, root_human_id, is_human_rooted,
-    triggering_invocation_id} or None if no pointer exists or on DDB error.
+    triggering_invocation_id, chain_depth} or None if no pointer exists
+    or on DDB error.
 
     Uses ConsistentRead=True to close the bot-race window where two
     near-simultaneous bot events could both miss the pointer.
@@ -79,11 +80,19 @@ def read_pointer(key: str) -> dict | None:
         item = resp.get("Item")
         if item is None:
             return None
+        # chain_depth may be absent on old pointers — treat as None (unknown)
+        chain_depth = item.get("chain_depth")
+        if chain_depth is not None:
+            try:
+                chain_depth = int(chain_depth)
+            except (ValueError, TypeError):
+                chain_depth = None
         return {
             "correlation_id": item["correlation_id"],
             "root_human_id": item["root_human_id"],
             "is_human_rooted": item.get("is_human_rooted", True),
             "triggering_invocation_id": item.get("triggering_invocation_id"),
+            "chain_depth": chain_depth,
         }
     except ClientError as e:
         logger.warning(

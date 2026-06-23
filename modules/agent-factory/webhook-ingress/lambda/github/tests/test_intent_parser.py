@@ -430,9 +430,10 @@ class TestChainAwareBotLogic:
             {"source_bot": "operations", "target_persona": "developer"},
         )
 
-    # 5. Bot mentions another bot, pointer EXISTS → blocked (continuation)
+    # 5. Bot mentions another bot, chain depth >= MAX → blocked (depth guard)
     @patch("intent_parser._emit_metric")
     def test_bot_in_active_chain_blocked(self, mock_metric):
+        """Bot mention at depth >= MAX_CHAIN_DEPTH is blocked (issue #1696)."""
         payload = {
             "action": "created",
             "comment": {"body": "@agent-developer please implement this fix"},
@@ -440,16 +441,19 @@ class TestChainAwareBotLogic:
             "sender": self._bot_sender(),
             "installation": {"id": 123},
         }
-        ctx = self._active_chain_ctx()  # is_new_chain = False
+        # Issue #1696: is_new_chain no longer matters; depth guard decides.
+        # Set chain_depth >= MAX_CHAIN_DEPTH to trigger blocking.
+        ctx = self._active_chain_ctx()
+        ctx["chain_depth"] = 8  # MAX_CHAIN_DEPTH default
         identity = self._bot_identity(bot_kind="operations")
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
         assert result is None
-        # Verify BotChainContinuationBlocked metric emitted
+        # Verify ChainDepthExceeded metric emitted (replaces BotChainContinuationBlocked)
         mock_metric.assert_called_with(
-            "BotChainContinuationBlocked",
-            {"persona": "developer"},
+            "ChainDepthExceeded",
+            {"persona": "developer", "depth": "8"},
         )
 
     # 6. Bot self-mention → blocked

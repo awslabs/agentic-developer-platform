@@ -7,7 +7,7 @@
     "body": "Implements OAuth2 flow for user authentication.",
     "head": {
       "sha": "abc123def456",
-      "ref": "feat/user-auth"
+      "ref": "agent/issue-258"
     },
     "base": {
       "ref": "main"

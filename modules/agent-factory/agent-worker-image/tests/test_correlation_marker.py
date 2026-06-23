@@ -93,3 +93,85 @@ class TestPrependCorrelationMarker:
             result = prepend_correlation_marker("")
         assert result.startswith("<!-- adp-correlation:corr-123")
         assert result.endswith("-->\n")
+
+    # --- Issue #1696: adp-invocation and adp-chain-depth ---
+
+    def test_includes_invocation_when_message_id_set(self):
+        """Marker includes adp-invocation when ADP_MESSAGE_ID is set."""
+        env = {
+            "ADP_CORRELATION_ID": "corr-123",
+            "ADP_ROOT_HUMAN_ID": "user-456",
+            "ADP_IS_HUMAN_ROOTED": "true",
+            "ADP_MESSAGE_ID": "msg-789",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("ADP_CHAIN_DEPTH", None)
+            result = prepend_correlation_marker("Body")
+        assert "adp-invocation:msg-789" in result
+        assert result.startswith("<!--")
+        assert result.count("-->") == 1
+
+    def test_includes_chain_depth_when_set(self):
+        """Marker includes adp-chain-depth when ADP_CHAIN_DEPTH is set."""
+        env = {
+            "ADP_CORRELATION_ID": "corr-123",
+            "ADP_ROOT_HUMAN_ID": "user-456",
+            "ADP_IS_HUMAN_ROOTED": "true",
+            "ADP_CHAIN_DEPTH": "3",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("ADP_MESSAGE_ID", None)
+            result = prepend_correlation_marker("Body")
+        assert "adp-chain-depth:3" in result
+
+    def test_full_marker_with_all_fields(self):
+        """Marker includes all fields when all env vars are set."""
+        env = {
+            "ADP_CORRELATION_ID": "corr-full",
+            "ADP_ROOT_HUMAN_ID": "user-full",
+            "ADP_IS_HUMAN_ROOTED": "true",
+            "ADP_MESSAGE_ID": "msg-full",
+            "ADP_CHAIN_DEPTH": "5",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = prepend_correlation_marker("Test body")
+        assert "adp-correlation:corr-full" in result
+        assert "adp-root-human:user-full" in result
+        assert "adp-is-human-rooted:true" in result
+        assert "adp-invocation:msg-full" in result
+        assert "adp-chain-depth:5" in result
+        # Single-line marker (one opening <!--, one closing -->)
+        marker_line = result.split("\n")[0]
+        assert marker_line.startswith("<!--")
+        assert marker_line.endswith("-->")
+
+    def test_no_invocation_when_message_id_empty(self):
+        """No adp-invocation field when ADP_MESSAGE_ID is empty."""
+        env = {
+            "ADP_CORRELATION_ID": "corr-123",
+            "ADP_ROOT_HUMAN_ID": "user-456",
+            "ADP_IS_HUMAN_ROOTED": "true",
+            "ADP_MESSAGE_ID": "",
+            "ADP_CHAIN_DEPTH": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = prepend_correlation_marker("Body")
+        assert "adp-invocation" not in result
+        assert "adp-chain-depth" not in result
+
+    def test_marker_is_single_line(self):
+        """Marker MUST be single-line (GitHub Markdown rendering requirement)."""
+        env = {
+            "ADP_CORRELATION_ID": "corr-123",
+            "ADP_ROOT_HUMAN_ID": "user-456",
+            "ADP_IS_HUMAN_ROOTED": "true",
+            "ADP_MESSAGE_ID": "msg-789",
+            "ADP_CHAIN_DEPTH": "2",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = prepend_correlation_marker("Body")
+        lines = result.split("\n")
+        # First line is the marker, second line onward is the body
+        assert lines[0].startswith("<!--")
+        assert lines[0].endswith("-->")
+        assert lines[1] == "Body"

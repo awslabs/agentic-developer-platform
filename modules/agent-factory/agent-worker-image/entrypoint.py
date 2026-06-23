@@ -175,6 +175,14 @@ def main() -> int:
     if message_id:
         os.environ["ADP_MESSAGE_ID"] = message_id
 
+    # Issue #1696: Export chain depth so outbound markers carry it for cross-agent
+    # lineage inheritance. Missing → treat as 0 (chain root / unknown depth).
+    chain_depth = corr_ctx.get("chain_depth")
+    if chain_depth is not None:
+        os.environ["ADP_CHAIN_DEPTH"] = str(chain_depth)
+    else:
+        os.environ["ADP_CHAIN_DEPTH"] = "0"
+
     # Issue #1289: Expose personal-context identity for the Node agent runtime.
     # These env vars are read by the worker harness to set X-Owner-Sub and
     # X-Tenant-Id on Context MCP requests. Set from trusted dispatch metadata
@@ -1059,9 +1067,16 @@ def _write_outbound_correlation(repo: str, channel_suffix: str, action_kind: str
     root = os.environ.get("ADP_ROOT_HUMAN_ID", "")
     rooted = os.environ.get("ADP_IS_HUMAN_ROOTED", "false") == "true"
     own_message_id = os.environ.get("ADP_MESSAGE_ID", "")
+    depth_str = os.environ.get("ADP_CHAIN_DEPTH", "0")
 
     if not corr or not root:
         return  # No correlation context — skip silently
+
+    # Parse chain depth (issue #1696) — defaults to 0 if absent/invalid
+    try:
+        current_depth = int(depth_str)
+    except (ValueError, TypeError):
+        current_depth = 0
 
     # Build canonical channel key matching webhook-ingress format (#1661).
     # channel_suffix is "issue:{N}" or "pr:{branch}" — parse to extract kind/number.
@@ -1072,7 +1087,7 @@ def _write_outbound_correlation(repo: str, channel_suffix: str, action_kind: str
         # PR path: keep legacy format for now (out of scope per #1661 approved design).
         key = f"github:{repo}:{channel_suffix}"
 
-    # DDB pointer write (fail-soft) — includes triggering_invocation_id for lineage
+    # DDB pointer write (fail-soft) — includes triggering_invocation_id + chain_depth
     try:
         write_pointer(
             channel_key=key,
@@ -1080,6 +1095,7 @@ def _write_outbound_correlation(repo: str, channel_suffix: str, action_kind: str
             root_human_id=root,
             is_human_rooted=rooted,
             triggering_invocation_id=own_message_id or None,
+            chain_depth=current_depth,
         )
     except Exception as exc:
         logger.warning("Outbound correlation pointer write failed (non-fatal): %s", exc)

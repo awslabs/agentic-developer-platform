@@ -3,19 +3,25 @@
 Parses incoming GitHub webhook events into actionable intents that determine
 which agent persona should handle the work.
 
-Phase 2-c (#786): Bot guard split by event type. For issue_comment events,
-bot senders are routed through chain-aware logic that allows bot-to-bot
-triggering when starting a new correlation chain, while blocking continuation
-mentions within an active chain (loop prevention). For all other event types
-(issues.labeled, pull_request), the binary bot guard is preserved unchanged.
+Issue #1696: Replaced the binary is_new_chain bot guard with a depth-only loop
+guard (MAX_CHAIN_DEPTH=8, env-configurable). The self-mention guard is evaluated
+BEFORE the depth check. Bot pull_request events are allowed when the PR body
+carries a valid adp-* marker (marker-gated relaxation). The agent/issue-* branch
+filter and synchronize gate prevent double-triggering.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+# Maximum chain depth before blocking bot-to-bot triggers (issue #1696).
+# Env-configurable for operational flexibility. Default 8 bounds all loop
+# topologies (proven in architect review). Worst case: 8 runs ≈ $4-$16.
+MAX_CHAIN_DEPTH = int(os.environ.get("MAX_CHAIN_DEPTH", "8"))
 
 # Label names that trigger specific agent personas.
 LABEL_TO_PERSONA: dict[str, str] = {
@@ -71,8 +77,8 @@ def extract_intent(
     sender = payload.get("sender", {})
     action = payload.get("action", "")
 
-    # Non-comment events: keep binary bot guard (no behavior change from pre-2c)
-    if event_type != "issue_comment" and _is_bot_sender(sender):
+    # Non-comment, non-PR events: keep binary bot guard (no behavior change)
+    if event_type not in ("issue_comment", "pull_request") and _is_bot_sender(sender):
         logger.info(
             "Ignoring bot-generated %s event from %s",
             event_type,
@@ -80,15 +86,29 @@ def extract_intent(
         )
         return None
 
+    # pull_request events from bots: marker-gated relaxation (issue #1696).
+    # Allow ONLY when the PR body carries a valid adp-* marker AND branch
+    # matches agent/issue-*. Without a marker, bot PRs stay blocked.
+    if event_type == "pull_request" and _is_bot_sender(sender):
+        pr_body = payload.get("pull_request", {}).get("body", "") or ""
+        from common.marker_parse import has_valid_marker
+
+        if not has_valid_marker(pr_body):
+            logger.info(
+                "Bot PR event from %s blocked — no valid adp-* marker in PR body",
+                sender.get("login", "unknown"),
+            )
+            return None
+
     # issues + labeled → map label to persona
     if event_type == "issues" and action == "labeled":
         return _handle_issue_labeled(payload)
 
-    # pull_request + opened|synchronize → reviewer persona
+    # pull_request + opened|synchronize → reviewer persona (with guards)
     if event_type == "pull_request" and action in ("opened", "synchronize"):
-        return _handle_pr_event(payload, action)
+        return _handle_pr_event(payload, action, sender)
 
-    # issue_comment + created → chain-aware handler (Phase 2-c)
+    # issue_comment + created → chain-aware handler (Phase 2-c / issue #1696)
     if event_type == "issue_comment" and action == "created":
         return _handle_issue_comment(payload, correlation_ctx, resolved_identity)
 
@@ -128,6 +148,21 @@ def _extract_mention_persona(body: str) -> str | None:
     return None
 
 
+def _extract_all_mention_personas(body: str) -> list[str]:
+    """Extract ALL @agent-X persona mentions from comment body.
+
+    Returns a list of persona strings. Supports fan-out (one comment
+    triggering multiple agents). Order follows MENTION_TO_PERSONA iteration.
+    """
+    if not body:
+        return []
+    personas = []
+    for mention, persona in MENTION_TO_PERSONA.items():
+        if mention in body:
+            personas.append(persona)
+    return personas
+
+
 def _handle_issue_labeled(payload: dict) -> Intent | None:
     """Handle issues.labeled event — map the added label to a persona."""
     label = payload.get("label", {})
@@ -141,8 +176,34 @@ def _handle_issue_labeled(payload: dict) -> Intent | None:
     return Intent(persona=persona, trigger="issue_labeled", label=label_name)
 
 
-def _handle_pr_event(payload: dict, action: str) -> Intent | None:
-    """Handle pull_request opened/synchronize — assign reviewer persona."""
+def _handle_pr_event(payload: dict, action: str, sender: dict) -> Intent | None:
+    """Handle pull_request opened/synchronize — assign reviewer persona.
+
+    Issue #1696 guards:
+    - Branch filter: only trigger for agent/issue-* branches
+    - Synchronize gate: bot senders only trigger on 'opened' (not synchronize)
+      to prevent runaway reviewer spawning on every push
+    """
+    # Branch filter: only trigger reviewer for agent PR branches (issue #1696).
+    # Reproduces the behavior of the removed pr-review-trigger.yml.
+    head_ref = payload.get("pull_request", {}).get("head", {}).get("ref", "")
+    if not head_ref.startswith("agent/issue-"):
+        logger.debug(
+            "PR branch '%s' does not match agent/issue-* pattern — no reviewer trigger",
+            head_ref,
+        )
+        return None
+
+    # Synchronize gate: bot senders only trigger on 'opened' (issue #1696).
+    # Without this, every push to an agent PR branch (including the reviewer's
+    # own fix commits) would spawn a NEW reviewer = runaway.
+    if action == "synchronize" and _is_bot_sender(sender):
+        logger.info(
+            "Bot PR synchronize event from %s — blocking to prevent double-trigger",
+            sender.get("login", "unknown"),
+        )
+        return None
+
     return Intent(persona="reviewer", trigger=f"pr_{action}", label=None)
 
 
@@ -151,12 +212,11 @@ def _handle_issue_comment(
     correlation_ctx: dict | None,
     resolved_identity,
 ) -> Intent | None:
-    """Handle issue_comment.created — chain-aware bot-to-bot logic.
+    """Handle issue_comment.created — depth-only loop guard (issue #1696).
 
     For human senders: parse @-mention as before, always produces intent.
-    For bot senders: only allow if this starts a NEW correlation chain
-    (no existing pointer on the channel). Blocks continuation mentions
-    within an active chain to prevent feedback loops.
+    For bot senders: apply depth-only guard (MAX_CHAIN_DEPTH) with self-mention
+    guard evaluated first. Replaces the binary is_new_chain block.
     """
     sender = payload.get("sender", {})
     body = payload.get("comment", {}).get("body", "")
@@ -170,7 +230,7 @@ def _handle_issue_comment(
     if not _is_bot_sender(sender):
         return Intent(persona=persona, trigger="mentioned", label=None)
 
-    # Bot sender: chain-aware logic
+    # Bot sender: depth-only loop guard (issue #1696)
     if correlation_ctx is None:
         # No correlation context available (e.g. Phase 2-b not configured).
         # Fall back to blocking all bot mentions (safe default).
@@ -181,18 +241,7 @@ def _handle_issue_comment(
         )
         return None
 
-    # Bot-to-bot: only allow if this is a NEW sub-chain
-    if not correlation_ctx.get("is_new_chain", False):
-        logger.info(
-            "Bot %s mentioned %s within existing chain %s — blocking to prevent loop",
-            sender.get("login", "unknown"),
-            persona,
-            correlation_ctx.get("correlation_id", "unknown"),
-        )
-        _emit_metric("BotChainContinuationBlocked", {"persona": persona})
-        return None
-
-    # Self-mention guard (bot mentions own persona)
+    # Self-mention guard: evaluated BEFORE depth check (catches depth-0 self-loops)
     if resolved_identity is not None and hasattr(resolved_identity, "bot_kind"):
         if persona == resolved_identity.bot_kind:
             logger.info(
@@ -200,13 +249,30 @@ def _handle_issue_comment(
                 sender.get("login", "unknown"),
                 persona,
             )
+            _emit_metric("SelfMentionBlocked", {"persona": persona})
             return None
 
-    # New chain, not self-mention → allow bot-to-bot trigger
+    # Depth-only guard (issue #1696): block when chain depth >= MAX_CHAIN_DEPTH.
+    # chain_depth in correlation_ctx is the CURRENT run's depth (already incremented
+    # by determine_correlation). If it meets or exceeds the cap, block.
+    chain_depth = correlation_ctx.get("chain_depth", 0)
+    if chain_depth >= MAX_CHAIN_DEPTH:
+        logger.info(
+            "Bot %s mentioned %s but chain depth %d >= max %d — blocking (loop prevention)",
+            sender.get("login", "unknown"),
+            persona,
+            chain_depth,
+            MAX_CHAIN_DEPTH,
+        )
+        _emit_metric("ChainDepthExceeded", {"persona": persona, "depth": str(chain_depth)})
+        return None
+
+    # Depth within bounds, not self-mention → allow bot-to-bot trigger
     logger.info(
-        "Bot %s starting new chain by mentioning %s — allowing",
+        "Bot %s triggering %s at chain depth %d — allowing",
         sender.get("login", "unknown"),
         persona,
+        chain_depth,
     )
     source_bot = ""
     if resolved_identity is not None and hasattr(resolved_identity, "bot_kind"):
