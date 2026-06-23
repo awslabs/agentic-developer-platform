@@ -272,6 +272,44 @@ def _get_correlation_store():
     return _correlation_store_mod
 
 
+def _pr_marker_text_with_issue_fallback(store, repo, pr_body, head_ref) -> str | None:
+    """Resolve the marker text to use for a PR event's correlation.
+
+    Issue #1731/#1735: the PR body usually has NO valid adp-* marker at
+    pull_request.opened time — the agent self-opens the PR with its own
+    descriptive body ("## Summary…") before any marker is backfilled. That body
+    is NON-EMPTY, so a bare `if not pr_body` check is wrong (truthy without a
+    marker). If the body lacks a VALID marker, fall back to the ISSUE's
+    correlation pointer (the issue number is in the agent/issue-<N> branch; the
+    developer run wrote that pointer at its "started" comment, BEFORE opening
+    the PR — so it reliably exists). Synthesizes a marker string from the issue
+    pointer so determine_correlation can set parent_invocation_id across the
+    issue→PR boundary without depending on the racy PR-body marker.
+
+    Returns marker text (PR body if it already has a valid marker, else a
+    synthesized marker from the issue pointer), or pr_body unchanged when no
+    fallback applies.
+    """
+    from common.marker_parse import has_valid_marker
+
+    if pr_body and has_valid_marker(pr_body):
+        return pr_body
+    m = re.match(r"agent/issue-(\d+)", head_ref or "")
+    if not m:
+        return pr_body
+    issue_channel = store.channel_key("github", repo, "issue", int(m.group(1)))
+    issue_pointer = store.read_pointer(issue_channel)
+    if not issue_pointer:
+        return pr_body
+    return (
+        f"<!-- adp-correlation:{issue_pointer['correlation_id']} "
+        f"adp-root-human:{issue_pointer['root_human_id']} "
+        f"adp-is-human-rooted:{'true' if issue_pointer.get('is_human_rooted') else 'false'} "
+        f"adp-invocation:{issue_pointer.get('triggering_invocation_id') or ''} "
+        f"adp-chain-depth:{issue_pointer.get('chain_depth') or 0} -->"
+    )
+
+
 def determine_correlation(
     payload: dict,
     resolved_identity,
@@ -688,35 +726,10 @@ def handler(event: dict, context) -> dict:
         if pr_number and repo:
             store = _get_correlation_store()
             channel_key_str = store.channel_key("github", repo, "pr", pr_number)
-            # Extract marker text from PR body for bot senders
-            marker_text = (
-                payload.get("pull_request", {}).get("body", "")
-                if sender.get("type") == "Bot" or sender.get("login", "").endswith("[bot]")
-                else None
-            )
-            # Issue #1731: the PR-body marker is often ABSENT at pull_request.opened
-            # time (the agent self-opens the PR before any marker is written), and
-            # there is no PR-channel pointer on the first event. So fall back to the
-            # ISSUE's correlation pointer — the issue number is encoded in the agent
-            # branch name (agent/issue-<N>), and the developer run already wrote a
-            # pointer on that issue channel. This is what actually carries
-            # parent_invocation_id across the issue→PR boundary without depending on
-            # the racy PR-body marker.
-            if not marker_text:
-                head_ref = payload.get("pull_request", {}).get("head", {}).get("ref", "")
-                m = re.match(r"agent/issue-(\d+)", head_ref)
-                if m:
-                    issue_channel = store.channel_key("github", repo, "issue", int(m.group(1)))
-                    issue_pointer = store.read_pointer(issue_channel)
-                    if issue_pointer:
-                        marker_text = (
-                            f"<!-- adp-correlation:{issue_pointer['correlation_id']} "
-                            f"adp-root-human:{issue_pointer['root_human_id']} "
-                            f"adp-is-human-rooted:"
-                            f"{'true' if issue_pointer.get('is_human_rooted') else 'false'} "
-                            f"adp-invocation:{issue_pointer.get('triggering_invocation_id') or ''} "
-                            f"adp-chain-depth:{issue_pointer.get('chain_depth') or 0} -->"
-                        )
+            is_bot = sender.get("type") == "Bot" or sender.get("login", "").endswith("[bot]")
+            pr_body = payload.get("pull_request", {}).get("body", "") if is_bot else None
+            head_ref = payload.get("pull_request", {}).get("head", {}).get("ref", "")
+            marker_text = _pr_marker_text_with_issue_fallback(store, repo, pr_body, head_ref)
             correlation_ctx = determine_correlation(
                 payload, resolved, channel_key_str, marker_text=marker_text
             )
