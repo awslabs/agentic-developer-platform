@@ -979,7 +979,8 @@ def _handle_success(
                 ],
                 env={**os.environ},
             )
-            pr_already_exists = bool(existing_pr.stdout.strip())
+            existing_pr_number = existing_pr.stdout.strip()
+            pr_already_exists = bool(existing_pr_number)
         except subprocess.CalledProcessError:
             pass
 
@@ -1004,6 +1005,14 @@ def _handle_success(
             )
             # On success: write pointer + provenance for the PR (fail-soft)
             _write_outbound_correlation(repo, f"pr:{branch}", "pr_create")
+        else:
+            # The agent opened its OWN PR (via the SDK's `gh pr create`), so the
+            # entrypoint's marker-prepend above was skipped. Agent-authored PR
+            # bodies therefore carry NO adp-* correlation marker — which means
+            # the webhook's marker-gated reviewer trigger (issue #1696) blocks
+            # the PR and cross-agent lineage is lost (issue #1721). Backfill it:
+            # edit the PR body to prepend the marker if it isn't already there.
+            _ensure_pr_body_marker(repo, existing_pr_number, branch)
         _post_comment(
             repo,
             issue,
@@ -1028,6 +1037,46 @@ def _handle_success(
         )
         return 1
     return 0
+
+
+def _ensure_pr_body_marker(repo: str, pr_number: str, branch: str) -> None:
+    """Backfill the correlation marker onto an agent-authored PR body (issue #1721).
+
+    When the agent opens its own PR via the SDK, the entrypoint's marker-prepend
+    is skipped, so the PR body has no adp-* marker and the webhook's marker-gated
+    reviewer trigger (#1696) blocks it. This reads the current PR body, prepends
+    the marker if absent (prepend_correlation_marker is idempotent + no-ops when
+    correlation env vars are missing), edits the PR, and writes the outbound
+    correlation pointer so lineage round-trips. Fail-soft: never raises.
+    """
+    if not pr_number:
+        return
+    try:
+        view = run_cmd(
+            ["gh", "pr", "view", pr_number, "-R", repo, "--json", "body", "--jq", ".body"],
+            env={**os.environ},
+        )
+        current_body = view.stdout.rstrip("\n")
+    except subprocess.CalledProcessError as exc:
+        logger.warning("Could not read PR #%s body for marker backfill: %s", pr_number, exc)
+        return
+
+    # Idempotent: prepend_correlation_marker is a no-op if the marker is already
+    # present (first 500 bytes) or if correlation env vars are unset.
+    new_body = prepend_correlation_marker(current_body)
+    if new_body == current_body:
+        logger.info("PR #%s body already marked (or no correlation context) — skip", pr_number)
+        return
+
+    try:
+        run_cmd(
+            ["gh", "pr", "edit", pr_number, "-R", repo, "--body", new_body],
+            env={**os.environ},
+        )
+        logger.info("Backfilled correlation marker onto agent-authored PR #%s", pr_number)
+        _write_outbound_correlation(repo, f"pr:{branch}", "pr_create")
+    except subprocess.CalledProcessError as exc:
+        logger.warning("Failed to backfill marker on PR #%s (non-fatal): %s", pr_number, exc)
 
 
 def _handle_failure(
