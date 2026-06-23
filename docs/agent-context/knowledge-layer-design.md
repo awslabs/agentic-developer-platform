@@ -176,21 +176,31 @@ Identity is **header-based and pluggable**: the verbs trust `X-GitHub-Login` / `
 
 ## 9. The MCP server and its verbs
 
-One server is the single query surface. Build it **stateless** (request/response) and **serverless from day one** (Lambda + API Gateway, or Fargate) — nothing to migrate later.
+One server (`context-mcp`, port 5100) is the single query surface, registered in-process into agent runtimes as `AgentTool[]` (in-process `KnowledgeLayerPort`, not an external MCP transport hop). It is also reachable over REST (`GET /tools`, `POST /call {name, arguments}`) and MCP Streamable HTTP (`/mcp/`). Build it **stateless** (request/response) and **serverless from day one** (Lambda + API Gateway, or Fargate) — nothing to migrate later.
 
-Five `knowledge_*` verbs, registered in-process into agent runtimes as `AgentTool[]` (in-process `KnowledgeLayerPort`, not an external MCP transport hop):
+**Six verbs are deployed** — four retrieval verbs and two memory/Experience-layer verbs. This reflects the live `context-mcp` surface (as deployed), which differs from the originally-planned five `knowledge_*` retrieval verbs in two ways: there is **no standalone `search_semantic`** (semantic is folded into `search`, consistent with the §6 decision to gate semantic-for-code), and the **`remember` / `experience` write verbs** are exposed (the Experience layer — see the product-vision moat).
 
-| Verb | Backed by | Notes |
+### Retrieval verbs
+
+| Verb | Signature | Backed by | Notes |
+|---|---|---|---|
+| `search` | `search(query*, scope, limit)` | Zoekt (+ docs/learnings) | Find relevant code, documentation, and past learnings. Semantic-for-code stays gated (§6); semantic applies to wiki/doc prose only. |
+| `understand` | `understand(target*, depth)` | `code-index.json` + Neptune | Deep understanding (structure summary) of a repo, directory, or file. |
+| `impact` | `impact(target*, cross_repo)` | Neptune (call graph) | Complete caller set for a symbol before edit/delete. Verdict-first, ranked, bounded ≤100, grouped by repo; cross-repo via `symbol_id`. Prefer over grep for blast-radius. |
+| `browse` | `browse(action*, uri*, depth)` | catalog + S3 | Navigate the indexed content filesystem; carries coverage metadata so agents discover what's indexed (no separate discovery tool). |
+
+### Memory / Experience verbs (write side)
+
+| Verb | Signature | Notes |
 |---|---|---|
-| `knowledge_search` (exact) | Zoekt | regex/literal text |
-| `knowledge_search_semantic` | S3 Vectors | **wiki/doc prose + NL only in v1** (§6) |
-| `knowledge_understand` | `code-index.json` + Neptune | structure summary of a symbol/file |
-| `knowledge_impact` | Neptune (call graph) | reverse-call BFS, bounded (≤100 paths); cross-repo via `symbol_id` |
-| `knowledge_browse` | catalog + S3 | file-tree walk; **also carries coverage metadata** so agents can discover what's indexed (no separate discovery tool) |
+| `remember` | `remember(session_id*, messages*, outcome)` | Save session context, decisions, and learnings to long-term memory. |
+| `experience` | `experience(action*, persona*, content, learning_type, context, query, visibility, limit, cross_persona)` | Save or recall experiential knowledge — per-user, persona-scoped, synthesized. This is the Experience layer (the product-vision moat: outcome-verified experience on top of retrieval). |
 
 Neptune query constraints are baked in: no `shortestPath()`/APOC/`FOREACH`; never put inline map literals in `collect()` (Bug #1611 — use `collect(node)` + project in Python); fallback to `code-index.json` with `"source": "code-index-fallback"`; never return a silent `[]` on error — raise `NeptuneQueryError`.
 
-**Build order priority (from §6):** structural tier (`understand`/`impact` + MCP server) first; it is the strongest, least-built tier. Semantic-for-code stays gated.
+**ACL is enforced here, fail-closed (§8):** verified on the live Door — a `search` with no `X-GitHub-Login` identity header returns `{"results": [], "total": 0}`.
+
+**Build order priority (from §6):** structural tier (`understand`/`impact`) first; it is the strongest, least-built tier (the live Door currently returns exact `search`/`browse` results but empty `understand` — the structural index/Neptune graph is the gap). Semantic-for-code stays gated.
 
 ---
 
