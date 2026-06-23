@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import os
+import re
 from datetime import UTC, datetime
 import time
 import uuid
@@ -693,6 +694,29 @@ def handler(event: dict, context) -> dict:
                 if sender.get("type") == "Bot" or sender.get("login", "").endswith("[bot]")
                 else None
             )
+            # Issue #1731: the PR-body marker is often ABSENT at pull_request.opened
+            # time (the agent self-opens the PR before any marker is written), and
+            # there is no PR-channel pointer on the first event. So fall back to the
+            # ISSUE's correlation pointer — the issue number is encoded in the agent
+            # branch name (agent/issue-<N>), and the developer run already wrote a
+            # pointer on that issue channel. This is what actually carries
+            # parent_invocation_id across the issue→PR boundary without depending on
+            # the racy PR-body marker.
+            if not marker_text:
+                head_ref = payload.get("pull_request", {}).get("head", {}).get("ref", "")
+                m = re.match(r"agent/issue-(\d+)", head_ref)
+                if m:
+                    issue_channel = store.channel_key("github", repo, "issue", int(m.group(1)))
+                    issue_pointer = store.read_pointer(issue_channel)
+                    if issue_pointer:
+                        marker_text = (
+                            f"<!-- adp-correlation:{issue_pointer['correlation_id']} "
+                            f"adp-root-human:{issue_pointer['root_human_id']} "
+                            f"adp-is-human-rooted:"
+                            f"{'true' if issue_pointer.get('is_human_rooted') else 'false'} "
+                            f"adp-invocation:{issue_pointer.get('triggering_invocation_id') or ''} "
+                            f"adp-chain-depth:{issue_pointer.get('chain_depth') or 0} -->"
+                        )
             correlation_ctx = determine_correlation(
                 payload, resolved, channel_key_str, marker_text=marker_text
             )

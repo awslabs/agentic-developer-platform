@@ -86,19 +86,21 @@ def extract_intent(
         )
         return None
 
-    # pull_request events from bots: marker-gated relaxation (issue #1696).
-    # Allow ONLY when the PR body carries a valid adp-* marker AND branch
-    # matches agent/issue-*. Without a marker, bot PRs stay blocked.
-    if event_type == "pull_request" and _is_bot_sender(sender):
-        pr_body = payload.get("pull_request", {}).get("body", "") or ""
-        from common.marker_parse import has_valid_marker
-
-        if not has_valid_marker(pr_body):
-            logger.info(
-                "Bot PR event from %s blocked — no valid adp-* marker in PR body",
-                sender.get("login", "unknown"),
-            )
-            return None
+    # Bot pull_request events: allowed through to _handle_pr_event, which gates
+    # on the agent/issue-* branch filter + the synchronize dedup (issue #1716).
+    #
+    # Issue #1731: We deliberately DO NOT require an adp-* marker in the PR body
+    # to TRIGGER the reviewer. The earlier marker-gate (#1696) created a race:
+    # the agent self-opens the PR (fires pull_request.opened) BEFORE the
+    # entrypoint backfills the marker (#1727), so the opened event always saw an
+    # unmarked body and was blocked. Triggering is a separate decision from
+    # lineage:
+    #   - SPAWN gate  = bot identity (already 403-gated by identity resolution
+    #     in handler.py BEFORE this runs) + agent/issue-* branch + opened.
+    #   - LINEAGE      = best-effort: the PR-body marker (if present by now) OR
+    #     the issue's correlation pointer (issue number is in the branch name),
+    #     resolved in determine_correlation. Marker ABSENCE no longer blocks.
+    # Non-ADP bots (dependabot, etc.) never reach here — they 403 upstream.
 
     # issues + labeled → map label to persona
     if event_type == "issues" and action == "labeled":

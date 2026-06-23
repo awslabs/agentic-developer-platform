@@ -122,9 +122,27 @@ class TestPullRequestEvents:
         result = extract_intent("pull_request", payload)
         assert result is None
 
-    def test_pr_opened_by_bot_ignored(self):
+    def test_pr_opened_by_bot_on_agent_branch_produces_intent(self):
+        """Issue #1731: intent_parser no longer gates bot PRs by sender identity.
+
+        A bot PR on an agent/issue-* branch produces a reviewer intent at THIS
+        layer. Protection against non-ADP bots (dependabot, etc.) lives upstream
+        in handler.py identity resolution, which 403s any sender not in the
+        identity-index BEFORE extract_intent is ever called. This unit test
+        calls extract_intent directly, bypassing that gate — so it asserts the
+        post-identity-gate behavior: branch filter is the only block here.
+        """
+        payload = load_fixture("pr_opened.json")  # head ref: agent/issue-258
+        payload["sender"] = {"login": "dependabot[bot]", "id": 777, "type": "Bot"}
+        result = extract_intent("pull_request", payload)
+        assert result is not None
+        assert result.persona == "reviewer"
+
+    def test_pr_opened_by_bot_on_non_agent_branch_ignored(self):
+        """Bot PR on a non-agent branch is still blocked by the branch filter."""
         payload = load_fixture("pr_opened.json")
         payload["sender"] = {"login": "dependabot[bot]", "id": 777, "type": "Bot"}
+        payload["pull_request"]["head"]["ref"] = "dependabot/npm/foo-1.2.3"
         result = extract_intent("pull_request", payload)
         assert result is None
 

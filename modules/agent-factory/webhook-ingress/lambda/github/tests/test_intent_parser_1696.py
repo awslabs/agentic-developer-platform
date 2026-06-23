@@ -359,14 +359,21 @@ class TestSynchronizeGate:
         assert result.trigger == "pr_opened"
 
 
-# --- Bot-guard marker-gated relaxation ---
+# --- Bot PR trigger: decoupled from the marker (issue #1731) ---
 
 
-class TestBotGuardMarkerGated:
-    """Bot PR events: only allowed with valid adp-* marker."""
+class TestBotPrTriggerDecoupled:
+    """Bot PR events trigger the reviewer based on branch + identity, NOT marker.
 
-    def test_bot_pr_without_marker_blocked(self):
-        """Bot-opened PR without adp-* marker stays blocked."""
+    Issue #1731: the marker-gate created a race (PR opens → opened event fires
+    before the marker is backfilled → always blocked). Triggering is now gated
+    only by the agent/issue-* branch filter + synchronize dedup; the marker is
+    best-effort lineage enrichment, never a trigger requirement. Non-ADP bots
+    never reach intent_parser — they 403 at identity resolution upstream.
+    """
+
+    def test_bot_pr_without_marker_now_allowed(self):
+        """Bot-opened agent PR with NO marker is now allowed (the race fix)."""
         payload = {
             "action": "opened",
             "pull_request": {
@@ -378,10 +385,11 @@ class TestBotGuardMarkerGated:
             "installation": {"id": 123},
         }
         result = extract_intent("pull_request", payload)
-        assert result is None
+        assert result is not None
+        assert result.persona == "reviewer"
 
     def test_bot_pr_with_marker_allowed(self):
-        """Bot-opened PR with valid adp-* marker is allowed through."""
+        """Bot-opened PR with a marker is also allowed (lineage enrichment)."""
         payload = {
             "action": "opened",
             "pull_request": {
@@ -396,8 +404,8 @@ class TestBotGuardMarkerGated:
         assert result is not None
         assert result.persona == "reviewer"
 
-    def test_bot_pr_with_empty_body_blocked(self):
-        """Bot PR with empty body (no marker possible) → blocked."""
+    def test_bot_pr_empty_body_allowed(self):
+        """Empty PR body no longer blocks — branch filter is the gate."""
         payload = {
             "action": "opened",
             "pull_request": {
@@ -409,16 +417,17 @@ class TestBotGuardMarkerGated:
             "installation": {"id": 123},
         }
         result = extract_intent("pull_request", payload)
-        assert result is None
+        assert result is not None
+        assert result.persona == "reviewer"
 
-    def test_bot_pr_with_null_body_blocked(self):
-        """Bot PR with null body → blocked."""
+    def test_bot_pr_non_agent_branch_blocked(self):
+        """A bot PR on a non-agent branch is still blocked (branch filter)."""
         payload = {
             "action": "opened",
             "pull_request": {
                 "number": 15,
-                "body": None,
-                "head": {"ref": "agent/issue-123", "sha": "abc"},
+                "body": "",
+                "head": {"ref": "feature/random-branch", "sha": "abc"},
             },
             "sender": _bot_sender(),
             "installation": {"id": 123},
