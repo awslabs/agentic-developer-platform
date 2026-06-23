@@ -72,3 +72,21 @@ class TestEnsurePrBodyMarker:
         entrypoint._ensure_pr_body_marker("aws-e/adp", "", "agent/issue-1719")
         mock_run.assert_not_called()
         mock_outbound.assert_not_called()
+
+
+class TestFindOpenPr:
+    @patch("entrypoint.run_cmd")
+    def test_returns_pr_number(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="1726\n", stderr="")
+        assert entrypoint._find_open_pr("aws-e/adp", "agent/issue-1725") == "1726"
+
+    @patch("entrypoint.run_cmd")
+    def test_returns_empty_when_none(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="\n", stderr="")
+        assert entrypoint._find_open_pr("aws-e/adp", "agent/issue-1725") == ""
+
+    @patch("entrypoint.run_cmd")
+    def test_fail_soft_on_error(self, mock_run):
+        import subprocess
+        mock_run.side_effect = subprocess.CalledProcessError(1, "gh")
+        assert entrypoint._find_open_pr("aws-e/adp", "agent/issue-1725") == ""

@@ -939,8 +939,19 @@ def _handle_success(
             has_unpushed = has_uncommitted  # fallback: push if we just committed
 
         if not has_uncommitted and not has_unpushed:
-            # Only the empty WIP commit is on the branch; agent made no real changes.
+            # Only the empty WIP commit is on the branch from the entrypoint's
+            # view — but the AGENT may have self-pushed and self-opened a PR
+            # during its exec (the common case: agent-worker.js runs `git push`
+            # + `gh pr create` itself). In that case there are no changes left
+            # for the entrypoint to push, yet a PR exists whose body needs the
+            # correlation marker for the webhook reviewer trigger (#1696/#1721).
+            # Backfill it before returning — this is the path #1723 missed
+            # (the backfill was only wired into the entrypoint-creates-PR block,
+            # which this early return never reaches).
             logger.info("No agent changes beyond WIP commit")
+            self_pr = _find_open_pr(repo, branch)
+            if self_pr:
+                _ensure_pr_body_marker(repo, self_pr, branch)
             _post_comment(
                 repo,
                 issue,
@@ -1037,6 +1048,21 @@ def _handle_success(
         )
         return 1
     return 0
+
+
+def _find_open_pr(repo: str, branch: str) -> str:
+    """Return the PR number open on `branch`, or "" if none. Fail-soft."""
+    try:
+        res = run_cmd(
+            [
+                "gh", "pr", "list", "--head", branch, "-R", repo,
+                "--json", "number", "--jq", ".[0].number",
+            ],
+            env={**os.environ},
+        )
+        return res.stdout.strip()
+    except subprocess.CalledProcessError:
+        return ""
 
 
 def _ensure_pr_body_marker(repo: str, pr_number: str, branch: str) -> None:
