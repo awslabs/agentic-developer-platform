@@ -46,9 +46,10 @@ class TestWritePointerTriggeringInvocationId:
             triggering_invocation_id="msg-run-parent-123",
         )
 
-        mock_client.put_item.assert_called_once()
-        item = mock_client.put_item.call_args[1]["Item"]
-        assert item["triggering_invocation_id"] == {"S": "msg-run-parent-123"}
+        # Issue #1716: now uses update_item; data is in ExpressionAttributeValues.
+        mock_client.update_item.assert_called_once()
+        vals = mock_client.update_item.call_args[1]["ExpressionAttributeValues"]
+        assert vals[":tii"] == {"S": "msg-run-parent-123"}
 
     @patch("lib.correlation_store._get_client")
     @patch.dict(os.environ, {"CORRELATION_POINTERS_TABLE": "test-table"})
@@ -65,8 +66,9 @@ class TestWritePointerTriggeringInvocationId:
             triggering_invocation_id=None,
         )
 
-        item = mock_client.put_item.call_args[1]["Item"]
-        assert "triggering_invocation_id" not in item
+        call = mock_client.update_item.call_args[1]
+        assert ":tii" not in call["ExpressionAttributeValues"]
+        assert "triggering_invocation_id" not in call["UpdateExpression"]
 
     @patch("lib.correlation_store._get_client")
     @patch.dict(os.environ, {"CORRELATION_POINTERS_TABLE": "test-table"})
@@ -83,15 +85,16 @@ class TestWritePointerTriggeringInvocationId:
             triggering_invocation_id="",
         )
 
-        item = mock_client.put_item.call_args[1]["Item"]
-        assert "triggering_invocation_id" not in item
+        call = mock_client.update_item.call_args[1]
+        assert ":tii" not in call["ExpressionAttributeValues"]
+        assert "triggering_invocation_id" not in call["UpdateExpression"]
 
     @patch("lib.correlation_store._get_client")
     @patch.dict(os.environ, {"CORRELATION_POINTERS_TABLE": "test-table"})
     def test_fail_soft_with_triggering_invocation_id(self, mock_get_client):
         """DDB error with triggering_invocation_id still doesn't raise."""
         mock_client = MagicMock()
-        mock_client.put_item.side_effect = Exception("DDB unavailable")
+        mock_client.update_item.side_effect = Exception("DDB unavailable")
         mock_get_client.return_value = mock_client
 
         # Should not raise
@@ -132,23 +135,25 @@ class TestRoundTripCompatibility:
             triggering_invocation_id="inv-AAA",
         )
 
-        item = mock_client.put_item.call_args[1]["Item"]
+        # Issue #1716: update_item — map SET expression back to attr names.
+        call = mock_client.update_item.call_args[1]
+        expr = call["UpdateExpression"]
+        vals = call["ExpressionAttributeValues"]
 
-        # These are the exact attribute names the webhook's read_pointer accesses:
-        # item["correlation_id"], item["root_human_id"], item.get("is_human_rooted"),
-        # item.get("triggering_invocation_id")
-        assert "correlation_id" in item
-        assert "root_human_id" in item
-        assert "is_human_rooted" in item
-        assert "triggering_invocation_id" in item
+        # The SET expression writes these exact attribute names (matching what
+        # the webhook's read_pointer accesses):
+        assert "correlation_id = :cid" in expr
+        assert "root_human_id = :rh" in expr
+        assert "is_human_rooted = :hr" in expr
+        assert "triggering_invocation_id = :tii" in expr
 
         # Must NOT have the old prefixed names that would be invisible to webhook
-        assert "latest_correlation_id" not in item
-        assert "latest_root_human_id" not in item
-        assert "latest_is_human_rooted" not in item
+        assert "latest_correlation_id" not in expr
+        assert "latest_root_human_id" not in expr
+        assert "latest_is_human_rooted" not in expr
 
         # Verify values (low-level DDB format)
-        assert item["correlation_id"] == {"S": "chain-abc"}
-        assert item["root_human_id"] == {"S": "user-human"}
-        assert item["is_human_rooted"] == {"BOOL": True}
-        assert item["triggering_invocation_id"] == {"S": "inv-AAA"}
+        assert vals[":cid"] == {"S": "chain-abc"}
+        assert vals[":rh"] == {"S": "user-human"}
+        assert vals[":hr"] == {"BOOL": True}
+        assert vals[":tii"] == {"S": "inv-AAA"}

@@ -252,6 +252,27 @@ def _handle_issue_comment(
             _emit_metric("SelfMentionBlocked", {"persona": persona})
             return None
 
+    # Immediate self-re-trigger guard (issue #1716): block when the mentioned
+    # persona is the SAME as the persona most recently triggered in this chain.
+    # This stops an agent's own status comments (which contain its persona token
+    # in boilerplate, e.g. "**Agent**: @agent-developer") from re-spawning the
+    # same persona — the self-loop the depth-only guard (issue #1696) failed to
+    # catch because the shared bot identity doesn't resolve to a per-persona
+    # bot_kind. Server-side (read from the correlation pointer), NOT spoofable
+    # via the marker. Cross-persona cycles (reviewer→developer→reviewer) remain
+    # allowed because each hop's persona differs from the previous.
+    last_persona = correlation_ctx.get("last_triggered_persona")
+    if last_persona and persona == last_persona:
+        logger.info(
+            "Bot %s mentioned %s but that persona was the last triggered in chain %s "
+            "— blocking immediate self-re-trigger",
+            sender.get("login", "unknown"),
+            persona,
+            correlation_ctx.get("correlation_id", "unknown"),
+        )
+        _emit_metric("SelfReTriggerBlocked", {"persona": persona})
+        return None
+
     # Depth-only guard (issue #1696): block when chain depth >= MAX_CHAIN_DEPTH.
     # chain_depth in correlation_ctx is the CURRENT run's depth (already incremented
     # by determine_correlation). If it meets or exceeds the cap, block.

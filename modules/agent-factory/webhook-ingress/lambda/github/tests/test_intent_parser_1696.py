@@ -485,3 +485,117 @@ class TestMaxChainDepthConfig:
 
     def test_default_is_8(self):
         assert MAX_CHAIN_DEPTH == 8
+
+
+# --- Self-re-trigger guard tests (issue #1716) ---
+
+
+class TestSelfReTriggerGuard:
+    """The immediate self-re-trigger guard: block a bot mention when the
+    mentioned persona == the chain's last_triggered_persona.
+
+    This is the fix for the self-loop where an agent's own status comment
+    (containing its persona token in boilerplate, e.g. "**Agent**:
+    @agent-developer") re-spawns the same persona. The depth-only guard
+    (#1696) failed to catch this because the shared bot identity doesn't
+    resolve to a per-persona bot_kind.
+    """
+
+    def _payload(self, mention="@agent-developer", sender=None):
+        return {
+            "action": "created",
+            "comment": {"body": f"## Implementation Plan\n**Agent**: {mention}\nworking..."},
+            "issue": {"number": 1714},
+            "sender": sender or _bot_sender(),
+            "installation": {"id": 123},
+        }
+
+    def test_blocks_same_persona_as_last_triggered(self):
+        """THE BUG: developer's own comment re-triggering developer → blocked."""
+        payload = self._payload("@agent-developer")
+        ctx = {
+            "correlation_id": "corr-loop",
+            "root_human_id": "user-alice",
+            "is_new_chain": False,
+            "chain_depth": 1,
+            "last_triggered_persona": "developer",
+        }
+        # Shared bot identity does NOT resolve to bot_kind="developer" (that's
+        # why the self-mention guard alone didn't catch this in production).
+        identity = _bot_identity(bot_kind="")
+        result = extract_intent(
+            "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
+        )
+        assert result is None, "developer re-triggering developer must be blocked"
+
+    def test_allows_different_persona_than_last_triggered(self):
+        """reviewer mentions @agent-developer (last=reviewer) → allowed.
+
+        This is the legitimate cross-persona cycle (#1320 review→fix) that a
+        full per-persona repetition guard would have wrongly blocked.
+        """
+        payload = self._payload("@agent-developer")
+        ctx = {
+            "correlation_id": "corr-cycle",
+            "root_human_id": "user-alice",
+            "is_new_chain": False,
+            "chain_depth": 2,
+            "last_triggered_persona": "reviewer",
+        }
+        identity = _bot_identity(bot_kind="")
+        result = extract_intent(
+            "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
+        )
+        assert result is not None
+        assert result.persona == "developer"
+
+    def test_allows_reviewer_developer_reviewer_cycle(self):
+        """developer mentions @agent-reviewer (last=developer) → allowed."""
+        payload = self._payload("@agent-reviewer")
+        ctx = {
+            "correlation_id": "corr-cycle",
+            "root_human_id": "user-alice",
+            "is_new_chain": False,
+            "chain_depth": 3,
+            "last_triggered_persona": "developer",
+        }
+        identity = _bot_identity(bot_kind="")
+        result = extract_intent(
+            "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
+        )
+        assert result is not None
+        assert result.persona == "reviewer"
+
+    def test_allows_when_no_last_triggered_persona(self):
+        """No last_triggered_persona on pointer (fresh/old chain) → not gated by this guard."""
+        payload = self._payload("@agent-developer")
+        ctx = {
+            "correlation_id": "corr-new",
+            "root_human_id": "user-alice",
+            "is_new_chain": False,
+            "chain_depth": 1,
+            # last_triggered_persona absent
+        }
+        identity = _bot_identity(bot_kind="")
+        result = extract_intent(
+            "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
+        )
+        assert result is not None
+        assert result.persona == "developer"
+
+    def test_self_retrigger_guard_does_not_affect_humans(self):
+        """A human mentioning the same persona is always allowed."""
+        payload = self._payload("@agent-developer", sender=_human_sender())
+        ctx = {
+            "correlation_id": "corr-h",
+            "root_human_id": "user-alice",
+            "is_new_chain": True,
+            "chain_depth": 0,
+            "last_triggered_persona": "developer",
+        }
+        identity = _human_identity()
+        result = extract_intent(
+            "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
+        )
+        assert result is not None
+        assert result.persona == "developer"

@@ -332,6 +332,7 @@ def determine_correlation(
                 "is_new_chain": False,
                 "parent_invocation_id": pointer.get("triggering_invocation_id"),
                 "chain_depth": inherited_depth + 1,
+                "last_triggered_persona": pointer.get("last_triggered_persona"),
             }
         else:
             # Different correlation — marker represents cross-channel hop
@@ -359,6 +360,7 @@ def determine_correlation(
             "is_new_chain": False,
             "parent_invocation_id": pointer.get("triggering_invocation_id"),
             "chain_depth": inherited_depth + 1,
+            "last_triggered_persona": pointer.get("last_triggered_persona"),
         }
 
     if marker:
@@ -765,6 +767,10 @@ def handler(event: dict, context) -> dict:
                 correlation_id=correlation_ctx["correlation_id"],
                 root_human_id=correlation_ctx["root_human_id"],
                 is_human_rooted=correlation_ctx["is_human_rooted"],
+                # Record the persona we're about to spawn so the next bot mention
+                # in this chain can be blocked if it re-targets the SAME persona
+                # (immediate self-re-trigger guard, issue #1716).
+                last_triggered_persona=intent.persona,
             )
         except Exception as e:
             logger.warning("write_pointer failed (fail-soft): %s", e)

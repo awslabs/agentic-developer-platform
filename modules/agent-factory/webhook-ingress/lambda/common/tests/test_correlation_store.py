@@ -106,6 +106,7 @@ class TestReadPointer:
             "is_human_rooted": True,
             "triggering_invocation_id": None,
             "chain_depth": None,
+            "last_triggered_persona": None,
         }
 
     def test_returns_none_on_ddb_error(self):

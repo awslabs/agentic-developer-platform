@@ -61,8 +61,8 @@ def read_pointer(key: str) -> dict | None:
     """Read the correlation pointer for a channel.
 
     Returns {correlation_id, root_human_id, is_human_rooted,
-    triggering_invocation_id, chain_depth} or None if no pointer exists
-    or on DDB error.
+    triggering_invocation_id, chain_depth, last_triggered_persona} or None
+    if no pointer exists or on DDB error.
 
     Uses ConsistentRead=True to close the bot-race window where two
     near-simultaneous bot events could both miss the pointer.
@@ -93,6 +93,13 @@ def read_pointer(key: str) -> dict | None:
             "is_human_rooted": item.get("is_human_rooted", True),
             "triggering_invocation_id": item.get("triggering_invocation_id"),
             "chain_depth": chain_depth,
+            # Persona most recently triggered in this chain on this channel.
+            # Used by the immediate-self-re-trigger guard (issue #1716): a bot
+            # mention is blocked when the mentioned persona == this value, which
+            # stops an agent's own status comments (e.g. "**Agent**: @agent-X")
+            # from re-spawning the same persona, WITHOUT blocking legitimate
+            # cross-persona cycles like reviewer→developer→reviewer.
+            "last_triggered_persona": item.get("last_triggered_persona"),
         }
     except ClientError as e:
         logger.warning(
@@ -113,6 +120,7 @@ def write_pointer(
     is_human_rooted: bool,
     ttl_days: int = 7,
     triggering_invocation_id: str | None = None,
+    last_triggered_persona: str | None = None,
 ) -> None:
     """Idempotently upsert a correlation pointer with TTL.
 
@@ -123,6 +131,11 @@ def write_pointer(
         triggering_invocation_id: The message_id/invocation_id of the run
             that produced this outbound action. Used by the next inbound
             webhook to set parent_invocation_id on the child run's provenance.
+        last_triggered_persona: The persona this webhook is about to spawn on
+            this channel/chain. Recorded so the next bot mention can be blocked
+            if it targets the SAME persona (immediate self-re-trigger guard,
+            issue #1716). NOT preserved when None (so we never clobber a real
+            value with a missing one on a continuation write).
     """
     table = _get_table()
     if table is None:
@@ -140,6 +153,8 @@ def write_pointer(
     }
     if triggering_invocation_id:
         item["triggering_invocation_id"] = triggering_invocation_id
+    if last_triggered_persona:
+        item["last_triggered_persona"] = last_triggered_persona
 
     try:
         table.put_item(Item=item)

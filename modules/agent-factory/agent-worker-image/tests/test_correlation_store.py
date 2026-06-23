@@ -80,28 +80,29 @@ class TestWritePointer:
             ttl_days=7,
         )
 
-        mock_client.put_item.assert_called_once()
-        call_kwargs = mock_client.put_item.call_args[1]
+        # Issue #1716: write now uses update_item (not put_item) so it never
+        # erases webhook-managed fields like last_triggered_persona.
+        mock_client.update_item.assert_called_once()
+        call_kwargs = mock_client.update_item.call_args[1]
         assert call_kwargs["TableName"] == "test-table"
-        item = call_kwargs["Item"]
-        assert item["channel_key"] == {"S": "github:repo=org/repo,issue=42"}
+        assert call_kwargs["Key"] == {"channel_key": {"S": "github:repo=org/repo,issue=42"}}
+        vals = call_kwargs["ExpressionAttributeValues"]
         # Issue #1661: attribute names must match what the webhook reads
-        assert item["correlation_id"] == {"S": "corr-abc"}
-        assert item["root_human_id"] == {"S": "user-xyz"}
-        assert item["is_human_rooted"] == {"BOOL": True}
-        # Must NOT have the old prefixed names
-        assert "latest_correlation_id" not in item
-        assert "latest_root_human_id" not in item
-        assert "latest_is_human_rooted" not in item
-        assert "updated_at" in item
-        assert "expires_at" in item
+        assert vals[":cid"] == {"S": "corr-abc"}
+        assert vals[":rh"] == {"S": "user-xyz"}
+        assert vals[":hr"] == {"BOOL": True}
+        assert ":ua" in vals  # updated_at
+        assert ":ea" in vals  # expires_at
+        # update_item must SET (not clobber) — last_triggered_persona is NOT in
+        # the update expression, so an existing value is preserved.
+        assert "last_triggered_persona" not in call_kwargs["UpdateExpression"]
 
     @patch("lib.correlation_store._get_client")
     @patch.dict(os.environ, {"CORRELATION_POINTERS_TABLE": "test-table"})
     def test_fail_soft_on_dynamodb_error(self, mock_get_client):
         """Should log warning but not raise on DDB errors."""
         mock_client = MagicMock()
-        mock_client.put_item.side_effect = Exception("DDB unavailable")
+        mock_client.update_item.side_effect = Exception("DDB unavailable")
         mock_get_client.return_value = mock_client
 
         # Should not raise
@@ -127,7 +128,7 @@ class TestWritePointer:
             ttl_days=14,
         )
 
-        item = mock_client.put_item.call_args[1]["Item"]
-        updated_at = int(item["updated_at"]["N"])
-        expires_at = int(item["expires_at"]["N"])
+        vals = mock_client.update_item.call_args[1]["ExpressionAttributeValues"]
+        updated_at = int(vals[":ua"]["N"])
+        expires_at = int(vals[":ea"]["N"])
         assert expires_at - updated_at == 14 * 86400

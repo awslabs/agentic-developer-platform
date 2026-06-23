@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from typing import Any
 
 import boto3
 
@@ -69,21 +70,37 @@ def write_pointer(
 
     try:
         now = int(time.time())
-        item = {
-            "channel_key": {"S": channel_key},
-            "correlation_id": {"S": correlation_id},
-            "root_human_id": {"S": root_human_id},
-            "is_human_rooted": {"BOOL": is_human_rooted},
-            "updated_at": {"N": str(now)},
-            "expires_at": {"N": str(now + ttl_days * 86400)},
+        # Use update_item (not put_item) so we only SET the attributes this
+        # producing run owns — and never erase webhook-managed fields like
+        # last_triggered_persona (issue #1716). A full put_item here would wipe
+        # the self-re-trigger guard value the webhook wrote when it spawned this
+        # run, reopening the self-loop the moment the agent posts its first
+        # comment mid-run.
+        set_parts = [
+            "correlation_id = :cid",
+            "root_human_id = :rh",
+            "is_human_rooted = :hr",
+            "updated_at = :ua",
+            "expires_at = :ea",
+        ]
+        expr_vals: dict[str, Any] = {
+            ":cid": {"S": correlation_id},
+            ":rh": {"S": root_human_id},
+            ":hr": {"BOOL": is_human_rooted},
+            ":ua": {"N": str(now)},
+            ":ea": {"N": str(now + ttl_days * 86400)},
         }
         if triggering_invocation_id:
-            item["triggering_invocation_id"] = {"S": triggering_invocation_id}
+            set_parts.append("triggering_invocation_id = :tii")
+            expr_vals[":tii"] = {"S": triggering_invocation_id}
         if chain_depth is not None:
-            item["chain_depth"] = {"N": str(chain_depth)}
-        _get_client().put_item(
+            set_parts.append("chain_depth = :cd")
+            expr_vals[":cd"] = {"N": str(chain_depth)}
+        _get_client().update_item(
             TableName=table,
-            Item=item,
+            Key={"channel_key": {"S": channel_key}},
+            UpdateExpression="SET " + ", ".join(set_parts),
+            ExpressionAttributeValues=expr_vals,
         )
         logger.info("Wrote correlation pointer: channel=%s corr=%s", channel_key, correlation_id)
     except Exception as exc:
