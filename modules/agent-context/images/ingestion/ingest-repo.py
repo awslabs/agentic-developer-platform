@@ -36,9 +36,13 @@ log = get_logger("ingest-repo")
 # ---------------------------------------------------------------------------
 
 from config import settings
+from scope import compute_s3_prefix, parse_scope_from_env
 from scip_indexer import index_repo as scip_index_repo, detect_languages, cleanup_indexing_artifacts
 from scip_ingester import ingest_scip
-from scip_neptune_csv import generate_csv as scip_generate_csv, generate_summary as scip_generate_summary
+from scip_neptune_csv import (
+    generate_csv as scip_generate_csv,
+    generate_summary as scip_generate_summary,
+)
 
 DEEPWIKI_URL = settings.deepwiki_url
 DEEPWIKI_ENABLED = settings.deepwiki_enabled
@@ -431,8 +435,7 @@ def _write_code_index_to_filesystem(code_index_json: str, safe_name: str, org_re
         return True
     except OSError as e:
         log.warning(
-            "Failed to write code-index to filesystem for %s: %s — "
-            "falling back to S3-only upload",
+            "Failed to write code-index to filesystem for %s: %s — falling back to S3-only upload",
             org_repo,
             e,
         )
@@ -971,7 +974,8 @@ def scip_structural_ingest(
         log.error(
             "FAIL-LOUD: SCIP produced 0 edges for %s (languages: %s). "
             "This indicates failed dep resolution or indexer issue.",
-            org_repo, lang_counts,
+            org_repo,
+            lang_counts,
         )
         result["status"] = "no_edges"
         result["nodes"] = graph.node_count
@@ -1012,18 +1016,22 @@ def scip_structural_ingest(
                 result["status"] = "load_partial"
                 log.warning(
                     "Neptune load had errors for %s: %s",
-                    org_repo, load_result.get("total_errors", 0),
+                    org_repo,
+                    load_result.get("total_errors", 0),
                 )
         else:
             # No Neptune endpoint — CSV + S3 only
             result["status"] = "complete"
             log.info(
                 "SCIP graph for %s: %d nodes, %d edges (Neptune not configured — CSV only)",
-                org_repo, graph.node_count, graph.edge_count,
+                org_repo,
+                graph.node_count,
+                graph.edge_count,
             )
     finally:
         # Clean up temp CSV directory
         import shutil as _shutil
+
         _shutil.rmtree(csv_output_dir, ignore_errors=True)
 
     # Clean up indexing artifacts from the clone
@@ -1031,7 +1039,11 @@ def scip_structural_ingest(
 
     log.info(
         "SCIP structural ingest complete for %s: %d nodes, %d edges (%d CALLS, %d REFERENCES)",
-        org_repo, graph.node_count, graph.edge_count, graph.calls_count, graph.references_count,
+        org_repo,
+        graph.node_count,
+        graph.edge_count,
+        graph.calls_count,
+        graph.references_count,
     )
     return result
 
@@ -1041,7 +1053,12 @@ def scip_structural_ingest(
 # ---------------------------------------------------------------------------
 
 
-def _generate_source_sbom(clone_path: str, org_repo: str, s3_store: S3ContentStore) -> str:
+def _generate_source_sbom(
+    clone_path: str,
+    org_repo: str,
+    s3_store: S3ContentStore,
+    sbom_s3_prefix: str | None = None,
+) -> str:
     """Run Syft against a cloned repo directory and store the CycloneDX SBOM.
 
     Steps:
@@ -1055,7 +1072,8 @@ def _generate_source_sbom(clone_path: str, org_repo: str, s3_store: S3ContentSto
 
     from sbom_parser import parse_cyclonedx
 
-    sbom_s3_prefix = settings.sbom_s3_prefix
+    if sbom_s3_prefix is None:
+        sbom_s3_prefix = settings.sbom_s3_prefix
     syft_timeout = settings.syft_timeout
 
     # Generate a safe slug for the S3 key
@@ -1111,7 +1129,9 @@ def _generate_source_sbom(clone_path: str, org_repo: str, s3_store: S3ContentSto
         )
         log.info(
             "Source SBOM uploaded: s3://%s/%s (%d bytes)",
-            s3_store.bucket_name, s3_key, len(sbom_bytes),
+            s3_store.bucket_name,
+            s3_key,
+            len(sbom_bytes),
         )
     except Exception as e:
         log.error("S3 upload failed for source SBOM of %s: %s", org_repo, e)
@@ -1249,10 +1269,25 @@ def ingest_repo(
         "sbom_source": "skipped",
     }
 
+    # Read scope from environment (propagated by sqs-worker for tenant isolation)
+    scope = parse_scope_from_env()
+    scoped_content_prefix = compute_s3_prefix(scope, S3_CONTENT_PREFIX)
+    scoped_wiki_prefix = compute_s3_prefix(scope, WIKI_S3_PREFIX)
+    scoped_code_index_prefix = compute_s3_prefix(scope, CODE_INDEX_S3_PREFIX)
+    scoped_sbom_prefix = compute_s3_prefix(scope, settings.sbom_s3_prefix)
+
+    if not scope.is_shared:
+        log.info(
+            "Scoped ingestion: visibility=%s tenant_id=%s owner_sub=%s",
+            scope.visibility,
+            scope.tenant_id,
+            scope.owner_sub,
+        )
+
     # Initialize the S3 content store and writer adapter
     s3_store = S3ContentStore(
         bucket_name=S3_BUCKET_NAME,
-        prefix=S3_CONTENT_PREFIX,
+        prefix=scoped_content_prefix,
         region_name=AWS_REGION,
     )
     s3_writer = _S3WriterAdapter(s3_store)
@@ -1265,9 +1300,7 @@ def ingest_repo(
         import db as stage_db
 
         db_conn = stage_db.get_connection()
-        repo_id = stage_db.ensure_repo_exists(
-            db_conn, org_repo, f"https://github.com/{org_repo}"
-        )
+        repo_id = stage_db.ensure_repo_exists(db_conn, org_repo, f"https://github.com/{org_repo}")
     except Exception as e:
         log.warning("DB unavailable for stage tracking — legacy mode: %s", e)
         db_conn = None
@@ -1336,7 +1369,9 @@ def ingest_repo(
         # Check if we can skip (already verified at this SHA)
         skip_cgc_stage = tracker and tracker.should_skip("cgc_structural")
         if skip_cgc_stage:
-            log.info("Skipping cgc_structural for %s — already verified at %s", org_repo, commit_sha)
+            log.info(
+                "Skipping cgc_structural for %s — already verified at %s", org_repo, commit_sha
+            )
             tracker.mark_skipped("cgc_structural", "already verified at current SHA")
             result["code_index"] = "skipped_verified"
             result["s3_upload"] = "skipped_verified"
@@ -1359,7 +1394,7 @@ def ingest_repo(
                         org_repo,
                         s3_writer=s3_writer,
                         s3_bucket=S3_BUCKET_NAME,
-                        code_index_s3_prefix=CODE_INDEX_S3_PREFIX,
+                        code_index_s3_prefix=scoped_code_index_prefix,
                     )
 
                     if s3_key:
@@ -1434,7 +1469,7 @@ def ingest_repo(
                         allowed_principals=allowed_principals,
                         s3_writer=s3_writer,
                         s3_bucket=S3_BUCKET_NAME,
-                        wiki_s3_prefix=WIKI_S3_PREFIX,
+                        wiki_s3_prefix=scoped_wiki_prefix,
                         shard_count=S3_VECTORS_SHARD_COUNT,
                     )
 
@@ -1449,9 +1484,7 @@ def ingest_repo(
                             try:
                                 with tracker.stage("deepwiki") as ctx:
                                     ctx.set_artifact(wiki_s3_key)
-                                    ctx.verify(
-                                        lambda: _verify_s3_object(s3_store, wiki_s3_key)
-                                    )
+                                    ctx.verify(lambda: _verify_s3_object(s3_store, wiki_s3_key))
                             except Exception as e:
                                 log.warning("deepwiki stage tracking failed: %s", e)
                     else:
@@ -1523,9 +1556,7 @@ def ingest_repo(
                         try:
                             with tracker.stage("graphrag") as ctx:
                                 entity_count = graphrag_result.get("entities", 0)
-                                ctx.set_artifact(
-                                    f"neptune:{org_repo}:entities={entity_count}"
-                                )
+                                ctx.set_artifact(f"neptune:{org_repo}:entities={entity_count}")
                                 ctx.verify(lambda: entity_count > 0)
                         except Exception as e:
                             log.warning("graphrag stage tracking failed: %s", e)
@@ -1549,7 +1580,9 @@ def ingest_repo(
     if SCIP_ENABLED and not skip_scip:
         skip_scip_stage = tracker and tracker.should_skip("scip_structural")
         if skip_scip_stage:
-            log.info("Skipping scip_structural for %s — already verified at %s", org_repo, commit_sha)
+            log.info(
+                "Skipping scip_structural for %s — already verified at %s", org_repo, commit_sha
+            )
             tracker.mark_skipped("scip_structural", "already verified at current SHA")
             result["scip_structural"] = "skipped_verified"
         else:
@@ -1564,9 +1597,7 @@ def ingest_repo(
                         if scip_status == "complete":
                             with tracker.stage("scip_structural") as ctx:
                                 edge_count = scip_result.get("edges", 0)
-                                ctx.set_artifact(
-                                    f"neptune:{org_repo}:edges={edge_count}"
-                                )
+                                ctx.set_artifact(f"neptune:{org_repo}:edges={edge_count}")
                                 ctx.verify(lambda: edge_count > 0)
                         elif scip_status == "no_languages":
                             tracker.mark_skipped("scip_structural", "no SCIP-supported languages")
@@ -1578,9 +1609,7 @@ def ingest_repo(
                                 )
                         else:
                             with tracker.stage("scip_structural") as ctx:
-                                ctx.fail(
-                                    scip_result.get("error", f"status={scip_status}")
-                                )
+                                ctx.fail(scip_result.get("error", f"status={scip_status}"))
                     except Exception as e:
                         log.warning("scip_structural stage tracking failed: %s", e)
             except Exception as e:
@@ -1605,14 +1634,14 @@ def ingest_repo(
             result["sbom_source"] = "skipped_verified"
         else:
             try:
-                sbom_result = _generate_source_sbom(clone_path, org_repo, s3_store)
+                sbom_result = _generate_source_sbom(
+                    clone_path, org_repo, s3_store, sbom_s3_prefix=scoped_sbom_prefix
+                )
                 result["sbom_source"] = sbom_result
 
                 # Stage tracking: verify the SBOM artifact in S3
                 if tracker:
-                    sbom_s3_key = (
-                        f"{settings.sbom_s3_prefix}/repos/{org_repo}/source.cdx.json"
-                    )
+                    sbom_s3_key = f"{scoped_sbom_prefix}/repos/{org_repo}/source.cdx.json"
                     try:
                         if sbom_result == "complete":
                             with tracker.stage("sbom_source") as ctx:
@@ -1676,7 +1705,9 @@ def main():
     parser.add_argument("--skip-cgc", action="store_true", help="Skip code-index generation")
     parser.add_argument("--skip-deepwiki", action="store_true", help="Skip DeepWiki generation")
     parser.add_argument("--skip-graphrag", action="store_true", help="Skip GraphRAG extraction")
-    parser.add_argument("--skip-scip", action="store_true", help="Skip SCIP structural graph ingestion")
+    parser.add_argument(
+        "--skip-scip", action="store_true", help="Skip SCIP structural graph ingestion"
+    )
     parser.add_argument("--tags", default="{}", help="JSON tags object for metadata")
     args = parser.parse_args()
 

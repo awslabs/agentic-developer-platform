@@ -171,7 +171,12 @@ def write_dynamo_run_record(
 # ---------------------------------------------------------------------------
 
 
-def ingest_repo(source: str, tags: dict[str, str], steps: list[str] | None = None) -> None:
+def ingest_repo(
+    source: str,
+    tags: dict[str, str],
+    steps: list[str] | None = None,
+    scope_env: dict[str, str] | None = None,
+) -> None:
     """Run ingest-repo.py for a repository."""
     cmd = [
         sys.executable,
@@ -181,10 +186,10 @@ def ingest_repo(source: str, tags: dict[str, str], steps: list[str] | None = Non
     ]
     if tags:
         cmd.extend(["--tags", json.dumps(tags)])
-    _run_subprocess(cmd, timeout=TIMEOUTS["repo"])
+    _run_subprocess(cmd, timeout=TIMEOUTS["repo"], extra_env=scope_env)
 
 
-def ingest_url(source: str, tags: dict[str, str]) -> None:
+def ingest_url(source: str, tags: dict[str, str], scope_env: dict[str, str] | None = None) -> None:
     """Run ingest-url.py for a URL."""
     cmd = [
         sys.executable,
@@ -196,10 +201,15 @@ def ingest_url(source: str, tags: dict[str, str]) -> None:
     ]
     if tags:
         cmd.extend(["--tags", json.dumps(tags)])
-    _run_subprocess(cmd, timeout=TIMEOUTS["url"])
+    _run_subprocess(cmd, timeout=TIMEOUTS["url"], extra_env=scope_env)
 
 
-def ingest_doc(source: str, tags: dict[str, str], title: str | None = None) -> None:
+def ingest_doc(
+    source: str,
+    tags: dict[str, str],
+    title: str | None = None,
+    scope_env: dict[str, str] | None = None,
+) -> None:
     """Run ingest-doc.py for a document."""
     cmd = [
         sys.executable,
@@ -211,10 +221,12 @@ def ingest_doc(source: str, tags: dict[str, str], title: str | None = None) -> N
         cmd.extend(["--title", title])
     if tags:
         cmd.extend(["--tags", json.dumps(tags)])
-    _run_subprocess(cmd, timeout=TIMEOUTS["doc"])
+    _run_subprocess(cmd, timeout=TIMEOUTS["doc"], extra_env=scope_env)
 
 
-def discover_infra(source: str, tags: dict[str, str]) -> None:
+def discover_infra(
+    source: str, tags: dict[str, str], scope_env: dict[str, str] | None = None
+) -> None:
     """Run discover-infra.py for an AWS account."""
     cmd = [
         sys.executable,
@@ -224,10 +236,10 @@ def discover_infra(source: str, tags: dict[str, str]) -> None:
     ]
     if tags:
         cmd.extend(["--tags", json.dumps(tags)])
-    _run_subprocess(cmd, timeout=TIMEOUTS["infra"])
+    _run_subprocess(cmd, timeout=TIMEOUTS["infra"], extra_env=scope_env)
 
 
-def _run_subprocess(cmd: list[str], timeout: int) -> None:
+def _run_subprocess(cmd: list[str], timeout: int, extra_env: dict[str, str] | None = None) -> None:
     """Run a subprocess with timeout, streaming output through structured logging.
 
     Streams child stdout/stderr line-by-line through the parent's logger (which
@@ -251,6 +263,10 @@ def _run_subprocess(cmd: list[str], timeout: int) -> None:
             "http://adot-collector.adp-agents.svc.cluster.local:4317",
         ),
     )
+
+    # Propagate scope and any other extra env vars to child process
+    if extra_env:
+        child_env.update(extra_env)
 
     cmd_summary = " ".join(cmd[:6])
     log.info("subprocess.start: %s (timeout=%ds)", cmd_summary, timeout)
@@ -292,9 +308,7 @@ def _run_subprocess(cmd: list[str], timeout: int) -> None:
         process.wait(timeout=10)
         reader.join(timeout=5)
         duration = _time.monotonic() - start
-        log.error(
-            "subprocess.timeout: %s (killed after %.1fs)", cmd_summary, duration
-        )
+        log.error("subprocess.timeout: %s (killed after %.1fs)", cmd_summary, duration)
         raise subprocess.TimeoutExpired(cmd, timeout)
 
     # Wait for reader thread to finish draining output
@@ -310,9 +324,7 @@ def _run_subprocess(cmd: list[str], timeout: int) -> None:
             returncode,
             duration,
         )
-        raise RuntimeError(
-            f"Exit code {returncode}: {tail[:2000]}"
-        )
+        raise RuntimeError(f"Exit code {returncode}: {tail[:2000]}")
 
     log.info("subprocess.complete: %s exit_code=0 duration=%.1fs", cmd_summary, duration)
 
@@ -391,6 +403,9 @@ def main():
     # Parse scope envelope (backward-compatible: defaults to shared if absent)
     scope = parse_scope(message.get("scope"))
 
+    # Export scope as env vars for child processes (S3 prefix routing in #1773)
+    scope_env = scope.to_env()
+
     # Set correlation context from SQS envelope (fail-open)
     safe_emit(
         set_correlation_context,
@@ -417,21 +432,19 @@ def main():
         "project_id": scope.project_id or "",
         "visibility": scope.visibility,
     }
-    root_span_cm = _tracer.start_as_current_span(
-        "ingestion_run", attributes=root_span_attrs
-    )
+    root_span_cm = _tracer.start_as_current_span("ingestion_run", attributes=root_span_attrs)
     root_span = root_span_cm.__enter__()
 
     start_time = time.monotonic()
     try:
         if content_type == "repo":
-            ingest_repo(source, tags=tags, steps=steps)
+            ingest_repo(source, tags=tags, steps=steps, scope_env=scope_env)
         elif content_type == "url":
-            ingest_url(source, tags=tags)
+            ingest_url(source, tags=tags, scope_env=scope_env)
         elif content_type == "doc":
-            ingest_doc(source, tags=tags, title=title)
+            ingest_doc(source, tags=tags, title=title, scope_env=scope_env)
         elif content_type == "infra":
-            discover_infra(source, tags=tags)
+            discover_infra(source, tags=tags, scope_env=scope_env)
         else:
             raise ValueError(f"Unknown content_type: {content_type}")
 
