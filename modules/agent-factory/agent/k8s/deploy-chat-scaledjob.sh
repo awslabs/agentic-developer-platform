@@ -24,7 +24,19 @@ INFRA_DIR="${SCRIPT_DIR}/../../infra"
 
 echo "[deploy-chat] Reading Terraform outputs from ${INFRA_DIR}"
 pushd "${INFRA_DIR}" > /dev/null
-terraform init -backend-config="../../../environments/${ENVIRONMENT}/modules/agent-factory-backend.tfvars" -input=false -reconfigure > /dev/null
+
+# The committed backend tfvars keeps a literal ACCOUNT_ID placeholder so the
+# repo stays portable across accounts (it is rewritten by bootstrap for
+# self-managed deploys, but this CI path runs from a clean checkout). Resolve
+# the real state bucket at runtime and override the bucket on init — otherwise
+# terraform inits against "adp-terraform-state-ACCOUNT_ID" and fails with
+# NoSuchBucket (the cause of every chat-agent-deploy failure to date).
+STATE_BUCKET="${STATE_BUCKET:-adp-terraform-state-$(aws sts get-caller-identity --query Account --output text)}"
+echo "[deploy-chat] Using Terraform state bucket: ${STATE_BUCKET}"
+terraform init \
+  -backend-config="../../../environments/${ENVIRONMENT}/modules/agent-factory-backend.tfvars" \
+  -backend-config="bucket=${STATE_BUCKET}" \
+  -input=false -reconfigure > /dev/null
 
 CHAT_TASKS_FIFO_URL=$(terraform output -raw chat_tasks_fifo_queue_url)
 CONTEXT_TABLE=$(terraform output -raw chat_context_table_name)
