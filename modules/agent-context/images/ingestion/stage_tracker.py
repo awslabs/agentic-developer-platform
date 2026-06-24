@@ -21,11 +21,13 @@ Usage in ingest-repo.py:
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable
 
 import db as stage_db
+from metrics import record_stage_complete, record_stage_failed
 from telemetry import (
     asset_type_var,
     owner_sub_var,
@@ -158,6 +160,7 @@ class StageTracker:
 
         ctx = StageContext(_stage_name=stage_name)
         stage_id = stage_db.start_stage(self._conn, self._run_id, self._repo, stage_name)
+        stage_start_time = time.monotonic()
 
         # Start OTel span (fail-open: wrap in try/except so tracing never blocks)
         span_cm = None
@@ -202,6 +205,7 @@ class StageTracker:
                 pass
 
         # Determine final state (unchanged from pre-tracing behavior)
+        stage_duration_ms = (time.monotonic() - stage_start_time) * 1000
         if ctx._verified and ctx._artifact_ref:
             stage_db.verify_stage(self._conn, stage_id, ctx._artifact_ref)
             self._results.append(StageResult(
@@ -209,6 +213,14 @@ class StageTracker:
                 status="verified",
                 artifact_ref=ctx._artifact_ref,
             ))
+            # Emit metrics (fail-open via safe_emit)
+            safe_emit(
+                record_stage_complete,
+                tenant_id=tenant_id_var.get() or "",
+                stage=stage_name,
+                asset_type=asset_type_var.get() or "",
+                latency_ms=stage_duration_ms,
+            )
         else:
             error = ctx._error or "stage completed without verification"
             stage_db.fail_stage(self._conn, stage_id, error)
@@ -217,6 +229,13 @@ class StageTracker:
                 status="failed",
                 error=error,
             ))
+            # Emit metrics (fail-open via safe_emit)
+            safe_emit(
+                record_stage_failed,
+                tenant_id=tenant_id_var.get() or "",
+                stage=stage_name,
+                asset_type=asset_type_var.get() or "",
+            )
 
     def mark_skipped(self, stage_name: str, reason: str = "disabled") -> None:
         """Record a stage as skipped (feature disabled, not applicable, etc.)."""

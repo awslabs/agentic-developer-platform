@@ -21,11 +21,13 @@ from typing import Any
 
 import boto3
 
+from metrics import record_ingestion_duration, setup_metrics, shutdown_metrics
 from telemetry import configure_telemetry, get_logger, safe_emit, set_correlation_context
 from tracing import get_tracer, setup_tracing, shutdown_tracing
 
 configure_telemetry(service_name="knowledge-layer-ingestion")
 setup_tracing(service_name="knowledge-layer-ingestion")
+setup_metrics(service_name="knowledge-layer")
 log = get_logger("sqs-worker")
 _tracer = get_tracer("knowledge-layer.sqs-worker")
 
@@ -454,6 +456,14 @@ def main():
             trigger=triggered_by,
             steps={s: "ok" for s in steps},
         )
+        # Emit ingestion duration metric (fail-open)
+        safe_emit(
+            record_ingestion_duration,
+            tenant_id=scope.tenant_id or "",
+            asset_type=content_type,
+            duration_ms=duration * 1000,
+        )
+
         delete_sqs_message(receipt_handle)
         log.info("Completed %s (%s) in %.1fs", source, content_type, duration)
 
@@ -488,6 +498,7 @@ def main():
         except Exception:
             pass
         safe_emit(shutdown_tracing)
+        safe_emit(shutdown_metrics)
         sys.exit(1)
 
     # End root span on success (fail-open)
@@ -496,6 +507,7 @@ def main():
     except Exception:
         pass
     safe_emit(shutdown_tracing)
+    safe_emit(shutdown_metrics)
 
 
 if __name__ == "__main__":

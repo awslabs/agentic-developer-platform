@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -26,6 +27,7 @@ from fastapi import FastAPI, Request, Response
 from .acl import CallerPrincipal, SearchHit, extract_caller_principal, filter_results
 from .browse_backend import browse
 from .config import config
+from .metrics import record_query, setup_door_metrics
 from .remember_backend import remember
 from .search_backend import ZoektSearchBackend
 from .structural_backend import impact, understand
@@ -136,6 +138,9 @@ state = AppState()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize backends on startup, clean up on shutdown."""
+    # Metrics (fail-open: never blocks startup)
+    setup_door_metrics()
+
     # Tracing setup (must be early, before middleware registration)
     setup_tracing(app)
 
@@ -346,16 +351,29 @@ async def call_tool(request: Request) -> Response:
     headers = _extract_headers(request)
     caller = extract_caller_principal(headers)
 
-    # Route to verb handler
+    # Route to verb handler (with metrics)
+    tenant_id = headers.get("x-tenant-id", "")
+    query_start = time.monotonic()
     try:
         result = await _dispatch_tool(name, arguments, headers, caller)
     except Exception:
         log.exception("Tool %s failed with unhandled error", name)
+        duration_ms = (time.monotonic() - query_start) * 1000
+        try:
+            record_query(tenant_id=tenant_id, verb=name, duration_ms=duration_ms, error=True)
+        except Exception:
+            pass  # fail-open
         return Response(
             content=json.dumps({"error": f"Internal error processing tool '{name}'"}),
             status_code=500,
             media_type="application/json",
         )
+
+    duration_ms = (time.monotonic() - query_start) * 1000
+    try:
+        record_query(tenant_id=tenant_id, verb=name, duration_ms=duration_ms, error=False)
+    except Exception:
+        pass  # fail-open
 
     return Response(
         content=json.dumps(result, default=str),

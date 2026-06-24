@@ -334,7 +334,7 @@ resource "aws_iam_role_policy" "otel_collector_permissions" {
         Resource = "*"
         Condition = {
           StringEquals = {
-            "cloudwatch:namespace" = "ADP/AgentTelemetry"
+            "cloudwatch:namespace" = ["ADP/AgentTelemetry", "ADP/KnowledgeLayer"]
           }
         }
       },
@@ -351,7 +351,9 @@ resource "aws_iam_role_policy" "otel_collector_permissions" {
         ]
         Resource = [
           "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:${var.otel_collector_log_group}/*",
-          "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:${var.otel_collector_log_group}/*:*"
+          "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:${var.otel_collector_log_group}/*:*",
+          "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:/adp/*/knowledge-layer/*",
+          "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:/adp/*/knowledge-layer/*:*"
         ]
       },
       {
