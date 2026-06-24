@@ -50,6 +50,11 @@ class ServerConfig:
             "yes",
         )
 
+        # Tenant scoping (E8 multi-tenancy — kill switch)
+        self.tenant_scope_enabled: bool = os.environ.get(
+            "TENANT_SCOPE_ENABLED", "false"
+        ).lower() in ("true", "1", "yes")
+
         # Server
         self.host: str = os.environ.get("MCP_HOST", "0.0.0.0")
         self.port: int = int(os.environ.get("MCP_PORT", "5100"))

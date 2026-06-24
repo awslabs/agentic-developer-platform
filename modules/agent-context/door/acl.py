@@ -22,6 +22,8 @@ log = logging.getLogger(__name__)
 # Header names (canonical lowercase for case-insensitive matching)
 HEADER_GITHUB_LOGIN = "x-github-login"
 HEADER_GITHUB_TEAMS = "x-github-teams"
+HEADER_TENANT_ID = "x-tenant-id"
+HEADER_OWNER_SUB = "x-owner-sub"
 
 # Sentinel value in allowed_principals meaning "visible to everyone"
 PUBLIC_SENTINEL = "*"
@@ -34,10 +36,17 @@ PUBLIC_SENTINEL = "*"
 
 @dataclass(frozen=True)
 class CallerPrincipal:
-    """The caller's GitHub identity, extracted from request headers."""
+    """The caller's identity, extracted from request headers.
+
+    Combines GitHub identity (login/teams) with tenant isolation headers
+    (tenant_id/owner_sub). The principal is "resolved" if it has at least
+    a login or team membership — tenant headers alone are not sufficient.
+    """
 
     github_login: str = ""
     github_teams: list[str] = field(default_factory=list)
+    tenant_id: str = ""
+    owner_sub: str = ""
 
     @property
     def is_resolved(self) -> bool:
@@ -68,10 +77,16 @@ class ACLStore(Protocol):
     def get_allowed_repos(self, principal: CallerPrincipal) -> set[str]:
         """Return the set of repo_names this principal is allowed to see.
 
-        Must include repos where allowed_principals contains:
+        When tenant scoping is disabled, includes repos where allowed_principals contains:
         - The PUBLIC_SENTINEL ("*"), OR
         - principal.github_login, OR
         - Any value in principal.github_teams
+
+        When tenant scoping is enabled, additionally enforces:
+        - Shared repos (tenant_id IS NULL): principals match required
+        - Per-tenant repos (tenant_id matches caller): principals match required
+        - Per-individual repos (owner_sub matches caller): visible regardless of principals
+        - Cross-tenant repos (tenant_id != caller's): excluded
 
         If the store is unreachable, implementations MUST raise (not return
         all repos). The caller handles the exception as fail-closed.
@@ -85,10 +100,17 @@ class ACLStore(Protocol):
 
 
 def extract_caller_principal(headers: dict[str, str]) -> CallerPrincipal | None:
-    """Extract the caller's GitHub identity from request headers.
+    """Extract the caller's identity from request headers.
 
-    Returns None if neither header is present (fail-closed at filter time).
-    Headers are treated case-insensitively.
+    Reads four headers:
+    - X-GitHub-Login: GitHub username
+    - X-GitHub-Teams: comma-separated team slugs
+    - X-Tenant-Id: organization/tenant identifier
+    - X-Owner-Sub: individual user identifier (Cognito sub or similar)
+
+    Returns None if neither GitHub header is present (fail-closed at filter time).
+    Tenant/owner headers are optional enrichment — they narrow scope but cannot
+    establish identity alone.
     """
     normalized = {k.lower(): v for k, v in headers.items()}
 
@@ -103,7 +125,16 @@ def extract_caller_principal(headers: dict[str, str]) -> CallerPrincipal | None:
     if not login and not teams:
         return None
 
-    return CallerPrincipal(github_login=login, github_teams=teams)
+    # Tenant isolation headers (optional enrichment)
+    tenant_id = normalized.get(HEADER_TENANT_ID, "").strip()
+    owner_sub = normalized.get(HEADER_OWNER_SUB, "").strip().lower()
+
+    return CallerPrincipal(
+        github_login=login,
+        github_teams=teams,
+        tenant_id=tenant_id,
+        owner_sub=owner_sub,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -176,31 +207,40 @@ class PostgresACLStore:
     """ACL store backed by the repositories table in Postgres.
 
     Uses the `allowed_principals` TEXT[] column with a GIN index.
+    When tenant scoping is enabled, additionally filters by tenant_id/owner_sub.
+
     Callers are expected to pass a connection/pool; this class does not
     manage connection lifecycle.
-
-    Query:
-        SELECT repo_name FROM repositories
-        WHERE '*' = ANY(allowed_principals)
-           OR $login = ANY(allowed_principals)
-           OR allowed_principals && $teams_array
     """
 
-    def __init__(self, db_pool: Any):
-        """Initialize with a database connection pool (asyncpg or psycopg pool)."""
+    def __init__(self, db_pool: Any, *, tenant_scope_enabled: bool = False):
+        """Initialize with a database connection pool and optional tenant scoping.
+
+        Parameters
+        ----------
+        db_pool:
+            Database connection pool (psycopg2 or similar).
+        tenant_scope_enabled:
+            When True, enforce tenant/individual scoping in addition to
+            principal matching. When False, use legacy principal-only logic.
+        """
         self._pool = db_pool
+        self._tenant_scope_enabled = tenant_scope_enabled
 
     def get_allowed_repos(self, principal: CallerPrincipal) -> set[str]:
         """Query Postgres for repos this principal can access.
 
         Raises on connection failure (caller handles as fail-closed).
         """
-        # Build the query parameters
+        if self._tenant_scope_enabled:
+            return self._get_allowed_repos_scoped(principal)
+        return self._get_allowed_repos_legacy(principal)
+
+    def _get_allowed_repos_legacy(self, principal: CallerPrincipal) -> set[str]:
+        """Legacy query: principal matching only (no tenant isolation)."""
         login = principal.github_login or ""
         teams = principal.github_teams or []
 
-        # The query uses PostgreSQL array operators:
-        # ANY() for single-value membership, && for array overlap
         query = """
             SELECT repo_name FROM repositories
             WHERE $1 = ANY(allowed_principals)
@@ -208,6 +248,48 @@ class PostgresACLStore:
                OR allowed_principals && $3::text[]
         """
         params = [PUBLIC_SENTINEL, login, teams]
+
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+                return {row[0] for row in rows}
+        finally:
+            self._pool.putconn(conn)
+
+    def _get_allowed_repos_scoped(self, principal: CallerPrincipal) -> set[str]:
+        """Tenant-scoped query: visibility rule per design §7.2–§7.4.
+
+        Visibility:
+        1. Shared repos (tenant_id IS NULL) — require principals match
+        2. Per-tenant repos (tenant_id == caller's) — require principals match
+        3. Per-individual repos (owner_sub == caller's) — visible unconditionally
+        4. Cross-tenant repos — excluded (fail-closed)
+        """
+        login = principal.github_login or ""
+        teams = principal.github_teams or []
+        tenant_id = principal.tenant_id or ""
+        owner_sub = principal.owner_sub or ""
+
+        # The query combines three visibility paths via UNION to keep logic clear.
+        # Path 1+2: shared + same-tenant repos where principals match
+        # Path 3: individual repos where owner_sub matches (no principal check)
+        query = """
+            SELECT repo_name FROM repositories
+            WHERE (
+                (tenant_id IS NULL OR tenant_id = $4)
+                AND (
+                    $1 = ANY(allowed_principals)
+                    OR $2 = ANY(allowed_principals)
+                    OR allowed_principals && $3::text[]
+                )
+            )
+            OR (
+                $5 != '' AND owner_sub = $5
+            )
+        """
+        params = [PUBLIC_SENTINEL, login, teams, tenant_id, owner_sub]
 
         conn = self._pool.getconn()
         try:

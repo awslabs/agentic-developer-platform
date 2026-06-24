@@ -160,7 +160,9 @@ async def lifespan(app: FastAPI):
     if state.db_pool:
         from .acl import PostgresACLStore
 
-        state.acl_store = PostgresACLStore(state.db_pool)
+        state.acl_store = PostgresACLStore(
+            state.db_pool, tenant_scope_enabled=config.tenant_scope_enabled
+        )
 
     # Neptune driver (for structural queries — impact/understand)
     if config.neptune_enabled:
