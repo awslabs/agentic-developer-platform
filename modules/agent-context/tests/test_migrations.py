@@ -596,3 +596,428 @@ class TestMigration004FileStructure:
         content = migration.read_text()
         assert "DROP COLUMN owner_sub" in content
         assert "DROP COLUMN tenant_id" in content
+
+
+class TestProjectScopingMigration:
+    """Test the 005_project_scoping migration (Issue #1784).
+
+    Verifies that the projects and project_repositories tables are created
+    correctly, with proper indexes, constraints, and CASCADE behaviour.
+    """
+
+    @pytest.fixture
+    def db(self, tmp_path):
+        """Create a fresh SQLite database with base schema + migrations 004 + 005 applied."""
+        db_path = tmp_path / "test_project_scoping.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+
+        # Apply base schema (001) — simplified for SQLite
+        conn.executescript("""
+            CREATE TABLE repositories (
+                id              TEXT PRIMARY KEY,
+                repo_name       TEXT NOT NULL UNIQUE,
+                git_url         TEXT NOT NULL,
+                owner           TEXT NOT NULL,
+                allowed_principals TEXT NOT NULL DEFAULT '[]',
+                last_indexed_sha TEXT,
+                indexed_at      TEXT,
+                zoekt_status    TEXT NOT NULL DEFAULT 'pending',
+                vectors_status  TEXT NOT NULL DEFAULT 'pending',
+                structure_status TEXT NOT NULL DEFAULT 'pending',
+                sbom_status     TEXT NOT NULL DEFAULT 'pending',
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX ix_repositories_owner ON repositories(owner);
+        """)
+
+        # Apply migration 004: add tenant_id and owner_sub to repositories
+        conn.executescript("""
+            ALTER TABLE repositories ADD COLUMN tenant_id TEXT;
+            ALTER TABLE repositories ADD COLUMN owner_sub TEXT;
+            CREATE INDEX ix_repositories_tenant_id ON repositories(tenant_id);
+            CREATE INDEX ix_repositories_owner_sub ON repositories(owner_sub);
+        """)
+
+        # Apply migration 005: projects + project_repositories
+        conn.executescript("""
+            CREATE TABLE projects (
+                id          TEXT PRIMARY KEY,
+                owner_sub   TEXT NOT NULL,
+                name        TEXT NOT NULL,
+                tenant_id   TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+
+                UNIQUE (owner_sub, name)
+            );
+
+            CREATE INDEX ix_projects_owner_sub ON projects(owner_sub);
+            CREATE INDEX ix_projects_tenant_id ON projects(tenant_id);
+
+            CREATE TABLE project_repositories (
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                repo_id     TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+                added_at    TEXT NOT NULL DEFAULT (datetime('now')),
+
+                PRIMARY KEY (project_id, repo_id)
+            );
+
+            CREATE INDEX ix_project_repositories_repo_id ON project_repositories(repo_id);
+        """)
+        conn.commit()
+        yield conn
+        conn.close()
+
+    def test_projects_table_exists(self, db):
+        """Migration creates the projects table."""
+        cursor = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'")
+        assert cursor.fetchone() is not None
+
+    def test_project_repositories_table_exists(self, db):
+        """Migration creates the project_repositories join table."""
+        cursor = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='project_repositories'"
+        )
+        assert cursor.fetchone() is not None
+
+    def test_projects_indexes_exist(self, db):
+        """Indexes ix_projects_owner_sub and ix_projects_tenant_id are created."""
+        cursor = db.execute("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
+        indexes = [row[0] for row in cursor.fetchall()]
+        assert "ix_projects_owner_sub" in indexes
+        assert "ix_projects_tenant_id" in indexes
+
+    def test_project_repositories_index_exists(self, db):
+        """Index ix_project_repositories_repo_id is created."""
+        cursor = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='ix_project_repositories_repo_id'"
+        )
+        assert cursor.fetchone() is not None
+
+    def test_insert_project(self, db):
+        """Can insert a project with all fields."""
+        db.execute(
+            "INSERT INTO projects (id, owner_sub, name, tenant_id) VALUES (?, ?, ?, ?)",
+            ("proj-1", "user-sub-abc", "My Project", "tenant-xyz"),
+        )
+        db.commit()
+
+        cursor = db.execute(
+            "SELECT owner_sub, name, tenant_id FROM projects WHERE id = ?", ("proj-1",)
+        )
+        row = cursor.fetchone()
+        assert row[0] == "user-sub-abc"
+        assert row[1] == "My Project"
+        assert row[2] == "tenant-xyz"
+
+    def test_project_tenant_id_nullable(self, db):
+        """Projects can have NULL tenant_id (personal, no org)."""
+        db.execute(
+            "INSERT INTO projects (id, owner_sub, name, tenant_id) VALUES (?, ?, ?, ?)",
+            ("proj-personal", "user-sub-123", "Personal Project", None),
+        )
+        db.commit()
+
+        cursor = db.execute("SELECT tenant_id FROM projects WHERE id = ?", ("proj-personal",))
+        assert cursor.fetchone()[0] is None
+
+    def test_unique_constraint_owner_name(self, db):
+        """Same owner cannot have two projects with the same name."""
+        db.execute(
+            "INSERT INTO projects (id, owner_sub, name) VALUES (?, ?, ?)",
+            ("proj-a", "user-sub-1", "Alpha"),
+        )
+        db.commit()
+
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO projects (id, owner_sub, name) VALUES (?, ?, ?)",
+                ("proj-b", "user-sub-1", "Alpha"),
+            )
+
+    def test_different_owners_same_name_allowed(self, db):
+        """Different owners can have projects with the same name."""
+        db.execute(
+            "INSERT INTO projects (id, owner_sub, name) VALUES (?, ?, ?)",
+            ("proj-x", "user-sub-1", "Common Name"),
+        )
+        db.execute(
+            "INSERT INTO projects (id, owner_sub, name) VALUES (?, ?, ?)",
+            ("proj-y", "user-sub-2", "Common Name"),
+        )
+        db.commit()
+
+        cursor = db.execute("SELECT COUNT(*) FROM projects WHERE name = ?", ("Common Name",))
+        assert cursor.fetchone()[0] == 2
+
+    def test_link_project_to_repository(self, db):
+        """Can link a project to a repository via the join table."""
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner) VALUES (?, ?, ?, ?)",
+            ("repo-1", "org/service", "https://github.com/org/service.git", "org"),
+        )
+        db.execute(
+            "INSERT INTO projects (id, owner_sub, name) VALUES (?, ?, ?)",
+            ("proj-1", "user-sub-1", "Backend"),
+        )
+        db.execute(
+            "INSERT INTO project_repositories (project_id, repo_id) VALUES (?, ?)",
+            ("proj-1", "repo-1"),
+        )
+        db.commit()
+
+        cursor = db.execute(
+            "SELECT project_id, repo_id FROM project_repositories WHERE project_id = ?",
+            ("proj-1",),
+        )
+        row = cursor.fetchone()
+        assert row[0] == "proj-1"
+        assert row[1] == "repo-1"
+
+    def test_many_to_many_relationship(self, db):
+        """A repo can belong to multiple projects and a project can have multiple repos."""
+        # Create repos and projects
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner) VALUES (?, ?, ?, ?)",
+            ("repo-a", "org/api", "https://github.com/org/api.git", "org"),
+        )
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner) VALUES (?, ?, ?, ?)",
+            ("repo-b", "org/web", "https://github.com/org/web.git", "org"),
+        )
+        db.execute(
+            "INSERT INTO projects (id, owner_sub, name) VALUES (?, ?, ?)",
+            ("proj-backend", "user-1", "Backend"),
+        )
+        db.execute(
+            "INSERT INTO projects (id, owner_sub, name) VALUES (?, ?, ?)",
+            ("proj-fullstack", "user-1", "Fullstack"),
+        )
+
+        # Link: repo-a -> both projects, repo-b -> fullstack only
+        db.execute(
+            "INSERT INTO project_repositories (project_id, repo_id) VALUES (?, ?)",
+            ("proj-backend", "repo-a"),
+        )
+        db.execute(
+            "INSERT INTO project_repositories (project_id, repo_id) VALUES (?, ?)",
+            ("proj-fullstack", "repo-a"),
+        )
+        db.execute(
+            "INSERT INTO project_repositories (project_id, repo_id) VALUES (?, ?)",
+            ("proj-fullstack", "repo-b"),
+        )
+        db.commit()
+
+        # repo-a belongs to 2 projects
+        cursor = db.execute(
+            "SELECT COUNT(*) FROM project_repositories WHERE repo_id = ?", ("repo-a",)
+        )
+        assert cursor.fetchone()[0] == 2
+
+        # fullstack project has 2 repos
+        cursor = db.execute(
+            "SELECT COUNT(*) FROM project_repositories WHERE project_id = ?", ("proj-fullstack",)
+        )
+        assert cursor.fetchone()[0] == 2
+
+    def test_composite_pk_prevents_duplicates(self, db):
+        """Cannot link the same repo to the same project twice."""
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner) VALUES (?, ?, ?, ?)",
+            ("repo-dup", "org/dup", "https://github.com/org/dup.git", "org"),
+        )
+        db.execute(
+            "INSERT INTO projects (id, owner_sub, name) VALUES (?, ?, ?)",
+            ("proj-dup", "user-1", "DupTest"),
+        )
+        db.execute(
+            "INSERT INTO project_repositories (project_id, repo_id) VALUES (?, ?)",
+            ("proj-dup", "repo-dup"),
+        )
+        db.commit()
+
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO project_repositories (project_id, repo_id) VALUES (?, ?)",
+                ("proj-dup", "repo-dup"),
+            )
+
+    def test_cascade_delete_project(self, db):
+        """Deleting a project cascades to project_repositories."""
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner) VALUES (?, ?, ?, ?)",
+            ("repo-cas", "org/cascade", "https://github.com/org/cascade.git", "org"),
+        )
+        db.execute(
+            "INSERT INTO projects (id, owner_sub, name) VALUES (?, ?, ?)",
+            ("proj-cas", "user-1", "CascadeTest"),
+        )
+        db.execute(
+            "INSERT INTO project_repositories (project_id, repo_id) VALUES (?, ?)",
+            ("proj-cas", "repo-cas"),
+        )
+        db.commit()
+
+        # Delete the project
+        db.execute("DELETE FROM projects WHERE id = ?", ("proj-cas",))
+        db.commit()
+
+        # Join row is gone
+        cursor = db.execute(
+            "SELECT COUNT(*) FROM project_repositories WHERE project_id = ?", ("proj-cas",)
+        )
+        assert cursor.fetchone()[0] == 0
+
+    def test_cascade_delete_repository(self, db):
+        """Deleting a repository cascades to project_repositories."""
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner) VALUES (?, ?, ?, ?)",
+            ("repo-del", "org/to-delete", "https://github.com/org/to-delete.git", "org"),
+        )
+        db.execute(
+            "INSERT INTO projects (id, owner_sub, name) VALUES (?, ?, ?)",
+            ("proj-keep", "user-1", "KeepProject"),
+        )
+        db.execute(
+            "INSERT INTO project_repositories (project_id, repo_id) VALUES (?, ?)",
+            ("proj-keep", "repo-del"),
+        )
+        db.commit()
+
+        # Delete the repository
+        db.execute("DELETE FROM repositories WHERE id = ?", ("repo-del",))
+        db.commit()
+
+        # Join row is gone but project survives
+        cursor = db.execute(
+            "SELECT COUNT(*) FROM project_repositories WHERE repo_id = ?", ("repo-del",)
+        )
+        assert cursor.fetchone()[0] == 0
+
+        cursor = db.execute("SELECT COUNT(*) FROM projects WHERE id = ?", ("proj-keep",))
+        assert cursor.fetchone()[0] == 1
+
+    def test_project_scoped_query(self, db):
+        """Can query repos visible to a project (the core use-case for Story B)."""
+        # Setup: two repos, one project containing only repo-a
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner) VALUES (?, ?, ?, ?)",
+            ("repo-in", "org/in-project", "https://github.com/org/in-project.git", "org"),
+        )
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner) VALUES (?, ?, ?, ?)",
+            ("repo-out", "org/not-in-project", "https://github.com/org/not-in-project.git", "org"),
+        )
+        db.execute(
+            "INSERT INTO projects (id, owner_sub, name) VALUES (?, ?, ?)",
+            ("proj-scope", "user-1", "ScopedProject"),
+        )
+        db.execute(
+            "INSERT INTO project_repositories (project_id, repo_id) VALUES (?, ?)",
+            ("proj-scope", "repo-in"),
+        )
+        db.commit()
+
+        # Query: repos in project
+        cursor = db.execute(
+            """
+            SELECT r.repo_name
+            FROM repositories r
+            JOIN project_repositories pr ON pr.repo_id = r.id
+            WHERE pr.project_id = ?
+            ORDER BY r.repo_name
+            """,
+            ("proj-scope",),
+        )
+        repos = [row[0] for row in cursor.fetchall()]
+        assert repos == ["org/in-project"]
+        assert "org/not-in-project" not in repos
+
+    def test_fk_rejects_invalid_project_id(self, db):
+        """Cannot insert a join row with a non-existent project_id."""
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner) VALUES (?, ?, ?, ?)",
+            ("repo-fk", "org/fk-test", "https://github.com/org/fk-test.git", "org"),
+        )
+        db.commit()
+
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO project_repositories (project_id, repo_id) VALUES (?, ?)",
+                ("nonexistent-project", "repo-fk"),
+            )
+
+    def test_fk_rejects_invalid_repo_id(self, db):
+        """Cannot insert a join row with a non-existent repo_id."""
+        db.execute(
+            "INSERT INTO projects (id, owner_sub, name) VALUES (?, ?, ?)",
+            ("proj-fk", "user-1", "FKTest"),
+        )
+        db.commit()
+
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO project_repositories (project_id, repo_id) VALUES (?, ?)",
+                ("proj-fk", "nonexistent-repo"),
+            )
+
+
+class TestMigration005FileStructure:
+    """Verify migration 005 file is well-formed and chains correctly."""
+
+    def test_migration_file_exists(self):
+        """Migration 005 file exists at the expected path."""
+        migration = MIGRATIONS_DIR / "005_project_scoping.py"
+        assert migration.exists(), f"Migration not found at {migration}"
+
+    def test_migration_revision_chain(self):
+        """Migration 005 revises 004_add_tenant_isolation_columns."""
+        migration = MIGRATIONS_DIR / "005_project_scoping.py"
+        content = migration.read_text()
+        assert 'revision: str = "005_project_scoping"' in content
+        assert 'down_revision: str = "004_add_tenant_isolation_columns"' in content
+
+    def test_migration_has_upgrade_and_downgrade(self):
+        """Migration 005 defines both upgrade() and downgrade() functions."""
+        migration = MIGRATIONS_DIR / "005_project_scoping.py"
+        content = migration.read_text()
+        assert "def upgrade()" in content
+        assert "def downgrade()" in content
+
+    def test_migration_creates_projects_table(self):
+        """Migration 005 creates the projects table."""
+        migration = MIGRATIONS_DIR / "005_project_scoping.py"
+        content = migration.read_text()
+        assert "CREATE TABLE projects" in content
+        assert "owner_sub" in content
+        assert "uq_projects_owner_name" in content
+
+    def test_migration_creates_project_repositories_table(self):
+        """Migration 005 creates the project_repositories join table."""
+        migration = MIGRATIONS_DIR / "005_project_scoping.py"
+        content = migration.read_text()
+        assert "CREATE TABLE project_repositories" in content
+        assert "ON DELETE CASCADE" in content
+
+    def test_migration_creates_indexes(self):
+        """Migration 005 creates all required indexes."""
+        migration = MIGRATIONS_DIR / "005_project_scoping.py"
+        content = migration.read_text()
+        assert "ix_projects_owner_sub" in content
+        assert "ix_projects_tenant_id" in content
+        assert "ix_project_repositories_repo_id" in content
+
+    def test_downgrade_drops_tables(self):
+        """Migration 005 downgrade drops both tables in correct order."""
+        migration = MIGRATIONS_DIR / "005_project_scoping.py"
+        content = migration.read_text()
+        # project_repositories must be dropped before projects (FK dependency)
+        pr_pos = content.index("project_repositories")
+        # Find the drop_table call for projects (the standalone table)
+        proj_drop_pos = content.index('drop_table("projects")')
+        # project_repositories is dropped first
+        assert pr_pos < proj_drop_pos
