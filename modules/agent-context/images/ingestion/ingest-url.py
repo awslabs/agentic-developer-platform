@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import logging
 import re
 import sys
 from datetime import datetime, timezone
@@ -24,12 +23,10 @@ from xml.etree import ElementTree
 
 import requests
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
-log = logging.getLogger("ingest-url")
+from telemetry import configure_telemetry, get_logger
+
+configure_telemetry(service_name="knowledge-layer-ingest-url")
+log = get_logger("ingest-url")
 
 from config import settings
 from s3_store import S3ContentStore

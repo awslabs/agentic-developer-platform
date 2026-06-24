@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 import shutil
 import subprocess
@@ -23,12 +22,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
-log = logging.getLogger("discover-infra")
+from telemetry import configure_telemetry, get_logger
+
+configure_telemetry(service_name="knowledge-layer-discover-infra")
+log = get_logger("discover-infra")
 
 from config import settings
 from github_auth import mint_github_token

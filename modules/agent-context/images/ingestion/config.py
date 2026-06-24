@@ -115,6 +115,14 @@ class Settings(BaseSettings):
     syft_timeout: int = 120  # seconds for syft CLI execution
     sbom_db_enabled: bool = True  # Write dependency rows to Postgres (best-effort)
 
+    # --- Telemetry (Knowledge Layer observability, #1746) ----------------------
+    knowledge_layer_telemetry_enabled: bool = True
+    knowledge_layer_traces_enabled: bool = True
+    otel_exporter_otlp_endpoint: str = (
+        "http://adot-collector.adp-agents.svc.cluster.local:4317"
+    )
+    log_format: str = "json"  # "json" or "text" (text for local dev)
+
     # --- Personal Context Synthesis -------------------------------------------
     synthesis_model: str = "bedrock/global.anthropic.claude-sonnet-4-6"
     min_learnings_threshold: int = 5

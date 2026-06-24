@@ -11,7 +11,7 @@ Usage:
 from __future__ import annotations
 
 import json
-import logging
+import os
 import subprocess
 import sys
 import time
@@ -21,12 +21,13 @@ from typing import Any
 
 import boto3
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
-log = logging.getLogger("sqs-worker")
+from telemetry import configure_telemetry, get_logger, safe_emit, set_correlation_context
+from tracing import get_tracer, setup_tracing, shutdown_tracing
+
+configure_telemetry(service_name="knowledge-layer-ingestion")
+setup_tracing(service_name="knowledge-layer-ingestion")
+log = get_logger("sqs-worker")
+_tracer = get_tracer("knowledge-layer.sqs-worker")
 
 # ---------------------------------------------------------------------------
 # Configuration (centralized via config.py)
@@ -224,15 +225,93 @@ def discover_infra(source: str, tags: dict[str, str]) -> None:
 
 
 def _run_subprocess(cmd: list[str], timeout: int) -> None:
-    """Run a subprocess with timeout, raising on failure."""
-    log.info("Running: %s", " ".join(cmd[:6]) + "...")
-    result = subprocess.run(cmd, capture_output=True, timeout=timeout)
-    stdout = result.stdout.decode()[:2000] if result.stdout else ""
-    stderr = result.stderr.decode()[:2000] if result.stderr else ""
-    if result.returncode != 0:
-        raise RuntimeError(f"Exit code {result.returncode}: {stderr or stdout}")
-    if stdout:
-        log.info("Output: %s", stdout[:500])
+    """Run a subprocess with timeout, streaming output through structured logging.
+
+    Streams child stdout/stderr line-by-line through the parent's logger (which
+    carries correlation context). Emits bookend events (start/complete/fail) with
+    duration and exit code.
+
+    This fixes the lost-subprocess-logs gap: previously output was captured via
+    capture_output=True and truncated to 500 chars, losing SCIP/cgc/syft diagnostics.
+    """
+    import threading
+    import time as _time
+
+    # Propagate telemetry config to child so it emits structured JSON
+    child_env = os.environ.copy()
+    child_env.setdefault("KNOWLEDGE_LAYER_TELEMETRY_ENABLED", "true")
+    child_env.setdefault("LOG_FORMAT", os.environ.get("LOG_FORMAT", "json"))
+    child_env.setdefault(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        os.environ.get(
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "http://adot-collector.adp-agents.svc.cluster.local:4317",
+        ),
+    )
+
+    cmd_summary = " ".join(cmd[:6])
+    log.info("subprocess.start: %s (timeout=%ds)", cmd_summary, timeout)
+    start = _time.monotonic()
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=child_env,
+    )
+
+    # Stream output line-by-line in a reader thread (so timeout works even if
+    # the child produces no output — e.g. a long-running computation or sleep)
+    last_lines: list[str] = []  # Keep tail for error context
+
+    def _read_output():
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                stripped = line.rstrip("\n")
+                if stripped:
+                    log.info("subprocess: %s", stripped)
+                    last_lines.append(stripped)
+                    if len(last_lines) > 50:
+                        last_lines.pop(0)
+        except Exception as e:
+            log.warning("subprocess output read error: %s", e)
+
+    reader = threading.Thread(target=_read_output, daemon=True)
+    reader.start()
+
+    # Wait for process to complete (with timeout)
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
+        reader.join(timeout=5)
+        duration = _time.monotonic() - start
+        log.error(
+            "subprocess.timeout: %s (killed after %.1fs)", cmd_summary, duration
+        )
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    # Wait for reader thread to finish draining output
+    reader.join(timeout=10)
+    duration = _time.monotonic() - start
+    returncode = process.returncode
+
+    if returncode != 0:
+        tail = "\n".join(last_lines[-10:]) if last_lines else "(no output)"
+        log.error(
+            "subprocess.failed: %s exit_code=%d duration=%.1fs",
+            cmd_summary,
+            returncode,
+            duration,
+        )
+        raise RuntimeError(
+            f"Exit code {returncode}: {tail[:2000]}"
+        )
+
+    log.info("subprocess.complete: %s exit_code=0 duration=%.1fs", cmd_summary, duration)
 
 
 # ---------------------------------------------------------------------------
@@ -306,10 +385,35 @@ def main():
     triggered_by = message.get("triggered_by", "unknown")
     steps = message.get("steps", [])
 
+    # Set correlation context from SQS envelope (fail-open)
+    safe_emit(
+        set_correlation_context,
+        asset_id=source,
+        asset_type=content_type,
+        owner_sub=message.get("owner_sub"),
+        tenant_id=message.get("tenant_id"),
+        project_id=message.get("project_id"),
+    )
+
     log.info("Processing: %s (%s) triggered_by=%s", source, content_type, triggered_by)
 
     # Update DynamoDB status to "processing"
     update_dynamo_status(source, content_type, "processing", tags=tags)
+
+    # Root span wrapping the entire ingestion run — child spans per stage
+    # are created by StageTracker and become children via trace context propagation
+    root_span_attrs = {
+        "asset_id": source,
+        "content_type": content_type,
+        "triggered_by": triggered_by,
+        "owner_sub": message.get("owner_sub", ""),
+        "tenant_id": message.get("tenant_id", ""),
+        "project_id": message.get("project_id", ""),
+    }
+    root_span_cm = _tracer.start_as_current_span(
+        "ingestion_run", attributes=root_span_attrs
+    )
+    root_span = root_span_cm.__enter__()
 
     start_time = time.monotonic()
     try:
@@ -325,6 +429,15 @@ def main():
             raise ValueError(f"Unknown content_type: {content_type}")
 
         duration = time.monotonic() - start_time
+
+        # Mark root span as successful (fail-open)
+        try:
+            from opentelemetry.trace import StatusCode
+
+            root_span.set_attribute("duration_sec", round(duration, 1))
+            root_span.set_status(StatusCode.OK)
+        except Exception:
+            pass
 
         # Success — update state and write run record
         update_dynamo_status(source, content_type, "complete", tags=tags)
@@ -344,6 +457,16 @@ def main():
         error_msg = str(e)[:1000]
         log.error("Failed %s (%s) after %.1fs: %s", source, content_type, duration, error_msg)
 
+        # Mark root span as failed (fail-open)
+        try:
+            from opentelemetry.trace import StatusCode
+
+            root_span.record_exception(e)
+            root_span.set_attribute("duration_sec", round(duration, 1))
+            root_span.set_status(StatusCode.ERROR, error_msg[:256])
+        except Exception:
+            pass
+
         # Failure — update state but don't delete message (goes back to queue for retry, then DLQ)
         update_dynamo_status(source, content_type, "failed", error=error_msg, tags=tags)
         write_dynamo_run_record(
@@ -354,7 +477,20 @@ def main():
             trigger=triggered_by,
             error=error_msg,
         )
+        # End root span + flush before exit (fail-open)
+        try:
+            root_span_cm.__exit__(None, None, None)
+        except Exception:
+            pass
+        safe_emit(shutdown_tracing)
         sys.exit(1)
+
+    # End root span on success (fail-open)
+    try:
+        root_span_cm.__exit__(None, None, None)
+    except Exception:
+        pass
+    safe_emit(shutdown_tracing)
 
 
 if __name__ == "__main__":

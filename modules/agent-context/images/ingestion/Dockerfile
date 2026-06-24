@@ -87,7 +87,13 @@ RUN pip install --no-cache-dir \
     alembic \
     sqlalchemy \
     asyncpg \
-    protobuf
+    protobuf \
+    python-json-logger==2.0.7 \
+    opentelemetry-api>=1.20.0 \
+    opentelemetry-sdk>=1.20.0 \
+    opentelemetry-exporter-otlp-proto-grpc>=1.20.0 \
+    opentelemetry-sdk-extension-aws>=2.0.0 \
+    opentelemetry-propagator-aws-xray>=1.0.0
 
 # Download RDS CA bundle for IAM auth TLS verification
 RUN curl -sSfL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
@@ -97,7 +103,7 @@ RUN curl -sSfL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 RUN crawl4ai-setup || echo "crawl4ai-setup not available or optional — continuing"
 
 # Copy pipeline scripts (config.py must be first — all scripts import it)
-COPY config.py s3_store.py wiki_store.py sbom_parser.py db.py stage_tracker.py github_auth.py /app/
+COPY config.py telemetry.py tracing.py s3_store.py wiki_store.py sbom_parser.py db.py stage_tracker.py github_auth.py /app/
 COPY scip_ingester.py scip_indexer.py scip_neptune_csv.py scip_neptune_loader.py /app/
 COPY iac_terraform_parser.py iac_neptune_csv.py /app/
 COPY scip_proto/ /app/scip_proto/

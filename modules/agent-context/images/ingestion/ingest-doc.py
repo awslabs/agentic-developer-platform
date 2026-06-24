@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 import re
 import sys
@@ -31,12 +30,10 @@ from urllib.parse import urlparse
 
 import requests
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
-log = logging.getLogger("ingest-doc")
+from telemetry import configure_telemetry, get_logger
+
+configure_telemetry(service_name="knowledge-layer-ingest-doc")
+log = get_logger("ingest-doc")
 
 from config import settings
 from s3_store import S3ContentStore

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 import shutil
 import subprocess
@@ -27,12 +26,10 @@ from typing import Any
 
 import requests
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
-log = logging.getLogger("ingest-repo")
+from telemetry import configure_telemetry, get_logger
+
+configure_telemetry(service_name="knowledge-layer-ingest-repo")
+log = get_logger("ingest-repo")
 
 # ---------------------------------------------------------------------------
 # Configuration (centralized via config.py)
