@@ -91,6 +91,14 @@ variable "s3_vectors_shard_count" {
   default     = 4
 }
 
+# --- Observability (Knowledge Layer dashboard + alarms) ----------------------
+
+variable "enable_knowledge_layer_otel" {
+  description = "Deploy Knowledge Layer observability resources (dashboard, alarms, log groups)"
+  type        = bool
+  default     = false
+}
+
 # --- SQS + DynamoDB (Parallel Ingestion Pipeline) ---------------------------
 
 variable "dynamodb_table_name" {

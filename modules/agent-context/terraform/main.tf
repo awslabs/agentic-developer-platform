@@ -289,6 +289,23 @@ module "rds_bootstrap" {
 }
 
 # =============================================================================
+# Observability (Knowledge Layer dashboard + alarms)
+# =============================================================================
+# Issue: #1757 — CloudWatch dashboard, log groups, alarms, and SNS topic for
+# the Knowledge Layer pipeline. Gated by enable_knowledge_layer_otel.
+
+module "observability" {
+  source = "./modules/observability"
+  count  = var.enable_knowledge_layer_otel ? 1 : 0
+
+  environment           = var.environment
+  aws_region            = var.aws_region
+  name_prefix           = local.name_prefix
+  sqs_queue_name_prefix = "${local.cluster_name}-context"
+  tags                  = var.tags
+}
+
+# =============================================================================
 # SSM Parameter: RDS Endpoint (Issue #1437)
 # =============================================================================
 # Publishes the RDS host to SSM so the deploy workflow's migration Job can
