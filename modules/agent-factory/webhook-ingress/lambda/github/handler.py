@@ -780,6 +780,10 @@ def handler(event: dict, context) -> dict:
             payload=payload,
             correlation_id=correlation_ctx["correlation_id"] if correlation_ctx else None,
             status="no_op",
+            parent_invocation_id=(
+                correlation_ctx.get("parent_invocation_id") if correlation_ctx else None
+            ),
+            chain_depth=correlation_ctx.get("chain_depth") if correlation_ctx else None,
         )
         return _response(200, {"status": "no_op"})
 
@@ -899,6 +903,14 @@ def handler(event: dict, context) -> dict:
         payload=payload,
         correlation_id=correlation_ctx["correlation_id"] if correlation_ctx else None,
         status="webhook_received",
+        # Issue #1750: persist the lineage edge onto the row the Activity UI reads.
+        # determine_correlation computes this (from pointer/marker) and it flows to
+        # SQS + provenance, but was never written here — leaving parent_invocation_id
+        # null on EVERY run, all paths. This is the actual root of the lineage gap.
+        parent_invocation_id=(
+            correlation_ctx.get("parent_invocation_id") if correlation_ctx else None
+        ),
+        chain_depth=correlation_ctx.get("chain_depth") if correlation_ctx else None,
     )
 
     message_id = _get_sqs_publisher().publish_envelope(envelope)
@@ -947,6 +959,8 @@ def _capture_invocation_event(
     payload: dict,
     correlation_id: str | None,
     status: str,
+    parent_invocation_id: str | None = None,
+    chain_depth: int | None = None,
 ) -> None:
     """Write enriched invocation row to DynamoDB (best-effort).
 
@@ -995,6 +1009,8 @@ def _capture_invocation_event(
             source_url=source_url,
             issue_number=issue_number,
             correlation_id=correlation_id,
+            parent_invocation_id=parent_invocation_id,
+            chain_depth=chain_depth,
         )
     except Exception as e:
         # Best-effort — never block the webhook response

@@ -83,6 +83,8 @@ class WebhookEventLogger:
         source_url: str | None = None,
         issue_number: int | None = None,
         correlation_id: str | None = None,
+        parent_invocation_id: str | None = None,
+        chain_depth: int | None = None,
     ) -> dict[str, Any]:
         """Record a webhook event in DynamoDB.
 
@@ -110,6 +112,11 @@ class WebhookEventLogger:
             source_url: Link to the triggering issue/PR.
             issue_number: Issue or PR number.
             correlation_id: Correlation chain ID.
+            parent_invocation_id: The invocation_id (event_id) of the run that
+                spawned this one — the cross-agent lineage edge (#1696). Read by
+                the Activity chain view. Computed by determine_correlation but
+                previously never persisted to the row (issue #1750).
+            chain_depth: This run's depth in the chain (#1696).
 
         Returns:
             The DDB item that was written.
@@ -160,6 +167,10 @@ class WebhookEventLogger:
             item["issue_number"] = issue_number
         if correlation_id:
             item["correlation_id"] = correlation_id
+        if parent_invocation_id:
+            item["parent_invocation_id"] = parent_invocation_id
+        if chain_depth is not None:
+            item["chain_depth"] = chain_depth
 
         try:
             self._table.put_item(Item=item)
