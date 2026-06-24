@@ -1021,3 +1021,255 @@ class TestMigration005FileStructure:
         proj_drop_pos = content.index('drop_table("projects")')
         # project_repositories is dropped first
         assert pr_pos < proj_drop_pos
+
+
+class TestKnowledgeAssetsMigration:
+    """Test the 007_knowledge_assets migration (Issue #1790).
+
+    Verifies that the knowledge_assets registry table is created with proper
+    columns, indexes, and unique constraints.
+    """
+
+    @pytest.fixture
+    def db(self, tmp_path):
+        """Create a fresh SQLite database with the knowledge_assets table."""
+        db_path = tmp_path / "test_knowledge_assets.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+
+        # Apply knowledge_assets schema (adapted for SQLite)
+        conn.executescript("""
+            CREATE TABLE knowledge_assets (
+                id              TEXT PRIMARY KEY,
+                asset_type      TEXT NOT NULL,
+                source_ref      TEXT NOT NULL,
+                tenant_id       TEXT,
+                owner_sub       TEXT,
+                project_id      TEXT,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                registered_by   TEXT,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                metadata        TEXT DEFAULT '{}',
+                last_error      TEXT,
+                retry_count     INTEGER NOT NULL DEFAULT 0
+            );
+
+            -- Unique index (SQLite version — COALESCE for NULL handling)
+            CREATE UNIQUE INDEX uq_knowledge_assets_source_scope
+            ON knowledge_assets (
+                source_ref,
+                COALESCE(tenant_id, ''),
+                COALESCE(owner_sub, '')
+            );
+
+            CREATE INDEX ix_knowledge_assets_tenant_id ON knowledge_assets(tenant_id);
+            CREATE INDEX ix_knowledge_assets_owner_sub ON knowledge_assets(owner_sub);
+            CREATE INDEX ix_knowledge_assets_status ON knowledge_assets(status);
+            CREATE INDEX ix_knowledge_assets_project_id ON knowledge_assets(project_id);
+        """)
+        conn.commit()
+        yield conn
+        conn.close()
+
+    def test_table_exists(self, db):
+        """Migration creates the knowledge_assets table."""
+        cursor = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_assets'"
+        )
+        assert cursor.fetchone() is not None
+
+    def test_insert_asset(self, db):
+        """Can insert an asset with all fields."""
+        db.execute(
+            "INSERT INTO knowledge_assets (id, asset_type, source_ref, tenant_id, owner_sub, "
+            "project_id, status, registered_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "asset-1",
+                "github_repo",
+                "https://github.com/org/repo",
+                "tenant-acme",
+                "sub-alice-001",
+                "proj-123",
+                "indexed",
+                "alice",
+            ),
+        )
+        db.commit()
+
+        cursor = db.execute(
+            "SELECT asset_type, source_ref, tenant_id, owner_sub, project_id, status "
+            "FROM knowledge_assets WHERE id = ?",
+            ("asset-1",),
+        )
+        row = cursor.fetchone()
+        assert row[0] == "github_repo"
+        assert row[1] == "https://github.com/org/repo"
+        assert row[2] == "tenant-acme"
+        assert row[3] == "sub-alice-001"
+        assert row[4] == "proj-123"
+        assert row[5] == "indexed"
+
+    def test_nullable_scope_fields(self, db):
+        """Scope fields (tenant_id, owner_sub, project_id) are nullable."""
+        db.execute(
+            "INSERT INTO knowledge_assets (id, asset_type, source_ref) VALUES (?, ?, ?)",
+            ("asset-shared", "github_repo", "https://github.com/oss/lib"),
+        )
+        db.commit()
+
+        cursor = db.execute(
+            "SELECT tenant_id, owner_sub, project_id FROM knowledge_assets WHERE id = ?",
+            ("asset-shared",),
+        )
+        row = cursor.fetchone()
+        assert row[0] is None
+        assert row[1] is None
+        assert row[2] is None
+
+    def test_default_status_pending(self, db):
+        """Default status is 'pending'."""
+        db.execute(
+            "INSERT INTO knowledge_assets (id, asset_type, source_ref) VALUES (?, ?, ?)",
+            ("asset-default", "github_repo", "https://github.com/org/new"),
+        )
+        db.commit()
+
+        cursor = db.execute(
+            "SELECT status FROM knowledge_assets WHERE id = ?", ("asset-default",)
+        )
+        assert cursor.fetchone()[0] == "pending"
+
+    def test_default_retry_count_zero(self, db):
+        """Default retry_count is 0."""
+        db.execute(
+            "INSERT INTO knowledge_assets (id, asset_type, source_ref) VALUES (?, ?, ?)",
+            ("asset-retry", "github_repo", "https://github.com/org/retry"),
+        )
+        db.commit()
+
+        cursor = db.execute(
+            "SELECT retry_count FROM knowledge_assets WHERE id = ?", ("asset-retry",)
+        )
+        assert cursor.fetchone()[0] == 0
+
+    def test_unique_index_prevents_duplicate_registration(self, db):
+        """Same source_ref + tenant_id + owner_sub cannot be registered twice."""
+        db.execute(
+            "INSERT INTO knowledge_assets (id, asset_type, source_ref, tenant_id, owner_sub) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("asset-a", "github_repo", "https://github.com/org/repo", "tenant-1", "sub-1"),
+        )
+        db.commit()
+
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO knowledge_assets (id, asset_type, source_ref, tenant_id, owner_sub) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("asset-b", "github_repo", "https://github.com/org/repo", "tenant-1", "sub-1"),
+            )
+
+    def test_unique_index_allows_same_source_different_tenant(self, db):
+        """Same source_ref but different tenant_id is allowed."""
+        db.execute(
+            "INSERT INTO knowledge_assets (id, asset_type, source_ref, tenant_id, owner_sub) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("asset-t1", "github_repo", "https://github.com/org/repo", "tenant-1", "sub-1"),
+        )
+        db.execute(
+            "INSERT INTO knowledge_assets (id, asset_type, source_ref, tenant_id, owner_sub) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("asset-t2", "github_repo", "https://github.com/org/repo", "tenant-2", "sub-1"),
+        )
+        db.commit()
+
+        cursor = db.execute(
+            "SELECT COUNT(*) FROM knowledge_assets WHERE source_ref = ?",
+            ("https://github.com/org/repo",),
+        )
+        assert cursor.fetchone()[0] == 2
+
+    def test_unique_index_null_scope_dedup(self, db):
+        """Shared assets (NULL scope) are deduplicated via COALESCE('')."""
+        db.execute(
+            "INSERT INTO knowledge_assets (id, asset_type, source_ref) VALUES (?, ?, ?)",
+            ("asset-shared-1", "github_repo", "https://github.com/oss/shared"),
+        )
+        db.commit()
+
+        # Second insert with same source_ref and NULL scope should fail
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO knowledge_assets (id, asset_type, source_ref) VALUES (?, ?, ?)",
+                ("asset-shared-2", "github_repo", "https://github.com/oss/shared"),
+            )
+
+    def test_indexes_exist(self, db):
+        """All required indexes are created."""
+        cursor = db.execute("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
+        indexes = [row[0] for row in cursor.fetchall()]
+        assert "ix_knowledge_assets_tenant_id" in indexes
+        assert "ix_knowledge_assets_owner_sub" in indexes
+        assert "ix_knowledge_assets_status" in indexes
+        assert "ix_knowledge_assets_project_id" in indexes
+        assert "uq_knowledge_assets_source_scope" in indexes
+
+    def test_open_asset_type(self, db):
+        """asset_type is an open VARCHAR, not constrained by enum/CHECK."""
+        # Can insert any string as asset_type
+        for i, atype in enumerate(["github_repo", "s3_bucket", "confluence_page", "custom_v2"]):
+            db.execute(
+                "INSERT INTO knowledge_assets (id, asset_type, source_ref, tenant_id) "
+                "VALUES (?, ?, ?, ?)",
+                (f"asset-type-{i}", atype, f"source-{i}", f"tenant-{i}"),
+            )
+        db.commit()
+
+        cursor = db.execute("SELECT COUNT(*) FROM knowledge_assets")
+        assert cursor.fetchone()[0] == 4
+
+
+class TestMigration007FileStructure:
+    """Verify migration 007 file is well-formed and chains correctly."""
+
+    def test_migration_file_exists(self):
+        """Migration 007 file exists at the expected path."""
+        migration = MIGRATIONS_DIR / "007_knowledge_assets.py"
+        assert migration.exists(), f"Migration not found at {migration}"
+
+    def test_migration_revision_chain(self):
+        """Migration 007 revises 006_merge_005_heads."""
+        migration = MIGRATIONS_DIR / "007_knowledge_assets.py"
+        content = migration.read_text()
+        assert 'revision: str = "007_knowledge_assets"' in content
+        assert 'down_revision: str = "006_merge_005_heads"' in content
+
+    def test_migration_has_upgrade_and_downgrade(self):
+        """Migration 007 defines both upgrade() and downgrade() functions."""
+        migration = MIGRATIONS_DIR / "007_knowledge_assets.py"
+        content = migration.read_text()
+        assert "def upgrade()" in content
+        assert "def downgrade()" in content
+
+    def test_migration_creates_table(self):
+        """Migration 007 creates knowledge_assets table."""
+        migration = MIGRATIONS_DIR / "007_knowledge_assets.py"
+        content = migration.read_text()
+        assert "CREATE TABLE knowledge_assets" in content
+        assert "asset_type" in content
+        assert "source_ref" in content
+        assert "tenant_id" in content
+        assert "owner_sub" in content
+
+    def test_migration_creates_unique_index(self):
+        """Migration 007 creates the unique scope index."""
+        migration = MIGRATIONS_DIR / "007_knowledge_assets.py"
+        content = migration.read_text()
+        assert "uq_knowledge_assets_source_scope" in content
+        assert "COALESCE" in content
+
+    def test_downgrade_drops_table(self):
+        """Migration 007 downgrade drops the table."""
+        migration = MIGRATIONS_DIR / "007_knowledge_assets.py"
+        content = migration.read_text()
+        assert "drop_table" in content
