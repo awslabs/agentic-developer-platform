@@ -56,8 +56,18 @@ locals {
     : local.caller_arn
   )
 
+  # CI/ARC runner role — always granted cluster-admin so a human-run apply
+  # never destroys the runner's access entry (and vice-versa). Derived from
+  # name_prefix + account, so it's portable across environments. Without this,
+  # the admin set was just the deploying caller: a CI apply (as the runner)
+  # would drop the human Admin entry and a human apply (as Admin) would drop
+  # the runner entry — a flip-flop that tripped the destroy-safety gate every
+  # apply. The other human operator role(s) go in extra_cluster_admin_principal_arns.
+  ci_runner_role_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-runner-role"
+
   cluster_admin_principal_arns = distinct(concat(
     [local.deployer_role_arn],
+    [local.ci_runner_role_arn],
     var.extra_cluster_admin_principal_arns,
   ))
 }

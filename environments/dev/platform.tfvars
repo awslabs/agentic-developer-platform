@@ -19,6 +19,16 @@ eks_node_max_size       = 10
 # Adds CloudWatch metric + log ingestion cost (bounded by cluster size).
 enable_container_insights = true
 
+# Human operator role(s) that need EKS cluster-admin, beyond the deploying
+# caller and the CI runner (those two are added automatically in main.tf).
+# "Admin" is this account's human-operator role; without it here, a CI apply
+# (running as agent-runner-role) would destroy Admin's access entry and lock
+# human operators out of kubectl. Account-specific by nature, hence in tfvars
+# rather than derived. distinct() dedupes if a future deployer IS Admin.
+extra_cluster_admin_principal_arns = [
+  "arn:aws:iam::879318057152:role/Admin",
+]
+
 # `eks_public_access_cidrs` is intentionally NOT set here so the repo stays
 # portable. Set it per-invocation via:
 #   export TF_VAR_eks_public_access_cidrs='["<your.public.ip>/32"]'
