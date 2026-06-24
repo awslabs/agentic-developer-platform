@@ -360,7 +360,14 @@ def determine_correlation(
 
     if pointer and marker:
         if pointer["correlation_id"] == marker.get("correlation_id"):
-            # Same chain — pointer is authoritative (server-written)
+            # Same chain — pointer is authoritative for the CHAIN (server-written).
+            # But the parent edge can be missing from this channel's pointer: e.g.
+            # a PR-channel pointer written by the worker without
+            # triggering_invocation_id (issue #1738). The marker (synthesized from
+            # the issue pointer, or carried in the PR body) holds the producing
+            # run's invocation id, so fall back to it when the pointer lacks one.
+            # This is what actually populates parent_invocation_id across the
+            # issue→PR boundary.
             pointer_depth = pointer.get("chain_depth")
             inherited_depth = pointer_depth if pointer_depth is not None else 0
             return {
@@ -369,7 +376,9 @@ def determine_correlation(
                 "triggered_by": resolved_identity.user_id,
                 "is_human_rooted": pointer["is_human_rooted"],
                 "is_new_chain": False,
-                "parent_invocation_id": pointer.get("triggering_invocation_id"),
+                "parent_invocation_id": (
+                    pointer.get("triggering_invocation_id") or marker.get("invocation_id")
+                ),
                 "chain_depth": inherited_depth + 1,
                 "last_triggered_persona": pointer.get("last_triggered_persona"),
             }

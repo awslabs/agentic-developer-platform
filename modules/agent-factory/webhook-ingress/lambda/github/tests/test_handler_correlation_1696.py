@@ -73,6 +73,38 @@ class TestDetermineCorrelationPrecedence:
         assert result["is_new_chain"] is False
 
     @patch("handler._get_correlation_store")
+    def test_same_corr_parent_falls_back_to_marker_when_pointer_lacks_trig(self, mock_store_fn):
+        """Issue #1738: pointer + marker same corr, but pointer has NO
+        triggering_invocation_id (e.g. a worker-written PR-channel pointer) →
+        parent_invocation_id falls back to the marker's invocation id.
+
+        This is the final lineage gap: the reviewer inherited the chain (corr
+        matched) but parent stayed null because the PR pointer that 'won' had no
+        triggering_invocation_id, even though the synthesized issue marker did.
+        """
+        from handler import determine_correlation
+
+        mock_store = MagicMock()
+        mock_store.read_pointer.return_value = {
+            "correlation_id": "corr-marker-001",  # same as MARKER_TEXT
+            "root_human_id": "user-pointer",
+            "is_human_rooted": True,
+            "triggering_invocation_id": None,  # PR pointer lacks the parent edge
+            "chain_depth": 0,
+        }
+        mock_store_fn.return_value = mock_store
+
+        identity = _bot_identity()
+        result = determine_correlation(
+            {}, identity, "github:repo=org/repo,pr=1741", marker_text=MARKER_TEXT
+        )
+
+        assert result["correlation_id"] == "corr-marker-001"  # chain inherited
+        # parent falls back to the marker's invocation (msg-parent-123)
+        assert result["parent_invocation_id"] == "msg-parent-123"
+        assert result["is_new_chain"] is False
+
+    @patch("handler._get_correlation_store")
     def test_pointer_and_marker_different_correlation_uses_marker(self, mock_store_fn):
         """Pointer + marker with different correlation_id → marker wins (cross-channel hop)."""
         from handler import determine_correlation
