@@ -544,6 +544,12 @@ async def invoke_model_by_path(
     request: Request,
     context: Annotated[TokenContext, Depends(get_token_context)],
     proxy_service: Annotated[ProxyService, Depends(get_proxy_service)],
+    # Issue #1753: this native-Bedrock URL pattern is what the Claude SDK
+    # actually calls (ANTHROPIC_BEDROCK_BASE_URL). The #1616 cost-attribution
+    # work added set_agent_run_id_from_header to the OpenAI/Anthropic/bedrock-
+    # invoke routes but MISSED this path — so agent_run_id was NULL on 100% of
+    # usage_logs rows and per-run cost never linked. Add the dependency here.
+    _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
     authorization: Annotated[str | None, Header()] = None,
     x_api_key: Annotated[str | None, Header(alias="X-Api-Key")] = None,
 ) -> Response:
@@ -625,6 +631,10 @@ async def invoke_model_stream_by_path(
     request: Request,
     context: Annotated[TokenContext, Depends(get_token_context)],
     proxy_service: Annotated[ProxyService, Depends(get_proxy_service)],
+    # Issue #1753: same fix as the non-streaming sibling — the SDK's native
+    # Bedrock URL pattern must read x-agent-runid so usage_logs.agent_run_id
+    # is populated and per-run cost links.
+    _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
     authorization: Annotated[str | None, Header()] = None,
     x_api_key: Annotated[str | None, Header(alias="X-Api-Key")] = None,
 ) -> StreamingResponse:

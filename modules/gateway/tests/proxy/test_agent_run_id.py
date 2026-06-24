@@ -79,3 +79,38 @@ class TestSetAgentRunIdFromHeader:
         result = set_agent_run_id_from_header(request)
         assert result is None
         _current_agent_run_id.set(None)
+
+
+class TestInvokeRoutesHaveAgentRunIdDependency:
+    """Issue #1753 regression: EVERY Bedrock-invoke route must wire
+    set_agent_run_id_from_header, or usage_logs.agent_run_id is NULL and per-run
+    cost never links. The #1616 work missed /model/{id}/invoke (the native URL
+    the Claude SDK actually uses), so 100% of rows had agent_run_id=NULL.
+    """
+
+    def _dep_callables(self, route):
+        return {d.call for d in route.dependant.dependencies}
+
+    def test_all_invoke_routes_wire_agent_run_id(self):
+        from src.proxy.routes import router, set_agent_run_id_from_header
+
+        # Every POST route whose path drives a model invocation must carry the dep.
+        invoke_paths = {
+            "/v1/chat/completions",
+            "/v1/messages",
+            "/bedrock/invoke",
+            "/bedrock/invoke-with-response-stream",
+            "/model/{model_id}/invoke",
+            "/model/{model_id}/invoke-with-response-stream",
+        }
+        seen = {}
+        for route in router.routes:
+            path = getattr(route, "path", None)
+            if path in invoke_paths and "POST" in getattr(route, "methods", set()):
+                seen[path] = set_agent_run_id_from_header in self._dep_callables(route)
+
+        # All six must be present AND wired.
+        missing = invoke_paths - set(seen)
+        assert not missing, f"invoke routes not found: {missing}"
+        unwired = [p for p, ok in seen.items() if not ok]
+        assert not unwired, f"invoke routes missing agent_run_id dependency: {unwired}"
