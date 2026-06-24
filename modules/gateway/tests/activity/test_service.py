@@ -155,6 +155,39 @@ class TestQueryByUser:
         assert item.repo == "aws-e/adp"
         assert item.issue_number == 1320
 
+    def test_invocation_id_from_event_id_real_schema(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Issue #1756 regression: real webhook-events rows key the invocation by
+        `event_id` ONLY — no `invocation_id`/`pk` attribute. The old mapping
+        defaulted to "" so invocation_id was BLANK on every item, breaking the
+        cost-join (cost_map.get("")) and the chain tree. Assert event_id is used.
+
+        (The original mapping test used a fixture with BOTH pk and invocation_id —
+        which production rows never have — so it never caught this.)
+        """
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    # NOTE: only event_id, exactly like a production row
+                    "event_id": "fdeadead-ca8f-4768-9b41-0b77315e9070",
+                    "arrived_at": "2026-06-24T11:27:00Z",
+                    "channel": "github",
+                    "status": "complete",
+                    "persona": "developer",
+                    "correlation_id": "corr-x",
+                    "run_id": "agent-scaledjob-zrcdp-hhjqc",
+                    "user_id": "user-1",
+                    "tenant_id": "org-1",
+                }
+            ],
+            "Count": 1,
+        }
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+        item = result.items[0]
+        # The key fix: invocation_id is populated from event_id, NOT blank.
+        assert item.invocation_id == "fdeadead-ca8f-4768-9b41-0b77315e9070"
+        assert item.invocation_id != ""
+
     def test_short_page_with_last_key(self, mock_dynamodb_resource, mock_dynamodb_table):
         """Filtered query returning 0 items with LastEvaluatedKey → non-null last_key in response."""
         mock_dynamodb_table.query.return_value = {

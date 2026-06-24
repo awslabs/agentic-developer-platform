@@ -279,7 +279,13 @@ class ActivityService:
         completed_at = item.get("status_updated_at") if status in terminal_statuses else None
 
         return InvocationItem(
-            invocation_id=item.get("invocation_id", item.get("pk", "")),
+            # Issue #1756: the DDB webhook-events row keys the invocation by
+            # `event_id` (the message_id). There is NO `invocation_id`/`pk`
+            # attribute, so the old `.get("invocation_id", .get("pk"))` always
+            # fell through to "" — leaving invocation_id BLANK on every item,
+            # which broke the cost-join (cost_map.get("")) so per-run cost never
+            # rendered. Fall back to event_id.
+            invocation_id=item.get("invocation_id") or item.get("pk") or item.get("event_id", ""),
             invoked_at=item.get("arrived_at", ""),
             channel=item.get("channel"),
             status=status,
@@ -548,7 +554,9 @@ class ActivityService:
         # Filter: exclude the root item and optionally non-triggering statuses
         descendants: list[InvocationChainItem] = []
         for item in all_items:
-            inv_id = item.get("invocation_id", item.get("pk", ""))
+            # Issue #1756: fall back to event_id (the real DDB key); the row has
+            # no invocation_id/pk attribute, so the old default left this blank.
+            inv_id = item.get("invocation_id") or item.get("pk") or item.get("event_id", "")
             if inv_id == root_invocation_id:
                 continue  # Skip the root itself
 
@@ -660,7 +668,8 @@ def _build_chain_tree(items: list[dict]) -> list[InvocationChainItem]:
     # Create nodes
     nodes: dict[str, InvocationChainItem] = {}
     for item in items:
-        inv_id = item.get("invocation_id", item.get("pk", ""))
+        # Issue #1756: fall back to event_id (the real DDB key) — see _map_item.
+        inv_id = item.get("invocation_id") or item.get("pk") or item.get("event_id", "")
         nodes[inv_id] = InvocationChainItem(
             invocation_id=inv_id,
             invoked_at=item.get("arrived_at", ""),
