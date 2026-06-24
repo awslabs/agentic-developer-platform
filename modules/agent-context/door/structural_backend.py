@@ -15,8 +15,11 @@ import logging
 from typing import Any
 
 from .acl import SearchHit
+from .tracing import get_tracer
 
 log = logging.getLogger(__name__)
+
+_structural_tracer = get_tracer("knowledge-layer.door.structural")
 
 
 def _normalize_repo_id(repo_id: str) -> str:
@@ -53,17 +56,23 @@ async def load_code_index(repo_id: str, *, s3_client: Any, bucket: str, prefix: 
 
     # Strategy 1: Exact match at code-indexes/{safe_name}.json
     primary_key = f"code-indexes/{safe_name}.json"
-    try:
-        response = s3_client.get_object(Bucket=bucket, Key=primary_key)
-        body = response["Body"].read()
-        data = json.loads(body)
-        if data:
-            log.debug("Loaded code-index for %s from %s", repo_id, primary_key)
-            return data
-    except s3_client.exceptions.NoSuchKey:
-        pass
-    except Exception:
-        log.warning("Failed to load code-index for %s at %s", repo_id, primary_key, exc_info=True)
+    with _structural_tracer.start_as_current_span(
+        "s3_fetch_index",
+        attributes={"repo_id": repo_id, "s3_key": primary_key},
+    ):
+        try:
+            response = s3_client.get_object(Bucket=bucket, Key=primary_key)
+            body = response["Body"].read()
+            data = json.loads(body)
+            if data:
+                log.debug("Loaded code-index for %s from %s", repo_id, primary_key)
+                return data
+        except s3_client.exceptions.NoSuchKey:
+            pass
+        except Exception:
+            log.warning(
+                "Failed to load code-index for %s at %s", repo_id, primary_key, exc_info=True
+            )
 
     # Strategy 2: Suffix match — repo_id might be a short name (e.g. "agent-skills")
     # and the actual key is "addyosmani-agent-skills.json". List prefix and find match.

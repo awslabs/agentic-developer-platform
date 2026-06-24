@@ -16,8 +16,11 @@ from typing import Any, Protocol
 import httpx
 
 from .acl import SearchHit
+from .tracing import get_tracer
 
 log = logging.getLogger(__name__)
+
+_search_tracer = get_tracer("knowledge-layer.door.search")
 
 # Default timeout for Zoekt API requests (seconds)
 DEFAULT_TIMEOUT = 10.0
@@ -99,25 +102,31 @@ class ZoektSearchBackend:
 
         payload: dict[str, Any] = {"q": zoekt_query, "num": limit}
 
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(
-                    f"{self._base_url}/api/search",
-                    json=payload,
+        with _search_tracer.start_as_current_span(
+            "zoekt_search",
+            attributes={"query": query[:100], "limit": limit},
+        ):
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    resp = await client.post(
+                        f"{self._base_url}/api/search",
+                        json=payload,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+            except httpx.TimeoutException:
+                log.warning(
+                    "zoekt search timed out after %.1fs for query: %s", self._timeout, query
                 )
-                resp.raise_for_status()
-                data = resp.json()
-        except httpx.TimeoutException:
-            log.warning("zoekt search timed out after %.1fs for query: %s", self._timeout, query)
-            return []
-        except httpx.HTTPStatusError as e:
-            log.warning("zoekt returned HTTP %d for query: %s", e.response.status_code, query)
-            return []
-        except Exception:
-            log.warning("zoekt search failed for query: %s", query, exc_info=True)
-            return []
+                return []
+            except httpx.HTTPStatusError as e:
+                log.warning("zoekt returned HTTP %d for query: %s", e.response.status_code, query)
+                return []
+            except Exception:
+                log.warning("zoekt search failed for query: %s", query, exc_info=True)
+                return []
 
-        return _parse_zoekt_response(data)
+            return _parse_zoekt_response(data)
 
     async def health_check(self) -> bool:
         """Check if zoekt-webserver is reachable and responding."""

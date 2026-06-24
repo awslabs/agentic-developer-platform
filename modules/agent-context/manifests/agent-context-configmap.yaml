@@ -84,6 +84,11 @@ data:
   MAX_INDEXES_PER_RUN: "15"
   MIN_CLUSTER_SIZE: "3"
 
+  # --- Door OTel tracing (Issue #1754) ---
+  KNOWLEDGE_LAYER_TRACES_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://adot-collector.adp-agents.svc.cluster.local:4317"
+  OTEL_SERVICE_NAME: "knowledge-layer-door"
+
   # --- GitHub App ---
   GITHUB_APP_ID_SECRET: "${GITHUB_APP_ID_SECRET}"
   GITHUB_APP_KEY_SECRET: "${GITHUB_APP_KEY_SECRET}"

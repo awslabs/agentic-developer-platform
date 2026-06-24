@@ -29,6 +29,7 @@ from .config import config
 from .remember_backend import remember
 from .search_backend import ZoektSearchBackend
 from .structural_backend import impact, understand
+from .tracing import get_tracer, setup_tracing, shutdown_tracing
 
 log = logging.getLogger(__name__)
 
@@ -135,6 +136,9 @@ state = AppState()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize backends on startup, clean up on shutdown."""
+    # Tracing setup (must be early, before middleware registration)
+    setup_tracing(app)
+
     # Zoekt backend (always available)
     state.zoekt = ZoektSearchBackend(config.zoekt_url, timeout=config.zoekt_timeout)
 
@@ -187,6 +191,7 @@ async def lifespan(app: FastAPI):
         yield
 
     # Cleanup
+    shutdown_tracing()
     if state.db_pool:
         state.db_pool.closeall()
     log.info("Context MCP Server shutting down")
@@ -253,6 +258,30 @@ class _NoOpBackend:
 
 
 app = FastAPI(title="Context MCP Server", lifespan=lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Identity-enrichment middleware (stamps caller identity onto current OTel span)
+# ---------------------------------------------------------------------------
+
+_door_tracer = get_tracer("knowledge-layer.door")
+
+
+@app.middleware("http")
+async def enrich_span_with_identity(request: Request, call_next):
+    """Stamp caller identity headers onto the active OTel span for trace filtering."""
+    try:
+        from opentelemetry import trace as otel_trace
+
+        span = otel_trace.get_current_span()
+        if span and span.is_recording():
+            span.set_attribute("caller.owner_sub", request.headers.get("x-owner-sub", ""))
+            span.set_attribute("caller.tenant_id", request.headers.get("x-tenant-id", ""))
+            span.set_attribute("caller.github_login", request.headers.get("x-github-login", ""))
+    except Exception:
+        pass  # Fail-open: tracing unavailable doesn't block requests
+    response = await call_next(request)
+    return response
 
 
 @app.get("/tools")
