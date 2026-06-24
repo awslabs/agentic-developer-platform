@@ -100,9 +100,7 @@ class TestKnowledgeLayerSchema:
 
     def test_tables_exist(self, db):
         """All four tables are created."""
-        cursor = db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
+        cursor = db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         tables = [row[0] for row in cursor.fetchall()]
         assert "repositories" in tables
         assert "dependencies" in tables
@@ -111,9 +109,7 @@ class TestKnowledgeLayerSchema:
 
     def test_indexes_exist(self, db):
         """Critical indexes are created."""
-        cursor = db.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' ORDER BY name"
-        )
+        cursor = db.execute("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
         indexes = [row[0] for row in cursor.fetchall()]
         assert "ix_dependencies_package_coordinate" in indexes
         assert "ix_dependencies_repo_id" in indexes
@@ -267,9 +263,7 @@ class TestKnowledgeLayerSchema:
         )
         db.commit()
 
-        cursor = db.execute(
-            "SELECT COUNT(*) FROM dependencies WHERE repo_id = ?", ("repo-src",)
-        )
+        cursor = db.execute("SELECT COUNT(*) FROM dependencies WHERE repo_id = ?", ("repo-src",))
         assert cursor.fetchone()[0] == 2
 
     def test_acl_jsonb_query(self, db):
@@ -341,3 +335,264 @@ class TestMigrationFileStructure:
         content = migration.read_text()
         assert "ix_dependencies_package_coordinate" in content
         assert "package_coordinate" in content
+
+
+class TestTenantIsolationMigration:
+    """Test the 004_add_tenant_isolation_columns migration (Issue #1770)."""
+
+    @pytest.fixture
+    def db(self, tmp_path):
+        """Create a fresh SQLite database with base schema + migration 004 applied."""
+        db_path = tmp_path / "test_tenant_isolation.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+
+        # Apply base schema (001) — simplified for SQLite
+        conn.executescript("""
+            CREATE TABLE repositories (
+                id              TEXT PRIMARY KEY,
+                repo_name       TEXT NOT NULL UNIQUE,
+                git_url         TEXT NOT NULL,
+                owner           TEXT NOT NULL,
+                allowed_principals TEXT NOT NULL DEFAULT '[]',
+                last_indexed_sha TEXT,
+                indexed_at      TEXT,
+                zoekt_status    TEXT NOT NULL DEFAULT 'pending',
+                vectors_status  TEXT NOT NULL DEFAULT 'pending',
+                structure_status TEXT NOT NULL DEFAULT 'pending',
+                sbom_status     TEXT NOT NULL DEFAULT 'pending',
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX ix_repositories_owner ON repositories(owner);
+        """)
+
+        # Apply migration 004: add tenant_id and owner_sub
+        conn.executescript("""
+            ALTER TABLE repositories ADD COLUMN tenant_id TEXT;
+            ALTER TABLE repositories ADD COLUMN owner_sub TEXT;
+            CREATE INDEX ix_repositories_tenant_id ON repositories(tenant_id);
+            CREATE INDEX ix_repositories_owner_sub ON repositories(owner_sub);
+        """)
+        conn.commit()
+        yield conn
+        conn.close()
+
+    def test_tenant_id_column_exists(self, db):
+        """Migration adds tenant_id column to repositories."""
+        cursor = db.execute("PRAGMA table_info(repositories)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert "tenant_id" in columns
+
+    def test_owner_sub_column_exists(self, db):
+        """Migration adds owner_sub column to repositories."""
+        cursor = db.execute("PRAGMA table_info(repositories)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert "owner_sub" in columns
+
+    def test_tenant_id_index_exists(self, db):
+        """Index ix_repositories_tenant_id is created."""
+        cursor = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='ix_repositories_tenant_id'"
+        )
+        assert cursor.fetchone() is not None
+
+    def test_owner_sub_index_exists(self, db):
+        """Index ix_repositories_owner_sub is created."""
+        cursor = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='ix_repositories_owner_sub'"
+        )
+        assert cursor.fetchone() is not None
+
+    def test_existing_rows_have_null_tenant_id(self, db):
+        """Pre-existing rows get tenant_id=NULL (shared corpus, no data migration)."""
+        # Insert a repo WITHOUT specifying tenant_id (simulates existing data)
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner) VALUES (?, ?, ?, ?)",
+            ("repo-existing", "org/existing", "https://github.com/org/existing.git", "org"),
+        )
+        db.commit()
+
+        cursor = db.execute(
+            "SELECT tenant_id, owner_sub FROM repositories WHERE id = ?",
+            ("repo-existing",),
+        )
+        row = cursor.fetchone()
+        assert row[0] is None  # tenant_id
+        assert row[1] is None  # owner_sub
+
+    def test_insert_shared_repo(self, db):
+        """A shared repo has tenant_id=NULL and allowed_principals=["*"]."""
+        import json
+
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner, allowed_principals, tenant_id, owner_sub) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "repo-shared",
+                "oss/public",
+                "https://github.com/oss/public.git",
+                "oss",
+                json.dumps(["*"]),
+                None,
+                None,
+            ),
+        )
+        db.commit()
+
+        cursor = db.execute(
+            "SELECT tenant_id, owner_sub FROM repositories WHERE id = ?",
+            ("repo-shared",),
+        )
+        row = cursor.fetchone()
+        assert row[0] is None
+        assert row[1] is None
+
+    def test_insert_tenant_scoped_repo(self, db):
+        """A per-tenant repo has tenant_id set, owner_sub=NULL."""
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner, tenant_id, owner_sub) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "repo-tenant",
+                "acme/private",
+                "https://github.com/acme/private.git",
+                "acme",
+                "acme-org-id",
+                None,
+            ),
+        )
+        db.commit()
+
+        cursor = db.execute(
+            "SELECT tenant_id, owner_sub FROM repositories WHERE id = ?",
+            ("repo-tenant",),
+        )
+        row = cursor.fetchone()
+        assert row[0] == "acme-org-id"
+        assert row[1] is None
+
+    def test_insert_individual_scoped_repo(self, db):
+        """A per-individual repo has both tenant_id and owner_sub set."""
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner, tenant_id, owner_sub) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "repo-personal",
+                "user/my-repo",
+                "https://github.com/user/my-repo.git",
+                "user",
+                "acme-org-id",
+                "user-cognito-sub-123",
+            ),
+        )
+        db.commit()
+
+        cursor = db.execute(
+            "SELECT tenant_id, owner_sub FROM repositories WHERE id = ?",
+            ("repo-personal",),
+        )
+        row = cursor.fetchone()
+        assert row[0] == "acme-org-id"
+        assert row[1] == "user-cognito-sub-123"
+
+    def test_tenant_scoped_query(self, db):
+        """Querying by tenant_id returns only that tenant's repos + shared."""
+        import json
+
+        # Shared repo
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner, allowed_principals, tenant_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("repo-s", "oss/lib", "https://github.com/oss/lib.git", "oss", json.dumps(["*"]), None),
+        )
+        # Tenant A repo
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner, tenant_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("repo-a", "acme/internal", "https://github.com/acme/internal.git", "acme", "tenant-a"),
+        )
+        # Tenant B repo
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner, tenant_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("repo-b", "beta/private", "https://github.com/beta/private.git", "beta", "tenant-b"),
+        )
+        db.commit()
+
+        # Query: repos visible to tenant-a (their own + shared)
+        cursor = db.execute(
+            """
+            SELECT repo_name FROM repositories
+            WHERE tenant_id = ? OR tenant_id IS NULL
+            ORDER BY repo_name
+            """,
+            ("tenant-a",),
+        )
+        repos = [row[0] for row in cursor.fetchall()]
+        assert "acme/internal" in repos
+        assert "oss/lib" in repos
+        assert "beta/private" not in repos
+
+    def test_columns_are_nullable(self, db):
+        """Both columns accept NULL (additive migration, no NOT NULL constraint)."""
+        # Insert with explicit NULLs
+        db.execute(
+            "INSERT INTO repositories (id, repo_name, git_url, owner, tenant_id, owner_sub) "
+            "VALUES (?, ?, ?, ?, NULL, NULL)",
+            ("repo-null", "org/null-test", "https://github.com/org/null-test.git", "org"),
+        )
+        db.commit()
+
+        cursor = db.execute(
+            "SELECT tenant_id, owner_sub FROM repositories WHERE id = ?",
+            ("repo-null",),
+        )
+        row = cursor.fetchone()
+        assert row[0] is None
+        assert row[1] is None
+
+
+class TestMigration004FileStructure:
+    """Verify migration 004 file is well-formed and chains correctly."""
+
+    def test_migration_file_exists(self):
+        """Migration 004 file exists at the expected path."""
+        migration = MIGRATIONS_DIR / "004_add_tenant_isolation_columns.py"
+        assert migration.exists(), f"Migration not found at {migration}"
+
+    def test_migration_revision_chain(self):
+        """Migration 004 revises 003_index_run_stages."""
+        migration = MIGRATIONS_DIR / "004_add_tenant_isolation_columns.py"
+        content = migration.read_text()
+        assert 'revision: str = "004_add_tenant_isolation_columns"' in content
+        assert 'down_revision: str = "003_index_run_stages"' in content
+
+    def test_migration_has_upgrade_and_downgrade(self):
+        """Migration 004 defines both upgrade() and downgrade() functions."""
+        migration = MIGRATIONS_DIR / "004_add_tenant_isolation_columns.py"
+        content = migration.read_text()
+        assert "def upgrade()" in content
+        assert "def downgrade()" in content
+
+    def test_migration_adds_tenant_id(self):
+        """Migration 004 adds tenant_id column."""
+        migration = MIGRATIONS_DIR / "004_add_tenant_isolation_columns.py"
+        content = migration.read_text()
+        assert "tenant_id" in content
+        assert "ix_repositories_tenant_id" in content
+
+    def test_migration_adds_owner_sub(self):
+        """Migration 004 adds owner_sub column."""
+        migration = MIGRATIONS_DIR / "004_add_tenant_isolation_columns.py"
+        content = migration.read_text()
+        assert "owner_sub" in content
+        assert "ix_repositories_owner_sub" in content
+
+    def test_downgrade_drops_columns(self):
+        """Migration 004 downgrade drops both columns."""
+        migration = MIGRATIONS_DIR / "004_add_tenant_isolation_columns.py"
+        content = migration.read_text()
+        assert "DROP COLUMN owner_sub" in content
+        assert "DROP COLUMN tenant_id" in content
