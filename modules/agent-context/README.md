@@ -290,6 +290,62 @@ kubectl create job --from=cronjob/ingestion-refresh manual-refresh -n agent-cont
 | `DEEPWIKI_ENABLED` | `true` | Enable DeepWiki |
 | `INGESTION_REFRESH_SCHEDULE` | `0 6 * * *` | CronJob schedule |
 
+## Observability (Kill Switch & Troubleshooting)
+
+The ingestion pipeline emits structured logs (JSON), distributed traces (OTel -> X-Ray),
+and metrics. All telemetry follows a **fail-open discipline**: emission errors are
+swallowed silently and never block ingestion.
+
+### Kill switches
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `KNOWLEDGE_LAYER_TELEMETRY_ENABLED` | `true` | Master switch — disables ALL telemetry (logs revert to text, no traces, no metrics) |
+| `KNOWLEDGE_LAYER_TRACES_ENABLED` | `true` | Disables trace export only (logs + metrics continue) |
+
+### Emergency procedure
+
+If telemetry is consuming excessive resources or causing issues:
+
+1. **Immediate (no redeploy):** Set `KNOWLEDGE_LAYER_TELEMETRY_ENABLED=false` in the ConfigMap:
+   ```bash
+   kubectl -n agent-context edit configmap agent-context-config
+   # Add: KNOWLEDGE_LAYER_TELEMETRY_ENABLED: "false"
+   kubectl -n agent-context rollout restart deployment/context-mcp
+   # ScaledJob pods pick up ConfigMap on next spawn (no restart needed)
+   ```
+
+2. **Verify disabled:** Check logs are plain text (not JSON):
+   ```bash
+   kubectl -n agent-context logs -l app=ingestion-worker --tail=5
+   # Should show "2026-... [INFO] [sqs-worker] Processing: ..." (text format)
+   ```
+
+3. **Investigate root cause:** Check ADOT collector health:
+   ```bash
+   kubectl -n adp-agents logs -l app.kubernetes.io/name=adot-collector --tail=20
+   ```
+
+### Dashboard
+
+CloudWatch dashboard: `adp-<env>-knowledge-layer`
+
+### Correlation query
+
+Find everything about one asset in CloudWatch Logs Insights:
+```
+SOURCE '/adp/dev/knowledge-layer/ingestion'
+| filter asset_id = '<org/repo>'
+| sort @timestamp asc
+```
+
+### Fail-open guarantee
+
+The `test_telemetry_failopen.py` regression test validates that even with ALL
+telemetry subsystems throwing exceptions (traces, logger formatter, correlation
+context), the ingestion pipeline completes with correct artifacts. This test
+must always pass — it is the safety net for the entire observability layer.
+
 ## Testing
 
 ```bash
@@ -301,6 +357,53 @@ uv run pytest tests/ -v
 # Live E2E tests (against deployed cluster)
 TEST_ENV=dev uv run pytest tests/ -v -m "live or not live_only"
 ```
+
+## Observability (Kill Switch & Troubleshooting)
+
+The ingestion pipeline emits structured logs (JSON), distributed traces (OTel/X-Ray), and metrics. All telemetry follows a **fail-open discipline**: emission errors are silently swallowed and never block ingestion.
+
+### Kill switches
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `KNOWLEDGE_LAYER_TELEMETRY_ENABLED` | `true` | Master switch — disables ALL telemetry (logs revert to text, no traces, no metrics) |
+| `KNOWLEDGE_LAYER_TRACES_ENABLED` | `true` | Disables trace export only (logs + metrics continue) |
+
+### Emergency procedure
+
+If telemetry is consuming excessive resources or causing issues:
+
+1. **Immediate (no redeploy):** Set `KNOWLEDGE_LAYER_TELEMETRY_ENABLED=false` in the ConfigMap:
+   ```bash
+   kubectl -n agent-context edit configmap agent-context-config
+   # Add: KNOWLEDGE_LAYER_TELEMETRY_ENABLED: "false"
+   kubectl -n agent-context rollout restart deployment/context-mcp
+   # ScaledJob pods pick up ConfigMap on next spawn (no restart needed)
+   ```
+
+2. **Verify disabled:** Check logs are plain text (not JSON):
+   ```bash
+   kubectl -n agent-context logs -l app=ingestion-worker --tail=5
+   # Should show "2026-... [INFO] [sqs-worker] Processing: ..." (text format)
+   ```
+
+3. **Investigate root cause:** Check ADOT collector health:
+   ```bash
+   kubectl -n adp-agents logs -l app.kubernetes.io/name=adot-collector --tail=20
+   ```
+
+### Correlation query
+
+Find everything about one asset in CloudWatch Logs Insights:
+```
+SOURCE '/adp/dev/knowledge-layer/ingestion'
+| filter asset_id = '<org/repo>'
+| sort @timestamp asc
+```
+
+### Fail-open guarantee
+
+The `safe_emit()` utility in `telemetry.py` wraps every telemetry call so exceptions are caught and discarded. The regression test suite (`tests/unit/test_telemetry_failopen.py`) patches all telemetry subsystems to throw on every call, then verifies a full ingestion cycle completes with correct artifacts. This test runs in CI on every PR.
 
 ## Further Reading
 
