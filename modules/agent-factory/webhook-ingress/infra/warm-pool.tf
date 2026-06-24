@@ -224,8 +224,15 @@ EOF
 # onto existing/other nodes. Mirrors the proven embark1 `chat-agent-image-prepull`
 # DaemonSet (modules/agent-factory/agent/k8s/image-prepull-daemonset.yaml).
 #
-# karpenter.sh/do-not-disrupt keeps Auto Mode from consolidating nodes out from
-# under the cached image. Toleration `operator: Exists` lands it on every node.
+# The DaemonSet places one pod per node, so every node — including newly
+# provisioned ones during a scale-out burst — caches the image automatically.
+# We intentionally DO NOT set karpenter.sh/do-not-disrupt: that annotation only
+# blocks scale-IN, and on a per-node image-cache DaemonSet it vetoed Auto Mode
+# consolidation on EVERY node, pinning the cluster at peak size 24/7 even when
+# the agent queue was empty all night. Caching on a live node is unaffected;
+# idle nodes we no longer need are now free to be reclaimed (a later burst
+# re-pulls onto fresh nodes — a one-time pull per node). Toleration
+# `operator: Exists` still lands the prepull on every node.
 # =============================================================================
 
 locals {
@@ -248,8 +255,6 @@ locals {
         metadata:
           labels:
             app.kubernetes.io/name: agent-image-prepull
-          annotations:
-            karpenter.sh/do-not-disrupt: "true"
         spec:
           # Land on every node, tolerating system/control-plane taints.
           tolerations:

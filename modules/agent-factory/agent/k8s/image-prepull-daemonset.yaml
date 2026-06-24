@@ -7,8 +7,14 @@
 # forever). containerd caches layers per-node; when the real ScaledJob pod
 # lands, its image is already local.
 #
-# Auto Mode will keep nodes around because the DaemonSet pod runs on them,
-# and karpenter.sh/do-not-disrupt prevents consolidation evictions.
+# The DaemonSet runs one pod per node, so every node (including newly
+# provisioned ones) caches the image automatically — caching is a property of
+# the DaemonSet, not of any scale-in annotation. We intentionally DO NOT set
+# karpenter.sh/do-not-disrupt here: that annotation only blocks scale-IN, and
+# putting it on a per-node image cache vetoed consolidation on every node,
+# pinning the cluster at its peak size 24/7 even when idle. Image caching on a
+# live node survives regardless; an idle node we no longer need should be free
+# to be reclaimed (the next burst re-pulls onto fresh nodes, one-time per node).
 #
 # Image is pinned to :latest rather than a sha because we want the DaemonSet
 # to track whatever the chat-agent-deploy workflow pushed most recently.
@@ -31,8 +37,6 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: chat-agent-image-prepull
-      annotations:
-        karpenter.sh/do-not-disrupt: "true"
     spec:
       # Run on any node (don't restrict to a particular label). Tolerate common
       # control-plane / system taints so this lands everywhere.
