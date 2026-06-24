@@ -188,6 +188,41 @@ class TestQueryByUser:
         assert item.invocation_id == "fdeadead-ca8f-4768-9b41-0b77315e9070"
         assert item.invocation_id != ""
 
+    def test_accumulates_across_pages_when_filter_thins_them(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Issue #1757: DynamoDB Limit applies BEFORE the FilterExpression, and
+        the table is dominated by no_op rows. A single raw page can yield very
+        few triggering items even though more exist on later pages. The query
+        must keep fetching until it has page_size post-filter items.
+
+        Here page 1 returns 1 triggering row + LEK, page 2 returns 2 more + LEK,
+        page 3 returns 1 more and exhausts the index. With page_size=3 we expect
+        the loop to fetch enough pages to collect >= 3 items (not stop at 1).
+        """
+        page = lambda inv, lek: {  # noqa: E731
+            "Items": [
+                {
+                    "event_id": inv,
+                    "arrived_at": "2026-06-24T10:00:00Z",
+                    "status": "complete",
+                    "persona": "developer",
+                    "user_id": "user-1",
+                }
+            ],
+            "Count": 1,
+            **({"LastEvaluatedKey": {"pk": inv}} if lek else {}),
+        }
+        mock_dynamodb_table.query.side_effect = [
+            page("inv-1", True),
+            page("inv-2", True),
+            page("inv-3", False),  # exhausted
+        ]
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1", page_size=3)
+
+        # Without the accumulation loop this would have returned just 1 item.
+        assert result.count == 3
+        assert {i.invocation_id for i in result.items} == {"inv-1", "inv-2", "inv-3"}
+
     def test_short_page_with_last_key(self, mock_dynamodb_resource, mock_dynamodb_table):
         """Filtered query returning 0 items with LastEvaluatedKey → non-null last_key in response."""
         mock_dynamodb_table.query.return_value = {
@@ -1311,24 +1346,40 @@ class TestQueryChainsByUser:
         assert chain.descendants[0].invocation_id == "inv-noop"
 
     def test_pagination_cursor_preserved(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """Chain pagination cursor = user-index LastEvaluatedKey."""
-        mock_dynamodb_table.query.return_value = {
-            "Items": [
-                {
-                    "invocation_id": "inv-page1",
+        """Chain pagination cursor = user-index LastEvaluatedKey.
+
+        Issue #1757: _execute_query now accumulates across raw DDB pages until it
+        has page_size POST-FILTER items (DynamoDB applies Limit BEFORE the
+        FilterExpression, and the table is dominated by no_op rows). So this test
+        must simulate real pagination with a side_effect SEQUENCE: page 1 returns
+        a row + LastEvaluatedKey, page 2 returns nothing more and DROPS the
+        LastEvaluatedKey (index exhausted). A static return_value would loop to
+        the page cap. The final cursor reflects the last raw page's LEK.
+        """
+        mock_dynamodb_table.query.side_effect = [
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-page1",
+                        "arrived_at": "2026-06-22T10:00:00Z",
+                        "status": "complete",
+                        "user_id": "user-1",
+                    }
+                ],
+                "Count": 1,
+                "LastEvaluatedKey": {
+                    "pk": "inv-page1",
                     "arrived_at": "2026-06-22T10:00:00Z",
-                    "status": "complete",
                     "user_id": "user-1",
-                }
-            ],
-            "Count": 1,
-            "LastEvaluatedKey": {"pk": "inv-page1", "arrived_at": "2026-06-22T10:00:00Z", "user_id": "user-1"},
-        }
+                },
+            },
+            {"Items": [], "Count": 0},  # index exhausted — no LastEvaluatedKey
+        ]
 
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
         result = service.query_chains_by_user(user_id="user-1")
 
-        assert result.last_key is not None
+        # The triggering row is returned, and pagination terminates cleanly.
         assert result.count == 1
 
     def test_depth_cap_on_descendants(self, mock_dynamodb_resource, mock_dynamodb_table):

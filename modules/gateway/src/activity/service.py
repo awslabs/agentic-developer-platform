@@ -243,8 +243,36 @@ class ActivityService:
         if last_key:
             query_kwargs["ExclusiveStartKey"] = _decode_cursor(last_key)
 
+        # Issue #1757: DynamoDB applies `Limit` to rows read BEFORE the
+        # FilterExpression. The webhook-events table is dominated by no_op rows
+        # (bot status-comment events), so a single page of `page_size` rows
+        # typically yields only 1-2 triggering runs after filtering — even though
+        # many more exist on later pages (LastEvaluatedKey set). The board then
+        # showed "far fewer runs than expected". Fix: accumulate across pages
+        # until we have page_size POST-FILTER items or the index is exhausted,
+        # bounded by a max-page cap so a pathological all-no_op chain can't loop
+        # unboundedly.
+        items: list[InvocationItem] = []
+        next_cursor: str | None = None
+        max_pages = 20  # backstop: read at most max_pages * page_size raw rows
+        pages = 0
         try:
-            response = self._table.query(**query_kwargs)
+            while True:
+                pages += 1
+                response = self._table.query(**query_kwargs)
+                items.extend(self._map_item(it) for it in response.get("Items", []))
+                lek = response.get("LastEvaluatedKey")
+                # Stop when we have enough POST-FILTER items, the index is
+                # exhausted, or we hit the page-read backstop. The next cursor is
+                # DDB's own LastEvaluatedKey (no synthetic cursor — keeps resume
+                # correct against the GSI key schema). We may return slightly more
+                # than page_size filtered items from the final raw page; that's
+                # harmless and avoids fragile cursor reconstruction.
+                if len(items) >= page_size or lek is None or pages >= max_pages:
+                    if lek is not None:
+                        next_cursor = _encode_cursor(lek)
+                    break
+                query_kwargs["ExclusiveStartKey"] = lek
         except ClientError as exc:
             error_code = exc.response.get("Error", {}).get("Code", "")
             if error_code in ("ValidationException", "ResourceNotFoundException"):
@@ -259,14 +287,6 @@ class ActivityService:
                 )
                 return InvocationListResponse(items=[], count=0, last_key=None)
             raise
-
-        # Map DDB items to response schema
-        items = [self._map_item(item) for item in response.get("Items", [])]
-
-        # Encode next cursor if DDB says there are more pages
-        next_cursor = None
-        if "LastEvaluatedKey" in response:
-            next_cursor = _encode_cursor(response["LastEvaluatedKey"])
 
         return InvocationListResponse(items=items, count=len(items), last_key=next_cursor)
 
