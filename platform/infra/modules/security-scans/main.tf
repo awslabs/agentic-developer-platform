@@ -12,6 +12,16 @@ resource "aws_s3_bucket" "security_scans" {
   # change there — S3 buckets cannot be renamed in place. New/cross-account
   # deploys get the suffixed name on first apply with no migration needed.
   bucket = "adp-${var.environment}-security-scans-${var.account_id}"
+
+  # force_destroy lets Terraform empty the bucket itself when it must be
+  # destroyed/replaced. Required for the #982 rename: the legacy bucket is
+  # continuously written to by running CI security scans (SARIF/SBOM uploads),
+  # so manual "empty then apply" always loses the race — a new object lands in
+  # the gap and DeleteBucket fails with BucketNotEmpty. Terraform empties +
+  # deletes atomically with retries, closing the window. Safe here: contents
+  # are disposable scan artifacts (regenerated every scan; lifecycle-expired
+  # anyway), never source-of-truth data.
+  force_destroy = true
 }
 
 resource "aws_s3_bucket_versioning" "security_scans" {
