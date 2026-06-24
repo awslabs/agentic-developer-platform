@@ -299,6 +299,7 @@ class ProxyService(IProxyService):
         context: TokenContext,
         stream: bool = False,
         request_id: str | None = None,
+        agent_run_id: str | None = None,
     ) -> dict[str, Any] | AsyncIterator[bytes]:
         """Handle Bedrock InvokeModel pass-through (US-4.3).
 
@@ -308,6 +309,10 @@ class ProxyService(IProxyService):
             context: Authentication context
             stream: Whether to use streaming
             request_id: Optional request ID for usage_logs correlation (Issue #1074)
+            agent_run_id: Optional agent run id for per-run cost attribution.
+                Issue #1755: threaded explicitly because the route-dependency
+                contextvar does not survive across the service-call boundary to
+                _log_usage (mirrors the request_id fix from #1074).
 
         Returns:
             Bedrock response or SSE stream
@@ -315,6 +320,10 @@ class ProxyService(IProxyService):
         # Issue #1074: Set request_id in contextvar for _log_usage to pick up
         if request_id:
             _current_request_id.set(request_id)
+        # Issue #1755: re-set agent_run_id contextvar in THIS (service) context so
+        # _log_usage reads it reliably — the route-set value is lost across the call.
+        if agent_run_id:
+            _current_agent_run_id.set(agent_run_id)
 
         # Resolve model (in case it's an alias)
         bedrock_model_id = self._model_resolver.resolve_model(model_id)

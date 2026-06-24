@@ -580,7 +580,18 @@ async def invoke_model_by_path(
 
         # Issue #144: Time bedrock invocation
         with timings.time_segment("bedrock"):
-            response = await proxy_service.invoke_model(model_id, body, context, stream=False, request_id=request_id)
+            # Issue #1755: thread agent_run_id explicitly (like request_id) — the
+            # route-dependency contextvar does NOT survive to _log_usage across the
+            # service-call boundary, so agent_run_id was NULL on 100% of rows even
+            # though the header arrives and the dependency (#1781) sets it.
+            response = await proxy_service.invoke_model(
+                model_id,
+                body,
+                context,
+                stream=False,
+                request_id=request_id,
+                agent_run_id=_agent_run_id,
+            )
         bedrock_ms = timings.get("bedrock")
 
         logger.info(
@@ -656,7 +667,15 @@ async def invoke_model_stream_by_path(
 
         # Issue #144: Time to get the stream object (includes model resolution)
         with timings.time_segment("bedrock_ttfb"):
-            stream = await proxy_service.invoke_model(model_id, body, context, stream=True, request_id=request_id)
+            # Issue #1755: thread agent_run_id explicitly (see non-streaming route).
+            stream = await proxy_service.invoke_model(
+                model_id,
+                body,
+                context,
+                stream=True,
+                request_id=request_id,
+                agent_run_id=_agent_run_id,
+            )
         chat_logger = get_chat_logging_service()
 
         # Issue #143: Use shared streaming logging wrapper

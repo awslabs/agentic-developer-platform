@@ -250,6 +250,36 @@ class TestProxyServiceInvokeModel:
         assert "content" in response
 
     @pytest.mark.asyncio
+    async def test_invoke_model_sets_agent_run_id_contextvar(
+        self,
+        proxy_service: ProxyService,
+        token_context: TokenContext,
+    ) -> None:
+        """Issue #1755: invoke_model must re-set the agent_run_id contextvar in
+        the service context so _log_usage reads it. The route-dependency sets it
+        in an earlier context that is lost across the service-call boundary —
+        usage_logs.agent_run_id was NULL on 100% of agent rows. Threading it
+        explicitly fixes it, exactly like request_id (#1074).
+        """
+        from src.proxy.service import _current_agent_run_id
+
+        _current_agent_run_id.set(None)  # simulate the lost route-context value
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        }
+        await proxy_service.invoke_model(
+            "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            body,
+            token_context,
+            stream=False,
+            agent_run_id="inv-run-abc",
+        )
+        assert _current_agent_run_id.get() == "inv-run-abc"
+        _current_agent_run_id.set(None)
+
+    @pytest.mark.asyncio
     async def test_invoke_model_with_alias(
         self,
         proxy_service: ProxyService,
