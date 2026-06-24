@@ -35,6 +35,7 @@ _tracer = get_tracer("knowledge-layer.sqs-worker")
 
 from config import settings
 from github_auth import mint_github_token
+from scope import parse_scope
 
 AWS_REGION = settings.aws_region
 SQS_QUEUE_URL = settings.sqs_queue_url
@@ -385,14 +386,17 @@ def main():
     triggered_by = message.get("triggered_by", "unknown")
     steps = message.get("steps", [])
 
+    # Parse scope envelope (backward-compatible: defaults to shared if absent)
+    scope = parse_scope(message.get("scope"))
+
     # Set correlation context from SQS envelope (fail-open)
     safe_emit(
         set_correlation_context,
         asset_id=source,
         asset_type=content_type,
-        owner_sub=message.get("owner_sub"),
-        tenant_id=message.get("tenant_id"),
-        project_id=message.get("project_id"),
+        owner_sub=scope.owner_sub,
+        tenant_id=scope.tenant_id,
+        project_id=scope.project_id,
     )
 
     log.info("Processing: %s (%s) triggered_by=%s", source, content_type, triggered_by)
@@ -406,9 +410,10 @@ def main():
         "asset_id": source,
         "content_type": content_type,
         "triggered_by": triggered_by,
-        "owner_sub": message.get("owner_sub", ""),
-        "tenant_id": message.get("tenant_id", ""),
-        "project_id": message.get("project_id", ""),
+        "owner_sub": scope.owner_sub or "",
+        "tenant_id": scope.tenant_id or "",
+        "project_id": scope.project_id or "",
+        "visibility": scope.visibility,
     }
     root_span_cm = _tracer.start_as_current_span(
         "ingestion_run", attributes=root_span_attrs

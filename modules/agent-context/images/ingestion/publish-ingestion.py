@@ -39,6 +39,7 @@ log = logging.getLogger("publish-ingestion")
 # ---------------------------------------------------------------------------
 
 from config import settings
+from scope import DEFAULT_SCOPE, IngestionScope
 
 AWS_REGION = settings.aws_region
 SQS_QUEUE_URL = settings.sqs_queue_url
@@ -229,6 +230,7 @@ def publish_message(
     title: str | None = None,
     force: bool = False,
     triggered_by: str = "manual",
+    scope: IngestionScope | None = None,
 ) -> bool:
     """Publish a single ingestion message to SQS."""
     now = datetime.now(timezone.utc).isoformat()
@@ -240,6 +242,7 @@ def publish_message(
         "tags": tags,
         "triggered_by": triggered_by,
         "enqueued_at": now,
+        "scope": (scope or DEFAULT_SCOPE).to_dict(),
     }
     if title:
         message["title"] = title
