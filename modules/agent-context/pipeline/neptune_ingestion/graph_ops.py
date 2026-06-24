@@ -104,6 +104,78 @@ def count_repo_nodes(neptune_url: str, region: str, repo: str) -> int:
     return 0
 
 
+def backfill_tenant_id(
+    neptune_url: str,
+    region: str,
+    repo: str,
+    tenant_id: str,
+    owner_sub: str | None = None,
+) -> dict:
+    """Backfill tenant_id (and optionally owner_sub) on existing nodes for a repo.
+
+    Stamps all nodes with repo = $repo that currently have no tenant_id.
+    This is idempotent — nodes that already carry tenant_id are left unchanged.
+
+    Used during migration to stamp existing graph data with tenant scope
+    so that the query-side scope filter can take effect without breaking
+    shared-corpus semantics (Story 6 / #1775).
+
+    Args:
+        neptune_url: Neptune openCypher endpoint URL
+        region: AWS region for SigV4 signing
+        repo: Repository identifier (e.g., "aws-e/adp")
+        tenant_id: Tenant identifier to stamp on unscoped nodes
+        owner_sub: Optional owner subject identifier
+
+    Returns:
+        Dict with keys: success (bool), updated_nodes (int), elapsed_ms (int), error (str|None)
+    """
+    start = time.time()
+
+    # Only stamp nodes that don't already have a tenant_id
+    cypher = "MATCH (n) WHERE n.repo = $repo AND n.tenant_id IS NULL SET n.tenant_id = $tenant_id"
+    params: dict[str, str] = {"repo": repo, "tenant_id": tenant_id}
+
+    if owner_sub:
+        cypher = (
+            "MATCH (n) WHERE n.repo = $repo AND n.tenant_id IS NULL "
+            "SET n.tenant_id = $tenant_id, n.owner_sub = $owner_sub"
+        )
+        params["owner_sub"] = owner_sub
+
+    result = neptune_query(neptune_url, region, cypher, params)
+
+    elapsed_ms = int((time.time() - start) * 1000)
+
+    if "error" in result:
+        log.warning(
+            "backfill_tenant_id failed for %s: %s (HTTP %s, %dms)",
+            repo,
+            str(result["error"])[:200],
+            result.get("code", "?"),
+            elapsed_ms,
+        )
+        return {
+            "success": False,
+            "updated_nodes": 0,
+            "elapsed_ms": elapsed_ms,
+            "error": str(result["error"])[:500],
+        }
+
+    log.info(
+        "backfill_tenant_id completed for %s tenant=%s (%dms)",
+        repo,
+        tenant_id,
+        elapsed_ms,
+    )
+    return {
+        "success": True,
+        "updated_nodes": -1,  # Neptune SET doesn't return affected count
+        "elapsed_ms": elapsed_ms,
+        "error": None,
+    }
+
+
 def count_repo_edges(neptune_url: str, region: str, repo: str) -> int:
     """Count all edges belonging to a repo (edges where repo property = repo).
 

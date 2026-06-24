@@ -73,6 +73,8 @@ def generate_csv(
     graph: SCIPGraph,
     output_dir: str,
     calls_only: bool = False,
+    tenant_id: str | None = None,
+    owner_sub: str | None = None,
 ) -> CSVOutput:
     """Generate Neptune openCypher CSV files from a SCIPGraph.
 
@@ -80,6 +82,9 @@ def generate_csv(
         graph: The SCIP graph to convert
         output_dir: Directory to write CSV files to
         calls_only: If True, only emit CALLS edges (filter REFERENCES)
+        tenant_id: Optional tenant scope identifier stamped on each node.
+            None means shared/unscoped (visible to all tenants).
+        owner_sub: Optional owner subject (individual user) stamped on each node.
 
     Returns:
         CSVOutput with paths and counts
@@ -109,6 +114,8 @@ def generate_csv(
         "line:Int",
         "kind:String",
         "repo:String",
+        "tenant_id:String",
+        "owner_sub:String",
     ]
 
     vertex_count = 0
@@ -134,6 +141,8 @@ def generate_csv(
                     "line:Int": node.line,
                     "kind:String": node.kind,
                     "repo:String": graph.repo,
+                    "tenant_id:String": tenant_id or "",
+                    "owner_sub:String": owner_sub or "",
                 }
             )
             vertex_count += 1

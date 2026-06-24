@@ -174,6 +174,8 @@ def _load_vertices(
                 "line": int(v["line:Int"]),
                 "kind": v["kind:String"],
                 "repo": v["repo:String"],
+                "tenant_id": v.get("tenant_id:String") or None,
+                "owner_sub": v.get("owner_sub:String") or None,
             }
             for v in batch
         ]
@@ -183,7 +185,8 @@ def _load_vertices(
         MERGE (n:Symbol {`~id`: node.id})
         SET n.symbol_id = node.symbol_id, n.name = node.name,
             n.module = node.module, n.file = node.file,
-            n.line = node.line, n.kind = node.kind, n.repo = node.repo
+            n.line = node.line, n.kind = node.kind, n.repo = node.repo,
+            n.tenant_id = node.tenant_id, n.owner_sub = node.owner_sub
         RETURN count(n) AS cnt
         """
         result = _neptune_query(neptune_url, region, cypher, {"nodes": params})

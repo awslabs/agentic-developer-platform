@@ -4,6 +4,11 @@ Provides lazy driver initialization, availability checking, and typed
 query methods for the impact and understand verbs. Falls back gracefully
 when Neptune is unreachable.
 
+Tenant isolation (Story 6 / #1775): All query functions accept an optional
+``tenant_id`` parameter. When provided, a scope predicate is injected:
+``WHERE n.tenant_id = $tid OR n.tenant_id IS NULL`` — allowing shared corpus
+nodes (unscoped) alongside tenant-specific nodes.
+
 See: docs/agent-context/neptune-deep-graph-design.md (Door Query Patterns)
 """
 
@@ -76,6 +81,37 @@ def neptune_available() -> bool:
     except Exception:
         log.warning("Neptune unreachable - falling back to code-index.json")
         return False
+
+
+def _build_scope_filter(
+    node_var: str,
+    tenant_id: str | None,
+    params: dict[str, Any],
+) -> str:
+    """Build a WHERE clause fragment for tenant scope filtering.
+
+    Returns a Cypher fragment like ``AND n.tenant_id = $tid OR n.tenant_id IS NULL``
+    suitable for appending to an existing WHERE clause, or an empty string if
+    tenant_id is None (unscoped query — returns all nodes).
+
+    The semantics are:
+    - tenant_id is None → no filtering (backward-compatible, returns everything)
+    - tenant_id provided → returns nodes belonging to this tenant OR shared
+      (unscoped) nodes whose tenant_id property is NULL.
+
+    Parameters
+    ----------
+    node_var:
+        Cypher variable name of the node being filtered (e.g. "s", "target").
+    tenant_id:
+        Tenant identifier, or None for unscoped queries.
+    params:
+        Mutable dict of query parameters — $tid is added when tenant_id is set.
+    """
+    if tenant_id is None:
+        return ""
+    params["tid"] = tenant_id
+    return f" AND ({node_var}.tenant_id = $tid OR {node_var}.tenant_id IS NULL)"
 
 
 def resolve_repo_name(repo: str) -> str:
@@ -284,6 +320,8 @@ def query_impact(
     repo: str,
     file: str,
     symbol_name: str,
+    *,
+    tenant_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Query Neptune for transitive callers of a symbol (impact analysis).
 
@@ -300,6 +338,9 @@ def query_impact(
         File path within the repo. If empty, matches any file.
     symbol_name:
         Symbol name to find callers of.
+    tenant_id:
+        Optional tenant scope filter. When set, only returns results where
+        the target node belongs to this tenant or is shared (tenant_id IS NULL).
 
     Returns
     -------
@@ -313,8 +354,11 @@ def query_impact(
     # When file is empty, omit it from the property match to avoid matching
     # only symbols with a literal empty-string file property (Bug #1587 Fix 1).
     if file:
-        cypher = """
-            MATCH (target:Symbol {repo: $repo, file: $file, name: $symbol_name})
+        params: dict[str, Any] = {"repo": repo, "file": file, "symbol_name": symbol_name}
+        scope = _build_scope_filter("target", tenant_id, params)
+        cypher = f"""
+            MATCH (target:Symbol {{repo: $repo, file: $file, name: $symbol_name}})
+            WHERE true{scope}
             WITH target
             MATCH path = (caller:Symbol)-[:CALLS*1..4]->(target)
             WHERE caller <> target
@@ -324,10 +368,12 @@ def query_impact(
             ORDER BY distance ASC, caller_repo, caller_file
             LIMIT 100
         """
-        params: dict[str, str] = {"repo": repo, "file": file, "symbol_name": symbol_name}
     else:
-        cypher = """
-            MATCH (target:Symbol {repo: $repo, name: $symbol_name})
+        params = {"repo": repo, "symbol_name": symbol_name}
+        scope = _build_scope_filter("target", tenant_id, params)
+        cypher = f"""
+            MATCH (target:Symbol {{repo: $repo, name: $symbol_name}})
+            WHERE true{scope}
             WITH target
             MATCH path = (caller:Symbol)-[:CALLS*1..4]->(target)
             WHERE caller <> target
@@ -337,7 +383,6 @@ def query_impact(
             ORDER BY distance ASC, caller_repo, caller_file
             LIMIT 100
         """
-        params = {"repo": repo, "symbol_name": symbol_name}
 
     try:
         with driver.session() as session:
@@ -376,6 +421,8 @@ def query_understand(
     repo: str,
     file: str,
     symbol_name: str,
+    *,
+    tenant_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Query Neptune for a symbol's neighborhood (understand analysis).
 
@@ -398,6 +445,9 @@ def query_understand(
         File path within the repo. If empty, matches any file.
     symbol_name:
         Symbol name to understand.
+    tenant_id:
+        Optional tenant scope filter. When set, only matches symbols
+        belonging to this tenant or shared (tenant_id IS NULL).
 
     Returns
     -------
@@ -423,8 +473,11 @@ def query_understand(
     # connection with "Operation terminated (internal error)".
     # The node properties are projected to dicts in Python via _nodes_to_dicts.
     if file:
-        cypher = """
-            MATCH (s:Symbol {repo: $repo, file: $file, name: $symbol_name})
+        params: dict[str, Any] = {"repo": repo, "file": file, "symbol_name": symbol_name}
+        scope = _build_scope_filter("s", tenant_id, params)
+        cypher = f"""
+            MATCH (s:Symbol {{repo: $repo, file: $file, name: $symbol_name}})
+            WHERE true{scope}
             OPTIONAL MATCH (s)-[:CALLS]->(callee:Symbol)
             WITH s, collect(DISTINCT callee) AS callee_nodes
             OPTIONAL MATCH (caller:Symbol)-[:CALLS]->(s)
@@ -438,10 +491,12 @@ def query_understand(
                    collect(DISTINCT owner) AS owner_nodes
             LIMIT 50
         """
-        params: dict[str, str] = {"repo": repo, "file": file, "symbol_name": symbol_name}
     else:
-        cypher = """
-            MATCH (s:Symbol {repo: $repo, name: $symbol_name})
+        params = {"repo": repo, "symbol_name": symbol_name}
+        scope = _build_scope_filter("s", tenant_id, params)
+        cypher = f"""
+            MATCH (s:Symbol {{repo: $repo, name: $symbol_name}})
+            WHERE true{scope}
             OPTIONAL MATCH (s)-[:CALLS]->(callee:Symbol)
             WITH s, collect(DISTINCT callee) AS callee_nodes
             OPTIONAL MATCH (caller:Symbol)-[:CALLS]->(s)
@@ -455,7 +510,6 @@ def query_understand(
                    collect(DISTINCT owner) AS owner_nodes
             LIMIT 50
         """
-        params = {"repo": repo, "symbol_name": symbol_name}
 
     try:
         with driver.session() as session:
@@ -487,7 +541,7 @@ def query_understand(
         ) from exc
 
 
-def query_repo_topology(repo: str) -> list[dict[str, Any]]:
+def query_repo_topology(repo: str, *, tenant_id: str | None = None) -> list[dict[str, Any]]:
     """Query Neptune for repo-level module topology (understand at repo level).
 
     Returns module paths, their files, and symbol counts. Used when the
@@ -497,6 +551,8 @@ def query_repo_topology(repo: str) -> list[dict[str, Any]]:
     ----------
     repo:
         Repository identifier.
+    tenant_id:
+        Optional tenant scope filter.
 
     Returns
     -------
@@ -507,8 +563,11 @@ def query_repo_topology(repo: str) -> list[dict[str, Any]]:
     if not driver:
         return []
 
-    cypher = """
-        MATCH (m:Module {repo: $repo})
+    params: dict[str, Any] = {"repo": repo}
+    scope = _build_scope_filter("m", tenant_id, params)
+    cypher = f"""
+        MATCH (m:Module {{repo: $repo}})
+        WHERE true{scope}
         OPTIONAL MATCH (m)-[:CONTAINS]->(f:File)
         OPTIONAL MATCH (f)-[:DEFINES]->(s:Symbol)
         RETURN m.path AS module_path,
@@ -517,7 +576,6 @@ def query_repo_topology(repo: str) -> list[dict[str, Any]]:
         ORDER BY module_path
         LIMIT 50
     """
-    params = {"repo": repo}
 
     try:
         with driver.session() as session:
@@ -533,7 +591,9 @@ def query_repo_topology(repo: str) -> list[dict[str, Any]]:
         return []
 
 
-def query_file_symbols(repo: str, file_path: str) -> list[dict[str, Any]]:
+def query_file_symbols(
+    repo: str, file_path: str, *, tenant_id: str | None = None
+) -> list[dict[str, Any]]:
     """Query Neptune for all symbols defined in a file.
 
     Used when understand target is a file path.
@@ -544,6 +604,8 @@ def query_file_symbols(repo: str, file_path: str) -> list[dict[str, Any]]:
         Repository identifier.
     file_path:
         File path within the repo.
+    tenant_id:
+        Optional tenant scope filter.
 
     Returns
     -------
@@ -554,14 +616,16 @@ def query_file_symbols(repo: str, file_path: str) -> list[dict[str, Any]]:
     if not driver:
         return []
 
-    cypher = """
-        MATCH (s:Symbol {repo: $repo, file: $file})
+    params: dict[str, Any] = {"repo": repo, "file": file_path}
+    scope = _build_scope_filter("s", tenant_id, params)
+    cypher = f"""
+        MATCH (s:Symbol {{repo: $repo, file: $file}})
+        WHERE true{scope}
         RETURN s.name AS name, s.kind AS kind, s.line AS line,
                s.signature AS signature
         ORDER BY s.line
         LIMIT 50
     """
-    params = {"repo": repo, "file": file_path}
 
     try:
         with driver.session() as session:
@@ -578,7 +642,9 @@ def query_file_symbols(repo: str, file_path: str) -> list[dict[str, Any]]:
         return []
 
 
-def query_dir_symbols(repo: str, dir_path: str) -> list[dict[str, Any]]:
+def query_dir_symbols(
+    repo: str, dir_path: str, *, tenant_id: str | None = None
+) -> list[dict[str, Any]]:
     """Query Neptune for symbols in files under a directory.
 
     Used when understand target is a directory path.
@@ -589,6 +655,8 @@ def query_dir_symbols(repo: str, dir_path: str) -> list[dict[str, Any]]:
         Repository identifier.
     dir_path:
         Directory path prefix.
+    tenant_id:
+        Optional tenant scope filter.
 
     Returns
     -------
@@ -598,14 +666,15 @@ def query_dir_symbols(repo: str, dir_path: str) -> list[dict[str, Any]]:
     if not driver:
         return []
 
-    cypher = """
-        MATCH (s:Symbol {repo: $repo})
-        WHERE s.file STARTS WITH $dir_prefix
+    params: dict[str, Any] = {"repo": repo, "dir_prefix": dir_path + "/"}
+    scope = _build_scope_filter("s", tenant_id, params)
+    cypher = f"""
+        MATCH (s:Symbol {{repo: $repo}})
+        WHERE s.file STARTS WITH $dir_prefix{scope}
         RETURN s.file AS file, s.name AS name, s.kind AS kind, s.line AS line
         ORDER BY s.file, s.line
         LIMIT 50
     """
-    params = {"repo": repo, "dir_prefix": dir_path + "/"}
 
     try:
         with driver.session() as session:
@@ -661,6 +730,8 @@ def query_cross_repo_impact(
     repo: str,
     file: str,
     symbol_name: str,
+    *,
+    tenant_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Query Neptune for cross-repo callers/references via symbol_id join.
 
@@ -679,6 +750,9 @@ def query_cross_repo_impact(
         File path of the target symbol within its repo.
     symbol_name:
         Name of the target symbol.
+    tenant_id:
+        Optional tenant scope filter. When set, only returns callers whose
+        nodes belong to this tenant or are shared (tenant_id IS NULL).
 
     Returns
     -------
@@ -691,13 +765,14 @@ def query_cross_repo_impact(
         return []
 
     # Step 1: Resolve the target symbol's symbol_id
-    resolve_cypher = """
-        MATCH (target:Symbol {repo: $repo, file: $file, name: $symbol_name})
-        WHERE target.symbol_id IS NOT NULL
+    params: dict[str, Any] = {"repo": repo, "file": file, "symbol_name": symbol_name}
+    scope = _build_scope_filter("target", tenant_id, params)
+    resolve_cypher = f"""
+        MATCH (target:Symbol {{repo: $repo, file: $file, name: $symbol_name}})
+        WHERE target.symbol_id IS NOT NULL{scope}
         RETURN target.symbol_id AS symbol_id
         LIMIT 1
     """
-    params = {"repo": repo, "file": file, "symbol_name": symbol_name}
 
     try:
         with driver.session() as session:
