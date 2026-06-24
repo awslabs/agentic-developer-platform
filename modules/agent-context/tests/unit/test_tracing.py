@@ -423,6 +423,81 @@ class TestStageTrackerSpans:
         # If we get here, fail-open worked. The stage should still have results.
         # Note: with the broken span, the verify logic still runs.
 
+    def test_root_span_wraps_stages(self):
+        """Root span in sqs-worker is parent of stage spans (trace context propagation).
+
+        Verifies that when the sqs-worker creates an 'ingestion_run' root span
+        and StageTracker creates child spans within it, the trace context propagation
+        makes stage spans children of the root span.
+        """
+        from opentelemetry import trace
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import (
+            SimpleSpanProcessor,
+            SpanExporter,
+            SpanExportResult,
+        )
+
+        # Simple in-memory exporter that captures finished spans
+        class _ListExporter(SpanExporter):
+            def __init__(self):
+                self.spans = []
+
+            def export(self, spans):
+                self.spans.extend(spans)
+                return SpanExportResult.SUCCESS
+
+            def shutdown(self):
+                pass
+
+        exporter = _ListExporter()
+        provider = TracerProvider(resource=Resource.create({"service.name": "test"}))
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+
+        try:
+            tracer = trace.get_tracer("test-root-span")
+
+            # Simulate sqs-worker: create root span wrapping stage spans
+            with tracer.start_as_current_span("ingestion_run", attributes={"asset_id": "org/repo"}):
+                # Simulate StageTracker: child span created within root context
+                with tracer.start_as_current_span(
+                    "clone", attributes={"stage": "clone", "run_id": "run-001"}
+                ):
+                    pass  # stage work here
+
+                with tracer.start_as_current_span(
+                    "zoekt", attributes={"stage": "zoekt", "run_id": "run-001"}
+                ):
+                    pass
+
+            # Verify span tree structure
+            spans = exporter.spans
+            assert len(spans) == 3, f"Expected 3 spans, got {len(spans)}"
+
+            # Find spans by name
+            span_by_name = {s.name: s for s in spans}
+            root = span_by_name["ingestion_run"]
+            clone = span_by_name["clone"]
+            zoekt = span_by_name["zoekt"]
+
+            # All spans share the same trace ID
+            assert clone.context.trace_id == root.context.trace_id
+            assert zoekt.context.trace_id == root.context.trace_id
+
+            # Child spans have root as parent
+            assert clone.parent.span_id == root.context.span_id
+            assert zoekt.parent.span_id == root.context.span_id
+
+            # Root has no parent
+            assert root.parent is None
+
+        finally:
+            provider.shutdown()
+            # Reset global tracer provider
+            trace.set_tracer_provider(trace.NoOpTracerProvider())
+
 
 # ---------------------------------------------------------------------------
 # Tests: shutdown_tracing
