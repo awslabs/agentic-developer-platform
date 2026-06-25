@@ -89,6 +89,11 @@ spec:
     activeDeadlineSeconds: 900
     template:
       metadata:
+        # Protect in-flight runs from Karpenter/Auto Mode consolidation (see #1807):
+        # long-running, restartPolicy: Never — eviction kills the run silently.
+        # On the WORK pod (not per-node), so idle nodes still consolidate.
+        annotations:
+          karpenter.sh/do-not-disrupt: "true"
         labels:
           app.kubernetes.io/name: chat-agent-worker
       spec:

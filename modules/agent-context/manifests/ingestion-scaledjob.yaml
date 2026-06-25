@@ -23,6 +23,11 @@ spec:
     backoffLimit: 0
     template:
       metadata:
+        # Protect in-flight ingestion runs from Karpenter/Auto Mode consolidation
+        # (see #1807): long-running, restartPolicy: Never — eviction kills the run
+        # silently. On the WORK pod (not per-node), so idle nodes still consolidate.
+        annotations:
+          karpenter.sh/do-not-disrupt: "true"
         labels:
           app: ingestion-worker
       spec:

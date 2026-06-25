@@ -130,6 +130,15 @@ locals {
         activeDeadlineSeconds: ${var.agent_pod_deadline_seconds}
         template:
           metadata:
+            # Protect in-flight agent runs from Karpenter/Auto Mode consolidation.
+            # These are long-running, restartPolicy: Never jobs — a consolidation
+            # eviction kills the run silently (no resume) and orphans its SQS
+            # message. Unlike the prepull DaemonSet (#1807), this is on the WORK
+            # pod, not per-node: it only blocks scale-in of a node WHILE an agent
+            # is actively running on it; idle nodes still consolidate, so it does
+            # NOT re-introduce the always-on cost bug.
+            annotations:
+              karpenter.sh/do-not-disrupt: "true"
             labels:
               app.kubernetes.io/name: agent-scaledjob
               app.kubernetes.io/part-of: adp-agent-factory
