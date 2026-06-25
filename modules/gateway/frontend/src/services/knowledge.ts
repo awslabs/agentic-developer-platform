@@ -6,12 +6,16 @@
  */
 
 import { apiClient, buildQueryString } from './api';
+import { getAccessToken } from './auth';
 import type {
   KnowledgeAsset,
   AssetListResponse,
   AssetCreateRequest,
   AccessibleRepo,
   AccessibleReposResponse,
+  BulkPreviewResponse,
+  BulkCommitRequest,
+  BulkCommitResponse,
 } from '@/types';
 
 // ---------------------------------------------------------------------------
@@ -180,6 +184,73 @@ export async function getAccessibleRepos(params?: {
     total: response?.total ?? 0,
     page: response?.page ?? 1,
     hasMore: response?.has_more ?? false,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Bulk upload (Issue #1795 — Story F)
+// ---------------------------------------------------------------------------
+
+/**
+ * Upload a file for bulk preview (no DB writes).
+ * Uses multipart/form-data — bypasses apiClient's JSON serialization.
+ */
+export async function bulkPreview(
+  file: File,
+  scope: 'personal' | 'tenant' = 'tenant',
+): Promise<BulkPreviewResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('scope', scope);
+
+  const token = getAccessToken();
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const response = await fetch('/api/agent-context/assets/bulk', {
+    method: 'POST',
+    headers,
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+    throw errorData;
+  }
+
+  return response.json();
+}
+
+/** Commit the validated items from a bulk preview. */
+export async function bulkCommit(body: BulkCommitRequest): Promise<BulkCommitResponse> {
+  const raw = await apiClient.post<{
+    created: number;
+    skipped_duplicates: number;
+    assets: Array<{
+      id: string;
+      asset_type: string;
+      source_ref: string;
+      display_name: string | null;
+      tags: Record<string, unknown>;
+      metadata: Record<string, unknown>;
+      tenant_id: string | null;
+      owner_sub: string | null;
+      project_id: string | null;
+      status: string;
+      last_error: string | null;
+      retry_count: number;
+      registered_by: string | null;
+      created_at: string;
+      updated_at: string | null;
+    }>;
+  }>('/api/agent-context/assets/bulk/commit', body);
+
+  return {
+    created: raw.created,
+    skipped_duplicates: raw.skipped_duplicates,
+    assets: (raw.assets || []).map(transformAsset),
   };
 }
 

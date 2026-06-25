@@ -596,3 +596,63 @@ export interface AccessibleReposResponse {
   page: number;
   hasMore: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1795: Bulk upload types
+// ---------------------------------------------------------------------------
+
+/** A valid item from bulk preview. */
+export interface BulkPreviewValidItem {
+  line: number;
+  source_ref: string;
+  asset_type: string;
+  display_name: string | null;
+  tags: Record<string, unknown>;
+}
+
+/** A rejected item from bulk preview. */
+export interface BulkPreviewRejectedItem {
+  line: number;
+  source_ref: string;
+  reason: string;
+}
+
+/** A duplicate item from bulk preview. */
+export interface BulkPreviewDuplicateItem {
+  line: number;
+  source_ref: string;
+  existing_id: string;
+}
+
+/** Response from POST /api/agent-context/assets/bulk (preview). */
+export interface BulkPreviewResponse {
+  total_lines: number;
+  parsed: number;
+  skipped_comments: number;
+  valid: BulkPreviewValidItem[];
+  rejected: BulkPreviewRejectedItem[];
+  duplicates: BulkPreviewDuplicateItem[];
+  quota_ok: boolean;
+  quota_after: Record<string, { used: number; limit: number }>;
+}
+
+/** A single item in the bulk commit request. */
+export interface BulkCommitItem {
+  source_ref: string;
+  asset_type: string;
+  display_name?: string | null;
+  tags?: Record<string, unknown>;
+}
+
+/** Request body for POST /api/agent-context/assets/bulk/commit. */
+export interface BulkCommitRequest {
+  items: BulkCommitItem[];
+  scope: 'personal' | 'tenant';
+}
+
+/** Response from POST /api/agent-context/assets/bulk/commit. */
+export interface BulkCommitResponse {
+  created: number;
+  skipped_duplicates: number;
+  assets: KnowledgeAsset[];
+}

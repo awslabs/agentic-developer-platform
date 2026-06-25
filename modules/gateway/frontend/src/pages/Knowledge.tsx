@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Tabs, TabsList, Tab, TabPanel } from '@/components/ui/Tabs';
 import { AddAssetDialog } from '@/components/knowledge/AddAssetDialog';
+import { BulkUploadDialog } from '@/components/knowledge/BulkUploadDialog';
 import { listAssets, getAssetDetail, deleteAsset, reindexAsset } from '@/services/knowledge';
 import { useToast } from '@/contexts/ToastContext';
 import type { KnowledgeAsset, AssetQuotaInfo } from '@/types';
@@ -81,6 +82,7 @@ export default function Knowledge() {
 
   // Add dialog
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const [showBulkUpload, setShowBulkUpload] = useState(false);
 
   // Load assets
   const loadAssets = useCallback(async () => {
@@ -171,7 +173,12 @@ export default function Knowledge() {
             Manage knowledge assets — repos, URLs, and documents.
           </p>
         </div>
-        <Button onClick={() => setShowAddDialog(true)}>Add Asset</Button>
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={() => setShowBulkUpload(true)}>
+            Bulk Upload
+          </Button>
+          <Button onClick={() => setShowAddDialog(true)}>Add Asset</Button>
+        </div>
       </div>
 
       {/* Three-zone layout */}
@@ -397,6 +404,14 @@ export default function Knowledge() {
         isOpen={showAddDialog}
         onClose={() => setShowAddDialog(false)}
         onAssetAdded={handleAssetAdded}
+        scope={scopeFilter === 'tenant' ? 'tenant' : 'personal'}
+      />
+
+      {/* Bulk upload dialog */}
+      <BulkUploadDialog
+        isOpen={showBulkUpload}
+        onClose={() => setShowBulkUpload(false)}
+        onAssetsAdded={handleAssetAdded}
         scope={scopeFilter === 'tenant' ? 'tenant' : 'personal'}
       />
     </div>
