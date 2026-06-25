@@ -18,7 +18,7 @@ import os
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,9 +27,14 @@ from agent_context.api.assets_schemas import (
     AssetDetailResponse,
     AssetListResponse,
     AssetResponse,
+    BulkCommitRequest,
+    BulkCommitResponse,
+    BulkDuplicateItem,
+    BulkPreviewResponse,
     QuotaDetail,
     QuotaInfo,
 )
+from agent_context.api.bulk_parser import MAX_FILE_SIZE_BYTES, MAX_LINES, parse_bulk_file
 from agent_context.ingestion.dispatch import dispatch_ingestion
 from agent_context.ingestion.type_registry import is_valid_asset_type, validate_source_ref
 
@@ -406,6 +411,290 @@ async def reindex_asset(
     if not updated_row:
         raise HTTPException(status_code=500, detail="Failed to read updated asset")
     return _row_to_response(updated_row)
+
+
+# ---------------------------------------------------------------------------
+# Bulk Upload — Two-Step: Preview + Commit (§5, §8.3)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/bulk", response_model=BulkPreviewResponse)
+async def bulk_preview(
+    db: Annotated[AsyncSession, Depends(get_assets_db)],
+    current_user: Annotated[Any, Depends(get_current_user_from_state)],
+    file: UploadFile = File(...),
+    scope: str = Form("tenant"),
+) -> BulkPreviewResponse:
+    """Parse + validate a bulk upload file. Returns preview — NO DB writes.
+
+    Tenant admin can upload at tenant scope; any user can upload at personal scope.
+    """
+    # Validate scope value
+    if scope not in ("personal", "tenant"):
+        raise HTTPException(status_code=400, detail="scope must be 'personal' or 'tenant'")
+
+    # Admin gate for tenant scope
+    if scope == "tenant" and not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Tenant-scope bulk upload requires admin privileges",
+        )
+
+    # Read and validate file size
+    content_bytes = await file.read()
+    if len(content_bytes) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {MAX_FILE_SIZE_BYTES // 1024} KB",
+        )
+
+    content = content_bytes.decode("utf-8", errors="replace")
+
+    # Check line count
+    line_count = len(content.splitlines())
+    if line_count > MAX_LINES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File has {line_count} lines. Maximum is {MAX_LINES}",
+        )
+
+    # Parse the file
+    valid_items, rejected_items, total_lines, skipped_comments = parse_bulk_file(content)
+
+    # Derive scope for dedup + quota check
+    tenant_id = current_user.org_id or None
+    owner_sub: str | None = None
+    if scope == "personal":
+        owner_sub = current_user.user_id
+
+    # Check for duplicates against existing DB rows
+    duplicates: list[BulkDuplicateItem] = []
+    non_duplicate_valid = []
+
+    for item in valid_items:
+        dup_result = await db.execute(
+            text("""
+                SELECT id FROM knowledge_assets
+                WHERE source_ref = :sref
+                  AND COALESCE(tenant_id, '') = COALESCE(:tid, '')
+                  AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+                  AND status != 'removed'
+                LIMIT 1
+            """),
+            {"sref": item.source_ref, "tid": tenant_id or "", "sub": owner_sub or ""},
+        )
+        existing = dup_result.fetchone()
+        if existing:
+            duplicates.append(
+                BulkDuplicateItem(
+                    line=item.line,
+                    source_ref=item.source_ref,
+                    existing_id=str(existing.id),
+                )
+            )
+        else:
+            non_duplicate_valid.append(item)
+
+    # Quota check: count existing + new per asset_type
+    scope_key = scope
+    quota_after: dict[str, QuotaDetail] = {}
+    quota_ok = True
+
+    # Get existing counts by type
+    count_result = await db.execute(
+        text("""
+            SELECT asset_type, COUNT(*) as cnt
+            FROM knowledge_assets
+            WHERE COALESCE(tenant_id, '') = COALESCE(:tid, '')
+              AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+              AND status != 'removed'
+            GROUP BY asset_type
+        """),
+        {"tid": tenant_id or "", "sub": owner_sub or ""},
+    )
+    existing_counts: dict[str, int] = {}
+    for r in count_result.fetchall():
+        existing_counts[r.asset_type] = r.cnt
+
+    # Count new items by type
+    new_counts: dict[str, int] = {}
+    for item in non_duplicate_valid:
+        new_counts[item.asset_type] = new_counts.get(item.asset_type, 0) + 1
+
+    # Check each type's quota
+    all_types = set(list(existing_counts.keys()) + list(new_counts.keys()))
+    for atype in all_types:
+        existing = existing_counts.get(atype, 0)
+        new = new_counts.get(atype, 0)
+        limit = _get_quota_limit(scope_key, atype)
+        after = existing + new
+        quota_after[f"{atype}s"] = QuotaDetail(used=after, limit=limit)
+        if after > limit:
+            quota_ok = False
+
+    return BulkPreviewResponse(
+        total_lines=total_lines,
+        parsed=len(valid_items) + len(rejected_items),
+        skipped_comments=skipped_comments,
+        valid=non_duplicate_valid,
+        rejected=rejected_items,
+        duplicates=duplicates,
+        quota_ok=quota_ok,
+        quota_after=quota_after,
+    )
+
+
+@router.post("/bulk/commit", response_model=BulkCommitResponse, status_code=201)
+async def bulk_commit(
+    body: BulkCommitRequest,
+    db: Annotated[AsyncSession, Depends(get_assets_db)],
+    current_user: Annotated[Any, Depends(get_current_user_from_state)],
+) -> BulkCommitResponse:
+    """Commit a previewed bulk upload batch. Writes rows + dispatches to SQS.
+
+    Tenant admin can commit at tenant scope; any user can commit at personal scope.
+    """
+    # Admin gate for tenant scope
+    if body.scope == "tenant" and not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Tenant-scope bulk commit requires admin privileges",
+        )
+
+    if not body.items:
+        raise HTTPException(status_code=400, detail="No items to commit")
+
+    # Enforce file limit on commit as well
+    if len(body.items) > MAX_LINES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Too many items. Maximum is {MAX_LINES}",
+        )
+
+    # Derive scope
+    tenant_id = current_user.org_id or None
+    owner_sub: str | None = None
+    scope_key = body.scope
+    if body.scope == "personal":
+        owner_sub = current_user.user_id
+
+    # Quota check before committing
+    count_result = await db.execute(
+        text("""
+            SELECT asset_type, COUNT(*) as cnt
+            FROM knowledge_assets
+            WHERE COALESCE(tenant_id, '') = COALESCE(:tid, '')
+              AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+              AND status != 'removed'
+            GROUP BY asset_type
+        """),
+        {"tid": tenant_id or "", "sub": owner_sub or ""},
+    )
+    existing_counts: dict[str, int] = {}
+    for r in count_result.fetchall():
+        existing_counts[r.asset_type] = r.cnt
+
+    new_counts: dict[str, int] = {}
+    for item in body.items:
+        new_counts[item.asset_type] = new_counts.get(item.asset_type, 0) + 1
+
+    for atype, new_count in new_counts.items():
+        existing = existing_counts.get(atype, 0)
+        limit = _get_quota_limit(scope_key, atype)
+        if existing + new_count > limit:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "message": "Quota exceeded",
+                    "quota": {
+                        atype: {"used": existing, "limit": limit, "requested": new_count},
+                    },
+                },
+            )
+
+    # Insert rows, skipping duplicates
+    created_assets: list[AssetResponse] = []
+    skipped_duplicates = 0
+
+    for item in body.items:
+        # Validate asset_type
+        if not is_valid_asset_type(item.asset_type):
+            continue  # Skip invalid types silently (should have been caught in preview)
+
+        # Validate source_ref
+        if not validate_source_ref(item.asset_type, item.source_ref):
+            continue
+
+        # Check duplicate
+        dup_result = await db.execute(
+            text("""
+                SELECT id FROM knowledge_assets
+                WHERE source_ref = :sref
+                  AND COALESCE(tenant_id, '') = COALESCE(:tid, '')
+                  AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+                  AND status != 'removed'
+                LIMIT 1
+            """),
+            {"sref": item.source_ref, "tid": tenant_id or "", "sub": owner_sub or ""},
+        )
+        if dup_result.fetchone():
+            skipped_duplicates += 1
+            continue
+
+        # Insert
+        asset_id = str(uuid.uuid4())
+        await db.execute(
+            text("""
+                INSERT INTO knowledge_assets
+                    (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
+                     status, registered_by, metadata, display_name, tags)
+                VALUES
+                    (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
+                     'registered', :registered_by, '{}'::jsonb,
+                     :display_name, :tags::jsonb)
+            """),
+            {
+                "id": asset_id,
+                "asset_type": item.asset_type,
+                "source_ref": item.source_ref,
+                "tenant_id": tenant_id,
+                "owner_sub": owner_sub,
+                "registered_by": current_user.user_id,
+                "display_name": item.display_name,
+                "tags": _json_dumps(item.tags),
+            },
+        )
+
+        # Dispatch to SQS (Phase 1 inline dispatch)
+        try:
+            await dispatch_ingestion(
+                asset_id=asset_id,
+                asset_type=item.asset_type,
+                source_ref=item.source_ref,
+                tenant_id=tenant_id,
+                owner_sub=owner_sub,
+                project_id=None,
+                db=db,
+            )
+        except Exception:
+            logger.warning(
+                "Ingestion dispatch failed for bulk asset %s — row stays at 'registered'",
+                asset_id,
+                exc_info=True,
+            )
+
+        # Fetch the created row
+        row = await _fetch_asset_by_id(db, asset_id)
+        if row:
+            created_assets.append(_row_to_response(row))
+
+    await db.commit()
+
+    return BulkCommitResponse(
+        created=len(created_assets),
+        skipped_duplicates=skipped_duplicates,
+        assets=created_assets,
+    )
 
 
 # ---------------------------------------------------------------------------

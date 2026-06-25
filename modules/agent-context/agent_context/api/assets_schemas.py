@@ -83,3 +83,71 @@ class AssetDetailResponse(AssetResponse):
     """GET /api/agent-context/assets/{id} — full detail (extends AssetResponse)."""
 
     pass
+
+
+# ---------------------------------------------------------------------------
+# Bulk upload schemas (Story C — §5, §8.3, §8.7)
+# ---------------------------------------------------------------------------
+
+
+class BulkPreviewItem(BaseModel):
+    """A single valid item in the bulk preview response."""
+
+    line: int
+    source_ref: str
+    asset_type: str
+    display_name: str | None = None
+    tags: dict[str, Any] = Field(default_factory=dict)
+
+
+class BulkRejectedItem(BaseModel):
+    """A rejected line in the bulk preview response."""
+
+    line: int
+    source_ref: str
+    reason: str
+
+
+class BulkDuplicateItem(BaseModel):
+    """A duplicate item found during bulk preview."""
+
+    line: int
+    source_ref: str
+    existing_id: str
+
+
+class BulkPreviewResponse(BaseModel):
+    """POST /api/agent-context/assets/bulk — preview response (no DB writes)."""
+
+    total_lines: int
+    parsed: int
+    skipped_comments: int
+    valid: list[BulkPreviewItem]
+    rejected: list[BulkRejectedItem]
+    duplicates: list[BulkDuplicateItem]
+    quota_ok: bool
+    quota_after: dict[str, QuotaDetail] = Field(default_factory=dict)
+
+
+class BulkCommitItem(BaseModel):
+    """A single item in the bulk commit request."""
+
+    source_ref: str = Field(..., max_length=2048)
+    asset_type: str = Field(..., max_length=32)
+    display_name: str | None = Field(None, max_length=512)
+    tags: dict[str, Any] = Field(default_factory=dict)
+
+
+class BulkCommitRequest(BaseModel):
+    """POST /api/agent-context/assets/bulk/commit — commit request."""
+
+    items: list[BulkCommitItem]
+    scope: str = Field("tenant", pattern=r"^(personal|tenant)$")
+
+
+class BulkCommitResponse(BaseModel):
+    """POST /api/agent-context/assets/bulk/commit — commit response."""
+
+    created: int
+    skipped_duplicates: int
+    assets: list[AssetResponse]
