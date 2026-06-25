@@ -11,7 +11,6 @@ import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.activity.cost_service import get_cost_by_run_ids
@@ -27,7 +26,7 @@ from src.admin.access_control import AccessControl
 from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
-from src.shared.models.organization import User
+from src.shared.identity import resolve_canonical_user_id
 from src.shared.schemas.auth import TokenContext
 
 logger = logging.getLogger("bedrockgateway.activity")
@@ -43,34 +42,6 @@ def get_activity_service() -> ActivityService:
 async def get_access_control(db: Annotated[AsyncSession, Depends(get_db)]) -> AccessControl:
     """Get access control instance."""
     return AccessControl(db)
-
-
-async def _resolve_canonical_user_id(db: AsyncSession, token: TokenContext) -> str:
-    """Resolve the caller's Cognito sub (TokenContext.user_id) to the canonical
-    ADP user_id (`users.id`).
-
-    Invocation rows in the webhook-events table are stored under the canonical
-    `users.id` (the UUID that the webhook-ingress identity resolver maps every
-    provider identity — GitHub sender, Cognito sub — to). But the gateway's
-    JWT middleware sets `TokenContext.user_id = claims.sub` (the raw Cognito
-    sub), which is a *provider* identity, NOT the canonical id. Querying the
-    `user-index` GSI with the raw sub therefore matches nothing and the screen
-    shows an empty "mine" view even when the user has invocations (issue: a
-    logged-in user sees no agent activity).
-
-    This mirrors the established `select(User).where(User.cognito_sub == sub)`
-    pattern used across the gateway (e.g. auth/org_id_resolver.py). If no
-    matching user row exists, fall back to the raw token value so behavior is
-    unchanged for identities that aren't (yet) provisioned in Postgres.
-    """
-    canonical = await db.scalar(select(User.id).where(User.cognito_sub == token.user_id))
-    if canonical:
-        return canonical
-    logger.warning(
-        "No users row for cognito_sub=%s; falling back to raw token user_id for activity query",
-        token.user_id,
-    )
-    return token.user_id
 
 
 async def _enrich_with_cost(db: AsyncSession, response: InvocationListResponse) -> InvocationListResponse:
@@ -254,7 +225,7 @@ async def get_my_invocations(
     chain (root + descendants inline), paginated over chains by root arrived_at.
     Default view=runs preserves the flat list behavior.
     """
-    canonical_user_id = await _resolve_canonical_user_id(db, current_user)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
     try:
         if view == "chains":
             chain_result = service.query_chains_by_user(
@@ -372,7 +343,7 @@ async def get_my_invocation_chain(
     from the token's Cognito sub). Shows the entire chain the caller roots or
     participates in.
     """
-    canonical_user_id = await _resolve_canonical_user_id(db, current_user)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
     chain = service.get_chain(
         correlation_id=correlation_id,
         user_id=canonical_user_id,
@@ -402,7 +373,7 @@ async def get_my_invocation_detail(
 
     Returns 404 (not 403) if the run doesn't belong to the caller (existence-hiding).
     """
-    canonical_user_id = await _resolve_canonical_user_id(db, current_user)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
     item = service.get_invocation(invocation_id, user_id=canonical_user_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Invocation not found")
