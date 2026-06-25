@@ -28,6 +28,12 @@ from .acl import CallerPrincipal, SearchHit, extract_caller_principal, filter_re
 from .browse_backend import browse
 from .config import config
 from .metrics import record_query, setup_door_metrics
+from .project_filter import (
+    ProjectFilterError,
+    ProjectScope,
+    apply_project_filter,
+    resolve_project_repos,
+)
 from .remember_backend import remember
 from .search_backend import ZoektSearchBackend
 from .structural_backend import impact, understand
@@ -414,14 +420,20 @@ async def _dispatch_tool(
     caller: CallerPrincipal | None,
 ) -> dict[str, Any]:
     """Route a tool call to the appropriate verb handler."""
+    # Resolve project scope for retrieval verbs (search/understand/impact/browse)
+    project_scope = _resolve_project_scope(arguments, caller)
+    if isinstance(project_scope, dict):
+        # Error dict — return immediately
+        return project_scope
+
     if name == "search":
-        return await _handle_search(arguments, caller)
+        return await _handle_search(arguments, caller, project_scope)
     elif name == "understand":
-        return await _handle_understand(arguments, caller)
+        return await _handle_understand(arguments, caller, project_scope)
     elif name == "impact":
-        return await _handle_impact(arguments, caller)
+        return await _handle_impact(arguments, caller, project_scope)
     elif name == "browse":
-        return await _handle_browse(arguments, caller)
+        return await _handle_browse(arguments, caller, project_scope)
     elif name == "remember":
         return await _handle_remember(arguments, headers)
     elif name == "experience":
@@ -431,12 +443,56 @@ async def _dispatch_tool(
 
 
 # ---------------------------------------------------------------------------
+# Project scope resolution helper
+# ---------------------------------------------------------------------------
+
+
+def _resolve_project_scope(
+    arguments: dict[str, Any],
+    caller: CallerPrincipal | None,
+) -> ProjectScope | None | dict[str, Any]:
+    """Resolve the optional 'project' argument to a ProjectScope.
+
+    Returns:
+        ProjectScope — if project was specified and resolved successfully.
+        None — if no project specified (passthrough) or feature disabled.
+        dict — error response if project resolution failed.
+    """
+    project_arg = arguments.get("project", "")
+    if not project_arg or not config.project_filter_enabled:
+        return None
+
+    if caller is None or not caller.owner_sub:
+        # Cannot resolve project without identity — but ACL will fail-close anyway
+        return None
+
+    if state.db_pool is None:
+        log.warning("Project filter requested but no database pool available")
+        return None
+
+    try:
+        return resolve_project_repos(
+            project_id=project_arg,
+            caller_owner_sub=caller.owner_sub,
+            db_pool=state.db_pool,
+            caller_tenant_id=caller.tenant_id,
+        )
+    except ProjectFilterError as e:
+        return {"error": e.args[0], "code": e.code}
+    except Exception:
+        log.warning("Project resolution failed unexpectedly", exc_info=True)
+        return {"error": "Failed to resolve project", "code": "project_resolution_error"}
+
+
+# ---------------------------------------------------------------------------
 # Verb handlers (importable functions wrapping backend calls + ACL)
 # ---------------------------------------------------------------------------
 
 
 async def _handle_search(
-    arguments: dict[str, Any], caller: CallerPrincipal | None
+    arguments: dict[str, Any],
+    caller: CallerPrincipal | None,
+    project_scope: ProjectScope | None = None,
 ) -> dict[str, Any]:
     """Handle the search verb: exact (Zoekt), semantic, or memory.
 
@@ -469,8 +525,11 @@ async def _handle_search(
     raw_limit = limit * 10
     hits = await state.zoekt.search(query, limit=raw_limit)
 
-    # ACL filter
+    # ACL filter (Step 2: #1721 isolation)
     filtered = _apply_acl(hits, caller)
+
+    # Project filter (Step 3: narrow to project repos)
+    filtered = apply_project_filter(filtered, project_scope)
 
     # Deduplicate to one result per file (collect all unique files)
     seen_files: set[str] = set()
@@ -547,7 +606,9 @@ async def _handle_semantic_search(
 
 
 async def _handle_understand(
-    arguments: dict[str, Any], caller: CallerPrincipal | None
+    arguments: dict[str, Any],
+    caller: CallerPrincipal | None,
+    project_scope: ProjectScope | None = None,
 ) -> dict[str, Any]:
     """Handle the understand verb: structural index lookup."""
     target = arguments.get("target", "")
@@ -594,8 +655,11 @@ async def _handle_understand(
         zoekt_backend=state.zoekt,
     )
 
-    # ACL filter
+    # ACL filter (Step 2: #1721 isolation)
     filtered = _apply_acl(hits, caller)
+
+    # Project filter (Step 3: narrow to project repos)
+    filtered = apply_project_filter(filtered, project_scope)
 
     definitions = [hit.data for hit in filtered]
     summary = f"Found {len(definitions)} definition(s) for '{target}'"
@@ -607,7 +671,9 @@ async def _handle_understand(
 
 
 async def _handle_impact(
-    arguments: dict[str, Any], caller: CallerPrincipal | None
+    arguments: dict[str, Any],
+    caller: CallerPrincipal | None,
+    project_scope: ProjectScope | None = None,
 ) -> dict[str, Any]:
     """Handle the impact verb: call-graph analysis.
 
@@ -637,8 +703,11 @@ async def _handle_impact(
         zoekt_backend=state.zoekt,
     )
 
-    # ACL filter
+    # ACL filter (Step 2: #1721 isolation)
     filtered = _apply_acl(hits, caller)
+
+    # Project filter (Step 3: narrow to project repos)
+    filtered = apply_project_filter(filtered, project_scope)
 
     all_data = [hit.data for hit in filtered]
 
@@ -694,7 +763,9 @@ async def _handle_impact(
 
 
 async def _handle_browse(
-    arguments: dict[str, Any], caller: CallerPrincipal | None
+    arguments: dict[str, Any],
+    caller: CallerPrincipal | None,
+    project_scope: ProjectScope | None = None,
 ) -> dict[str, Any]:
     """Handle the browse verb: catalog + S3 + Zoekt file listing."""
     action = arguments.get("action", "ls")
@@ -712,8 +783,11 @@ async def _handle_browse(
         zoekt_url=config.zoekt_url,
     )
 
-    # ACL filter
+    # ACL filter (Step 2: #1721 isolation)
     filtered = _apply_acl(hits, caller)
+
+    # Project filter (Step 3: narrow to project repos)
+    filtered = apply_project_filter(filtered, project_scope)
 
     entries = [hit.data for hit in filtered]
     return {"action": action, "uri": uri, "entries": entries}
