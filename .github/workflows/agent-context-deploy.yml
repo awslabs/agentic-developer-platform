@@ -13,6 +13,15 @@
 name: Agent Context Deploy
 
 on:
+  # Auto-deploy: chain off a successful image build on main so a merge that
+  # rebuilds context-mcp / ingestion images actually rolls out to the cluster.
+  # (Previously deploy was manual-only, so new images sat in ECR un-deployed.)
+  # workflow_run carries no inputs, so the deploy job falls back to config /
+  # IRSA for the account and "latest built image" for tags — the dev default.
+  workflow_run:
+    workflows: ["Agent Context Images Build"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       customer_account_id:
@@ -64,6 +73,8 @@ jobs:
     name: Deploy Services
     runs-on: arc-runner-org
     timeout-minutes: 20
+    # Manual dispatch always runs; auto (workflow_run) only on a successful build.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     steps:
       - uses: actions/checkout@v4
