@@ -77,6 +77,11 @@ jobs:
             --cov=src --cov-report=xml
 
       - name: Upload Coverage
+        # Coverage upload is informational — it must never fail the Test gate.
+        # GitHub artifact-storage quota exhaustion (recalculated every 6-12h)
+        # was failing this step and dragging the whole Test job to red even
+        # when all tests passed, blocking merges across every PR.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
