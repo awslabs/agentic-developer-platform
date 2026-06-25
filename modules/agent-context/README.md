@@ -203,9 +203,22 @@ Registering an asset dispatches an ingestion job (Phase-1 inline SQS dispatch). 
 
 ## Ingestion Pipeline
 
-Content enters through the **Asset Registry** (above), the input files below, or a daily refresh CronJob. Ingestion runs as a **KEDA ScaledJob** consuming an **SQS** queue; run state is tracked in **DynamoDB** (`adp-context-service-state`).
+Ingestion is where raw content becomes the queryable substrate the verbs serve. It is **not a single step** — each asset goes through several independent enrichment stages, each producing a different artifact for a different backend (code search, structural graph, semantic vectors, wikis, SBOM). This section covers how content enters and exactly what processing runs before anything is queryable.
 
-### Input Files
+### How content enters
+
+Content is dispatched onto an **SQS** queue and processed by a **KEDA ScaledJob** worker (`images/ingestion/sqs-worker.py`); per-run state is tracked in **DynamoDB** (`adp-context-service-state`). Work arrives from four sources:
+
+| Source | How |
+|---|---|
+| **Asset Registry** (E10) | Registering an asset via the API dispatches an ingestion job inline |
+| **Input files** | `index_content/{repos,urls,accounts}.txt` (see below), published on change |
+| **Daily refresh CronJob** | SHA/ETag-based incremental re-ingest of existing content |
+| **Manual** | `gh workflow run agent-context-ingest.yml` or a one-off `kubectl create job` |
+
+Each SQS message carries a `content_type` (`repo` · `url` · `doc` · `infra`) plus scope tags (`tenant_id` / `owner_sub` / `project`), and the worker routes to the matching pipeline below. The whole run is wrapped in an OTel root span with a child span per stage.
+
+#### Input Files
 
 | File | Format | What It Feeds |
 |------|--------|---------------|
@@ -213,26 +226,68 @@ Content enters through the **Asset Registry** (above), the input files below, or
 | `index_content/urls.txt` | URL per line | Web documentation sites |
 | `index_content/accounts.txt` | `account_id:role:regions` | AWS infrastructure discovery |
 
-### Per-Repo Pipeline
+### Processing stages by content type
+
+#### `repo` — the full enrichment pipeline (`ingest-repo.py`)
+
+A repository is the richest asset. It runs through up to six stages, each writing to a different store. Every stage is **independent and best-effort**: one failing (e.g. DeepWiki) does not block the others, and each follows a **verify-after-write contract** (write row → produce artifact → read-back verify → only then record the stage as verified), so an interrupted run resumes cleanly.
 
 ```
 org/repo
   │
-  1. Clone → AST extraction → embeddings → S3 + S3 Vectors (per-tenant index)
+  1. Clone            git clone --depth=1 → kept on the S3 Files mount
+  │                   (shared by all downstream stages; not deleted after)
   │
-  2. codegraph (CGC) analyze → code-index (symbols, imports, call graphs) → S3
-  │     (+ Neptune graph load when GRAPHRAG_ENABLED)
+  2. Structural       cgc analyze (CodeGraphContext) → code-index
+  │   code-index      (symbols, imports, call graphs); tree-sitter fallback
+  │                   → JSON to filesystem + Markdown summary to S3
   │
-  3. DeepWiki → wiki.md (architecture docs, diagrams) → S3
+  3. Wiki             DeepWiki API → wiki.md (architecture docs + diagrams)
+  │                   → S3, and embedded into S3 Vectors via wiki_store
+  │                   (this is the main semantic-embedding step — wiki/NL prose)
   │
-  4. Scope-stamp rows (tenant_id / owner_sub) + register in knowledge_assets · Cleanup
+  4. GraphRAG         LLM entity/relationship extraction → Neptune
+  │   (optional)      (only when GRAPHRAG_ENABLED)
+  │
+  5a. SCIP graph      Detect languages → run scip-<lang> indexer → decode .scip
+  │   (deep graph)    → build call/reference graph → Neptune CSV → S3 → bulk-load
+  │                   Neptune.  Languages: Python, TS/JS, Go, Java/Kotlin/Scala,
+  │                   Ruby, C# (scip-python/-typescript/-go/-java/-ruby/-dotnet)
+  │
+  5b. Source SBOM     syft dir:<clone> -o cyclonedx-json → S3
+  │                   → parse + upsert components to Postgres (feeds the
+  │                   reverse-dependency / vuln-management loop)
+  │
+  6. Persist          Scope-stamp DB rows (tenant_id / owner_sub), keep the
+                      clone on the S3 Files mount for incremental refresh
 ```
+
+Why each artifact exists: **code-index** powers `understand`/`impact` structurally (whole functions, not chunks); **SCIP → Neptune** is the cross-repo deep call graph; **wiki + S3 Vectors** serve `search` for NL/vocabulary-mismatch queries; **SBOM → Postgres** is the reverse-dependency index behind "which repos are exposed to CVE X?". Exact code search (Zoekt) indexes the persisted clone separately.
+
+#### `url` — web documentation (`ingest-url.py`)
+
+1. **Discover** pages — look for a sitemap; otherwise crawl the URL directly (bounded by `--max-pages`).
+2. **Crawl** each page with `crawl4ai` (headless browser) → clean **Markdown**; falls back to a `requests` + HTML-to-Markdown path if `crawl4ai` is unavailable.
+3. **Store** Markdown to S3, embedded into S3 Vectors for semantic `search(scope="web")`.
+
+#### `doc` — uploaded documents (`ingest-doc.py`)
+
+1. **Fetch** the document (URL download or S3 copy).
+2. **Convert** to Markdown with `markitdown` (handles PDF, PPTX, DOCX, HTML, images).
+3. **Store** to S3 at `docs/{slug}.md`.
+4. **GraphRAG** entity extraction (when enabled).
+
+#### `infra` — AWS infrastructure (`discover-infra.py`)
+
+1. **Discover** live resources via AWS Resource Explorer (assuming a read-only role per account).
+2. **Parse IaC** from indexed repos — Terraform, CloudFormation, CDK.
+3. **Store** the resource inventory to S3 (and, with GraphRAG, an IaC graph to Neptune) for `search(scope="infra")`.
 
 ### Daily Refresh (CronJob)
 
-SHA-based incremental — only re-processes repos whose HEAD changed:
-1. `git ls-remote` each repo → compare SHA with saved state (DynamoDB).
-2. Changed repos → full re-ingest (dispatched via SQS).
+SHA-based incremental — only re-processes what changed (`refresh-repos.py`):
+1. `git ls-remote` each repo → compare HEAD SHA with saved state (DynamoDB).
+2. Changed repos → full re-ingest (dispatched via SQS); stages already verified at the current SHA are **skipped**, not redone.
 3. DeepWiki backfill for repos missing wikis (capped per run).
 4. Web docs: HEAD/ETag compare → re-crawl if changed.
 
