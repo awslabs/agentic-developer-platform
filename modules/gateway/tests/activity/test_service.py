@@ -1528,3 +1528,106 @@ class TestQueryChainsByUser:
         chain_b = result.chains[1]
         assert chain_b.chain_id == "corr-B"
         assert chain_b.descendant_count == 0
+
+    def test_agent_descendants_on_user_page_dont_duplicate_chain(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Regression (#2058): after #2042, agent-spawned child runs are also
+        attributed to the human's user_id, so the user-index page returns BOTH
+        the human root AND its agent children — all sharing one correlation_id.
+        The chain view must emit ONE top-level row (rooted at the human run),
+        NOT one row per run. Children (those with a parent_invocation_id) must
+        never appear as top-level chains, and a correlation_id must never be
+        duplicated across top-level rows."""
+        mock_dynamodb_table.query.side_effect = [
+            # user-index now returns the human root AND two agent-spawned children,
+            # all with the SAME correlation_id (the #2042 attribution change).
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-human-root",
+                        "arrived_at": "2026-06-22T10:00:00Z",
+                        "status": "complete",
+                        "topic": "Operations: orchestrate",
+                        "persona": "operations",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-dup",
+                        "is_human_rooted": True,
+                        "root_human_id": "user-1",
+                    },
+                    {
+                        "invocation_id": "inv-agent-child-1",
+                        "arrived_at": "2026-06-22T10:05:00Z",
+                        "status": "complete",
+                        "topic": "Developer: implement",
+                        "persona": "developer",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-dup",
+                        "parent_invocation_id": "inv-human-root",
+                        "is_human_rooted": True,
+                        "root_human_id": "user-1",
+                    },
+                    {
+                        "invocation_id": "inv-agent-child-2",
+                        "arrived_at": "2026-06-22T10:10:00Z",
+                        "status": "in_progress",
+                        "topic": "Reviewer: review",
+                        "persona": "reviewer",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-dup",
+                        "parent_invocation_id": "inv-agent-child-1",
+                        "is_human_rooted": True,
+                        "root_human_id": "user-1",
+                    },
+                ],
+                "Count": 3,
+            },
+            # correlation-index for corr-dup (root + 2 descendants)
+            {
+                "Items": [
+                    {
+                        "invocation_id": "inv-human-root",
+                        "arrived_at": "2026-06-22T10:00:00Z",
+                        "status": "complete",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-dup",
+                    },
+                    {
+                        "invocation_id": "inv-agent-child-1",
+                        "arrived_at": "2026-06-22T10:05:00Z",
+                        "status": "complete",
+                        "topic": "Developer: implement",
+                        "persona": "developer",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-dup",
+                        "parent_invocation_id": "inv-human-root",
+                    },
+                    {
+                        "invocation_id": "inv-agent-child-2",
+                        "arrived_at": "2026-06-22T10:10:00Z",
+                        "status": "in_progress",
+                        "topic": "Reviewer: review",
+                        "persona": "reviewer",
+                        "user_id": "user-1",
+                        "correlation_id": "corr-dup",
+                        "parent_invocation_id": "inv-agent-child-1",
+                    },
+                ],
+                "Count": 3,
+            },
+        ]
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id="user-1")
+
+        # Exactly ONE top-level chain, rooted at the human run.
+        assert result.count == 1
+        chain = result.chains[0]
+        assert chain.chain_id == "corr-dup"
+        assert chain.root.invocation_id == "inv-human-root"
+        assert chain.root.persona == "operations"
+        # The agent children are nested as descendants, not top-level rows.
+        assert chain.descendant_count == 2
+        descendant_ids = {d.invocation_id for d in chain.descendants}
+        assert descendant_ids == {"inv-agent-child-1", "inv-agent-child-2"}
+        # correlation-index queried exactly once (not once per attributed run).
+        correlation_queries = [c for c in mock_dynamodb_table.query.call_args_list if c.kwargs.get("IndexName") == "correlation-index"]
+        assert len(correlation_queries) == 1

@@ -486,10 +486,34 @@ class ActivityService:
             include_non_triggering=include_non_triggering,
         )
 
-        # Step 2: For each root, fetch descendants from correlation-index
+        # Step 2: For each TRUE root, fetch descendants from correlation-index.
+        #
+        # Issue #2058: the old code assumed "every user-index hit IS a chain root"
+        # (humans always start a new correlation_id). That assumption broke with
+        # #2042 — agent-spawned runs are now also attributed to the human's
+        # user_id (so they appear in /me), but they are NOT roots: they have a
+        # parent_invocation_id and share their correlation_id with the human run.
+        # The old loop therefore emitted one top-level chain row PER RUN, so a
+        # single chain (one correlation_id) showed up as many duplicate rows, and
+        # agent-triggered child runs appeared as top-level "roots". Fix: emit one
+        # row per correlation_id, rooted at the actual root run (no parent), with
+        # everything else nested as descendants.
         chains: list[ChainSummary] = []
+        _seen_correlations: set[str] = set()
         for root_item in flat_result.items:
             correlation_id = root_item.correlation_id
+
+            # Skip descendants masquerading as roots: a run WITH a parent is not a
+            # chain root — it belongs nested under its parent's chain row.
+            if correlation_id and root_item.triggered_by_invocation_id:
+                continue
+            # One top-level row per chain: if we've already emitted this chain
+            # (from its true root), don't add it again.
+            if correlation_id and correlation_id in _seen_correlations:
+                continue
+            if correlation_id:
+                _seen_correlations.add(correlation_id)
+
             if not correlation_id:
                 # No correlation_id → singleton chain (no descendants possible)
                 chains.append(
