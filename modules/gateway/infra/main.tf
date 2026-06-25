@@ -1176,3 +1176,28 @@ resource "aws_iam_role_policy" "gateway_identity_index" {
     ]
   })
 }
+
+# Issue #1797: SQS SendMessage permission for Phase 1 inline ingestion dispatch.
+# The gateway publishes to the agent-context ingestion queue when a user registers
+# or reindexes a knowledge asset. Phase 2 (sweeper) will make this additive-only
+# (removable without breaking the registration flow).
+resource "aws_iam_role_policy" "gateway_ingestion_sqs_publish" {
+  count = var.enable_agent_context_sqs ? 1 : 0
+  name  = "${local.name_prefix}-policy-gateway-ingestion-sqs-publish"
+  role  = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "IngestionSQSPublish"
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage",
+          "sqs:GetQueueUrl"
+        ]
+        Resource = var.agent_context_ingestion_queue_arn
+      }
+    ]
+  })
+}

@@ -30,6 +30,8 @@ from agent_context.api.assets_schemas import (
     QuotaDetail,
     QuotaInfo,
 )
+from agent_context.ingestion.dispatch import dispatch_ingestion
+from agent_context.ingestion.type_registry import is_valid_asset_type, validate_source_ref
 
 logger = logging.getLogger("agent_context.api.assets")
 
@@ -105,7 +107,21 @@ async def register_asset(
     db: Annotated[AsyncSession, Depends(get_assets_db)],
     current_user: Annotated[Any, Depends(get_current_user_from_state)],
 ) -> AssetResponse:
-    """Register one asset. Scope from session, soft quota check."""
+    """Register one asset. Scope from session, soft quota check, dispatch to SQS."""
+    # Validate asset_type against registry (§6.4)
+    if not is_valid_asset_type(body.asset_type):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown asset_type: '{body.asset_type}'. Supported types: repo, url, doc",
+        )
+
+    # Validate source_ref pattern for the type
+    if not validate_source_ref(body.asset_type, body.source_ref):
+        raise HTTPException(
+            status_code=400,
+            detail=f"source_ref does not match expected pattern for type '{body.asset_type}'",
+        )
+
     # Derive scope from session
     tenant_id = current_user.org_id or None
     owner_sub: str | None = None
@@ -193,7 +209,27 @@ async def register_asset(
     )
     await db.commit()
 
-    # Fetch the created row
+    # Phase 1 inline dispatch: publish to SQS, update status to 'queued'.
+    # Row is at 'registered' — row-before-publish invariant (§8.9).
+    # On failure, row stays at 'registered' (recoverable by sweeper/reindex).
+    try:
+        await dispatch_ingestion(
+            asset_id=asset_id,
+            asset_type=body.asset_type,
+            source_ref=body.source_ref,
+            tenant_id=tenant_id,
+            owner_sub=owner_sub,
+            project_id=None,
+            db=db,
+        )
+    except Exception:
+        logger.warning(
+            "Ingestion dispatch failed for asset %s — row stays at 'registered'",
+            asset_id,
+            exc_info=True,
+        )
+
+    # Fetch the created row (may be 'registered' or 'queued' depending on dispatch)
     row = await _fetch_asset_by_id(db, asset_id)
     if not row:
         raise HTTPException(status_code=500, detail="Failed to read created asset")
@@ -347,6 +383,24 @@ async def reindex_asset(
         {"id": asset_id},
     )
     await db.commit()
+
+    # Phase 1 inline dispatch: re-publish to SQS after resetting to 'registered'.
+    try:
+        await dispatch_ingestion(
+            asset_id=asset_id,
+            asset_type=row.asset_type,
+            source_ref=row.source_ref,
+            tenant_id=row.tenant_id,
+            owner_sub=row.owner_sub,
+            project_id=str(row.project_id) if row.project_id else None,
+            db=db,
+        )
+    except Exception:
+        logger.warning(
+            "Ingestion dispatch failed for reindex of asset %s — row stays at 'registered'",
+            asset_id,
+            exc_info=True,
+        )
 
     updated_row = await _fetch_asset_by_id(db, asset_id)
     if not updated_row:

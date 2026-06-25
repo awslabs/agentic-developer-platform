@@ -394,6 +394,22 @@ variable "api_gateway_log_retention_days" {
 }
 
 # =============================================================================
+# Agent Context Ingestion (Issue #1797)
+# =============================================================================
+
+variable "enable_agent_context_sqs" {
+  type        = bool
+  description = "Enable SQS SendMessage permission on gateway IRSA role for Phase 1 inline ingestion dispatch."
+  default     = false
+}
+
+variable "agent_context_ingestion_queue_arn" {
+  type        = string
+  description = "ARN of the agent-context SQS ingestion queue. Required when enable_agent_context_sqs = true."
+  default     = ""
+}
+
+# =============================================================================
 # Test Users Configuration (Issue #60)
 # =============================================================================
 
