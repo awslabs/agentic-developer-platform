@@ -48,6 +48,15 @@ data:
   # --- Feature flags ---
   DEEPWIKI_ENABLED: "${DEEPWIKI_ENABLED}"
   GRAPHRAG_ENABLED: "${GRAPHRAG_ENABLED}"
+  # E8 #1721 / E9 #1728: enable multi-tenant isolation + project scoping in the
+  # Door (context-mcp). Default-off in code (door/config.py) as a kill switch;
+  # set here so the merged ACL/tenant/project filters are actually enforced.
+  # The scoped ACL query reads tenant_id/owner_sub columns added by migrations
+  # 004/005 — the deploy runs `alembic upgrade head` before the rollout, so the
+  # columns exist before these flags take effect. Flip to "false" to revert to
+  # the legacy principal-only (non-isolating) query.
+  TENANT_SCOPE_ENABLED: "true"
+  PROJECT_FILTER_ENABLED: "true"
 
   # --- Per-task model tiering ---
   # Wiki generation/updates: needs strong reasoning
