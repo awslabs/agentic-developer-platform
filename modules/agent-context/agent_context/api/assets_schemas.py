@@ -151,3 +151,31 @@ class BulkCommitResponse(BaseModel):
     created: int
     skipped_duplicates: int
     assets: list[AssetResponse]
+
+
+# ---------------------------------------------------------------------------
+# Asset index-status schemas (Story G — §13, Issue #1796)
+# ---------------------------------------------------------------------------
+
+
+class AssetIndexStage(BaseModel):
+    """Per-stage indexing status for an asset."""
+
+    stage: str
+    status: str
+    artifact_ref: str | None = None
+    error: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class AssetStatusResponse(BaseModel):
+    """GET /api/agent-context/assets/{id}/status — per-tool indexing status."""
+
+    asset_id: str
+    source_ref: str
+    repo_found: bool = False
+    run_id: str | None = None
+    run_status: str | None = None
+    run_started_at: datetime | None = None
+    stages: list[AssetIndexStage] = Field(default_factory=list)

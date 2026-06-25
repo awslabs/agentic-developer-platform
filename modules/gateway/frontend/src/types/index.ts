@@ -656,3 +656,28 @@ export interface BulkCommitResponse {
   skipped_duplicates: number;
   assets: KnowledgeAsset[];
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1796: Asset index-status types (Story G)
+// ---------------------------------------------------------------------------
+
+/** Per-stage indexing status for an asset. */
+export interface AssetIndexStage {
+  stage: string;
+  status: string;
+  artifactRef: string | null;
+  error: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+/** Response from GET /api/agent-context/assets/{id}/status. */
+export interface AssetStatusResponse {
+  assetId: string;
+  sourceRef: string;
+  repoFound: boolean;
+  runId: string | null;
+  runStatus: string | null;
+  runStartedAt: string | null;
+  stages: AssetIndexStage[];
+}

@@ -11,6 +11,8 @@ import type {
   KnowledgeAsset,
   AssetListResponse,
   AssetCreateRequest,
+  AssetStatusResponse,
+  AssetIndexStage,
   AccessibleRepo,
   AccessibleReposResponse,
   BulkPreviewResponse,
@@ -153,6 +155,36 @@ export async function reindexAsset(assetId: string): Promise<KnowledgeAsset> {
     updated_at: string | null;
   }>(`/api/agent-context/assets/${assetId}/reindex`);
   return transformAsset(response);
+}
+
+/** Get per-tool indexing status for an asset (joins index_run_stages). */
+export async function getAssetStatus(assetId: string): Promise<AssetStatusResponse> {
+  const response = await apiClient.get<{
+    asset_id: string;
+    source_ref: string;
+    repo_found: boolean;
+    run_id: string | null;
+    run_status: string | null;
+    run_started_at: string | null;
+    stages: Array<{
+      stage: string;
+      status: string;
+      artifact_ref: string | null;
+      error: string | null;
+      started_at: string | null;
+      completed_at: string | null;
+    }>;
+  }>(`/api/agent-context/assets/${assetId}/status`);
+
+  return {
+    assetId: response.asset_id,
+    sourceRef: response.source_ref,
+    repoFound: response.repo_found,
+    runId: response.run_id ?? null,
+    runStatus: response.run_status ?? null,
+    runStartedAt: response.run_started_at ?? null,
+    stages: (response.stages ?? []).map(transformStage),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -303,5 +335,23 @@ function transformRepo(raw: {
     fullName: raw.full_name,
     private: raw.private,
     url: raw.url,
+  };
+}
+
+function transformStage(raw: {
+  stage: string;
+  status: string;
+  artifact_ref: string | null;
+  error: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}): AssetIndexStage {
+  return {
+    stage: raw.stage,
+    status: raw.status,
+    artifactRef: raw.artifact_ref,
+    error: raw.error,
+    startedAt: raw.started_at,
+    completedAt: raw.completed_at,
   };
 }

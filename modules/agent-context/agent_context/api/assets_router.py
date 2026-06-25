@@ -25,8 +25,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agent_context.api.assets_schemas import (
     AssetCreateRequest,
     AssetDetailResponse,
+    AssetIndexStage,
     AssetListResponse,
     AssetResponse,
+    AssetStatusResponse,
     BulkCommitRequest,
     BulkCommitResponse,
     BulkDuplicateItem,
@@ -411,6 +413,110 @@ async def reindex_asset(
     if not updated_row:
         raise HTTPException(status_code=500, detail="Failed to read updated asset")
     return _row_to_response(updated_row)
+
+
+@router.get("/{asset_id}/status", response_model=AssetStatusResponse)
+async def get_asset_status(
+    asset_id: str,
+    db: Annotated[AsyncSession, Depends(get_assets_db)],
+    current_user: Annotated[Any, Depends(get_current_user_from_state)],
+) -> AssetStatusResponse:
+    """Get per-tool indexing status for an asset.
+
+    Joins knowledge_assets.source_ref → repositories.git_url → index_runs →
+    index_run_stages to derive per-stage status from the latest run.
+    Issue #1796 (Story G of E10 #1736).
+    """
+    row = await _fetch_asset_by_id(db, asset_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    # Scope check: user must be in the same tenant
+    if row.tenant_id and row.tenant_id != current_user.org_id:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    # Personal assets: only visible to owner or admin
+    if row.owner_sub and row.owner_sub != current_user.user_id and not current_user.is_admin:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    source_ref = row.source_ref
+
+    # Join: knowledge_assets.source_ref → repositories.git_url
+    repo_result = await db.execute(
+        text("""
+            SELECT id FROM repositories
+            WHERE git_url = :source_ref
+            LIMIT 1
+        """),
+        {"source_ref": source_ref},
+    )
+    repo_row = repo_result.fetchone()
+
+    if not repo_row:
+        return AssetStatusResponse(
+            asset_id=asset_id,
+            source_ref=source_ref,
+            repo_found=False,
+        )
+
+    repo_id = str(repo_row.id)
+
+    # Get the latest index_run for this repo
+    run_result = await db.execute(
+        text("""
+            SELECT id, status, started_at
+            FROM index_runs
+            WHERE repo_id = :repo_id
+            ORDER BY started_at DESC
+            LIMIT 1
+        """),
+        {"repo_id": repo_id},
+    )
+    run_row = run_result.fetchone()
+
+    if not run_row:
+        return AssetStatusResponse(
+            asset_id=asset_id,
+            source_ref=source_ref,
+            repo_found=True,
+        )
+
+    run_id = str(run_row.id)
+
+    # Get index_run_stages for this run + repo
+    stages_result = await db.execute(
+        text("""
+            SELECT stage, status, artifact_ref, error, started_at, completed_at
+            FROM index_run_stages
+            WHERE run_id = :run_id
+              AND repo = :source_ref
+            ORDER BY stage
+        """),
+        {"run_id": run_id, "source_ref": source_ref},
+    )
+    stage_rows = stages_result.fetchall()
+
+    stages = [
+        AssetIndexStage(
+            stage=s.stage,
+            status=s.status,
+            artifact_ref=s.artifact_ref,
+            error=s.error,
+            started_at=s.started_at,
+            completed_at=s.completed_at,
+        )
+        for s in stage_rows
+    ]
+
+    return AssetStatusResponse(
+        asset_id=asset_id,
+        source_ref=source_ref,
+        repo_found=True,
+        run_id=run_id,
+        run_status=run_row.status,
+        run_started_at=run_row.started_at,
+        stages=stages,
+    )
 
 
 # ---------------------------------------------------------------------------

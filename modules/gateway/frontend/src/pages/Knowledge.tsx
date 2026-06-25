@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/Button';
 import { Tabs, TabsList, Tab, TabPanel } from '@/components/ui/Tabs';
 import { AddAssetDialog } from '@/components/knowledge/AddAssetDialog';
 import { BulkUploadDialog } from '@/components/knowledge/BulkUploadDialog';
+import { AssetStatusChips } from '@/components/knowledge/AssetStatusChips';
 import { listAssets, getAssetDetail, deleteAsset, reindexAsset } from '@/services/knowledge';
 import { useToast } from '@/contexts/ToastContext';
 import type { KnowledgeAsset, AssetQuotaInfo } from '@/types';
@@ -352,6 +353,16 @@ export default function Knowledge() {
                   </p>
                 </div>
               </div>
+
+              {/* Index status chips (Story G — per-tool status) */}
+              {selectedAsset.assetType === 'repo' && (
+                <div>
+                  <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                    Indexing Status
+                  </p>
+                  <AssetStatusChips assetId={selectedAsset.id} />
+                </div>
+              )}
 
               {/* Error display */}
               {selectedAsset.lastError && (
