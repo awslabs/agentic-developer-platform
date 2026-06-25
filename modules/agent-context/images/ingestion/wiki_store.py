@@ -219,6 +219,32 @@ def get_shard_index(org_id: str, shard_count: int = 4) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_vector_index(
+    visibility: str,
+    org_id: str,
+    tenant_id: str | None,
+    owner_sub: str | None,
+    shard_count: int,
+) -> str:
+    """Resolve the target vector index name based on scope visibility.
+
+    Per-tenant isolation (Story 5, #1774):
+    - "shared" → code-shard-{N} (hash-sharded by org_id)
+    - "tenant" → tenant-{tenant_id}
+    - "personal" → personal-{owner_sub}
+
+    Falls back to shared if tenant/personal visibility lacks required IDs.
+    """
+    if visibility == "tenant" and tenant_id:
+        return f"tenant-{tenant_id}"
+    elif visibility == "personal" and owner_sub:
+        return f"personal-{owner_sub}"
+    else:
+        # Default: shared → hash-sharded
+        shard_idx = get_shard_index(org_id, shard_count)
+        return f"code-shard-{shard_idx}"
+
+
 def store_wiki(
     wiki_text: str,
     org_repo: str,
@@ -232,6 +258,9 @@ def store_wiki(
     s3_bucket: str = "",
     wiki_s3_prefix: str = "content/wikis",
     shard_count: int = 4,
+    visibility: str = "shared",
+    tenant_id: str | None = None,
+    owner_sub: str | None = None,
 ) -> WikiStoreResult:
     """Store wiki to S3 (human browse) and S3 Vectors (semantic search).
 
@@ -249,6 +278,9 @@ def store_wiki(
         s3_bucket: Target S3 bucket name.
         wiki_s3_prefix: S3 key prefix for wiki objects.
         shard_count: Number of S3 Vectors shards.
+        visibility: Scope visibility ("shared", "tenant", "personal").
+        tenant_id: Tenant identifier (required for "tenant" visibility).
+        owner_sub: User identifier (required for "personal" visibility).
 
     Returns:
         WikiStoreResult with status for each sink.
@@ -282,8 +314,13 @@ def store_wiki(
                 result.vectors_success = True  # Not a failure — just empty
                 result.vectors_written = 0
             else:
-                shard_idx = get_shard_index(org_id, shard_count)
-                index_name = f"code-shard-{shard_idx}"
+                index_name = _resolve_vector_index(
+                    visibility=visibility,
+                    org_id=org_id,
+                    tenant_id=tenant_id,
+                    owner_sub=owner_sub,
+                    shard_count=shard_count,
+                )
 
                 vectors: list[dict[str, Any]] = []
                 for chunk in chunks:
@@ -309,10 +346,10 @@ def store_wiki(
                 result.vectors_written = len(vectors)
                 result.vectors_success = True
                 log.info(
-                    "Wiki embedded: %d chunks -> %s (shard %d)",
+                    "Wiki embedded: %d chunks -> %s (visibility=%s)",
                     len(vectors),
                     index_name,
-                    shard_idx,
+                    visibility,
                 )
         except Exception as e:
             log.error("Wiki embedding failed for %s: %s", org_repo, e)

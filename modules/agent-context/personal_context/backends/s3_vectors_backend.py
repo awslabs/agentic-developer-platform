@@ -193,6 +193,11 @@ class S3VectorsCodeStore:
     Used by the ingestion pipeline for code-intel semantic search.
     Scatter-gather queries across all shards at read time.
 
+    Supports per-tenant index isolation (Story 5, #1774):
+    - ``shared`` visibility → hash-sharded indexes (``code-shard-{N}``)
+    - ``tenant`` visibility → ``tenant-{tenant_id}`` index
+    - ``personal`` visibility → ``personal-{owner_sub}`` index
+
     Parameters
     ----------
     bucket_name:
@@ -215,6 +220,7 @@ class S3VectorsCodeStore:
         if region_name:
             kwargs["region_name"] = region_name
         self._client = boto3.client("s3vectors", **kwargs)
+        self._ensured_indexes: set[str] = set()
 
     def get_shard_index(self, org_id: str) -> int:
         """Deterministic shard assignment by org_id hash."""
@@ -223,6 +229,78 @@ class S3VectorsCodeStore:
 
     def _index_name(self, shard: int) -> str:
         return f"code-shard-{shard}"
+
+    def _ensure_index(self, index_name: str) -> None:
+        """Create a named index if it doesn't exist (idempotent).
+
+        Caches index names to avoid repeated create_index calls.
+        """
+        if index_name in self._ensured_indexes:
+            return
+
+        try:
+            self._client.create_index(
+                vectorBucketName=self.bucket_name,
+                indexName=index_name,
+                dimension=1024,
+                distanceMetric="cosine",
+                dataType="float32",
+            )
+            logger.info("Created S3 Vectors index: %s", index_name)
+        except ClientError as e:
+            error_code = e.response["Error"]["Code"]
+            if error_code in ("ConflictException", "ResourceAlreadyExistsException"):
+                logger.debug("S3 Vectors index already exists: %s", index_name)
+            else:
+                raise
+
+        self._ensured_indexes.add(index_name)
+
+    @staticmethod
+    def resolve_index_name(
+        visibility: str,
+        org_id: str,
+        tenant_id: str | None = None,
+        owner_sub: str | None = None,
+        shard_count: int = 4,
+    ) -> str:
+        """Determine target index name from scope visibility.
+
+        Parameters
+        ----------
+        visibility:
+            One of "shared", "tenant", "personal".
+        org_id:
+            Organization ID (used for shard routing in shared mode).
+        tenant_id:
+            Tenant identifier (required when visibility is "tenant").
+        owner_sub:
+            User identifier (required when visibility is "personal").
+        shard_count:
+            Number of shared shards.
+
+        Returns
+        -------
+        Index name string for the target S3 Vectors index.
+
+        Raises
+        ------
+        ValueError:
+            If tenant_id/owner_sub missing for tenant/personal visibility.
+        """
+        if visibility == "tenant":
+            if not tenant_id:
+                raise ValueError("tenant_id required for tenant visibility")
+            return f"tenant-{tenant_id}"
+        elif visibility == "personal":
+            if not owner_sub:
+                raise ValueError("owner_sub required for personal visibility")
+            return f"personal-{owner_sub}"
+        else:
+            # Default: shared → hash-sharded
+            h = hashlib.sha256(org_id.encode()).digest()
+            shard = int.from_bytes(h[:4], "big") % shard_count
+            return f"code-shard-{shard}"
 
     def put_vectors(self, vectors: list[dict[str, Any]], org_id: str) -> None:
         """Write code vectors to the appropriate shard.
@@ -238,6 +316,65 @@ class S3VectorsCodeStore:
         """
         shard = self.get_shard_index(org_id)
         index_name = self._index_name(shard)
+
+        # Batch into groups of 500
+        for i in range(0, len(vectors), _MAX_BATCH_SIZE):
+            batch = vectors[i : i + _MAX_BATCH_SIZE]
+            s3v_vectors = [
+                {
+                    "key": v["key"],
+                    "data": {"float32": v["embedding"]},
+                    "metadata": v.get("metadata", {}),
+                }
+                for v in batch
+            ]
+            self._client.put_vectors(
+                vectorBucketName=self.bucket_name,
+                indexName=index_name,
+                vectors=s3v_vectors,
+            )
+
+    def put_vectors_scoped(
+        self,
+        vectors: list[dict[str, Any]],
+        org_id: str,
+        visibility: str = "shared",
+        tenant_id: str | None = None,
+        owner_sub: str | None = None,
+    ) -> None:
+        """Write vectors to a scope-determined index.
+
+        Routes vectors to the appropriate index based on visibility:
+        - "shared" → code-shard-{N} (existing hash-sharded behavior)
+        - "tenant" → tenant-{tenant_id}
+        - "personal" → personal-{owner_sub}
+
+        Creates the target index on first write (lazy provisioning).
+
+        Parameters
+        ----------
+        vectors:
+            List of dicts with keys: ``key``, ``embedding``, ``metadata``.
+        org_id:
+            Organization ID (used for shard routing in shared mode).
+        visibility:
+            Scope visibility ("shared", "tenant", "personal").
+        tenant_id:
+            Tenant identifier (required for "tenant" visibility).
+        owner_sub:
+            User identifier (required for "personal" visibility).
+        """
+        index_name = self.resolve_index_name(
+            visibility=visibility,
+            org_id=org_id,
+            tenant_id=tenant_id,
+            owner_sub=owner_sub,
+            shard_count=self.shard_count,
+        )
+
+        # Ensure index exists (lazy creation for tenant/personal indexes)
+        if visibility in ("tenant", "personal"):
+            self._ensure_index(index_name)
 
         # Batch into groups of 500
         for i in range(0, len(vectors), _MAX_BATCH_SIZE):
@@ -299,3 +436,104 @@ class S3VectorsCodeStore:
         # Sort by distance (ascending = most similar first for cosine)
         all_results.sort(key=lambda r: r.get("distance", float("inf")))
         return all_results[:top_k]
+
+    def query_scoped(
+        self,
+        query_vector: list[float],
+        org_id: str,
+        tenant_id: str | None = None,
+        owner_sub: str | None = None,
+        top_k: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Query scoped indexes: unions shared + tenant + personal results.
+
+        Queries the indexes the caller is entitled to see:
+        1. Shared shards (scatter-gather across code-shard-{0..N})
+        2. Tenant index (tenant-{tenant_id}) if tenant_id provided
+        3. Personal index (personal-{owner_sub}) if owner_sub provided
+
+        Results from all indexes are merged and sorted by distance.
+
+        Parameters
+        ----------
+        query_vector:
+            The query embedding.
+        org_id:
+            Organization ID for metadata filtering on shared shards.
+        tenant_id:
+            Caller's tenant ID. If provided, also queries tenant-{tenant_id}.
+        owner_sub:
+            Caller's user ID. If provided, also queries personal-{owner_sub}.
+        top_k:
+            Number of results to return.
+
+        Returns
+        -------
+        Merged results sorted by distance (ascending), limited to top_k.
+        """
+        all_results: list[dict[str, Any]] = []
+
+        # 1. Query shared shards (scatter-gather)
+        for shard_idx in range(self.shard_count):
+            index_name = self._index_name(shard_idx)
+            results = self._query_single_index(
+                index_name, query_vector, top_k, filter_metadata={"org_id": {"$eq": org_id}}
+            )
+            all_results.extend(results)
+
+        # 2. Query tenant index (if caller has a tenant)
+        if tenant_id:
+            tenant_index = f"tenant-{tenant_id}"
+            results = self._query_single_index(tenant_index, query_vector, top_k)
+            all_results.extend(results)
+
+        # 3. Query personal index (if caller has an owner_sub)
+        if owner_sub:
+            personal_index = f"personal-{owner_sub}"
+            results = self._query_single_index(personal_index, query_vector, top_k)
+            all_results.extend(results)
+
+        # Merge: sort by distance ascending, limit to top_k
+        all_results.sort(key=lambda r: r.get("distance", float("inf")))
+        return all_results[:top_k]
+
+    def _query_single_index(
+        self,
+        index_name: str,
+        query_vector: list[float],
+        top_k: int,
+        filter_metadata: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query a single index, returning empty list on index-not-found.
+
+        Parameters
+        ----------
+        index_name:
+            Target index name.
+        query_vector:
+            The query embedding.
+        top_k:
+            Max results from this index.
+        filter_metadata:
+            Optional metadata filter (e.g., {"org_id": {"$eq": "..."}}).
+
+        Returns
+        -------
+        List of vector result dicts from the index, or [] if index doesn't exist.
+        """
+        try:
+            kwargs: dict[str, Any] = {
+                "vectorBucketName": self.bucket_name,
+                "indexName": index_name,
+                "queryVector": {"float32": query_vector},
+                "topK": min(top_k * 2, 100),
+            }
+            if filter_metadata:
+                kwargs["filter"] = filter_metadata
+            response = self._client.query_vectors(**kwargs)
+            return response.get("vectors", [])
+        except ClientError as e:
+            error_code = e.response["Error"]["Code"]
+            if error_code in ("NotFoundException", "ResourceNotFoundException"):
+                return []
+            raise

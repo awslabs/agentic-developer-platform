@@ -130,6 +130,8 @@ class AppState:
         self.experience_tool: Any = None
         self.acl_store: Any = None
         self.neptune_driver: Any = None
+        self.semantic_code_store: Any = None
+        self.semantic_http_client: Any = None
 
 
 state = AppState()
@@ -185,6 +187,22 @@ async def lifespan(app: FastAPI):
     # Experience tool (for remember + experience verbs)
     _init_experience_tool()
 
+    # S3 Vectors code store + async HTTP client for semantic search (#1774)
+    if config.semantic_enabled and config.s3_vectors_bucket:
+        try:
+            import httpx
+
+            from ..personal_context.backends.s3_vectors_backend import S3VectorsCodeStore
+
+            state.semantic_code_store = S3VectorsCodeStore(
+                bucket_name=config.s3_vectors_bucket,
+                region_name=config.s3_vectors_region or config.s3_region,
+            )
+            state.semantic_http_client = httpx.AsyncClient(timeout=10.0)
+            log.info("Semantic code store initialized (bucket: %s)", config.s3_vectors_bucket)
+        except Exception:
+            log.warning("Failed to initialize semantic code store", exc_info=True)
+
     # Start the MCP session manager's task group AFTER backends are initialized.
     # The MCP tool shims reference module-level `state`, so backends must be live
     # before the session manager accepts requests. The sub-app's own lifespan is
@@ -199,6 +217,8 @@ async def lifespan(app: FastAPI):
 
     # Cleanup
     shutdown_tracing()
+    if state.semantic_http_client:
+        await state.semantic_http_client.aclose()
     if state.db_pool:
         state.db_pool.closeall()
     log.info("Context MCP Server shutting down")
@@ -438,8 +458,8 @@ async def _handle_search(
         return {"results": [], "total": 0, "query": query}
 
     if scope == "docs" and config.semantic_enabled:
-        # Semantic search (optional — gated on §12.1 decision)
-        return {"results": [], "total": 0, "query": query}
+        # Semantic search via S3 Vectors — scoped per caller (#1774)
+        return await _handle_semantic_search(query, limit, caller)
 
     # Default: exact code search via Zoekt
     if state.zoekt is None:
@@ -465,6 +485,65 @@ async def _handle_search(
     deduped.sort(key=lambda d: -_file_relevance_score(d.get("file", ""), query))
 
     return {"results": deduped[:limit], "total": min(len(deduped), limit), "query": query}
+
+
+async def _handle_semantic_search(
+    query: str,
+    limit: int,
+    caller: CallerPrincipal | None,
+) -> dict[str, Any]:
+    """Scoped semantic search via S3 Vectors (Story 5, #1774).
+
+    Unions results from shared + caller's tenant + caller's personal indexes.
+    Requires semantic_enabled=True, s3_vectors_bucket configured, and a resolved caller.
+    Uses singleton code_store and async HTTP client initialized at startup.
+    """
+    if caller is None or not caller.is_resolved:
+        return {"results": [], "total": 0, "query": query}
+
+    if state.semantic_code_store is None or state.semantic_http_client is None:
+        return {"results": [], "total": 0, "query": query}
+
+    try:
+        # Generate query embedding via LiteLLM (async — does not block event loop)
+        embed_response = await state.semantic_http_client.post(
+            f"{config.litellm_url}/embeddings",
+            json={"input": query, "model": "amazon.titan-embed-text-v2:0"},
+        )
+        embed_response.raise_for_status()
+        query_vector = embed_response.json()["data"][0]["embedding"]
+
+        # Determine caller's org_id from tenant_id (best effort)
+        org_id = caller.tenant_id or ""
+
+        # Scoped query: union shared + tenant + personal indexes
+        results = state.semantic_code_store.query_scoped(
+            query_vector=query_vector,
+            org_id=org_id,
+            tenant_id=caller.tenant_id or None,
+            owner_sub=caller.owner_sub or None,
+            top_k=limit,
+        )
+
+        # Transform S3 Vectors results to search result format
+        formatted = []
+        for r in results:
+            metadata = r.get("metadata", {})
+            formatted.append(
+                {
+                    "key": r.get("key", ""),
+                    "distance": r.get("distance", 1.0),
+                    "repo": metadata.get("repo", ""),
+                    "source_type": metadata.get("source_type", ""),
+                    "section_heading": metadata.get("section_heading", ""),
+                    "chunk_text": metadata.get("chunk_text", ""),
+                }
+            )
+
+        return {"results": formatted[:limit], "total": len(formatted), "query": query}
+    except Exception:
+        log.warning("Semantic search failed", exc_info=True)
+        return {"results": [], "total": 0, "query": query}
 
 
 async def _handle_understand(
