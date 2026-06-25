@@ -73,3 +73,40 @@ class TestParentInvocationIdPersisted:
         )
         item = table.put_item.call_args[1]["Item"]
         assert item["chain_depth"] == 0
+
+    def test_root_human_and_is_human_rooted_persisted(self):
+        """Issue #2042: root_human_id + is_human_rooted are written to the row so
+        the Activity layer can attribute agent-spawned runs to the originating
+        human (not the bot sender)."""
+        logger, table = _logger_with_mock_table()
+        logger.log_event(
+            event_id="child-evt",
+            arrived_at="2026-06-25T00:00:00Z",
+            tenant_id="t",
+            channel="github",
+            event_type="issue_comment",
+            action="created",
+            status="webhook_received",
+            correlation_id="chain-X",
+            root_human_id="human-1",
+            is_human_rooted=True,
+        )
+        item = table.put_item.call_args[1]["Item"]
+        assert item["root_human_id"] == "human-1"
+        assert item["is_human_rooted"] is True
+
+    def test_root_fields_absent_when_not_provided(self):
+        """Not provided → fields omitted (no null-writes), preserving old rows."""
+        logger, table = _logger_with_mock_table()
+        logger.log_event(
+            event_id="e2",
+            arrived_at="2026-06-25T00:00:00Z",
+            tenant_id="t",
+            channel="github",
+            event_type="issues",
+            action="labeled",
+            status="webhook_received",
+        )
+        item = table.put_item.call_args[1]["Item"]
+        assert "root_human_id" not in item
+        assert "is_human_rooted" not in item

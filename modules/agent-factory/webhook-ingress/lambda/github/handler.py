@@ -890,10 +890,20 @@ def handler(event: dict, context) -> dict:
     # diagnosed this: every event stayed frozen at webhook_received because the
     # worker's UpdateItem hit ConditionalCheckFailedException on a not-yet-
     # written row, then silently swallowed the error).
+    # Issue #2042: attribute the run to the chain's HUMAN ROOT, not the bot
+    # sender, for human-rooted chains. The /me Activity view filters by the
+    # user-index GSI (PK=user_id); without this, an agent-spawned run (sender =
+    # the agent bot) is attributed to the bot and never appears under the
+    # originating human — so operators "only see the operations agents," not the
+    # agents they triggered. For non-human-rooted chains (CI/EventBridge/bot
+    # roots) we keep the sender's resolved user_id.
+    _root_human = correlation_ctx.get("root_human_id") if correlation_ctx else None
+    _is_human_rooted = correlation_ctx.get("is_human_rooted") if correlation_ctx else None
+    _effective_user_id = _root_human if (_is_human_rooted and _root_human) else resolved.user_id
     _capture_invocation_event(
         envelope=envelope,
         tenant_id=tenant_id,
-        user_id=resolved.user_id,
+        user_id=_effective_user_id,
         github_login=sender.get("login", ""),
         event_type=event_type,
         action=action,
@@ -911,6 +921,9 @@ def handler(event: dict, context) -> dict:
             correlation_ctx.get("parent_invocation_id") if correlation_ctx else None
         ),
         chain_depth=correlation_ctx.get("chain_depth") if correlation_ctx else None,
+        # Issue #2042: persist the chain root so the row records true ownership.
+        root_human_id=_root_human,
+        is_human_rooted=_is_human_rooted,
     )
 
     message_id = _get_sqs_publisher().publish_envelope(envelope)
@@ -961,6 +974,8 @@ def _capture_invocation_event(
     status: str,
     parent_invocation_id: str | None = None,
     chain_depth: int | None = None,
+    root_human_id: str | None = None,
+    is_human_rooted: bool | None = None,
 ) -> None:
     """Write enriched invocation row to DynamoDB (best-effort).
 
@@ -1011,6 +1026,8 @@ def _capture_invocation_event(
             correlation_id=correlation_id,
             parent_invocation_id=parent_invocation_id,
             chain_depth=chain_depth,
+            root_human_id=root_human_id,
+            is_human_rooted=is_human_rooted,
         )
     except Exception as e:
         # Best-effort — never block the webhook response

@@ -85,6 +85,8 @@ class WebhookEventLogger:
         correlation_id: str | None = None,
         parent_invocation_id: str | None = None,
         chain_depth: int | None = None,
+        root_human_id: str | None = None,
+        is_human_rooted: bool | None = None,
     ) -> dict[str, Any]:
         """Record a webhook event in DynamoDB.
 
@@ -171,6 +173,14 @@ class WebhookEventLogger:
             item["parent_invocation_id"] = parent_invocation_id
         if chain_depth is not None:
             item["chain_depth"] = chain_depth
+        # Issue #2042: persist the chain's human root so the Activity layer can
+        # attribute agent-spawned runs to the originating human (not the bot
+        # sender) — otherwise cross-issue/agent-triggered runs never appear under
+        # the human's /me view.
+        if root_human_id:
+            item["root_human_id"] = root_human_id
+        if is_human_rooted is not None:
+            item["is_human_rooted"] = is_human_rooted
 
         try:
             self._table.put_item(Item=item)
