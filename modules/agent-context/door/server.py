@@ -53,6 +53,7 @@ TOOLS: list[dict[str, Any]] = [
             "query": {"type": "string", "required": True},
             "scope": {"type": "string", "required": False},
             "limit": {"type": "integer", "required": False},
+            "project": {"type": "string", "required": False},
         },
     },
     {
@@ -61,6 +62,7 @@ TOOLS: list[dict[str, Any]] = [
         "parameters": {
             "target": {"type": "string", "required": True},
             "depth": {"type": "string", "required": False},
+            "project": {"type": "string", "required": False},
         },
     },
     {
@@ -73,6 +75,7 @@ TOOLS: list[dict[str, Any]] = [
         "parameters": {
             "target": {"type": "string", "required": True},
             "cross_repo": {"type": "boolean", "required": False},
+            "project": {"type": "string", "required": False},
         },
     },
     {
@@ -82,6 +85,7 @@ TOOLS: list[dict[str, Any]] = [
             "action": {"type": "string", "required": True},
             "uri": {"type": "string", "required": True},
             "depth": {"type": "integer", "required": False},
+            "project": {"type": "string", "required": False},
         },
     },
     {

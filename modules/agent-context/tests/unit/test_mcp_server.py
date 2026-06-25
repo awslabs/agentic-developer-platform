@@ -437,3 +437,92 @@ class TestToolsConstantIntegrity:
                 assert param_name in schema["properties"], (
                     f"Parameter '{param_name}' missing from schema for tool '{tool['name']}'"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Project parameter on retrieval verbs (Story C, #1786)
+# ---------------------------------------------------------------------------
+
+
+class TestProjectParameterExposed:
+    """Verify 'project' parameter is exposed on the 4 retrieval verbs."""
+
+    RETRIEVAL_VERBS = ("search", "understand", "impact", "browse")
+
+    def test_tools_constant_includes_project(self):
+        """All 4 retrieval verbs have 'project' in their TOOLS parameters."""
+        for tool in TOOLS:
+            if tool["name"] in self.RETRIEVAL_VERBS:
+                assert "project" in tool["parameters"], (
+                    f"Tool '{tool['name']}' missing 'project' parameter in TOOLS"
+                )
+                assert tool["parameters"]["project"]["type"] == "string"
+                assert tool["parameters"]["project"]["required"] is False
+
+    def test_project_not_on_non_retrieval_verbs(self):
+        """remember and experience do NOT have 'project' parameter."""
+        for tool in TOOLS:
+            if tool["name"] not in self.RETRIEVAL_VERBS:
+                assert "project" not in tool["parameters"], (
+                    f"Tool '{tool['name']}' should NOT have 'project' parameter"
+                )
+
+    def test_json_schema_includes_project(self):
+        """JSON Schema conversion includes project as optional string."""
+        for tool in TOOLS:
+            if tool["name"] in self.RETRIEVAL_VERBS:
+                schema = _tools_to_json_schema(tool)
+                assert "project" in schema["properties"], (
+                    f"Tool '{tool['name']}' missing 'project' in JSON Schema"
+                )
+                assert schema["properties"]["project"]["type"] == "string"
+                # project must NOT be required
+                assert "project" not in schema.get("required", [])
+
+    @pytest.mark.asyncio
+    async def test_mcp_tools_list_includes_project(self):
+        """MCP tools/list includes 'project' in retrieval verb schemas."""
+        from door.mcp_app import mcp_server
+
+        result = await mcp_server.list_tools()
+        for tool in result:
+            if tool.name in self.RETRIEVAL_VERBS:
+                schema = tool.inputSchema
+                assert "project" in schema.get("properties", {}), (
+                    f"MCP tool '{tool.name}' missing 'project' in inputSchema"
+                )
+
+    @pytest.mark.asyncio
+    async def test_project_threaded_to_dispatch(self):
+        """MCP search with project passes it through to _dispatch_tool arguments."""
+        from unittest.mock import AsyncMock, patch
+
+        from door.mcp_app import mcp_server
+
+        mock_dispatch = AsyncMock(return_value={"results": [], "total": 0, "query": "test"})
+
+        with patch("door.mcp_app._get_dispatch_tool", return_value=mock_dispatch):
+            await mcp_server.call_tool(
+                "search", {"query": "test", "scope": "code", "project": "my-project"}
+            )
+
+        mock_dispatch.assert_called_once()
+        call_args = mock_dispatch.call_args[0]
+        assert call_args[0] == "search"
+        assert call_args[1]["project"] == "my-project"
+
+    @pytest.mark.asyncio
+    async def test_project_omitted_when_empty(self):
+        """MCP search without project does NOT add empty 'project' key."""
+        from unittest.mock import AsyncMock, patch
+
+        from door.mcp_app import mcp_server
+
+        mock_dispatch = AsyncMock(return_value={"results": [], "total": 0, "query": "test"})
+
+        with patch("door.mcp_app._get_dispatch_tool", return_value=mock_dispatch):
+            await mcp_server.call_tool("search", {"query": "test", "scope": "code"})
+
+        mock_dispatch.assert_called_once()
+        call_args = mock_dispatch.call_args[0]
+        assert "project" not in call_args[1]

@@ -153,12 +153,15 @@ async def mcp_search(
     query: str,
     scope: str = "code",
     limit: int = 20,
+    project: str = "",
     ctx: Context = None,  # type: ignore[assignment]
 ) -> str:
     """Find relevant code, documentation, and past learnings."""
     headers = _get_headers_from_context(ctx)
     caller = extract_caller_principal(headers)
-    arguments = {"query": query, "scope": scope, "limit": limit}
+    arguments: dict[str, Any] = {"query": query, "scope": scope, "limit": limit}
+    if project:
+        arguments["project"] = project
     dispatch = _get_dispatch_tool()
     result = await dispatch("search", arguments, headers, caller)
     return json.dumps(result, default=str)
@@ -168,12 +171,15 @@ async def mcp_search(
 async def mcp_understand(
     target: str,
     depth: str = "overview",
+    project: str = "",
     ctx: Context = None,  # type: ignore[assignment]
 ) -> str:
     """Get deep understanding of a specific repo, directory, or file."""
     headers = _get_headers_from_context(ctx)
     caller = extract_caller_principal(headers)
-    arguments = {"target": target, "depth": depth}
+    arguments: dict[str, Any] = {"target": target, "depth": depth}
+    if project:
+        arguments["project"] = project
     dispatch = _get_dispatch_tool()
     result = await dispatch("understand", arguments, headers, caller)
     return json.dumps(result, default=str)
@@ -183,12 +189,15 @@ async def mcp_understand(
 async def mcp_impact(
     target: str,
     cross_repo: bool = False,
+    project: str = "",
     ctx: Context = None,  # type: ignore[assignment]
 ) -> str:
     """Analyse blast radius before editing or deleting a symbol."""
     headers = _get_headers_from_context(ctx)
     caller = extract_caller_principal(headers)
-    arguments = {"target": target, "cross_repo": cross_repo}
+    arguments: dict[str, Any] = {"target": target, "cross_repo": cross_repo}
+    if project:
+        arguments["project"] = project
     dispatch = _get_dispatch_tool()
     result = await dispatch("impact", arguments, headers, caller)
     return json.dumps(result, default=str)
@@ -199,12 +208,15 @@ async def mcp_browse(
     action: str,
     uri: str,
     depth: int = 1,
+    project: str = "",
     ctx: Context = None,  # type: ignore[assignment]
 ) -> str:
     """Navigate the indexed content filesystem."""
     headers = _get_headers_from_context(ctx)
     caller = extract_caller_principal(headers)
-    arguments = {"action": action, "uri": uri, "depth": depth}
+    arguments: dict[str, Any] = {"action": action, "uri": uri, "depth": depth}
+    if project:
+        arguments["project"] = project
     dispatch = _get_dispatch_tool()
     result = await dispatch("browse", arguments, headers, caller)
     return json.dumps(result, default=str)
