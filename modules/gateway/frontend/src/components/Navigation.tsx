@@ -73,6 +73,9 @@ export function Navigation() {
     navItems.push({ to: '/ratelimits', label: 'Rate Limits', icon: '⏱️' });
   }
 
+  // Knowledge management for all authenticated users (Issue #1794)
+  navItems.push({ to: '/knowledge', label: 'Knowledge', icon: '📚' });
+
   // Agent Activity for all authenticated users (Issue #1457)
   navItems.push({ to: '/activity', label: 'Agent Activity', icon: '📋' });
 

@@ -522,3 +522,77 @@ export interface IndexRunDetailResponse {
   commitSha: string | null;
   stages: IndexRunStage[];
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1794: Knowledge-assets management page types
+// ---------------------------------------------------------------------------
+
+/** Asset status values. */
+export type AssetStatus = 'registered' | 'queued' | 'indexing' | 'indexed' | 'failed' | 'removed';
+
+/** A single knowledge asset. */
+export interface KnowledgeAsset {
+  id: string;
+  assetType: string;
+  sourceRef: string;
+  displayName: string | null;
+  tags: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  tenantId: string | null;
+  ownerSub: string | null;
+  projectId: string | null;
+  status: AssetStatus;
+  lastError: string | null;
+  retryCount: number;
+  registeredBy: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+/** Quota detail for a single asset type. */
+export interface AssetQuotaDetail {
+  used: number;
+  limit: number;
+}
+
+/** Aggregated quota info. */
+export interface AssetQuotaInfo {
+  repos: AssetQuotaDetail | null;
+  urls: AssetQuotaDetail | null;
+  docs: AssetQuotaDetail | null;
+}
+
+/** Paginated asset list response. */
+export interface AssetListResponse {
+  items: KnowledgeAsset[];
+  total: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+  quota: AssetQuotaInfo | null;
+}
+
+/** Request body for creating an asset. */
+export interface AssetCreateRequest {
+  asset_type: string;
+  source_ref: string;
+  display_name?: string;
+  tags?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  scope: 'personal' | 'tenant';
+}
+
+/** A GitHub repo from the picker API. */
+export interface AccessibleRepo {
+  fullName: string;
+  private: boolean;
+  url: string;
+}
+
+/** Response from the repo picker API. */
+export interface AccessibleReposResponse {
+  repos: AccessibleRepo[];
+  total: number;
+  page: number;
+  hasMore: boolean;
+}
