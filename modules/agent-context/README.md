@@ -4,6 +4,29 @@ A unified, multi-tenant code intelligence platform that gives AI coding agents d
 
 This module is the implementation of the **Knowledge Layer** (EPIC #1345). Design-of-record lives in [`docs/agent-context/knowledge-layer-design.md`](../../docs/agent-context/knowledge-layer-design.md); product vision in [`docs/agent-context/knowledge-layer-product-vision.md`](../../docs/agent-context/knowledge-layer-product-vision.md).
 
+## Vision
+
+> **Every agent and engineer working in our codebase should be able to ask any question about it — "what does this do?", "what breaks if I change this?", "which repos are exposed to this CVE?" — and get a correct, permission-safe answer in seconds, across every repository, without reading the code first. And beyond answering: the platform should _act_ on what it knows — finding vulnerabilities across the whole corpus and fixing them with its own agents, then remembering what worked.**
+
+The Knowledge Layer turns a pile of repositories into a **queryable, reasoning substrate** that humans and ADP's autonomous agents share — the difference between agents that grep blindly and agents that *understand* the code they're changing. It exists because as a codebase grows past what one person can hold in their head, three things break: **comprehension doesn't scale** (answering "how does auth work here?" means reading code across repos), **change is blind** ("what breaks if I touch this?" gets discovered in production, not before the PR), and **security is reactive** (a new CVE means a frantic manual repo-by-repo audit). The common root cause is that the knowledge is latent in the code but not *queryable*.
+
+**ADP is not a code-search tool — it is an autonomous code-intelligence and vulnerability-management platform.** Code search is table stakes; the product is what becomes possible once the codebase is queryable:
+
+- **Agents that understand before they act** — fewer wrong edits, less wasted reasoning, higher first-pass PR quality.
+- **Blast-radius before the PR, not after the incident.**
+- **A vulnerability that fixes itself** — detect a CVE → reverse-index finds every affected repo/file → reachability triage drops false positives → a fix issue is filed → ADP's developer agents fix it and run the tests → a PR is opened (never auto-merged) → the verified outcome is remembered. Across the whole corpus, autonomously.
+
+**The moat is outcome-verified experience on top of a competent retriever.** Retrieval quality is becoming a commodity; our defensible position is orthogonal — an **Experience layer** that remembers what actually *worked*, backed by substrate proof (tests passed, deploy succeeded, CVE closed), and matures proven procedures into reusable workflows. Retrieval tells an agent *where to look*; verified experience tells it *what has worked here before*. It compounds with every green deploy, is proprietary by construction (built from our outcomes on our corpus), and is the bridge from "answers questions" to "does work."
+
+**Design principles** (the constraints that shape everything below):
+1. **Permission-safe or it doesn't ship** — every answer is ACL-filtered at the single query surface; an unknown caller sees nothing (fail-closed).
+2. **Permissively licensed, end to end** — Apache-2.0 / MIT only (the reason Sourcebot, OpenViking, Redis, Neo4j, and Grype were all replaced); no AGPL/GPL/BSL/SSPL anywhere.
+3. **Portable, not welded to ADP** — header-based pluggable identity, talks to AWS services directly; runnable as "a few Lambdas + Fargate + S3 via one Terraform module."
+4. **Structural over semantic for code** — bet on AST/structural understanding (whole functions, not broken chunks); reserve embeddings for genuine vocabulary-mismatch cases (wiki/doc prose, NL questions).
+5. **Act, don't just answer** — retrieval that stops at a result list is half a product.
+
+See [`docs/agent-context/knowledge-layer-product-vision.md`](../../docs/agent-context/knowledge-layer-product-vision.md) for the full vision (personas, success measures, roadmap, non-goals).
+
 ## What It Does
 
 When an AI agent (Claude Code, Kiro, Cursor, or an ARC runner) needs to understand code it hasn't seen before, it calls the **Context MCP Server** (a.k.a. the Door) on `:5100`. That single endpoint:
