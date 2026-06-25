@@ -248,4 +248,27 @@ def create_app() -> FastAPI:
                 extra={"error": str(e)},
             )
 
+        # Issue #1793: Mount GitHub repo picker router (user-facing).
+        try:
+            from agent_context.api.github_repos import (
+                get_current_user_from_state as gh_get_user,
+            )
+            from agent_context.api.github_repos import (
+                get_repos_db,
+            )
+            from agent_context.api.github_repos import router as github_repos_router
+
+            app.dependency_overrides[get_repos_db] = get_db
+            app.dependency_overrides[gh_get_user] = get_current_user
+            app.include_router(
+                github_repos_router,
+                dependencies=[Depends(get_current_user)],
+            )
+            logger.info("Agent-context GitHub repo picker router mounted")
+        except ImportError as e:
+            logger.debug(
+                "Agent-context GitHub repos router not available, skipped",
+                extra={"error": str(e)},
+            )
+
     return app
