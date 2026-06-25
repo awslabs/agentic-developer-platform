@@ -40,7 +40,18 @@ class ServerConfig:
         )
 
         # Postgres (catalog for browse + ACL store)
+        # Static DSN (local/CI fallback only — production uses IAM auth)
         self.database_url: str = os.environ.get("DATABASE_URL", "")
+        # IAM auth (production): connect via RDS IAM tokens instead of password
+        self.db_use_iam_auth: bool = os.environ.get("DB_USE_IAM_AUTH", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        self.db_host: str = os.environ.get("DB_HOST", "")
+        self.db_port: int = int(os.environ.get("DB_PORT", "5432"))
+        self.db_name: str = os.environ.get("DB_NAME", "agent_context")
+        self.db_user: str = os.environ.get("DB_USER", "agent_context_rw")
 
         # Neptune (graph database for structural queries)
         self.neptune_endpoint: str = os.environ.get("NEPTUNE_ENDPOINT", "")

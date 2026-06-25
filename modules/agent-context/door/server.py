@@ -164,14 +164,17 @@ async def lifespan(app: FastAPI):
         state.s3_client = boto3.client("s3", region_name=config.s3_region)
 
     # Database pool (for browse catalog + ACL)
-    if config.database_url:
-        try:
-            import psycopg2.pool
+    # Uses IAM auth tokens in production (DB_USE_IAM_AUTH=true) — mints a
+    # fresh token per new connection since RDS IAM tokens expire ~15 min.
+    # Falls back to static DATABASE_URL for local/CI.
+    try:
+        from .db import create_db_pool
 
-            state.db_pool = psycopg2.pool.SimpleConnectionPool(1, 5, config.database_url)
-            log.info("Database pool initialized")
-        except Exception:
-            log.warning("Failed to initialize database pool", exc_info=True)
+        state.db_pool = create_db_pool(config)
+        if state.db_pool:
+            log.info("Database pool initialized (iam=%s)", config.db_use_iam_auth)
+    except Exception:
+        log.warning("Failed to initialize database pool", exc_info=True)
 
     # ACL store (Postgres-backed)
     if state.db_pool:
