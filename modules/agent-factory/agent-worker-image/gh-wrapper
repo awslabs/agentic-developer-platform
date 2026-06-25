@@ -1,9 +1,57 @@
 #!/bin/sh
-# gh CLI wrapper — reads fresh token from file before invoking the real gh
-# binary (issue #1469). Installed at /usr/local/bin/gh, shadowing /usr/bin/gh.
-# Falls back to existing GH_TOKEN env var if file does not exist.
+# gh CLI wrapper — installed at /usr/local/bin/gh, shadowing /usr/bin/gh.
+#
+# 1. (issue #1469) Reads a fresh GitHub App token from the token file so
+#    long-running agents don't 401 after the 1h expiry.
+# 2. (issue #1828) Cross-issue lineage seeding: when an agent triggers ANOTHER
+#    persona by posting `@agent-<persona>` on a DIFFERENT issue, the inbound
+#    webhook would otherwise start a fresh, bot-rooted chain (the raw comment
+#    carries no correlation marker). BEFORE exec'ing the real `gh`, we write the
+#    correlation pointer for the target issue so the webhook inherits THIS run's
+#    chain. Synchronous → pointer is committed before the comment posts → no race
+#    (webhook read_pointer uses ConsistentRead). Covers every gh path.
+#
+# Both steps are best-effort and must NEVER block the underlying gh command.
+
 TOKEN_FILE="${ADP_TOKEN_FILE:-/tmp/.adp-gh-token}"
 if [ -f "$TOKEN_FILE" ]; then
-  export GH_TOKEN="$(cat "$TOKEN_FILE")"
+  GH_TOKEN="$(cat "$TOKEN_FILE")"
+  export GH_TOKEN
 fi
+
+# --- Cross-issue lineage seeding (issue #1828) ---------------------------------
+# Only act on:  gh issue comment <N> ...   or   gh pr comment <N> ...
+# where the body contains an @agent-<persona> mention AND <N> differs from this
+# run's own ISSUE_NUMBER (seeding our own channel would clobber our self-chain).
+if [ "$1" = "issue" ] || [ "$1" = "pr" ]; then
+  if [ "$2" = "comment" ] && [ -n "$3" ]; then
+    _kind="$1"
+    _target="$3"
+    # Target must be a bare number (gh issue comment <number>). If it's a URL or
+    # flag, skip — seeding only applies to the numeric form the agents use.
+    case "$_target" in
+      *[!0-9]* | "") _target="" ;;
+    esac
+    if [ -n "$_target" ] && [ "$_target" != "${ISSUE_NUMBER:-}" ]; then
+      # Extract the comment body from --body "<text>" or --body-file <path>.
+      _body=""
+      _prev=""
+      for _arg in "$@"; do
+        case "$_prev" in
+          --body) _body="$_arg" ;;
+          --body-file|-F) [ -f "$_arg" ] && _body="$(cat "$_arg" 2>/dev/null)" ;;
+        esac
+        _prev="$_arg"
+      done
+      # Persona = first @agent-<name> mention in the body, if any.
+      _persona="$(printf '%s' "$_body" | grep -oE '@agent-[a-z-]+' | head -1 | sed 's/^@agent-//')"
+      if [ -n "$_persona" ] && [ -n "${TARGET_REPO:-}" ]; then
+        # Seed the pointer BEFORE the comment posts. Fail-soft (the helper never
+        # exits non-zero; the `|| true` is belt-and-suspenders).
+        python3 -m lib.seed_trigger_pointer "$TARGET_REPO" "$_target" "$_persona" >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
+fi
+
 exec /usr/bin/gh "$@"
