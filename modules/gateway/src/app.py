@@ -204,6 +204,15 @@ def create_app() -> FastAPI:
                 extra={"module_path": module_path, "error": str(e)},
             )
 
+    # Issue #2047: Startup warning when knowledge dispatch is enabled but queue is absent.
+    if os.environ.get("AGENT_CONTEXT_ENABLED", "").lower() == "true":
+        if not os.environ.get("INGESTION_QUEUE_URL"):
+            logger.warning(
+                "AGENT_CONTEXT_ENABLED=true but INGESTION_QUEUE_URL is not set. "
+                "Knowledge routes will register but dispatch will return 503 until "
+                "the queue URL is configured."
+            )
+
     # Issue #1424: Conditionally mount agent-context indexing admin router.
     # Routes are DEFINED in agent-context, MOUNTED here behind AGENT_CONTEXT_ENABLED.
     # Inherits Cognito JWT auth + admin-role guard from the gateway middleware stack.

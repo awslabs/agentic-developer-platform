@@ -31,6 +31,19 @@ logger = logging.getLogger("bedrockgateway.knowledge.dispatch")
 
 
 # ---------------------------------------------------------------------------
+# Custom exceptions
+# ---------------------------------------------------------------------------
+
+
+class IngestionQueueUnavailableError(Exception):
+    """Raised when INGESTION_QUEUE_URL is not configured.
+
+    Callers (routes) should catch this and surface a 503 to the client,
+    rather than letting it be swallowed by the generic dispatch try/except.
+    """
+
+
+# ---------------------------------------------------------------------------
 # SQS client protocol — allows injection for testing
 # ---------------------------------------------------------------------------
 
@@ -77,11 +90,14 @@ def get_queue_url() -> str:
     """Read ingestion queue URL from environment.
 
     Env var: INGESTION_QUEUE_URL (same as used by sqs-worker.py and publish-ingestion.py).
+
+    Raises:
+        IngestionQueueUnavailableError: when INGESTION_QUEUE_URL is not set.
     """
     url = os.environ.get("INGESTION_QUEUE_URL", "")
     if not url:
-        raise RuntimeError(
-            "INGESTION_QUEUE_URL not set — cannot dispatch ingestion. Set this env var on the gateway pod to enable Phase 1 inline dispatch."
+        raise IngestionQueueUnavailableError(
+            "INGESTION_QUEUE_URL not set — cannot dispatch ingestion. Set this env var on the gateway pod to enable knowledge-asset dispatch."
         )
     return url
 
@@ -213,6 +229,9 @@ async def dispatch_ingestion(
             asset_id,
             asset_type,
         )
+    except IngestionQueueUnavailableError:
+        # Let queue-unavailable propagate — caller surfaces as 503.
+        raise
     except Exception:
         logger.exception(
             "dispatch_ingestion: SQS publish failed for asset_id=%s — row stays at 'registered'",

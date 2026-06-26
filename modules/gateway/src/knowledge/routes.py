@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.dependencies import get_current_user
 from src.knowledge.bulk_parser import MAX_FILE_SIZE_BYTES, MAX_LINES, parse_bulk_file
-from src.knowledge.dispatch import dispatch_ingestion
+from src.knowledge.dispatch import IngestionQueueUnavailableError, dispatch_ingestion
 from src.knowledge.schemas import (
     AssetCreateRequest,
     AssetDetailResponse,
@@ -44,6 +44,7 @@ from src.knowledge.schemas import (
 )
 from src.knowledge.type_registry import is_valid_asset_type, validate_source_ref
 from src.shared.database import get_db
+from src.shared.identity import resolve_canonical_user_id
 
 logger = logging.getLogger("bedrockgateway.knowledge.routes")
 
@@ -94,13 +95,13 @@ async def register_asset(
             detail=f"source_ref does not match expected pattern for type '{body.asset_type}'",
         )
 
-    # Derive scope from session
+    # Derive scope from session — resolve canonical users.id for owner_sub (#2047/#1319)
     tenant_id = current_user.org_id or None
     owner_sub: str | None = None
     scope_key = body.scope
 
     if body.scope == "personal":
-        owner_sub = current_user.user_id
+        owner_sub = await resolve_canonical_user_id(db, current_user.user_id)
     elif body.scope == "tenant":
         if not current_user.is_admin:
             raise HTTPException(
@@ -194,6 +195,11 @@ async def register_asset(
             project_id=None,
             db=db,
         )
+    except IngestionQueueUnavailableError:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge ingestion queue is not configured. Set INGESTION_QUEUE_URL to enable asset dispatch.",
+        )
     except Exception:
         logger.warning(
             "Ingestion dispatch failed for asset %s — row stays at 'registered'",
@@ -222,10 +228,11 @@ async def list_assets(
     conditions: list[str] = ["status != 'removed'"]
     params: dict[str, Any] = {}
 
-    # Scope filtering
+    # Scope filtering — resolve canonical id for personal scope (#2047/#1319)
     if scope == "personal":
+        canonical_sub = await resolve_canonical_user_id(db, current_user.user_id)
         conditions.append("owner_sub = :sub")
-        params["sub"] = current_user.user_id
+        params["sub"] = canonical_sub
         conditions.append("tenant_id = :tid")
         params["tid"] = current_user.org_id
     elif scope == "tenant":
@@ -301,9 +308,11 @@ async def get_asset_detail(
     if row.tenant_id and row.tenant_id != current_user.org_id:
         raise HTTPException(status_code=404, detail="Asset not found")
 
-    # Personal assets: only visible to owner or admin
-    if row.owner_sub and row.owner_sub != current_user.user_id and not current_user.is_admin:
-        raise HTTPException(status_code=404, detail="Asset not found")
+    # Personal assets: only visible to owner or admin — use canonical id (#2047/#1319)
+    if row.owner_sub and not current_user.is_admin:
+        canonical_sub = await resolve_canonical_user_id(db, current_user.user_id)
+        if row.owner_sub != canonical_sub:
+            raise HTTPException(status_code=404, detail="Asset not found")
 
     return AssetDetailResponse(**_row_to_response(row).model_dump())
 
@@ -399,9 +408,11 @@ async def get_asset_status(
     if row.tenant_id and row.tenant_id != current_user.org_id:
         raise HTTPException(status_code=404, detail="Asset not found")
 
-    # Personal assets: only visible to owner or admin
-    if row.owner_sub and row.owner_sub != current_user.user_id and not current_user.is_admin:
-        raise HTTPException(status_code=404, detail="Asset not found")
+    # Personal assets: only visible to owner or admin — use canonical id (#2047/#1319)
+    if row.owner_sub and not current_user.is_admin:
+        canonical_sub = await resolve_canonical_user_id(db, current_user.user_id)
+        if row.owner_sub != canonical_sub:
+            raise HTTPException(status_code=404, detail="Asset not found")
 
     source_ref = row.source_ref
 
@@ -531,11 +542,11 @@ async def bulk_preview(
     # Parse the file
     valid_items, rejected_items, total_lines, skipped_comments = parse_bulk_file(content)
 
-    # Derive scope for dedup + quota check
+    # Derive scope for dedup + quota check — resolve canonical id (#2047/#1319)
     tenant_id = current_user.org_id or None
     owner_sub: str | None = None
     if scope == "personal":
-        owner_sub = current_user.user_id
+        owner_sub = await resolve_canonical_user_id(db, current_user.user_id)
 
     # Check for duplicates against existing DB rows
     duplicates: list[BulkDuplicateItem] = []
@@ -641,12 +652,12 @@ async def bulk_commit(
             detail=f"Too many items. Maximum is {MAX_LINES}",
         )
 
-    # Derive scope
+    # Derive scope — resolve canonical id (#2047/#1319)
     tenant_id = current_user.org_id or None
     owner_sub: str | None = None
     scope_key = body.scope
     if body.scope == "personal":
-        owner_sub = current_user.user_id
+        owner_sub = await resolve_canonical_user_id(db, current_user.user_id)
 
     # Quota check before committing
     count_result = await db.execute(
@@ -746,6 +757,11 @@ async def bulk_commit(
                 project_id=None,
                 db=db,
             )
+        except IngestionQueueUnavailableError:
+            raise HTTPException(
+                status_code=503,
+                detail="Knowledge ingestion queue is not configured. Set INGESTION_QUEUE_URL to enable asset dispatch.",
+            )
         except Exception:
             logger.warning(
                 "Ingestion dispatch failed for bulk asset %s — row stays at 'registered'",
@@ -826,6 +842,9 @@ def _row_to_response(row: Any) -> AssetResponse:
 
 async def _get_quota_info(db: AsyncSession, current_user: Any) -> QuotaInfo:
     """Compute quota usage for the current user's scope."""
+    # Resolve canonical id for personal-scope quota count (#2047/#1319)
+    canonical_sub = await resolve_canonical_user_id(db, current_user.user_id)
+
     # Count assets per type for personal scope
     result = await db.execute(
         text("""
@@ -836,7 +855,7 @@ async def _get_quota_info(db: AsyncSession, current_user: Any) -> QuotaInfo:
               AND status != 'removed'
             GROUP BY asset_type
         """),
-        {"tid": current_user.org_id, "sub": current_user.user_id},
+        {"tid": current_user.org_id, "sub": canonical_sub},
     )
     counts: dict[str, int] = {}
     for r in result.fetchall():

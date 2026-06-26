@@ -86,6 +86,9 @@ class FakeAsyncSession:
         self._call_index = 0
         self.committed = False
         self.executed_statements: list[Any] = []
+        # Optional: set to control resolve_canonical_user_id fallback behavior.
+        # When None (default), the resolver falls back to the raw cognito_sub.
+        self.scalar_result: Any = None
 
     async def execute(self, stmt: Any, params: dict | None = None) -> FakeResult:
         self.executed_statements.append((stmt, params))
@@ -95,6 +98,10 @@ class FakeAsyncSession:
             return result
         return FakeResult()
 
+    async def scalar(self, stmt: Any) -> Any:
+        """Support for db.scalar() used by resolve_canonical_user_id."""
+        return self.scalar_result
+
     async def commit(self) -> None:
         self.committed = True
 
@@ -102,6 +109,15 @@ class FakeAsyncSession:
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _set_queue_url(monkeypatch) -> None:
+    """Ensure INGESTION_QUEUE_URL is always set for route tests (prevents 503)."""
+    monkeypatch.setenv(
+        "INGESTION_QUEUE_URL",
+        "https://sqs.us-east-1.amazonaws.com/123456789012/test-ingestion",
+    )
 
 
 @pytest.fixture

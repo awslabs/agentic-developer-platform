@@ -262,23 +262,25 @@ class TestDispatchIngestion:
         assert "T" in body["enqueued_at"]
 
     @pytest.mark.anyio
-    async def test_missing_queue_url_returns_false(self, fake_db, monkeypatch):
-        """Missing INGESTION_QUEUE_URL -> RuntimeError caught, returns False."""
+    async def test_missing_queue_url_raises_unavailable(self, fake_db, monkeypatch):
+        """Missing INGESTION_QUEUE_URL -> IngestionQueueUnavailableError propagates (#2047)."""
+        from src.knowledge.dispatch import IngestionQueueUnavailableError
+
         monkeypatch.delenv("INGESTION_QUEUE_URL", raising=False)
         fake_client = FakeSQSClient()
         set_sqs_client(fake_client)
 
-        result = await dispatch_ingestion(
-            asset_id="asset-008",
-            asset_type="repo",
-            source_ref="https://github.com/acme/my-service",
-            tenant_id="acme-corp",
-            owner_sub="user-alice",
-            project_id=None,
-            db=fake_db,
-        )
+        with pytest.raises(IngestionQueueUnavailableError):
+            await dispatch_ingestion(
+                asset_id="asset-008",
+                asset_type="repo",
+                source_ref="https://github.com/acme/my-service",
+                tenant_id="acme-corp",
+                owner_sub="user-alice",
+                project_id=None,
+                db=fake_db,
+            )
 
-        assert result is False
         assert len(fake_client.messages) == 0
         set_sqs_client(None)
 

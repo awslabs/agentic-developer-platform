@@ -26,7 +26,7 @@ class IngestionScope:
 
     Attributes:
         tenant_id: Organization-level isolation key (None = shared corpus).
-        owner_sub: User-level isolation key (Cognito sub; None = not personal).
+        owner_sub: User-level isolation key (canonical users.id UUID; None = not personal).
         project_id: Project-level grouping (None = unscoped).
         visibility: One of "shared", "tenant", "personal".
     """
