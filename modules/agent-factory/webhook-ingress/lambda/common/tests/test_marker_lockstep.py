@@ -103,3 +103,43 @@ class TestMarkerLockstep:
         parsed = parse_marker(body)
         assert parsed is not None
         assert parsed["chain_depth"] == 0
+
+    def test_dispatch_persona_round_trip(self):
+        """Issue #2149: dispatch_persona field round-trips correctly."""
+        env = {
+            "ADP_CORRELATION_ID": "corr-dispatch-001",
+            "ADP_ROOT_HUMAN_ID": "user-dispatch",
+            "ADP_IS_HUMAN_ROOTED": "true",
+            "ADP_MESSAGE_ID": "msg-dispatch",
+            "ADP_CHAIN_DEPTH": "2",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            body = prepend_correlation_marker(
+                "@agent-developer please review this",
+                dispatch_persona="developer",
+            )
+
+        parsed = parse_marker(body)
+        assert parsed is not None
+        assert parsed["correlation_id"] == "corr-dispatch-001"
+        assert parsed["dispatch_persona"] == "developer"
+        assert parsed["chain_depth"] == 2
+
+    def test_no_dispatch_persona_round_trip(self):
+        """Marker without dispatch_persona parses correctly (backward compat)."""
+        env = {
+            "ADP_CORRELATION_ID": "corr-nodispatch",
+            "ADP_ROOT_HUMAN_ID": "user-nodispatch",
+            "ADP_IS_HUMAN_ROOTED": "true",
+            "ADP_MESSAGE_ID": "msg-nodispatch",
+            "ADP_CHAIN_DEPTH": "1",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            body = prepend_correlation_marker(
+                "## @agent-developer Started\nStatus update"
+            )
+
+        parsed = parse_marker(body)
+        assert parsed is not None
+        assert parsed["correlation_id"] == "corr-nodispatch"
+        assert parsed.get("dispatch_persona") is None

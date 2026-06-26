@@ -107,6 +107,8 @@ class TestReadPointer:
             "triggering_invocation_id": None,
             "chain_depth": None,
             "last_triggered_persona": None,
+            "recent_triggered_personas": set(),
+            "recent_trigger_count": 0,
         }
 
     def test_returns_none_on_ddb_error(self):

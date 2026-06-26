@@ -8,6 +8,12 @@ guard (MAX_CHAIN_DEPTH=8, env-configurable). The self-mention guard is evaluated
 BEFORE the depth check. Bot pull_request events are allowed when the PR body
 carries a valid adp-* marker (marker-gated relaxation). The agent/issue-* branch
 filter and synchronize gate prevent double-triggering.
+
+Issue #2149: Bot comments now require an explicit `adp-dispatch:<persona>` marker
+to trigger a run. Bare `@agent-X` in bot-authored prose (status headers, plans)
+no longer triggers. Human comments still trigger from bare `@agent-X` as before.
+Additionally, a windowed cross-persona loop guard catches A→B→A→B alternation
+that the scalar last_triggered_persona guard cannot detect.
 """
 
 from __future__ import annotations
@@ -22,6 +28,12 @@ logger = logging.getLogger(__name__)
 # Env-configurable for operational flexibility. Default 8 bounds all loop
 # topologies (proven in architect review). Worst case: 8 runs ≈ $4-$16.
 MAX_CHAIN_DEPTH = int(os.environ.get("MAX_CHAIN_DEPTH", "8"))
+
+# Issue #2149: Cross-persona loop threshold. A bot dispatch is blocked when the
+# target persona is already in the recent_triggered_personas set AND the total
+# trigger count meets or exceeds this threshold. Default 4 allows legitimate
+# human→dev→reviewer→dev (3 bot dispatches) while blocking the 4th (loop).
+CROSS_PERSONA_LOOP_THRESHOLD = int(os.environ.get("CROSS_PERSONA_LOOP_THRESHOLD", "4"))
 
 # Label names that trigger specific agent personas.
 LABEL_TO_PERSONA: dict[str, str] = {
@@ -214,23 +226,49 @@ def _handle_issue_comment(
     correlation_ctx: dict | None,
     resolved_identity,
 ) -> Intent | None:
-    """Handle issue_comment.created — depth-only loop guard (issue #1696).
+    """Handle issue_comment.created — dispatch-marker gate + loop guards.
+
+    Issue #2149: Bot comments now require an explicit `adp-dispatch:<persona>`
+    marker to trigger a run. Bare `@agent-X` in bot prose is treated as text.
+    Human comments still trigger from bare `@agent-X` as before.
 
     For human senders: parse @-mention as before, always produces intent.
-    For bot senders: apply depth-only guard (MAX_CHAIN_DEPTH) with self-mention
-    guard evaluated first. Replaces the binary is_new_chain block.
+    For bot senders: require adp-dispatch marker, then apply guard sequence:
+      1. Self-mention guard (depth-0 self-loops)
+      2. Immediate self-re-trigger guard (issue #1716)
+      3. Cross-persona loop guard (issue #2149)
+      4. Depth guard (MAX_CHAIN_DEPTH, issue #1696)
     """
     sender = payload.get("sender", {})
     body = payload.get("comment", {}).get("body", "")
 
-    # Parse @-mention regardless of sender kind
-    persona = _extract_mention_persona(body)
-    if not persona:
-        return None
-
-    # Human sender: always allow (no chain-aware gating needed)
+    # Human sender: parse @-mention, always allow (no chain-aware gating needed)
     if not _is_bot_sender(sender):
+        persona = _extract_mention_persona(body)
+        if not persona:
+            return None
         return Intent(persona=persona, trigger="mentioned", label=None)
+
+    # --- Bot sender path (issue #2149) ---
+    # Bot comments require an explicit adp-dispatch:<persona> marker to trigger.
+    # This separates deliberate dispatch from incidental @agent-X prose in
+    # status comments, plans, and boilerplate.
+    persona = _extract_dispatch_persona_from_marker(body)
+    if not persona:
+        # No dispatch marker found. As a fallback, check if the body contains
+        # a bare @agent-X mention — but log it as blocked (the comment is prose,
+        # not a dispatch). This logging helps diagnose when a legitimate emit
+        # site forgets to include the dispatch marker.
+        bare_persona = _extract_mention_persona(body)
+        if bare_persona:
+            logger.info(
+                "Bot %s comment contains @agent-%s but no adp-dispatch marker "
+                "— treating as prose, not dispatch (issue #2149)",
+                sender.get("login", "unknown"),
+                bare_persona,
+            )
+            _emit_metric("BotMentionWithoutDispatchMarker", {"persona": bare_persona})
+        return None
 
     # Bot sender: depth-only loop guard (issue #1696)
     if correlation_ctx is None:
@@ -256,13 +294,7 @@ def _handle_issue_comment(
 
     # Immediate self-re-trigger guard (issue #1716): block when the mentioned
     # persona is the SAME as the persona most recently triggered in this chain.
-    # This stops an agent's own status comments (which contain its persona token
-    # in boilerplate, e.g. "**Agent**: @agent-developer") from re-spawning the
-    # same persona — the self-loop the depth-only guard (issue #1696) failed to
-    # catch because the shared bot identity doesn't resolve to a per-persona
-    # bot_kind. Server-side (read from the correlation pointer), NOT spoofable
-    # via the marker. Cross-persona cycles (reviewer→developer→reviewer) remain
-    # allowed because each hop's persona differs from the previous.
+    # Server-side (read from the correlation pointer), NOT spoofable via marker.
     last_persona = correlation_ctx.get("last_triggered_persona")
     if last_persona and persona == last_persona:
         logger.info(
@@ -273,6 +305,25 @@ def _handle_issue_comment(
             correlation_ctx.get("correlation_id", "unknown"),
         )
         _emit_metric("SelfReTriggerBlocked", {"persona": persona})
+        return None
+
+    # Issue #2149: Cross-persona loop guard. Catches A→B→A→B alternation that
+    # the scalar last_triggered_persona guard cannot detect. Blocks when the
+    # target persona has ALREADY been triggered in this chain AND the total
+    # trigger count meets or exceeds CROSS_PERSONA_LOOP_THRESHOLD.
+    recent_personas = correlation_ctx.get("recent_triggered_personas", set())
+    recent_count = correlation_ctx.get("recent_trigger_count", 0)
+    if persona in recent_personas and recent_count >= CROSS_PERSONA_LOOP_THRESHOLD:
+        logger.info(
+            "Cross-persona loop detected: %s already in recent set %s (count=%d, "
+            "threshold=%d) in chain %s — blocking",
+            persona,
+            recent_personas,
+            recent_count,
+            CROSS_PERSONA_LOOP_THRESHOLD,
+            correlation_ctx.get("correlation_id", "unknown"),
+        )
+        _emit_metric("CrossPersonaLoopBlocked", {"persona": persona})
         return None
 
     # Depth-only guard (issue #1696): block when chain depth >= MAX_CHAIN_DEPTH.
@@ -290,9 +341,9 @@ def _handle_issue_comment(
         _emit_metric("ChainDepthExceeded", {"persona": persona, "depth": str(chain_depth)})
         return None
 
-    # Depth within bounds, not self-mention → allow bot-to-bot trigger
+    # All guards passed → allow bot-to-bot trigger
     logger.info(
-        "Bot %s triggering %s at chain depth %d — allowing",
+        "Bot %s triggering %s at chain depth %d (dispatch marker present) — allowing",
         sender.get("login", "unknown"),
         persona,
         chain_depth,
@@ -306,6 +357,36 @@ def _handle_issue_comment(
     )
 
     return Intent(persona=persona, trigger="mentioned", label=None)
+
+
+def _extract_dispatch_persona_from_marker(body: str) -> str | None:
+    """Extract the dispatch persona from an adp-dispatch marker in the body.
+
+    Issue #2149: Only parses the first 1000 bytes (markers are always prepended).
+    Returns the persona string if `adp-dispatch:<persona>` is found, else None.
+    """
+    if not body:
+        return None
+
+    from common.marker_parse import parse_marker
+
+    marker_data = parse_marker(body)
+    if marker_data is None:
+        return None
+
+    dispatch_persona = marker_data.get("dispatch_persona")
+    if not dispatch_persona:
+        return None
+
+    # Validate the dispatch persona against known personas
+    if dispatch_persona not in {p for p in MENTION_TO_PERSONA.values()}:
+        logger.warning(
+            "adp-dispatch marker contains unknown persona %r — ignoring",
+            dispatch_persona,
+        )
+        return None
+
+    return dispatch_persona
 
 
 def _emit_metric(metric_name: str, dimensions: dict[str, str]) -> None:

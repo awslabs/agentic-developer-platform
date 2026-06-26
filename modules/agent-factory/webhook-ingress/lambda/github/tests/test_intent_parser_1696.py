@@ -53,10 +53,20 @@ VALID_MARKER = "<!-- adp-correlation:corr-123 adp-root-human:user-456 adp-is-hum
 class TestDepthOnlyGuard:
     """Test the depth-only loop guard (replaces is_new_chain)."""
 
-    def _make_comment_payload(self, mention="@agent-developer", sender=None):
+    def _make_comment_payload(self, mention="@agent-developer", sender=None, persona="developer"):
+        # Issue #2149: bot comments need adp-dispatch marker to reach depth guard.
+        # For human senders, use bare mention (unchanged behavior).
+        if sender and sender.get("type") != "Bot" and not sender.get("login", "").endswith("[bot]"):
+            body = f"Hey {mention} please fix this"
+        else:
+            body = (
+                f"<!-- adp-correlation:corr-001 adp-root-human:user-alice "
+                f"adp-is-human-rooted:true adp-dispatch:{persona} -->\n"
+                f"Hey {mention} please fix this"
+            )
         return {
             "action": "created",
-            "comment": {"body": f"Hey {mention} please fix this"},
+            "comment": {"body": body},
             "issue": {"number": 55},
             "sender": sender or _bot_sender(),
             "installation": {"id": 123},
@@ -176,9 +186,15 @@ class TestSelfMentionGuard:
 
     def test_self_mention_blocked(self):
         """Bot mentioning its own persona is blocked regardless of depth."""
+        # Issue #2149: include dispatch marker so self-mention guard is reached
+        body = (
+            "<!-- adp-correlation:corr-001 adp-root-human:user-alice "
+            "adp-is-human-rooted:true adp-dispatch:operations -->\n"
+            "@agent-operations let me re-run"
+        )
         payload = {
             "action": "created",
-            "comment": {"body": "@agent-operations let me re-run"},
+            "comment": {"body": body},
             "issue": {"number": 55},
             "sender": _bot_sender(),
             "installation": {"id": 123},
@@ -197,9 +213,15 @@ class TestSelfMentionGuard:
 
     def test_cross_mention_allowed(self):
         """Bot mentioning a DIFFERENT persona is allowed (not self-mention)."""
+        # Issue #2149: include dispatch marker for valid bot-to-bot trigger
+        body = (
+            "<!-- adp-correlation:corr-001 adp-root-human:user-alice "
+            "adp-is-human-rooted:true adp-dispatch:developer -->\n"
+            "@agent-developer please fix this"
+        )
         payload = {
             "action": "created",
-            "comment": {"body": "@agent-developer please fix this"},
+            "comment": {"body": body},
             "issue": {"number": 55},
             "sender": _bot_sender(),
             "installation": {"id": 123},
@@ -510,10 +532,20 @@ class TestSelfReTriggerGuard:
     resolve to a per-persona bot_kind.
     """
 
-    def _payload(self, mention="@agent-developer", sender=None):
+    def _payload(self, mention="@agent-developer", sender=None, persona="developer"):
+        # Issue #2149: bot comments need adp-dispatch marker.
+        # For human senders, use bare mention (unchanged behavior).
+        if sender and sender.get("type") != "Bot" and not sender.get("login", "").endswith("[bot]"):
+            body = f"## Implementation Plan\n**Agent**: {mention}\nworking..."
+        else:
+            body = (
+                f"<!-- adp-correlation:corr-test adp-root-human:user-alice "
+                f"adp-is-human-rooted:true adp-dispatch:{persona} -->\n"
+                f"## Implementation Plan\n**Agent**: {mention}\nworking..."
+            )
         return {
             "action": "created",
-            "comment": {"body": f"## Implementation Plan\n**Agent**: {mention}\nworking..."},
+            "comment": {"body": body},
             "issue": {"number": 1714},
             "sender": sender or _bot_sender(),
             "installation": {"id": 123},
@@ -521,7 +553,7 @@ class TestSelfReTriggerGuard:
 
     def test_blocks_same_persona_as_last_triggered(self):
         """THE BUG: developer's own comment re-triggering developer → blocked."""
-        payload = self._payload("@agent-developer")
+        payload = self._payload("@agent-developer", persona="developer")
         ctx = {
             "correlation_id": "corr-loop",
             "root_human_id": "user-alice",
@@ -543,7 +575,7 @@ class TestSelfReTriggerGuard:
         This is the legitimate cross-persona cycle (#1320 review→fix) that a
         full per-persona repetition guard would have wrongly blocked.
         """
-        payload = self._payload("@agent-developer")
+        payload = self._payload("@agent-developer", persona="developer")
         ctx = {
             "correlation_id": "corr-cycle",
             "root_human_id": "user-alice",
@@ -560,7 +592,7 @@ class TestSelfReTriggerGuard:
 
     def test_allows_reviewer_developer_reviewer_cycle(self):
         """developer mentions @agent-reviewer (last=developer) → allowed."""
-        payload = self._payload("@agent-reviewer")
+        payload = self._payload("@agent-reviewer", persona="reviewer")
         ctx = {
             "correlation_id": "corr-cycle",
             "root_human_id": "user-alice",
@@ -577,7 +609,7 @@ class TestSelfReTriggerGuard:
 
     def test_allows_when_no_last_triggered_persona(self):
         """No last_triggered_persona on pointer (fresh/old chain) → not gated by this guard."""
-        payload = self._payload("@agent-developer")
+        payload = self._payload("@agent-developer", persona="developer")
         ctx = {
             "correlation_id": "corr-new",
             "root_human_id": "user-alice",

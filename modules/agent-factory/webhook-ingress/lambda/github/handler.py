@@ -381,6 +381,9 @@ def determine_correlation(
                 ),
                 "chain_depth": inherited_depth + 1,
                 "last_triggered_persona": pointer.get("last_triggered_persona"),
+                # Issue #2149: preserve cross-persona loop tracking from pointer
+                "recent_triggered_personas": pointer.get("recent_triggered_personas", set()),
+                "recent_trigger_count": pointer.get("recent_trigger_count", 0),
             }
         else:
             # Different correlation — marker represents cross-channel hop
@@ -409,6 +412,9 @@ def determine_correlation(
             "parent_invocation_id": pointer.get("triggering_invocation_id"),
             "chain_depth": inherited_depth + 1,
             "last_triggered_persona": pointer.get("last_triggered_persona"),
+            # Issue #2149: preserve cross-persona loop tracking from pointer
+            "recent_triggered_personas": pointer.get("recent_triggered_personas", set()),
+            "recent_trigger_count": pointer.get("recent_trigger_count", 0),
         }
 
     if marker:
@@ -812,6 +818,15 @@ def handler(event: dict, context) -> dict:
 
         # Write correlation pointer (fail-soft)
         try:
+            # Issue #2149: Merge the new persona into the recent set and
+            # increment the count so the cross-persona loop guard can detect
+            # A→B→A→B alternation on the next inbound event.
+            existing_recent = correlation_ctx.get("recent_triggered_personas", set())
+            if not isinstance(existing_recent, set):
+                existing_recent = set(existing_recent) if existing_recent else set()
+            updated_recent = existing_recent | {intent.persona}
+            updated_count = correlation_ctx.get("recent_trigger_count", 0) + 1
+
             _get_correlation_store().write_pointer(
                 key=channel_key_str,
                 correlation_id=correlation_ctx["correlation_id"],
@@ -821,6 +836,9 @@ def handler(event: dict, context) -> dict:
                 # in this chain can be blocked if it re-targets the SAME persona
                 # (immediate self-re-trigger guard, issue #1716).
                 last_triggered_persona=intent.persona,
+                # Issue #2149: cross-persona loop tracking
+                recent_triggered_personas=updated_recent,
+                recent_trigger_count=updated_count,
             )
         except Exception as e:
             logger.warning("write_pointer failed (fail-soft): %s", e)

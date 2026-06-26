@@ -87,6 +87,15 @@ def read_pointer(key: str) -> dict | None:
                 chain_depth = int(chain_depth)
             except (ValueError, TypeError):
                 chain_depth = None
+        # Issue #2149: recent_trigger_count for cross-persona loop detection
+        recent_trigger_count = item.get("recent_trigger_count")
+        if recent_trigger_count is not None:
+            try:
+                recent_trigger_count = int(recent_trigger_count)
+            except (ValueError, TypeError):
+                recent_trigger_count = 0
+        else:
+            recent_trigger_count = 0
         return {
             "correlation_id": item["correlation_id"],
             "root_human_id": item["root_human_id"],
@@ -100,6 +109,14 @@ def read_pointer(key: str) -> dict | None:
             # from re-spawning the same persona, WITHOUT blocking legitimate
             # cross-persona cycles like reviewer→developer→reviewer.
             "last_triggered_persona": item.get("last_triggered_persona"),
+            # Issue #2149: Set of all personas triggered in this chain on this
+            # channel + total count. Used by the cross-persona loop guard to
+            # catch A→B→A→B alternation that the scalar last_triggered_persona
+            # guard cannot detect.
+            "recent_triggered_personas": set(
+                item.get("recent_triggered_personas", []) or []
+            ),
+            "recent_trigger_count": recent_trigger_count,
         }
     except ClientError as e:
         logger.warning(
@@ -121,6 +138,8 @@ def write_pointer(
     ttl_days: int = 7,
     triggering_invocation_id: str | None = None,
     last_triggered_persona: str | None = None,
+    recent_triggered_personas: set | None = None,
+    recent_trigger_count: int | None = None,
 ) -> None:
     """Idempotently upsert a correlation pointer with TTL.
 
@@ -136,6 +155,11 @@ def write_pointer(
             if it targets the SAME persona (immediate self-re-trigger guard,
             issue #1716). NOT preserved when None (so we never clobber a real
             value with a missing one on a continuation write).
+        recent_triggered_personas: Issue #2149 — set of all personas triggered
+            in this chain. Used by the cross-persona loop guard to detect
+            A→B→A→B alternation. NOT preserved when None.
+        recent_trigger_count: Issue #2149 — total number of bot-triggered
+            dispatches in this chain. NOT preserved when None.
     """
     table = _get_table()
     if table is None:
@@ -155,6 +179,13 @@ def write_pointer(
         item["triggering_invocation_id"] = triggering_invocation_id
     if last_triggered_persona:
         item["last_triggered_persona"] = last_triggered_persona
+    # Issue #2149: persist cross-persona loop tracking fields
+    if recent_triggered_personas is not None:
+        # DynamoDB StringSet — must be non-empty; omit if empty set
+        if recent_triggered_personas:
+            item["recent_triggered_personas"] = recent_triggered_personas
+    if recent_trigger_count is not None:
+        item["recent_trigger_count"] = recent_trigger_count
 
     try:
         table.put_item(Item=item)

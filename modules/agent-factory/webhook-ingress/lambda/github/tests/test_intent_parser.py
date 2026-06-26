@@ -425,11 +425,18 @@ class TestChainAwareBotLogic:
         assert result.persona == "developer"
 
     # 4. Bot mentions another bot, NO pointer → NEW chain → Intent
+    #    Issue #2149: requires adp-dispatch marker for bot-to-bot triggers.
     @patch("intent_parser._emit_metric")
     def test_bot_starts_new_subchain(self, mock_metric):
+        # Issue #2149: bot comments need adp-dispatch marker to trigger
+        dispatch_body = (
+            "<!-- adp-correlation:corr-new-001 adp-root-human:user-alice-456 "
+            "adp-is-human-rooted:true adp-dispatch:developer -->\n"
+            "@agent-developer please implement this fix"
+        )
         payload = {
             "action": "created",
-            "comment": {"body": "@agent-developer please implement this fix"},
+            "comment": {"body": dispatch_body},
             "issue": {"number": 55},
             "sender": self._bot_sender(),
             "installation": {"id": 123},
@@ -452,9 +459,15 @@ class TestChainAwareBotLogic:
     @patch("intent_parser._emit_metric")
     def test_bot_in_active_chain_blocked(self, mock_metric):
         """Bot mention at depth >= MAX_CHAIN_DEPTH is blocked (issue #1696)."""
+        # Issue #2149: bot comments need adp-dispatch marker to reach depth guard
+        dispatch_body = (
+            "<!-- adp-correlation:corr-active-002 adp-root-human:user-alice-456 "
+            "adp-is-human-rooted:true adp-dispatch:developer -->\n"
+            "@agent-developer please implement this fix"
+        )
         payload = {
             "action": "created",
-            "comment": {"body": "@agent-developer please implement this fix"},
+            "comment": {"body": dispatch_body},
             "issue": {"number": 55},
             "sender": self._bot_sender(),
             "installation": {"id": 123},

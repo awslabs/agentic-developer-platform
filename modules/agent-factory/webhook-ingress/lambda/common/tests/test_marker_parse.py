@@ -123,3 +123,69 @@ class TestHasValidMarker:
 
     def test_legacy_marker(self):
         assert has_valid_marker(MARKER_LEGACY) is True
+
+
+# --- Issue #2149: adp-dispatch field ---
+
+MARKER_WITH_DISPATCH = (
+    "<!-- adp-correlation:corr-dispatch-001 adp-root-human:user-d "
+    "adp-is-human-rooted:true adp-invocation:msg-d adp-chain-depth:2 "
+    "adp-dispatch:developer -->"
+)
+
+MARKER_WITH_DISPATCH_REVIEWER = (
+    "<!-- adp-correlation:corr-dispatch-002 adp-root-human:user-r "
+    "adp-is-human-rooted:true adp-dispatch:reviewer -->"
+)
+
+
+class TestDispatchPersonaField:
+    """Issue #2149: parse adp-dispatch:<persona> from markers."""
+
+    def test_dispatch_persona_parsed(self):
+        """Marker with adp-dispatch:developer parses correctly."""
+        result = parse_marker(MARKER_WITH_DISPATCH + "\nBody")
+        assert result is not None
+        assert result["dispatch_persona"] == "developer"
+        # Other fields still work
+        assert result["correlation_id"] == "corr-dispatch-001"
+        assert result["chain_depth"] == 2
+
+    def test_dispatch_persona_reviewer(self):
+        """Marker with adp-dispatch:reviewer parses correctly."""
+        result = parse_marker(MARKER_WITH_DISPATCH_REVIEWER + "\nBody")
+        assert result is not None
+        assert result["dispatch_persona"] == "reviewer"
+
+    def test_dispatch_persona_absent_on_legacy_markers(self):
+        """Old markers without adp-dispatch parse with dispatch_persona=None."""
+        result = parse_marker(MARKER_FULL + "\nBody")
+        assert result is not None
+        assert result["dispatch_persona"] is None
+
+    def test_dispatch_persona_absent_on_partial_markers(self):
+        """Partial markers return dispatch_persona=None."""
+        result = parse_marker(MARKER_PARTIAL + "\nBody")
+        assert result is not None
+        assert result["dispatch_persona"] is None
+
+    def test_dispatch_field_with_hyphenated_persona(self):
+        """Hyphenated persona names parse correctly."""
+        marker = (
+            "<!-- adp-correlation:corr-x adp-root-human:user-y "
+            "adp-is-human-rooted:true adp-dispatch:malware-analysis-agent -->"
+        )
+        result = parse_marker(marker)
+        assert result is not None
+        assert result["dispatch_persona"] == "malware-analysis-agent"
+
+    def test_dispatch_field_does_not_break_other_parsing(self):
+        """Adding dispatch field doesn't interfere with other field parsing."""
+        result = parse_marker(MARKER_WITH_DISPATCH)
+        assert result is not None
+        assert result["correlation_id"] == "corr-dispatch-001"
+        assert result["root_human_id"] == "user-d"
+        assert result["is_human_rooted"] is True
+        assert result["invocation_id"] == "msg-d"
+        assert result["chain_depth"] == 2
+        assert result["dispatch_persona"] == "developer"

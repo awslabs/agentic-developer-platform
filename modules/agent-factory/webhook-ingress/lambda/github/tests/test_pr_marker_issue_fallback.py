@@ -50,7 +50,9 @@ class TestPrMarkerIssueFallback:
     def test_body_with_valid_marker_used_as_is(self):
         """If the PR body already has a valid marker, use it (no fallback)."""
         store = _store_with_issue_pointer()
-        marked = "<!-- adp-correlation:corr-PR adp-root-human:u adp-is-human-rooted:true -->\n## Summary"
+        marked = (
+            "<!-- adp-correlation:corr-PR adp-root-human:u adp-is-human-rooted:true -->\n## Summary"
+        )
         result = _pr_marker_text_with_issue_fallback(store, "aws-e/adp", marked, "agent/issue-1733")
         assert result == marked
         store.read_pointer.assert_not_called()

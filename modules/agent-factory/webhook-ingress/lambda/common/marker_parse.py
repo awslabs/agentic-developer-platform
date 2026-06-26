@@ -26,6 +26,9 @@ _FIELD_PATTERNS: dict[str, re.Pattern] = {
     "is_human_rooted": re.compile(r"adp-is-human-rooted:([^\s]+)"),
     "invocation_id": re.compile(r"adp-invocation:([^\s]+)"),
     "chain_depth": re.compile(r"adp-chain-depth:([^\s]+)"),
+    # Issue #2149: Explicit dispatch marker — distinguishes deliberate bot→bot
+    # dispatch from incidental @agent-X prose in status comments.
+    "dispatch_persona": re.compile(r"adp-dispatch:([^\s]+)"),
 }
 
 
@@ -41,6 +44,8 @@ def parse_marker(text: str) -> dict[str, Any] | None:
         - is_human_rooted: bool
         - invocation_id: str | None  (the producing run's ADP_MESSAGE_ID)
         - chain_depth: int | None
+        - dispatch_persona: str | None  (issue #2149: target persona for
+          deliberate bot→bot dispatch; None when the comment is prose)
 
     Returns None if no marker is present or if required fields
     (correlation_id) are missing.
