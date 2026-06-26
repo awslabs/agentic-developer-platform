@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.admin.middleware import create_request_logging_middleware
-from src.auth.dependencies import get_current_user, require_admin  # Issue #1424, #1791: for agent-context router guards
+from src.auth.dependencies import require_admin  # Issue #1424: for agent-context indexing admin router guard
 from src.auth.middleware import TokenContextMiddleware
 from src.budget.enforcement_middleware import BudgetEnforcementMiddleware
 from src.ratelimit.enforcement_middleware import RateLimitEnforcementMiddleware
@@ -39,6 +39,8 @@ UNIT_MODULES = [
     "src.ratelimit.routes",
     "src.usage.routes",
     "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)
+    "src.knowledge.routes",  # Issue #2045: Knowledge-assets registry CRUD
+    "src.knowledge.github_repos",  # Issue #2045: GitHub repo picker
 ]
 
 
@@ -227,48 +229,8 @@ def create_app() -> FastAPI:
                 extra={"error": str(e)},
             )
 
-        # Issue #1791: Mount knowledge-assets registry CRUD router (user-facing).
-        try:
-            from agent_context.api.assets_router import (
-                get_assets_db,
-                get_current_user_from_state,
-            )
-            from agent_context.api.assets_router import router as assets_router
-
-            app.dependency_overrides[get_assets_db] = get_db
-            app.dependency_overrides[get_current_user_from_state] = get_current_user
-            app.include_router(
-                assets_router,
-                dependencies=[Depends(get_current_user)],
-            )
-            logger.info("Agent-context assets registry router mounted")
-        except ImportError as e:
-            logger.debug(
-                "Agent-context assets router not available, skipped",
-                extra={"error": str(e)},
-            )
-
-        # Issue #1793: Mount GitHub repo picker router (user-facing).
-        try:
-            from agent_context.api.github_repos import (
-                get_current_user_from_state as gh_get_user,
-            )
-            from agent_context.api.github_repos import (
-                get_repos_db,
-            )
-            from agent_context.api.github_repos import router as github_repos_router
-
-            app.dependency_overrides[get_repos_db] = get_db
-            app.dependency_overrides[gh_get_user] = get_current_user
-            app.include_router(
-                github_repos_router,
-                dependencies=[Depends(get_current_user)],
-            )
-            logger.info("Agent-context GitHub repo picker router mounted")
-        except ImportError as e:
-            logger.debug(
-                "Agent-context GitHub repos router not available, skipped",
-                extra={"error": str(e)},
-            )
+        # Issue #2045: knowledge-assets and github-repos routers are now native
+        # to the gateway (src.knowledge.routes, src.knowledge.github_repos) and
+        # registered via UNIT_MODULES above. No cross-module import needed.
 
     return app

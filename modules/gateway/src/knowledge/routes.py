@@ -1,0 +1,874 @@
+"""Knowledge-assets registry CRUD API router.
+
+Issue #2045: Relocated from agent_context.api.assets_router into the gateway.
+Original: Issue #1791 (Story B of E10 #1736).
+
+Register/list/detail/delete/reindex endpoints + bulk upload (preview + commit).
+Scope derived from the authenticated session (TokenContext), soft quota check.
+
+Database dependency: uses the gateway's own get_db session factory directly.
+Auth: uses the gateway's get_current_user dependency directly.
+
+Gating: this module's router is only exposed when AGENT_CONTEXT_ENABLED=true.
+The UNIT_MODULES auto-discovery loop checks `hasattr(module, "router")` — when
+the gate is off, `router` is not defined so the routes are silently skipped.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import uuid
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.auth.dependencies import get_current_user
+from src.knowledge.bulk_parser import MAX_FILE_SIZE_BYTES, MAX_LINES, parse_bulk_file
+from src.knowledge.dispatch import dispatch_ingestion
+from src.knowledge.schemas import (
+    AssetCreateRequest,
+    AssetDetailResponse,
+    AssetIndexStage,
+    AssetListResponse,
+    AssetResponse,
+    AssetStatusResponse,
+    BulkCommitRequest,
+    BulkCommitResponse,
+    BulkDuplicateItem,
+    BulkPreviewResponse,
+    QuotaDetail,
+    QuotaInfo,
+)
+from src.knowledge.type_registry import is_valid_asset_type, validate_source_ref
+from src.shared.database import get_db
+
+logger = logging.getLogger("bedrockgateway.knowledge.routes")
+
+_router = APIRouter(prefix="/api/agent-context/assets", tags=["knowledge-assets"])
+
+# ---------------------------------------------------------------------------
+# Quota defaults (overridable via env / SSM)
+# ---------------------------------------------------------------------------
+
+DEFAULT_QUOTAS: dict[str, dict[str, int]] = {
+    "personal": {"repo": 20, "url": 50, "doc": 20},
+    "tenant": {"repo": 200, "url": 500, "doc": 200},
+}
+
+
+def _get_quota_limit(scope: str, asset_type: str) -> int:
+    """Return the quota limit for a given scope and asset_type."""
+    env_key = f"ASSET_QUOTA_{scope.upper()}_{asset_type.upper()}"
+    env_val = os.environ.get(env_key)
+    if env_val and env_val.isdigit():
+        return int(env_val)
+    return DEFAULT_QUOTAS.get(scope, {}).get(asset_type, 50)
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+
+@_router.post("", response_model=AssetResponse, status_code=201)
+async def register_asset(
+    body: AssetCreateRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+) -> AssetResponse:
+    """Register one asset. Scope from session, soft quota check, dispatch to SQS."""
+    # Validate asset_type against registry
+    if not is_valid_asset_type(body.asset_type):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown asset_type: '{body.asset_type}'. Supported types: repo, url, doc",
+        )
+
+    # Validate source_ref pattern for the type
+    if not validate_source_ref(body.asset_type, body.source_ref):
+        raise HTTPException(
+            status_code=400,
+            detail=f"source_ref does not match expected pattern for type '{body.asset_type}'",
+        )
+
+    # Derive scope from session
+    tenant_id = current_user.org_id or None
+    owner_sub: str | None = None
+    scope_key = body.scope
+
+    if body.scope == "personal":
+        owner_sub = current_user.user_id
+    elif body.scope == "tenant":
+        if not current_user.is_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="Tenant-scope registration requires admin privileges",
+            )
+
+    # Soft quota check
+    quota_limit = _get_quota_limit(scope_key, body.asset_type)
+    count_result = await db.execute(
+        text("""
+            SELECT COUNT(*) FROM knowledge_assets
+            WHERE tenant_id = :tid
+              AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+              AND asset_type = :atype
+              AND status != 'removed'
+        """),
+        {"tid": tenant_id or "", "sub": owner_sub or "", "atype": body.asset_type},
+    )
+    current_count = count_result.scalar() or 0
+
+    if current_count >= quota_limit:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": "Quota exceeded",
+                "quota": {
+                    body.asset_type: {"used": current_count, "limit": quota_limit},
+                },
+            },
+        )
+
+    # Check for duplicate (same source_ref in same scope)
+    dup_result = await db.execute(
+        text("""
+            SELECT id FROM knowledge_assets
+            WHERE source_ref = :sref
+              AND COALESCE(tenant_id, '') = COALESCE(:tid, '')
+              AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+              AND status != 'removed'
+            LIMIT 1
+        """),
+        {"sref": body.source_ref, "tid": tenant_id or "", "sub": owner_sub or ""},
+    )
+    existing = dup_result.fetchone()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Asset already registered under this scope",
+                "existing_id": str(existing.id),
+            },
+        )
+
+    # Insert
+    asset_id = str(uuid.uuid4())
+    await db.execute(
+        text("""
+            INSERT INTO knowledge_assets
+                (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
+                 status, registered_by, metadata, display_name, tags)
+            VALUES
+                (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
+                 'registered', :registered_by, :metadata::jsonb,
+                 :display_name, :tags::jsonb)
+        """),
+        {
+            "id": asset_id,
+            "asset_type": body.asset_type,
+            "source_ref": body.source_ref,
+            "tenant_id": tenant_id,
+            "owner_sub": owner_sub,
+            "registered_by": current_user.user_id,
+            "metadata": _json_dumps(body.metadata),
+            "display_name": body.display_name,
+            "tags": _json_dumps(body.tags),
+        },
+    )
+    await db.commit()
+
+    # Phase 1 inline dispatch: publish to SQS, update status to 'queued'.
+    # Row is at 'registered' — row-before-publish invariant.
+    # On failure, row stays at 'registered' (recoverable by sweeper/reindex).
+    try:
+        await dispatch_ingestion(
+            asset_id=asset_id,
+            asset_type=body.asset_type,
+            source_ref=body.source_ref,
+            tenant_id=tenant_id,
+            owner_sub=owner_sub,
+            project_id=None,
+            db=db,
+        )
+    except Exception:
+        logger.warning(
+            "Ingestion dispatch failed for asset %s — row stays at 'registered'",
+            asset_id,
+            exc_info=True,
+        )
+
+    # Fetch the created row (may be 'registered' or 'queued' depending on dispatch)
+    row = await _fetch_asset_by_id(db, asset_id)
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to read created asset")
+    return _row_to_response(row)
+
+
+@_router.get("", response_model=AssetListResponse)
+async def list_assets(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+    scope: Annotated[str | None, Query()] = None,
+    asset_type: Annotated[str | None, Query()] = None,
+    status: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> AssetListResponse:
+    """List/filter assets for caller's scope."""
+    conditions: list[str] = ["status != 'removed'"]
+    params: dict[str, Any] = {}
+
+    # Scope filtering
+    if scope == "personal":
+        conditions.append("owner_sub = :sub")
+        params["sub"] = current_user.user_id
+        conditions.append("tenant_id = :tid")
+        params["tid"] = current_user.org_id
+    elif scope == "tenant":
+        conditions.append("tenant_id = :tid")
+        params["tid"] = current_user.org_id
+        conditions.append("owner_sub IS NULL")
+    else:
+        # Default: show all assets the user can see (personal + tenant)
+        conditions.append("tenant_id = :tid")
+        params["tid"] = current_user.org_id
+
+    if asset_type:
+        conditions.append("asset_type = :atype")
+        params["atype"] = asset_type
+    if status:
+        conditions.append("status = :status")
+        params["status"] = status
+
+    where_clause = " AND ".join(conditions)
+
+    # Count
+    count_result = await db.execute(
+        text(f"SELECT COUNT(*) FROM knowledge_assets WHERE {where_clause}"),
+        params,
+    )
+    total = count_result.scalar() or 0
+
+    # Fetch page
+    offset = (page - 1) * page_size
+    params["limit"] = page_size
+    params["offset"] = offset
+    rows_result = await db.execute(
+        text(f"""
+            SELECT id, asset_type, source_ref, display_name, tags, metadata,
+                   tenant_id, owner_sub, project_id, status, last_error,
+                   retry_count, registered_by, created_at, updated_at
+            FROM knowledge_assets
+            WHERE {where_clause}
+            ORDER BY created_at DESC
+            LIMIT :limit OFFSET :offset
+        """),
+        params,
+    )
+    rows = rows_result.fetchall()
+
+    items = [_row_to_response(r) for r in rows]
+
+    # Quota info
+    quota = await _get_quota_info(db, current_user)
+
+    return AssetListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        has_more=(offset + page_size) < total,
+        quota=quota,
+    )
+
+
+@_router.get("/{asset_id}", response_model=AssetDetailResponse)
+async def get_asset_detail(
+    asset_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+) -> AssetDetailResponse:
+    """Get asset detail. Only visible if caller has scope access."""
+    row = await _fetch_asset_by_id(db, asset_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    # Scope check: user must be in the same tenant
+    if row.tenant_id and row.tenant_id != current_user.org_id:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    # Personal assets: only visible to owner or admin
+    if row.owner_sub and row.owner_sub != current_user.user_id and not current_user.is_admin:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    return AssetDetailResponse(**_row_to_response(row).model_dump())
+
+
+@_router.delete("/{asset_id}", status_code=204)
+async def delete_asset(
+    asset_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+) -> None:
+    """Soft-delete asset (status = 'removed'). Owner or tenant admin."""
+    row = await _fetch_asset_by_id(db, asset_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    # Authorization: owner or tenant admin
+    _authorize_modify(row, current_user)
+
+    await db.execute(
+        text("""
+            UPDATE knowledge_assets
+            SET status = 'removed', updated_at = NOW()
+            WHERE id = :id
+        """),
+        {"id": asset_id},
+    )
+    await db.commit()
+
+
+@_router.post("/{asset_id}/reindex", response_model=AssetResponse)
+async def reindex_asset(
+    asset_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+) -> AssetResponse:
+    """Re-queue asset for indexing: set status = 'registered'. Owner or admin."""
+    row = await _fetch_asset_by_id(db, asset_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    _authorize_modify(row, current_user)
+
+    await db.execute(
+        text("""
+            UPDATE knowledge_assets
+            SET status = 'registered', last_error = NULL, updated_at = NOW()
+            WHERE id = :id
+        """),
+        {"id": asset_id},
+    )
+    await db.commit()
+
+    # Phase 1 inline dispatch: re-publish to SQS after resetting to 'registered'.
+    try:
+        await dispatch_ingestion(
+            asset_id=asset_id,
+            asset_type=row.asset_type,
+            source_ref=row.source_ref,
+            tenant_id=row.tenant_id,
+            owner_sub=row.owner_sub,
+            project_id=str(row.project_id) if row.project_id else None,
+            db=db,
+        )
+    except Exception:
+        logger.warning(
+            "Ingestion dispatch failed for reindex of asset %s — row stays at 'registered'",
+            asset_id,
+            exc_info=True,
+        )
+
+    updated_row = await _fetch_asset_by_id(db, asset_id)
+    if not updated_row:
+        raise HTTPException(status_code=500, detail="Failed to read updated asset")
+    return _row_to_response(updated_row)
+
+
+@_router.get("/{asset_id}/status", response_model=AssetStatusResponse)
+async def get_asset_status(
+    asset_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+) -> AssetStatusResponse:
+    """Get per-tool indexing status for an asset.
+
+    Joins knowledge_assets.source_ref -> repositories.git_url -> index_runs ->
+    index_run_stages to derive per-stage status from the latest run.
+    """
+    row = await _fetch_asset_by_id(db, asset_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    # Scope check: user must be in the same tenant
+    if row.tenant_id and row.tenant_id != current_user.org_id:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    # Personal assets: only visible to owner or admin
+    if row.owner_sub and row.owner_sub != current_user.user_id and not current_user.is_admin:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    source_ref = row.source_ref
+
+    # Join: knowledge_assets.source_ref -> repositories.git_url
+    repo_result = await db.execute(
+        text("""
+            SELECT id FROM repositories
+            WHERE git_url = :source_ref
+            LIMIT 1
+        """),
+        {"source_ref": source_ref},
+    )
+    repo_row = repo_result.fetchone()
+
+    if not repo_row:
+        return AssetStatusResponse(
+            asset_id=asset_id,
+            source_ref=source_ref,
+            repo_found=False,
+        )
+
+    repo_id = str(repo_row.id)
+
+    # Get the latest index_run for this repo
+    run_result = await db.execute(
+        text("""
+            SELECT id, status, started_at
+            FROM index_runs
+            WHERE repo_id = :repo_id
+            ORDER BY started_at DESC
+            LIMIT 1
+        """),
+        {"repo_id": repo_id},
+    )
+    run_row = run_result.fetchone()
+
+    if not run_row:
+        return AssetStatusResponse(
+            asset_id=asset_id,
+            source_ref=source_ref,
+            repo_found=True,
+        )
+
+    run_id = str(run_row.id)
+
+    # Get index_run_stages for this run + repo
+    stages_result = await db.execute(
+        text("""
+            SELECT stage, status, artifact_ref, error, started_at, completed_at
+            FROM index_run_stages
+            WHERE run_id = :run_id
+              AND repo = :source_ref
+            ORDER BY stage
+        """),
+        {"run_id": run_id, "source_ref": source_ref},
+    )
+    stage_rows = stages_result.fetchall()
+
+    stages = [
+        AssetIndexStage(
+            stage=s.stage,
+            status=s.status,
+            artifact_ref=s.artifact_ref,
+            error=s.error,
+            started_at=s.started_at,
+            completed_at=s.completed_at,
+        )
+        for s in stage_rows
+    ]
+
+    return AssetStatusResponse(
+        asset_id=asset_id,
+        source_ref=source_ref,
+        repo_found=True,
+        run_id=run_id,
+        run_status=run_row.status,
+        run_started_at=run_row.started_at,
+        stages=stages,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bulk Upload — Two-Step: Preview + Commit
+# ---------------------------------------------------------------------------
+
+
+@_router.post("/bulk", response_model=BulkPreviewResponse)
+async def bulk_preview(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+    file: UploadFile = File(...),
+    scope: str = Form("tenant"),
+) -> BulkPreviewResponse:
+    """Parse + validate a bulk upload file. Returns preview — NO DB writes.
+
+    Tenant admin can upload at tenant scope; any user can upload at personal scope.
+    """
+    # Validate scope value
+    if scope not in ("personal", "tenant"):
+        raise HTTPException(status_code=400, detail="scope must be 'personal' or 'tenant'")
+
+    # Admin gate for tenant scope
+    if scope == "tenant" and not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Tenant-scope bulk upload requires admin privileges",
+        )
+
+    # Read and validate file size
+    content_bytes = await file.read()
+    if len(content_bytes) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {MAX_FILE_SIZE_BYTES // 1024} KB",
+        )
+
+    content = content_bytes.decode("utf-8", errors="replace")
+
+    # Check line count
+    line_count = len(content.splitlines())
+    if line_count > MAX_LINES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File has {line_count} lines. Maximum is {MAX_LINES}",
+        )
+
+    # Parse the file
+    valid_items, rejected_items, total_lines, skipped_comments = parse_bulk_file(content)
+
+    # Derive scope for dedup + quota check
+    tenant_id = current_user.org_id or None
+    owner_sub: str | None = None
+    if scope == "personal":
+        owner_sub = current_user.user_id
+
+    # Check for duplicates against existing DB rows
+    duplicates: list[BulkDuplicateItem] = []
+    non_duplicate_valid = []
+
+    for item in valid_items:
+        dup_result = await db.execute(
+            text("""
+                SELECT id FROM knowledge_assets
+                WHERE source_ref = :sref
+                  AND COALESCE(tenant_id, '') = COALESCE(:tid, '')
+                  AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+                  AND status != 'removed'
+                LIMIT 1
+            """),
+            {"sref": item.source_ref, "tid": tenant_id or "", "sub": owner_sub or ""},
+        )
+        existing = dup_result.fetchone()
+        if existing:
+            duplicates.append(
+                BulkDuplicateItem(
+                    line=item.line,
+                    source_ref=item.source_ref,
+                    existing_id=str(existing.id),
+                )
+            )
+        else:
+            non_duplicate_valid.append(item)
+
+    # Quota check: count existing + new per asset_type
+    scope_key = scope
+    quota_after: dict[str, QuotaDetail] = {}
+    quota_ok = True
+
+    # Get existing counts by type
+    count_result = await db.execute(
+        text("""
+            SELECT asset_type, COUNT(*) as cnt
+            FROM knowledge_assets
+            WHERE COALESCE(tenant_id, '') = COALESCE(:tid, '')
+              AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+              AND status != 'removed'
+            GROUP BY asset_type
+        """),
+        {"tid": tenant_id or "", "sub": owner_sub or ""},
+    )
+    existing_counts: dict[str, int] = {}
+    for r in count_result.fetchall():
+        existing_counts[r.asset_type] = r.cnt
+
+    # Count new items by type
+    new_counts: dict[str, int] = {}
+    for item in non_duplicate_valid:
+        new_counts[item.asset_type] = new_counts.get(item.asset_type, 0) + 1
+
+    # Check each type's quota
+    all_types = set(list(existing_counts.keys()) + list(new_counts.keys()))
+    for atype in all_types:
+        existing = existing_counts.get(atype, 0)
+        new = new_counts.get(atype, 0)
+        limit = _get_quota_limit(scope_key, atype)
+        after = existing + new
+        quota_after[f"{atype}s"] = QuotaDetail(used=after, limit=limit)
+        if after > limit:
+            quota_ok = False
+
+    return BulkPreviewResponse(
+        total_lines=total_lines,
+        parsed=len(valid_items) + len(rejected_items),
+        skipped_comments=skipped_comments,
+        valid=non_duplicate_valid,
+        rejected=rejected_items,
+        duplicates=duplicates,
+        quota_ok=quota_ok,
+        quota_after=quota_after,
+    )
+
+
+@_router.post("/bulk/commit", response_model=BulkCommitResponse, status_code=201)
+async def bulk_commit(
+    body: BulkCommitRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+) -> BulkCommitResponse:
+    """Commit a previewed bulk upload batch. Writes rows + dispatches to SQS.
+
+    Tenant admin can commit at tenant scope; any user can commit at personal scope.
+    """
+    # Admin gate for tenant scope
+    if body.scope == "tenant" and not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Tenant-scope bulk commit requires admin privileges",
+        )
+
+    if not body.items:
+        raise HTTPException(status_code=400, detail="No items to commit")
+
+    # Enforce file limit on commit as well
+    if len(body.items) > MAX_LINES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Too many items. Maximum is {MAX_LINES}",
+        )
+
+    # Derive scope
+    tenant_id = current_user.org_id or None
+    owner_sub: str | None = None
+    scope_key = body.scope
+    if body.scope == "personal":
+        owner_sub = current_user.user_id
+
+    # Quota check before committing
+    count_result = await db.execute(
+        text("""
+            SELECT asset_type, COUNT(*) as cnt
+            FROM knowledge_assets
+            WHERE COALESCE(tenant_id, '') = COALESCE(:tid, '')
+              AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+              AND status != 'removed'
+            GROUP BY asset_type
+        """),
+        {"tid": tenant_id or "", "sub": owner_sub or ""},
+    )
+    existing_counts: dict[str, int] = {}
+    for r in count_result.fetchall():
+        existing_counts[r.asset_type] = r.cnt
+
+    new_counts: dict[str, int] = {}
+    for item in body.items:
+        new_counts[item.asset_type] = new_counts.get(item.asset_type, 0) + 1
+
+    for atype, new_count in new_counts.items():
+        existing = existing_counts.get(atype, 0)
+        limit = _get_quota_limit(scope_key, atype)
+        if existing + new_count > limit:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "message": "Quota exceeded",
+                    "quota": {
+                        atype: {"used": existing, "limit": limit, "requested": new_count},
+                    },
+                },
+            )
+
+    # Insert rows, skipping duplicates
+    created_assets: list[AssetResponse] = []
+    skipped_duplicates = 0
+
+    for item in body.items:
+        # Validate asset_type
+        if not is_valid_asset_type(item.asset_type):
+            continue  # Skip invalid types silently (should have been caught in preview)
+
+        # Validate source_ref
+        if not validate_source_ref(item.asset_type, item.source_ref):
+            continue
+
+        # Check duplicate
+        dup_result = await db.execute(
+            text("""
+                SELECT id FROM knowledge_assets
+                WHERE source_ref = :sref
+                  AND COALESCE(tenant_id, '') = COALESCE(:tid, '')
+                  AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+                  AND status != 'removed'
+                LIMIT 1
+            """),
+            {"sref": item.source_ref, "tid": tenant_id or "", "sub": owner_sub or ""},
+        )
+        if dup_result.fetchone():
+            skipped_duplicates += 1
+            continue
+
+        # Insert
+        asset_id = str(uuid.uuid4())
+        await db.execute(
+            text("""
+                INSERT INTO knowledge_assets
+                    (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
+                     status, registered_by, metadata, display_name, tags)
+                VALUES
+                    (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
+                     'registered', :registered_by, '{}'::jsonb,
+                     :display_name, :tags::jsonb)
+            """),
+            {
+                "id": asset_id,
+                "asset_type": item.asset_type,
+                "source_ref": item.source_ref,
+                "tenant_id": tenant_id,
+                "owner_sub": owner_sub,
+                "registered_by": current_user.user_id,
+                "display_name": item.display_name,
+                "tags": _json_dumps(item.tags),
+            },
+        )
+
+        # Dispatch to SQS (Phase 1 inline dispatch)
+        try:
+            await dispatch_ingestion(
+                asset_id=asset_id,
+                asset_type=item.asset_type,
+                source_ref=item.source_ref,
+                tenant_id=tenant_id,
+                owner_sub=owner_sub,
+                project_id=None,
+                db=db,
+            )
+        except Exception:
+            logger.warning(
+                "Ingestion dispatch failed for bulk asset %s — row stays at 'registered'",
+                asset_id,
+                exc_info=True,
+            )
+
+        # Fetch the created row
+        row = await _fetch_asset_by_id(db, asset_id)
+        if row:
+            created_assets.append(_row_to_response(row))
+
+    await db.commit()
+
+    return BulkCommitResponse(
+        created=len(created_assets),
+        skipped_duplicates=skipped_duplicates,
+        assets=created_assets,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _authorize_modify(row: Any, current_user: Any) -> None:
+    """Check that the current user can modify (delete/reindex) the asset."""
+    # Tenant check
+    if row.tenant_id and row.tenant_id != current_user.org_id:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    # Owner or admin can modify
+    is_owner = row.registered_by == current_user.user_id
+    is_tenant_admin = current_user.is_admin and (row.tenant_id == current_user.org_id)
+    if not is_owner and not is_tenant_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the asset owner or a tenant admin can perform this action",
+        )
+
+
+async def _fetch_asset_by_id(db: AsyncSession, asset_id: str) -> Any | None:
+    """Fetch a single asset row by ID."""
+    result = await db.execute(
+        text("""
+            SELECT id, asset_type, source_ref, display_name, tags, metadata,
+                   tenant_id, owner_sub, project_id, status, last_error,
+                   retry_count, registered_by, created_at, updated_at
+            FROM knowledge_assets
+            WHERE id = :id
+        """),
+        {"id": asset_id},
+    )
+    return result.fetchone()
+
+
+def _row_to_response(row: Any) -> AssetResponse:
+    """Convert a DB row to an AssetResponse."""
+    return AssetResponse(
+        id=str(row.id),
+        asset_type=row.asset_type,
+        source_ref=row.source_ref,
+        display_name=row.display_name,
+        tags=row.tags if row.tags else {},
+        metadata=row.metadata if row.metadata else {},
+        tenant_id=row.tenant_id,
+        owner_sub=row.owner_sub,
+        project_id=str(row.project_id) if row.project_id else None,
+        status=row.status,
+        last_error=row.last_error,
+        retry_count=row.retry_count,
+        registered_by=row.registered_by,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+async def _get_quota_info(db: AsyncSession, current_user: Any) -> QuotaInfo:
+    """Compute quota usage for the current user's scope."""
+    # Count assets per type for personal scope
+    result = await db.execute(
+        text("""
+            SELECT asset_type, COUNT(*) as cnt
+            FROM knowledge_assets
+            WHERE tenant_id = :tid
+              AND (owner_sub = :sub OR owner_sub IS NULL)
+              AND status != 'removed'
+            GROUP BY asset_type
+        """),
+        {"tid": current_user.org_id, "sub": current_user.user_id},
+    )
+    counts: dict[str, int] = {}
+    for r in result.fetchall():
+        counts[r.asset_type] = r.cnt
+
+    scope_key = "personal"
+    return QuotaInfo(
+        repos=QuotaDetail(
+            used=counts.get("repo", 0),
+            limit=_get_quota_limit(scope_key, "repo"),
+        ),
+        urls=QuotaDetail(
+            used=counts.get("url", 0),
+            limit=_get_quota_limit(scope_key, "url"),
+        ),
+        docs=QuotaDetail(
+            used=counts.get("doc", 0),
+            limit=_get_quota_limit(scope_key, "doc"),
+        ),
+    )
+
+
+def _json_dumps(obj: dict[str, Any]) -> str:
+    """Serialize dict to JSON string for Postgres JSONB cast."""
+    import json
+
+    return json.dumps(obj)
+
+
+# ---------------------------------------------------------------------------
+# Conditional export — gated behind AGENT_CONTEXT_ENABLED
+# ---------------------------------------------------------------------------
+
+if os.environ.get("AGENT_CONTEXT_ENABLED", "").lower() == "true":
+    router = _router

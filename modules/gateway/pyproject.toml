@@ -19,6 +19,7 @@ dependencies = [
     "PyJWT[crypto]==2.12.0",
     "python-json-logger==2.0.7",
     "email-validator==2.1.1",
+    "python-multipart>=0.0.9",
     # Issue #143: Chat logging uses boto3 with asyncio.to_thread for async S3/Comprehend
     # No additional deps needed; aioboto3 could be added for native async support if needed
 ]
