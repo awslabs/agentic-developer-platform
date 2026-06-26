@@ -2532,3 +2532,350 @@ class TestOtelResourceAttributes:
 
         # OTEL_RESOURCE_ATTRIBUTES should not exist
         assert "OTEL_RESOURCE_ATTRIBUTES" not in os.environ
+
+
+# --- Test: SQS message deletion lifecycle (Issue #1864) ---
+
+
+class TestSqsMessageDeletion:
+    """Verify the SQS message is deleted on both success and failure paths.
+
+    Issue #1864: SQS message not deleted on successful completion → 6h FIFO
+    redelivery spawns redundant runs. The fix ensures _delete_message is called
+    with the correct receipt handle on ANY terminal exit.
+    """
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_delete_message_called_on_success(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """On successful agent run, _delete_message must be called with correct receipt handle."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-handle-success-123")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        result = main()
+        assert result == 0
+
+        # _delete_message MUST be called with the correct queue URL and receipt handle
+        mock_delete_msg.assert_called_once_with(
+            "https://sqs.us-east-1.amazonaws.com/123/test-queue.fifo",
+            "us-east-1",
+            "receipt-handle-success-123",
+        )
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_delete_message_called_on_failure(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """On agent failure, _delete_message must still be called (terminal exit)."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-handle-failure-456")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        # Agent exits non-zero
+        mock_subprocess_run.return_value = MagicMock(returncode=1)
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        result = main()
+        assert result == 1
+
+        # Even on failure, the message MUST be deleted (terminal exit)
+        mock_delete_msg.assert_called_once_with(
+            "https://sqs.us-east-1.amazonaws.com/123/test-queue.fifo",
+            "us-east-1",
+            "receipt-handle-failure-456",
+        )
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_delete_message_error_does_not_fail_pod(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """If _delete_message raises, the pod must still exit successfully."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-handle-err")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+        # _delete_message raises an exception (e.g., expired credentials)
+        mock_delete_msg.side_effect = Exception("ReceiptHandle expired")
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        # Pod should still exit 0 — the agent work is committed to GitHub
+        result = main()
+        assert result == 0
+
+
+# --- Test: Idempotency guard (Issue #1864) ---
+
+
+class TestIdempotencyGuard:
+    """Verify the idempotency guard skips redelivered messages for completed stories.
+
+    When an SQS message is redelivered after the visibility timeout (because
+    the original delete was missed due to pod OOM/crash), the guard checks if
+    the agent branch already has a merged PR and short-circuits to delete+exit.
+    """
+
+    def test_is_already_completed_returns_true_on_merged_pr(self, monkeypatch):
+        """_is_already_completed returns True when a merged PR exists on the agent branch."""
+        from entrypoint import _is_already_completed
+
+        with patch("entrypoint.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="1847\n", stderr=""
+            )
+            result = _is_already_completed("acme/repo", 42, "ghs_test_token")
+
+        assert result is True
+        # Verify the correct gh command was called
+        call_args = mock_run.call_args[0][0]
+        assert "pr" in call_args
+        assert "list" in call_args
+        assert "--state" in call_args
+        assert "merged" in call_args[call_args.index("--state") + 1]
+        assert "--head" in call_args
+        assert "agent/issue-42" in call_args[call_args.index("--head") + 1]
+
+    def test_is_already_completed_returns_false_on_no_merged_pr(self):
+        """_is_already_completed returns False when no merged PR exists."""
+        from entrypoint import _is_already_completed
+
+        with patch("entrypoint.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="", stderr=""
+            )
+            result = _is_already_completed("acme/repo", 42, "ghs_test_token")
+
+        assert result is False
+
+    def test_is_already_completed_fails_open_on_error(self):
+        """_is_already_completed returns False on any exception (fail-open)."""
+        from entrypoint import _is_already_completed
+
+        with patch("entrypoint.subprocess.run") as mock_run:
+            mock_run.side_effect = OSError("Network error")
+            result = _is_already_completed("acme/repo", 42, "ghs_test_token")
+
+        assert result is False
+
+    def test_is_already_completed_fails_open_on_nonzero_exit(self):
+        """_is_already_completed returns False on non-zero gh exit code (fail-open)."""
+        from entrypoint import _is_already_completed
+
+        with patch("entrypoint.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1, stdout="", stderr="gh: error"
+            )
+            result = _is_already_completed("acme/repo", 42, "ghs_test_token")
+
+        assert result is False
+
+    @patch("entrypoint._is_already_completed")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    def test_idempotency_guard_skips_and_deletes_on_merged(
+        self,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_is_completed,
+        monkeypatch,
+        tmp_path,
+    ):
+        """When idempotency guard detects merged PR, message is deleted and run skips."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-redelivery")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        # Idempotency guard returns True (merged PR found)
+        mock_is_completed.return_value = True
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+
+        result = main()
+
+        # Must exit cleanly (0)
+        assert result == 0
+        # Must delete the message (so it doesn't redeliver again)
+        mock_delete_msg.assert_called_once_with(
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-redelivery",
+        )
+        # Must NOT call run_cmd beyond envelope parse (no clone, no agent exec)
+        # run_cmd is used for git/gh commands — idempotency skip means no git work
+        mock_run_cmd.assert_not_called()
+
+    @patch("entrypoint._is_already_completed")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_idempotency_guard_proceeds_on_open_issue(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_is_completed,
+        monkeypatch,
+        tmp_path,
+    ):
+        """When no merged PR exists, the run proceeds normally."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-fresh")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+        # Idempotency guard returns False (no merged PR — fresh run)
+        mock_is_completed.return_value = False
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        result = main()
+        assert result == 0
+
+        # Agent subprocess was invoked (normal run proceeded)
+        mock_subprocess_run.assert_called()
+        # Message deleted after run completion
+        mock_delete_msg.assert_called_once()

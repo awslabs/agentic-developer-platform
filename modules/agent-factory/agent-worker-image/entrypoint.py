@@ -104,6 +104,43 @@ def _delete_message(queue_url: str, region: str, receipt_handle: str) -> None:
     )
 
 
+def _is_already_completed(repo: str, issue: int, token: str) -> bool:
+    """Check if the agent branch for this issue already has a merged PR.
+
+    Returns True if the issue has a merged PR from the agent branch
+    (agent/issue-NNN), indicating a prior run already completed successfully.
+    This is the idempotency guard for SQS redelivery (issue #1864).
+
+    Fail-open: returns False on any error (so the run proceeds normally).
+    """
+    branch_name = f"agent/issue-{issue}"
+    try:
+        result = subprocess.run(
+            [
+                "gh", "pr", "list",
+                "--repo", repo,
+                "--head", branch_name,
+                "--state", "merged",
+                "--json", "number",
+                "--jq", ".[0].number // empty",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "GH_TOKEN": token},
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            logger.info(
+                "Idempotency check: found merged PR #%s on branch %s",
+                result.stdout.strip(),
+                branch_name,
+            )
+            return True
+    except Exception as exc:
+        logger.warning("Idempotency check failed (proceeding with run): %s", exc)
+    return False
+
+
 def main() -> int:
     queue_url = os.environ.get("QUEUE_URL")
     if not queue_url:
@@ -241,6 +278,28 @@ def main() -> int:
         bootstrap_log.close()
         raise
     bootstrap_log.step_success(3, "mint_token")
+
+    # Step 3b: Idempotency guard — skip redelivered messages for completed work.
+    # If the issue's agent branch already has a MERGED PR, a prior run completed
+    # successfully and this message is a stale SQS redelivery (visibility timeout
+    # expired before delete). Delete the message and exit cleanly.
+    # This is the primary defense against issue #1864 (6h redelivery spawns
+    # redundant runs on already-merged stories).
+    if _is_already_completed(repo, issue, token):
+        logger.info(
+            "Idempotency guard: issue #%s already has merged PR on agent branch — "
+            "skipping redelivered message (message_id=%s)",
+            issue,
+            message_id,
+        )
+        bootstrap_log.step_success(4, "idempotency_guard_skip", issue=issue)
+        bootstrap_log.close()
+        try:
+            _delete_message(queue_url, region, receipt_handle)
+            logger.info("SQS message deleted (idempotency skip)")
+        except Exception as exc:
+            logger.error("Failed to delete SQS message during idempotency skip: %s", exc)
+        return 0
 
     # Step 4: Set environment variables
     bootstrap_log.step_start(4, "set_env")
