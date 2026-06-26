@@ -154,28 +154,18 @@ class BulkCommitResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Asset index-status schemas (Story G — S13, Issue #1796)
+# Asset status schema — day-one gateway-row-only (Issue #2048, C1 caveat)
 # ---------------------------------------------------------------------------
 
 
-class AssetIndexStage(BaseModel):
-    """Per-stage indexing status for an asset."""
-
-    stage: str
-    status: str
-    artifact_ref: str | None = None
-    error: str | None = None
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-
-
 class AssetStatusResponse(BaseModel):
-    """GET /api/agent-context/assets/{id}/status — per-tool indexing status."""
+    """GET /api/agent-context/assets/{id}/status — gateway-row-only status.
+
+    Day-one scope: returns only fields from the gateway knowledge_assets row.
+    No cross-DB join to repositories/index_runs/index_run_stages (those live in
+    agent_context). Rich per-stage detail arrives via the status-callback story.
+    """
 
     asset_id: str
     source_ref: str
-    repo_found: bool = False
-    run_id: str | None = None
-    run_status: str | None = None
-    run_started_at: datetime | None = None
-    stages: list[AssetIndexStage] = Field(default_factory=list)
+    status: str

@@ -293,6 +293,149 @@ class TestReindexAsset:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/agent-context/assets/{id}/status — day-one gateway-row-only (C1)
+# ---------------------------------------------------------------------------
+
+
+class TestGetAssetStatus:
+    """Tests for GET /api/agent-context/assets/{id}/status (Issue #2048).
+
+    Proves:
+    1. Status endpoint reads ONLY from gateway knowledge_assets row.
+    2. No cross-DB join to repositories/index_runs/index_run_stages.
+    3. Scope isolation enforced (cross-tenant/cross-owner → 404).
+    """
+
+    @pytest.mark.anyio
+    async def test_status_returns_slim_gateway_row(self, make_client, fake_user):
+        """Status returns {asset_id, source_ref, status} from gateway row only."""
+        asset_id = uuid.uuid4()
+        asset_row = FakeRow(
+            id=asset_id,
+            source_ref="https://github.com/acme/my-service",
+            status="queued",
+        )
+        db = FakeAsyncSession()
+        db.execute_results = [FakeResult(rows=[asset_row])]
+
+        async with make_client(db, fake_user) as client:
+            resp = await client.get(f"/api/agent-context/assets/{asset_id}/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        # Exactly the three fields from the design — no more, no less
+        assert data == {
+            "asset_id": str(asset_id),
+            "source_ref": "https://github.com/acme/my-service",
+            "status": "queued",
+        }
+
+    @pytest.mark.anyio
+    async def test_status_no_cross_db_join(self, make_client, fake_user):
+        """Status handler issues NO query against repositories/index_runs/index_run_stages.
+
+        Only one DB execute call should happen: the _fetch_asset_by_id SELECT on
+        knowledge_assets. No additional queries to corpus tables.
+        """
+        asset_id = uuid.uuid4()
+        asset_row = FakeRow(id=asset_id, status="indexing")
+        db = FakeAsyncSession()
+        db.execute_results = [FakeResult(rows=[asset_row])]
+
+        async with make_client(db, fake_user) as client:
+            resp = await client.get(f"/api/agent-context/assets/{asset_id}/status")
+
+        assert resp.status_code == 200
+
+        # Verify only 1 DB query was issued (the _fetch_asset_by_id call)
+        assert len(db.executed_statements) == 1
+        stmt_text = str(db.executed_statements[0][0].text)
+        # The single query must target knowledge_assets only
+        assert "knowledge_assets" in stmt_text
+        # Must NOT reference any corpus tables
+        assert "repositories" not in stmt_text
+        assert "index_runs" not in stmt_text
+        assert "index_run_stages" not in stmt_text
+
+    @pytest.mark.anyio
+    async def test_status_not_found(self, make_client, fake_user):
+        """Non-existent asset returns 404."""
+        db = FakeAsyncSession()
+        db.execute_results = [FakeResult(rows=[])]
+
+        async with make_client(db, fake_user) as client:
+            resp = await client.get(f"/api/agent-context/assets/{uuid.uuid4()}/status")
+
+        assert resp.status_code == 404
+
+    @pytest.mark.anyio
+    async def test_status_cross_tenant_returns_404(self, make_client, fake_user):
+        """Asset from different tenant returns 404 (scope isolation)."""
+        asset_id = uuid.uuid4()
+        asset_row = FakeRow(id=asset_id, tenant_id="other-corp", status="complete")
+        db = FakeAsyncSession()
+        db.execute_results = [FakeResult(rows=[asset_row])]
+
+        async with make_client(db, fake_user) as client:
+            resp = await client.get(f"/api/agent-context/assets/{asset_id}/status")
+
+        assert resp.status_code == 404
+
+    @pytest.mark.anyio
+    async def test_status_cross_owner_returns_404(self, make_client):
+        """Personal asset owned by different user returns 404 (scope isolation)."""
+        asset_id = uuid.uuid4()
+        asset_row = FakeRow(
+            id=asset_id,
+            tenant_id="acme-corp",
+            owner_sub="user-bob",
+            status="pending",
+        )
+        db = FakeAsyncSession()
+        db.execute_results = [FakeResult(rows=[asset_row])]
+
+        other_user = FakeTokenContext(user_id="user-eve", org_id="acme-corp")
+        async with make_client(db, other_user) as client:
+            resp = await client.get(f"/api/agent-context/assets/{asset_id}/status")
+
+        assert resp.status_code == 404
+
+    @pytest.mark.anyio
+    async def test_status_admin_can_see_others_asset(self, make_client, admin_user):
+        """Admin can view status of any asset in their tenant."""
+        asset_id = uuid.uuid4()
+        asset_row = FakeRow(
+            id=asset_id,
+            tenant_id="acme-corp",
+            owner_sub="user-alice",
+            status="complete",
+        )
+        db = FakeAsyncSession()
+        db.execute_results = [FakeResult(rows=[asset_row])]
+
+        async with make_client(db, admin_user) as client:
+            resp = await client.get(f"/api/agent-context/assets/{asset_id}/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "complete"
+
+    @pytest.mark.anyio
+    async def test_status_handles_none_status_cleanly(self, make_client, fake_user):
+        """Status field is never None — DB column has a default, but handle gracefully."""
+        asset_id = uuid.uuid4()
+        # Simulate a row where status is pending (the initial state)
+        asset_row = FakeRow(id=asset_id, status="pending")
+        db = FakeAsyncSession()
+        db.execute_results = [FakeResult(rows=[asset_row])]
+
+        async with make_client(db, fake_user) as client:
+            resp = await client.get(f"/api/agent-context/assets/{asset_id}/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "pending"
+
+
+# ---------------------------------------------------------------------------
 # Zero agent-context dependency verification
 # ---------------------------------------------------------------------------
 

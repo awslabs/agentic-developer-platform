@@ -31,7 +31,6 @@ from src.knowledge.dispatch import IngestionQueueUnavailableError, dispatch_inge
 from src.knowledge.schemas import (
     AssetCreateRequest,
     AssetDetailResponse,
-    AssetIndexStage,
     AssetListResponse,
     AssetResponse,
     AssetStatusResponse,
@@ -395,10 +394,12 @@ async def get_asset_status(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> AssetStatusResponse:
-    """Get per-tool indexing status for an asset.
+    """Day-one asset status: gateway-row-only read (Issue #2048, C1 caveat).
 
-    Joins knowledge_assets.source_ref -> repositories.git_url -> index_runs ->
-    index_run_stages to derive per-stage status from the latest run.
+    Returns {asset_id, source_ref, status} from the gateway knowledge_assets
+    row ONLY. Does NOT query repositories/index_runs/index_run_stages (those
+    live in agent_context — cross-DB join forbidden by service boundary).
+    Rich per-stage detail arrives via the status-callback story (E7 #1672).
     """
     row = await _fetch_asset_by_id(db, asset_id)
     if not row:
@@ -414,83 +415,10 @@ async def get_asset_status(
         if row.owner_sub != canonical_sub:
             raise HTTPException(status_code=404, detail="Asset not found")
 
-    source_ref = row.source_ref
-
-    # Join: knowledge_assets.source_ref -> repositories.git_url
-    repo_result = await db.execute(
-        text("""
-            SELECT id FROM repositories
-            WHERE git_url = :source_ref
-            LIMIT 1
-        """),
-        {"source_ref": source_ref},
-    )
-    repo_row = repo_result.fetchone()
-
-    if not repo_row:
-        return AssetStatusResponse(
-            asset_id=asset_id,
-            source_ref=source_ref,
-            repo_found=False,
-        )
-
-    repo_id = str(repo_row.id)
-
-    # Get the latest index_run for this repo
-    run_result = await db.execute(
-        text("""
-            SELECT id, status, started_at
-            FROM index_runs
-            WHERE repo_id = :repo_id
-            ORDER BY started_at DESC
-            LIMIT 1
-        """),
-        {"repo_id": repo_id},
-    )
-    run_row = run_result.fetchone()
-
-    if not run_row:
-        return AssetStatusResponse(
-            asset_id=asset_id,
-            source_ref=source_ref,
-            repo_found=True,
-        )
-
-    run_id = str(run_row.id)
-
-    # Get index_run_stages for this run + repo
-    stages_result = await db.execute(
-        text("""
-            SELECT stage, status, artifact_ref, error, started_at, completed_at
-            FROM index_run_stages
-            WHERE run_id = :run_id
-              AND repo = :source_ref
-            ORDER BY stage
-        """),
-        {"run_id": run_id, "source_ref": source_ref},
-    )
-    stage_rows = stages_result.fetchall()
-
-    stages = [
-        AssetIndexStage(
-            stage=s.stage,
-            status=s.status,
-            artifact_ref=s.artifact_ref,
-            error=s.error,
-            started_at=s.started_at,
-            completed_at=s.completed_at,
-        )
-        for s in stage_rows
-    ]
-
     return AssetStatusResponse(
         asset_id=asset_id,
-        source_ref=source_ref,
-        repo_found=True,
-        run_id=run_id,
-        run_status=run_row.status,
-        run_started_at=run_row.started_at,
-        stages=stages,
+        source_ref=row.source_ref,
+        status=row.status,
     )
 
 
