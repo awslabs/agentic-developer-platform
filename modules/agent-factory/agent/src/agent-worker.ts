@@ -1174,7 +1174,13 @@ Now, complete the assigned task.`;
             } : {}),
             settingSources: ['project'],
             permissionMode: 'bypassPermissions',
-            persistSession: false,
+            // Issue #2079: persist the session to disk so resilientQuery can
+            // TRULY resume it (via options.resume) after a transient stream
+            // stall, instead of restarting the task from scratch. The SDK can
+            // only resume sessions it persisted. CLAUDE_CONFIG_DIR points at
+            // ephemeral container storage, so this leaves no durable footprint
+            // beyond the pod's lifetime.
+            persistSession: true,
             maxTurns: 10000,
           }
         },
@@ -1182,6 +1188,18 @@ Now, complete the assigned task.`;
         baseDelayMs: 10_000,
         maxDelayMs: 120_000,
         idleTimeoutMs: 600_000, // 10 min — detect silent upstream stalls (issue #1223)
+        // Issue #2079: On retry, resilientQuery resumes the persisted session
+        // (full conversation history reloaded), so this nudge is just a short
+        // continuation instruction — the agent already remembers what it read,
+        // decided, and posted. If no session_id was captured before the stall,
+        // resilientQuery falls back to prepending this to the original prompt.
+        resumeContext: (attemptNumber, priorMessagesYielded) => [
+          `You are RESUMING this task after a transient stream interruption`,
+          `(retry attempt ${attemptNumber}; ${priorMessagesYielded} messages produced before the stall).`,
+          `Continue from where you left off — do NOT repeat completed work`,
+          `(re-reading files, re-running analysis, or re-posting an Implementation`,
+          `Plan you already posted). Proceed with the next unfinished step.`,
+        ].join('\n'),
         log: (msg) => log('WARN', msg),
       })) {
         lastActivityTime = Date.now();

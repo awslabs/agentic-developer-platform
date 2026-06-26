@@ -925,4 +925,501 @@ describe('resilientQuery', () => {
       }
     );
   });
+
+  describe('issue #2079: resume context on retry', () => {
+    it('should inject resumeContext into the prompt on retry attempts', async () => {
+      jest.useRealTimers();
+
+      const messages = [
+        { type: 'assistant', content: 'hello' },
+        { type: 'result', subtype: 'success' },
+      ];
+
+      let callCount = 0;
+      mockQuery.mockImplementation((params: any) => {
+        callCount++;
+        if (callCount === 1) {
+          // First attempt: yields a message then throws a retryable error
+          return asyncThrowingGenerator(
+            [{ type: 'assistant', content: 'partial' }],
+            new Error('fetch failed'),
+            1,
+          ) as any;
+        }
+        // Second attempt: succeeds. Verify prompt was augmented.
+        expect(params.prompt).toContain('RESUME CONTEXT');
+        expect(params.prompt).toContain('retry attempt 2');
+        expect(params.prompt).toContain('1 messages');
+        return asyncFromArray(messages) as any;
+      });
+
+      const log = jest.fn();
+      const resumeContext = jest.fn((attemptNumber: number, priorMessagesYielded: number) =>
+        `RESUME CONTEXT: retry attempt ${attemptNumber}, ${priorMessagesYielded} messages prior.`
+      );
+
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'do the task', options: {} } as any,
+        maxRetries: 3,
+        baseDelayMs: 10,
+        resumeContext,
+        log,
+      };
+
+      const results = await collectAll(resilientQuery(opts));
+
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(resumeContext).toHaveBeenCalledWith(2, 1);
+      // Should have yielded partial from attempt 1 + messages from attempt 2
+      expect(results).toHaveLength(3);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('should NOT inject resumeContext on the first attempt', async () => {
+      const messages = [
+        { type: 'assistant', content: 'success' },
+        { type: 'result', subtype: 'success' },
+      ];
+
+      mockQuery.mockImplementation((params: any) => {
+        // First attempt should use original prompt without modification
+        expect(params.prompt).toBe('do the task');
+        return asyncFromArray(messages) as any;
+      });
+
+      const resumeContext = jest.fn(() => 'RESUME CONTEXT');
+
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'do the task', options: {} } as any,
+        maxRetries: 3,
+        baseDelayMs: 10,
+        resumeContext,
+        log: jest.fn(),
+      };
+
+      await collectAll(resilientQuery(opts));
+
+      expect(resumeContext).not.toHaveBeenCalled();
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not re-yield already-emitted messages on resume (messages stream through naturally)', async () => {
+      jest.useRealTimers();
+
+      // Simulate the bug scenario: attempt 1 yields 3 "opening" messages
+      // (codebase reads + plan post) then stalls. Attempt 2 should have
+      // resumeContext injected so the agent doesn't redo those steps.
+      const openingMessages = [
+        { type: 'assistant', content: 'Reading codebase...' },
+        { type: 'assistant', content: 'Analyzing issue...' },
+        { type: 'assistant', content: 'Implementation Plan: ...' },
+      ];
+      const continuationMessages = [
+        { type: 'assistant', content: 'Continuing from where I left off...' },
+        { type: 'assistant', content: 'Making changes...' },
+        { type: 'result', subtype: 'success' },
+      ];
+
+      let callCount = 0;
+      let capturedPrompt = '';
+      mockQuery.mockImplementation((params: any) => {
+        callCount++;
+        if (callCount === 1) {
+          // First attempt: yields opening messages, then idle-timeout stall
+          const closeFn = jest.fn();
+          let idx = 0;
+          return Object.assign(
+            {
+              [Symbol.asyncIterator]() {
+                return {
+                  next: () => {
+                    if (idx < openingMessages.length) {
+                      return Promise.resolve({ done: false, value: openingMessages[idx++] });
+                    }
+                    // Stall forever after yielding opening messages
+                    return new Promise<IteratorResult<unknown>>(() => {});
+                  },
+                };
+              },
+            },
+            { close: closeFn },
+          ) as any;
+        }
+        // Second attempt: capture the prompt and return continuation
+        capturedPrompt = params.prompt;
+        return asyncFromArray(continuationMessages) as any;
+      });
+
+      const resumeContext = (attemptNumber: number, priorYielded: number) =>
+        `[RESUME] Attempt ${attemptNumber}. Prior messages: ${priorYielded}. Do NOT repost plan.`;
+
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'Original task prompt', options: {} } as any,
+        maxRetries: 5,
+        baseDelayMs: 10,
+        maxDelayMs: 50,
+        idleTimeoutMs: 50,
+        resumeContext,
+        log: jest.fn(),
+      };
+
+      const results = await collectAll(resilientQuery(opts));
+
+      // Verify resumeContext was injected with correct info
+      expect(capturedPrompt).toContain('[RESUME] Attempt 2. Prior messages: 3. Do NOT repost plan.');
+      expect(capturedPrompt).toContain('Original task prompt');
+      // Results include opening messages (yielded before stall) + continuation
+      expect(results).toHaveLength(6); // 3 opening + 3 continuation (incl result)
+
+      jest.useFakeTimers();
+    }, 15000);
+  });
+
+  describe('issue #2079: true session resume', () => {
+    it('uses options.resume with the captured session_id on retry (NOT a full re-run)', async () => {
+      jest.useRealTimers();
+
+      let callCount = 0;
+      let secondParams: any;
+      mockQuery.mockImplementation((params: any) => {
+        callCount++;
+        if (callCount === 1) {
+          // First attempt: emits a system message carrying session_id, then a
+          // message, then throws a retryable error.
+          return asyncThrowingGenerator(
+            [
+              { type: 'system', subtype: 'init', session_id: 'sess-ABC' },
+              { type: 'assistant', content: 'partial work' },
+            ],
+            new Error('fetch failed'),
+            2,
+          ) as any;
+        }
+        // Second attempt: capture params and succeed.
+        secondParams = params;
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const resumeContext = jest.fn(
+        (attempt: number) => `Continue from where you left off (attempt ${attempt}).`,
+      );
+
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'ORIGINAL TASK PROMPT', options: { model: 'm' } } as any,
+        maxRetries: 3,
+        baseDelayMs: 10,
+        resumeContext,
+        log: jest.fn(),
+      };
+
+      const results = await collectAll(resilientQuery(opts));
+
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      // The retry resumes the captured session...
+      expect(secondParams.options.resume).toBe('sess-ABC');
+      // ...and uses ONLY the short nudge as the prompt — the original task is
+      // NOT re-sent (it already lives in the resumed conversation history).
+      expect(secondParams.prompt).toBe('Continue from where you left off (attempt 2).');
+      expect(secondParams.prompt).not.toContain('ORIGINAL TASK PROMPT');
+      // Original options are preserved alongside resume.
+      expect(secondParams.options.model).toBe('m');
+      // 2 messages from attempt 1 + 1 from attempt 2.
+      expect(results).toHaveLength(3);
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('falls back to prompt-prefix when no session_id was captured before the stall', async () => {
+      jest.useRealTimers();
+
+      let callCount = 0;
+      let secondParams: any;
+      mockQuery.mockImplementation((params: any) => {
+        callCount++;
+        if (callCount === 1) {
+          // Stalls/throws before ever emitting a session_id.
+          return asyncThrowingGenerator([], new Error('fetch failed'), 0) as any;
+        }
+        secondParams = params;
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'ORIGINAL TASK', options: {} } as any,
+        maxRetries: 3,
+        baseDelayMs: 10,
+        resumeContext: () => 'RESUME-PREFIX',
+        log: jest.fn(),
+      };
+
+      await collectAll(resilientQuery(opts));
+
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      // No resume option (nothing to resume)...
+      expect(secondParams.options?.resume).toBeUndefined();
+      // ...and the nudge is PREPENDED to the original prompt (best-effort).
+      expect(secondParams.prompt).toBe('RESUME-PREFIX\n\nORIGINAL TASK');
+
+      jest.useFakeTimers();
+    }, 10000);
+
+    it('captures session_id only once and reuses it across multiple retries', async () => {
+      jest.useRealTimers();
+
+      const resumeValues: Array<string | undefined> = [];
+      let callCount = 0;
+      mockQuery.mockImplementation((params: any) => {
+        callCount++;
+        if (callCount > 1) resumeValues.push(params.options?.resume);
+        if (callCount === 1) {
+          return asyncThrowingGenerator(
+            [{ type: 'system', subtype: 'init', session_id: 'sess-XYZ' }],
+            new Error('502 bad gateway'),
+            1,
+          ) as any;
+        }
+        if (callCount === 2) {
+          // Resumed but errors again WITHOUT emitting a new session_id.
+          return asyncThrowingGenerator([], new Error('503 service unavailable'), 0) as any;
+        }
+        return asyncFromArray([{ type: 'result', subtype: 'success' }]) as any;
+      });
+
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'task', options: {} } as any,
+        maxRetries: 5,
+        baseDelayMs: 10,
+        resumeContext: () => 'continue',
+        log: jest.fn(),
+      };
+
+      await collectAll(resilientQuery(opts));
+
+      // Both retries resumed the SAME captured session id.
+      expect(resumeValues).toEqual(['sess-XYZ', 'sess-XYZ']);
+
+      jest.useFakeTimers();
+    }, 10000);
+  });
+
+  describe('issue #2079: progress-aware stall guard', () => {
+    it('should abort when consecutive attempts stall at the same high-water mark', async () => {
+      jest.useRealTimers();
+
+      // Simulate the diagnosed bug: each attempt yields the same ~3 opening
+      // messages (re-reading code, re-posting plan) then stalls. The old guard
+      // didn't catch this because yieldedInThisAttempt was true.
+      const openingMessages = [
+        { type: 'assistant', content: 'Reading codebase...' },
+        { type: 'assistant', content: 'Posting Implementation Plan...' },
+        { type: 'assistant', content: 'Starting work...' },
+      ];
+
+      let callCount = 0;
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        const closeFn = jest.fn();
+        let idx = 0;
+
+        if (callCount === 1) {
+          // First attempt: yields 3 messages then stalls
+          // This sets the high-water mark at 3
+          return Object.assign(
+            {
+              [Symbol.asyncIterator]() {
+                return {
+                  next: () => {
+                    if (idx < openingMessages.length) {
+                      return Promise.resolve({ done: false, value: openingMessages[idx++] });
+                    }
+                    return new Promise<IteratorResult<unknown>>(() => {});
+                  },
+                };
+              },
+            },
+            { close: closeFn },
+          ) as any;
+        }
+        // Subsequent attempts: stall immediately, yielding ZERO new messages.
+        // With true session resume (the production path), a resumed attempt does
+        // NOT re-yield the opening phase — it continues from history — so a stall
+        // that produces nothing new leaves the total at the prior high-water mark.
+        // That is exactly the "no forward progress" condition the guard must
+        // catch, and after MAX_CONSECUTIVE_STALL_RETRIES it aborts.
+        return Object.assign(
+          {
+            [Symbol.asyncIterator]() {
+              return {
+                next: () => new Promise<IteratorResult<unknown>>(() => {}), // immediate stall
+              };
+            },
+          },
+          { close: closeFn },
+        ) as any;
+      });
+
+      const log = jest.fn();
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'test', options: {} } as any,
+        maxRetries: 10, // High limit — should abort via stall guard, not maxRetries
+        baseDelayMs: 10,
+        maxDelayMs: 50,
+        idleTimeoutMs: 50,
+        log,
+      };
+
+      await expect(collectAll(resilientQuery(opts))).rejects.toThrow('stream idle timeout');
+      // Attempt 1: yields 3, sets high-water mark to 3
+      // Attempt 2: yields 0 (total stays at 3, not > highWaterMark=3) → stall 1
+      // Attempt 3: yields 0 (total stays at 3, not > highWaterMark=3) → stall 2
+      // Attempt 4: yields 0 (total stays at 3, not > highWaterMark=3) → stall 3 → ABORT
+      expect(mockQuery).toHaveBeenCalledTimes(4);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('consecutive idle-timeout retries with no forward progress'));
+
+      jest.useFakeTimers();
+    }, 15000);
+
+    it('should NOT abort when each attempt makes genuine forward progress', async () => {
+      jest.useRealTimers();
+
+      // Each attempt yields MORE messages than the previous before stalling.
+      // This should be allowed to continue (not tripped by the stall guard).
+      let callCount = 0;
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        const closeFn = jest.fn();
+
+        if (callCount <= 3) {
+          // Attempts 1-3: yield increasing number of messages then stall
+          const msgCount = callCount * 2; // 2, 4, 6 messages
+          let idx = 0;
+          return Object.assign(
+            {
+              [Symbol.asyncIterator]() {
+                return {
+                  next: () => {
+                    if (idx < msgCount) {
+                      idx++;
+                      return Promise.resolve({
+                        done: false,
+                        value: { type: 'assistant', content: `msg-${callCount}-${idx}` },
+                      });
+                    }
+                    return new Promise<IteratorResult<unknown>>(() => {});
+                  },
+                };
+              },
+            },
+            { close: closeFn },
+          ) as any;
+        }
+        // Attempt 4: succeeds
+        return asyncFromArray([
+          { type: 'assistant', content: 'final' },
+          { type: 'result', subtype: 'success' },
+        ]) as any;
+      });
+
+      const log = jest.fn();
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'test', options: {} } as any,
+        maxRetries: 10,
+        baseDelayMs: 10,
+        maxDelayMs: 50,
+        idleTimeoutMs: 50,
+        log,
+      };
+
+      const results = await collectAll(resilientQuery(opts));
+
+      // Should NOT have aborted — all attempts made forward progress
+      expect(mockQuery).toHaveBeenCalledTimes(4);
+      // Total messages: 2 + 4 + 6 + 2 (final) = 14
+      expect(results).toHaveLength(14);
+      // Stall abort message should NOT appear
+      const abortCalls = log.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && call[0].includes('consecutive idle-timeout retries')
+      );
+      expect(abortCalls).toHaveLength(0);
+
+      jest.useFakeTimers();
+    }, 15000);
+
+    it('should still immediately throw non-retryable errors (regression check)', async () => {
+      const nonRetryableError = new Error('Permission denied: cannot access resource');
+
+      mockQuery.mockImplementation(() => {
+        return asyncThrowingGenerator(
+          [{ type: 'assistant', content: 'started' }],
+          nonRetryableError,
+          1,
+        ) as any;
+      });
+
+      const log = jest.fn();
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'test', options: {} } as any,
+        maxRetries: 5,
+        resumeContext: () => 'RESUME',
+        log,
+      };
+
+      await expect(collectAll(resilientQuery(opts))).rejects.toThrow('Permission denied');
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('Non-retryable error'));
+    });
+
+    it('should handle idle-timeout on first attempt correctly (sets high-water mark)', async () => {
+      jest.useRealTimers();
+
+      // First attempt stalls with zero messages → high-water stays at 0
+      // Second attempt succeeds
+      let callCount = 0;
+      mockQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          const closeFn = jest.fn();
+          return Object.assign(
+            {
+              [Symbol.asyncIterator]() {
+                return {
+                  next: () => new Promise<IteratorResult<unknown>>(() => {}),
+                };
+              },
+            },
+            { close: closeFn },
+          ) as any;
+        }
+        return asyncFromArray([
+          { type: 'assistant', content: 'success' },
+          { type: 'result', subtype: 'success' },
+        ]) as any;
+      });
+
+      const log = jest.fn();
+      const resumeContext = jest.fn(
+        (attempt: number, prior: number) => `Resume attempt ${attempt}, prior=${prior}`,
+      );
+
+      const opts: ResilientQueryOptions = {
+        queryParams: { prompt: 'task', options: {} } as any,
+        maxRetries: 5,
+        baseDelayMs: 10,
+        maxDelayMs: 50,
+        idleTimeoutMs: 50,
+        resumeContext,
+        log,
+      };
+
+      const results = await collectAll(resilientQuery(opts));
+
+      expect(results).toHaveLength(2);
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      // resumeContext called for attempt 2 with 0 prior messages
+      expect(resumeContext).toHaveBeenCalledWith(2, 0);
+
+      jest.useFakeTimers();
+    }, 10000);
+  });
 });

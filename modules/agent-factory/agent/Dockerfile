@@ -86,10 +86,17 @@ ENTRYPOINT ["dumb-init", "--"]
 # invokes bash directly. bash is installed above via apk; without it the tool
 # errors out with "shell environment isn't configured here" (misleading — the
 # message mentions SHELL but the real requirement is the bash binary).
+# CLAUDE_CONFIG_DIR points the Agent SDK's session store at ephemeral,
+# agent-writable container storage (issue #2079). persistSession:true in the
+# worker writes session transcripts here so a stalled run can be TRULY resumed
+# (options.resume) on retry instead of restarting from scratch. /tmp/workspace
+# is created and chowned to the agent user in the runtime stage above; it lives
+# only for the pod's lifetime, so this leaves no durable footprint.
 ENV NODE_ENV=production \
     PORT=8765 \
     AGENT_ENTRYPOINT=github \
     PERSONAS_DIR=/app/personas \
+    CLAUDE_CONFIG_DIR=/tmp/workspace/.claude \
     SHELL=/bin/bash
 
 # Start the application (dispatched by AGENT_ENTRYPOINT)
