@@ -21,6 +21,8 @@ import time
 from typing import Any
 
 import httpx
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("bedrockgateway.knowledge.github_app_service")
 
@@ -225,3 +227,104 @@ async def list_accessible_repos(
         "page": page,
         "has_more": end < total,
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-repo installation resolution (Issue #2086)
+# ---------------------------------------------------------------------------
+
+
+def _get_global_app_credentials() -> tuple[str, str]:
+    """Return (app_id, private_key_pem) for the global ADP GitHub App.
+
+    Reads BG_GITHUB_APP_ID / BG_GITHUB_APP_PRIVATE_KEY from gateway settings.
+    """
+    from src.shared.config import get_settings
+
+    settings = get_settings()
+    return settings.github_app_id or "", settings.github_app_private_key or ""
+
+
+async def resolve_installation_for_repo(
+    owner: str,
+    repo: str,
+    *,
+    http_client: httpx.AsyncClient | None = None,
+) -> int | None:
+    """Resolve the GitHub App installation_id that has access to a specific repo.
+
+    Uses the global ADP App JWT (BG_GITHUB_APP_ID / BG_GITHUB_APP_PRIVATE_KEY)
+    to call GitHub's GET /repos/{owner}/{repo}/installation endpoint.
+
+    Returns:
+        The installation_id (int) on success, or None if the App is not
+        installed on that repo (404).
+
+    Raises:
+        httpx.HTTPStatusError: on non-200/non-404 responses.
+        ValueError: if global App credentials are not configured.
+    """
+    app_id, private_key = _get_global_app_credentials()
+
+    if not app_id or not private_key:
+        raise ValueError("Global GitHub App credentials not configured (BG_GITHUB_APP_ID / BG_GITHUB_APP_PRIVATE_KEY).")
+
+    jwt_token = _mint_app_jwt(app_id, private_key)
+
+    client = http_client or httpx.AsyncClient(
+        base_url=GITHUB_API_BASE,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        timeout=10.0,
+    )
+    try:
+        resp = await client.get(
+            f"/repos/{owner}/{repo}/installation",
+            headers={"Authorization": f"Bearer {jwt_token}"},
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return int(resp.json()["id"])
+    finally:
+        if http_client is None:
+            await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Tenant ownership check (Issue #2086)
+# ---------------------------------------------------------------------------
+
+
+async def verify_installation_ownership(
+    tenant_id: str,
+    installation_id: int,
+    *,
+    db: AsyncSession,
+) -> bool:
+    """Verify that an installation_id belongs to the given tenant.
+
+    Queries channel_tenant_map using metadata->>'installation_id' to confirm
+    the installation was registered under the caller's tenant. This closes the
+    cross-tenant hole: the global App JWT can resolve ANY tenant's installation,
+    so registration must verify the resolved installation belongs to the caller.
+
+    Uses metadata JSON extraction (NOT provider_scope_id, which is the GitHub
+    numeric account id). Handles both org and personal installs (both write
+    channel_tenant_map rows).
+
+    Returns:
+        True if the installation belongs to the tenant, False otherwise.
+    """
+    result = await db.execute(
+        text("""
+            SELECT 1 FROM channel_tenant_map
+            WHERE provider = 'github'
+              AND org_id = :tenant_id
+              AND metadata->>'installation_id' = :installation_id
+        """),
+        {"tenant_id": tenant_id, "installation_id": str(installation_id)},
+    )
+    return result.fetchone() is not None
