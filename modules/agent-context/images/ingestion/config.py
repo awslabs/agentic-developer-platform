@@ -118,10 +118,12 @@ class Settings(BaseSettings):
     # --- Telemetry (Knowledge Layer observability, #1746) ----------------------
     knowledge_layer_telemetry_enabled: bool = True
     knowledge_layer_traces_enabled: bool = True
-    otel_exporter_otlp_endpoint: str = (
-        "http://adot-collector.adp-agents.svc.cluster.local:4317"
-    )
+    otel_exporter_otlp_endpoint: str = "http://adot-collector.adp-agents.svc.cluster.local:4317"
     log_format: str = "json"  # "json" or "text" (text for local dev)
+
+    # --- Status Callback (worker → gateway, Issue #2049) ---------------------
+    gateway_callback_url: str = ""  # Base URL for gateway callback (e.g. http://gateway-svc:8080)
+    gateway_internal_api_key: str = ""  # Shared secret for X-Internal-Api-Key header
 
     # --- Personal Context Synthesis -------------------------------------------
     synthesis_model: str = "bedrock/global.anthropic.claude-sonnet-4-6"

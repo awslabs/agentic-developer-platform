@@ -38,6 +38,7 @@ _tracer = get_tracer("knowledge-layer.sqs-worker")
 from config import settings
 from github_auth import mint_github_token
 from scope import parse_scope
+from status_callback import emit_status_callback
 
 AWS_REGION = settings.aws_region
 SQS_QUEUE_URL = settings.sqs_queue_url
@@ -399,6 +400,7 @@ def main():
     title = message.get("title")
     triggered_by = message.get("triggered_by", "unknown")
     steps = message.get("steps", [])
+    registry_asset_id = message.get("registry_asset_id")
 
     # Parse scope envelope (backward-compatible: defaults to shared if absent)
     scope = parse_scope(message.get("scope"))
@@ -420,6 +422,9 @@ def main():
 
     # Update DynamoDB status to "processing"
     update_dynamo_status(source, content_type, "processing", tags=tags)
+
+    # Emit status callback: worker "processing" → gateway "indexing" (#2049)
+    safe_emit(emit_status_callback, registry_asset_id, "indexing")
 
     # Root span wrapping the entire ingestion run — child spans per stage
     # are created by StageTracker and become children via trace context propagation
@@ -469,6 +474,19 @@ def main():
             trigger=triggered_by,
             steps={s: "ok" for s in steps},
         )
+
+        # Emit status callback: complete with compact status_detail (#2049)
+        safe_emit(
+            emit_status_callback,
+            registry_asset_id,
+            "complete",
+            status_detail={
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "duration_sec": round(duration, 1),
+                "steps": {s: "ok" for s in steps},
+            },
+        )
+
         # Emit ingestion duration metric (fail-open)
         safe_emit(
             record_ingestion_duration,
@@ -503,6 +521,18 @@ def main():
             "failed",
             duration,
             trigger=triggered_by,
+            error=error_msg,
+        )
+
+        # Emit status callback: failed with error in status_detail (#2049)
+        safe_emit(
+            emit_status_callback,
+            registry_asset_id,
+            "failed",
+            status_detail={
+                "failed_at": datetime.now(timezone.utc).isoformat(),
+                "duration_sec": round(duration, 1),
+            },
             error=error_msg,
         )
         # End root span + flush before exit (fail-open)

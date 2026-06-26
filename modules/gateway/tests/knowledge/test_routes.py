@@ -323,11 +323,12 @@ class TestGetAssetStatus:
 
         assert resp.status_code == 200
         data = resp.json()
-        # Exactly the three fields from the design — no more, no less
+        # Gateway-row fields: asset_id, source_ref, status, status_detail
         assert data == {
             "asset_id": str(asset_id),
             "source_ref": "https://github.com/acme/my-service",
             "status": "queued",
+            "status_detail": None,
         }
 
     @pytest.mark.anyio

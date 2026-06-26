@@ -419,6 +419,7 @@ async def get_asset_status(
         asset_id=asset_id,
         source_ref=row.source_ref,
         status=row.status,
+        status_detail=row.status_detail if hasattr(row, "status_detail") else None,
     )
 
 
@@ -737,8 +738,8 @@ async def _fetch_asset_by_id(db: AsyncSession, asset_id: str) -> Any | None:
     result = await db.execute(
         text("""
             SELECT id, asset_type, source_ref, display_name, tags, metadata,
-                   tenant_id, owner_sub, project_id, status, last_error,
-                   retry_count, registered_by, created_at, updated_at
+                   tenant_id, owner_sub, project_id, status, status_detail,
+                   last_error, retry_count, registered_by, created_at, updated_at
             FROM knowledge_assets
             WHERE id = :id
         """),

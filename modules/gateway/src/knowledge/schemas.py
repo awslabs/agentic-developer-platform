@@ -163,9 +163,11 @@ class AssetStatusResponse(BaseModel):
 
     Day-one scope: returns only fields from the gateway knowledge_assets row.
     No cross-DB join to repositories/index_runs/index_run_stages (those live in
-    agent_context). Rich per-stage detail arrives via the status-callback story.
+    agent_context). status_detail is populated by the worker status-callback bridge
+    (Issue #2049). Rich per-stage detail arrives via E7 #1672.
     """
 
     asset_id: str
     source_ref: str
     status: str
+    status_detail: dict[str, Any] | None = None

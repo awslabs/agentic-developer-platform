@@ -49,6 +49,7 @@ class FakeRow:
     owner_sub: str | None = "user-alice"
     project_id: uuid.UUID | None = None
     status: str = "registered"
+    status_detail: dict[str, Any] | None = None
     last_error: str | None = None
     retry_count: int = 0
     registered_by: str | None = "user-alice"
