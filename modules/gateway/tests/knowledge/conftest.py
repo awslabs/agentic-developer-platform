@@ -121,6 +121,25 @@ def _set_queue_url(monkeypatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _mock_accessibility_validation(monkeypatch) -> None:
+    """Default mock for validate_repo_accessibility — allows all repos as tenant-scoped.
+
+    Tests that specifically test accessibility behavior override this via
+    patch("src.knowledge.routes.validate_repo_accessibility") in their test body.
+    Issue #2087: prevents existing tests from failing due to the new validation.
+    """
+    from src.knowledge.accessibility import AccessibilityResult
+
+    async def _default_validate(*args, **kwargs):
+        return AccessibilityResult(allowed=True, shared=False, installation_id=None)
+
+    monkeypatch.setattr(
+        "src.knowledge.routes.validate_repo_accessibility",
+        _default_validate,
+    )
+
+
 @pytest.fixture
 def fake_user() -> FakeTokenContext:
     return FakeTokenContext()

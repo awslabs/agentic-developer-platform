@@ -16,6 +16,7 @@ the gate is off, `router` is not defined so the routes are silently skipped.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -26,6 +27,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.dependencies import get_current_user
+from src.knowledge.accessibility import (
+    AccessibilityResult,
+    validate_repo_accessibility,
+)
 from src.knowledge.bulk_parser import MAX_FILE_SIZE_BYTES, MAX_LINES, parse_bulk_file
 from src.knowledge.dispatch import IngestionQueueUnavailableError, dispatch_ingestion
 from src.knowledge.schemas import (
@@ -94,19 +99,45 @@ async def register_asset(
             detail=f"source_ref does not match expected pattern for type '{body.asset_type}'",
         )
 
+    # --- Register-time accessibility validation (Issue #2087) ---
+    # For repos: determine public/private, resolve installation, verify ownership.
+    accessibility: AccessibilityResult | None = None
+    if body.asset_type == "repo":
+        accessibility = await validate_repo_accessibility(
+            body.source_ref,
+            current_user.org_id or "",
+            db=db,
+        )
+        if not accessibility.allowed:
+            raise HTTPException(
+                status_code=accessibility.error_code,
+                detail=accessibility.error_message,
+            )
+
     # Derive scope from session — resolve canonical users.id for owner_sub (#2047/#1319)
+    # If repo is public, override to shared scope (tenant_id=NULL, no owner).
     tenant_id = current_user.org_id or None
     owner_sub: str | None = None
     scope_key = body.scope
+    installation_id: int | None = None
 
-    if body.scope == "personal":
+    if accessibility and accessibility.shared:
+        # Public repo → shared scope regardless of request body scope
+        tenant_id = None
+        owner_sub = None
+        scope_key = "tenant"  # quota still uses tenant limit for shared
+    elif body.scope == "personal":
         owner_sub = await resolve_canonical_user_id(db, current_user.user_id)
+        if accessibility:
+            installation_id = accessibility.installation_id
     elif body.scope == "tenant":
         if not current_user.is_admin:
             raise HTTPException(
                 status_code=403,
                 detail="Tenant-scope registration requires admin privileges",
             )
+        if accessibility:
+            installation_id = accessibility.installation_id
 
     # Soft quota check
     quota_limit = _get_quota_limit(scope_key, body.asset_type)
@@ -155,17 +186,18 @@ async def register_asset(
             },
         )
 
-    # Insert
+    # Insert (includes installation_id from accessibility validation — Issue #2087)
     asset_id = str(uuid.uuid4())
     await db.execute(
         text("""
             INSERT INTO knowledge_assets
                 (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
-                 status, registered_by, metadata, display_name, tags)
+                 status, registered_by, metadata, display_name, tags,
+                 installation_id)
             VALUES
                 (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
                  'registered', :registered_by, :metadata::jsonb,
-                 :display_name, :tags::jsonb)
+                 :display_name, :tags::jsonb, :installation_id)
         """),
         {
             "id": asset_id,
@@ -177,6 +209,7 @@ async def register_asset(
             "metadata": _json_dumps(body.metadata),
             "display_name": body.display_name,
             "tags": _json_dumps(body.tags),
+            "installation_id": installation_id,
         },
     )
     await db.commit()
@@ -563,6 +596,7 @@ async def bulk_commit(
     """Commit a previewed bulk upload batch. Writes rows + dispatches to SQS.
 
     Tenant admin can commit at tenant scope; any user can commit at personal scope.
+    Validates ALL repo items for accessibility BEFORE inserting any (Issue #2087).
     """
     # Admin gate for tenant scope
     if body.scope == "tenant" and not current_user.is_admin:
@@ -587,6 +621,37 @@ async def bulk_commit(
     scope_key = body.scope
     if body.scope == "personal":
         owner_sub = await resolve_canonical_user_id(db, current_user.user_id)
+
+    # --- Accessibility validation: validate ALL repo items before inserting any ---
+    # (Issue #2087: validate-all-before-insert; no partial commit)
+    repo_items = [item for item in body.items if item.asset_type == "repo"]
+    # Map from source_ref → AccessibilityResult for repo items
+    accessibility_map: dict[str, AccessibilityResult] = {}
+
+    if repo_items:
+        # Validate all repo items in parallel using asyncio.gather
+        validation_coros = [
+            validate_repo_accessibility(
+                item.source_ref,
+                current_user.org_id or "",
+                db=db,
+            )
+            for item in repo_items
+        ]
+        results = await asyncio.gather(*validation_coros)
+
+        for item, result in zip(repo_items, results):
+            if not result.allowed:
+                # One bad item → reject entire batch
+                raise HTTPException(
+                    status_code=result.error_code,
+                    detail={
+                        "message": f"Accessibility check failed for {item.source_ref}",
+                        "source_ref": item.source_ref,
+                        "reason": result.error_message,
+                    },
+                )
+            accessibility_map[item.source_ref] = result
 
     # Quota check before committing
     count_result = await db.execute(
@@ -651,27 +716,42 @@ async def bulk_commit(
             skipped_duplicates += 1
             continue
 
-        # Insert
+        # Determine scope overrides for public repos (Issue #2087)
+        item_tenant_id = tenant_id
+        item_owner_sub = owner_sub
+        item_installation_id: int | None = None
+
+        acc = accessibility_map.get(item.source_ref)
+        if acc and acc.shared:
+            # Public repo → shared scope
+            item_tenant_id = None
+            item_owner_sub = None
+        elif acc:
+            item_installation_id = acc.installation_id
+
+        # Insert (includes installation_id — Issue #2087)
         asset_id = str(uuid.uuid4())
         await db.execute(
             text("""
                 INSERT INTO knowledge_assets
                     (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
-                     status, registered_by, metadata, display_name, tags)
+                     status, registered_by, metadata, display_name, tags,
+                     installation_id)
                 VALUES
                     (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
                      'registered', :registered_by, '{}'::jsonb,
-                     :display_name, :tags::jsonb)
+                     :display_name, :tags::jsonb, :installation_id)
             """),
             {
                 "id": asset_id,
                 "asset_type": item.asset_type,
                 "source_ref": item.source_ref,
-                "tenant_id": tenant_id,
-                "owner_sub": owner_sub,
+                "tenant_id": item_tenant_id,
+                "owner_sub": item_owner_sub,
                 "registered_by": current_user.user_id,
                 "display_name": item.display_name,
                 "tags": _json_dumps(item.tags),
+                "installation_id": item_installation_id,
             },
         )
 
@@ -681,8 +761,8 @@ async def bulk_commit(
                 asset_id=asset_id,
                 asset_type=item.asset_type,
                 source_ref=item.source_ref,
-                tenant_id=tenant_id,
-                owner_sub=owner_sub,
+                tenant_id=item_tenant_id,
+                owner_sub=item_owner_sub,
                 project_id=None,
                 db=db,
             )
