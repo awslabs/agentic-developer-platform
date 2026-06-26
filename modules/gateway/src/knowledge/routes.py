@@ -226,6 +226,7 @@ async def register_asset(
             owner_sub=owner_sub,
             project_id=None,
             db=db,
+            installation_id=installation_id,
         )
     except IngestionQueueUnavailableError:
         raise HTTPException(
@@ -407,6 +408,7 @@ async def reindex_asset(
             owner_sub=row.owner_sub,
             project_id=str(row.project_id) if row.project_id else None,
             db=db,
+            installation_id=row.installation_id,
         )
     except Exception:
         logger.warning(
@@ -765,6 +767,7 @@ async def bulk_commit(
                 owner_sub=item_owner_sub,
                 project_id=None,
                 db=db,
+                installation_id=item_installation_id,
             )
         except IngestionQueueUnavailableError:
             raise HTTPException(
@@ -819,7 +822,8 @@ async def _fetch_asset_by_id(db: AsyncSession, asset_id: str) -> Any | None:
         text("""
             SELECT id, asset_type, source_ref, display_name, tags, metadata,
                    tenant_id, owner_sub, project_id, status, status_detail,
-                   last_error, retry_count, registered_by, created_at, updated_at
+                   last_error, retry_count, registered_by, installation_id,
+                   created_at, updated_at
             FROM knowledge_assets
             WHERE id = :id
         """),
