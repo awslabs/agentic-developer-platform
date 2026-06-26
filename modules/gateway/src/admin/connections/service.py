@@ -291,6 +291,12 @@ async def install_callback(
         repositories=repositories,
     )
 
+    # Issue #2085: Seed per-tenant GitHub App secret so that downstream
+    # resolve_tenant_app_credentials() never hits a missing-secret error.
+    from .tenant_secret import seed_tenant_github_app_secret
+
+    await seed_tenant_github_app_secret(caller_org_id, installation_id)
+
     if account_type == "Organization":
         # Issue #719: Populate organizations.github_installation_ids so that
         # future users from this org are matched to this tenant automatically.

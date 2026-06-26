@@ -1,14 +1,16 @@
 """Unit tests for the connections service layer.
 
 Issue #465: GitHub App install + connection management.
+Issue #2085: Tenant GitHub App secret seeding tests.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -19,6 +21,10 @@ from src.admin.connections.service import (
     install_callback,
     install_start,
     list_connections,
+)
+from src.admin.connections.tenant_secret import (
+    _seed_secret_sync,
+    seed_tenant_github_app_secret,
 )
 from src.shared.models.base import Base
 from src.shared.models.organization import Organization
@@ -512,3 +518,145 @@ class TestDeleteConnection:
         )
 
         gh.delete_installation.assert_called_once_with(124731131)
+
+
+# ---------------------------------------------------------------------------
+# Tenant GitHub App secret seeding (Issue #2085)
+# ---------------------------------------------------------------------------
+
+
+class TestSeedTenantGitHubAppSecret:
+    """Tests for seed_tenant_github_app_secret and _seed_secret_sync."""
+
+    def test_creates_secret_with_correct_name_and_shape(self, monkeypatch):
+        """The util creates the secret at adp/<env>/tenants/<org>/github-app
+        with a JSON payload containing app_id and private_key."""
+        monkeypatch.setenv("BG_GITHUB_APP_ID", "3410773")
+        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        mock_sm = MagicMock()
+        with patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm):
+            _seed_secret_sync("org-tenant-42", 999)
+
+        mock_sm.create_secret.assert_called_once()
+        call_kwargs = mock_sm.create_secret.call_args[1]
+        assert call_kwargs["Name"] == "adp/dev/tenants/org-tenant-42/github-app"
+
+        import json
+
+        payload = json.loads(call_kwargs["SecretString"])
+        assert payload["app_id"] == "3410773"
+        assert "RSA PRIVATE KEY" in payload["private_key"]
+
+        # Verify tags include Tenant and InstallationId
+        tags = {t["Key"]: t["Value"] for t in call_kwargs["Tags"]}
+        assert tags["Tenant"] == "org-tenant-42"
+        assert tags["InstallationId"] == "999"
+        assert tags["ManagedBy"] == "connections-install"
+
+    def test_idempotent_when_secret_already_exists(self, monkeypatch):
+        """Calling the util when the secret already exists is a no-op (no clobber)."""
+        monkeypatch.setenv("BG_GITHUB_APP_ID", "3410773")
+        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "test-key")
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        mock_sm = MagicMock()
+        # Simulate ResourceExistsException
+        error_response = {"Error": {"Code": "ResourceExistsException", "Message": "already exists"}}
+        mock_sm.create_secret.side_effect = ClientError(error_response, "CreateSecret")
+
+        with patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm):
+            # Should not raise
+            _seed_secret_sync("org-tenant-42", 999)
+
+        # create_secret was called (attempted), but no error propagated
+        mock_sm.create_secret.assert_called_once()
+
+    def test_no_op_when_credentials_not_configured(self, monkeypatch):
+        """When BG_GITHUB_APP_ID or BG_GITHUB_APP_PRIVATE_KEY is empty, skip gracefully."""
+        monkeypatch.setenv("BG_GITHUB_APP_ID", "")
+        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "")
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        mock_sm = MagicMock()
+        with patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm):
+            _seed_secret_sync("org-tenant-42", 999)
+
+        # Should not attempt to create the secret
+        mock_sm.create_secret.assert_not_called()
+
+    def test_failure_does_not_raise(self, monkeypatch):
+        """SM failures are logged but never propagate (fail-soft)."""
+        monkeypatch.setenv("BG_GITHUB_APP_ID", "3410773")
+        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "test-key")
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        mock_sm = MagicMock()
+        error_response = {"Error": {"Code": "InternalServiceError", "Message": "boom"}}
+        mock_sm.create_secret.side_effect = ClientError(error_response, "CreateSecret")
+
+        with patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm):
+            # Should not raise
+            _seed_secret_sync("org-tenant-42", 999)
+
+    async def test_async_wrapper_does_not_raise_on_error(self, monkeypatch):
+        """The async seed_tenant_github_app_secret never raises."""
+        monkeypatch.setenv("BG_GITHUB_APP_ID", "3410773")
+        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "test-key")
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        with patch(
+            "src.admin.connections.tenant_secret.asyncio.to_thread",
+            side_effect=RuntimeError("thread pool boom"),
+        ):
+            # Should not raise
+            await seed_tenant_github_app_secret("org-tenant-42", 999)
+
+    async def test_install_callback_invokes_seeding(self, db_session: AsyncSession, org_in_db, monkeypatch):
+        """install_callback calls seed_tenant_github_app_secret after attach."""
+        monkeypatch.setenv("BG_GITHUB_APP_ID", "3410773")
+        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "test-key")
+
+        # Seed user + nonce
+        from src.shared.models.organization import User
+
+        db_session.add(
+            User(
+                id="user-seed-test",
+                org_id="org-test-001",
+                team_id="team-test-001",
+                email="seed@test.local",
+                cognito_sub="sub-seed",
+            )
+        )
+        await db_session.commit()
+        nonce = MagicLinkNonce(
+            jti="seed-jti",
+            provider=_PROVIDER_GITHUB_INSTALL,
+            provider_user_id="sub-seed",
+            channel_context=None,
+            target_user_id="user-seed-test",
+            expires_at=datetime.now(UTC) + timedelta(minutes=15),
+            consumed_at=None,
+        )
+        db_session.add(nonce)
+        await db_session.commit()
+
+        gh = _mock_github_client()
+        mock_seed = AsyncMock()
+
+        with patch(
+            "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
+            mock_seed,
+        ):
+            result = await install_callback(
+                installation_id=124731131,
+                setup_action="install",
+                state="seed-jti",
+                db=db_session,
+                github_client=gh,
+            )
+
+        assert result["success"] is True
+        mock_seed.assert_called_once_with("org-test-001", 124731131)
