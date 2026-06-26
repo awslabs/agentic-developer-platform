@@ -194,6 +194,10 @@ jobs:
           # Issue #1158: Read proxy host allowlist from SSM (or default for dev)
           VAULT_PROXY_HOST_ALLOWLIST=$(get_ssm "/adp/${ENVIRONMENT}/gateway/vault-proxy-host-allowlist" "api.github.com,api.openai.com,api.anthropic.com,*.atlassian.net,api.stripe.com,slack.com")
 
+          # #2082: Knowledge-registry ingestion queue (agent-context SQS). Empty
+          # is safe — registry routes still mount; dispatch returns 503 until set.
+          INGESTION_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/agent-context/ingestion-queue-url" "")
+
           sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
               -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
               -e "s|__DB_HOST__|${DB_HOST}|g" \
@@ -214,6 +218,7 @@ jobs:
               -e "s|__TRUST_APIGW_HEADERS__|true|g" \
               -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
               -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
+              -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
               modules/gateway/k8s/configmap.yaml | kubectl apply -f -
 
           # --- Create K8s Secret from Secrets Manager (Section 2) ---

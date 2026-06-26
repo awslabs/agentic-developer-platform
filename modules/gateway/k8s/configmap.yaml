@@ -130,3 +130,15 @@ data:
   # =============================================================================
   BG_AGENT_REGISTRY_TABLE: "__AGENT_REGISTRY_TABLE__"
   AGENT_REGISTRY_TABLE: "__AGENT_REGISTRY_TABLE__"
+
+  # =============================================================================
+  # Knowledge Layer registry (E10 #1736 / #2082).
+  # Read directly via os.environ in app.py (NOT BG_-prefixed) — they gate +
+  # power the agent-context registry routes mounted into the gateway.
+  #   AGENT_CONTEXT_ENABLED: kill switch — routes mount only when "true".
+  #   INGESTION_QUEUE_URL:   SQS queue the registry dispatches ingestion to;
+  #                          if empty, routes still mount but dispatch returns
+  #                          503 (app.py logs a startup warning, does not crash).
+  # =============================================================================
+  AGENT_CONTEXT_ENABLED: "true"
+  INGESTION_QUEUE_URL: "__INGESTION_QUEUE_URL__"
