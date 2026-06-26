@@ -31,7 +31,7 @@ def _run(argv):
 class TestSeedTriggerPointer:
     def test_inherits_chain_and_increments_depth(self):
         """Full context → pointer for target issue inherits corr/root, parent=own
-        msg_id, depth=own+1."""
+        msg_id, depth=own+1, last_triggered_persona=target persona."""
         with patch.dict(os.environ, _FULL_ENV, clear=False):
             with (
                 patch("lib.correlation_store.write_pointer") as wp,
@@ -50,6 +50,8 @@ class TestSeedTriggerPointer:
         assert kw["is_human_rooted"] is True
         assert kw["triggering_invocation_id"] == "ops-msg-1"
         assert kw["chain_depth"] == 1
+        # Issue #2149: pre-seeds the self-re-trigger guard
+        assert kw["last_triggered_persona"] == "developer"
 
     def test_no_correlation_context_skips(self):
         """No ADP_CORRELATION_ID/ROOT → no write (webhook will start fresh chain)."""
@@ -75,6 +77,22 @@ class TestSeedTriggerPointer:
             ):
                 rc = _run(["x", "aws-e/adp", "1777", "developer"])
         assert rc == 0
+
+    def test_passes_reviewer_persona(self):
+        """last_triggered_persona matches the target persona, not the triggering one."""
+        with patch.dict(os.environ, _FULL_ENV, clear=False):
+            with (
+                patch("lib.correlation_store.write_pointer") as wp,
+                patch(
+                    "lib.correlation_store.channel_key",
+                    side_effect=lambda p, r, k, n: f"{p}:repo={r},{k}={n}",
+                ),
+            ):
+                rc = _run(["x", "aws-e/adp", "1777", "reviewer"])
+        assert rc == 0
+        wp.assert_called_once()
+        kw = wp.call_args.kwargs
+        assert kw["last_triggered_persona"] == "reviewer"
 
     def test_missing_args_skips(self):
         with patch.dict(os.environ, _FULL_ENV, clear=False):

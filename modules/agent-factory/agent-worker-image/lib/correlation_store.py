@@ -49,6 +49,7 @@ def write_pointer(
     ttl_days: int = 7,
     triggering_invocation_id: str | None = None,
     chain_depth: int | None = None,
+    last_triggered_persona: str | None = None,
 ) -> None:
     """Write a correlation pointer to DynamoDB. Fail-soft: logs and returns on error.
 
@@ -62,6 +63,9 @@ def write_pointer(
             run. Propagated to the next inbound event as parent_invocation_id.
         chain_depth: Current chain depth of the producing run (issue #1696).
             Used by the webhook to enforce the depth-only loop guard.
+        last_triggered_persona: The persona being triggered on this channel
+            (issue #2149). Pre-seeds the self-re-trigger guard so the webhook
+            can block immediate re-dispatch of the same persona.
     """
     table = _table_name or os.environ.get("CORRELATION_POINTERS_TABLE", "")
     if not table:
@@ -96,6 +100,10 @@ def write_pointer(
         if chain_depth is not None:
             set_parts.append("chain_depth = :cd")
             expr_vals[":cd"] = {"N": str(chain_depth)}
+        # Issue #2149: pre-seed the self-re-trigger guard for cross-issue dispatch.
+        if last_triggered_persona:
+            set_parts.append("last_triggered_persona = :ltp")
+            expr_vals[":ltp"] = {"S": last_triggered_persona}
         _get_client().update_item(
             TableName=table,
             Key={"channel_key": {"S": channel_key}},

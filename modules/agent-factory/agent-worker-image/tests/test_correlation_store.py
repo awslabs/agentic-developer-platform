@@ -93,9 +93,31 @@ class TestWritePointer:
         assert vals[":hr"] == {"BOOL": True}
         assert ":ua" in vals  # updated_at
         assert ":ea" in vals  # expires_at
-        # update_item must SET (not clobber) — last_triggered_persona is NOT in
-        # the update expression, so an existing value is preserved.
+        # When last_triggered_persona is NOT passed, update_item must NOT include
+        # it in the expression, so an existing value is preserved (issue #1716).
         assert "last_triggered_persona" not in call_kwargs["UpdateExpression"]
+
+    @patch("lib.correlation_store._get_client")
+    @patch.dict(os.environ, {"CORRELATION_POINTERS_TABLE": "test-table"})
+    def test_writes_last_triggered_persona_when_passed(self, mock_get_client):
+        """Issue #2149: write_pointer includes last_triggered_persona in the
+        update expression when explicitly passed (cross-issue dispatch seeding)."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        correlation_store.write_pointer(
+            channel_key="github:repo=org/repo,issue=42",
+            correlation_id="corr-abc",
+            root_human_id="user-xyz",
+            is_human_rooted=True,
+            last_triggered_persona="developer",
+        )
+
+        mock_client.update_item.assert_called_once()
+        call_kwargs = mock_client.update_item.call_args[1]
+        assert "last_triggered_persona" in call_kwargs["UpdateExpression"]
+        vals = call_kwargs["ExpressionAttributeValues"]
+        assert vals[":ltp"] == {"S": "developer"}
 
     @patch("lib.correlation_store._get_client")
     @patch.dict(os.environ, {"CORRELATION_POINTERS_TABLE": "test-table"})

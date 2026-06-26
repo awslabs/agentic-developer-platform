@@ -175,3 +175,68 @@ class TestPrependCorrelationMarker:
         assert lines[0].startswith("<!--")
         assert lines[0].endswith("-->")
         assert lines[1] == "Body"
+
+    # --- Issue #2149: adp-dispatch marker ---
+
+    def test_includes_dispatch_persona_when_set(self):
+        """Marker includes adp-dispatch:<persona> when dispatch_persona is passed."""
+        env = {
+            "ADP_CORRELATION_ID": "corr-123",
+            "ADP_ROOT_HUMAN_ID": "user-456",
+            "ADP_IS_HUMAN_ROOTED": "true",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = prepend_correlation_marker(
+                "@agent-developer please implement", dispatch_persona="developer"
+            )
+        assert "adp-dispatch:developer" in result
+        assert "adp-correlation:corr-123" in result
+        assert "adp-root-human:user-456" in result
+
+    def test_no_dispatch_when_persona_not_set(self):
+        """No adp-dispatch field when dispatch_persona is not passed (status comments)."""
+        env = {
+            "ADP_CORRELATION_ID": "corr-123",
+            "ADP_ROOT_HUMAN_ID": "user-456",
+            "ADP_IS_HUMAN_ROOTED": "true",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = prepend_correlation_marker("## @agent-developer Started")
+        assert "adp-dispatch" not in result
+
+    def test_no_dispatch_when_persona_empty_string(self):
+        """No adp-dispatch field when dispatch_persona is empty string."""
+        env = {
+            "ADP_CORRELATION_ID": "corr-123",
+            "ADP_ROOT_HUMAN_ID": "user-456",
+            "ADP_IS_HUMAN_ROOTED": "true",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = prepend_correlation_marker("body", dispatch_persona="")
+        assert "adp-dispatch" not in result
+
+    def test_full_marker_with_dispatch_persona(self):
+        """Full marker with all fields including dispatch_persona is single-line."""
+        env = {
+            "ADP_CORRELATION_ID": "corr-full",
+            "ADP_ROOT_HUMAN_ID": "user-full",
+            "ADP_IS_HUMAN_ROOTED": "true",
+            "ADP_MESSAGE_ID": "msg-full",
+            "ADP_CHAIN_DEPTH": "3",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = prepend_correlation_marker(
+                "@agent-reviewer review", dispatch_persona="reviewer"
+            )
+        lines = result.split("\n")
+        marker_line = lines[0]
+        assert marker_line.startswith("<!--")
+        assert marker_line.endswith("-->")
+        assert "adp-correlation:corr-full" in marker_line
+        assert "adp-root-human:user-full" in marker_line
+        assert "adp-is-human-rooted:true" in marker_line
+        assert "adp-invocation:msg-full" in marker_line
+        assert "adp-chain-depth:3" in marker_line
+        assert "adp-dispatch:reviewer" in marker_line
+        # Body on next line
+        assert lines[1] == "@agent-reviewer review"

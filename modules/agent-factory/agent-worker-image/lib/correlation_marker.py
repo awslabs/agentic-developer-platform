@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 
 
-def prepend_correlation_marker(body: str) -> str:
+def prepend_correlation_marker(body: str, *, dispatch_persona: str | None = None) -> str:
     """Idempotently prepend HTML correlation marker to a comment/PR body.
 
     Reads correlation context from ADP_CORRELATION_ID, ADP_ROOT_HUMAN_ID,
@@ -21,6 +21,9 @@ def prepend_correlation_marker(body: str) -> str:
 
     Args:
         body: The comment or PR body text.
+        dispatch_persona: Optional. When set, includes ``adp-dispatch:<persona>``
+            in the marker, signaling an intentional cross-issue bot→bot dispatch.
+            Status/boilerplate comments MUST NOT pass this parameter (issue #2149).
 
     Returns:
         Body with marker prepended, or original body unchanged.
@@ -52,6 +55,10 @@ def prepend_correlation_marker(body: str) -> str:
         parts.append(f"adp-invocation:{invocation}")
     if chain_depth:
         parts.append(f"adp-chain-depth:{chain_depth}")
+
+    # Issue #2149: dispatch marker for intentional cross-issue bot→bot triggers.
+    if dispatch_persona:
+        parts.append(f"adp-dispatch:{dispatch_persona}")
 
     marker = f"<!-- {' '.join(parts)} -->\n"
     return marker + body

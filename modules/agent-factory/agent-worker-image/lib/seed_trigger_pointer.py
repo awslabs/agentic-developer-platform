@@ -70,6 +70,9 @@ def main(argv: list[str]) -> int:
         key = channel_key("github", repo, "issue", issue_number)
         # The spawned run inherits THIS chain; its parent is this run's invocation;
         # its depth is this run's depth + 1.
+        # Issue #2149: pass last_triggered_persona so the cross-persona loop guard
+        # is pre-seeded on the target channel (the webhook reads it to block
+        # immediate self-re-triggers).
         write_pointer(
             channel_key=key,
             correlation_id=correlation_id,
@@ -77,6 +80,7 @@ def main(argv: list[str]) -> int:
             is_human_rooted=is_human_rooted,
             triggering_invocation_id=own_message_id or None,
             chain_depth=own_depth + 1,
+            last_triggered_persona=persona,
         )
         logger.info(
             "seed_trigger_pointer: seeded pointer channel=%s corr=%s parent=%s depth=%d "

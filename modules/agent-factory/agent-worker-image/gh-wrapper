@@ -49,6 +49,26 @@ if [ "$1" = "issue" ] || [ "$1" = "pr" ]; then
         # Seed the pointer BEFORE the comment posts. Fail-soft (the helper never
         # exits non-zero; the `|| true` is belt-and-suspenders).
         python3 -m lib.seed_trigger_pointer "$TARGET_REPO" "$_target" "$_persona" >/dev/null 2>&1 || true
+        # Issue #2149: Inject the dispatch marker into the comment body so the
+        # webhook parser (#2156) recognizes this as an intentional bot→bot trigger.
+        # Write body to a temp file, call the Python marker helper to prepend the
+        # marker (with adp-dispatch:<persona>), then rewrite gh args to use the
+        # marked file. Fail-soft: if anything goes wrong, original args pass through.
+        _marked_file="/tmp/.adp-dispatch-body-$$"
+        printf '%s' "$_body" > "$_marked_file.in" 2>/dev/null
+        ADP_DISPATCH_PERSONA="$_persona" python3 -c "
+import os, sys
+sys.path.insert(0, os.environ.get('AGENT_WORKDIR', '/app'))
+from lib.correlation_marker import prepend_correlation_marker
+body = open(sys.argv[1]).read()
+marked = prepend_correlation_marker(body, dispatch_persona=os.environ['ADP_DISPATCH_PERSONA'])
+open(sys.argv[2], 'w').write(marked)
+" "$_marked_file.in" "$_marked_file" 2>/dev/null
+        if [ -s "$_marked_file" ]; then
+          # Rebuild args: replace --body/--body-file with the marked file.
+          set -- "$_kind" "comment" "$_target" --body-file "$_marked_file"
+        fi
+        rm -f "$_marked_file.in" 2>/dev/null
       fi
     fi
   fi
