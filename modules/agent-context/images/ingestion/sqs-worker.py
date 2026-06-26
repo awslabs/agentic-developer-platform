@@ -36,7 +36,7 @@ _tracer = get_tracer("knowledge-layer.sqs-worker")
 # ---------------------------------------------------------------------------
 
 from config import settings
-from github_auth import mint_github_token
+from github_auth import InstallationRevokedError, mint_github_token, mint_installation_token
 from scope import parse_scope
 from status_callback import emit_status_callback
 
@@ -380,13 +380,25 @@ def _mint_github_token() -> bool:
     return mint_github_token()
 
 
+def _mint_per_installation_token(installation_id: int) -> bool:
+    """Mint a token for a specific GitHub App installation (issue #2088).
+
+    Per-pod installation auth: the asset carries its installation_id from
+    register time. We mint a token scoped to exactly that installation.
+
+    Returns True on success.
+
+    Raises:
+        InstallationRevokedError: installation no longer exists (fail-closed).
+        RuntimeError: transient/config error.
+    """
+    return mint_installation_token(installation_id)
+
+
 def main():
     if not SQS_QUEUE_URL:
         log.error("SQS_QUEUE_URL not set")
         sys.exit(1)
-
-    # Mint GitHub App token before processing (enables private repo clones)
-    _mint_github_token()
 
     result = receive_sqs_message()
     if result is None:
@@ -401,6 +413,7 @@ def main():
     triggered_by = message.get("triggered_by", "unknown")
     steps = message.get("steps", [])
     registry_asset_id = message.get("registry_asset_id")
+    installation_id = message.get("installation_id")  # Per-pod auth (#2088)
 
     # Parse scope envelope (backward-compatible: defaults to shared if absent)
     scope = parse_scope(message.get("scope"))
@@ -417,6 +430,56 @@ def main():
         tenant_id=scope.tenant_id,
         project_id=scope.project_id,
     )
+
+    # --- Per-pod installation auth (issue #2088) ---
+    # If the asset carries an installation_id (private repo registered via
+    # story #4), mint a token for THAT specific installation. If absent
+    # (public/shared asset), fall back to anonymous clone (no mint).
+    # Fail-closed: if the installation is revoked, abort immediately.
+    if installation_id and content_type == "repo":
+        try:
+            _mint_per_installation_token(int(installation_id))
+        except InstallationRevokedError as e:
+            error_msg = f"access_revoked: {e}"
+            log.error(
+                "Installation revoked for %s (installation_id=%s): %s",
+                source,
+                installation_id,
+                e,
+            )
+            update_dynamo_status(source, content_type, "failed", error=error_msg, tags=tags)
+            write_dynamo_run_record(
+                source,
+                content_type,
+                "failed",
+                0.0,
+                trigger=triggered_by,
+                error=error_msg,
+            )
+            safe_emit(
+                emit_status_callback,
+                registry_asset_id,
+                "failed",
+                status_detail={"reason": "access_revoked"},
+                error=error_msg,
+            )
+            # Fail-closed: delete message (no retry — installation won't come back)
+            # and exit. The asset status surfaces the revocation to the user.
+            delete_sqs_message(receipt_handle)
+            sys.exit(1)
+        except RuntimeError as e:
+            # Transient/config error — let the message return to queue for retry
+            log.error(
+                "Token mint failed for %s (installation_id=%s): %s",
+                source,
+                installation_id,
+                e,
+            )
+            sys.exit(1)
+    elif not installation_id and content_type == "repo":
+        # Public/shared asset — use legacy global mint (non-fatal if it fails)
+        _mint_github_token()
+    # Non-repo content types don't need GitHub auth
 
     log.info("Processing: %s (%s) triggered_by=%s", source, content_type, triggered_by)
 

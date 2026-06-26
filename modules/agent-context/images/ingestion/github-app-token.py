@@ -27,6 +27,7 @@ Usage:
     --k8s-key github-token \
     --namespace agent-context
 """
+
 import argparse
 import json
 import os
@@ -36,7 +37,11 @@ import sys
 import time
 
 
-def error_exit(msg, code=1):
+EXIT_GENERAL_ERROR = 1
+EXIT_INSTALLATION_REVOKED = 2  # Installation not found (404/410) — revoked or removed
+
+
+def error_exit(msg, code=EXIT_GENERAL_ERROR):
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(code)
 
@@ -123,7 +128,10 @@ def discover_installation_id(encoded_jwt, owner=None):
                 return inst["id"]
         error_exit(f"No installation found for owner '{owner}'")
     installation = installations[0]
-    print(f"Using installation {installation['id']} (account: {installation.get('account', {}).get('login', 'unknown')})", file=sys.stderr)
+    print(
+        f"Using installation {installation['id']} (account: {installation.get('account', {}).get('login', 'unknown')})",
+        file=sys.stderr,
+    )
     return installation["id"]
 
 
@@ -145,8 +153,12 @@ def get_installation_token(encoded_jwt, installation_id):
         error_exit(f"GitHub API request failed: {e}")
     if resp.status_code == 401:
         error_exit("GitHub API returned 401. JWT may be expired or private key is incorrect.")
-    elif resp.status_code == 404:
-        error_exit(f"Installation {installation_id} not found.")
+    elif resp.status_code in (404, 410):
+        error_exit(
+            f"Installation {installation_id} not found (HTTP {resp.status_code}). "
+            "The installation may have been revoked or removed.",
+            code=EXIT_INSTALLATION_REVOKED,
+        )
     elif resp.status_code != 201:
         error_exit(f"GitHub API returned {resp.status_code}: {resp.text[:500]}")
     data = resp.json()
@@ -166,7 +178,9 @@ def update_k8s_secret(secret_name, key, value, namespace):
     try:
         subprocess.run(
             ["kubectl", "patch", "secret", secret_name, "-n", namespace, "-p", patch_data],
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
         )
     except subprocess.CalledProcessError as e:
         error_exit(f"Failed to patch K8s secret: {e.stderr}")
@@ -176,8 +190,12 @@ def update_k8s_secret(secret_name, key, value, namespace):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate GitHub App installation access token")
-    parser.add_argument("--app-id-secret", help="Secrets Manager ID for App ID (e.g., adp/gh-app-ops-id)")
-    parser.add_argument("--app-key-secret", help="Secrets Manager ID for App private key (e.g., adp/gh-app-ops-key)")
+    parser.add_argument(
+        "--app-id-secret", help="Secrets Manager ID for App ID (e.g., adp/gh-app-ops-id)"
+    )
+    parser.add_argument(
+        "--app-key-secret", help="Secrets Manager ID for App private key (e.g., adp/gh-app-ops-key)"
+    )
     parser.add_argument("--secret-id", help="Single JSON secret ID (legacy mode)")
     parser.add_argument("--region", default="us-east-1")
     parser.add_argument("--owner", help="GitHub org/user to find installation for")
@@ -197,8 +215,13 @@ def main():
 
     installation_id = args.installation_id
     if mode == "split":
-        print(f"Fetching credentials from '{args.app_id_secret}' + '{args.app_key_secret}'...", file=sys.stderr)
-        app_id, private_key = get_credentials_split(args.app_id_secret, args.app_key_secret, args.region)
+        print(
+            f"Fetching credentials from '{args.app_id_secret}' + '{args.app_key_secret}'...",
+            file=sys.stderr,
+        )
+        app_id, private_key = get_credentials_split(
+            args.app_id_secret, args.app_key_secret, args.region
+        )
     else:
         print(f"Fetching credentials from '{args.secret_id}'...", file=sys.stderr)
         app_id, private_key, stored_id = get_credentials_combined(args.secret_id, args.region)
