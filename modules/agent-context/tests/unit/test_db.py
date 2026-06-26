@@ -173,7 +173,33 @@ class TestEnsureRepoExists:
         db.ensure_repo_exists(mock_conn, "myorg/myrepo", "https://github.com/myorg/myrepo")
         insert_call = cursor.execute.call_args_list[0]
         params = insert_call[0][1]
-        assert params == ("myorg/myrepo", "https://github.com/myorg/myrepo", "myorg")
+        # Params: (repo_name, git_url, owner, allowed_principals_json, tenant_id)
+        assert params[0] == "myorg/myrepo"
+        assert params[1] == "https://github.com/myorg/myrepo"
+        assert params[2] == "myorg"
+        # Default: allowed_principals=["*"] (public), tenant_id=None
+        assert params[3] == '["*"]'
+        assert params[4] is None
+
+    def test_inserts_with_custom_principals(self, mock_conn):
+        """Issue #2082: allowed_principals passed through to INSERT."""
+        import db
+
+        cursor = mock_conn.cursor.return_value
+        cursor.fetchone.return_value = ("uuid-new",)
+
+        db.ensure_repo_exists(
+            mock_conn,
+            "acme/private-svc",
+            "https://github.com/acme/private-svc",
+            allowed_principals=["tenant:acme"],
+            tenant_id="acme",
+        )
+        insert_call = cursor.execute.call_args_list[0]
+        params = insert_call[0][1]
+        assert params[0] == "acme/private-svc"
+        assert params[3] == '["tenant:acme"]'
+        assert params[4] == "acme"
 
     def test_raises_on_missing_row(self, mock_conn):
         import db

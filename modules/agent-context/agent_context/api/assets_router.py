@@ -401,6 +401,7 @@ async def reindex_asset(
             owner_sub=row.owner_sub,
             project_id=str(row.project_id) if row.project_id else None,
             db=db,
+            installation_id=row.installation_id,
         )
     except Exception:
         logger.warning(
@@ -830,7 +831,8 @@ async def _fetch_asset_by_id(db: AsyncSession, asset_id: str) -> Any | None:
         text("""
             SELECT id, asset_type, source_ref, display_name, tags, metadata,
                    tenant_id, owner_sub, project_id, status, last_error,
-                   retry_count, registered_by, created_at, updated_at
+                   retry_count, registered_by, created_at, updated_at,
+                   installation_id
             FROM knowledge_assets
             WHERE id = :id
         """),

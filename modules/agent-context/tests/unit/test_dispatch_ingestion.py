@@ -412,3 +412,60 @@ class TestDispatchIngestion:
 
         body = fake_sqs.messages[0]["MessageBody"]
         assert body["scope"]["project_id"] == "proj-xyz"
+
+
+class TestDispatchInstallationId:
+    """Tests for installation_id passthrough in dispatch_ingestion (#2082)."""
+
+    @pytest.mark.anyio
+    async def test_installation_id_included_in_message(self, fake_sqs, fake_db):
+        """When installation_id is provided, it appears in the SQS message body."""
+        result = await dispatch_ingestion(
+            asset_id="asset-install-1",
+            asset_type="repo",
+            source_ref="https://github.com/acme/private-repo",
+            tenant_id="acme-corp",
+            owner_sub="user-alice",
+            project_id=None,
+            db=fake_db,
+            installation_id=12345,
+        )
+
+        assert result is True
+        body = fake_sqs.messages[0]["MessageBody"]
+        assert body["installation_id"] == 12345
+
+    @pytest.mark.anyio
+    async def test_installation_id_omitted_when_none(self, fake_sqs, fake_db):
+        """When installation_id is None (public repo), key is absent from SQS message."""
+        result = await dispatch_ingestion(
+            asset_id="asset-install-2",
+            asset_type="repo",
+            source_ref="https://github.com/acme/public-repo",
+            tenant_id=None,
+            owner_sub=None,
+            project_id=None,
+            db=fake_db,
+            installation_id=None,
+        )
+
+        assert result is True
+        body = fake_sqs.messages[0]["MessageBody"]
+        assert "installation_id" not in body
+
+    @pytest.mark.anyio
+    async def test_installation_id_not_set_by_default(self, fake_sqs, fake_db):
+        """Without passing installation_id kwarg, it's absent from message."""
+        result = await dispatch_ingestion(
+            asset_id="asset-install-3",
+            asset_type="repo",
+            source_ref="https://github.com/acme/public-repo",
+            tenant_id="acme-corp",
+            owner_sub=None,
+            project_id=None,
+            db=fake_db,
+        )
+
+        assert result is True
+        body = fake_sqs.messages[0]["MessageBody"]
+        assert "installation_id" not in body

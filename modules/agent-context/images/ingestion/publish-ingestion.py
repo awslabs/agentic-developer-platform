@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Queue Publisher — reads source files, checks DynamoDB state, enqueues changed items to SQS.
+"""Queue Publisher — reads source files or registry, checks state, enqueues changed items to SQS.
 
-Reads index_content/*.txt files, checks DynamoDB for each source's current state,
-and publishes SQS messages only for items that have changed (or all if --force).
+Reads index_content/*.txt files (legacy) or knowledge_assets registry (Phase 2),
+checks DynamoDB for each source's current state, and publishes SQS messages only
+for items that have changed (or all if --force).
 
 Usage:
   python publish-ingestion.py --type repo --source-file /config/repos.txt
@@ -11,6 +12,7 @@ Usage:
   python publish-ingestion.py --type infra --source-file /config/accounts.txt
   python publish-ingestion.py --type repo --force  # Re-process everything
   python publish-ingestion.py --all                # Publish all types
+  python publish-ingestion.py --from-registry      # Publish repos from knowledge_assets (#2082)
 """
 
 from __future__ import annotations
@@ -166,7 +168,8 @@ def _repo_has_changed(source: str, state: dict[str, Any]) -> bool:
     try:
         result = subprocess.run(
             ["git", "ls-remote", f"https://github.com/{source}", "HEAD"],
-            capture_output=True, timeout=30,
+            capture_output=True,
+            timeout=30,
         )
         if result.returncode == 0 and result.stdout:
             current_sha = result.stdout.decode().split()[0]
@@ -183,7 +186,8 @@ def _url_has_changed(source: str, state: dict[str, Any]) -> bool:
     """Check if a URL has changed via ETag/Last-Modified."""
     try:
         resp = requests.head(
-            source, timeout=15,
+            source,
+            timeout=15,
             headers={"User-Agent": "AgentContext-Publisher/1.0"},
             allow_redirects=True,
         )
@@ -231,6 +235,9 @@ def publish_message(
     force: bool = False,
     triggered_by: str = "manual",
     scope: IngestionScope | None = None,
+    *,
+    registry_asset_id: str | None = None,
+    installation_id: int | None = None,
 ) -> bool:
     """Publish a single ingestion message to SQS."""
     now = datetime.now(timezone.utc).isoformat()
@@ -246,6 +253,10 @@ def publish_message(
     }
     if title:
         message["title"] = title
+    if registry_asset_id:
+        message["registry_asset_id"] = registry_asset_id
+    if installation_id is not None:
+        message["installation_id"] = installation_id
 
     try:
         sqs_client().send_message(
@@ -297,25 +308,107 @@ def publish(
 
     log.info(
         "Publish complete (%s): %d total, %d enqueued, %d skipped, %d errors",
-        content_type, stats["total"], stats["enqueued"], stats["skipped"], stats["errors"],
+        content_type,
+        stats["total"],
+        stats["enqueued"],
+        stats["skipped"],
+        stats["errors"],
+    )
+    return stats
+
+
+def publish_from_registry(
+    force: bool = False,
+    triggered_by: str = "daily_refresh",
+) -> dict[str, int]:
+    """Publish changed repos from the knowledge_assets registry (#2082 Phase 2).
+
+    Reads all registered repo assets from the gateway DB, checks DynamoDB for
+    SHA changes, and enqueues changed items to SQS with full scope + installation_id.
+    """
+    from registry_reader import RegistryAsset, extract_org_repo, read_registry_assets
+
+    stats = {"total": 0, "enqueued": 0, "skipped": 0, "errors": 0}
+
+    try:
+        assets: list[RegistryAsset] = read_registry_assets("repo")
+    except Exception as e:
+        log.error("Failed to read registry: %s", e)
+        return {"total": 0, "enqueued": 0, "skipped": 0, "errors": 1}
+
+    stats["total"] = len(assets)
+
+    for asset in assets:
+        org_repo = extract_org_repo(asset.source_ref)
+        state = get_dynamo_state(org_repo, "repo")
+
+        if not force and not has_changed(org_repo, state, "repo"):
+            log.info("SKIP %s — no changes", org_repo)
+            stats["skipped"] += 1
+            continue
+
+        # Build scope from registry row
+        scope = IngestionScope(
+            tenant_id=asset.tenant_id,
+            owner_sub=asset.owner_sub,
+            project_id=asset.project_id,
+            visibility=(
+                "personal" if asset.owner_sub else "tenant" if asset.tenant_id else "shared"
+            ),
+        )
+
+        if publish_message(
+            source=org_repo,
+            content_type="repo",
+            tags={},
+            force=force,
+            triggered_by=triggered_by,
+            scope=scope,
+            registry_asset_id=asset.asset_id,
+            installation_id=asset.installation_id,
+        ):
+            stats["enqueued"] += 1
+        else:
+            stats["errors"] += 1
+
+    log.info(
+        "Registry publish complete: %d total, %d enqueued, %d skipped, %d errors",
+        stats["total"],
+        stats["enqueued"],
+        stats["skipped"],
+        stats["errors"],
     )
     return stats
 
 
 def main():
     parser = argparse.ArgumentParser(description="Publish ingestion messages to SQS")
-    parser.add_argument("--type", choices=["repo", "url", "doc", "infra"],
-                        help="Content type to publish")
+    parser.add_argument(
+        "--type", choices=["repo", "url", "doc", "infra"], help="Content type to publish"
+    )
     parser.add_argument("--source-file", help="Path to source file (overrides default)")
     parser.add_argument("--force", action="store_true", help="Re-process all items")
     parser.add_argument("--all", action="store_true", help="Publish all content types")
-    parser.add_argument("--triggered-by", default="manual",
-                        help="Trigger source (manual, daily_refresh, gitops)")
+    parser.add_argument(
+        "--from-registry",
+        action="store_true",
+        help="Publish repos from knowledge_assets registry (#2082)",
+    )
+    parser.add_argument(
+        "--triggered-by", default="manual", help="Trigger source (manual, daily_refresh, gitops)"
+    )
     args = parser.parse_args()
 
     if not SQS_QUEUE_URL:
         log.error("SQS_QUEUE_URL not set")
         sys.exit(1)
+
+    if args.from_registry:
+        stats = publish_from_registry(args.force, args.triggered_by)
+        print(json.dumps(stats, indent=2))
+        if stats["errors"] > 0 and stats["enqueued"] == 0:
+            sys.exit(1)
+        return
 
     if args.all:
         total_stats = {"total": 0, "enqueued": 0, "skipped": 0, "errors": 0}

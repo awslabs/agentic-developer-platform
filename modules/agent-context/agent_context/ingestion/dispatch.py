@@ -155,6 +155,7 @@ async def dispatch_ingestion(
     owner_sub: str | None,
     project_id: str | None,
     db: AsyncSession,
+    *,
     installation_id: int | None = None,
 ) -> bool:
     """Phase 1: inline SQS publish for a registered asset.
@@ -169,9 +170,7 @@ async def dispatch_ingestion(
         owner_sub: User isolation key (may be None).
         project_id: Project grouping key (may be None).
         db: Active database session (for status update on success).
-        installation_id: GitHub App installation ID for per-pod auth (#2088).
-            If set, the worker mints a token scoped to this installation.
-            If None, the worker clones unauthenticated (public/shared assets).
+        installation_id: GitHub App installation_id for per-pod auth (#2082).
 
     Returns:
         True if publish succeeded and status updated to 'queued'.
@@ -198,8 +197,7 @@ async def dispatch_ingestion(
         "enqueued_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    # Include installation_id for per-pod credential minting (#2088).
-    # Worker uses this to mint a token scoped to the exact installation.
+    # Include installation_id so the ingestion pod can mint a per-repo token (#2082).
     if installation_id is not None:
         message["installation_id"] = installation_id
 

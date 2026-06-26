@@ -21,26 +21,30 @@ if TYPE_CHECKING:
 log = logging.getLogger("db")
 
 # Valid stage names for index_run_stages
-VALID_STAGES = frozenset({
-    "clone",
-    "cgc_structural",
-    "embed_vectors",
-    "sbom_source",
-    "sbom_image",
-    "deepwiki",
-    "zoekt_index",
-    "graphrag",
-})
+VALID_STAGES = frozenset(
+    {
+        "clone",
+        "cgc_structural",
+        "embed_vectors",
+        "sbom_source",
+        "sbom_image",
+        "deepwiki",
+        "zoekt_index",
+        "graphrag",
+    }
+)
 
 # Valid status values for index_run_stages
-VALID_STATUSES = frozenset({
-    "pending",
-    "running",
-    "succeeded",
-    "failed",
-    "verified",
-    "skipped",
-})
+VALID_STATUSES = frozenset(
+    {
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "verified",
+        "skipped",
+    }
+)
 
 
 def _get_iam_auth_token(host: str, port: int, user: str, region: str) -> str:
@@ -167,22 +171,45 @@ def upsert_dependencies(
     return total
 
 
-def ensure_repo_exists(conn, org_repo: str, git_url: str) -> str:
+def ensure_repo_exists(
+    conn,
+    org_repo: str,
+    git_url: str,
+    *,
+    allowed_principals: list[str] | None = None,
+    tenant_id: str | None = None,
+) -> str:
     """Ensure a repository row exists, returning its UUID.
 
     Creates the row if it doesn't exist (INSERT ... ON CONFLICT DO NOTHING)
     then fetches the id.
+
+    Issue #2082: When allowed_principals is provided, sets it on insert and
+    updates existing rows that have empty principals (fixes the #1920 root
+    cause where repos were invisible due to empty allowed_principals).
+    When tenant_id is provided, stamps it on the row for correct scoping.
     """
+    import json as _json
+
     owner = org_repo.split("/")[0] if "/" in org_repo else org_repo
+    # Default: public if no principals specified (backward-compatible)
+    principals_json = _json.dumps(allowed_principals if allowed_principals is not None else ["*"])
     cursor = conn.cursor()
     try:
         cursor.execute(
             """
-            INSERT INTO repositories (repo_name, git_url, owner)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (repo_name) DO NOTHING
+            INSERT INTO repositories (repo_name, git_url, owner, allowed_principals, tenant_id)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (repo_name) DO UPDATE
+                SET allowed_principals = CASE
+                        WHEN repositories.allowed_principals = '[]'::jsonb
+                          OR repositories.allowed_principals IS NULL
+                        THEN EXCLUDED.allowed_principals
+                        ELSE repositories.allowed_principals
+                    END,
+                    tenant_id = COALESCE(repositories.tenant_id, EXCLUDED.tenant_id)
             """,
-            (org_repo, git_url, owner),
+            (org_repo, git_url, owner, principals_json, tenant_id),
         )
         conn.commit()
 
@@ -523,14 +550,18 @@ def reconcile_stages(conn, repo: str, verify_fn) -> list[dict]:
                     """,
                     (now, stage_id),
                 )
-                drifted.append({
-                    "stage_id": stage_id,
-                    "stage": stage,
-                    "artifact_ref": artifact_ref,
-                })
+                drifted.append(
+                    {
+                        "stage_id": stage_id,
+                        "stage": stage,
+                        "artifact_ref": artifact_ref,
+                    }
+                )
                 log.warning(
                     "Reconciliation drift: repo=%s stage=%s artifact=%s",
-                    repo, stage, artifact_ref,
+                    repo,
+                    stage,
+                    artifact_ref,
                 )
 
         if drifted:

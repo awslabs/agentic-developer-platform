@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     syft_timeout: int = 120  # seconds for syft CLI execution
     sbom_db_enabled: bool = True  # Write dependency rows to Postgres (best-effort)
 
+    # --- Gateway DB (registry reader, Issue #2082 Phase 2) -------------------
+    gateway_db_name: str = ""  # Gateway DB name (e.g. "bedrockgateway"); empty = registry disabled
+    gateway_db_host: str = ""  # Defaults to DB_HOST if empty (same RDS instance)
+
     # --- Telemetry (Knowledge Layer observability, #1746) ----------------------
     knowledge_layer_telemetry_enabled: bool = True
     knowledge_layer_traces_enabled: bool = True
