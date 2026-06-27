@@ -206,6 +206,12 @@ COPY --chown=agent:agent modules/agent-factory/agent-worker-image/adp_cred/ /app
 RUN printf '#!/bin/sh\nexec python3 -m adp_cred "$@"\n' > /usr/local/bin/adp-cred && \
     chmod +x /usr/local/bin/adp-cred
 
+# Install adp-trigger CLI (agent-to-agent dispatch via API, #2153).
+# Same pattern as adp-cred: Python package + shell wrapper.
+COPY --chown=agent:agent modules/agent-factory/agent-worker-image/adp_trigger/ /app/adp_trigger/
+RUN printf '#!/bin/sh\nexec python3 -m adp_trigger "$@"\n' > /usr/local/bin/adp-trigger && \
+    chmod +x /usr/local/bin/adp-trigger
+
 # Set working directory and switch to non-root user
 WORKDIR /work
 USER agent

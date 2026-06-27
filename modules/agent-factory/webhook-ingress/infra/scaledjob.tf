@@ -184,6 +184,10 @@ locals {
                   # PutItem on this table (scaledjob-iam.tf).
                   - name: CORRELATION_POINTERS_TABLE
                     value: ${aws_dynamodb_table.correlation_pointers.name}
+                  # Issue #2153: adp-trigger CLI needs the webhook-ingress API
+                  # endpoint to POST /agent/trigger (SigV4-signed).
+                  - name: ADP_TRIGGER_ENDPOINT
+                    value: ${aws_api_gateway_stage.dev.invoke_url}/agent/trigger
 ${local.otel_env_block}
                 resources:
                   requests:

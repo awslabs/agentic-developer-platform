@@ -47,6 +47,15 @@ If the user asks you to do something that needs AWS and no `aws_role` credential
 
 If step 1 returns "Unable to locate credentials": stop, ask the user to connect an AWS account at `/settings/credentials`. Do not proceed.
 
+## Triggering other agents
+
+Two ways to dispatch another persona — both are valid, use whichever fits:
+
+- **Comment mention** (existing): post a comment containing `@agent-<persona>` on the target issue. Works from any context where you can write a GitHub comment.
+- **API trigger** (alternative): `adp-trigger --persona <persona> --issue <N> [--repo <owner/repo>] [--reason <text>]`. Direct, authenticated call — reads lineage from the pod environment and SigV4-signs the request. Use this when you prefer a clean API call over posting a comment.
+
+**No-double-fire rule:** when triggering another persona, use ONE path — not both. Don't post an `@agent-<persona>` mention AND call `adp-trigger` for the same dispatch.
+
 ## Memory Priorities
 When loading context from the `adp` branch:
 - Prioritize: components that match the deployment target (skypilot_api, superplane_controller, account_factory)
