@@ -73,3 +73,12 @@ resource "aws_lambda_permission" "api_gateway" {
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_api_gateway_rest_api.webhook.execution_arn}/*/POST/github"
 }
+
+# Issue #2152: Lambda permission for POST /agent/trigger (AWS_IAM auth route)
+resource "aws_lambda_permission" "api_gateway_agent_trigger" {
+  statement_id  = "AllowAPIGatewayInvokeAgentTrigger"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.github_webhook.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.webhook.execution_arn}/*/POST/agent/trigger"
+}

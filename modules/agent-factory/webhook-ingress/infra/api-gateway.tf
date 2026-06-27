@@ -48,11 +48,17 @@ resource "aws_api_gateway_deployment" "webhook" {
   rest_api_id = aws_api_gateway_rest_api.webhook.id
 
   # Force redeployment when routes/integrations change
+  # Issue #2152 review point I4: /agent/trigger IDs included so route is
+  # deployed automatically on apply (not silently 403/404).
   triggers = {
     redeployment = sha1(jsonencode([
       aws_api_gateway_resource.github.id,
       aws_api_gateway_method.post_github.id,
       aws_api_gateway_integration.github_webhook.id,
+      aws_api_gateway_resource.agent.id,
+      aws_api_gateway_resource.agent_trigger.id,
+      aws_api_gateway_method.post_agent_trigger.id,
+      aws_api_gateway_integration.agent_trigger.id,
       aws_api_gateway_rest_api_policy.webhook.policy,
     ]))
   }
@@ -64,6 +70,8 @@ resource "aws_api_gateway_deployment" "webhook" {
   depends_on = [
     aws_api_gateway_method.post_github,
     aws_api_gateway_integration.github_webhook,
+    aws_api_gateway_method.post_agent_trigger,
+    aws_api_gateway_integration.agent_trigger,
   ]
 }
 
@@ -101,6 +109,22 @@ resource "aws_api_gateway_method_settings" "throttle" {
   settings {
     throttling_rate_limit  = 100
     throttling_burst_limit = 200
+    logging_level          = "INFO"
+    metrics_enabled        = true
+  }
+}
+
+# Issue #2152: per-method throttling for POST /agent/trigger — tighter than
+# /github (10 rps / 20 burst) since agent spawns are more expensive and
+# unbounded spawn is a compute blowup risk.
+resource "aws_api_gateway_method_settings" "throttle_agent_trigger" {
+  rest_api_id = aws_api_gateway_rest_api.webhook.id
+  stage_name  = aws_api_gateway_stage.dev.stage_name
+  method_path = "agent/trigger/POST"
+
+  settings {
+    throttling_rate_limit  = 10
+    throttling_burst_limit = 20
     logging_level          = "INFO"
     metrics_enabled        = true
   }

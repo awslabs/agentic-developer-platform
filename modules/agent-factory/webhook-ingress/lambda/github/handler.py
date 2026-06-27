@@ -526,6 +526,14 @@ def handler(event: dict, context) -> dict:
     Returns:
         API Gateway response dict.
     """
+    # Issue #2152: dispatch /agent/trigger to the IAM-authenticated handler
+    # BEFORE HMAC validation (IAM auth is handled by API Gateway, not HMAC).
+    resource = event.get("resource", "")
+    if resource == "/agent/trigger":
+        from agent_trigger import handle_agent_trigger
+
+        return handle_agent_trigger(event, context)
+
     start_time = time.time()
     print("DBG handler:start")
 
