@@ -264,16 +264,15 @@ class TestDispatchMarkerGate:
 
 
 class TestCrossPersonaLoopGuard:
-    """Windowed cross-persona loop guard catches A->B->A->B alternation.
+    """Issue #2151: Cross-persona loop guard moved to spawn_persona().
 
-    The scalar last_triggered_persona guard only catches A->A. The new guard
-    tracks the SET of all personas triggered in a chain + total count, blocking
-    when the target is already in the set AND count >= threshold.
+    These tests verify that intent_parser returns Intent for valid dispatch
+    markers regardless of loop state — the guard is now in spawn_persona().
+    See common/tests/test_spawn_persona.py for actual guard tests.
     """
 
-    @patch("intent_parser._emit_metric")
-    def test_cross_persona_loop_blocked_at_threshold(self, mock_metric):
-        """dev->reviewer->dev at count=4 (threshold) -> blocked."""
+    def test_cross_persona_loop_returns_intent_at_threshold(self):
+        """Issue #2151: guard moved. Intent returned even at threshold."""
         marker = (
             "<!-- adp-correlation:corr-loop adp-root-human:user-x "
             "adp-is-human-rooted:true adp-dispatch:developer -->"
@@ -292,20 +291,20 @@ class TestCrossPersonaLoopGuard:
             "is_human_rooted": True,
             "is_new_chain": False,
             "chain_depth": 5,
-            "last_triggered_persona": "reviewer",  # Different from target
+            "last_triggered_persona": "reviewer",
             "recent_triggered_personas": {"developer", "reviewer"},
-            "recent_trigger_count": CROSS_PERSONA_LOOP_THRESHOLD,  # At threshold
+            "recent_trigger_count": CROSS_PERSONA_LOOP_THRESHOLD,
         }
         identity = _bot_identity(bot_kind="reviewer")
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
-        assert result is None
-        mock_metric.assert_called_with("CrossPersonaLoopBlocked", {"persona": "developer"})
+        # Guards now in spawn_persona()
+        assert result is not None
+        assert result.persona == "developer"
 
-    @patch("intent_parser._emit_metric")
-    def test_cross_persona_loop_blocked_above_threshold(self, mock_metric):
-        """Trigger count above threshold -> blocked."""
+    def test_cross_persona_loop_returns_intent_above_threshold(self):
+        """Issue #2151: guard moved. Intent returned even above threshold."""
         marker = (
             "<!-- adp-correlation:corr-loop adp-root-human:user-x "
             "adp-is-human-rooted:true adp-dispatch:developer -->"
@@ -332,10 +331,10 @@ class TestCrossPersonaLoopGuard:
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
-        assert result is None
+        assert result is not None
+        assert result.persona == "developer"
 
-    @patch("intent_parser._emit_metric")
-    def test_legitimate_chain_below_threshold_allowed(self, mock_metric):
+    def test_legitimate_chain_below_threshold_allowed(self):
         """human->dev->reviewer (count=2, below threshold) -> allowed."""
         marker = (
             "<!-- adp-correlation:corr-ok adp-root-human:user-x "
@@ -366,8 +365,7 @@ class TestCrossPersonaLoopGuard:
         assert result is not None
         assert result.persona == "reviewer"
 
-    @patch("intent_parser._emit_metric")
-    def test_new_persona_at_threshold_allowed(self, mock_metric):
+    def test_new_persona_at_threshold_allowed(self):
         """New persona not in set, even at threshold -> allowed."""
         marker = (
             "<!-- adp-correlation:corr-ok adp-root-human:user-x "
@@ -398,8 +396,7 @@ class TestCrossPersonaLoopGuard:
         assert result is not None
         assert result.persona == "architect"
 
-    @patch("intent_parser._emit_metric")
-    def test_empty_recent_set_allows_any_dispatch(self, mock_metric):
+    def test_empty_recent_set_allows_any_dispatch(self):
         """Fresh chain with empty recent set -> any dispatch allowed."""
         marker = (
             "<!-- adp-correlation:corr-fresh adp-root-human:user-x "
@@ -430,8 +427,7 @@ class TestCrossPersonaLoopGuard:
         assert result is not None
         assert result.persona == "developer"
 
-    @patch("intent_parser._emit_metric")
-    def test_three_hop_chain_allowed(self, mock_metric):
+    def test_three_hop_chain_allowed(self):
         """human->dev->reviewer->dev (count=3, below threshold=4) -> allowed.
 
         This is the deepest legitimate pattern and must NOT be blocked.
@@ -470,13 +466,13 @@ class TestCrossPersonaLoopGuard:
 
 
 class TestExistingGuardsWithDispatchMarker:
-    """Verify existing guards (self-mention, self-re-trigger, depth) still fire
-    even when a dispatch marker is present.
+    """Issue #2151: Guards moved to spawn_persona(). Verify intent_parser
+    returns Intent for valid dispatches (guards tested in test_spawn_persona.py).
+    The "no correlation ctx" case still blocks at intent_parser level (safe default).
     """
 
-    @patch("intent_parser._emit_metric")
-    def test_self_mention_still_blocked_with_dispatch_marker(self, mock_metric):
-        """Bot dispatching to its own persona -> blocked."""
+    def test_self_mention_returns_intent_with_dispatch_marker(self):
+        """Issue #2151: self-mention guard moved. Intent returned."""
         marker = (
             "<!-- adp-correlation:corr-self adp-root-human:user-x "
             "adp-is-human-rooted:true adp-dispatch:operations -->"
@@ -494,11 +490,11 @@ class TestExistingGuardsWithDispatchMarker:
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
-        assert result is None
+        assert result is not None
+        assert result.persona == "operations"
 
-    @patch("intent_parser._emit_metric")
-    def test_self_retrigger_still_blocked_with_dispatch_marker(self, mock_metric):
-        """Dispatch targeting last_triggered_persona -> blocked."""
+    def test_self_retrigger_returns_intent_with_dispatch_marker(self):
+        """Issue #2151: self-re-trigger guard moved. Intent returned."""
         marker = (
             "<!-- adp-correlation:corr-retrig adp-root-human:user-x "
             "adp-is-human-rooted:true adp-dispatch:developer -->"
@@ -516,11 +512,11 @@ class TestExistingGuardsWithDispatchMarker:
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
-        assert result is None
+        assert result is not None
+        assert result.persona == "developer"
 
-    @patch("intent_parser._emit_metric")
-    def test_depth_guard_still_blocks_with_dispatch_marker(self, mock_metric):
-        """Dispatch at depth >= MAX -> blocked."""
+    def test_depth_guard_returns_intent_with_dispatch_marker(self):
+        """Issue #2151: depth guard moved. Intent returned."""
         marker = (
             "<!-- adp-correlation:corr-deep adp-root-human:user-x "
             "adp-is-human-rooted:true adp-dispatch:developer -->"
@@ -538,11 +534,15 @@ class TestExistingGuardsWithDispatchMarker:
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
-        assert result is None
+        assert result is not None
+        assert result.persona == "developer"
 
-    @patch("intent_parser._emit_metric")
-    def test_no_correlation_ctx_blocks_with_dispatch_marker(self, mock_metric):
-        """Bot with dispatch marker but no correlation ctx -> blocked (safe default)."""
+    def test_no_correlation_ctx_blocks_with_dispatch_marker(self):
+        """Bot with dispatch marker but no correlation ctx -> blocked (safe default).
+
+        This is the ONE guard that remains in intent_parser: if there's no
+        correlation context at all, we can't safely pass through.
+        """
         body = DISPATCH_MARKER + "\n@agent-developer do this"
         payload = {
             "action": "created",
@@ -564,13 +564,19 @@ class TestSelfTriggerLoopScenario:
     """End-to-end scenario from the #2082 bug report.
 
     The loop was: developer posts status comment with `## @agent-developer Started`
-    -> webhook parses the mention -> spawns developer -> developer posts another
-    status -> repeat.
+    -> webhook parses the mention -> spawns developer -> repeat.
+
+    Issue #2151: The dispatch-marker gate (no adp-dispatch marker = no Intent for
+    bot comments) still lives in intent_parser and prevents this. Guard logic for
+    cases WITH a dispatch marker has moved to spawn_persona().
     """
 
     @patch("intent_parser._emit_metric")
     def test_developer_started_comment_no_dispatch(self, mock_metric):
-        """Exact pattern from the bug: developer's 'Started' status comment."""
+        """Exact pattern from the bug: developer's 'Started' status comment.
+
+        No adp-dispatch marker -> None (dispatch-marker gate still in intent_parser).
+        """
         body = (
             "<!-- adp-correlation:7c382ffb adp-root-human:650f093f "
             "adp-is-human-rooted:true -->\n"
@@ -605,7 +611,10 @@ class TestSelfTriggerLoopScenario:
 
     @patch("intent_parser._emit_metric")
     def test_architect_completed_comment_no_dispatch(self, mock_metric):
-        """Architect's 'Completed' comment mentioning @agent-architect."""
+        """Architect's 'Completed' comment mentioning @agent-architect.
+
+        No adp-dispatch marker -> None (dispatch-marker gate still in intent_parser).
+        """
         body = (
             "<!-- adp-correlation:abc123 adp-root-human:user-x "
             "adp-is-human-rooted:true -->\n"
@@ -626,12 +635,11 @@ class TestSelfTriggerLoopScenario:
         )
         assert result is None
 
-    @patch("intent_parser._emit_metric")
-    def test_cross_persona_alternation_scenario(self, mock_metric):
-        """Simulated dev->reviewer->dev->reviewer loop (the #2082 pattern).
+    def test_cross_persona_alternation_returns_intent(self):
+        """Issue #2151: cross-persona loop guard moved to spawn_persona().
 
-        After 4 bot dispatches (threshold), the 5th attempt to trigger a persona
-        already in the set is blocked.
+        With a dispatch marker present, intent_parser returns Intent.
+        spawn_persona() catches the loop.
         """
         marker = (
             "<!-- adp-correlation:corr-epic adp-root-human:user-x "
@@ -645,23 +653,23 @@ class TestSelfTriggerLoopScenario:
             "sender": _bot_sender(),
             "installation": {"id": 123},
         }
-        # Simulates: human->dev->reviewer->dev->reviewer (4 bot dispatches)
-        # Now reviewer tries to dispatch developer again (5th)
         ctx = {
             "correlation_id": "corr-epic",
             "root_human_id": "user-alice",
             "is_human_rooted": True,
             "is_new_chain": False,
             "chain_depth": 5,
-            "last_triggered_persona": "reviewer",  # Different, so #1716 passes
+            "last_triggered_persona": "reviewer",
             "recent_triggered_personas": {"developer", "reviewer"},
-            "recent_trigger_count": 4,  # At threshold
+            "recent_trigger_count": 4,
         }
         identity = _bot_identity(bot_kind="reviewer")
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
-        assert result is None, "Cross-persona loop must be caught at threshold"
+        # Guards now in spawn_persona()
+        assert result is not None
+        assert result.persona == "developer"
 
 
 # --- Configuration ---

@@ -88,8 +88,8 @@ class TestDepthOnlyGuard:
         assert result is not None
         assert result.persona == "developer"
 
-    def test_bot_blocked_when_depth_at_max(self):
-        """Bot mention at depth == MAX_CHAIN_DEPTH should be blocked."""
+    def test_bot_at_depth_max_returns_intent(self):
+        """Issue #2151: depth guard moved to spawn_persona(). intent_parser returns Intent."""
         payload = self._make_comment_payload()
         ctx = {
             "correlation_id": "corr-001",
@@ -101,10 +101,12 @@ class TestDepthOnlyGuard:
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
-        assert result is None
+        # Guards are enforced in spawn_persona(), not intent_parser
+        assert result is not None
+        assert result.persona == "developer"
 
-    def test_bot_blocked_when_depth_above_max(self):
-        """Bot mention at depth > MAX_CHAIN_DEPTH should be blocked."""
+    def test_bot_at_depth_above_max_returns_intent(self):
+        """Issue #2151: depth guard moved to spawn_persona(). intent_parser returns Intent."""
         payload = self._make_comment_payload()
         ctx = {
             "correlation_id": "corr-001",
@@ -116,7 +118,9 @@ class TestDepthOnlyGuard:
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
-        assert result is None
+        # Guards are enforced in spawn_persona(), not intent_parser
+        assert result is not None
+        assert result.persona == "developer"
 
     def test_bot_allowed_at_depth_zero(self):
         """Bot at depth 0 (first hop) should be allowed."""
@@ -182,11 +186,11 @@ class TestDepthOnlyGuard:
 
 
 class TestSelfMentionGuard:
-    """Self-mention guard evaluated BEFORE depth check."""
+    """Self-mention guard — Issue #2151: moved to spawn_persona()."""
 
-    def test_self_mention_blocked(self):
-        """Bot mentioning its own persona is blocked regardless of depth."""
-        # Issue #2149: include dispatch marker so self-mention guard is reached
+    def test_self_mention_returns_intent(self):
+        """Issue #2151: self-mention guard moved to spawn_persona(). Intent returned."""
+        # intent_parser no longer blocks self-mentions; spawn_persona() does.
         body = (
             "<!-- adp-correlation:corr-001 adp-root-human:user-alice "
             "adp-is-human-rooted:true adp-dispatch:operations -->\n"
@@ -203,13 +207,15 @@ class TestSelfMentionGuard:
             "correlation_id": "corr-001",
             "root_human_id": "user-alice",
             "is_new_chain": True,
-            "chain_depth": 0,  # Even at depth 0
+            "chain_depth": 0,
         }
         identity = _bot_identity("operations")  # Same persona as mention
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
-        assert result is None
+        # Guards enforced in spawn_persona(), not here
+        assert result is not None
+        assert result.persona == "operations"
 
     def test_cross_mention_allowed(self):
         """Bot mentioning a DIFFERENT persona is allowed (not self-mention)."""
@@ -551,8 +557,8 @@ class TestSelfReTriggerGuard:
             "installation": {"id": 123},
         }
 
-    def test_blocks_same_persona_as_last_triggered(self):
-        """THE BUG: developer's own comment re-triggering developer → blocked."""
+    def test_same_persona_as_last_triggered_returns_intent(self):
+        """Issue #2151: self-re-trigger guard moved to spawn_persona(). Intent returned."""
         payload = self._payload("@agent-developer", persona="developer")
         ctx = {
             "correlation_id": "corr-loop",
@@ -567,7 +573,9 @@ class TestSelfReTriggerGuard:
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
-        assert result is None, "developer re-triggering developer must be blocked"
+        # Guards enforced in spawn_persona(), not intent_parser
+        assert result is not None
+        assert result.persona == "developer"
 
     def test_allows_different_persona_than_last_triggered(self):
         """reviewer mentions @agent-developer (last=reviewer) → allowed.

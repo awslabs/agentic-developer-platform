@@ -191,12 +191,14 @@ class TestIntentParsing:
 
 class TestSuccessfulPublish:
     @patch("handler._get_events_log")
-    @patch("handler._get_sqs_publisher")
+    @patch("common.spawn_persona._capture_invocation_event")
+    @patch("common.spawn_persona._write_pointer_and_provenance")
+    @patch("common.sqs_publisher.publish_envelope")
     @patch("handler._get_rate_limiter")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
     def test_labeled_issue_publishes_envelope(
-        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log
+        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_write, mock_capture, mock_log
     ):
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (
@@ -204,7 +206,7 @@ class TestSuccessfulPublish:
             "ok",
         )
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
-        mock_sqs.return_value.publish_envelope.return_value = "msg-id-123"
+        mock_sqs.return_value = "msg-id-123"
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
@@ -223,10 +225,9 @@ class TestSuccessfulPublish:
         assert result["statusCode"] == 202
         body = json.loads(result["body"])
         assert body["status"] == "accepted"
-        assert body["message_id"] == "msg-id-123"
 
-        # Verify envelope structure
-        envelope = mock_sqs.return_value.publish_envelope.call_args[0][0]
+        # Verify envelope structure passed to SQS
+        envelope = mock_sqs.call_args[0][0]
         assert envelope["version"] == "1.0"
         assert envelope["channel"] == "github"
         assert envelope["tenant_id"] == "acme"
@@ -244,12 +245,14 @@ class TestSuccessfulPublish:
         assert envelope["intent"]["persona"] == "developer"
 
     @patch("handler._get_events_log")
-    @patch("handler._get_sqs_publisher")
+    @patch("common.spawn_persona._capture_invocation_event")
+    @patch("common.spawn_persona._write_pointer_and_provenance")
+    @patch("common.sqs_publisher.publish_envelope")
     @patch("handler._get_rate_limiter")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
     def test_pr_opened_publishes_reviewer_envelope(
-        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log
+        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_write, mock_capture, mock_log
     ):
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (
@@ -257,7 +260,7 @@ class TestSuccessfulPublish:
             "ok",
         )
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
-        mock_sqs.return_value.publish_envelope.return_value = "msg-id-456"
+        mock_sqs.return_value = "msg-id-456"
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
@@ -273,24 +276,26 @@ class TestSuccessfulPublish:
         result = handler(event, None)
 
         assert result["statusCode"] == 202
-        envelope = mock_sqs.return_value.publish_envelope.call_args[0][0]
+        envelope = mock_sqs.call_args[0][0]
         assert envelope["persona"] == "reviewer"
         assert envelope["source_ref"]["pr"] == 15
         assert envelope["source_ref"]["sha"] == "abc123"
         assert envelope["intent"]["trigger"] == "pr_opened"
 
     @patch("handler._get_events_log")
-    @patch("handler._get_sqs_publisher")
+    @patch("common.spawn_persona._capture_invocation_event")
+    @patch("common.spawn_persona._write_pointer_and_provenance")
+    @patch("common.sqs_publisher.publish_envelope")
     @patch("handler._get_rate_limiter")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
     def test_sqs_publish_failure_returns_500(
-        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log
+        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_write, mock_capture, mock_log
     ):
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
-        mock_sqs.return_value.publish_envelope.return_value = None  # failure
+        mock_sqs.return_value = None  # failure
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
@@ -372,15 +377,17 @@ class TestSecretResolution:
 
 
 class TestMessageIdOnEnvelope:
-    """Verify handler sets a unique message_id UUID on the envelope before publish."""
+    """Verify spawn_persona sets a unique message_id UUID on the envelope."""
 
     @patch("handler._get_events_log")
-    @patch("handler._get_sqs_publisher")
+    @patch("common.spawn_persona._capture_invocation_event")
+    @patch("common.spawn_persona._write_pointer_and_provenance")
+    @patch("common.sqs_publisher.publish_envelope")
     @patch("handler._get_rate_limiter")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
     def test_handler_sets_message_id_on_envelope(
-        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log
+        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_write, mock_capture, mock_log
     ):
         """Envelope passed to publish_envelope contains a valid UUID4 message_id."""
         import uuid as uuid_mod
@@ -388,41 +395,42 @@ class TestMessageIdOnEnvelope:
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
-        mock_sqs.return_value.publish_envelope.return_value = "msg-id-100"
+        mock_sqs.return_value = "msg-id-100"
         mock_log.return_value.log_event = MagicMock()
 
-        known_uuid = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
-        with patch("handler.uuid.uuid4", return_value=uuid_mod.UUID(known_uuid)):
-            from handler import handler
+        from handler import handler
 
-            payload = {
-                "action": "labeled",
-                "label": {"name": "developer"},
-                "issue": {"number": 10},
-                "repository": {"full_name": "acme/repo"},
-                "sender": {"login": "user", "id": 1, "type": "User"},
-                "installation": {"id": 123},
-            }
-            event = _make_event("issues", payload)
-            result = handler(event, None)
+        payload = {
+            "action": "labeled",
+            "label": {"name": "developer"},
+            "issue": {"number": 10},
+            "repository": {"full_name": "acme/repo"},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        event = _make_event("issues", payload)
+        result = handler(event, None)
 
         assert result["statusCode"] == 202
-        envelope = mock_sqs.return_value.publish_envelope.call_args[0][0]
-        assert envelope["message_id"] == known_uuid
+        envelope = mock_sqs.call_args[0][0]
+        # Verify message_id is a valid UUID4
+        uuid_mod.UUID(envelope["message_id"], version=4)
 
     @patch("handler._get_events_log")
-    @patch("handler._get_sqs_publisher")
+    @patch("common.spawn_persona._capture_invocation_event")
+    @patch("common.spawn_persona._write_pointer_and_provenance")
+    @patch("common.sqs_publisher.publish_envelope")
     @patch("handler._get_rate_limiter")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
     def test_two_dispatches_get_distinct_message_ids(
-        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log
+        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_write, mock_capture, mock_log
     ):
         """Two consecutive dispatches produce different message_id UUIDs."""
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
-        mock_sqs.return_value.publish_envelope.return_value = "msg-id-200"
+        mock_sqs.return_value = "msg-id-200"
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
@@ -440,7 +448,7 @@ class TestMessageIdOnEnvelope:
         handler(event, None)
         handler(event, None)
 
-        calls = mock_sqs.return_value.publish_envelope.call_args_list
+        calls = mock_sqs.call_args_list
         id_1 = calls[-2][0][0]["message_id"]
         id_2 = calls[-1][0][0]["message_id"]
         assert id_1 != id_2
@@ -453,18 +461,22 @@ class TestMessageIdOnEnvelope:
 
 class TestBase64Body:
     @patch("handler._get_events_log")
-    @patch("handler._get_sqs_publisher")
+    @patch("common.spawn_persona._capture_invocation_event")
+    @patch("common.spawn_persona._write_pointer_and_provenance")
+    @patch("common.sqs_publisher.publish_envelope")
     @patch("handler._get_rate_limiter")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
-    def test_base64_encoded_body(self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log):
+    def test_base64_encoded_body(
+        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_write, mock_capture, mock_log
+    ):
         """API Gateway may send base64-encoded bodies."""
         import base64
 
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_resolver.return_value.resolve.return_value = (_mock_resolved_identity(), "ok")
         mock_rate.return_value.check_and_increment.return_value = _mock_rate_result()
-        mock_sqs.return_value.publish_envelope.return_value = "msg-id-789"
+        mock_sqs.return_value = "msg-id-789"
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler

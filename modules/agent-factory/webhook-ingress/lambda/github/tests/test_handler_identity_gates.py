@@ -114,12 +114,14 @@ class TestUnknownInstallation:
         # Patch downstream dispatch bits so the handler can complete
         with (
             patch("handler._get_rate_limiter") as mock_rate,
-            patch("handler._get_sqs_publisher") as mock_sqs,
+            patch("common.sqs_publisher.publish_envelope") as mock_sqs_pub,
+            patch("common.spawn_persona._write_pointer_and_provenance"),
+            patch("common.spawn_persona._capture_invocation_event"),
         ):
             mock_rate.return_value.check_and_increment.return_value = MagicMock(
                 allowed=True, retry_after_seconds=0
             )
-            mock_sqs.return_value.publish_envelope.return_value = "msg-heal-1"
+            mock_sqs_pub.return_value = "msg-heal-1"
 
             from handler import handler
 
@@ -202,12 +204,14 @@ class TestSuccessfulIdentityResolution:
     """Known installation + known sender (same org) → 202 with full actor."""
 
     @patch("handler._get_events_log")
-    @patch("handler._get_sqs_publisher")
+    @patch("common.spawn_persona._capture_invocation_event")
+    @patch("common.spawn_persona._write_pointer_and_provenance")
+    @patch("common.sqs_publisher.publish_envelope")
     @patch("handler._get_rate_limiter")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
     def test_known_identity_returns_202_with_actor(
-        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_log
+        self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_write, mock_capture, mock_log
     ):
         from common.identity_resolver import ResolvedIdentity
 
@@ -224,7 +228,7 @@ class TestSuccessfulIdentityResolution:
         mock_rate.return_value.check_and_increment.return_value = MagicMock(
             allowed=True, retry_after_seconds=0
         )
-        mock_sqs.return_value.publish_envelope.return_value = "msg-id-202"
+        mock_sqs.return_value = "msg-id-202"
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
@@ -235,10 +239,9 @@ class TestSuccessfulIdentityResolution:
         assert result["statusCode"] == 202
         body = json.loads(result["body"])
         assert body["status"] == "accepted"
-        assert body["message_id"] == "msg-id-202"
 
         # Verify envelope actor has user_id and org_id
-        envelope = mock_sqs.return_value.publish_envelope.call_args[0][0]
+        envelope = mock_sqs.call_args[0][0]
         assert envelope["actor"]["user_id"] == "u_abc123"
         assert envelope["actor"]["org_id"] == "acme"
         assert envelope["actor"]["github_id"] == 999
@@ -250,13 +253,16 @@ class TestAutoProvision:
     """Auto-provision: unknown sender + auto_provision mode → 202 after provision."""
 
     @patch("handler._get_events_log")
-    @patch("handler._get_sqs_publisher")
+    @patch("common.spawn_persona._capture_invocation_event")
+    @patch("common.spawn_persona._write_pointer_and_provenance")
+    @patch("common.sqs_publisher.publish_envelope")
     @patch("handler._get_rate_limiter")
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
     def test_auto_provision_creates_user_and_accepts(
-        self, mock_sig, mock_resolver, mock_gw_client, mock_rate, mock_sqs, mock_log
+        self, mock_sig, mock_resolver, mock_gw_client, mock_rate, mock_sqs,
+        mock_write, mock_capture, mock_log
     ):
         from common.identity_resolver import ResolvedIdentity
 
@@ -290,7 +296,7 @@ class TestAutoProvision:
         mock_rate.return_value.check_and_increment.return_value = MagicMock(
             allowed=True, retry_after_seconds=0
         )
-        mock_sqs.return_value.publish_envelope.return_value = "msg-id-auto"
+        mock_sqs.return_value = "msg-id-auto"
         mock_log.return_value.log_event = MagicMock()
 
         from handler import handler
@@ -310,6 +316,6 @@ class TestAutoProvision:
         )
 
         # Verify envelope has provisioned user's identity
-        envelope = mock_sqs.return_value.publish_envelope.call_args[0][0]
+        envelope = mock_sqs.call_args[0][0]
         assert envelope["actor"]["user_id"] == "u_new_user"
         assert envelope["actor"]["org_id"] == "acme"

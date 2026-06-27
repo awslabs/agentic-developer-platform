@@ -8,7 +8,6 @@ import json
 import sys
 from pathlib import Path
 from dataclasses import dataclass
-from unittest.mock import patch
 
 # Add parent directory to path so we can import intent_parser
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -426,8 +425,8 @@ class TestChainAwareBotLogic:
 
     # 4. Bot mentions another bot, NO pointer → NEW chain → Intent
     #    Issue #2149: requires adp-dispatch marker for bot-to-bot triggers.
-    @patch("intent_parser._emit_metric")
-    def test_bot_starts_new_subchain(self, mock_metric):
+    #    Issue #2151: guards moved to spawn_persona(); intent_parser returns Intent.
+    def test_bot_starts_new_subchain(self):
         # Issue #2149: bot comments need adp-dispatch marker to trigger
         dispatch_body = (
             "<!-- adp-correlation:corr-new-001 adp-root-human:user-alice-456 "
@@ -449,17 +448,16 @@ class TestChainAwareBotLogic:
         assert result is not None
         assert result.persona == "developer"
         assert result.trigger == "mentioned"
-        # Verify BotToBotTrigger metric emitted
-        mock_metric.assert_called_with(
-            "BotToBotTrigger",
-            {"source_bot": "operations", "target_persona": "developer"},
-        )
+        # Issue #2151: BotToBotTrigger metric now emitted by spawn_persona(),
+        # not intent_parser. Guard enforcement is in the shared function.
 
-    # 5. Bot mentions another bot, chain depth >= MAX → blocked (depth guard)
-    @patch("intent_parser._emit_metric")
-    def test_bot_in_active_chain_blocked(self, mock_metric):
-        """Bot mention at depth >= MAX_CHAIN_DEPTH is blocked (issue #1696)."""
-        # Issue #2149: bot comments need adp-dispatch marker to reach depth guard
+    # 5. Bot mentions another bot, chain depth >= MAX → Intent returned (guard in spawn_persona)
+    #    Issue #2151: depth guard moved to spawn_persona(). intent_parser returns
+    #    Intent for valid dispatch markers regardless of depth — spawn_persona()
+    #    enforces the depth cap.
+    def test_bot_in_active_chain_returns_intent(self):
+        """Bot mention at depth >= MAX produces Intent (guard is in spawn_persona)."""
+        # Issue #2149: bot comments need adp-dispatch marker
         dispatch_body = (
             "<!-- adp-correlation:corr-active-002 adp-root-human:user-alice-456 "
             "adp-is-human-rooted:true adp-dispatch:developer -->\n"
@@ -472,20 +470,15 @@ class TestChainAwareBotLogic:
             "sender": self._bot_sender(),
             "installation": {"id": 123},
         }
-        # Issue #1696: is_new_chain no longer matters; depth guard decides.
-        # Set chain_depth >= MAX_CHAIN_DEPTH to trigger blocking.
         ctx = self._active_chain_ctx()
         ctx["chain_depth"] = 8  # MAX_CHAIN_DEPTH default
         identity = self._bot_identity(bot_kind="operations")
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
-        assert result is None
-        # Verify ChainDepthExceeded metric emitted (replaces BotChainContinuationBlocked)
-        mock_metric.assert_called_with(
-            "ChainDepthExceeded",
-            {"persona": "developer", "depth": "8"},
-        )
+        # Issue #2151: intent_parser no longer blocks — spawn_persona does
+        assert result is not None
+        assert result.persona == "developer"
 
     # 6. Bot self-mention → blocked
     def test_bot_self_mention_blocked(self):

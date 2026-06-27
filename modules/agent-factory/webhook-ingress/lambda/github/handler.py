@@ -793,160 +793,49 @@ def handler(event: dict, context) -> dict:
         )
         return _response(200, {"status": "no_op"})
 
-    # 12. Intent is not None — write provenance + pointer (fail-soft) BEFORE SQS publish
-    if correlation_ctx and channel_key_str:
-        # Post provenance record (fail-soft)
-        try:
-            _get_gateway_client().post_provenance(
-                actor_user_id=resolved.user_id,
-                triggered_by=correlation_ctx.get("triggered_by"),
-                root_human_id=correlation_ctx["root_human_id"],
-                is_human_rooted=correlation_ctx["is_human_rooted"],
-                action_kind="webhook_trigger",
-                source_event={
-                    "event_type": event_type,
-                    "action": action,
-                    "repo": repo,
-                    "issue": payload.get("issue", {}).get("number"),
-                },
-                correlation_id=correlation_ctx["correlation_id"],
-                org_id=resolved.org_id,
-                parent_invocation_id=correlation_ctx.get("parent_invocation_id"),
-            )
-        except Exception as e:
-            logger.warning("post_provenance failed (fail-soft): %s", e)
+    # 12. Intent is not None — delegate to spawn_persona() for guards + publish.
+    # Issue #2151: All loop guards, pointer/provenance writes, envelope build,
+    # DDB capture, and SQS publish are now in the shared spawn_persona() function.
+    # This is the SINGLE enforcement point — no drift across trigger adapters.
+    from common.spawn_persona import spawn_persona as _spawn_persona
 
-        # Write correlation pointer (fail-soft)
-        try:
-            # Issue #2149: Merge the new persona into the recent set and
-            # increment the count so the cross-persona loop guard can detect
-            # A→B→A→B alternation on the next inbound event.
-            existing_recent = correlation_ctx.get("recent_triggered_personas", set())
-            if not isinstance(existing_recent, set):
-                existing_recent = set(existing_recent) if existing_recent else set()
-            updated_recent = existing_recent | {intent.persona}
-            updated_count = correlation_ctx.get("recent_trigger_count", 0) + 1
-
-            _get_correlation_store().write_pointer(
-                key=channel_key_str,
-                correlation_id=correlation_ctx["correlation_id"],
-                root_human_id=correlation_ctx["root_human_id"],
-                is_human_rooted=correlation_ctx["is_human_rooted"],
-                # Record the persona we're about to spawn so the next bot mention
-                # in this chain can be blocked if it re-targets the SAME persona
-                # (immediate self-re-trigger guard, issue #1716).
-                last_triggered_persona=intent.persona,
-                # Issue #2149: cross-persona loop tracking
-                recent_triggered_personas=updated_recent,
-                recent_trigger_count=updated_count,
-            )
-        except Exception as e:
-            logger.warning("write_pointer failed (fail-soft): %s", e)
-
-    # 13. Build envelope + publish to SQS
-    # Issue #1289: include cognito_sub for personal-context identity propagation.
-    # For human users resolved via identity_resolver, user_id is the platform
-    # user ID (which maps 1:1 to a Cognito sub). For bot/service-account
-    # senders, cognito_sub is empty — the MCP server will fail-closed (no
-    # personal-context access for bots, by design).
-    cognito_sub = resolved.user_id if resolved.user_kind == "human" else ""
-    envelope = {
-        "version": "1.0",
-        "channel": "github",
-        "tenant_id": tenant_id,
-        "cognito_sub": cognito_sub,
-        "persona": intent.persona,
-        "actor": {
-            "user_id": resolved.user_id,
-            "org_id": resolved.org_id,
-            "github_id": sender.get("id", 0),
-            "github_login": sender.get("login", ""),
-            "is_bot": sender.get("type") == "Bot",  # Deprecated
-        },
-        "source_ref": {
-            "installation_id": installation_id,
-            "repo": repo,
-            # Issue #1696: fall back to pull_request.number when no issue key exists.
-            # This ensures FIFO MessageGroupId serializes per-PR (not …#None).
-            "issue": payload.get("issue", {}).get("number")
-            if "issue" in payload
-            else payload.get("pull_request", {}).get("number"),
-            "pr": payload.get("pull_request", {}).get("number")
-            if "pull_request" in payload
-            else None,
-            "sha": payload.get("pull_request", {}).get("head", {}).get("sha")
-            if "pull_request" in payload
-            else None,
-        },
-        "intent": {
-            "trigger": intent.trigger,
-            "label": intent.label,
-            "persona": intent.persona,
-        },
-        "correlation": {
-            "correlation_id": correlation_ctx["correlation_id"] if correlation_ctx else "",
-            "root_human_id": correlation_ctx["root_human_id"] if correlation_ctx else "",
-            "is_human_rooted": correlation_ctx["is_human_rooted"] if correlation_ctx else True,
-            "parent_invocation_id": correlation_ctx.get("parent_invocation_id")
-            if correlation_ctx
-            else None,
-            "chain_depth": correlation_ctx.get("chain_depth", 0) if correlation_ctx else 0,
-        },
-        "payload": payload,
-        "arrived_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    # Provide a default correlation_ctx if not available (e.g. issues.labeled
+    # events where we didn't compute correlation above).
+    effective_correlation_ctx = correlation_ctx or {
+        "correlation_id": "",
+        "root_human_id": resolved.user_id,
+        "is_human_rooted": True,
+        "is_new_chain": True,
+        "parent_invocation_id": None,
+        "chain_depth": 0,
     }
-    envelope["message_id"] = str(uuid.uuid4())
-    print(
-        f"DBG handler:publish_attempt message_id={envelope['message_id']} persona={intent.persona}"
-    )
 
-    # 14b. Capture invocation event to DynamoDB BEFORE SQS publish.
-    # The worker uses ConditionExpression("attribute_exists(event_id)") on
-    # UpdateItem, so the row MUST exist before the worker receives the message.
-    # Writing DDB first eliminates the race where KEDA dispatches the SQS
-    # message faster than the Lambda can write the row (issue #1463 Gate #1455
-    # diagnosed this: every event stayed frozen at webhook_received because the
-    # worker's UpdateItem hit ConditionalCheckFailedException on a not-yet-
-    # written row, then silently swallowed the error).
-    # Issue #2042: attribute the run to the chain's HUMAN ROOT, not the bot
-    # sender, for human-rooted chains. The /me Activity view filters by the
-    # user-index GSI (PK=user_id); without this, an agent-spawned run (sender =
-    # the agent bot) is attributed to the bot and never appears under the
-    # originating human — so operators "only see the operations agents," not the
-    # agents they triggered. For non-human-rooted chains (CI/EventBridge/bot
-    # roots) we keep the sender's resolved user_id.
-    _root_human = correlation_ctx.get("root_human_id") if correlation_ctx else None
-    _is_human_rooted = correlation_ctx.get("is_human_rooted") if correlation_ctx else None
-    _effective_user_id = _root_human if (_is_human_rooted and _root_human) else resolved.user_id
-    _capture_invocation_event(
-        envelope=envelope,
+    spawn_result = _spawn_persona(
+        persona=intent.persona,
+        correlation_ctx=effective_correlation_ctx,
+        channel_key=channel_key_str,
+        resolved_identity=resolved,
         tenant_id=tenant_id,
-        user_id=_effective_user_id,
-        github_login=sender.get("login", ""),
+        actor_user_id=resolved.user_id,
+        actor_org_id=resolved.org_id,
+        sender=sender,
         event_type=event_type,
         action=action,
         installation_id=installation_id,
         repo=repo,
-        persona=intent.persona,
         payload=payload,
-        correlation_id=correlation_ctx["correlation_id"] if correlation_ctx else None,
-        status="webhook_received",
-        # Issue #1750: persist the lineage edge onto the row the Activity UI reads.
-        # determine_correlation computes this (from pointer/marker) and it flows to
-        # SQS + provenance, but was never written here — leaving parent_invocation_id
-        # null on EVERY run, all paths. This is the actual root of the lineage gap.
-        parent_invocation_id=(
-            correlation_ctx.get("parent_invocation_id") if correlation_ctx else None
-        ),
-        chain_depth=correlation_ctx.get("chain_depth") if correlation_ctx else None,
-        # Issue #2042: persist the chain root so the row records true ownership.
-        root_human_id=_root_human,
-        is_human_rooted=_is_human_rooted,
+        intent_trigger=intent.trigger,
+        intent_label=intent.label,
     )
 
-    message_id = _get_sqs_publisher().publish_envelope(envelope)
-    print(f"DBG handler:publish_result sqs_message_id={message_id!r}")
-    if not message_id:
+    print(
+        f"DBG handler:spawn_result success={spawn_result.success} "
+        f"message_id={spawn_result.message_id!r} block_reason={spawn_result.block_reason!r}"
+    )
+
+    if not spawn_result.success:
+        # Spawn was blocked by a guard or SQS failure
+        outcome = spawn_result.block_reason or "error"
         _log_outcome(
             event_type=event_type,
             action=action,
@@ -954,13 +843,15 @@ def handler(event: dict, context) -> dict:
             tenant_id=tenant_id,
             repo=repo,
             persona=intent.persona,
-            outcome="error",
+            outcome=outcome,
             start_time=start_time,
-            error="SQS publish failed",
         )
-        return _response(500, {"error": "Failed to enqueue"})
+        if spawn_result.block_reason == "sqs_publish_failed":
+            return _response(500, {"error": "Failed to enqueue"})
+        # Guard blocks are not errors — return 200 no_op
+        return _response(200, {"status": "no_op", "reason": outcome})
 
-    # 14. Log event
+    # 13. Log success + return 202
     _log_outcome(
         event_type=event_type,
         action=action,
@@ -972,8 +863,7 @@ def handler(event: dict, context) -> dict:
         start_time=start_time,
     )
 
-    # 15. Return 202
-    return _response(202, {"status": "accepted", "message_id": message_id})
+    return _response(202, {"status": "accepted", "message_id": spawn_result.message_id})
 
 
 def _capture_invocation_event(

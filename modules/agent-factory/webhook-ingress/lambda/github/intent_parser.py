@@ -14,6 +14,11 @@ to trigger a run. Bare `@agent-X` in bot-authored prose (status headers, plans)
 no longer triggers. Human comments still trigger from bare `@agent-X` as before.
 Additionally, a windowed cross-persona loop guard catches A→B→A→B alternation
 that the scalar last_triggered_persona guard cannot detect.
+
+Issue #2151: Loop guards (self-mention, self-re-trigger, cross-persona loop,
+depth cap) moved to common/spawn_persona.py. This module now returns Intent
+for any valid mention/dispatch without making spawn/block decisions. The guards
+are applied once in spawn_persona() — the single enforcement point.
 """
 
 from __future__ import annotations
@@ -22,7 +27,20 @@ import logging
 import os
 from dataclasses import dataclass
 
+from common.personas import LABEL_TO_PERSONA, MENTION_TO_PERSONA
+
 logger = logging.getLogger(__name__)
+
+# Re-export for backward compatibility with existing test imports.
+# These constants are now defined in common/personas.py.
+__all__ = [
+    "LABEL_TO_PERSONA",
+    "MENTION_TO_PERSONA",
+    "MAX_CHAIN_DEPTH",
+    "CROSS_PERSONA_LOOP_THRESHOLD",
+    "Intent",
+    "extract_intent",
+]
 
 # Maximum chain depth before blocking bot-to-bot triggers (issue #1696).
 # Env-configurable for operational flexibility. Default 8 bounds all loop
@@ -34,29 +52,6 @@ MAX_CHAIN_DEPTH = int(os.environ.get("MAX_CHAIN_DEPTH", "8"))
 # trigger count meets or exceeds this threshold. Default 4 allows legitimate
 # human→dev→reviewer→dev (3 bot dispatches) while blocking the 4th (loop).
 CROSS_PERSONA_LOOP_THRESHOLD = int(os.environ.get("CROSS_PERSONA_LOOP_THRESHOLD", "4"))
-
-# Label names that trigger specific agent personas.
-LABEL_TO_PERSONA: dict[str, str] = {
-    "developer": "developer",
-    "pm": "pm",
-    "agent-operations": "operations",
-    "agent-reviewer": "reviewer",
-    "agent-architect": "architect",
-    "malware-analysis-agent": "malware-analysis-agent",
-    "superpower": "pt-superpower",
-}
-
-# @-mention patterns in issue/PR comments that trigger personas.
-MENTION_TO_PERSONA: dict[str, str] = {
-    "@agent-developer": "developer",
-    "@agent-pm": "pm",
-    "@agent-operations": "operations",
-    "@agent-reviewer": "reviewer",
-    "@agent-architect": "architect",
-    "@agent-product": "product",
-    "@agent-malware-analysis-agent": "malware-analysis-agent",
-    "@agent-superpower": "pt-superpower",
-}
 
 
 @dataclass
@@ -226,18 +221,20 @@ def _handle_issue_comment(
     correlation_ctx: dict | None,
     resolved_identity,
 ) -> Intent | None:
-    """Handle issue_comment.created — dispatch-marker gate + loop guards.
+    """Handle issue_comment.created — dispatch-marker gate for bot comments.
 
-    Issue #2149: Bot comments now require an explicit `adp-dispatch:<persona>`
-    marker to trigger a run. Bare `@agent-X` in bot prose is treated as text.
+    Issue #2149: Bot comments require an explicit `adp-dispatch:<persona>` marker.
+    Bare `@agent-X` in bot prose is treated as text.
     Human comments still trigger from bare `@agent-X` as before.
 
-    For human senders: parse @-mention as before, always produces intent.
-    For bot senders: require adp-dispatch marker, then apply guard sequence:
-      1. Self-mention guard (depth-0 self-loops)
-      2. Immediate self-re-trigger guard (issue #1716)
-      3. Cross-persona loop guard (issue #2149)
-      4. Depth guard (MAX_CHAIN_DEPTH, issue #1696)
+    Issue #2151: Loop guards (self-mention, self-re-trigger, cross-persona loop,
+    depth cap) have been moved to common/spawn_persona.py. This function now
+    returns Intent for any valid mention/dispatch WITHOUT making block decisions.
+    The guards are enforced once in spawn_persona() — the single point.
+
+    For human senders: parse @-mention, always produces intent.
+    For bot senders: require adp-dispatch marker + correlation_ctx to produce
+    intent. Guards are applied downstream by spawn_persona().
     """
     sender = payload.get("sender", {})
     body = payload.get("comment", {}).get("body", "")
@@ -270,10 +267,8 @@ def _handle_issue_comment(
             _emit_metric("BotMentionWithoutDispatchMarker", {"persona": bare_persona})
         return None
 
-    # Bot sender: depth-only loop guard (issue #1696)
+    # Bot sender: require correlation context (safe default blocks without it)
     if correlation_ctx is None:
-        # No correlation context available (e.g. Phase 2-b not configured).
-        # Fall back to blocking all bot mentions (safe default).
         logger.info(
             "Bot %s mentioned %s but no correlation context available — blocking (safe default)",
             sender.get("login", "unknown"),
@@ -281,81 +276,8 @@ def _handle_issue_comment(
         )
         return None
 
-    # Self-mention guard: evaluated BEFORE depth check (catches depth-0 self-loops)
-    if resolved_identity is not None and hasattr(resolved_identity, "bot_kind"):
-        if persona == resolved_identity.bot_kind:
-            logger.info(
-                "Bot %s self-mention to persona %s — blocking",
-                sender.get("login", "unknown"),
-                persona,
-            )
-            _emit_metric("SelfMentionBlocked", {"persona": persona})
-            return None
-
-    # Immediate self-re-trigger guard (issue #1716): block when the mentioned
-    # persona is the SAME as the persona most recently triggered in this chain.
-    # Server-side (read from the correlation pointer), NOT spoofable via marker.
-    last_persona = correlation_ctx.get("last_triggered_persona")
-    if last_persona and persona == last_persona:
-        logger.info(
-            "Bot %s mentioned %s but that persona was the last triggered in chain %s "
-            "— blocking immediate self-re-trigger",
-            sender.get("login", "unknown"),
-            persona,
-            correlation_ctx.get("correlation_id", "unknown"),
-        )
-        _emit_metric("SelfReTriggerBlocked", {"persona": persona})
-        return None
-
-    # Issue #2149: Cross-persona loop guard. Catches A→B→A→B alternation that
-    # the scalar last_triggered_persona guard cannot detect. Blocks when the
-    # target persona has ALREADY been triggered in this chain AND the total
-    # trigger count meets or exceeds CROSS_PERSONA_LOOP_THRESHOLD.
-    recent_personas = correlation_ctx.get("recent_triggered_personas", set())
-    recent_count = correlation_ctx.get("recent_trigger_count", 0)
-    if persona in recent_personas and recent_count >= CROSS_PERSONA_LOOP_THRESHOLD:
-        logger.info(
-            "Cross-persona loop detected: %s already in recent set %s (count=%d, "
-            "threshold=%d) in chain %s — blocking",
-            persona,
-            recent_personas,
-            recent_count,
-            CROSS_PERSONA_LOOP_THRESHOLD,
-            correlation_ctx.get("correlation_id", "unknown"),
-        )
-        _emit_metric("CrossPersonaLoopBlocked", {"persona": persona})
-        return None
-
-    # Depth-only guard (issue #1696): block when chain depth >= MAX_CHAIN_DEPTH.
-    # chain_depth in correlation_ctx is the CURRENT run's depth (already incremented
-    # by determine_correlation). If it meets or exceeds the cap, block.
-    chain_depth = correlation_ctx.get("chain_depth", 0)
-    if chain_depth >= MAX_CHAIN_DEPTH:
-        logger.info(
-            "Bot %s mentioned %s but chain depth %d >= max %d — blocking (loop prevention)",
-            sender.get("login", "unknown"),
-            persona,
-            chain_depth,
-            MAX_CHAIN_DEPTH,
-        )
-        _emit_metric("ChainDepthExceeded", {"persona": persona, "depth": str(chain_depth)})
-        return None
-
-    # All guards passed → allow bot-to-bot trigger
-    logger.info(
-        "Bot %s triggering %s at chain depth %d (dispatch marker present) — allowing",
-        sender.get("login", "unknown"),
-        persona,
-        chain_depth,
-    )
-    source_bot = ""
-    if resolved_identity is not None and hasattr(resolved_identity, "bot_kind"):
-        source_bot = resolved_identity.bot_kind
-    _emit_metric(
-        "BotToBotTrigger",
-        {"source_bot": source_bot, "target_persona": persona},
-    )
-
+    # Issue #2151: Guards removed — spawn_persona() enforces them.
+    # Return Intent so handler can call spawn_persona() with full context.
     return Intent(persona=persona, trigger="mentioned", label=None)
 
 
