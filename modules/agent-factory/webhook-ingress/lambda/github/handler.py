@@ -1,7 +1,10 @@
-"""GitHub webhook Lambda — full handler.
+"""Webhook ingress Lambda — unified entry point.
 
-Entry point for the GitHub channel webhook Lambda. Validates signatures,
-parses events into agent intents, and publishes normalized envelopes to SQS.
+Handles two event sources via shape-based routing:
+  1. API Gateway events (GitHub webhooks) — have `headers` + `body`
+  2. EventBridge events (alarms, scheduled rules, CI) — have `source` + `detail-type` + `detail`
+
+Issue #2154: Added EventBridge shape detection to support machine/root-triggered agents.
 
 Target execution time: <300ms.
 This Lambda does NOT clone repos, call LLMs, or do heavy computation.
@@ -516,16 +519,39 @@ def _get_webhook_event_logger():
     return _webhook_event_logger
 
 
+def _is_eventbridge_event(event: dict) -> bool:
+    """Detect EventBridge event shape.
+
+    EventBridge events have `source`, `detail-type`, and `detail` at top level.
+    API Gateway events have `headers` (or `requestContext`).
+
+    Issue #2154: shape-based routing for multi-source ingress.
+    """
+    return (
+        "source" in event
+        and "detail-type" in event
+        and "detail" in event
+        and "headers" not in event
+        and "requestContext" not in event
+    )
+
+
 def handler(event: dict, context) -> dict:
-    """Lambda entry point for GitHub webhook processing.
+    """Lambda entry point — routes to GitHub or EventBridge handler by event shape.
 
     Args:
-        event: API Gateway event (REST API v1 or HTTP API v2).
+        event: API Gateway event (REST/HTTP API) or EventBridge event.
         context: Lambda context object.
 
     Returns:
-        API Gateway response dict.
+        Response dict (API Gateway format or plain dict for EventBridge).
     """
+    # Issue #2154: shape-based routing for EventBridge events
+    if _is_eventbridge_event(event):
+        from eventbridge.handler import handle_eventbridge
+
+        return handle_eventbridge(event, context)
+
     # Issue #2152: dispatch /agent/trigger to the IAM-authenticated handler
     # BEFORE HMAC validation (IAM auth is handled by API Gateway, not HMAC).
     resource = event.get("resource", "")

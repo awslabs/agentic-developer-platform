@@ -185,6 +185,28 @@ variable "otel_collector_log_group" {
   default     = "/adp/dev/agent-factory/otel"
 }
 
+# -----------------------------------------------------------------------------
+# EventBridge / Machine Triggers (Issue #2154)
+# -----------------------------------------------------------------------------
+
+variable "enable_eventbridge_alarm_rule" {
+  description = "Enable the example CloudWatch alarm-state-change EventBridge rule. Creates a rule + target that routes ALARM events to the webhook Lambda for agent triage."
+  type        = bool
+  default     = false
+}
+
+variable "eventbridge_alarm_persona" {
+  description = "Persona to spawn when a CloudWatch alarm fires (default: operations)."
+  type        = string
+  default     = "operations"
+}
+
+variable "eventbridge_alarm_target_repo" {
+  description = "GitHub repo (org/repo) where triage issues are created for alarm events."
+  type        = string
+  default     = ""
+}
+
 # Issue #575: the gateway's API Gateway invoke URL is resolved at apply time
 # from SSM (published by modules/gateway/infra/) rather than passed in as a
 # tfvar. Keeps new environments repeatable — no per-env hardcoding.
