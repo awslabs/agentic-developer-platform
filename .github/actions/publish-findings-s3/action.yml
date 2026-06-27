@@ -1,0 +1,33 @@
+name: Publish findings to S3 rendezvous
+description: >
+  Copy a tool's findings file (or directory) to the per-run rendezvous prefix
+  the Security Summary / baseline-update jobs read. Replaces the GitHub Actions
+  artifact handoff, which is unreliable under storage-quota pressure.
+inputs:
+  path:
+    description: 'Local findings file or directory to publish'
+    required: true
+  tool-name:
+    description: 'Tool that produced the findings (checkov, semgrep, bandit, cfn-nag, npm-audit, grype, detect-secrets)'
+    required: true
+  bucket:
+    description: 'S3 bucket name (account-suffixed security-scans bucket)'
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        if [ ! -e "${{ inputs.path }}" ]; then
+          echo "::warning::findings path '${{ inputs.path }}' not found for ${{ inputs.tool-name }} — scanner may have crashed; nothing to publish"
+          exit 0
+        fi
+        DEST="s3://${{ inputs.bucket }}/findings/${{ github.run_id }}/${{ inputs.tool-name }}/"
+        if [ -d "${{ inputs.path }}" ]; then
+          aws s3 cp "${{ inputs.path }}" "$DEST" --recursive \
+            --metadata "commit=${{ github.sha }},run-attempt=${{ github.run_attempt }}"
+        else
+          aws s3 cp "${{ inputs.path }}" "$DEST" \
+            --metadata "commit=${{ github.sha }},run-attempt=${{ github.run_attempt }}"
+        fi
+        echo "Published ${{ inputs.tool-name }} findings to $DEST"

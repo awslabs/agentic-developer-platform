@@ -157,10 +157,35 @@ resource "aws_iam_role_policy" "runner_security_scan_upload" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "SecurityScanSARIFUpload"
+        # SARIF archival (date-partitioned) + the per-run "findings/<run_id>/"
+        # rendezvous prefix the Security Summary job reads instead of GitHub
+        # Actions artifacts (which were unreliable under storage-quota pressure).
+        Sid    = "SecurityScanUpload"
+        Effect = "Allow"
+        Action = ["s3:PutObject"]
+        Resource = [
+          "${var.security_scans_bucket_arn}/sarif/*",
+          "${var.security_scans_bucket_arn}/findings/*"
+        ]
+      },
+      {
+        # Summary / nightly baseline jobs sync the rendezvous prefix back down.
+        Sid      = "SecurityScanReadFindings"
         Effect   = "Allow"
-        Action   = ["s3:PutObject"]
-        Resource = "${var.security_scans_bucket_arn}/sarif/*"
+        Action   = ["s3:GetObject"]
+        Resource = "${var.security_scans_bucket_arn}/findings/*"
+      },
+      {
+        # s3 sync lists the prefix before downloading.
+        Sid      = "SecurityScanListFindings"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = var.security_scans_bucket_arn
+        Condition = {
+          StringLike = {
+            "s3:prefix" = ["findings/*"]
+          }
+        }
       }
     ]
   })

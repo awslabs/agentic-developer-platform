@@ -83,13 +83,13 @@ jobs:
           tool-name: checkov
           bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
-      - name: Upload findings artifact
+      - name: Publish findings to S3 rendezvous
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/publish-findings-s3
         with:
-          name: checkov-findings
           path: checkov-results.sarif
-          retention-days: 1
+          tool-name: checkov
+          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
   # ---------- Job 2: Semgrep (SAST) ----------
   semgrep:
@@ -139,13 +139,13 @@ jobs:
           tool-name: semgrep
           bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
-      - name: Upload findings artifact
+      - name: Publish findings to S3 rendezvous
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/publish-findings-s3
         with:
-          name: semgrep-findings
           path: semgrep-results.sarif
-          retention-days: 1
+          tool-name: semgrep
+          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
   # ---------- Job 3: detect-secrets ----------
   detect-secrets:
@@ -177,15 +177,26 @@ jobs:
             > detect-secrets-audit.json 2>/dev/null \
             || true
 
-      - name: Upload findings artifact
+      - name: Resolve account ID
         if: always()
-        uses: actions/upload-artifact@v4
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
+      - name: Collect detect-secrets findings
+        if: always()
+        run: |
+          mkdir -p detect-secrets-findings
+          cp -f detect-secrets-results.json detect-secrets-findings/ 2>/dev/null || true
+          cp -f detect-secrets-audit.json detect-secrets-findings/ 2>/dev/null || true
+
+      - name: Publish findings to S3 rendezvous
+        if: always()
+        uses: ./.github/actions/publish-findings-s3
         with:
-          name: detect-secrets-findings
-          path: |
-            detect-secrets-results.json
-            detect-secrets-audit.json
-          retention-days: 1
+          path: detect-secrets-findings
+          tool-name: detect-secrets
+          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
   # ---------- Job 4: Grype (CVE scan via CodeBuild) ----------
   grype:
@@ -235,12 +246,13 @@ jobs:
             echo "::warning::Grype SARIF count (${COUNT}) is below Dockerfile count (${EXPECTED}). Some scans may have failed — see CodeBuild logs."
           fi
 
-      - uses: actions/upload-artifact@v4
+      - name: Publish findings to S3 rendezvous
         if: always()
+        uses: ./.github/actions/publish-findings-s3
         with:
-          name: grype-findings
-          path: grype-findings/
-          retention-days: 1
+          path: grype-findings
+          tool-name: grype
+          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
   # ---------- Job 5: Bandit (Python SAST) ----------
   bandit:
@@ -282,13 +294,13 @@ jobs:
           tool-name: bandit
           bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
-      - name: Upload findings artifact
+      - name: Publish findings to S3 rendezvous
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/publish-findings-s3
         with:
-          name: bandit-findings
           path: bandit-results.sarif
-          retention-days: 1
+          tool-name: bandit
+          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
   # ---------- Job 6: cfn-nag (CloudFormation) ----------
   cfn-nag:
@@ -316,13 +328,19 @@ jobs:
             > cfn-nag-results.json \
             || true
 
-      - name: Upload findings artifact
+      - name: Resolve account ID
         if: always()
-        uses: actions/upload-artifact@v4
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
+      - name: Publish findings to S3 rendezvous
+        if: always()
+        uses: ./.github/actions/publish-findings-s3
         with:
-          name: cfn-nag-findings
           path: cfn-nag-results.json
-          retention-days: 1
+          tool-name: cfn-nag
+          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
   # ---------- Job 7: npm audit ----------
   npm-audit:
@@ -348,19 +366,33 @@ jobs:
         run: |
           npm audit --json --audit-level=high > npm-audit-results.json 2>/dev/null || true
 
-      - name: Set artifact name
+      - name: Set package slug
         id: name
         run: |
           NAME=$(echo "${{ matrix.package_dir }}" | sed 's|/|-|g')
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload findings artifact
+      - name: Resolve account ID
         if: always()
-        uses: actions/upload-artifact@v4
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
+      - name: Stage npm-audit findings
+        if: always()
+        run: |
+          # Matrix legs share the npm-audit tool prefix; rename per-package so
+          # they don't overwrite each other in the S3 rendezvous.
+          cp -f "${{ matrix.package_dir }}/npm-audit-results.json" \
+            "npm-audit-${{ steps.name.outputs.name }}.json" 2>/dev/null || true
+
+      - name: Publish findings to S3 rendezvous
+        if: always()
+        uses: ./.github/actions/publish-findings-s3
         with:
-          name: npm-audit-findings-${{ steps.name.outputs.name }}
-          path: ${{ matrix.package_dir }}/npm-audit-results.json
-          retention-days: 1
+          path: npm-audit-${{ steps.name.outputs.name }}.json
+          tool-name: npm-audit
+          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
   # ---------- Job 8: Syft (SBOM via CodeBuild) ----------
   syft:
@@ -410,12 +442,13 @@ jobs:
             echo "::warning::Syft SBOM count (${COUNT}) is below Dockerfile count (${EXPECTED}). Some scans may have failed — see CodeBuild logs."
           fi
 
-      - uses: actions/upload-artifact@v4
+      - name: Publish findings to S3 rendezvous
         if: always()
+        uses: ./.github/actions/publish-findings-s3
         with:
-          name: sbom-findings
-          path: sbom-findings/
-          retention-days: 1
+          path: sbom-findings
+          tool-name: syft
+          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
   # ---------- Summary job ----------
   summary:
@@ -439,11 +472,25 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Download all findings artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: findings/
-          pattern: '*-findings*'
+      - name: Pull findings from S3 rendezvous
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          mkdir -p findings
+          aws s3 sync \
+            "s3://adp-${{ env.ENVIRONMENT }}-security-scans-${ACCOUNT_ID}/findings/${{ github.run_id }}/" \
+            findings/
+
+          # Fail loud: an empty rendezvous means the pipeline is broken
+          # (upload path misconfigured, every scanner crashed, IAM denied).
+          # Reporting "0 findings" in that case is a false all-clear — the exact
+          # failure mode this job is meant to surface. Require at least one
+          # diffable tool's output before trusting the diff.
+          FOUND=$(find findings -type f \( -name '*.sarif' -o -name '*.json' \) | wc -l)
+          echo "Pulled ${FOUND} findings file(s) from the rendezvous prefix"
+          if [ "${FOUND}" -eq 0 ]; then
+            echo "::error::No findings files found under findings/${{ github.run_id }}/ in S3. The scan pipeline did not publish results — refusing to report a false '0 findings'. Check the scanner jobs' 'Publish findings to S3' steps."
+            exit 1
+          fi
 
       - name: Diff findings against baseline
         run: |
@@ -485,11 +532,19 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Download all findings artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: findings/
-          pattern: '*-findings*'
+      - name: Pull findings from S3 rendezvous
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          mkdir -p findings
+          aws s3 sync \
+            "s3://adp-${{ env.ENVIRONMENT }}-security-scans-${ACCOUNT_ID}/findings/${{ github.run_id }}/" \
+            findings/
+          FOUND=$(find findings -type f \( -name '*.sarif' -o -name '*.json' \) | wc -l)
+          echo "Pulled ${FOUND} findings file(s) from the rendezvous prefix"
+          if [ "${FOUND}" -eq 0 ]; then
+            echo "::error::No findings files in S3 rendezvous; refusing to overwrite baselines with empty data."
+            exit 1
+          fi
 
       - name: Update baseline files
         id: update
