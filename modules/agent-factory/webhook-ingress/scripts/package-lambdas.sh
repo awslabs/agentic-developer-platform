@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
-# Package each channel Lambda separately with common/ included.
-# Output: dist/<lambda-name>.zip for each handler directory.
+# Package each channel Lambda separately with common/ (and any in-process
+# modules) included.
+# Output: dist/<lambda-name>.zip for each STANDALONE handler directory.
+#
+# Module layout (issue #2203):
+#   - common/      — shared library, bundled into EVERY zip; never standalone.
+#   - <channel>/   — a standalone Lambda function (e.g. github/) → its own zip
+#                    deployed as adp-<env>-<channel>-webhook.
+#   - in-process modules — handler code invoked IN-PROCESS by another Lambda
+#                    (not its own AWS function). These must be BUNDLED into the
+#                    owning Lambda's zip and must NOT be emitted as a standalone
+#                    zip, or the deploy pipeline's update-code step will try to
+#                    update a function (adp-<env>-<name>-webhook) that doesn't
+#                    exist → ResourceNotFoundException.
+#                    `eventbridge/` is such a module: github/handler.py routes
+#                    EventBridge events to it via `from eventbridge.handler
+#                    import handle_eventbridge` (issue #2154); there is no
+#                    separate eventbridge Lambda — it reuses github-webhook.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,6 +24,21 @@ MODULE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="$MODULE_DIR/dist"
 LAMBDA_DIR="$MODULE_DIR/lambda"
 COMMON_DIR="$LAMBDA_DIR/common"
+
+# In-process modules: bundled into EVERY standalone Lambda zip (like common/),
+# never emitted as their own zip. Add a dir here when its handler is invoked
+# in-process by another Lambda rather than deployed as its own function.
+IN_PROCESS_MODULES=("eventbridge")
+
+# Returns 0 if "$1" is an in-process module (should be bundled, not standalone).
+_is_in_process_module() {
+  local name="$1"
+  local m
+  for m in "${IN_PROCESS_MODULES[@]}"; do
+    [ "$name" = "$m" ] && return 0
+  done
+  return 1
+}
 
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
@@ -30,6 +61,13 @@ for handler_dir in "$LAMBDA_DIR"/*/; do
     continue
   fi
 
+  # Skip in-process modules — they're bundled into standalone zips below,
+  # never deployed as their own Lambda function (issue #2203).
+  if _is_in_process_module "$handler_name"; then
+    echo "Skipping standalone zip for in-process module: $handler_name (bundled into owning Lambda)"
+    continue
+  fi
+
   # Skip __pycache__ and hidden directories
   if [[ "$handler_name" == __* ]] || [[ "$handler_name" == .* ]]; then
     continue
@@ -45,6 +83,15 @@ for handler_dir in "$LAMBDA_DIR"/*/; do
   if [ -d "$COMMON_DIR" ]; then
     (cd "$LAMBDA_DIR" && zip -r "$ZIP_FILE" common/ -x '__pycache__/*' '*.pyc')
   fi
+
+  # Add in-process modules (e.g. eventbridge/) so handlers that import them
+  # in-process (github/handler.py → eventbridge.handler) resolve at runtime.
+  for module in "${IN_PROCESS_MODULES[@]}"; do
+    if [ -d "$LAMBDA_DIR/$module" ]; then
+      (cd "$LAMBDA_DIR" && zip -r "$ZIP_FILE" "$module/" \
+        -x '__pycache__/*' '*.pyc' "$module/tests/*" '*/tests/*')
+    fi
+  done
 
   # Add dependencies if they were installed
   if [ -n "$DEPS_DIR" ] && [ -d "$DEPS_DIR" ]; then
