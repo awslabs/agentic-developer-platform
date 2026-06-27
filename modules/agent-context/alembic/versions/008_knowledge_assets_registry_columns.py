@@ -6,16 +6,20 @@ status_detail. These columns were defined in gateway migrations 019/020 (which
 targeted the wrong database and never ran). This migration adds them to the
 authoritative table in agent_context.
 
-Revision ID: 008_knowledge_assets_registry_columns
+Revision ID: 008_ka_registry_cols
 Revises: 007_knowledge_assets
 Create Date: 2026-06-26
+
+NOTE: the revision id is kept short (<=32 chars) because alembic_version.version_num
+is VARCHAR(32). The original id "008_knowledge_assets_registry_columns" (37 chars)
+overflowed it (StringDataRightTruncationError), rolling back the whole migration.
 """
 
 from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "008_knowledge_assets_registry_columns"
+revision: str = "008_ka_registry_cols"
 down_revision: str = "007_knowledge_assets"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
