@@ -69,13 +69,19 @@ jobs:
             --soft-fail \
             || true
 
+      - name: Resolve account ID
+        if: always()
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
       - name: Upload SARIF to S3
         if: always()
         uses: ./.github/actions/upload-sarif-s3
         with:
           sarif-file: checkov-results.sarif
           tool-name: checkov
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans
+          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
       - name: Upload findings artifact
         if: always()
@@ -119,13 +125,19 @@ jobs:
             --error \
             || true
 
+      - name: Resolve account ID
+        if: always()
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
       - name: Upload SARIF to S3
         if: always()
         uses: ./.github/actions/upload-sarif-s3
         with:
           sarif-file: semgrep-results.sarif
           tool-name: semgrep
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans
+          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
       - name: Upload findings artifact
         if: always()
@@ -190,6 +202,7 @@ jobs:
       - name: Resolve deploy vars
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> $GITHUB_ENV
           echo "STATE_BUCKET=adp-terraform-state-${ACCOUNT_ID}" >> $GITHUB_ENV
           echo "AWS_REGION=${AWS_REGION:-us-east-1}" >> $GITHUB_ENV
 
@@ -211,7 +224,7 @@ jobs:
           BUILD_RUN_ID="${BUILD_ID##*:}"
           mkdir -p grype-findings
           aws s3 sync \
-            "s3://adp-${{ env.ENVIRONMENT }}-security-scans/sarif/${DATE}/${BUILD_RUN_ID}/grype/" \
+            "s3://adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}/sarif/${DATE}/${BUILD_RUN_ID}/grype/" \
             grype-findings/ || true
 
           # Surface partial-count but don't fail the job
@@ -255,13 +268,19 @@ jobs:
             --exit-zero \
             || true
 
+      - name: Resolve account ID
+        if: always()
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
       - name: Upload SARIF to S3
         if: always()
         uses: ./.github/actions/upload-sarif-s3
         with:
           sarif-file: bandit-results.sarif
           tool-name: bandit
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans
+          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
 
       - name: Upload findings artifact
         if: always()
@@ -358,6 +377,7 @@ jobs:
       - name: Resolve deploy vars
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> $GITHUB_ENV
           echo "STATE_BUCKET=adp-terraform-state-${ACCOUNT_ID}" >> $GITHUB_ENV
           echo "AWS_REGION=${AWS_REGION:-us-east-1}" >> $GITHUB_ENV
 
@@ -379,7 +399,7 @@ jobs:
           BUILD_RUN_ID="${BUILD_ID##*:}"
           mkdir -p sbom-findings
           aws s3 sync \
-            "s3://adp-${{ env.ENVIRONMENT }}-security-scans/sbom/${DATE}/${BUILD_RUN_ID}/" \
+            "s3://adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}/sbom/${DATE}/${BUILD_RUN_ID}/" \
             sbom-findings/ || true
 
           # Surface partial-count but don't fail the job
