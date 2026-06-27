@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     rds_port: int = 5432  # RDS port
     rds_username: str = "bgadmin"  # Database username for IAM auth
     rds_dbname: str = "bedrockgateway"  # Database name
+    agent_context_dbname: str = "agent_context"  # Knowledge Layer registry DB (Issue #2182)
     rds_tls_verify: bool = True  # Set BG_RDS_TLS_VERIFY=false only for emergency rollback
 
     # Redis (optional)

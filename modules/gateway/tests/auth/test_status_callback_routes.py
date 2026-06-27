@@ -74,7 +74,7 @@ def _build_app(db_session, auth_enabled: bool = True):
 
             from src.internal.auth_deps import verify_internal_or_irsa
             from src.internal.status_callback_routes import router
-            from src.shared.database import get_db
+            from src.shared.database_agent_context import get_agent_context_db
 
             app = FastAPI()
             app.include_router(router)
@@ -82,7 +82,7 @@ def _build_app(db_session, auth_enabled: bool = True):
             async def _override_get_db():
                 yield db_session
 
-            app.dependency_overrides[get_db] = _override_get_db
+            app.dependency_overrides[get_agent_context_db] = _override_get_db
 
             if auth_enabled:
 

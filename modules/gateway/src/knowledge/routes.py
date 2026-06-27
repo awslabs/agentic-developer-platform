@@ -6,7 +6,7 @@ Original: Issue #1791 (Story B of E10 #1736).
 Register/list/detail/delete/reindex endpoints + bulk upload (preview + commit).
 Scope derived from the authenticated session (TokenContext), soft quota check.
 
-Database dependency: uses the gateway's own get_db session factory directly.
+Database dependency: uses get_agent_context_db (targets agent_context DB, Issue #2182).
 Auth: uses the gateway's get_current_user dependency directly.
 
 Gating: this module's router is only exposed when AGENT_CONTEXT_ENABLED=true.
@@ -47,7 +47,7 @@ from src.knowledge.schemas import (
     QuotaInfo,
 )
 from src.knowledge.type_registry import is_valid_asset_type, validate_source_ref
-from src.shared.database import get_db
+from src.shared.database_agent_context import get_agent_context_db
 from src.shared.identity import resolve_canonical_user_id
 
 logger = logging.getLogger("bedrockgateway.knowledge.routes")
@@ -81,7 +81,7 @@ def _get_quota_limit(scope: str, asset_type: str) -> int:
 @_router.post("", response_model=AssetResponse, status_code=201)
 async def register_asset(
     body: AssetCreateRequest,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: Annotated[AsyncSession, Depends(get_agent_context_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> AssetResponse:
     """Register one asset. Scope from session, soft quota check, dispatch to SQS."""
@@ -249,7 +249,7 @@ async def register_asset(
 
 @_router.get("", response_model=AssetListResponse)
 async def list_assets(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: Annotated[AsyncSession, Depends(get_agent_context_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
     scope: Annotated[str | None, Query()] = None,
     asset_type: Annotated[str | None, Query()] = None,
@@ -329,7 +329,7 @@ async def list_assets(
 @_router.get("/{asset_id}", response_model=AssetDetailResponse)
 async def get_asset_detail(
     asset_id: str,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: Annotated[AsyncSession, Depends(get_agent_context_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> AssetDetailResponse:
     """Get asset detail. Only visible if caller has scope access."""
@@ -353,7 +353,7 @@ async def get_asset_detail(
 @_router.delete("/{asset_id}", status_code=204)
 async def delete_asset(
     asset_id: str,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: Annotated[AsyncSession, Depends(get_agent_context_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> None:
     """Soft-delete asset (status = 'removed'). Owner or tenant admin."""
@@ -378,7 +378,7 @@ async def delete_asset(
 @_router.post("/{asset_id}/reindex", response_model=AssetResponse)
 async def reindex_asset(
     asset_id: str,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: Annotated[AsyncSession, Depends(get_agent_context_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> AssetResponse:
     """Re-queue asset for indexing: set status = 'registered'. Owner or admin."""
@@ -426,7 +426,7 @@ async def reindex_asset(
 @_router.get("/{asset_id}/status", response_model=AssetStatusResponse)
 async def get_asset_status(
     asset_id: str,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: Annotated[AsyncSession, Depends(get_agent_context_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> AssetStatusResponse:
     """Day-one asset status: gateway-row-only read (Issue #2048, C1 caveat).
@@ -465,7 +465,7 @@ async def get_asset_status(
 
 @_router.post("/bulk", response_model=BulkPreviewResponse)
 async def bulk_preview(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: Annotated[AsyncSession, Depends(get_agent_context_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
     file: UploadFile = File(...),
     scope: str = Form("tenant"),
@@ -592,7 +592,7 @@ async def bulk_preview(
 @_router.post("/bulk/commit", response_model=BulkCommitResponse, status_code=201)
 async def bulk_commit(
     body: BulkCommitRequest,
-    db: Annotated[AsyncSession, Depends(get_db)],
+    db: Annotated[AsyncSession, Depends(get_agent_context_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> BulkCommitResponse:
     """Commit a previewed bulk upload batch. Writes rows + dispatches to SQS.

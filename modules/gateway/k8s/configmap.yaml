@@ -142,3 +142,4 @@ data:
   # =============================================================================
   AGENT_CONTEXT_ENABLED: "true"
   INGESTION_QUEUE_URL: "__INGESTION_QUEUE_URL__"
+  BG_AGENT_CONTEXT_DBNAME: "agent_context"

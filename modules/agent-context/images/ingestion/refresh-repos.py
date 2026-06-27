@@ -787,12 +787,10 @@ def run_publisher(force: bool = False, triggered_by: str = "daily_refresh") -> d
     Instead of processing sequentially, enqueues work to SQS for parallel processing
     by KEDA ScaledJob workers.
 
-    When GATEWAY_DB_NAME is set (#2082 Phase 2), uses --from-registry to read
-    knowledge_assets instead of repos.txt. Falls back to --all (legacy) when
-    the gateway DB is not configured.
+    Issue #2182: Always uses --from-registry to read knowledge_assets from the
+    agent_context DB (its own database). No cross-DB gate needed.
     """
-    use_registry = bool(settings.gateway_db_name)
-    mode = "--from-registry" if use_registry else "--all"
+    mode = "--from-registry"
     log.info(
         "SQS mode: delegating to publish-ingestion.py %s (triggered_by=%s)",
         mode,

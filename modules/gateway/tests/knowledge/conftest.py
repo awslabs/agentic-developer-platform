@@ -177,7 +177,7 @@ def knowledge_app(monkeypatch) -> FastAPI:
 def make_client(knowledge_app: FastAPI):
     """Factory to create a test client with configured dependencies."""
     from src.auth.dependencies import get_current_user
-    from src.shared.database import get_db
+    from src.shared.database_agent_context import get_agent_context_db
 
     def _make(db_session: FakeAsyncSession, user: FakeTokenContext | None = None):
         if user is None:
@@ -189,7 +189,7 @@ def make_client(knowledge_app: FastAPI):
         async def override_user() -> FakeTokenContext:
             return user
 
-        knowledge_app.dependency_overrides[get_db] = override_db
+        knowledge_app.dependency_overrides[get_agent_context_db] = override_db
         knowledge_app.dependency_overrides[get_current_user] = override_user
         return AsyncClient(
             transport=ASGITransport(app=knowledge_app),

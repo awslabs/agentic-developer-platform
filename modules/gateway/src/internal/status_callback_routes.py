@@ -25,7 +25,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.internal.auth_deps import verify_internal_or_irsa
-from src.shared.database import get_db
+from src.shared.database_agent_context import get_agent_context_db
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class StatusCallbackResponse(BaseModel):
 )
 async def status_callback(
     body: StatusCallbackRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_agent_context_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> StatusCallbackResponse:
     # Validate status value

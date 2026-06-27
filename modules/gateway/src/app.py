@@ -13,7 +13,7 @@ from src.auth.middleware import TokenContextMiddleware
 from src.budget.enforcement_middleware import BudgetEnforcementMiddleware
 from src.ratelimit.enforcement_middleware import RateLimitEnforcementMiddleware
 from src.shared.config import get_settings
-from src.shared.database import get_db  # Issue #1424: for agent-context router DI
+from src.shared.database_agent_context import get_agent_context_db  # Issue #2182: KL registry in agent_context DB
 from src.shared.exceptions import BedrockGatewayError
 from src.shared.logging import configure_logging
 from src.shared.middleware.logging_middleware import LoggingMiddleware
@@ -226,8 +226,8 @@ def create_app() -> FastAPI:
                 router as indexing_router,
             )
 
-            # Override the router's DB dependency with the gateway's session factory
-            app.dependency_overrides[get_indexing_db] = get_db
+            # Override the router's DB dependency with the agent_context session factory (Issue #2182)
+            app.dependency_overrides[get_indexing_db] = get_agent_context_db
             app.include_router(
                 indexing_router,
                 dependencies=[Depends(require_admin)],
