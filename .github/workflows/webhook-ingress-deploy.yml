@@ -64,7 +64,10 @@ jobs:
           CHANGED=$(git diff --name-only HEAD^ HEAD)
           echo "Changed files:"
           echo "$CHANGED"
-          if echo "$CHANGED" | grep -qE '^modules/agent-factory/webhook-ingress/(lambda|common)/'; then
+          # Issue #2203: include scripts/ and requirements.txt — a change to the
+          # packaging script (package-lambdas.sh) or deps must trigger a
+          # repackage, else a packaging fix merges but never re-runs a deploy.
+          if echo "$CHANGED" | grep -qE '^modules/agent-factory/webhook-ingress/(lambda|common|scripts)/|^modules/agent-factory/webhook-ingress/requirements\.txt$'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
@@ -238,12 +241,26 @@ jobs:
           # Function name template matches what Terraform creates in
           # infra/lambdas.tf: "${local.name_prefix}-github-webhook".
           # BASENAME comes from the zip (e.g. "github" → adp-dev-github-webhook).
-          # Do NOT silently swallow ResourceNotFoundException — a missing
-          # function means infra/code are out of sync and the deploy should
-          # fail loudly, not pretend success.
+          #
+          # Issue #2203: an artifact may exist in S3 with no matching Lambda —
+          # e.g. an in-process module (eventbridge/) that is bundled into another
+          # Lambda rather than deployed as its own function, or a stale orphan zip
+          # left by an older packaging run. Previously this loop hard-failed on
+          # ResourceNotFoundException, which jammed every deploy. We now probe
+          # with get-function and SKIP-with-warning when the function genuinely
+          # does not exist (orphan/in-process), while still failing on any OTHER
+          # update error (real drift / permissions / bad artifact).
+          UPDATED=0
+          SKIPPED=0
           for zip_name in $ARTIFACTS; do
             BASENAME=$(basename "$zip_name" .zip)
             FUNCTION_NAME="adp-${ENVIRONMENT}-${BASENAME}-webhook"
+            if ! aws lambda get-function --function-name "${FUNCTION_NAME}" \
+                 --region "${AWS_REGION}" >/dev/null 2>&1; then
+              echo "::warning::No Lambda named ${FUNCTION_NAME} for artifact ${BASENAME}.zip — skipping (in-process module or stale orphan artifact, see #2203)."
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
             echo "Updating function: ${FUNCTION_NAME}"
             aws lambda update-function-code \
               --function-name "${FUNCTION_NAME}" \
@@ -251,7 +268,13 @@ jobs:
               --s3-key "lambda-artifacts/webhook-ingress/${BASENAME}.zip" \
               --region "${AWS_REGION}" \
               --publish
+            UPDATED=$((UPDATED + 1))
           done
+          echo "Lambda code update complete: ${UPDATED} updated, ${SKIPPED} skipped."
+          if [ "$UPDATED" -eq 0 ]; then
+            echo "::error::No Lambda functions were updated — every artifact was skipped. Expected at least github-webhook."
+            exit 1
+          fi
 
   integration-test:
     name: Integration Tests
