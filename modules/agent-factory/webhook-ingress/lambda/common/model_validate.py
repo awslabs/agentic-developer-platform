@@ -17,17 +17,23 @@ import fnmatch
 # Kept deliberately minimal — just the names users are likely to type.
 # Must stay in sync with model_resolver.py's short aliases.
 MODEL_ALIASES: dict[str, str] = {
-    # Bare short names (issue #2279). Values MUST be invocable inference-profile
-    # IDs (global./us. prefix) — bare `anthropic.claude-*` IDs are NOT supported
-    # for on-demand invocation, and EOL versions are rejected by Bedrock
-    # (issue #2300). All verified ACTIVE via `aws bedrock list-inference-profiles`.
-    "opus": "global.anthropic.claude-opus-4-6-v1",
-    "sonnet": "global.anthropic.claude-sonnet-4-6",
-    "haiku": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-    # Slightly longer but still common
-    "claude-opus-4": "global.anthropic.claude-opus-4-6-v1",
-    "claude-sonnet-4": "global.anthropic.claude-sonnet-4-6",
-    "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Version-pinned aliases: <family><major><minor>, compact, no separators.
+    # Each maps to an invocable inference-profile ID (global. prefix) — verified
+    # ACTIVE via `aws bedrock list-inference-profiles` AND verified to invoke
+    # via bedrock-runtime invoke-model (issue #2300). Bare/ambiguous aliases
+    # (opus/sonnet/haiku) were removed in favour of explicit versions so a
+    # /model choice can't silently drift to a different model over time.
+    "opus48": "global.anthropic.claude-opus-4-8",
+    "opus47": "global.anthropic.claude-opus-4-7",
+    "opus46": "global.anthropic.claude-opus-4-6-v1",
+    "opus45": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    "sonnet46": "global.anthropic.claude-sonnet-4-6",
+    "sonnet45": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "haiku45": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    # NOTE: claude-sonnet-4-20250514 (Legacy, access-denied after 30d unused)
+    # and claude-fable-5 (requires non-default data-retention mode) are listed
+    # ACTIVE but do NOT invoke for us — deliberately excluded (#2300 lesson:
+    # verify by invocation, not just listing).
 }
 
 # Default allowed patterns (matches model_resolver.py DEFAULT_ALLOWED_PATTERNS)

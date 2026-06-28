@@ -15,13 +15,20 @@ logger = logging.getLogger(__name__)
 
 # Default model alias mappings
 DEFAULT_MODEL_ALIASES: dict[str, str] = {
-    # Short "latest" aliases for /model directive UX (issue #2279). Values MUST
-    # be invocable inference-profile IDs (global./us. prefix) — bare
-    # `anthropic.claude-*` IDs aren't supported for on-demand invocation and EOL
-    # versions are rejected (issue #2300). Verified ACTIVE via list-inference-profiles.
-    "opus": "global.anthropic.claude-opus-4-6-v1",
-    "sonnet": "global.anthropic.claude-sonnet-4-6",
-    "haiku": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Version-pinned /model aliases: <family><major><minor>, compact, no
+    # separators (e.g. opus48, sonnet46, haiku45). Each → an invocable
+    # inference-profile ID (global. prefix), verified ACTIVE + invokable
+    # (issues #2279/#2300). Bare opus/sonnet/haiku removed: a /model choice
+    # must name an explicit version so it can't silently drift.
+    "opus48": "global.anthropic.claude-opus-4-8",
+    "opus47": "global.anthropic.claude-opus-4-7",
+    "opus46": "global.anthropic.claude-opus-4-6-v1",
+    "opus45": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    "sonnet46": "global.anthropic.claude-sonnet-4-6",
+    "sonnet45": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "haiku45": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Excluded (listed ACTIVE but do not invoke for us, #2300): sonnet-4-20250514
+    # (Legacy/access-denied) and fable-5 (non-default data-retention required).
     # Claude 3.5 models
     "claude-3.5-sonnet": "anthropic.claude-3-5-sonnet-20241022-v2:0",
     "claude-3-5-sonnet": "anthropic.claude-3-5-sonnet-20241022-v2:0",
