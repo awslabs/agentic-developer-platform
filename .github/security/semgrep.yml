@@ -1,41 +1,18 @@
 rules: []
 # Semgrep configuration for ADP
 # Uses 'auto' config (p/default) as the primary ruleset via --config auto.
-# This file holds rule-scoped path exclusions for adjudicated false positives.
+# This file is loaded via `semgrep scan --config .github/security/semgrep.yml`
+# and may contain custom rules in the future. Path-based suppressions live in
+# the baseline (semgrep-baseline.sarif) — NOT here, because a top-level
+# `paths:` key is silently ignored in a --config rules file.
 #
-# Exclusion policy (per #2217 triage, #2223):
-#   - Each exclusion is tied to a specific rule ID + narrow path
-#   - Documented with the rule that motivated it (not a blanket .semgrepignore)
-#   - Real findings (disabled-cert-validation, missing-user) are NOT suppressed
+# Adjudicated false positives (47 findings from #2217 triage) are suppressed
+# via semgrep-baseline.sarif. The diff_security_findings.py script diffs
+# current scan results against the baseline, so baselined findings appear as
+# "stable" rather than "new" in PR comments.
 #
-# Tool-specific tuning:
-# - Focus: Python (modules/gateway, modules/agent-factory/gateway, lambdas)
-# - Focus: TypeScript (modules/agent-factory/agent, modules/gateway/frontend)
-# - Exclude: generated code, vendored deps, test fixtures
-
-# ---------- Rule-scoped path exclusions ----------
-# Each path listed below is excluded because a specific rule fires there
-# as a false positive. The rule ID and triage reference are documented inline.
-#
-# Rule: yaml.github-actions.security.run-shell-injection.* (25 findings)
-# Rule: generic.ci.security.use-frozen-lockfile.*
-#   Reason: CI workflows and composite actions use controlled variables
-#   (${{ github.sha }}, ${{ inputs.* }}) — these are NOT user-supplied input.
-#   Triage: #2217 Cluster B. Paths: .github/workflows/, .github/actions/
-#
-# Rule: javascript.lang.security.detect-child-process.* (14 findings)
-#   Reason: The agent runtime IS a process orchestrator — it spawns gh, git,
-#   claude by design. Not arbitrary command injection.
-#   Triage: #2217 Cluster B. Path: modules/agent-factory/agent/src/
-#
-# Rule: generic.secrets.security.detected-jwt-token.* (6 findings)
-#   Reason: Sample/example tokens in security audit documentation — not live
-#   secrets.
-#   Triage: #2217 Cluster B. Path: data/security/
-
-paths:
-  exclude:
-    - .github/workflows/
-    - .github/actions/
-    - modules/agent-factory/agent/src/
-    - data/security/
+# Baselined FP clusters (see semgrep-baseline.sarif):
+#   - run-shell-injection ×25 in .github/workflows/, .github/actions/
+#   - detect-child-process ×14 in modules/agent-factory/agent/src/
+#   - detected-jwt-token ×6 in data/security/, modules/agent-factory/agent/src/
+#   - unverified-jwt-decode ×2 in modules/gateway/src/auth/

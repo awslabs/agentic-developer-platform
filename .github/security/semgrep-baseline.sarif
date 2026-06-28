@@ -9,9 +9,118 @@
           "semanticVersion": "1.80.0",
           "rules": [
             {
-              "id": "python.lang.security.unverified-jwt-decode",
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Detected JWT token decoded with 'verify=False'. This bypasses any integrity checks for the token which means the token could be tampered with by malicious actors. Ensure that the JWT token is verified."
+              },
+              "help": {
+                "markdown": "Detected JWT token decoded with 'verify=False'. This bypasses any integrity checks for the token which means the token could be tampered with by malicious actors. Ensure that the JWT token is verified.\n\n#### \ud83d\udc8e Enable cross-file analysis and Pro rules for free at <a href='https://sg.run/pro'>sg.run/pro</a>\n\n<b>References:</b>\n - [Semgrep Rule](https://semgrep.dev/r/python.jwt.security.unverified-jwt-decode.unverified-jwt-decode)\n - [https://github.com/we45/Vulnerable-Flask-App/blob/752ee16087c0bfb79073f68802d907569a1f0df7/app/app.py#L96](https://github.com/we45/Vulnerable-Flask-App/blob/752ee16087c0bfb79073f68802d907569a1f0df7/app/app.py#L96)\n",
+                "text": "Detected JWT token decoded with 'verify=False'. This bypasses any integrity checks for the token which means the token could be tampered with by malicious actors. Ensure that the JWT token is verified.\n\ud83d\udc8e Enable cross-file analysis and Pro rules for free at sg.run/pro"
+              },
+              "helpUri": "https://semgrep.dev/r/python.jwt.security.unverified-jwt-decode.unverified-jwt-decode",
+              "id": "python.jwt.security.unverified-jwt-decode.unverified-jwt-decode",
+              "name": "python.jwt.security.unverified-jwt-decode.unverified-jwt-decode",
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "CWE-287: Improper Authentication",
+                  "MEDIUM CONFIDENCE",
+                  "OWASP-A02:2017 - Broken Authentication",
+                  "OWASP-A07:2021 - Identification and Authentication Failures",
+                  "OWASP-A07:2025 - Authentication Failures",
+                  "security"
+                ]
+              },
               "shortDescription": {
-                "text": "Detected JWT decode without signature verification"
+                "text": "Semgrep Finding: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Detected calls to child_process from a function argument `$FUNC`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+              },
+              "help": {
+                "markdown": "Detected calls to child_process from a function argument `$FUNC`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. \n\n#### \ud83d\udc8e Enable cross-file analysis and Pro rules for free at <a href='https://sg.run/pro'>sg.run/pro</a>\n\n<b>References:</b>\n - [Semgrep Rule](https://semgrep.dev/r/javascript.lang.security.detect-child-process.detect-child-process)\n - [https://cheatsheetseries.owasp.org/cheatsheets/Nodejs_Security_Cheat_Sheet.html#do-not-use-dangerous-functions](https://cheatsheetseries.owasp.org/cheatsheets/Nodejs_Security_Cheat_Sheet.html#do-not-use-dangerous-functions)\n",
+                "text": "Detected calls to child_process from a function argument `$FUNC`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. \n\ud83d\udc8e Enable cross-file analysis and Pro rules for free at sg.run/pro"
+              },
+              "helpUri": "https://semgrep.dev/r/javascript.lang.security.detect-child-process.detect-child-process",
+              "id": "javascript.lang.security.detect-child-process.detect-child-process",
+              "name": "javascript.lang.security.detect-child-process.detect-child-process",
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+                  "LOW CONFIDENCE",
+                  "OWASP-A01:2017 - Injection",
+                  "OWASP-A03:2021 - Injection",
+                  "OWASP-A05:2025 - Injection",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Semgrep Finding: javascript.lang.security.detect-child-process.detect-child-process"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "JWT token detected"
+              },
+              "help": {
+                "markdown": "JWT token detected\n\n#### \ud83d\udc8e Enable cross-file analysis and Pro rules for free at <a href='https://sg.run/pro'>sg.run/pro</a>\n\n<b>References:</b>\n - [Semgrep Rule](https://semgrep.dev/r/generic.secrets.security.detected-jwt-token.detected-jwt-token)\n - [https://semgrep.dev/blog/2020/hardcoded-secrets-unverified-tokens-and-other-common-jwt-mistakes/](https://semgrep.dev/blog/2020/hardcoded-secrets-unverified-tokens-and-other-common-jwt-mistakes/)\n",
+                "text": "JWT token detected\n\ud83d\udc8e Enable cross-file analysis and Pro rules for free at sg.run/pro"
+              },
+              "helpUri": "https://semgrep.dev/r/generic.secrets.security.detected-jwt-token.detected-jwt-token",
+              "id": "generic.secrets.security.detected-jwt-token.detected-jwt-token",
+              "name": "generic.secrets.security.detected-jwt-token.detected-jwt-token",
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "CWE-321: Use of Hard-coded Cryptographic Key",
+                  "LOW CONFIDENCE",
+                  "OWASP-A02:2021 - Cryptographic Failures",
+                  "OWASP-A04:2025 - Cryptographic Failures",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Semgrep Finding: generic.secrets.security.detected-jwt-token.detected-jwt-token"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+              },
+              "help": {
+                "markdown": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\".\n\n#### \ud83d\udc8e Enable cross-file analysis and Pro rules for free at <a href='https://sg.run/pro'>sg.run/pro</a>\n\n<b>References:</b>\n - [Semgrep Rule](https://semgrep.dev/r/yaml.github-actions.security.run-shell-injection.run-shell-injection)\n - [https://docs.github.com/en/actions/learn-github-actions/security-hardening-for-github-actions#understanding-the-risk-of-script-injections](https://docs.github.com/en/actions/learn-github-actions/security-hardening-for-github-actions#understanding-the-risk-of-script-injections)\n - [https://securitylab.github.com/research/github-actions-untrusted-input/](https://securitylab.github.com/research/github-actions-untrusted-input/)\n",
+                "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\".\n\ud83d\udc8e Enable cross-file analysis and Pro rules for free at sg.run/pro"
+              },
+              "helpUri": "https://semgrep.dev/r/yaml.github-actions.security.run-shell-injection.run-shell-injection",
+              "id": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+              "name": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+                  "HIGH CONFIDENCE",
+                  "OWASP-A01:2017 - Injection",
+                  "OWASP-A03:2021 - Injection",
+                  "OWASP-A05:2025 - Injection",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Semgrep Finding: yaml.github-actions.security.run-shell-injection.run-shell-injection"
               }
             }
           ]
@@ -19,52 +128,1647 @@
       },
       "results": [
         {
-          "ruleId": "python.lang.security.unverified-jwt-decode",
-          "level": "error",
-          "message": {
-            "text": "Detected JWT token decode without signature verification. This is suppressed via inline nosemgrep — the decode is a debug/logging helper; verified decode happens upstream."
+          "fingerprints": {
+            "matchBasedId/v1": "bd0f675d4a2651c3d887170d4ee79a8799ad403cdfd07b8e8d272dcda92e9c164883a87ea772465f2649ae849262b3d83c2ab02354720193a553748604345d5f_0"
           },
           "locations": [
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "modules/gateway/src/auth/cognito_jwt.py"
+                  "uri": ".github/actions/publish-findings-s3/action.yml",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
+                  "endColumn": 68,
+                  "endLine": 33,
+                  "snippet": {
+                    "text": "      run: |\n        if [ ! -e \"${{ inputs.path }}\" ]; then\n          echo \"::warning::findings path '${{ inputs.path }}' not found for ${{ inputs.tool-name }} \u2014 scanner may have crashed; nothing to publish\"\n          exit 0\n        fi\n        DEST=\"s3://${{ inputs.bucket }}/findings/${{ github.run_id }}/${{ inputs.tool-name }}/\"\n        if [ -d \"${{ inputs.path }}\" ]; then\n          aws s3 cp \"${{ inputs.path }}\" \"$DEST\" --recursive \\\n            --metadata \"commit=${{ github.sha }},run-attempt=${{ github.run_attempt }}\"\n        else\n          aws s3 cp \"${{ inputs.path }}\" \"$DEST\" \\\n            --metadata \"commit=${{ github.sha }},run-attempt=${{ github.run_attempt }}\"\n        fi\n        echo \"Published ${{ inputs.tool-name }} findings to $DEST\""
+                  },
+                  "startColumn": 7,
+                  "startLine": 20
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "883b7a10684e92dfe9f27417a21152909fed0c16760ef0c5dfde1583bf718958949460a9f438014d23efd0e985ea5f345f2f6da19b6a7eb865e7f37f133cf5db_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/actions/upload-sarif-s3/action.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 59,
+                  "endLine": 27,
+                  "snippet": {
+                    "text": "      run: |\n        if [ ! -f \"${{ inputs.sarif-file }}\" ]; then\n          echo \"::warning::SARIF file '${{ inputs.sarif-file }}' not found \u2014 scanner may have crashed; skipping S3 upload\"\n          exit 0\n        fi\n        DATE=$(date -u +%Y/%m/%d)\n        KEY=\"sarif/${DATE}/${{ github.run_id }}/${{ github.job }}/${{ inputs.tool-name }}.sarif\"\n        aws s3 cp \"${{ inputs.sarif-file }}\" \"s3://${{ inputs.bucket }}/${KEY}\" \\\n          --content-type application/sarif+json \\\n          --metadata \"commit=${{ github.sha }},workflow=${{ github.workflow }},run-attempt=${{ github.run_attempt }}\"\n        echo \"Uploaded: s3://${{ inputs.bucket }}/${KEY}\""
+                  },
+                  "startColumn": 7,
+                  "startLine": 17
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "f9d4ec0c359efe98576af2b74ecfb921cdb54a934c9cd2c78412b884cb00fde739e403000c1169318df510ce45684cd4bc75a9047c6c3802e3f4698fbebbacb1_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/_deploy-eks.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 92,
+                  "endLine": 33,
+                  "snippet": {
+                    "text": "        run: aws eks update-kubeconfig --name ${{ inputs.cluster_name }} --region us-east-1"
+                  },
+                  "startColumn": 9,
+                  "startLine": 33
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "43f47f392fc4d2e9cff95377874027ff411e810ca7078cb51c07ec331948f8614ae854a232f4dd02a3921735c33a83d1ffc56bf0e28a8abfc1b3488eefdaeb24_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/_deploy-eks.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 108,
+                  "endLine": 39,
+                  "snippet": {
+                    "text": "        run: |\n          kubectl apply -f . -n ${{ inputs.namespace }}\n          kubectl rollout status deployment/${{ inputs.module }} -n ${{ inputs.namespace }} --timeout=300s"
+                  },
+                  "startColumn": 9,
+                  "startLine": 37
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "14cfd4452a38d3afdc9e29ada274a7c455ea6f42bcc7d7fa848c0b1d5e51efa75cd21340065d6e5e97eb44b25b5ab0a3dad2a75d8bea21d1b8b5b926947c29db_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/agent-context-deploy.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 242,
+                  "snippet": {
+                    "text": "        run: |\n          set -e\n          cd modules/agent-context\n          source scripts/_common.sh\n          load_config \"$(pwd)\"\n\n          # Resolve RDS host from SSM (published by infra-apply)\n          RDS_HOST=$(aws ssm get-parameter \\\n            --name \"/adp/${{ env.ENVIRONMENT }}/rds/endpoint\" \\\n            --region \"${{ env.AWS_REGION }}\" \\\n            --query 'Parameter.Value' --output text 2>/dev/null || echo \"\")\n          if [ -z \"$RDS_HOST\" ]; then\n            echo \"::error::RDS host not found in SSM (/adp/${{ env.ENVIRONMENT }}/rds/endpoint). Run infra-apply first.\"\n            exit 1\n          fi\n\n          # Determine ingestion image (same logic as CronJob step)\n          INGESTION_REPO=\"adp-${{ env.ENVIRONMENT }}-agent-context-ingestion\"\n          INPUT_TAG=\"${{ inputs.ingestion_image_tag }}\"\n          if [ -n \"$INPUT_TAG\" ]; then\n            MIGRATION_IMAGE=\"${{ env.ECR_REGISTRY }}/${INGESTION_REPO}:${INPUT_TAG}\"\n          else\n            LATEST_TAG=$(aws ecr describe-images --repository-name \"${INGESTION_REPO}\" \\\n              --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \\\n              --output text 2>/dev/null || echo \"\")\n            if [ -n \"$LATEST_TAG\" ] && [ \"$LATEST_TAG\" != \"None\" ]; then\n              MIGRATION_IMAGE=\"${{ env.ECR_REGISTRY }}/${INGESTION_REPO}:${LATEST_TAG}\"\n            else\n              echo \"::error::No ingestion image found in ECR. Run images-build first.\"\n              exit 1\n            fi\n          fi\n\n          # Generate unique Job ID (short git SHA + timestamp)\n          MIGRATION_JOB_ID=\"$(date +%s)-$(echo $GITHUB_SHA | head -c 7)\"\n\n          # Template and apply migration Job\n          export NAMESPACE=\"${{ env.NAMESPACE }}\"\n          export SERVICE_ACCOUNT=\"${SERVICE_ACCOUNT:-agent-context-sa}\"\n          export INGESTION_IMAGE=\"$MIGRATION_IMAGE\"\n          export AC_RDS_HOST=\"$RDS_HOST\"\n          export AC_RDS_PORT=\"5432\"\n          export AC_RDS_USERNAME=\"agent_context_svc\"\n          export AC_RDS_DBNAME=\"agent_context\"\n          export AC_AWS_REGION=\"${{ env.AWS_REGION }}\"\n          export MIGRATION_JOB_ID\n\n          echo \"Launching migration Job (image: ${MIGRATION_IMAGE})...\"\n          echo \"  RDS host: ${RDS_HOST}\"\n          template_file manifests/migration-job.yaml | kubectl apply -f -\n\n          # Wait for Job completion (blocking \u2014 deploy fails if migration fails)\n          JOB_NAME=\"agent-context-migration-${MIGRATION_JOB_ID}\"\n          echo \"Waiting for Job ${JOB_NAME} to complete...\"\n          if ! kubectl wait --for=condition=complete \"job/${JOB_NAME}\" \\\n            -n ${{ env.NAMESPACE }} --timeout=240s 2>/dev/null; then\n            # Check if it failed (not just timed out)\n            JOB_STATUS=$(kubectl get job \"${JOB_NAME}\" -n ${{ env.NAMESPACE }} \\\n              -o jsonpath='{.status.conditions[?(@.type==\"Failed\")].status}' 2>/dev/null || echo \"\")\n            if [ \"$JOB_STATUS\" = \"True\" ]; then\n              echo \"::error::Migration Job FAILED. Logs:\"\n              kubectl logs \"job/${JOB_NAME}\" -n ${{ env.NAMESPACE }} --tail=50 || true\n              exit 1\n            fi\n            # Timed out \u2014 check once more\n            COMPLETE=$(kubectl get job \"${JOB_NAME}\" -n ${{ env.NAMESPACE }} \\\n              -o jsonpath='{.status.conditions[?(@.type==\"Complete\")].status}' 2>/dev/null || echo \"\")\n            if [ \"$COMPLETE\" != \"True\" ]; then\n              echo \"::error::Migration Job timed out (240s). Logs:\"\n              kubectl logs \"job/${JOB_NAME}\" -n ${{ env.NAMESPACE }} --tail=50 || true\n              exit 1\n            fi\n          fi\n\n          echo \"\u2705 Migration Job completed successfully\"\n          kubectl logs \"job/${JOB_NAME}\" -n ${{ env.NAMESPACE }} --tail=20 || true"
+                  },
+                  "startColumn": 9,
+                  "startLine": 166
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "017cf94bb46bbfe901b7200108ceef617c4e2c4e38ed2323154c4bc11203be3508e4fa4cd999f22e3fa6cfe617a1492479f82986c67d2e1875efca34b3ab77de_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/agent-context-deploy.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 438,
+                  "snippet": {
+                    "text": "        run: |\n          cd modules/agent-context\n          source scripts/_common.sh\n          load_config \"$(pwd)\"\n\n          # Issue #2213: Read SQS queue URL from SSM (same source as ConfigMap step)\n          SQS_QUEUE_URL=$(aws ssm get-parameter \\\n            --name \"/adp/${ENVIRONMENT}/agent-context/ingestion-queue-url\" \\\n            --query \"Parameter.Value\" --output text 2>/dev/null || echo \"\")\n          echo \"SQS_QUEUE_URL=${SQS_QUEUE_URL:-(not set \u2014 ScaledJob will be skipped)}\"\n\n          # Determine ingestion image\n          INGESTION_REPO=\"adp-${ENVIRONMENT}-agent-context-ingestion\"\n          INPUT_TAG=\"${{ inputs.ingestion_image_tag }}\"\n          if [ -n \"$INPUT_TAG\" ]; then\n            INGESTION_IMAGE=\"${ECR_REGISTRY}/${INGESTION_REPO}:${INPUT_TAG}\"\n          else\n            # Get latest built tag\n            LATEST_TAG=$(aws ecr describe-images --repository-name \"${INGESTION_REPO}\" \\\n              --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \\\n              --output text 2>/dev/null || echo \"\")\n            if [ -n \"$LATEST_TAG\" ] && [ \"$LATEST_TAG\" != \"None\" ]; then\n              INGESTION_IMAGE=\"${ECR_REGISTRY}/${INGESTION_REPO}:${LATEST_TAG}\"\n            fi\n          fi\n          export INGESTION_IMAGE\n          echo \"Ingestion image: ${INGESTION_IMAGE}\"\n\n          # Create content ConfigMap\n          kubectl create configmap ingestion-content-config \\\n            --from-file=repos.txt=index_content/repos.txt \\\n            --from-file=urls.txt=index_content/urls.txt \\\n            --from-file=docs.txt=index_content/docs.txt \\\n            --from-file=accounts.txt=index_content/accounts.txt \\\n            -n ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -\n\n          # Deploy CronJob\n          export NAMESPACE SERVICE_ACCOUNT INGESTION_REFRESH_SCHEDULE SQS_QUEUE_URL DYNAMO_TABLE\n          template_file manifests/repo-refresh-cronjob.yaml | kubectl apply -f -\n          echo \"Ingestion CronJob deployed\"\n\n          # Deploy KEDA ScaledJob (if SQS configured)\n          if [ -n \"${SQS_QUEUE_URL:-}\" ] && [ -f manifests/ingestion-scaledjob.yaml ]; then\n            export DEEPWIKI_URL=\"http://deepwiki.${NAMESPACE}.svc.cluster.local:8001\"\n            export LLM_BASE_URL=\"http://litellm-proxy.${NAMESPACE}.svc.cluster.local:4000/v1\"\n            export DEEPWIKI_ENABLED GRAPHRAG_ENABLED NEPTUNE_ENDPOINT NEPTUNE_PORT OPENSEARCH_ENDPOINT\n            export WIKI_LLM_MODEL ECR_REGISTRY\n            template_file manifests/ingestion-scaledjob.yaml | kubectl apply -f -\n            echo \"KEDA ScaledJob deployed\"\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 388
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "a910d609fb95c3f04f557c2cb21c9c952f45026f3ac580cebabcfadc60428d44bbb75bce743d7364b08109749ff359be9d8e19a1d04114ae1b920252540b3d35_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/agent-context-images-build.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 86,
+                  "snippet": {
+                    "text": "        run: |\n          if [ \"${{ github.event_name }}\" = \"workflow_dispatch\" ]; then\n            INPUT=\"${{ inputs.image }}\"\n            if [ \"$INPUT\" = \"all\" ]; then\n              echo 'matrix={\"image\":[\"ingestion\",\"codegraph-context\",\"litellm-proxy\",\"deepwiki\",\"context-mcp\"]}' >> \"$GITHUB_OUTPUT\"\n            else\n              echo \"matrix={\\\"image\\\":[\\\"$INPUT\\\"]}\" >> \"$GITHUB_OUTPUT\"\n            fi\n          else\n            # Detect which image directories changed\n            CHANGED=$(git diff --name-only HEAD^ HEAD \\\n              | grep '^modules/agent-context/images/' \\\n              | awk -F/ '{print $4}' \\\n              | sort -u \\\n              | jq -R . \\\n              | jq -sc .)\n            # If buildspec or workflow changed, rebuild all\n            if git diff --name-only HEAD^ HEAD | grep -qE '(codebuild/bs-agent-context-image\\.yml|\\.github/workflows/agent-context-images-build\\.yml)'; then\n              echo 'matrix={\"image\":[\"ingestion\",\"codegraph-context\",\"litellm-proxy\",\"deepwiki\",\"context-mcp\"]}' >> \"$GITHUB_OUTPUT\"\n            else\n              # If door/ or personal_context/ changed, include context-mcp (its source deps)\n              if git diff --name-only HEAD^ HEAD | grep -qE '^modules/agent-context/(door|personal_context)/'; then\n                CHANGED=$(echo \"$CHANGED\" | jq -c '. + [\"context-mcp\"] | unique')\n              fi\n              if [ \"$CHANGED\" = \"[]\" ] || [ -z \"$CHANGED\" ]; then\n                echo 'matrix={\"image\":[]}' >> \"$GITHUB_OUTPUT\"\n              else\n                echo \"matrix={\\\"image\\\":$CHANGED}\" >> \"$GITHUB_OUTPUT\"\n              fi\n            fi\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 55
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "c368fa6bc6157361d6ea21ce9b298e2b11a4f210c16bda2d4cefd51a92a2c22a86714586f1d7f3b34575e375aec7f13b330fe1a274a2215633bc23b205969afd_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/agent-context-infra-apply.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 104,
+                  "snippet": {
+                    "text": "        run: |\n          set -e\n          TARGET=\"${{ inputs.terraform_target }}\"\n          # Skip cost guard when targeting a non-GraphRAG module\n          if [ -n \"$TARGET\" ]; then\n            if echo \"$TARGET\" | grep -qvE '(neptune|opensearch)'; then\n              echo \"Targeted apply ($TARGET) \u2014 does not include GraphRAG resources. Skipping cost guard.\"\n              exit 0\n            fi\n          fi\n          # Check effective graphrag_enabled value (TF_VAR overrides tfvars)\n          GRAPHRAG_ENABLED=\"${TF_VAR_graphrag_enabled:-}\"\n          if [ -z \"$GRAPHRAG_ENABLED\" ]; then\n            GRAPHRAG_ENABLED=$(grep 'graphrag_enabled' \"${{ env.VAR_FILE }}\" | sed 's/.*=\\s*//' | tr -d ' \"' || echo \"false\")\n          fi\n          # Check effective neptune_enabled value (TF_VAR overrides tfvars).\n          # Neptune is gated separately from OpenSearch/GraphRAG but still costs money,\n          # so it shares the same CONFIRM_GRAPHRAG_COST guard.\n          NEPTUNE_ENABLED=\"${TF_VAR_neptune_enabled:-}\"\n          if [ -z \"$NEPTUNE_ENABLED\" ]; then\n            NEPTUNE_ENABLED=$(grep 'neptune_enabled' \"${{ env.VAR_FILE }}\" | sed 's/.*=\\s*//' | tr -d ' \"' || echo \"false\")\n          fi\n          echo \"graphrag_enabled=$GRAPHRAG_ENABLED neptune_enabled=$NEPTUNE_ENABLED\"\n          if [ \"$GRAPHRAG_ENABLED\" = \"true\" ] || [ \"$NEPTUNE_ENABLED\" = \"true\" ]; then\n            echo \"## :warning: Graph Infrastructure Cost Warning\" >> \"$GITHUB_STEP_SUMMARY\"\n            echo \"\" >> \"$GITHUB_STEP_SUMMARY\"\n            [ \"$NEPTUNE_ENABLED\" = \"true\" ] && echo \"- **neptune_enabled=true** \u2014 Neptune Serverless: ~\\$105/month idle\" >> \"$GITHUB_STEP_SUMMARY\"\n            [ \"$GRAPHRAG_ENABLED\" = \"true\" ] && echo \"- **graphrag_enabled=true** \u2014 OpenSearch Serverless: ~\\$700/month idle\" >> \"$GITHUB_STEP_SUMMARY\"\n            echo \"\" >> \"$GITHUB_STEP_SUMMARY\"\n            # Check for CONFIRM_GRAPHRAG_COST repo variable (covers both Neptune and OpenSearch)\n            CONFIRM=\"${{ vars.CONFIRM_GRAPHRAG_COST }}\"\n            if [ \"$CONFIRM\" != \"yes\" ]; then\n              echo \"::error::neptune_enabled and/or graphrag_enabled is true but repo variable CONFIRM_GRAPHRAG_COST is not 'yes'.\"\n              echo \"Set the repo variable (Settings -> Secrets and variables -> Actions -> Variables -> CONFIRM_GRAPHRAG_COST=yes), OR set the flags false in ${{ env.VAR_FILE }}.\"\n              exit 1\n            fi\n            echo \"CONFIRM_GRAPHRAG_COST=yes confirmed. Proceeding with graph infrastructure.\" >> \"$GITHUB_STEP_SUMMARY\"\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 66
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "a64f3d0755bfef078c7771d44c630d160de2b698a169ac7ff33a70b358a04bff8b2cb52d8acacfb001158e1ee1e4320166c2e73d89dfaa5d5ac8844fe650c211_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/agent-context-infra-apply.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 128,
+                  "snippet": {
+                    "text": "        run: |\n          set -e\n          set -o pipefail\n          TARGET=\"${{ inputs.terraform_target }}\"\n          TARGET_FLAG=\"\"\n          if [ -n \"$TARGET\" ]; then\n            TARGET_FLAG=\"-target=$TARGET\"\n            echo \"Targeted plan: $TARGET_FLAG\"\n          fi\n          EXIT_CODE=0\n          terraform plan -var-file=\"../../../${{ env.VAR_FILE }}\" $TARGET_FLAG -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?\n          echo \"detailed_exitcode=$EXIT_CODE\" >> \"$GITHUB_OUTPUT\"\n          if [ \"$EXIT_CODE\" -eq 1 ]; then\n            echo \"::error::Terraform plan failed.\"\n            exit 1\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 112
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "1003160f8b339afdb291acac27dff708573b864410614ab3053d30bd1026948d8006255cc3710f5af4155d6a9a721ebfc47d6bcb3f0f9c21ca0a5c6c3d9518aa_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/agent-context-infra-destroy.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 38,
+                  "snippet": {
+                    "text": "        run: |\n          if [ \"${{ inputs.confirm }}\" != \"agent-context\" ]; then\n            echo \"::error::Input did not match 'agent-context'. Aborting to prevent accidental destroy.\"\n            exit 1\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 33
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "85df30871d45f8dbb8a8c8e5601baa664ead55a7a5ed380c8d5299d72ad4a41d2ed773a8e67839e7a97e730cf47f0e05ae007e1719713603bfa04b917730d243_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/agent-factory-infra-destroy.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 38,
+                  "snippet": {
+                    "text": "        run: |\n          if [ \"${{ inputs.confirm }}\" != \"agent-factory\" ]; then\n            echo \"::error::Input did not match 'agent-factory'. Aborting to prevent accidental destroy.\"\n            exit 1\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 33
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "c7590dc18008a0d7011e7f68ff02e7cca06f7e2e0466a53952189de42195a21574c2dc8543850b20eeea191b93c2691f8bd8716e2fad1775a8b77a4c9156c538_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/chat-agent-deploy.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 14,
+                  "endLine": 180,
+                  "snippet": {
+                    "text": "        run: |\n          echo \"## Chat Agent Deploy\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"- **Image**: ${{ steps.build_info.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.build_info.outputs.image_tag }}\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"- **CodeBuild**: ${{ steps.build.outputs.build_id }}\" >> \"$GITHUB_STEP_SUMMARY\"\n          if [ \"${{ inputs.skip_deploy }}\" = \"true\" ]; then\n            echo \"- **Deploy**: skipped (workflow_dispatch input)\" >> \"$GITHUB_STEP_SUMMARY\"\n          else\n            echo \"- **ScaledJob**: chat-agent-worker in ns ${{ env.NAMESPACE }} on ${{ env.EKS_CLUSTER }}\" >> \"$GITHUB_STEP_SUMMARY\"\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 172
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "d217c454a0a9e66b1473213b2d99275daf46f3d13adc6ea227cbb213949bca079a82171cf3f3231fb8a679f7965e200eeeb0441aea507c5f3a4fb07ec4a77feb_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/cyber-windows-image-build.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 92,
+                  "snippet": {
+                    "text": "        run: |\n          BUILD_DATE=$(date -u +%Y-%m-%d)\n          echo \"BUILD_DATE=$BUILD_DATE\" >> \"$GITHUB_ENV\"\n\n          # Clean up any stale failure markers from previous runs\n          echo \"Cleaning stale failure markers...\"\n          aws s3 rm \"s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/\" \\\n            --recursive --exclude \"*\" --include \"BUILD_FAILED_*\" \\\n            --region \"${AWS_REGION}\" || true\n\n          aws s3 sync modules/domain-apps/cyber/image-builder/windows/packer/ \\\n            \"s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/packer/\" --region \"${AWS_REGION}\"\n          aws s3 sync modules/domain-apps/cyber/image-builder/windows/answer_files/ \\\n            \"s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/answer_files/\" --region \"${AWS_REGION}\"\n          aws s3 sync modules/domain-apps/cyber/image-builder/windows/scripts/ \\\n            \"s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/scripts/\" --region \"${AWS_REGION}\"\n          aws s3 cp modules/domain-apps/cyber/image-builder/windows/build-pipeline.sh \\\n            \"s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/build-pipeline.sh\" --region \"${AWS_REGION}\"\n          echo \"Build inputs staged to S3.\""
+                  },
+                  "startColumn": 9,
+                  "startLine": 73
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "86a67d2588cd5767f6e8a88046ec22b5417083da816b779424bbe7ce7b141300282a288032dc1799b79a6de1fad00af989e1f7b1406cd738d264357217fa7d41_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/cyber-windows-image-build.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 157,
+                  "snippet": {
+                    "text": "        run: |\n          BUILD_DATE=$(date -u +%Y-%m-%d)\n          TARGET=\"s3://${{ env.ASSETS_BUCKET }}/win11-cape-${BUILD_DATE}.qcow2\"\n          echo \"Waiting for: $TARGET\"\n          echo \"Expected build time: 60-90 minutes\"\n\n          # Also check for a failure marker\n          FAIL_MARKER=\"s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/BUILD_FAILED_${BUILD_DATE}\"\n\n          # Wait up to 96 minutes (384 iterations * 15s)\n          for i in $(seq 1 384); do\n            # Check for success (qcow2 exists)\n            if aws s3 ls \"$TARGET\" --region \"${AWS_REGION}\" 2>/dev/null | grep -q \"qcow2\"; then\n              SIZE=$(aws s3api head-object --bucket \"${{ env.ASSETS_BUCKET }}\" \\\n                --key \"win11-cape-${BUILD_DATE}.qcow2\" --region \"${AWS_REGION}\" \\\n                --query 'ContentLength' --output text 2>/dev/null || echo \"0\")\n              echo \"Build complete! qcow2 size: $SIZE bytes\"\n              if (( SIZE > 1000000000 )); then\n                echo \"Size looks valid (> 1GB). Build succeeded.\"\n                break\n              fi\n              echo \"Size too small, build may still be uploading...\"\n            fi\n\n            # Check for failure marker\n            if aws s3 ls \"$FAIL_MARKER\" --region \"${AWS_REGION}\" 2>/dev/null | grep -q \"BUILD_FAILED\"; then\n              echo \"ERROR: Build failed on the build host.\"\n              aws s3 cp \"$FAIL_MARKER\" - --region \"${AWS_REGION}\" 2>/dev/null || true\n              exit 1\n            fi\n\n            if (( i % 12 == 0 )); then\n              echo \"  Still building... ($((i * 15 / 60)) min elapsed)\"\n            fi\n            sleep 15\n          done\n\n          # Final check\n          if ! aws s3 ls \"$TARGET\" --region \"${AWS_REGION}\" 2>/dev/null | grep -q \"qcow2\"; then\n            echo \"ERROR: Build timed out after 96 minutes. No qcow2 in S3.\"\n            exit 1\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 115
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "8ebfdf7f5515fb229760674f4aadc36f9ddabe96dc0ec4be42762703c0b7ebe4baef65ce1c5c61df5e0eb11ecfd00a20339a479f3aa79615b4e8a4dc0777bb7d_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/gateway-infra-apply.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 135,
+                  "snippet": {
+                    "text": "        run: |\n          set -e\n          ARTIFACT_KEY=\"lambda-layers/psycopg2-py312.zip\"\n          if aws s3api head-object --bucket \"$STATE_BUCKET\" --key \"$ARTIFACT_KEY\" --region \"$AWS_REGION\" >/dev/null 2>&1; then\n            echo \"psycopg2 layer already in s3://$STATE_BUCKET/$ARTIFACT_KEY \u2014 skipping build.\"\n          else\n            echo \"psycopg2 layer missing \u2014 building inline via CodeBuild.\"\n            gh workflow run psycopg2-layer-build.yml --ref \"${{ github.ref_name }}\"\n            sleep 5\n            RUN=$(gh run list --workflow=psycopg2-layer-build.yml --limit=1 --json databaseId --jq '.[0].databaseId')\n            echo \"Waiting for psycopg2-layer-build run $RUN...\"\n            gh run watch \"$RUN\" --exit-status\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 122
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "c0ee26b739fe6fdaeba510b93b6bd4c73117efc0794046ab68374be61e7e11b81777c2030fbdfdf08e5387043fe11fca29b7e789203824140635593f5724b929_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/gateway-infra-apply.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 280,
+                  "snippet": {
+                    "text": "        run: |\n          set -e\n          # Count destroys without exiting non-zero on no-match (grep -c returns 1 when no match).\n          DESTROYS=$(grep -c 'will be destroyed' /tmp/plan-output.txt 2>/dev/null) || DESTROYS=0\n          if [ \"$DESTROYS\" -le 0 ]; then\n            echo \"No destroys in plan. Proceeding.\"\n            exit 0\n          fi\n\n          echo \"Plan includes $DESTROYS resource(s) to destroy.\"\n          echo \"\"\n          echo \"Resources to be destroyed:\"\n          grep 'will be destroyed' /tmp/plan-output.txt || true\n          echo \"\"\n\n          # workflow_dispatch: require explicit operator confirmation.\n          if [ \"${{ github.event_name }}\" = \"workflow_dispatch\" ]; then\n            if [ \"${{ inputs.confirm_destructive_apply }}\" = \"yes\" ]; then\n              echo \"Operator-confirmed destructive apply (confirm_destructive_apply=yes). Proceeding.\"\n              exit 0\n            fi\n            echo \"::error::This workflow_dispatch run schedules $DESTROYS destroy(s).\"\n            echo \"::error::Re-run with confirm_destructive_apply=yes to authorize. Or fix the underlying drift first.\"\n            exit 1\n          fi\n\n          # push / other events: require destructive-apply-approved label on the merged PR.\n          COMMIT_SHA=\"${{ github.sha }}\"\n          PR_NUMBER=$(gh pr list --state merged --search \"$COMMIT_SHA\" --json number --jq '.[0].number // empty' 2>/dev/null || echo \"\")\n          if [ -z \"$PR_NUMBER\" ]; then\n            echo \"::error::This apply would destroy $DESTROYS resource(s) but no associated merged PR was found for SHA $COMMIT_SHA. Cannot verify destructive-apply-approved label.\"\n            exit 1\n          fi\n          echo \"Associated PR: #$PR_NUMBER\"\n\n          # Use grep -qx (exact, quiet) instead of grep -c piped through arithmetic.\n          # Empty stdin to grep returns exit 1, which is what we want for \"no match\".\n          LABELS=$(gh pr view \"$PR_NUMBER\" --json labels --jq '.labels[].name' 2>/dev/null || echo \"\")\n          if echo \"$LABELS\" | grep -qx 'destructive-apply-approved'; then\n            echo \"PR #$PR_NUMBER has 'destructive-apply-approved' label. Proceeding.\"\n          else\n            echo \"::error::This apply would destroy $DESTROYS resource(s). PR #$PR_NUMBER does NOT have the 'destructive-apply-approved' label.\"\n            echo \"::error::Add the label to PR #$PR_NUMBER and re-run, or trigger manually with confirm_destructive_apply=yes.\"\n            exit 1\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 235
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "a388490ca7997c50d594c2547ef2c093c82fb3adde7139f0bac673b788e5d36ef44caa910b8e4f95bd0b373f787d634b5fdb5e8d72daf6299d67629f3e237020_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/gateway-infra-destroy.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 38,
+                  "snippet": {
+                    "text": "        run: |\n          if [ \"${{ inputs.confirm }}\" != \"gateway\" ]; then\n            echo \"::error::Input did not match 'gateway'. Aborting to prevent accidental destroy.\"\n            exit 1\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 33
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "edaa8edf1ed2ee730f2d5776a0c006e4c1a5fe8aa0ffa2edadf1fb96a347ec387d57144d48ccc2d13a3d653e2a2760d7eb8e98dd3e3c81e9d444eb99bb39318e_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/gbrain-infra-destroy.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 35,
+                  "snippet": {
+                    "text": "        run: |\n          if [ \"${{ inputs.confirm }}\" != \"gbrain\" ]; then\n            echo \"::error::Input did not match 'gbrain'. Aborting to prevent accidental destroy.\"\n            exit 1\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 30
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "615599ed4b3bf046dd025b29bd0018a1960378dab503974de8fbf4bc766ed9f2da310741dc49f039c35135f3d24effb4e2cd89850253cd220e1fa826c3051e99_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/gbrain-infra-destroy.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 71,
+                  "endLine": 97,
+                  "snippet": {
+                    "text": "        run: |\n          echo \"## Terraform Destroy -- ${{ env.MODULE_NAME }}\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"- **Module**: ${{ env.MODULE_NAME }}\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"- **Action**: destroy\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"- **Confirmation**: ${{ inputs.confirm }}\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"The teardown script handles:\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"1. Integration kill-switch assertion\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"2. ECS service scale-to-zero\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"3. S3 bucket emptying (versioned)\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"4. Terraform destroy (infra + CodeBuild)\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"5. ECR + Secrets Manager cleanup\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"6. Terraform state wipe\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"7. Orphan audit (fail-loud)\" >> \"$GITHUB_STEP_SUMMARY\"\n          echo \"8. Post-destroy assertions\" >> \"$GITHUB_STEP_SUMMARY\""
+                  },
+                  "startColumn": 9,
+                  "startLine": 83
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "fb473290d0c60475df63783df5509198450cf8ca0b50f05e776fddd3027f2612acfd68130febd8cfd2043d57916e52d21b17cd071d967f8e849d5596384e4c13_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/platform-deploy-mgmt-infra-apply.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 91,
+                  "snippet": {
+                    "text": "        run: |\n          set -e\n          DESTROYS=$(grep -c 'will be destroyed' /tmp/plan-output.txt 2>/dev/null) || DESTROYS=0\n          if [ \"$DESTROYS\" -le 0 ]; then\n            echo \"No destroys in plan. Proceeding.\"\n            exit 0\n          fi\n          echo \"Plan includes $DESTROYS resource(s) to destroy.\"\n          grep 'will be destroyed' /tmp/plan-output.txt || true\n          if [ \"${{ inputs.confirm_destructive_apply }}\" = \"yes\" ]; then\n            echo \"Operator-confirmed destructive apply. Proceeding.\"\n            exit 0\n          fi\n          echo \"::error::Re-run with confirm_destructive_apply=yes to authorize.\"\n          exit 1"
+                  },
+                  "startColumn": 9,
+                  "startLine": 76
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "a63e996cace74284a6487903023d66de4c407b3be6bedceeb2f56421d2ea76cfc945aa20a238abb1ee8ee72708c5fea1bdf96e120da0eecfe3ea6c2872639f7d_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/platform-infra-apply.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 185,
+                  "snippet": {
+                    "text": "        run: |\n          set -e\n          DESTROYS=$(grep -c 'will be destroyed' /tmp/plan-output.txt 2>/dev/null) || DESTROYS=0\n          if [ \"$DESTROYS\" -le 0 ]; then\n            echo \"No destroys in plan. Proceeding.\"\n            exit 0\n          fi\n\n          echo \"Plan includes $DESTROYS resource(s) to destroy.\"\n          echo \"\"\n          echo \"Resources to be destroyed:\"\n          grep 'will be destroyed' /tmp/plan-output.txt || true\n          echo \"\"\n\n          # workflow_dispatch: require explicit operator confirmation.\n          if [ \"${{ github.event_name }}\" = \"workflow_dispatch\" ]; then\n            if [ \"${{ inputs.confirm_destructive_apply }}\" = \"yes\" ]; then\n              echo \"Operator-confirmed destructive apply (confirm_destructive_apply=yes). Proceeding.\"\n              exit 0\n            fi\n            echo \"::error::This workflow_dispatch run schedules $DESTROYS destroy(s).\"\n            echo \"::error::Re-run with confirm_destructive_apply=yes to authorize. Or fix the underlying drift first.\"\n            exit 1\n          fi\n\n          # push / other events: require destructive-apply-approved label on the merged PR.\n          COMMIT_SHA=\"${{ github.sha }}\"\n          PR_NUMBER=$(gh pr list --state merged --search \"$COMMIT_SHA\" --json number --jq '.[0].number // empty' 2>/dev/null || echo \"\")\n          if [ -z \"$PR_NUMBER\" ]; then\n            echo \"::error::This apply would destroy $DESTROYS resource(s) but no associated merged PR was found for SHA $COMMIT_SHA. Cannot verify destructive-apply-approved label.\"\n            exit 1\n          fi\n          echo \"Associated PR: #$PR_NUMBER\"\n\n          LABELS=$(gh pr view \"$PR_NUMBER\" --json labels --jq '.labels[].name' 2>/dev/null || echo \"\")\n          if echo \"$LABELS\" | grep -qx 'destructive-apply-approved'; then\n            echo \"PR #$PR_NUMBER has 'destructive-apply-approved' label. Proceeding.\"\n          else\n            echo \"::error::This apply would destroy $DESTROYS resource(s). PR #$PR_NUMBER does NOT have the 'destructive-apply-approved' label.\"\n            echo \"::error::Add the label to PR #$PR_NUMBER and re-run, or trigger manually with confirm_destructive_apply=yes.\"\n            exit 1\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 143
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "38e52fd101dec80c53062f53934ba7d297a88ba9ad091b6f53ba788bbd63278a6afb888885e2a0e4b93d272314366056b82b85414e9ffa1833b881f8a967cde9_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/platform-infra-destroy.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 38,
+                  "snippet": {
+                    "text": "        run: |\n          if [ \"${{ inputs.confirm }}\" != \"platform\" ]; then\n            echo \"::error::Input did not match 'platform'. Aborting to prevent accidental destroy.\"\n            exit 1\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 33
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "3059768522c1fcf9357b066c83ba38eb2cd5c918c0b9eeda1b70c6efb576576825888c270b65eca7aceb850dec4b64c81fd53ad05727b66d7cceeefbb3492101_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/seed-hosted-tenant.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 62,
+                  "snippet": {
+                    "text": "        run: |\n          set -euo pipefail\n          if [[ ! \"${{ inputs.tenant_id }}\" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then\n            echo \"::error::tenant_id must be lowercase-hyphenated\"\n            exit 1\n          fi\n          if [[ ! \"${{ inputs.installation_id }}\" =~ ^[0-9]+$ ]]; then\n            echo \"::error::installation_id must be a positive integer\"\n            exit 1\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 52
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "4083594e9256fea40e73f6c72b292fdfd00940a36ef14898ae574b2c8e31b55d83a7a65805de37519f20a557d798322fea8260a4d57d057b44361a6305a3b6bb_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/seed-hosted-tenant.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 119,
+                  "snippet": {
+                    "text": "        run: |\n          set -euo pipefail\n          TENANT_ID='${{ inputs.tenant_id }}'\n          ORG_NAME='${{ inputs.org_name }}'\n          INSTALLATION_ID='${{ inputs.installation_id }}'\n          DEPT_ID=\"${TENANT_ID}-dept-default\"\n          TEAM_ID=\"${TENANT_ID}-team-default\"\n\n          cat > /tmp/seed.sql <<SQL\n          INSERT INTO organizations (id, name, aws_accounts, role_mappings, settings, created_at)\n          VALUES ('$TENANT_ID', '$ORG_NAME', '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, now())\n          ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name;\n\n          INSERT INTO departments (id, name, org_id)\n          VALUES ('$DEPT_ID', 'Default', '$TENANT_ID')\n          ON CONFLICT (id) DO NOTHING;\n\n          INSERT INTO teams (id, name, department_id, org_id)\n          VALUES ('$TEAM_ID', 'Default', '$DEPT_ID', '$TENANT_ID')\n          ON CONFLICT (id) DO NOTHING;\n\n          INSERT INTO channel_tenant_map (id, provider, provider_scope_id, org_id, created_at)\n          VALUES (gen_random_uuid()::text, 'github', '$INSTALLATION_ID', '$TENANT_ID', now())\n          ON CONFLICT (provider, provider_scope_id) DO NOTHING;\n\n          \\echo '--- Verify ---'\n          SELECT 'organizations' AS \"table\", COUNT(*) AS rows FROM organizations WHERE id = '$TENANT_ID'\n          UNION ALL\n          SELECT 'departments',   COUNT(*) FROM departments   WHERE org_id = '$TENANT_ID'\n          UNION ALL\n          SELECT 'teams',         COUNT(*) FROM teams         WHERE org_id = '$TENANT_ID'\n          UNION ALL\n          SELECT 'channel_tenant_map', COUNT(*) FROM channel_tenant_map\n                WHERE provider = 'github' AND provider_scope_id = '$INSTALLATION_ID';\n          SQL\n\n          echo \"=== Planned SQL ===\"\n          cat /tmp/seed.sql"
+                  },
+                  "startColumn": 9,
+                  "startLine": 81
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "ec744012fb48e7ce2d8a2f93378bdd46cdb12497f40c35cf80ec2e418acef5addeb69dcf8cfbe978f55dbd2e0a0634c31e95b47735d387adf51c5512b3244580_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".github/workflows/webhook-ingress-destroy.yml",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 35,
+                  "snippet": {
+                    "text": "        run: |\n          if [ \"${{ inputs.confirm }}\" != \"webhook-ingress\" ]; then\n            echo \"::error::Input did not match 'webhook-ingress'. Aborting to prevent accidental destroy.\"\n            exit 1\n          fi"
+                  },
+                  "startColumn": 9,
+                  "startLine": 30
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\"."
+          },
+          "properties": {},
+          "ruleId": "yaml.github-actions.security.run-shell-injection.run-shell-injection",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: run-shell-injection \u2014 CI workflows and composite actions use controlled variables (github.sha, inputs.*) \u2014 NOT user-supplied input. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "9b2141b815be0b06a8dd86442cf5fea21c08715c12b23ce1e84bc2ccb3acf4fe3b1a6e272025a1c9c6915c2373b7d9686d2405e3c51a532ed816da2372e98b92_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "data/security/2026-06-05-class-A-gitleaks-allowlist-audit.md",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 69,
+                  "endLine": 24,
+                  "snippet": {
+                    "text": "| `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.*` | Standard JWT example (HS256, sub=1234567890) | Textbook test JWT; no real claims |"
+                  },
+                  "startColumn": 4,
+                  "startLine": 24
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "JWT token detected"
+          },
+          "properties": {},
+          "ruleId": "generic.secrets.security.detected-jwt-token.detected-jwt-token",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detected-jwt-token \u2014 Sample/example tokens in security audit documentation or test fixtures \u2014 not live secrets. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "9b2141b815be0b06a8dd86442cf5fea21c08715c12b23ce1e84bc2ccb3acf4fe3b1a6e272025a1c9c6915c2373b7d9686d2405e3c51a532ed816da2372e98b92_1"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "data/security/2026-06-05-class-A-gitleaks-allowlist-audit.md",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 53,
+                  "endLine": 25,
+                  "snippet": {
+                    "text": "| `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.test_jwt_token` | Truncated/invalid JWT | Obviously synthetic signature |"
+                  },
+                  "startColumn": 4,
+                  "startLine": 25
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "JWT token detected"
+          },
+          "properties": {},
+          "ruleId": "generic.secrets.security.detected-jwt-token.detected-jwt-token",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detected-jwt-token \u2014 Sample/example tokens in security audit documentation or test fixtures \u2014 not live secrets. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "9b2141b815be0b06a8dd86442cf5fea21c08715c12b23ce1e84bc2ccb3acf4fe3b1a6e272025a1c9c6915c2373b7d9686d2405e3c51a532ed816da2372e98b92_2"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "data/security/2026-06-05-class-A-gitleaks-allowlist-audit.md",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 113,
+                  "endLine": 82,
+                  "snippet": {
+                    "text": "- **Findings**: 2 instances of `AKIAIOSFODNN7EXAMPLE`, 1 JWT (`eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.test_jwt_token`)"
+                  },
+                  "startColumn": 64,
+                  "startLine": 82
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "JWT token detected"
+          },
+          "properties": {},
+          "ruleId": "generic.secrets.security.detected-jwt-token.detected-jwt-token",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detected-jwt-token \u2014 Sample/example tokens in security audit documentation or test fixtures \u2014 not live secrets. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "2e9093a38434e4382e852c0c454ddd50eda46cb92e1a26d0b26f1c6d1c5ae6dec6a92ed6be442be6831e14a40938ffecc6a923cbc49effcb51b97253240770de_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/agent-superpower.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 24,
+                  "endLine": 119,
+                  "snippet": {
+                    "text": "    return execSync(cmd, {"
+                  },
+                  "startColumn": 21,
+                  "startLine": 119
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `cmd`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "42344b933e7f0c4215dcbf3cdcb2501eeba20ba97496808eb21805373d9b37c25e752387aa5120584df62dc359486f77de9fa4e41b432344bd1d4cf42396f13d_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/beads.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 36,
+                  "endLine": 128,
+                  "snippet": {
+                    "text": "    const result = execSync(command, {"
+                  },
+                  "startColumn": 29,
+                  "startLine": 128
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `args`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "803dfcd4b0b3d33235e245f3b804970356b50967d51390b0b6194ba6a3e7a0db421287034a4e380f13242fb9b0765f0d51a6803e5c589be469ec37e3f295fb5b_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/components/GitHubClient.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 41,
+                  "endLine": 34,
+                  "snippet": {
+                    "text": "    execSync(`git clone ${url} ${workDir}`, { stdio: 'pipe' });"
+                  },
+                  "startColumn": 14,
+                  "startLine": 34
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `workDir`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "f46d4a8ff9e25cead99839bc16cd9d158c7f00f770d14d3b7c8f562412eb0f6af8f6f3ae5b8cd8c65f4e4b6b629d80c8179094575f3864024d6a4dcb72ff5777_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/components/GitHubClient.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 43,
+                  "endLine": 84,
+                  "snippet": {
+                    "text": "    execSync(`git checkout -b ${safeBranch}`, { cwd: workDir, stdio: 'pipe' });"
+                  },
+                  "startColumn": 14,
+                  "startLine": 84
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `branchName`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "ba4ae00ff6a5808accf715a4dcdfe461ddfa3cd510893c9d5718863477831b2c904d0d10ca8a4ccd2167b8173047147a5b7547c15026ab8e6478d68147cb3f19_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/components/GitHubClient.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 47,
+                  "endLine": 116,
+                  "snippet": {
+                    "text": "      execSync(`git commit -m \"${safeMessage}\"`, { cwd: workDir, stdio: 'pipe' });"
+                  },
+                  "startColumn": 16,
+                  "startLine": 116
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `message`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "6192c7bf146e1959d7e72dd9ea4ddfc85c4b1f0c5590ab64c746c8a55de0d196ca77c5bcc67f70db831de0386f24fcc9fff311e61eb4c7efd05f1ae77baa3299_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/components/GitHubClient.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 45,
+                  "endLine": 136,
+                  "snippet": {
+                    "text": "      execSync(`git push origin ${safeBranch}`, { cwd: workDir, stdio: 'pipe' });"
+                  },
+                  "startColumn": 16,
+                  "startLine": 136
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `branchName`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "addc7a71ab243371fe4ca4634fdfc0f5a5d211ac7da5c1af53330c8d35e51befaa744426cd73728d49fadda1482d0982c697261fa80798a64f308369ac1ef631_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/experience-save-hook.test.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 100,
+                  "endLine": 147,
+                  "snippet": {
+                    "text": "    expect(containsSecret('Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U')).toBe(true);"
+                  },
+                  "startColumn": 35,
+                  "startLine": 147
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "JWT token detected"
+          },
+          "properties": {},
+          "ruleId": "generic.secrets.security.detected-jwt-token.detected-jwt-token",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detected-jwt-token \u2014 Sample/example tokens in security audit documentation or test fixtures \u2014 not live secrets. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "addc7a71ab243371fe4ca4634fdfc0f5a5d211ac7da5c1af53330c8d35e51befaa744426cd73728d49fadda1482d0982c697261fa80798a64f308369ac1ef631_1"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/experience-save-hook.test.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 74,
+                  "endLine": 436,
+                  "snippet": {
+                    "text": "- Token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U expired"
+                  },
+                  "startColumn": 9,
+                  "startLine": 436
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "JWT token detected"
+          },
+          "properties": {},
+          "ruleId": "generic.secrets.security.detected-jwt-token.detected-jwt-token",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detected-jwt-token \u2014 Sample/example tokens in security audit documentation or test fixtures \u2014 not live secrets. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "b89f904dc803ae9e1d58f59b0da6eb5ebe96ca892193a7cbf5d86f9ad614cbca45c5ba0998ef95cfb4ee9253646e1c655e26f1f9d0b4f2c1d07d019ddb60bb1b_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/memory.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 28,
+                  "endLine": 67,
+                  "snippet": {
+                    "text": "    return execSync(command, {"
+                  },
+                  "startColumn": 21,
+                  "startLine": 67
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `command`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "b89f904dc803ae9e1d58f59b0da6eb5ebe96ca892193a7cbf5d86f9ad614cbca45c5ba0998ef95cfb4ee9253646e1c655e26f1f9d0b4f2c1d07d019ddb60bb1b_1"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/memory.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 26,
+                  "endLine": 82,
+                  "snippet": {
+                    "text": "  return execSync(command, {"
+                  },
+                  "startColumn": 19,
+                  "startLine": 82
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `command`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "288fe220c4a7485875bd481dbceb1ce87f680064b058b37e919721360657746660313505205985cba4dae640d51dfd3b200a818a7c68d5b03b3b3098497be77d_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/memory.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 32,
+                  "endLine": 308,
+                  "snippet": {
+                    "text": "    execSync(`mkdir -p \"${dir}\"`, { cwd, encoding: 'utf-8' });"
+                  },
+                  "startColumn": 14,
+                  "startLine": 308
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `filePath`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "6d5bc381b3211ccb21c6893bbc0f58e14cc9592a1b94c2d88cdb8e47835b0d79117bc08c30393f6470eb81a595920ffddf298efb2a16da97ccc1ca487e8aa6dd_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/pm-health-monitor.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 24,
+                  "endLine": 148,
+                  "snippet": {
+                    "text": "    return execSync(cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).trim();"
+                  },
+                  "startColumn": 21,
+                  "startLine": 148
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `cmd`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "2b3a9d2b6ed0a08dc65f8be52869b576271c0eff3f396fed386524fb7dc35123d4f3111d37ee30461ff67f5b727a2e660485c3ececb2602d8b3cdfccc47a7077_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/pm-poll-analyzer.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 24,
+                  "endLine": 75,
+                  "snippet": {
+                    "text": "    return execSync(cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).trim();"
+                  },
+                  "startColumn": 21,
+                  "startLine": 75
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `cmd`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "73b85b7e89afe7206174f91f0a7011c70295c49b0ed25129fe10117186968f7cd20581f8f2ff96f85c54a80fc373f9f4fe0076372afee474eab7af015f1eb0f5_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/run-completion-event.test.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 83,
+                  "endLine": 106,
+                  "snippet": {
+                    "text": "    const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';"
+                  },
+                  "startColumn": 18,
+                  "startLine": 106
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "JWT token detected"
+          },
+          "properties": {},
+          "ruleId": "generic.secrets.security.detected-jwt-token.detected-jwt-token",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detected-jwt-token \u2014 Sample/example tokens in security audit documentation or test fixtures \u2014 not live secrets. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "495bb6a8904ab1cd06b3accc0865d5f95122244104c7dbacef6b948db778a982fcf09423bffa7cbbe2c1f93de278f3d26035b180112f119bcb2255258b666613_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/sub-issues.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 22,
+                  "endLine": 114,
+                  "snippet": {
+                    "text": "  return execSync(cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).trim();"
+                  },
+                  "startColumn": 19,
+                  "startLine": 114
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `cmd`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "48086227d8d8c8270268cbbd59934f00895b19e33cc8c8ba4064e487a3ce0aba600889905d5eb46bf3c5412a3e34d740d3d7ae419d330012d57081f7d5822cfb_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/utils/ghPost.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 88,
+                  "endLine": 94,
+                  "snippet": {
+                    "text": "    execSync(`gh issue comment ${issueNumber} --repo \"${repo}\" --body-file \"${tmpFile}\"`, {"
+                  },
+                  "startColumn": 14,
+                  "startLine": 94
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `issueNumber`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "ce46d4997192a1f97422d3438137b8b6e5fd6589e7dd60f8377e1cb94127a49a6b510c5d11849bc6a0f77347db91271b98c189a79389bb970f566b0d421cad83_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/agent-factory/agent/src/utils/ghPost.ts",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 88,
+                  "endLine": 94,
+                  "snippet": {
+                    "text": "    execSync(`gh issue comment ${issueNumber} --repo \"${repo}\" --body-file \"${tmpFile}\"`, {"
+                  },
+                  "startColumn": 14,
+                  "startLine": 94
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Detected calls to child_process from a function argument `opts`. This could lead to a command injection if the input is user controllable. Try to avoid calls to child_process, and if it is needed ensure user input is correctly sanitized or sandboxed. "
+          },
+          "properties": {},
+          "ruleId": "javascript.lang.security.detect-child-process.detect-child-process",
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: detect-child-process \u2014 Agent runtime is a process orchestrator by design \u2014 spawns gh, git, claude. Not arbitrary command injection. Adjudicated FP in #2217 Cluster B."
+            }
+          ]
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "ed2c14469ae09f1a834add05d149b28e4e47ef2735ca74c7d362b12a687f4ba5aa1f4b79faf2f5c3fe6fac2b463aaee24a37dfc7398f973f7d584387c0f2bec3_0"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/gateway/src/auth/cognito_jwt.py",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 72,
+                  "endLine": 233,
+                  "snippet": {
+                    "text": "            return jwt.decode(token, options={\"verify_signature\": False})"
+                  },
+                  "startColumn": 67,
                   "startLine": 233
                 }
               }
             }
           ],
+          "message": {
+            "text": "Detected JWT token decoded with 'verify=False'. This bypasses any integrity checks for the token which means the token could be tampered with by malicious actors. Ensure that the JWT token is verified."
+          },
+          "properties": {},
+          "ruleId": "python.jwt.security.unverified-jwt-decode.unverified-jwt-decode",
           "suppressions": [
             {
               "kind": "inSource",
-              "justification": "nosemgrep: unverified-jwt-decode — debug/logging helper only; never used for authz decisions. Verified decode happens in validate_token() via PyJWKClient JWKS signature check. Adjudicated FP in #2217."
+              "justification": "nosemgrep: unverified-jwt-decode \u2014 Debug/logging helper only; never used for authz decisions. Verified decode happens upstream via PyJWKClient JWKS signature check. Adjudicated FP in #2217."
             }
           ]
         },
         {
-          "ruleId": "python.lang.security.unverified-jwt-decode",
-          "level": "error",
-          "message": {
-            "text": "Detected JWT token decode without signature verification. This is suppressed via inline nosemgrep — the decode is a debug/logging helper; verified decode happens upstream."
+          "fingerprints": {
+            "matchBasedId/v1": "9dfc006b8b2469f26e8ba2b31b30776fc537e12cdf2acb41863d27f84e7fffd2dc9b483d4e2789e1006cd5595cb15e2594378a0db8e44af0a7ba3077ef030455_0"
           },
           "locations": [
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "modules/gateway/src/auth/token_manager.py"
+                  "uri": "modules/gateway/src/auth/token_manager.py",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
+                  "endColumn": 72,
+                  "endLine": 348,
+                  "snippet": {
+                    "text": "            return jwt.decode(token, options={\"verify_signature\": False})"
+                  },
+                  "startColumn": 67,
                   "startLine": 348
                 }
               }
             }
           ],
+          "message": {
+            "text": "Detected JWT token decoded with 'verify=False'. This bypasses any integrity checks for the token which means the token could be tampered with by malicious actors. Ensure that the JWT token is verified."
+          },
+          "properties": {},
+          "ruleId": "python.jwt.security.unverified-jwt-decode.unverified-jwt-decode",
           "suppressions": [
             {
               "kind": "inSource",
-              "justification": "nosemgrep: unverified-jwt-decode — debug/logging helper only; never used for authz decisions. Verified decode happens in validate_token() with self.secret_key signature check. Adjudicated FP in #2217."
+              "justification": "nosemgrep: unverified-jwt-decode \u2014 Debug/logging helper only; never used for authz decisions. Verified decode happens upstream via PyJWKClient JWKS signature check. Adjudicated FP in #2217."
             }
           ]
         }
