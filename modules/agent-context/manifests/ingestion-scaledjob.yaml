@@ -53,6 +53,12 @@ spec:
                   secretKeyRef:
                     name: agent-context-secrets
                     key: openviking-root-key
+                    # OpenViking is deprecated/absent in this stack; the worker
+                    # defaults this to "" (sqs-worker.py). Without optional:true,
+                    # KEDA's strict job-template validation fails to create the
+                    # ScaledJob (ScaledJobCheckFailed) when the secret is absent.
+                    # Mirrors repo-refresh-cronjob.yaml. (#2213 follow-up)
+                    optional: true
             resources:
               requests:
                 cpu: "500m"
