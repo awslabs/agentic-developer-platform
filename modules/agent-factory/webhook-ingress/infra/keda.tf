@@ -137,11 +137,20 @@ resource "helm_release" "keda" {
     value = "512Mi"
   }
 
-  # Prevent EKS Auto Mode's Karpenter from evicting the KEDA operator /
-  # metrics-apiserver / admission-webhook pods during node consolidation.
-  # Without this, the scaler can disappear at arbitrary times, breaking the
-  # 1-second SQS polling and leaving messages stuck until a new operator
-  # schedules.
+  # Keep the KEDA OPERATOR pinned (karpenter.sh/do-not-disrupt): it is the
+  # single shared scaler for ALL pipelines (agents in adp-agents, ingestion in
+  # agent-context, chat in adp-gateway-agents). If Karpenter evicts it during
+  # consolidation, 1-second SQS polling stops and messages stall across all
+  # three until it reschedules — worth a node.
+  #
+  # metricsAdapter + webhooks are NOT on the SQS-polling hot path: the
+  # metrics-apiserver serves HPA-style queries (ScaledJobs don't depend on it
+  # for queue-depth triggers) and the admission-webhook only validates
+  # ScaledObject edits (rare). A brief reschedule of either during
+  # consolidation does not interrupt scaling, so they should NOT pin their own
+  # nodes — each was holding a near-empty node overnight (the 7-node idle floor
+  # was largely these single DND pods preventing co-location). Dropping their
+  # annotation lets Karpenter consolidate them.
   #
   # `values = [yamlencode(...)]` is used instead of `set {}` because the helm
   # provider v2.x's `set` coerces the string "true" into a YAML bool, which
@@ -150,9 +159,7 @@ resource "helm_release" "keda" {
   values = [
     yamlencode({
       podAnnotations = {
-        keda           = { "karpenter.sh/do-not-disrupt" = "true" }
-        metricsAdapter = { "karpenter.sh/do-not-disrupt" = "true" }
-        webhooks       = { "karpenter.sh/do-not-disrupt" = "true" }
+        keda = { "karpenter.sh/do-not-disrupt" = "true" }
       }
     })
   ]

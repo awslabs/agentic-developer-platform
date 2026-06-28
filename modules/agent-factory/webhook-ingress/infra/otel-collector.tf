@@ -148,10 +148,12 @@ resource "kubernetes_deployment" "otel_collector" {
           "app.kubernetes.io/component" = "observability"
         }
 
-        annotations = {
-          # Prevent Karpenter from evicting the collector during consolidation
-          "karpenter.sh/do-not-disrupt" = "true"
-        }
+        # No karpenter.sh/do-not-disrupt: this is a telemetry collector, not on
+        # any latency- or correctness-critical path. Pinning it made a single
+        # collector pod hold a whole node against consolidation (part of the
+        # 7-node idle floor). A brief reschedule during consolidation drops at
+        # most a few seconds of buffered telemetry — an acceptable trade for
+        # letting Karpenter reclaim the node. OTLP clients reconnect on restart.
       }
 
       spec {
