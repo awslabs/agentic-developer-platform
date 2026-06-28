@@ -64,6 +64,9 @@ class WebhookEnvelope:
     arrived_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+    # Issue #2279: Caller-chosen model fields (optional, human /model directive)
+    model_requested: str | None = None  # Raw alias the user typed
+    model_resolved: str | None = None  # Validated Bedrock model ID, or None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict for JSON/SQS publishing."""
@@ -98,4 +101,6 @@ class WebhookEnvelope:
             },
             "payload": self.payload,
             "arrived_at": self.arrived_at,
+            "model_requested": self.model_requested,
+            "model_resolved": self.model_resolved,
         }

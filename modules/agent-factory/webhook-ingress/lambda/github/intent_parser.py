@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 
 from common.personas import LABEL_TO_PERSONA, MENTION_TO_PERSONA
@@ -61,6 +62,7 @@ class Intent:
     persona: str
     trigger: str
     label: str | None = None
+    model: str | None = None
 
 
 def extract_intent(
@@ -142,6 +144,28 @@ def _is_bot_sender(sender: dict) -> bool:
     if login.endswith("[bot]"):
         return True
     return False
+
+
+# Issue #2279: Line-anchored regex for /model directive. Must start at
+# beginning of a line to avoid matching inline code or blockquotes.
+# First match wins when multiple /model lines are present.
+_MODEL_DIRECTIVE_RE = re.compile(r"^/model\s+(\S+)\s*$", re.MULTILINE)
+
+
+def _extract_model_directive(body: str) -> str | None:
+    """Extract the /model alias from the comment body (issue #2279).
+
+    Uses a line-anchored regex so it won't match `/model x` in inline code
+    (backtick lines), blockquotes (`> /model x`), or embedded prose.
+    Returns the raw alias string (e.g. "opus") or None if no directive found.
+    First match wins if multiple /model lines are present.
+    """
+    if not body:
+        return None
+    match = _MODEL_DIRECTIVE_RE.search(body)
+    if match:
+        return match.group(1)
+    return None
 
 
 def _extract_mention_persona(body: str) -> str | None:
@@ -244,7 +268,9 @@ def _handle_issue_comment(
         persona = _extract_mention_persona(body)
         if not persona:
             return None
-        return Intent(persona=persona, trigger="mentioned", label=None)
+        # Issue #2279: Parse /model directive (human path only)
+        model = _extract_model_directive(body)
+        return Intent(persona=persona, trigger="mentioned", label=None, model=model)
 
     # --- Bot sender path (issue #2149) ---
     # Bot comments require an explicit adp-dispatch:<persona> marker to trigger.

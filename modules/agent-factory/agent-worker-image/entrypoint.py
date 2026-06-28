@@ -303,6 +303,15 @@ def main() -> int:
 
     # Step 4: Set environment variables
     bootstrap_log.step_start(4, "set_env")
+
+    # Issue #2279: If the envelope carries a validated model_resolved, use it
+    # instead of the pod's default ANTHROPIC_MODEL. This implements the
+    # /model directive: explicit /model > pod ANTHROPIC_MODEL default.
+    model_resolved = envelope.get("model_resolved")
+    effective_model = model_resolved or os.environ.get(
+        "ANTHROPIC_MODEL", "us.anthropic.claude-opus-4-6-v1"
+    )
+
     env_vars = {
         "GITHUB_TOKEN": token,
         "GH_TOKEN": token,
@@ -316,7 +325,7 @@ def main() -> int:
         "WORK_DIR": str(WORK_DIR),
         "TENANT_ID": tenant_id,
         "CLAUDE_CODE_USE_BEDROCK": "1",
-        "ANTHROPIC_MODEL": os.environ.get("ANTHROPIC_MODEL", "us.anthropic.claude-opus-4-6-v1"),
+        "ANTHROPIC_MODEL": effective_model,
         # GitHub App credentials for token refresh (#1502). The agent-worker.ts
         # TokenManager requires these to re-mint installation tokens before the
         # 1-hour expiry. Without them, long-running agents die with 401.
@@ -329,6 +338,14 @@ def main() -> int:
         # PATCH calls (cross-installation resource access).
         "GH_APP_INSTALLATION_ID": str(installation_id),
     }
+
+    # Issue #2279: Expose model_requested so the worker can post a warning
+    # if the requested model was rejected (lenient path).
+    model_requested = envelope.get("model_requested")
+    if model_requested:
+        env_vars["ADP_MODEL_REQUESTED"] = model_requested
+    if model_resolved:
+        env_vars["ADP_MODEL_RESOLVED"] = model_resolved
 
     # Vault credential context for adp-cred CLI (#137).
     # task_id flows into STS session tags via the gateway's assume-role

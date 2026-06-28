@@ -833,6 +833,28 @@ def handler(event: dict, context) -> dict:
     # This is the SINGLE enforcement point — no drift across trigger adapters.
     from common.spawn_persona import spawn_persona as _spawn_persona
 
+    # Issue #2279: Resolve /model directive if present on intent.
+    # Validate the alias inline (no gateway HTTP call). If invalid, we still
+    # run the agent with the default model (lenient path — worker posts warning).
+    model_requested = intent.model  # raw alias or None
+    model_resolved = None
+    if model_requested:
+        from common.model_validate import resolve_and_validate
+
+        model_resolved = resolve_and_validate(model_requested)
+        if model_resolved:
+            logger.info(
+                "handler: /model directive resolved %r -> %r",
+                model_requested,
+                model_resolved,
+            )
+        else:
+            logger.info(
+                "handler: /model directive %r rejected (unknown or disallowed) "
+                "— proceeding with default model (lenient)",
+                model_requested,
+            )
+
     # Provide a default correlation_ctx if not available (e.g. issues.labeled
     # events where we didn't compute correlation above).
     effective_correlation_ctx = correlation_ctx or {
@@ -860,6 +882,8 @@ def handler(event: dict, context) -> dict:
         payload=payload,
         intent_trigger=intent.trigger,
         intent_label=intent.label,
+        model_requested=model_requested,
+        model_resolved=model_resolved,
     )
 
     print(

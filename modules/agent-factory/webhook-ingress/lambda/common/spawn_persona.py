@@ -64,6 +64,8 @@ def spawn_persona(
     payload: dict,
     intent_trigger: str,
     intent_label: str | None = None,
+    model_requested: str | None = None,
+    model_resolved: str | None = None,
 ) -> SpawnResult:
     """Validate guards, write lineage, build envelope, publish to SQS.
 
@@ -86,6 +88,8 @@ def spawn_persona(
         payload: Full webhook payload dict.
         intent_trigger: Trigger string (e.g. "mentioned", "issue_labeled").
         intent_label: Optional label that triggered this (for issues.labeled).
+        model_requested: Raw alias the user typed in /model directive (issue #2279).
+        model_resolved: Validated Bedrock model ID, or None if rejected/absent.
 
     Returns:
         SpawnResult with success=True and message_id, or success=False and
@@ -137,6 +141,8 @@ def spawn_persona(
         correlation_ctx=correlation_ctx,
         intent_trigger=intent_trigger,
         intent_label=intent_label,
+        model_requested=model_requested,
+        model_resolved=model_resolved,
     )
 
     # --- Step 8: Capture invocation event to DDB BEFORE SQS ---
@@ -331,6 +337,8 @@ def _build_envelope(
     correlation_ctx: dict,
     intent_trigger: str,
     intent_label: str | None,
+    model_requested: str | None = None,
+    model_resolved: str | None = None,
 ) -> dict:
     """Build the normalized webhook envelope for SQS."""
     envelope = {
@@ -374,6 +382,14 @@ def _build_envelope(
         "payload": payload,
         "arrived_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    # Issue #2279: Thread caller-chosen model through the envelope.
+    # model_requested = raw alias the user typed; model_resolved = validated
+    # Bedrock model ID (or None if rejected). Worker reads model_resolved to
+    # override ANTHROPIC_MODEL; uses model_requested for the warning message.
+    if model_requested is not None:
+        envelope["model_requested"] = model_requested
+    if model_resolved is not None:
+        envelope["model_resolved"] = model_resolved
     envelope["message_id"] = str(uuid.uuid4())
     return envelope
 
