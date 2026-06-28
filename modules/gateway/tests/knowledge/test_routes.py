@@ -318,65 +318,74 @@ class TestReindexAsset:
 
 
 class TestGetAssetStatus:
-    """Tests for GET /api/agent-context/assets/{id}/status (Issue #2048).
+    """Tests for GET /api/agent-context/assets/{id}/status (#2213 follow-up).
 
     Proves:
-    1. Status endpoint reads ONLY from gateway knowledge_assets row.
-    2. No cross-DB join to repositories/index_runs/index_run_stages.
+    1. Status returns the registry row PLUS per-stage index detail (post-#2188
+       both tables live in agent_context, so the join is allowed — the earlier
+       #2048 "row-only" caveat is obsolete).
+    2. repo_found reflects whether index_run_stages rows exist.
     3. Scope isolation enforced (cross-tenant/cross-owner → 404).
     """
 
     @pytest.mark.anyio
-    async def test_status_returns_slim_gateway_row(self, make_client, fake_user):
-        """Status returns {asset_id, source_ref, status} from gateway row only."""
+    async def test_status_returns_stages(self, make_client, fake_user):
+        """Status returns repo_found + per-stage detail from index_run_stages."""
         asset_id = uuid.uuid4()
         asset_row = FakeRow(
             id=asset_id,
             source_ref="https://github.com/acme/my-service",
-            status="queued",
+            status="complete",
         )
+
+        class StageRow:
+            def __init__(self, stage, status):
+                self.run_id = "run-1"
+                self.stage = stage
+                self.status = status
+                self.artifact_ref = None
+                self.error = None
+                self.started_at = None
+                self.completed_at = None
+                self.run_status = "complete"
+                self.run_started_at = None
+
         db = FakeAsyncSession()
-        db.execute_results = [FakeResult(rows=[asset_row])]
+        db.execute_results = [
+            FakeResult(rows=[asset_row]),  # _fetch_asset_by_id
+            FakeResult(rows=[StageRow("clone", "verified"), StageRow("deepwiki", "failed")]),
+        ]
 
         async with make_client(db, fake_user) as client:
             resp = await client.get(f"/api/agent-context/assets/{asset_id}/status")
 
         assert resp.status_code == 200
         data = resp.json()
-        # Gateway-row fields: asset_id, source_ref, status, status_detail
-        assert data == {
-            "asset_id": str(asset_id),
-            "source_ref": "https://github.com/acme/my-service",
-            "status": "queued",
-            "status_detail": None,
-        }
+        assert data["status"] == "complete"
+        assert data["repo_found"] is True
+        assert [s["stage"] for s in data["stages"]] == ["clone", "deepwiki"]
+        assert data["stages"][1]["status"] == "failed"
 
     @pytest.mark.anyio
-    async def test_status_no_cross_db_join(self, make_client, fake_user):
-        """Status handler issues NO query against repositories/index_runs/index_run_stages.
-
-        Only one DB execute call should happen: the _fetch_asset_by_id SELECT on
-        knowledge_assets. No additional queries to corpus tables.
-        """
+    async def test_status_no_stages_means_not_found(self, make_client, fake_user):
+        """No index_run_stages rows → repo_found False (UI shows 'Not yet indexed')."""
         asset_id = uuid.uuid4()
-        asset_row = FakeRow(id=asset_id, status="indexing")
+        asset_row = FakeRow(id=asset_id, status="queued")
         db = FakeAsyncSession()
-        db.execute_results = [FakeResult(rows=[asset_row])]
+        db.execute_results = [
+            FakeResult(rows=[asset_row]),  # asset
+            FakeResult(rows=[]),  # no stages
+        ]
 
         async with make_client(db, fake_user) as client:
             resp = await client.get(f"/api/agent-context/assets/{asset_id}/status")
 
         assert resp.status_code == 200
-
-        # Verify only 1 DB query was issued (the _fetch_asset_by_id call)
-        assert len(db.executed_statements) == 1
-        stmt_text = str(db.executed_statements[0][0].text)
-        # The single query must target knowledge_assets only
-        assert "knowledge_assets" in stmt_text
-        # Must NOT reference any corpus tables
-        assert "repositories" not in stmt_text
-        assert "index_runs" not in stmt_text
-        assert "index_run_stages" not in stmt_text
+        data = resp.json()
+        assert data["repo_found"] is False
+        assert data["stages"] == []
+        # The stages query must target index_run_stages (the join was restored).
+        assert any("index_run_stages" in str(s[0].text) for s in db.executed_statements)
 
     @pytest.mark.anyio
     async def test_status_not_found(self, make_client, fake_user):

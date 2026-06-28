@@ -32,10 +32,15 @@ from src.knowledge.accessibility import (
     validate_repo_accessibility,
 )
 from src.knowledge.bulk_parser import MAX_FILE_SIZE_BYTES, MAX_LINES, parse_bulk_file
-from src.knowledge.dispatch import IngestionQueueUnavailableError, dispatch_ingestion
+from src.knowledge.dispatch import (
+    IngestionQueueUnavailableError,
+    dispatch_ingestion,
+    extract_source_identifier,
+)
 from src.knowledge.schemas import (
     AssetCreateRequest,
     AssetDetailResponse,
+    AssetIndexStage,
     AssetListResponse,
     AssetResponse,
     AssetStatusResponse,
@@ -437,12 +442,13 @@ async def get_asset_status(
     gateway_db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> AssetStatusResponse:
-    """Day-one asset status: gateway-row-only read (Issue #2048, C1 caveat).
+    """Asset status: registry row + per-stage index detail.
 
-    Returns {asset_id, source_ref, status} from the gateway knowledge_assets
-    row ONLY. Does NOT query repositories/index_runs/index_run_stages (those
-    live in agent_context — cross-DB join forbidden by service boundary).
-    Rich per-stage detail arrives via the status-callback story (E7 #1672).
+    Post-#2188 the knowledge_assets registry and index_run_stages both live in
+    the agent_context DB, so this joins them (the earlier #2048 "cross-DB join
+    forbidden" caveat no longer applies). Returns the registry status plus the
+    stages of the latest index run (clone, cgc_structural, deepwiki, zoekt, ...)
+    so the UI can render per-tool progress instead of "Not yet indexed".
     """
     row = await _fetch_asset_by_id(db, asset_id)
     if not row:
@@ -458,11 +464,60 @@ async def get_asset_status(
         if row.owner_sub != canonical_sub:
             raise HTTPException(status_code=404, detail="Asset not found")
 
+    # Resolve per-stage detail from the latest index run for this asset's repo.
+    # index_run_stages.repo holds the canonical "owner/repo" slug (same as the
+    # ingestion message source identifier). Non-repo assets (url/doc) currently
+    # have no per-stage rows → repo_found stays False (handled by the UI).
+    repo_slug = extract_source_identifier(row.source_ref, row.asset_type)
+    stages: list[AssetIndexStage] = []
+    run_id: str | None = None
+    run_status: str | None = None
+    run_started_at: str | None = None
+
+    stages_result = await db.execute(
+        text("""
+            SELECT s.run_id, s.stage, s.status, s.artifact_ref, s.error,
+                   s.started_at, s.completed_at, r.status AS run_status,
+                   r.started_at AS run_started_at
+            FROM index_run_stages s
+            LEFT JOIN index_runs r ON r.id = s.run_id
+            WHERE s.repo = :repo
+              AND s.run_id = (
+                  SELECT run_id FROM index_run_stages
+                  WHERE repo = :repo
+                  ORDER BY started_at DESC NULLS LAST
+                  LIMIT 1
+              )
+            ORDER BY s.started_at ASC NULLS LAST
+        """),
+        {"repo": repo_slug},
+    )
+    for sr in stages_result.fetchall():
+        if run_id is None:
+            run_id = str(sr.run_id) if sr.run_id else None
+            run_status = sr.run_status
+            run_started_at = sr.run_started_at.isoformat() if sr.run_started_at else None
+        stages.append(
+            AssetIndexStage(
+                stage=sr.stage,
+                status=sr.status,
+                artifact_ref=sr.artifact_ref,
+                error=sr.error,
+                started_at=sr.started_at.isoformat() if sr.started_at else None,
+                completed_at=sr.completed_at.isoformat() if sr.completed_at else None,
+            )
+        )
+
     return AssetStatusResponse(
         asset_id=asset_id,
         source_ref=row.source_ref,
         status=row.status,
         status_detail=row.status_detail if hasattr(row, "status_detail") else None,
+        repo_found=bool(stages),
+        run_id=run_id,
+        run_status=run_status,
+        run_started_at=run_started_at,
+        stages=stages,
     )
 
 
