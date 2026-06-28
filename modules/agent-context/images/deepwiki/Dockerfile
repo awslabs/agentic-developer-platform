@@ -11,8 +11,12 @@ FROM ghcr.io/asyncfuncai/deepwiki-open:v1.2.2
 COPY config/generator.json /app/api/config/generator.json
 COPY config/embedder.json /app/api/config/embedder.json
 
-# Create wiki cache directory
-RUN mkdir -p /root/.adalflow/wikicache
+# Create wiki cache directory and non-root user for security
+RUN mkdir -p /root/.adalflow/wikicache && \
+    addgroup --system --gid 1001 appgroup && \
+    adduser --system --uid 1001 --ingroup appgroup appuser && \
+    chmod 755 /root && \
+    chown -R appuser:appgroup /root/.adalflow /app
 
 # Environment defaults (overridden by K8s manifest)
 ENV PORT=8001
@@ -24,3 +28,5 @@ HEALTHCHECK --interval=60s --timeout=10s --retries=3 --start-period=30s \
   CMD curl -sf http://localhost:8001/health || exit 1
 
 EXPOSE 8001 3000
+
+USER appuser

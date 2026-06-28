@@ -17,12 +17,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY door/ ./door/
 COPY personal_context/ ./personal_context/
 
+# Non-root user for security
+RUN addgroup --system --gid 1001 appgroup && \
+    adduser --system --uid 1001 --ingroup appgroup appuser && \
+    chown -R appuser:appgroup /app
+
 # Expose MCP port
 EXPOSE 5100
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:5100/health || exit 1
+
+USER appuser
 
 # Run the server
 CMD ["uvicorn", "door.server:app", "--host", "0.0.0.0", "--port", "5100"]
