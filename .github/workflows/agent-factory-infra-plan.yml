@@ -52,7 +52,18 @@ jobs:
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
+        run: |
+          # The committed backend tfvars keeps a literal ACCOUNT_ID placeholder
+          # so the repo stays portable; without a bucket override, init targets
+          # "adp-terraform-state-ACCOUNT_ID" and fails with NoSuchBucket (this
+          # plan has failed on every agent-factory PR). Resolve the real bucket
+          # at runtime and override, mirroring agent-factory-infra-apply.yml.
+          STATE_BUCKET="adp-terraform-state-$(aws sts get-caller-identity --query Account --output text)"
+          echo "Using Terraform state bucket: ${STATE_BUCKET}"
+          terraform init \
+            -backend-config="../../../${{ env.BACKEND_CONFIG }}" \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -input=false
 
       - name: Terraform Plan
         id: plan
