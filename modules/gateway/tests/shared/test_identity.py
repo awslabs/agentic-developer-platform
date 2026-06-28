@@ -8,6 +8,7 @@ Covers:
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.exc import ProgrammingError
 
 from src.shared.identity import resolve_canonical_user_id
 
@@ -58,3 +59,15 @@ class TestResolveCanonicalUserId:
 
         assert result is not None
         assert isinstance(result, str)
+
+    @pytest.mark.asyncio
+    async def test_falls_back_on_db_error(self):
+        """When the users lookup raises (e.g. wrong-DB session → UndefinedTableError),
+        degrade to the raw sub instead of propagating a 500 (#2213 follow-up)."""
+        db = MagicMock()
+        db.scalar = AsyncMock(side_effect=ProgrammingError("SELECT users.id", {}, Exception('relation "users" does not exist')))
+
+        result = await resolve_canonical_user_id(db, KNOWN_COGNITO_SUB)
+
+        assert result == KNOWN_COGNITO_SUB
+        db.scalar.assert_called_once()

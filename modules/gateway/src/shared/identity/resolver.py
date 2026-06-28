@@ -17,6 +17,7 @@ Contract:
 import logging
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.organization import User
@@ -28,16 +29,30 @@ async def resolve_canonical_user_id(db: AsyncSession, cognito_sub: str) -> str:
     """Resolve a Cognito sub to the canonical ADP user_id (``users.id``).
 
     Args:
-        db: Async database session.
+        db: Async database session. MUST be a session bound to the gateway DB —
+            the ``users`` table lives there, not in the agent_context DB. Passing
+            the wrong session raises UndefinedTableError, which is caught below
+            and degrades to the raw sub (see #2213 follow-up).
         cognito_sub: The ``sub`` claim from the Cognito JWT (i.e.
             ``TokenContext.user_id``).
 
     Returns:
         The canonical ``users.id`` UUID if a matching row exists, otherwise
         the raw ``cognito_sub`` value (graceful fallback for unprovisioned
-        identities).
+        identities, or if the ``users`` table is unreachable on this session).
     """
-    canonical = await db.scalar(select(User.id).where(User.cognito_sub == cognito_sub))
+    try:
+        canonical = await db.scalar(select(User.id).where(User.cognito_sub == cognito_sub))
+    except SQLAlchemyError:
+        # Defense-in-depth: a wrong-DB session (no ``users`` table) or a transient
+        # DB error must not 500 the caller. Degrade to the raw sub — the same
+        # graceful-fallback contract as "no matching row".
+        logger.warning(
+            "users lookup failed for cognito_sub=%s (wrong DB session or DB error); falling back to raw token user_id",
+            cognito_sub,
+            exc_info=True,
+        )
+        return cognito_sub
     if canonical:
         return canonical
     logger.warning(

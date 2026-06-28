@@ -47,6 +47,7 @@ from src.knowledge.schemas import (
     QuotaInfo,
 )
 from src.knowledge.type_registry import is_valid_asset_type, validate_source_ref
+from src.shared.database import get_db
 from src.shared.database_agent_context import get_agent_context_db
 from src.shared.identity import resolve_canonical_user_id
 
@@ -82,6 +83,7 @@ def _get_quota_limit(scope: str, asset_type: str) -> int:
 async def register_asset(
     body: AssetCreateRequest,
     db: Annotated[AsyncSession, Depends(get_agent_context_db)],
+    gateway_db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> AssetResponse:
     """Register one asset. Scope from session, soft quota check, dispatch to SQS."""
@@ -127,7 +129,7 @@ async def register_asset(
         owner_sub = None
         scope_key = "tenant"  # quota still uses tenant limit for shared
     elif body.scope == "personal":
-        owner_sub = await resolve_canonical_user_id(db, current_user.user_id)
+        owner_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
         if accessibility:
             installation_id = accessibility.installation_id
     elif body.scope == "tenant":
@@ -250,6 +252,7 @@ async def register_asset(
 @_router.get("", response_model=AssetListResponse)
 async def list_assets(
     db: Annotated[AsyncSession, Depends(get_agent_context_db)],
+    gateway_db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
     scope: Annotated[str | None, Query()] = None,
     asset_type: Annotated[str | None, Query()] = None,
@@ -263,7 +266,7 @@ async def list_assets(
 
     # Scope filtering — resolve canonical id for personal scope (#2047/#1319)
     if scope == "personal":
-        canonical_sub = await resolve_canonical_user_id(db, current_user.user_id)
+        canonical_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
         conditions.append("owner_sub = :sub")
         params["sub"] = canonical_sub
         conditions.append("tenant_id = :tid")
@@ -314,7 +317,7 @@ async def list_assets(
     items = [_row_to_response(r) for r in rows]
 
     # Quota info
-    quota = await _get_quota_info(db, current_user)
+    quota = await _get_quota_info(db, gateway_db, current_user)
 
     return AssetListResponse(
         items=items,
@@ -330,6 +333,7 @@ async def list_assets(
 async def get_asset_detail(
     asset_id: str,
     db: Annotated[AsyncSession, Depends(get_agent_context_db)],
+    gateway_db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> AssetDetailResponse:
     """Get asset detail. Only visible if caller has scope access."""
@@ -343,7 +347,7 @@ async def get_asset_detail(
 
     # Personal assets: only visible to owner or admin — use canonical id (#2047/#1319)
     if row.owner_sub and not current_user.is_admin:
-        canonical_sub = await resolve_canonical_user_id(db, current_user.user_id)
+        canonical_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
         if row.owner_sub != canonical_sub:
             raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -427,6 +431,7 @@ async def reindex_asset(
 async def get_asset_status(
     asset_id: str,
     db: Annotated[AsyncSession, Depends(get_agent_context_db)],
+    gateway_db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> AssetStatusResponse:
     """Day-one asset status: gateway-row-only read (Issue #2048, C1 caveat).
@@ -446,7 +451,7 @@ async def get_asset_status(
 
     # Personal assets: only visible to owner or admin — use canonical id (#2047/#1319)
     if row.owner_sub and not current_user.is_admin:
-        canonical_sub = await resolve_canonical_user_id(db, current_user.user_id)
+        canonical_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
         if row.owner_sub != canonical_sub:
             raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -466,6 +471,7 @@ async def get_asset_status(
 @_router.post("/bulk", response_model=BulkPreviewResponse)
 async def bulk_preview(
     db: Annotated[AsyncSession, Depends(get_agent_context_db)],
+    gateway_db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
     file: UploadFile = File(...),
     scope: str = Form("tenant"),
@@ -510,7 +516,7 @@ async def bulk_preview(
     tenant_id = current_user.org_id or None
     owner_sub: str | None = None
     if scope == "personal":
-        owner_sub = await resolve_canonical_user_id(db, current_user.user_id)
+        owner_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
 
     # Check for duplicates against existing DB rows
     duplicates: list[BulkDuplicateItem] = []
@@ -593,6 +599,7 @@ async def bulk_preview(
 async def bulk_commit(
     body: BulkCommitRequest,
     db: Annotated[AsyncSession, Depends(get_agent_context_db)],
+    gateway_db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
 ) -> BulkCommitResponse:
     """Commit a previewed bulk upload batch. Writes rows + dispatches to SQS.
@@ -622,7 +629,7 @@ async def bulk_commit(
     owner_sub: str | None = None
     scope_key = body.scope
     if body.scope == "personal":
-        owner_sub = await resolve_canonical_user_id(db, current_user.user_id)
+        owner_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
 
     # --- Accessibility validation: validate ALL repo items before inserting any ---
     # (Issue #2087: validate-all-before-insert; no partial commit)
@@ -853,10 +860,15 @@ def _row_to_response(row: Any) -> AssetResponse:
     )
 
 
-async def _get_quota_info(db: AsyncSession, current_user: Any) -> QuotaInfo:
-    """Compute quota usage for the current user's scope."""
+async def _get_quota_info(db: AsyncSession, gateway_db: AsyncSession, current_user: Any) -> QuotaInfo:
+    """Compute quota usage for the current user's scope.
+
+    ``db`` is the agent_context session (knowledge_assets); ``gateway_db`` is the
+    gateway session used for the ``users`` identity lookup (the ``users`` table
+    lives in the gateway DB, not agent_context — see #2213 follow-up).
+    """
     # Resolve canonical id for personal-scope quota count (#2047/#1319)
-    canonical_sub = await resolve_canonical_user_id(db, current_user.user_id)
+    canonical_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
 
     # Count assets per type for personal scope
     result = await db.execute(
