@@ -635,6 +635,53 @@ ignore:
       name: github.com/opencontainers/selinux
 
   # ============================================================================
+  # Platform-arc-runner: Go-cluster GHSAs in Kaniko v1.24.0 and docker-ce-cli.
+  # Grype emits these findings under GHSA ids (not CVE ids). #2262 added
+  # CVE-keyed entries (above) which silently no-op; these GHSA-keyed entries
+  # are what actually suppress the findings. Upstream binaries — cannot be
+  # fixed by package-level upgrades in our Dockerfile.
+  # Re-evaluate quarterly (next: 2026-09-28).
+  # Source: Issue #2283, EPIC #615. Confirmed via scan run 28328207322.
+  # ============================================================================
+
+  # GHSA-pwhc-rpq9-4c8w: containerd push-on-pull redirect in v1.7.x/v2.x —
+  # runner does not process untrusted image refs/redirects.
+  - vulnerability: GHSA-pwhc-rpq9-4c8w
+    package:
+      type: go-module
+      name: github.com/containerd/containerd
+
+  # GHSA-p436-gjf2-799p: docker/cli authz plugin bypass (GHSA form of
+  # CVE-2024-41110) — requires malicious Docker daemon; runner only talks
+  # to ECR (trusted registry endpoint).
+  - vulnerability: GHSA-p436-gjf2-799p
+    package:
+      type: go-module
+      name: github.com/docker/cli
+
+  # GHSA-9h8m-3fm2-qjrq: go.opentelemetry.io/otel/sdk denial-of-service —
+  # telemetry SDK only; no untrusted input path in runner context.
+  - vulnerability: GHSA-9h8m-3fm2-qjrq
+    package:
+      type: go-module
+      name: go.opentelemetry.io/otel/sdk
+
+  # GHSA-6v2p-p543-phr9: golang.org/x/oauth2 token handling (GHSA form of
+  # CVE-2025-22868) — runner uses ECR credential helpers, not OAuth2 flows
+  # with untrusted providers.
+  - vulnerability: GHSA-6v2p-p543-phr9
+    package:
+      type: go-module
+      name: golang.org/x/oauth2
+
+  # GHSA-cgrx-mc8f-2prm: opencontainers/selinux label bypass — runner pods
+  # do not use SELinux enforcement; not in the runner's exploitation path.
+  - vulnerability: GHSA-cgrx-mc8f-2prm
+    package:
+      type: go-module
+      name: github.com/opencontainers/selinux
+
+  # ============================================================================
   # Agent-worker-image / agent-mail: libsqlite3-0 (Debian bookworm).
   # CVE-2025-7458 has no available patch in Debian bookworm (3.40.1-2+deb12u2).
   # Tracked upstream; no fix available for this distribution version.
