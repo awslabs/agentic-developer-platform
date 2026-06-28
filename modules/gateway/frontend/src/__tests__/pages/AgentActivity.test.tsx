@@ -17,6 +17,7 @@ import type { InvocationItem, InvocationListResponse } from '@/types/activity';
 // Mock the services
 vi.mock('@/services/activity', () => ({
   getMyInvocations: vi.fn(),
+  getMyChains: vi.fn(),
   getAllInvocations: vi.fn(),
   getMyInvocationChain: vi.fn(),
   getAdminInvocationChain: vi.fn(),
@@ -27,10 +28,11 @@ vi.mock('@/hooks/usePermissions', () => ({
   usePermissions: vi.fn(),
 }));
 
-import { getMyInvocations, getAllInvocations, getMyInvocationChain } from '@/services/activity';
+import { getMyInvocations, getMyChains, getAllInvocations, getMyInvocationChain } from '@/services/activity';
 import { usePermissions } from '@/hooks/usePermissions';
 
 const mockGetMine = getMyInvocations as ReturnType<typeof vi.fn>;
+const mockGetMyChains = getMyChains as ReturnType<typeof vi.fn>;
 const mockGetAll = getAllInvocations as ReturnType<typeof vi.fn>;
 const mockGetMyChain = getMyInvocationChain as ReturnType<typeof vi.fn>;
 const mockUsePermissions = usePermissions as ReturnType<typeof vi.fn>;
@@ -173,6 +175,7 @@ describe('AgentActivity Page', () => {
     vi.clearAllMocks();
     setupNonAdmin();
     mockGetMine.mockResolvedValue(mockResponse);
+    mockGetMyChains.mockResolvedValue({ chains: [], count: 0, last_key: null });
     mockGetAll.mockResolvedValue(mockResponse);
     mockGetMyChain.mockResolvedValue({
       correlation_id: 'chain-001',

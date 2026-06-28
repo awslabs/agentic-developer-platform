@@ -1,0 +1,75 @@
+name: Agent Context CI
+
+on:
+  pull_request:
+    paths:
+      - 'modules/agent-context/door/**'
+      - 'modules/agent-context/agent_context/**'
+      - 'modules/agent-context/pipeline/**'
+      - 'modules/agent-context/tests/**'
+      - 'modules/agent-context/pyproject.toml'
+    branches:
+      - main
+  push:
+    paths:
+      - 'modules/agent-context/door/**'
+      - 'modules/agent-context/agent_context/**'
+      - 'modules/agent-context/pipeline/**'
+      - 'modules/agent-context/pyproject.toml'
+    branches:
+      - main
+
+concurrency:
+  group: agent-context-ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: modules/agent-context/pyproject.toml
+
+      - name: Install dependencies
+        working-directory: modules/agent-context
+        run: |
+          pip install ruff
+
+      - name: Run Ruff
+        working-directory: modules/agent-context
+        run: |
+          ruff check .
+
+  test:
+    name: Test
+    runs-on: arc-runner-org
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: modules/agent-context/pyproject.toml
+
+      - name: Install dependencies
+        working-directory: modules/agent-context
+        run: |
+          pip install pytest pytest-asyncio httpx respx pydantic pydantic-settings asgi-lifespan
+
+      - name: Run Tests
+        working-directory: modules/agent-context
+        env:
+          PYTHONPATH: ${{ github.workspace }}/modules/agent-context
+        run: |
+          pytest tests/ -v --tb=short \
+            -m "not live_only and not graphrag and not workflow"
