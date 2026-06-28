@@ -144,6 +144,87 @@ ignore:
       name: stdlib
 
   # ============================================================================
+  # Arc-runner: upstream-controlled npm packages nested in ghcr.io/actions/actions-runner:2.335.1
+  # The actions-runner base image bundles its own node_modules with vulnerable
+  # versions of tar, minimatch, glob, and cross-spawn. These are internal to the
+  # runner's tooling — NOT exposed to untrusted input. A global npm install does
+  # not override these nested copies (confirmed: run 28326362807, PR #2262).
+  # Cannot fix until GitHub ships a runner release with updated bundled deps.
+  # Re-evaluate quarterly (next: 2026-09-28).
+  # Source: Issue #2276, EPIC #615. Second attempt at #2258 npm half.
+  # ============================================================================
+
+  # GHSA-34x7-hfp2-rc4v: tar header parsing vulnerability — runner does not
+  # process untrusted tar archives through its bundled node_modules.
+  - vulnerability: GHSA-34x7-hfp2-rc4v
+    package:
+      type: npm
+      name: tar
+
+  # GHSA-83g3-92jg-28cx: tar arbitrary file overwrite — runner extracts only
+  # trusted GitHub-provided artifacts, not attacker-controlled tarballs.
+  - vulnerability: GHSA-83g3-92jg-28cx
+    package:
+      type: npm
+      name: tar
+
+  # GHSA-8qq5-rm4j-mr97: tar path traversal — same rationale as above;
+  # no untrusted tar input path in CI runner context.
+  - vulnerability: GHSA-8qq5-rm4j-mr97
+    package:
+      type: npm
+      name: tar
+
+  # GHSA-qffp-2rhf-9h96: tar ReDoS in header parsing — runner does not parse
+  # attacker-controlled tar headers.
+  - vulnerability: GHSA-qffp-2rhf-9h96
+    package:
+      type: npm
+      name: tar
+
+  # GHSA-r6q2-hw4h-h46w: tar symlink handling vulnerability — runner does not
+  # extract untrusted archives with attacker-controlled symlinks.
+  - vulnerability: GHSA-r6q2-hw4h-h46w
+    package:
+      type: npm
+      name: tar
+
+  # GHSA-23c5-xmqv-rm74: minimatch ReDoS via brace expansion — runner's
+  # internal glob patterns are static/trusted, not user-supplied.
+  - vulnerability: GHSA-23c5-xmqv-rm74
+    package:
+      type: npm
+      name: minimatch
+
+  # GHSA-3ppc-4f35-3m26: minimatch ReDoS — same rationale; no untrusted
+  # glob patterns processed by the runner's bundled minimatch.
+  - vulnerability: GHSA-3ppc-4f35-3m26
+    package:
+      type: npm
+      name: minimatch
+
+  # GHSA-7r86-cg39-jmmj: minimatch ReDoS — same rationale; internal tooling
+  # only matches trusted path patterns.
+  - vulnerability: GHSA-7r86-cg39-jmmj
+    package:
+      type: npm
+      name: minimatch
+
+  # GHSA-5j98-mcp5-4vw2: glob ReDoS via crafted pattern — runner uses glob
+  # only with internal trusted patterns, not user-supplied input.
+  - vulnerability: GHSA-5j98-mcp5-4vw2
+    package:
+      type: npm
+      name: glob
+
+  # GHSA-3xgq-45jj-v275: cross-spawn command injection / ReDoS — runner does
+  # not pass untrusted input to cross-spawn; only spawns known internal commands.
+  - vulnerability: GHSA-3xgq-45jj-v275
+    package:
+      type: npm
+      name: cross-spawn
+
+  # ============================================================================
   # Agent-worker-image: Go stdlib in pre-compiled binaries (containerd/runc).
   # These CVEs affect Go standard library packages bundled with containerd, runc,
   # and ctr binaries that ship their own Go runtime. The agent-worker uses these

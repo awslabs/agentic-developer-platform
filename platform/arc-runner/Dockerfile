@@ -44,17 +44,6 @@ RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-l
     && rm /tmp/node.tar.xz \
     && node --version && npm --version
 
-# ── Force-upgrade vulnerable npm packages (#2258) ─────────────────────────────
-# The actions-runner base image bundles Node with older npm dependencies that
-# carry HIGH CVEs. Our Node install above replaces the binary but npm's global
-# packages still inherit vulnerable transitive deps. Force-upgrade them:
-#   tar         → >=7.5.0  (CVE-2024-28863: ReDoS in header parsing)
-#   minimatch   → >=9.0.5  (CVE-2024-26149: ReDoS via brace expansion)
-#   glob        → >=10.4.3 (pulls patched minimatch)
-#   cross-spawn → >=7.0.5  (CVE-2024-21538: command injection on Windows, ReDoS)
-RUN npm install -g tar@7 minimatch@9 glob@10 cross-spawn@7 \
-    && echo "npm global packages upgraded for CVE remediation"
-
 # ── Python 3.12 + pip (for CodeBuild log parsing, yaml checks, etc.) ────────
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
