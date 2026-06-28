@@ -198,8 +198,8 @@ async def register_asset(
                  installation_id)
             VALUES
                 (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
-                 'registered', :registered_by, :metadata::jsonb,
-                 :display_name, :tags::jsonb, :installation_id)
+                 'registered', :registered_by, CAST(:metadata AS jsonb),
+                 :display_name, CAST(:tags AS jsonb), :installation_id)
         """),
         {
             "id": asset_id,
@@ -749,7 +749,7 @@ async def bulk_commit(
                 VALUES
                     (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
                      'registered', :registered_by, '{}'::jsonb,
-                     :display_name, :tags::jsonb, :installation_id)
+                     :display_name, CAST(:tags AS jsonb), :installation_id)
             """),
             {
                 "id": asset_id,
