@@ -45,6 +45,14 @@ data:
   SQS_QUEUE_URL: "${SQS_QUEUE_URL}"
   DYNAMO_TABLE: "${DYNAMO_TABLE}"
 
+  # --- Status callback bridge (#2049 / #2213) ---
+  # In-cluster gateway URL the ingestion worker POSTs status updates to
+  # (worker "indexing/complete/failed" → gateway knowledge_assets row). Without
+  # this the registry status is stuck at "queued" in the UI after indexing.
+  # The matching X-Internal-Api-Key comes from the agent-context-gateway-callback
+  # K8s secret (created by agent-context-deploy from Secrets Manager).
+  GATEWAY_CALLBACK_URL: "${GATEWAY_CALLBACK_URL}"
+
   # --- Feature flags ---
   DEEPWIKI_ENABLED: "${DEEPWIKI_ENABLED}"
   GRAPHRAG_ENABLED: "${GRAPHRAG_ENABLED}"

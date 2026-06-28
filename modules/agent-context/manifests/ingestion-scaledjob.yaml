@@ -59,6 +59,18 @@ spec:
                     # ScaledJob (ScaledJobCheckFailed) when the secret is absent.
                     # Mirrors repo-refresh-cronjob.yaml. (#2213 follow-up)
                     optional: true
+              # Internal API key for the gateway status-callback (#2049 / #2213).
+              # Created by agent-context-deploy from Secrets Manager
+              # adp/<env>/gateway/internal-api-key. optional:true so a missing
+              # secret degrades to fail-open (callback skipped) rather than
+              # blocking ScaledJob creation. GATEWAY_CALLBACK_URL comes from the
+              # ConfigMap via envFrom above.
+              - name: GATEWAY_INTERNAL_API_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: agent-context-gateway-callback
+                    key: internal-api-key
+                    optional: true
             resources:
               requests:
                 cpu: "500m"

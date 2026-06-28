@@ -140,11 +140,35 @@ jobs:
             --query "Parameter.Value" --output text 2>/dev/null || echo "")
           echo "SQS_QUEUE_URL=${SQS_QUEUE_URL:-(not set)}"
 
+          # Issue #2049/#2213: in-cluster gateway URL for the worker status
+          # callback (worker indexing/complete/failed -> knowledge_assets row).
+          # Without this the registry status is stuck at "queued" in the UI.
+          GATEWAY_CALLBACK_URL="http://bedrockgateway.adp-gateway.svc.cluster.local"
+          echo "GATEWAY_CALLBACK_URL=${GATEWAY_CALLBACK_URL}"
+
+          # Mirror the gateway's internal API key into an agent-context-namespace
+          # K8s secret so the ScaledJob worker can authenticate the callback. The
+          # worker's IRSA cannot read adp/<env>/gateway/* directly, so the deploy
+          # job (broader CI creds) bridges it. Same SM secret the gateway reads.
+          INTERNAL_API_KEY=$(aws secretsmanager get-secret-value \
+            --secret-id "adp/${ENVIRONMENT}/gateway/internal-api-key" \
+            --query SecretString --output text 2>/dev/null || echo "")
+          if [ -n "$INTERNAL_API_KEY" ]; then
+            kubectl create secret generic agent-context-gateway-callback \
+              -n "${NAMESPACE}" \
+              --from-literal=internal-api-key="$INTERNAL_API_KEY" \
+              --dry-run=client -o yaml | kubectl apply -f -
+            echo "Secret agent-context-gateway-callback created (status callback auth)"
+          else
+            echo "WARNING: gateway internal-api-key not found — status callbacks will fail-open (status stuck at 'queued')"
+          fi
+
           # Export all variables needed for template substitution
           export NAMESPACE AWS_REGION SQS_QUEUE_URL DYNAMO_TABLE DEEPWIKI_ENABLED
           export GRAPHRAG_ENABLED NEPTUNE_ENDPOINT NEPTUNE_PORT OPENSEARCH_ENDPOINT
           export WIKI_LLM_MODEL GITHUB_APP_ID_SECRET GITHUB_APP_KEY_SECRET GITHUB_APP_OWNER
           export S3_VECTORS_BUCKET_NAME S3_VECTORS_REGION S3_FILES_BUCKET S3_CONTENT_PREFIX ZOEKT_URL
+          export GATEWAY_CALLBACK_URL
 
           template_file manifests/agent-context-configmap.yaml | kubectl apply -f -
           echo "ConfigMap agent-context-config deployed"
