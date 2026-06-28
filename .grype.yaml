@@ -499,6 +499,61 @@ ignore:
       name: github.com/cloudflare/circl
 
   # ============================================================================
+  # Platform-arc-runner: Go-module CVEs compiled into Kaniko v1.24.0 and
+  # docker-ce-cli pre-built binaries. These are baked into upstream releases
+  # and cannot be fixed by package-level upgrades in our Dockerfile.
+  # Kaniko repo is archived (2025-06-03) — no further releases expected.
+  # docker-ce-cli ships its own Go binaries that bundle these modules.
+  # Not exploitable in runner context: the runner uses Kaniko only for
+  # daemonless image builds against trusted Dockerfiles, and docker CLI only
+  # for ECR login/push against our own registry.
+  # Re-evaluate quarterly (next: 2026-09-28).
+  # Source: Issue #2258, EPIC #615.
+  # ============================================================================
+
+  # CVE-2024-41110: Authz plugin bypass in docker/cli — requires malicious
+  # Docker daemon; runner only talks to ECR (trusted registry endpoint).
+  - vulnerability: CVE-2024-41110
+    package:
+      type: go-module
+      name: github.com/docker/docker
+
+  # GHSA-77hh-43cm-v8j6: containerd push-on-pull-redirect — runner does not
+  # process untrusted image references that could trigger redirect.
+  - vulnerability: GHSA-77hh-43cm-v8j6
+    package:
+      type: go-module
+      name: github.com/containerd/containerd
+
+  # CVE-2024-9355: golang.org/x/crypto/ssh ECDH side-channel — Kaniko does
+  # not use SSH transport; all registry access is HTTPS.
+  - vulnerability: CVE-2024-9355
+    package:
+      type: go-module
+      name: golang.org/x/crypto
+
+  # CVE-2025-22868: golang.org/x/oauth2 token handling — Kaniko/docker-cli
+  # use ECR credential helpers, not OAuth2 flows with untrusted providers.
+  - vulnerability: CVE-2025-22868
+    package:
+      type: go-module
+      name: golang.org/x/oauth2
+
+  # CVE-2024-45337: golang.org/x/crypto/ssh authorization bypass — Kaniko
+  # does not use SSH-based git transport; not reachable.
+  - vulnerability: CVE-2024-45337
+    package:
+      type: go-module
+      name: golang.org/x/crypto
+
+  # GHSA-cg87-wmf2-gqfp: opencontainers/selinux label bypass — runner pods
+  # do not use SELinux enforcement; Kaniko runs in unprivileged user namespace.
+  - vulnerability: GHSA-cg87-wmf2-gqfp
+    package:
+      type: go-module
+      name: github.com/opencontainers/selinux
+
+  # ============================================================================
   # Agent-worker-image / agent-mail: libsqlite3-0 (Debian bookworm).
   # CVE-2025-7458 has no available patch in Debian bookworm (3.40.1-2+deb12u2).
   # Tracked upstream; no fix available for this distribution version.
