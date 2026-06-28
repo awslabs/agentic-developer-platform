@@ -31,6 +31,12 @@ export function AddAssetDialog({ isOpen, onClose, onAssetAdded, scope }: AddAsse
   const [reposLoading, setReposLoading] = useState(false);
   const [selectedRepo, setSelectedRepo] = useState<AccessibleRepo | null>(null);
 
+  // Public repo URL state — public/OSS repos can't be enumerated by the
+  // installed-App picker, so they're added by pasting the GitHub URL directly.
+  // The backend accepts any public github.com repo as shared scope (no App
+  // installation needed). See knowledge/accessibility.py check_repo_public.
+  const [repoUrlInput, setRepoUrlInput] = useState('');
+
   // URL input state
   const [urlInput, setUrlInput] = useState('');
   const [urlDisplayName, setUrlDisplayName] = useState('');
@@ -80,6 +86,7 @@ export function AddAssetDialog({ isOpen, onClose, onAssetAdded, scope }: AddAsse
       setError(null);
       setSelectedRepo(null);
       setRepoSearch('');
+      setRepoUrlInput('');
       setUrlInput('');
       setUrlDisplayName('');
       setDocName('');
@@ -93,17 +100,37 @@ export function AddAssetDialog({ isOpen, onClose, onAssetAdded, scope }: AddAsse
 
     try {
       if (activeTab === 'repo') {
-        if (!selectedRepo) {
-          setError('Please select a repository');
+        // A pasted public-repo URL takes precedence over a picker selection.
+        const typedUrl = repoUrlInput.trim();
+        if (typedUrl) {
+          if (!/^(https:\/\/github\.com\/|git@github\.com:)/.test(typedUrl)) {
+            setError('Enter a GitHub repo URL, e.g. https://github.com/owner/repo');
+            setIsSubmitting(false);
+            return;
+          }
+          const fullName = typedUrl
+            .replace(/^https:\/\/github\.com\//, '')
+            .replace(/^git@github\.com:/, '')
+            .replace(/\.git$/, '')
+            .replace(/\/$/, '');
+          await createAsset({
+            asset_type: 'repo',
+            source_ref: typedUrl,
+            display_name: fullName || typedUrl,
+            scope,
+          });
+        } else if (selectedRepo) {
+          await createAsset({
+            asset_type: 'repo',
+            source_ref: selectedRepo.url,
+            display_name: selectedRepo.fullName,
+            scope,
+          });
+        } else {
+          setError('Select a repository or paste a public GitHub repo URL');
           setIsSubmitting(false);
           return;
         }
-        await createAsset({
-          asset_type: 'repo',
-          source_ref: selectedRepo.url,
-          display_name: selectedRepo.fullName,
-          scope,
-        });
       } else if (activeTab === 'url') {
         if (!urlInput.trim()) {
           setError('Please enter a URL');
@@ -164,10 +191,33 @@ export function AddAssetDialog({ isOpen, onClose, onAssetAdded, scope }: AddAsse
         {/* Repo picker */}
         <TabPanel value="repo">
           <div className="space-y-3">
+            {/* Public / OSS repo by URL — can't be enumerated by the picker */}
+            <div className="space-y-1">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Public repo URL
+              </label>
+              <Input
+                placeholder="https://github.com/owner/repo"
+                value={repoUrlInput}
+                onChange={(e) => setRepoUrlInput(e.target.value)}
+              />
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Paste any public GitHub repo. For private repos, select one below
+                (requires the GitHub App installed).
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
+              <span className="flex-1 border-t border-gray-200 dark:border-gray-700" />
+              or pick an installed repo
+              <span className="flex-1 border-t border-gray-200 dark:border-gray-700" />
+            </div>
+
             <Input
               placeholder="Search repositories..."
               value={repoSearch}
               onChange={(e) => handleRepoSearchChange(e.target.value)}
+              disabled={repoUrlInput.trim().length > 0}
             />
             <div className="max-h-60 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-md">
               {reposLoading && (
