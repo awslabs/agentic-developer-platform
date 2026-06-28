@@ -326,3 +326,25 @@ resource "aws_ssm_parameter" "rds_endpoint" {
     Module    = "agent-context"
   })
 }
+
+# =============================================================================
+# SSM Parameter: Ingestion Queue URL (Issue #2213)
+# =============================================================================
+# Publishes the SQS ingestion queue URL to SSM so both consumers can discover
+# it without needing local Terraform state:
+#   - agent-context-deploy.yml reads it → sets SQS_QUEUE_URL → deploys ScaledJob
+#   - gateway-deploy.yml reads it → sets INGESTION_QUEUE_URL → enables dispatch
+# Single source of truth: module.sqs_ingestion.queue_url → this SSM param.
+
+resource "aws_ssm_parameter" "ingestion_queue_url" {
+  name  = "/adp/${var.environment}/agent-context/ingestion-queue-url"
+  type  = "String"
+  value = module.sqs_ingestion.queue_url
+
+  description = "SQS ingestion queue URL for Knowledge Layer pipeline (producer + consumer)"
+
+  tags = merge(var.tags, {
+    ManagedBy = "terraform"
+    Module    = "agent-context"
+  })
+}

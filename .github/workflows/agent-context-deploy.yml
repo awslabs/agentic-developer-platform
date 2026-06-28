@@ -132,6 +132,14 @@ jobs:
           source scripts/_common.sh
           load_config "$(pwd)"
 
+          # Issue #2213: Read SQS queue URL from SSM (published by agent-context
+          # infra-apply). Overrides the empty default from config.env; enables the
+          # KEDA ScaledJob deployment gate downstream.
+          SQS_QUEUE_URL=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/agent-context/ingestion-queue-url" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          echo "SQS_QUEUE_URL=${SQS_QUEUE_URL:-(not set)}"
+
           # Export all variables needed for template substitution
           export NAMESPACE AWS_REGION SQS_QUEUE_URL DYNAMO_TABLE DEEPWIKI_ENABLED
           export GRAPHRAG_ENABLED NEPTUNE_ENDPOINT NEPTUNE_PORT OPENSEARCH_ENDPOINT
@@ -381,6 +389,12 @@ jobs:
           cd modules/agent-context
           source scripts/_common.sh
           load_config "$(pwd)"
+
+          # Issue #2213: Read SQS queue URL from SSM (same source as ConfigMap step)
+          SQS_QUEUE_URL=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/agent-context/ingestion-queue-url" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          echo "SQS_QUEUE_URL=${SQS_QUEUE_URL:-(not set — ScaledJob will be skipped)}"
 
           # Determine ingestion image
           INGESTION_REPO="adp-${ENVIRONMENT}-agent-context-ingestion"

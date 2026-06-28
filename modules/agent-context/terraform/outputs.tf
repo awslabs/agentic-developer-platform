@@ -87,6 +87,11 @@ output "rds_endpoint_ssm_parameter" {
   value       = var.rds_enabled ? aws_ssm_parameter.rds_endpoint[0].name : ""
 }
 
+output "ingestion_queue_url_ssm_parameter" {
+  description = "SSM parameter name storing the ingestion queue URL"
+  value       = aws_ssm_parameter.ingestion_queue_url.name
+}
+
 # --- SQS + DynamoDB ---
 
 output "ingestion_queue_url" {
