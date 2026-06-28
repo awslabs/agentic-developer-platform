@@ -6,14 +6,14 @@
 #
 # Adapted from aws-innovate/AISuperPlane's infra/arc-runner/Dockerfile.
 #
-# Base: ghcr.io/actions/actions-runner:2.334.0 (pinned per session-context —
+# Base: ghcr.io/actions/actions-runner:2.335.1 (pinned per session-context —
 # do NOT use `:latest`, which GitHub can flag "deprecated" and cause the
 # runner to exit-7 loop).
 #
 # Build context: this directory (no parent references).
 # =============================================================================
 
-FROM ghcr.io/actions/actions-runner:2.334.0
+FROM ghcr.io/actions/actions-runner:2.335.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -114,7 +114,9 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && docker --version
 
 # ── Kaniko executor (daemonless container builds; no Docker daemon needed) ──
-COPY --from=gcr.io/kaniko-project/executor:latest /kaniko /kaniko
+# Pinned to v1.24.0 (final release; repo archived 2025-06-03).
+# Do NOT use :latest — pin tag + digest to avoid silent CVE regression.
+COPY --from=gcr.io/kaniko-project/executor:v1.24.0@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698 /kaniko /kaniko
 RUN chmod -R 777 /kaniko
 ENV PATH="/kaniko:${PATH}"
 
