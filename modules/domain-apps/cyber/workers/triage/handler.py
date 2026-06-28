@@ -27,8 +27,9 @@ def _region() -> str:
 
 def _hashes(path: Path) -> dict:
     """Compute MD5, SHA1, SHA256 of the file."""
-    md5 = hashlib.md5()
-    sha1 = hashlib.sha1()
+    # MD5/SHA1 used for malware sample fingerprinting (IOC identifiers), not security
+    md5 = hashlib.md5(usedforsecurity=False)  # nosec B324
+    sha1 = hashlib.sha1(usedforsecurity=False)  # nosec B324
     sha256 = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):

@@ -108,7 +108,7 @@ class FakeEmbeddingClient:
         # Deterministic "embedding" from text hash
         import hashlib
 
-        h = hashlib.md5(text.encode()).digest()
+        h = hashlib.md5(text.encode(), usedforsecurity=False).digest()  # nosec B324
         vec = [b / 255.0 for b in h[: self.dimension]]
         # Normalize
         mag = sum(x * x for x in vec) ** 0.5
