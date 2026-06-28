@@ -17,15 +17,17 @@ import fnmatch
 # Kept deliberately minimal — just the names users are likely to type.
 # Must stay in sync with model_resolver.py's short aliases.
 MODEL_ALIASES: dict[str, str] = {
-    # Bare short names (issue #2279)
-    "opus": "anthropic.claude-opus-4-20250514-v1:0",
-    "sonnet": "anthropic.claude-sonnet-4-20250514-v1:0",
-    "haiku": "anthropic.claude-3-5-haiku-20241022-v1:0",
+    # Bare short names (issue #2279). Values MUST be invocable inference-profile
+    # IDs (global./us. prefix) — bare `anthropic.claude-*` IDs are NOT supported
+    # for on-demand invocation, and EOL versions are rejected by Bedrock
+    # (issue #2300). All verified ACTIVE via `aws bedrock list-inference-profiles`.
+    "opus": "global.anthropic.claude-opus-4-6-v1",
+    "sonnet": "global.anthropic.claude-sonnet-4-6",
+    "haiku": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     # Slightly longer but still common
-    "claude-opus-4": "anthropic.claude-opus-4-20250514-v1:0",
-    "claude-sonnet-4": "anthropic.claude-sonnet-4-20250514-v1:0",
-    "claude-3-5-haiku": "anthropic.claude-3-5-haiku-20241022-v1:0",
-    "claude-3.5-haiku": "anthropic.claude-3-5-haiku-20241022-v1:0",
+    "claude-opus-4": "global.anthropic.claude-opus-4-6-v1",
+    "claude-sonnet-4": "global.anthropic.claude-sonnet-4-6",
+    "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
 }
 
 # Default allowed patterns (matches model_resolver.py DEFAULT_ALLOWED_PATTERNS)

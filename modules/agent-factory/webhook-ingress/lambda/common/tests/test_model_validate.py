@@ -15,34 +15,35 @@ from common.model_validate import resolve_and_validate
 class TestAliasResolution:
     """Tests that known aliases resolve to the correct Bedrock model IDs."""
 
+    # Issue #2300: aliases resolve to INVOCABLE inference-profile IDs (global. prefix).
     def test_opus_resolves(self):
         result = resolve_and_validate("opus")
-        assert result == "anthropic.claude-opus-4-20250514-v1:0"
+        assert result == "global.anthropic.claude-opus-4-6-v1"
 
     def test_sonnet_resolves(self):
         result = resolve_and_validate("sonnet")
-        assert result == "anthropic.claude-sonnet-4-20250514-v1:0"
+        assert result == "global.anthropic.claude-sonnet-4-6"
 
     def test_haiku_resolves(self):
         result = resolve_and_validate("haiku")
-        assert result == "anthropic.claude-3-5-haiku-20241022-v1:0"
+        assert result == "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
     def test_claude_opus_4_resolves(self):
         result = resolve_and_validate("claude-opus-4")
-        assert result == "anthropic.claude-opus-4-20250514-v1:0"
+        assert result == "global.anthropic.claude-opus-4-6-v1"
 
     def test_claude_sonnet_4_resolves(self):
         result = resolve_and_validate("claude-sonnet-4")
-        assert result == "anthropic.claude-sonnet-4-20250514-v1:0"
+        assert result == "global.anthropic.claude-sonnet-4-6"
 
     def test_case_insensitive(self):
         """Aliases are case-insensitive (users may type OPUS or Opus)."""
         result = resolve_and_validate("OPUS")
-        assert result == "anthropic.claude-opus-4-20250514-v1:0"
+        assert result == "global.anthropic.claude-opus-4-6-v1"
 
     def test_case_insensitive_mixed(self):
         result = resolve_and_validate("Sonnet")
-        assert result == "anthropic.claude-sonnet-4-20250514-v1:0"
+        assert result == "global.anthropic.claude-sonnet-4-6"
 
 
 class TestPassThroughModelIds:
@@ -78,18 +79,22 @@ class TestValidationAgainstPatterns:
         assert result is None  # Opus not in persona's allowed list
 
     def test_persona_allowed_models_permits(self):
-        """Model that matches persona's pattern is allowed."""
-        persona_allowed = ["anthropic.claude-opus-*"]
+        """Model that matches persona's pattern is allowed.
+
+        Note (#2300): the resolved alias is now a global.-prefixed inference
+        profile, so the persona pattern must match that prefix.
+        """
+        persona_allowed = ["global.anthropic.claude-opus-*"]
         result = resolve_and_validate("opus", persona_allowed_models=persona_allowed)
-        assert result == "anthropic.claude-opus-4-20250514-v1:0"
+        assert result == "global.anthropic.claude-opus-4-6-v1"
 
     def test_tenant_patterns_used_when_persona_empty(self):
         """Tenant patterns are used when persona allowed_models is empty."""
-        tenant_patterns = ["anthropic.claude-3-5-haiku-*"]
+        tenant_patterns = ["global.anthropic.claude-haiku-*"]
         result = resolve_and_validate(
             "haiku", persona_allowed_models=None, tenant_patterns=tenant_patterns
         )
-        assert result == "anthropic.claude-3-5-haiku-20241022-v1:0"
+        assert result == "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
     def test_tenant_patterns_reject(self):
         """Tenant patterns can reject a model."""

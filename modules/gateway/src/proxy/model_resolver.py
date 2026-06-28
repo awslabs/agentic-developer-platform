@@ -15,10 +15,13 @@ logger = logging.getLogger(__name__)
 
 # Default model alias mappings
 DEFAULT_MODEL_ALIASES: dict[str, str] = {
-    # Short "latest" aliases for /model directive UX (issue #2279)
-    "opus": "anthropic.claude-opus-4-20250514-v1:0",
-    "sonnet": "anthropic.claude-sonnet-4-20250514-v1:0",
-    "haiku": "anthropic.claude-3-5-haiku-20241022-v1:0",
+    # Short "latest" aliases for /model directive UX (issue #2279). Values MUST
+    # be invocable inference-profile IDs (global./us. prefix) — bare
+    # `anthropic.claude-*` IDs aren't supported for on-demand invocation and EOL
+    # versions are rejected (issue #2300). Verified ACTIVE via list-inference-profiles.
+    "opus": "global.anthropic.claude-opus-4-6-v1",
+    "sonnet": "global.anthropic.claude-sonnet-4-6",
+    "haiku": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     # Claude 3.5 models
     "claude-3.5-sonnet": "anthropic.claude-3-5-sonnet-20241022-v2:0",
     "claude-3-5-sonnet": "anthropic.claude-3-5-sonnet-20241022-v2:0",
