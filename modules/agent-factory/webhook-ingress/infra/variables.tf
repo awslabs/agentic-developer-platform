@@ -137,9 +137,18 @@ variable "agent_warm_pool_replicas" {
     parallel. 0 disables the warm pool (scale-from-zero; first agent is slow).
     Each replica holds one node 24/7 at the agent's resource request — the cost
     trade-off for instant starts.
+
+    Default is 0 (disabled). At replicas=1 the pool only warms a SINGLE agent
+    into an idle cluster; parallel bursts (the common case) and the 2nd+ agent
+    still cold-start while the lone balloon slowly replenishes — so it rarely
+    earned the permanent node (1 vCPU + 4Gi + 50Gi disk) it reserved 24/7. The
+    image-prepull DaemonSet (agent_image_prepull_enabled) already eliminates the
+    ~30s image-pull on every warm node, leaving only the ~60-90s node-provision
+    head start for that one first agent. Raise this only if instant first-agent
+    starts after idle are worth a standing node.
   DESC
   type        = number
-  default     = 1
+  default     = 0
 }
 
 variable "agent_image_prepull_enabled" {
