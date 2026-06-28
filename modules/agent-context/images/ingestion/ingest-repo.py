@@ -51,6 +51,12 @@ CLONE_BASE = settings.clone_base
 REQUEST_TIMEOUT = settings.request_timeout
 CODE_INDEX_DIR = settings.code_index_dir
 
+# Neptune TLS verification — Amazon CA bundle (Issue #2224)
+# Override with NEPTUNE_CA_BUNDLE_PATH env var for local dev (set to "" to disable).
+NEPTUNE_CA_BUNDLE = (
+    os.environ.get("NEPTUNE_CA_BUNDLE_PATH", "/etc/ssl/certs/rds-global-bundle.pem") or False
+)
+
 # GraphRAG configuration
 GRAPHRAG_ENABLED = settings.graphrag_enabled
 NEPTUNE_ENDPOINT = settings.neptune_endpoint
@@ -815,7 +821,9 @@ def _clear_repo_structural_graph(org_repo: str) -> bool:
     body = json.dumps({"gremlin": query})
     headers = _get_neptune_signed_headers("POST", neptune_url, body)
     try:
-        resp = requests.post(neptune_url, data=body, headers=headers, timeout=60, verify=False)
+        resp = requests.post(
+            neptune_url, data=body, headers=headers, timeout=60, verify=NEPTUNE_CA_BUNDLE
+        )
         if resp.status_code < 400:
             log.info("Cleared structural graph for %s", org_repo)
             return True
@@ -851,7 +859,7 @@ def _write_to_neptune(entities: list[dict], relationships: list[dict], org_repo:
                 data=body,
                 headers=signed_headers,
                 timeout=30,
-                verify=False,
+                verify=NEPTUNE_CA_BUNDLE,
             )
             if resp.status_code >= 400:
                 log.warning(
@@ -881,7 +889,7 @@ def _write_to_neptune(entities: list[dict], relationships: list[dict], org_repo:
                 data=body,
                 headers=signed_headers,
                 timeout=30,
-                verify=False,
+                verify=NEPTUNE_CA_BUNDLE,
             )
             if resp.status_code >= 400:
                 log.debug(

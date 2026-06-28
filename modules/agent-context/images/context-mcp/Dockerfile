@@ -9,6 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Download Amazon RDS/Neptune CA bundle for TLS verification (#2224)
+RUN curl -fsSL -o /etc/ssl/certs/rds-global-bundle.pem \
+        https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+    && test -s /etc/ssl/certs/rds-global-bundle.pem
+
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

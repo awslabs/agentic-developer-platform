@@ -95,9 +95,10 @@ RUN pip install --no-cache-dir \
     opentelemetry-sdk-extension-aws>=2.0.0 \
     opentelemetry-propagator-aws-xray>=1.0.0
 
-# Download RDS CA bundle for IAM auth TLS verification
-RUN curl -sSfL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
-    -o /etc/ssl/certs/rds-global-bundle.pem
+# Download Amazon RDS/Neptune CA bundle for TLS verification (#2224)
+RUN curl -fsSL -o /etc/ssl/certs/rds-global-bundle.pem \
+        https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+    && test -s /etc/ssl/certs/rds-global-bundle.pem
 
 # Install Playwright browsers for crawl4ai JS rendering
 RUN crawl4ai-setup || echo "crawl4ai-setup not available or optional — continuing"

@@ -38,6 +38,12 @@ NEPTUNE_ENDPOINT = os.environ.get("NEPTUNE_ENDPOINT", "")
 NEPTUNE_PORT = int(os.environ.get("NEPTUNE_PORT", "8182"))
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
+# Neptune TLS verification — Amazon CA bundle (Issue #2224)
+# Override with NEPTUNE_CA_BUNDLE_PATH env var for local dev (set to "" to disable).
+NEPTUNE_CA_BUNDLE: str | bool = (
+    os.environ.get("NEPTUNE_CA_BUNDLE_PATH", "/etc/ssl/certs/rds-global-bundle.pem") or False
+)
+
 # Valid edge types from schema-pack.yml
 VALID_EDGE_TYPES = frozenset(
     {"derived_from", "contradicts", "supports", "exemplifies", "cross_persona"}
@@ -92,7 +98,9 @@ def _execute_gremlin(query: str) -> dict[str, Any] | None:
     headers = _sign_request("POST", url, body)
 
     try:
-        resp = httpx.post(url, content=body, headers=headers, timeout=30.0, verify=False)
+        resp = httpx.post(
+            url, content=body, headers=headers, timeout=30.0, verify=NEPTUNE_CA_BUNDLE
+        )
         if resp.status_code >= 400:
             logger.warning(
                 "Neptune query failed: HTTP %d - %s",

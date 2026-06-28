@@ -53,6 +53,12 @@ STALE_WIKI_DAYS = settings.stale_wiki_days
 # GraphRAG configuration
 NEPTUNE_ENDPOINT = settings.neptune_endpoint
 NEPTUNE_PORT = settings.neptune_port
+
+# Neptune TLS verification — Amazon CA bundle (Issue #2224)
+# Override with NEPTUNE_CA_BUNDLE_PATH env var for local dev (set to "" to disable).
+NEPTUNE_CA_BUNDLE = (
+    os.environ.get("NEPTUNE_CA_BUNDLE_PATH", "/etc/ssl/certs/rds-global-bundle.pem") or False
+)
 LEARNING_DIR = settings.learning_dir
 CODE_INDEX_DIR = settings.code_index_dir
 
@@ -245,7 +251,7 @@ def check_graph_health() -> list[str]:
                 neptune_url,
                 json={"gremlin": gremlin},
                 timeout=30,
-                verify=False,
+                verify=NEPTUNE_CA_BUNDLE,
             )
             if resp.status_code < 300:
                 data = resp.json()
