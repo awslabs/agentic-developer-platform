@@ -1,5 +1,74 @@
 {
   "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
   "version": "2.1.0",
-  "runs": []
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Semgrep",
+          "semanticVersion": "1.80.0",
+          "rules": [
+            {
+              "id": "python.lang.security.unverified-jwt-decode",
+              "shortDescription": {
+                "text": "Detected JWT decode without signature verification"
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "python.lang.security.unverified-jwt-decode",
+          "level": "error",
+          "message": {
+            "text": "Detected JWT token decode without signature verification. This is suppressed via inline nosemgrep — the decode is a debug/logging helper; verified decode happens upstream."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/gateway/src/auth/cognito_jwt.py"
+                },
+                "region": {
+                  "startLine": 233
+                }
+              }
+            }
+          ],
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: unverified-jwt-decode — debug/logging helper only; never used for authz decisions. Verified decode happens in validate_token() via PyJWKClient JWKS signature check. Adjudicated FP in #2217."
+            }
+          ]
+        },
+        {
+          "ruleId": "python.lang.security.unverified-jwt-decode",
+          "level": "error",
+          "message": {
+            "text": "Detected JWT token decode without signature verification. This is suppressed via inline nosemgrep — the decode is a debug/logging helper; verified decode happens upstream."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "modules/gateway/src/auth/token_manager.py"
+                },
+                "region": {
+                  "startLine": 348
+                }
+              }
+            }
+          ],
+          "suppressions": [
+            {
+              "kind": "inSource",
+              "justification": "nosemgrep: unverified-jwt-decode — debug/logging helper only; never used for authz decisions. Verified decode happens in validate_token() with self.secret_key signature check. Adjudicated FP in #2217."
+            }
+          ]
+        }
+      ]
+    }
+  ]
 }

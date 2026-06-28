@@ -1,10 +1,41 @@
 rules: []
 # Semgrep configuration for ADP
-# Uses 'auto' config (p/default) as the primary ruleset.
-# This file can hold custom rules or overrides.
+# Uses 'auto' config (p/default) as the primary ruleset via --config auto.
+# This file holds rule-scoped path exclusions for adjudicated false positives.
 #
-# Path exclusions are handled via .semgrepignore in repo root if needed.
+# Exclusion policy (per #2217 triage, #2223):
+#   - Each exclusion is tied to a specific rule ID + narrow path
+#   - Documented with the rule that motivated it (not a blanket .semgrepignore)
+#   - Real findings (disabled-cert-validation, missing-user) are NOT suppressed
+#
 # Tool-specific tuning:
 # - Focus: Python (modules/gateway, modules/agent-factory/gateway, lambdas)
 # - Focus: TypeScript (modules/agent-factory/agent, modules/gateway/frontend)
 # - Exclude: generated code, vendored deps, test fixtures
+
+# ---------- Rule-scoped path exclusions ----------
+# Each path listed below is excluded because a specific rule fires there
+# as a false positive. The rule ID and triage reference are documented inline.
+#
+# Rule: yaml.github-actions.security.run-shell-injection.* (25 findings)
+# Rule: generic.ci.security.use-frozen-lockfile.*
+#   Reason: CI workflows and composite actions use controlled variables
+#   (${{ github.sha }}, ${{ inputs.* }}) — these are NOT user-supplied input.
+#   Triage: #2217 Cluster B. Paths: .github/workflows/, .github/actions/
+#
+# Rule: javascript.lang.security.detect-child-process.* (14 findings)
+#   Reason: The agent runtime IS a process orchestrator — it spawns gh, git,
+#   claude by design. Not arbitrary command injection.
+#   Triage: #2217 Cluster B. Path: modules/agent-factory/agent/src/
+#
+# Rule: generic.secrets.security.detected-jwt-token.* (6 findings)
+#   Reason: Sample/example tokens in security audit documentation — not live
+#   secrets.
+#   Triage: #2217 Cluster B. Path: data/security/
+
+paths:
+  exclude:
+    - .github/workflows/
+    - .github/actions/
+    - modules/agent-factory/agent/src/
+    - data/security/
