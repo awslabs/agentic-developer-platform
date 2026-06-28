@@ -180,6 +180,26 @@ class TestListAssets:
         assert data["page"] == 1
         assert data["has_more"] is False
 
+    @pytest.mark.anyio
+    async def test_default_scope_includes_shared_assets(self, make_client, fake_user):
+        """Default ("All") list must surface shared/public assets (tenant_id IS
+        NULL), not just the caller's tenant — else public repos are invisible in
+        every tab. Regression for #2213: 'added successfully' then disappeared."""
+        db = FakeAsyncSession()
+        db.execute_results = [
+            FakeResult(scalar_val=0),  # count
+            FakeResult(rows=[]),  # page rows
+            FakeResult(rows=[]),  # quota counts
+        ]
+
+        async with make_client(db, fake_user) as client:
+            resp = await client.get("/api/agent-context/assets")
+
+        assert resp.status_code == 200
+        # The count query (first executed) must OR-in the shared branch.
+        count_sql = str(db.executed_statements[0][0].text)
+        assert "tenant_id IS NULL" in count_sql, f"default list query must include shared assets; got: {count_sql}"
+
 
 # ---------------------------------------------------------------------------
 # GET /api/agent-context/assets/{id} — detail

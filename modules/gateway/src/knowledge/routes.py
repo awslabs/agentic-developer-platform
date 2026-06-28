@@ -276,8 +276,11 @@ async def list_assets(
         params["tid"] = current_user.org_id
         conditions.append("owner_sub IS NULL")
     else:
-        # Default: show all assets the user can see (personal + tenant)
-        conditions.append("tenant_id = :tid")
+        # Default ("All"): everything the user can see — their tenant's assets
+        # AND shared/public assets (tenant_id IS NULL, e.g. public repos). Public
+        # repos register as shared scope, so without the NULL branch they'd be
+        # invisible in every tab. (#2213 follow-up)
+        conditions.append("(tenant_id = :tid OR tenant_id IS NULL)")
         params["tid"] = current_user.org_id
 
     if asset_type:
