@@ -108,6 +108,34 @@ function renderAgentActivity() {
   );
 }
 
+/**
+ * Renders the AgentActivity page and switches to "By run" (flat table) mode.
+ *
+ * The component defaults to "By chain" view (issue #1662), which disables the
+ * flat query (getMyInvocations). Tests that assert on flat-table rows, status
+ * badges, trigger columns, etc. need the "By run" view active.
+ */
+async function renderAgentActivityFlat() {
+  const user = userEvent.setup();
+  const result = renderAgentActivity();
+
+  // Wait for the default chain view to load
+  await waitFor(() => {
+    expect(mockGetMyChains).toHaveBeenCalled();
+  });
+
+  // Switch to "By run" (flat) mode
+  const byRunTab = screen.getByRole('tab', { name: /by run/i });
+  await user.click(byRunTab);
+
+  // Wait for the flat query to fire
+  await waitFor(() => {
+    expect(mockGetMine).toHaveBeenCalled();
+  });
+
+  return result;
+}
+
 function setupNonAdmin() {
   mockUsePermissions.mockReturnValue({
     isPlatformAdmin: () => false,
@@ -188,13 +216,9 @@ describe('AgentActivity Page', () => {
   });
 
   it('renders date-desc rows from mocked /me/agent-invocations', async () => {
-    renderAgentActivity();
+    await renderAgentActivityFlat();
 
-    await waitFor(() => {
-      expect(mockGetMine).toHaveBeenCalledTimes(1);
-    });
-
-    // All items should be rendered
+    // All items should be rendered in the flat table
     expect(screen.getByText('Implement Agent Activity page')).toBeInTheDocument();
     expect(screen.getByText('Fix CORS headers')).toBeInTheDocument();
     expect(screen.getByText('Refactor auth')).toBeInTheDocument();
@@ -203,14 +227,10 @@ describe('AgentActivity Page', () => {
   it('"next" follows last_key; empty page with non-null last_key still shows working "next"', async () => {
     const user = userEvent.setup();
 
-    // First page has items and a cursor
+    // Override the flat query response: first page has items and a cursor
     mockGetMine.mockResolvedValueOnce(mockResponseWithCursor);
 
-    renderAgentActivity();
-
-    await waitFor(() => {
-      expect(mockGetMine).toHaveBeenCalledTimes(1);
-    });
+    await renderAgentActivityFlat();
 
     // Next button should be enabled since last_key is non-null
     const nextBtn = screen.getByRole('button', { name: /next/i });
@@ -257,11 +277,7 @@ describe('AgentActivity Page', () => {
 
     mockGetMine.mockResolvedValue({ items: allStatusItems, last_key: null });
 
-    renderAgentActivity();
-
-    await waitFor(() => {
-      expect(screen.getByText('Webhook recv')).toBeInTheDocument();
-    });
+    await renderAgentActivityFlat();
 
     // Scope to the results table — the status filter <select> also renders these
     // labels as <option>s, so a document-wide getByText would match >1 element.
@@ -296,11 +312,7 @@ describe('AgentActivity Page', () => {
 
     mockGetMine.mockResolvedValue({ items, last_key: null });
 
-    renderAgentActivity();
-
-    await waitFor(() => {
-      expect(screen.getByText('With link')).toBeInTheDocument();
-    });
+    await renderAgentActivityFlat();
 
     // Check the link
     const link = screen.getByRole('link', { name: /aws-e\/adp#1457/ });
@@ -314,29 +326,21 @@ describe('AgentActivity Page', () => {
 
   it('admin toggle hidden for non-admin role', async () => {
     setupNonAdmin();
-    renderAgentActivity();
-
-    await waitFor(() => {
-      expect(mockGetMine).toHaveBeenCalled();
-    });
+    await renderAgentActivityFlat();
 
     // The "Mine" / "All (Admin)" toggle should NOT be visible
-    expect(screen.queryByRole('tab', { name: /mine/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: /all/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /^mine$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /all \(admin\)/i })).not.toBeInTheDocument();
   });
 
   it('admin toggle visible and switches to /admin/ endpoint for admin', async () => {
     const user = userEvent.setup();
     setupAdmin();
 
-    renderAgentActivity();
-
-    await waitFor(() => {
-      expect(mockGetMine).toHaveBeenCalledTimes(1);
-    });
+    await renderAgentActivityFlat();
 
     // Toggle should be visible
-    const allTab = screen.getByRole('tab', { name: /all/i });
+    const allTab = screen.getByRole('tab', { name: /all \(admin\)/i });
     expect(allTab).toBeInTheDocument();
 
     // Click "All (Admin)"
@@ -349,7 +353,8 @@ describe('AgentActivity Page', () => {
 
   it('API error shows error/retry UI, not a blank page', async () => {
     const user = userEvent.setup();
-    mockGetMine.mockRejectedValueOnce(new Error('Network failure'));
+    // Make the chain query fail (default view is chain mode)
+    mockGetMyChains.mockRejectedValueOnce(new Error('Network failure'));
 
     renderAgentActivity();
 
@@ -362,16 +367,17 @@ describe('AgentActivity Page', () => {
     expect(retryBtn).toBeInTheDocument();
 
     // Click retry
-    mockGetMine.mockResolvedValueOnce(mockResponse);
+    mockGetMyChains.mockResolvedValueOnce({ chains: [], count: 0, last_key: null });
     await user.click(retryBtn);
 
     await waitFor(() => {
-      expect(mockGetMine).toHaveBeenCalledTimes(2);
+      expect(mockGetMyChains).toHaveBeenCalledTimes(2);
     });
   });
 
   it('shows empty state "No agent activity yet" when no items and no cursor', async () => {
-    mockGetMine.mockResolvedValue({ items: [], last_key: null });
+    // In chain view (default), empty means no chains
+    mockGetMyChains.mockResolvedValue({ chains: [], count: 0, last_key: null });
 
     renderAgentActivity();
 
@@ -386,8 +392,10 @@ describe('AgentActivity Page', () => {
     expect(screen.getByText('Agent Activity')).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(screen.getByText('Your agent invocations')).toBeInTheDocument();
+      expect(mockGetMyChains).toHaveBeenCalled();
     });
+
+    expect(screen.getByText('Your agent invocations')).toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -405,12 +413,9 @@ describe('AgentActivity Page', () => {
 
     mockGetMine.mockResolvedValue({ items, last_key: null });
 
-    renderAgentActivity();
+    await renderAgentActivityFlat();
 
-    await waitFor(() => {
-      expect(screen.getByTestId('trigger-badge-human')).toBeInTheDocument();
-    });
-
+    expect(screen.getByTestId('trigger-badge-human')).toBeInTheDocument();
     expect(screen.getByText('Started by you')).toBeInTheDocument();
   });
 
@@ -427,12 +432,9 @@ describe('AgentActivity Page', () => {
 
     mockGetMine.mockResolvedValue({ items, last_key: null });
 
-    renderAgentActivity();
+    await renderAgentActivityFlat();
 
-    await waitFor(() => {
-      expect(screen.getByTestId('trigger-badge-agent')).toBeInTheDocument();
-    });
-
+    expect(screen.getByTestId('trigger-badge-agent')).toBeInTheDocument();
     expect(screen.getByText('Agent-triggered')).toBeInTheDocument();
     // Shows parent topic
     expect(screen.getByText(/Deploy infrastructure/)).toBeInTheDocument();
@@ -451,12 +453,9 @@ describe('AgentActivity Page', () => {
 
     mockGetMine.mockResolvedValue({ items, last_key: null });
 
-    renderAgentActivity();
+    await renderAgentActivityFlat();
 
-    await waitFor(() => {
-      expect(screen.getByTestId('trigger-badge-bot')).toBeInTheDocument();
-    });
-
+    expect(screen.getByTestId('trigger-badge-bot')).toBeInTheDocument();
     expect(screen.getByText('Agent-initiated')).toBeInTheDocument();
   });
 
@@ -471,19 +470,15 @@ describe('AgentActivity Page', () => {
 
     mockGetMine.mockResolvedValue({ items, last_key: null });
 
-    renderAgentActivity();
+    await renderAgentActivityFlat();
 
-    await waitFor(() => {
-      expect(screen.getByText('View chain')).toBeInTheDocument();
-    });
+    expect(screen.getByText('View chain')).toBeInTheDocument();
   });
 
   it('Trigger column header is present in table', async () => {
-    renderAgentActivity();
+    await renderAgentActivityFlat();
 
-    await waitFor(() => {
-      expect(screen.getByText('Trigger')).toBeInTheDocument();
-    });
+    expect(screen.getByText('Trigger')).toBeInTheDocument();
   });
 
   it('flat list still works when lineage fields absent (pre-feature rows)', async () => {
@@ -501,12 +496,9 @@ describe('AgentActivity Page', () => {
 
     mockGetMine.mockResolvedValue({ items, last_key: null });
 
-    renderAgentActivity();
+    await renderAgentActivityFlat();
 
-    await waitFor(() => {
-      expect(screen.getByText('Old style invocation')).toBeInTheDocument();
-    });
-
+    expect(screen.getByText('Old style invocation')).toBeInTheDocument();
     // Should show "Started by you" as default
     expect(screen.getByTestId('trigger-badge-human')).toBeInTheDocument();
     // No "View chain" link when correlation_id is null
