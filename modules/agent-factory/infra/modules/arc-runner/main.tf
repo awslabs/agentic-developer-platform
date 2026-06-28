@@ -92,6 +92,18 @@ resource "helm_release" "arc_runner_set" {
         # baseline (3000), stalling processes in D-state and causing 5+ min
         # "hangs". Mirrors AISuperPlane's sizing — requests push Karpenter
         # to right-size the node, limits prevent one runner starving others.
+        #
+        # cpu=1 request is KEPT deliberately: it is the runner-density guard
+        # (≈ one runner per vCPU) that prevents the EBS-IOPS-saturation hang
+        # described above. Do not lower it.
+        #
+        # memory request lowered 4Gi -> 1Gi: observed steady-state usage is
+        # ~16-140Mi (peak ~3.5% of the old 4Gi reservation, via Container
+        # Insights over 2h). At 4Gi, memory was the binding constraint that
+        # forced ~2 runners/xlarge (7.5Gi) and inflated node count; at 1Gi,
+        # cpu=1 becomes the density cap (~4 runners/xlarge) — the intended
+        # IOPS guard — while freeing ~3Gi of phantom reservation per runner.
+        # Limit stays 8Gi so a heavy build can still burst without OOM.
         spec = {
           serviceAccountName = kubernetes_service_account.runner.metadata[0].name
           containers = [
@@ -100,7 +112,7 @@ resource "helm_release" "arc_runner_set" {
               image   = var.runner_image == "" ? "ghcr.io/actions/actions-runner:latest" : var.runner_image
               command = ["/home/runner/run.sh"]
               resources = {
-                requests = { cpu = "1", memory = "4Gi" }
+                requests = { cpu = "1", memory = "1Gi" }
                 limits   = { cpu = "4", memory = "8Gi" }
               }
             }
