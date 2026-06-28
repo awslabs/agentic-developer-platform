@@ -36,6 +36,25 @@ data "aws_iam_policy_document" "assume_role" {
       values   = ["sts.amazonaws.com"]
     }
   }
+
+  # KEDA operator chain-assumes this role for SQS queue-depth polling of the
+  # ingestion ScaledJob. KEDA's aws-eks identity provider authenticates as the
+  # operator SA first, then assumes this workload role to call SQS
+  # GetQueueAttributes. The operator role is owned by Phase 7
+  # (webhook-ingress/infra/keda.tf); passed in here as an ARN. Mirrors the
+  # gateway pattern (gateway-main.tf "gateway_agent" role). Issue #2213.
+  dynamic "statement" {
+    for_each = var.keda_operator_role_arn != "" ? [1] : []
+    content {
+      effect  = "Allow"
+      actions = ["sts:AssumeRole"]
+
+      principals {
+        type        = "AWS"
+        identifiers = [var.keda_operator_role_arn]
+      }
+    }
+  }
 }
 
 resource "aws_iam_role" "agent_context" {

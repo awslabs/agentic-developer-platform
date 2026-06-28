@@ -62,3 +62,9 @@ variable "neptune_enabled" {
   type        = bool
   default     = false
 }
+
+variable "keda_operator_role_arn" {
+  description = "ARN of the KEDA operator role allowed to chain-assume this IRSA role for SQS scaling. Empty disables the trust statement. Issue #2213."
+  type        = string
+  default     = ""
+}

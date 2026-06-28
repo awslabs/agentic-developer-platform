@@ -150,6 +150,10 @@ module "iam" {
   rds_username      = "agent_context_svc"
   graphrag_enabled  = var.graphrag_enabled
   neptune_enabled   = var.neptune_enabled
+
+  # Allow the KEDA operator to chain-assume this IRSA role for SQS queue-depth
+  # polling of the ingestion ScaledJob (#2213).
+  keda_operator_role_arn = data.aws_iam_role.keda_operator.arn
 }
 
 # =============================================================================
@@ -346,5 +350,52 @@ resource "aws_ssm_parameter" "ingestion_queue_url" {
   tags = merge(var.tags, {
     ManagedBy = "terraform"
     Module    = "agent-context"
+  })
+}
+
+# =============================================================================
+# KEDA operator SQS-scaler access for the ingestion ScaledJob (Issue #2213)
+# =============================================================================
+# KEDA's aws-eks pod-identity provider authenticates as the keda-operator SA
+# first, then chain-assumes the workload IRSA role to call SQS
+# GetQueueAttributes for queue-depth scaling. Without this the ingestion
+# ScaledJob fails with AccessDenied (sts:AssumeRole on the IRSA role) and
+# never scales. Mirrors the gateway pattern in
+# modules/agent-factory/infra/gateway-main.tf ("gateway-sqs-scaler-read").
+#
+# The keda-operator-role is owned by Phase 7
+# (modules/agent-factory/webhook-ingress/infra/keda.tf); referenced here
+# read-only via a data source. The reciprocal trust statement allowing the
+# operator to assume the IRSA role lives in modules/iam (agent_context role).
+
+data "aws_iam_role" "keda_operator" {
+  name = "adp-${var.environment}-keda-operator-role"
+}
+
+resource "aws_iam_role_policy" "keda_operator_ingestion_sqs" {
+  name = "agent-context-ingestion-sqs-scaler-read"
+  role = data.aws_iam_role.keda_operator.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "SQSQueuePolling"
+        Effect = "Allow"
+        Action = [
+          "sqs:GetQueueAttributes",
+          "sqs:ListQueues",
+        ]
+        Resource = [
+          module.sqs_ingestion.queue_arn,
+        ]
+      },
+      {
+        Sid      = "AssumeWorkloadRole"
+        Effect   = "Allow"
+        Action   = "sts:AssumeRole"
+        Resource = module.iam.role_arn
+      }
+    ]
   })
 }
