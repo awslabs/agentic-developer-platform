@@ -108,7 +108,7 @@ async def status_callback(
             text("""
                 UPDATE knowledge_assets
                 SET status = :status,
-                    status_detail = :status_detail::jsonb,
+                    status_detail = CAST(:status_detail AS jsonb),
                     last_error = :error,
                     retry_count = retry_count + 1,
                     updated_at = :now
@@ -130,7 +130,7 @@ async def status_callback(
             text("""
                 UPDATE knowledge_assets
                 SET status = :status,
-                    status_detail = :status_detail::jsonb,
+                    status_detail = CAST(:status_detail AS jsonb),
                     last_error = NULL,
                     updated_at = :now
                 WHERE id = :asset_id
