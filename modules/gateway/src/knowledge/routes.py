@@ -464,11 +464,16 @@ async def get_asset_status(
         if row.owner_sub != canonical_sub:
             raise HTTPException(status_code=404, detail="Asset not found")
 
-    # Resolve per-stage detail from the latest index run for this asset's repo.
-    # index_run_stages.repo holds the canonical "owner/repo" slug (same as the
-    # ingestion message source identifier). Non-repo assets (url/doc) currently
-    # have no per-stage rows → repo_found stays False (handled by the UI).
+    # Resolve per-stage detail from the latest index run for this asset.
+    # For repos: index_run_stages.repo holds the canonical "owner/repo" slug.
+    # For non-repo assets (url/doc): index_run_stages.repo holds the
+    # registry_asset_id (UUID) as the lookup key (issue #2308).
     repo_slug = extract_source_identifier(row.source_ref, row.asset_type)
+
+    # For non-repo assets, use the asset_id (registry_asset_id) as the lookup key
+    # since that's what the ingestion workers write to index_run_stages.repo.
+    stage_lookup_key = asset_id if row.asset_type in ("url", "doc") else repo_slug
+
     stages: list[AssetIndexStage] = []
     run_id: str | None = None
     run_status: str | None = None
@@ -490,7 +495,7 @@ async def get_asset_status(
               )
             ORDER BY s.started_at ASC NULLS LAST
         """),
-        {"repo": repo_slug},
+        {"repo": stage_lookup_key},
     )
     for sr in stages_result.fetchall():
         if run_id is None:

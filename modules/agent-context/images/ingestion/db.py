@@ -32,6 +32,10 @@ VALID_STAGES = frozenset(
         "deepwiki",
         "zoekt_index",
         "graphrag",
+        # URL/doc ingestion stages (issue #2308)
+        "fetch",
+        "convert",
+        "s3_upload",
     }
 )
 
@@ -271,10 +275,15 @@ def update_repo_sbom_status(
 # ---------------------------------------------------------------------------
 
 
-def create_index_run(conn, repo_id: str, repo: str, commit_sha: str | None = None) -> str:
+def create_index_run(conn, repo_id: str | None, repo: str, commit_sha: str | None = None) -> str:
     """Create a new index_runs header row. Returns the run_id (UUID).
 
     This run_id is the canonical spine for all stage rows in this indexing run.
+
+    Args:
+        repo_id: UUID of the repository row (None for non-repo assets like URL/doc).
+        repo: Canonical identifier — org/repo for repos, registry_asset_id for URL/doc.
+        commit_sha: Git commit SHA (None for non-repo assets).
     """
     run_id = str(uuid.uuid4())
     cursor = conn.cursor()

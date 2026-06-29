@@ -107,7 +107,7 @@ class StageTracker:
         self,
         conn,
         repo: str,
-        repo_id: str,
+        repo_id: str | None = None,
         commit_sha: str | None = None,
     ):
         self._conn = conn

@@ -38,6 +38,16 @@ log = get_logger("ingest-doc")
 from config import settings
 from s3_store import S3ContentStore
 
+# Stage tracking (issue #2308) — optional, fail-open if DB unavailable
+STAGE_TRACKING_AVAILABLE = False
+try:
+    import db as stage_db
+    from stage_tracker import StageTracker
+
+    STAGE_TRACKING_AVAILABLE = True
+except ImportError:
+    log.info("Stage tracking not available (db/stage_tracker not importable)")
+
 REQUEST_TIMEOUT = settings.request_timeout
 MAX_DOWNLOAD_SIZE = settings.max_download_size
 
@@ -316,8 +326,16 @@ def ingest_document(
     source: str,
     title: str | None = None,
     tags: dict[str, str] | None = None,
+    registry_asset_id: str | None = None,
 ) -> dict[str, Any]:
-    """Full document ingestion pipeline."""
+    """Full document ingestion pipeline.
+
+    Args:
+        source: Document source (URL, S3 URI, or local path).
+        title: Optional document title.
+        tags: Optional metadata tags.
+        registry_asset_id: UUID from knowledge_assets registry for stage tracking.
+    """
     tags = tags or {}
     start_time = time.monotonic()
     result: dict[str, Any] = {
@@ -328,6 +346,17 @@ def ingest_document(
         "steps": {},
     }
 
+    # Initialize stage tracker if registry_asset_id provided (issue #2308)
+    tracker = None
+    if registry_asset_id and STAGE_TRACKING_AVAILABLE:
+        try:
+            db_conn = stage_db.get_connection()
+            tracker = StageTracker(db_conn, registry_asset_id, repo_id=None, commit_sha=None)
+            log.info("Stage tracking initialized for doc asset %s (run_id=%s)", registry_asset_id, tracker.run_id)
+        except Exception as e:
+            log.warning("Stage tracking init failed (non-fatal): %s", e)
+            tracker = None
+
     # Initialize S3 content store
     store = S3ContentStore(
         bucket_name=settings.s3_bucket_name,
@@ -336,24 +365,46 @@ def ingest_document(
     )
 
     with tempfile.TemporaryDirectory(prefix="ingest-doc-") as tmpdir:
-        # Step 1: Fetch document
+        # Step 1: Fetch document (tracked as "fetch" stage)
         log.info("Step 1: Fetching %s", source)
         local_path = fetch_document(source, tmpdir)
         if not local_path:
             result["steps"]["fetch"] = "failed"
             result["error"] = f"Failed to fetch {source}"
+            if tracker:
+                with tracker.stage("fetch") as ctx:
+                    ctx.fail(f"Failed to fetch {source}")
+                tracker.finalize()
+                result["run_id"] = tracker.run_id
             return result
         result["steps"]["fetch"] = "ok"
 
-        # Step 2: Convert to markdown
+        if tracker:
+            with tracker.stage("fetch") as ctx:
+                ctx.set_artifact(local_path)
+                ctx.set_metrics({"file_size_bytes": os.path.getsize(local_path)})
+                ctx.verify(lambda: os.path.exists(local_path))
+
+        # Step 2: Convert to markdown (tracked as "convert" stage)
         log.info("Step 2: Converting to markdown")
         markdown = convert_to_markdown(local_path, title)
         if not markdown:
             result["steps"]["convert"] = "failed"
             result["error"] = f"Failed to convert {local_path}"
+            if tracker:
+                with tracker.stage("convert") as ctx:
+                    ctx.fail(f"Failed to convert {local_path}")
+                tracker.finalize()
+                result["run_id"] = tracker.run_id
             return result
         result["steps"]["convert"] = "ok"
         result["markdown_length"] = len(markdown)
+
+        if tracker:
+            with tracker.stage("convert") as ctx:
+                ctx.set_artifact(source)
+                ctx.set_metrics({"markdown_length": len(markdown)})
+                ctx.verify(lambda: len(markdown) > 0)
 
         # Add metadata header
         header = f"---\nsource: {source}\n"
@@ -364,7 +415,7 @@ def ingest_document(
         header += f"ingested_at: {datetime.now(timezone.utc).isoformat()}\n---\n\n"
         markdown = header + markdown
 
-        # Step 3: Upload to S3
+        # Step 3: Upload to S3 (tracked as "s3_upload" stage)
         log.info("Step 3: Uploading to S3")
         s3_path = source_to_s3_path(source)
 
@@ -372,13 +423,33 @@ def ingest_document(
         result["steps"]["s3_upload"] = "ok" if uploaded else "failed"
         result["s3_path"] = s3_path
 
-        # Step 4: GraphRAG extraction
+        if tracker:
+            with tracker.stage("s3_upload") as ctx:
+                if uploaded:
+                    ctx.set_artifact(s3_path)
+                    ctx.set_metrics({"content_length": len(markdown)})
+                    ctx.verify(lambda: store.exists(s3_path))
+                else:
+                    ctx.fail(f"S3 upload failed for {s3_path}")
+
+        # Step 4: GraphRAG extraction (tracked as "graphrag" stage)
         if GRAPHRAG_ENABLED:
             log.info("Step 4: GraphRAG entity extraction")
             graphrag_ok = extract_entities_graphrag(markdown, source, tags)
             result["steps"]["graphrag"] = "ok" if graphrag_ok else "failed"
+
+            if tracker:
+                with tracker.stage("graphrag") as ctx:
+                    if graphrag_ok:
+                        ctx.set_artifact(f"neptune://{source_to_slug(source)}")
+                        ctx.set_metrics({"enabled": True})
+                        ctx.verify(lambda: graphrag_ok)
+                    else:
+                        ctx.fail("GraphRAG entity extraction failed")
         else:
             result["steps"]["graphrag"] = "skipped"
+            if tracker:
+                tracker.mark_skipped("graphrag", "GraphRAG disabled")
 
     elapsed = time.monotonic() - start_time
     result["duration_sec"] = round(elapsed, 1)
@@ -392,6 +463,14 @@ def ingest_document(
     else:
         result["status"] = "failed"
 
+    # Finalize stage tracker
+    if tracker:
+        try:
+            tracker.finalize()
+            result["run_id"] = tracker.run_id
+        except Exception as e:
+            log.warning("Stage tracker finalize failed (non-fatal): %s", e)
+
     log.info(
         "Document ingestion %s: %s in %.1fs (steps: %s)",
         result["status"], source, elapsed, step_results,
@@ -404,6 +483,7 @@ def main():
     parser.add_argument("--source", required=True, help="Document source (URL or S3 URI)")
     parser.add_argument("--title", help="Document title")
     parser.add_argument("--tags", default="{}", help="JSON tags object")
+    parser.add_argument("--registry-asset-id", default=None, help="UUID from knowledge_assets registry for stage tracking")
     args = parser.parse_args()
 
     try:
@@ -415,6 +495,7 @@ def main():
         source=args.source,
         title=args.title,
         tags=tags,
+        registry_asset_id=args.registry_asset_id,
     )
 
     print(json.dumps(result, indent=2))

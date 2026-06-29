@@ -31,6 +31,16 @@ log = get_logger("ingest-url")
 from config import settings
 from s3_store import S3ContentStore
 
+# Stage tracking (issue #2308) — optional, fail-open if DB unavailable
+STAGE_TRACKING_AVAILABLE = False
+try:
+    import db as stage_db
+    from stage_tracker import StageTracker
+
+    STAGE_TRACKING_AVAILABLE = True
+except ImportError:
+    log.info("Stage tracking not available (db/stage_tracker not importable)")
+
 REQUEST_TIMEOUT = settings.request_timeout
 
 # DynamoDB configuration
@@ -265,14 +275,32 @@ def url_to_filename(url: str) -> str:
 async def ingest_url(
     url: str,
     max_pages: int = 100,
+    registry_asset_id: str | None = None,
 ) -> dict[str, Any]:
-    """Full crawling pipeline for one URL (may expand to multiple pages via sitemap)."""
+    """Full crawling pipeline for one URL (may expand to multiple pages via sitemap).
+
+    Args:
+        url: Base URL to crawl.
+        max_pages: Maximum pages to discover via sitemap.
+        registry_asset_id: UUID from knowledge_assets registry (used as stage tracking key).
+    """
     # Initialize S3 content store
     store = S3ContentStore(
         bucket_name=settings.s3_bucket_name,
         prefix=settings.s3_content_prefix,
         region_name=settings.aws_region,
     )
+
+    # Initialize stage tracker if registry_asset_id provided (issue #2308)
+    tracker = None
+    if registry_asset_id and STAGE_TRACKING_AVAILABLE:
+        try:
+            db_conn = stage_db.get_connection()
+            tracker = StageTracker(db_conn, registry_asset_id, repo_id=None, commit_sha=None)
+            log.info("Stage tracking initialized for URL asset %s (run_id=%s)", registry_asset_id, tracker.run_id)
+        except Exception as e:
+            log.warning("Stage tracking init failed (non-fatal): %s", e)
+            tracker = None
 
     result: dict[str, Any] = {
         "url": url,
@@ -288,7 +316,9 @@ async def ingest_url(
     result["pages_discovered"] = len(pages)
     log.info("Discovered %d pages for %s", len(pages), url)
 
-    # Step 2 & 3: Crawl each page and upload
+    # Step 2: Crawl each page (tracked as "fetch" stage)
+    crawled_pages: dict[str, str] = {}  # page_url -> markdown content
+
     for i, page_url in enumerate(pages):
         log.info("[%d/%d] Crawling %s", i + 1, len(pages), page_url)
         try:
@@ -297,24 +327,57 @@ async def ingest_url(
                 log.warning("Skipping %s — empty or too short", page_url)
                 result["errors"].append(f"empty: {page_url}")
                 continue
-
+            crawled_pages[page_url] = markdown
             result["pages_crawled"] += 1
-
-            # Upload to S3
-            s3_path = url_to_s3_path(page_url)
-            uploaded = store.put_content(s3_path, markdown)
-            if uploaded:
-                result["pages_uploaded"] += 1
-            else:
-                result["errors"].append(f"upload_failed: {page_url}")
-
-            # Rate limiting — be polite
-            if i < len(pages) - 1:
-                await asyncio.sleep(1.0)
-
         except Exception as e:
             log.warning("Error crawling %s: %s", page_url, e)
             result["errors"].append(f"error: {page_url}: {e}")
+
+        # Rate limiting — be polite
+        if i < len(pages) - 1:
+            await asyncio.sleep(1.0)
+
+    # Record fetch stage
+    if tracker:
+        with tracker.stage("fetch") as ctx:
+            if result["pages_crawled"] > 0:
+                ctx.set_artifact(url)
+                ctx.set_metrics({
+                    "pages_discovered": result["pages_discovered"],
+                    "pages_crawled": result["pages_crawled"],
+                })
+                ctx.verify(lambda: result["pages_crawled"] > 0)
+            else:
+                ctx.fail("No pages crawled successfully")
+
+    # Step 3: Upload crawled pages to S3 (tracked as "s3_upload" stage)
+    last_s3_path = None
+    for page_url, markdown in crawled_pages.items():
+        s3_path = url_to_s3_path(page_url)
+        uploaded = store.put_content(s3_path, markdown)
+        if uploaded:
+            result["pages_uploaded"] += 1
+            last_s3_path = s3_path
+        else:
+            result["errors"].append(f"upload_failed: {page_url}")
+
+    # Record s3_upload stage
+    if tracker:
+        with tracker.stage("s3_upload") as ctx:
+            if result["pages_uploaded"] > 0 and last_s3_path:
+                ctx.set_artifact(last_s3_path)
+                ctx.set_metrics({"pages_uploaded": result["pages_uploaded"]})
+                ctx.verify(lambda: store.exists(last_s3_path))
+            else:
+                ctx.fail("No pages uploaded to S3")
+
+    # Finalize stage tracker
+    if tracker:
+        try:
+            tracker.finalize()
+            result["run_id"] = tracker.run_id
+        except Exception as e:
+            log.warning("Stage tracker finalize failed (non-fatal): %s", e)
 
     log.info(
         "URL ingestion complete: %d discovered, %d crawled, %d uploaded",
@@ -372,6 +435,7 @@ def main():
     parser.add_argument("--url", required=True, help="URL to crawl")
     parser.add_argument("--max-pages", type=int, default=100, help="Max pages to crawl (default: 100)")
     parser.add_argument("--tags", default="{}", help="JSON tags object for metadata")
+    parser.add_argument("--registry-asset-id", default=None, help="UUID from knowledge_assets registry for stage tracking")
     args = parser.parse_args()
 
     try:
@@ -383,6 +447,7 @@ def main():
         ingest_url(
             url=args.url,
             max_pages=args.max_pages,
+            registry_asset_id=args.registry_asset_id,
         )
     )
 

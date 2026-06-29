@@ -190,7 +190,12 @@ def ingest_repo(
     _run_subprocess(cmd, timeout=TIMEOUTS["repo"], extra_env=scope_env)
 
 
-def ingest_url(source: str, tags: dict[str, str], scope_env: dict[str, str] | None = None) -> None:
+def ingest_url(
+    source: str,
+    tags: dict[str, str],
+    scope_env: dict[str, str] | None = None,
+    registry_asset_id: str | None = None,
+) -> None:
     """Run ingest-url.py for a URL."""
     cmd = [
         sys.executable,
@@ -202,6 +207,8 @@ def ingest_url(source: str, tags: dict[str, str], scope_env: dict[str, str] | No
     ]
     if tags:
         cmd.extend(["--tags", json.dumps(tags)])
+    if registry_asset_id:
+        cmd.extend(["--registry-asset-id", registry_asset_id])
     _run_subprocess(cmd, timeout=TIMEOUTS["url"], extra_env=scope_env)
 
 
@@ -210,6 +217,7 @@ def ingest_doc(
     tags: dict[str, str],
     title: str | None = None,
     scope_env: dict[str, str] | None = None,
+    registry_asset_id: str | None = None,
 ) -> None:
     """Run ingest-doc.py for a document."""
     cmd = [
@@ -222,6 +230,8 @@ def ingest_doc(
         cmd.extend(["--title", title])
     if tags:
         cmd.extend(["--tags", json.dumps(tags)])
+    if registry_asset_id:
+        cmd.extend(["--registry-asset-id", registry_asset_id])
     _run_subprocess(cmd, timeout=TIMEOUTS["doc"], extra_env=scope_env)
 
 
@@ -508,9 +518,9 @@ def main():
         if content_type == "repo":
             ingest_repo(source, tags=tags, steps=steps, scope_env=scope_env)
         elif content_type == "url":
-            ingest_url(source, tags=tags, scope_env=scope_env)
+            ingest_url(source, tags=tags, scope_env=scope_env, registry_asset_id=registry_asset_id)
         elif content_type == "doc":
-            ingest_doc(source, tags=tags, title=title, scope_env=scope_env)
+            ingest_doc(source, tags=tags, title=title, scope_env=scope_env, registry_asset_id=registry_asset_id)
         elif content_type == "infra":
             discover_infra(source, tags=tags, scope_env=scope_env)
         else:
