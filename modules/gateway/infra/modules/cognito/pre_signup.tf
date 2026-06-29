@@ -116,8 +116,9 @@ resource "aws_iam_role_policy" "pre_signup_secrets" {
 
 # Lambda Function
 resource "aws_lambda_function" "pre_signup" {
-  function_name = "${var.name_prefix}-pre-signup-trigger"
-  description   = "Cognito Pre Sign-Up trigger to gate GitHub user sign-ups"
+  function_name                  = "${var.name_prefix}-pre-signup-trigger"
+  description                    = "Cognito Pre Sign-Up trigger to gate GitHub user sign-ups"
+  reserved_concurrent_executions = 10
 
   filename         = data.archive_file.pre_signup.output_path
   source_code_hash = data.archive_file.pre_signup.output_base64sha256
@@ -129,6 +130,10 @@ resource "aws_lambda_function" "pre_signup" {
 
   timeout     = 10 # seconds (GitHub API calls may take a few seconds)
   memory_size = 128
+
+  tracing_config {
+    mode = "Active"
+  }
 
   environment {
     variables = {
@@ -151,6 +156,7 @@ resource "aws_lambda_function" "pre_signup" {
 resource "aws_cloudwatch_log_group" "pre_signup" {
   name              = "/aws/lambda/${var.name_prefix}-pre-signup-trigger"
   retention_in_days = var.environment == "prod" ? 30 : 7
+  kms_key_id        = var.cloudwatch_kms_key_arn
 
   tags = merge(var.common_tags, {
     Name    = "${var.name_prefix}-pre-signup-trigger-logs"

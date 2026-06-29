@@ -27,14 +27,14 @@ locals {
 resource "aws_ecr_repository" "agent_context_images" {
   for_each             = local.images
   name                 = "${var.name_prefix}-${each.key}"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
   }
 
   encryption_configuration {
-    encryption_type = "AES256"
+    encryption_type = "KMS"
   }
 
   tags = merge(var.common_tags, {
@@ -123,6 +123,13 @@ resource "aws_codebuild_project" "agent_context_images" {
   }
 
   build_timeout = 60
+
+  logs_config {
+    cloudwatch_logs {
+      group_name  = "/aws/codebuild/${var.name_prefix}-${each.key}-build"
+      stream_name = ""
+    }
+  }
 
   tags = merge(var.common_tags, {
     Component = "agent-context-images"

@@ -481,6 +481,8 @@ module "rds" {
   maintenance_window      = var.rds_maintenance_window
   db_name                 = var.rds_db_name
   username                = var.rds_username
+
+  cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 }
 
 # =============================================================================
@@ -542,6 +544,9 @@ module "cognito" {
 
   # Issue #642: KMS encryption for DynamoDB tables
   kms_key_arn = aws_kms_key.dynamodb.arn
+
+  # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
+  cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 
   # Issue #769: removed `depends_on = [module.cloudfront]`. The implicit
   # dependency through callback_urls/logout_urls (which reference
@@ -738,6 +743,9 @@ module "budget_lambda" {
   # S3 bucket containing pre-built Lambda layer artifacts (Issue #1038)
   lambda_artifact_bucket = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
 
+  # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
+  cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
+
   # Ensure the psycopg2 layer zip is built+uploaded before this module's
   # aws_s3_object data source reads it.
   depends_on = [module.s3_chat_logs, module.rds, null_resource.build_psycopg2_layer]
@@ -790,6 +798,9 @@ module "api_gateway" {
   # Logging
   log_retention_days = var.api_gateway_log_retention_days
 
+  # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
+  cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
+
   # Issue #1011: GitHub Auth Broker route in OpenAPI body
   broker_lambda_invoke_arn    = var.enable_github_auth_broker ? module.github_auth_broker[0].invoke_arn : ""
   broker_lambda_function_name = var.enable_github_auth_broker ? module.github_auth_broker[0].function_name : ""
@@ -832,6 +843,9 @@ module "lambda_authorizer" {
 
   # Issue #642: KMS encryption for DynamoDB tables
   kms_key_arn = aws_kms_key.dynamodb.arn
+
+  # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
+  cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 
   # Ensure the pyjwt layer zip is built+uploaded before this module's
   # aws_s3_object data source reads it.
@@ -1134,6 +1148,9 @@ module "github_auth_broker" {
   allowed_orgs            = var.github_auth_allowed_orgs
   github_token_secret_arn = var.github_auth_token_secret_arn
   lambda_artifact_bucket  = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+
+  # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
+  cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 
   # Issue #1011: API Gateway route is now defined in the api-gateway module's
   # OpenAPI body. The broker module only creates the Lambda + IAM.

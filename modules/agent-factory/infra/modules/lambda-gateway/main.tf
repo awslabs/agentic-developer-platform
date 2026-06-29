@@ -7,15 +7,20 @@ data "archive_file" "ingest" {
 }
 
 resource "aws_lambda_function" "ingest" {
-  function_name    = "${var.name_prefix}-gateway-ingest"
-  description      = "Agent gateway ingest — channel adapters, session management, SQS enqueue"
-  role             = aws_iam_role.ingest.arn
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.12"
-  memory_size      = 256
-  timeout          = 30
-  filename         = data.archive_file.ingest.output_path
-  source_code_hash = data.archive_file.ingest.output_base64sha256
+  function_name                  = "${var.name_prefix}-gateway-ingest"
+  description                    = "Agent gateway ingest — channel adapters, session management, SQS enqueue"
+  role                           = aws_iam_role.ingest.arn
+  handler                        = "handler.lambda_handler"
+  runtime                        = "python3.12"
+  memory_size                    = 256
+  timeout                        = 30
+  reserved_concurrent_executions = 20
+  filename                       = data.archive_file.ingest.output_path
+  source_code_hash               = data.archive_file.ingest.output_base64sha256
+
+  tracing_config {
+    mode = "Active"
+  }
 
   environment {
     variables = {
@@ -180,6 +185,7 @@ resource "aws_iam_role_policy" "ingest_gh_app_secrets" {
 resource "aws_cloudwatch_log_group" "ingest" {
   name              = "/aws/lambda/${var.name_prefix}-gateway-ingest"
   retention_in_days = 30
+  kms_key_id        = var.cloudwatch_kms_key_arn
   tags              = var.tags
 }
 
@@ -192,15 +198,20 @@ data "archive_file" "response" {
 }
 
 resource "aws_lambda_function" "response" {
-  function_name    = "${var.name_prefix}-gateway-response"
-  description      = "Agent gateway response — channel routers, session serialization"
-  role             = aws_iam_role.response.arn
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.12"
-  memory_size      = 256
-  timeout          = 30
-  filename         = data.archive_file.response.output_path
-  source_code_hash = data.archive_file.response.output_base64sha256
+  function_name                  = "${var.name_prefix}-gateway-response"
+  description                    = "Agent gateway response — channel routers, session serialization"
+  role                           = aws_iam_role.response.arn
+  handler                        = "handler.lambda_handler"
+  runtime                        = "python3.12"
+  memory_size                    = 256
+  timeout                        = 30
+  reserved_concurrent_executions = 50
+  filename                       = data.archive_file.response.output_path
+  source_code_hash               = data.archive_file.response.output_base64sha256
+
+  tracing_config {
+    mode = "Active"
+  }
 
   environment {
     variables = {
@@ -333,5 +344,6 @@ resource "aws_iam_role_policy" "response_secrets" {
 resource "aws_cloudwatch_log_group" "response" {
   name              = "/aws/lambda/${var.name_prefix}-gateway-response"
   retention_in_days = 30
+  kms_key_id        = var.cloudwatch_kms_key_arn
   tags              = var.tags
 }

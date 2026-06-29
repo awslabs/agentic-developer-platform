@@ -98,3 +98,9 @@ variable "classifier_model" {
   type        = string
   default     = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 }
+
+variable "cloudwatch_kms_key_arn" {
+  description = "ARN of the KMS key for CloudWatch Log Group encryption (CKV_AWS_158)"
+  type        = string
+  default     = ""
+}

@@ -72,6 +72,12 @@ variable "lambda_artifact_bucket" {
   type        = string
 }
 
+variable "cloudwatch_kms_key_arn" {
+  description = "ARN of the KMS key for CloudWatch Log Group encryption (CKV_AWS_158)"
+  type        = string
+  default     = ""
+}
+
 # --- API Gateway variables (Issue #525, removed in Issue #1011) ---
 # The route is now defined in the api-gateway module's OpenAPI body.
 # The broker module only needs to expose its invoke_arn as an output.

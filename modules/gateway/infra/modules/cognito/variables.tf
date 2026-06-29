@@ -164,3 +164,9 @@ variable "kms_key_arn" {
   description = "KMS key ARN for DynamoDB server-side encryption"
   type        = string
 }
+
+variable "cloudwatch_kms_key_arn" {
+  description = "ARN of the KMS key for CloudWatch Log Group encryption (CKV_AWS_158)"
+  type        = string
+  default     = ""
+}

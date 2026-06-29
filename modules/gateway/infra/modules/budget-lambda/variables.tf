@@ -121,3 +121,9 @@ variable "log_retention_days" {
   type        = number
   default     = 30
 }
+
+variable "cloudwatch_kms_key_arn" {
+  description = "ARN of the KMS key for CloudWatch Log Group encryption (CKV_AWS_158)"
+  type        = string
+  default     = ""
+}

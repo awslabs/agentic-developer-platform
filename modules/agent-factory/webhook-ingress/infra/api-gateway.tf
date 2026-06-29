@@ -133,4 +133,5 @@ resource "aws_api_gateway_method_settings" "throttle_agent_trigger" {
 resource "aws_cloudwatch_log_group" "api_gateway" {
   name              = "/aws/apigateway/${local.name_prefix}-webhook-ingress"
   retention_in_days = 14
+  kms_key_id        = aws_kms_key.cloudwatch.arn
 }

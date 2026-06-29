@@ -19,6 +19,7 @@
 resource "aws_cloudwatch_log_group" "ingestion" {
   name              = "/adp/${var.environment}/knowledge-layer/ingestion"
   retention_in_days = var.log_retention_days
+  kms_key_id        = var.cloudwatch_kms_key_arn
 
   tags = var.tags
 }
@@ -26,6 +27,7 @@ resource "aws_cloudwatch_log_group" "ingestion" {
 resource "aws_cloudwatch_log_group" "door" {
   name              = "/adp/${var.environment}/knowledge-layer/door"
   retention_in_days = var.log_retention_days
+  kms_key_id        = var.cloudwatch_kms_key_arn
 
   tags = var.tags
 }

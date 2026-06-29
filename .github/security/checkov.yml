@@ -34,8 +34,8 @@ directory:
 # KMS-encryption rules, or EKS-public-endpoint rules here — those are Band B/C.
 skip-check:
   # ─── AWS: S3 ───────────────────────────────────────────────────────────────
-  # S3 bucket logging — not needed in dev
-  - CKV_AWS_18
+  # NOTE: CKV_AWS_18 (S3 access logging) is now FIXED in Terraform (Band B #2380),
+  # not skipped — removed from this list.
   # S3 bucket versioning — controlled via Terraform var, not always needed
   - CKV_AWS_21
   # S3 cross-region replication — CRR is a prod-DR control, not needed in
@@ -46,8 +46,8 @@ skip-check:
   - CKV2_AWS_62
 
   # ─── AWS: CloudWatch / Lambda ──────────────────────────────────────────────
-  # CloudWatch log encryption — not required in dev
-  - CKV_AWS_158
+  # NOTE: CKV_AWS_158 (CloudWatch log KMS encryption) is now FIXED in Terraform
+  # (Band B #2380), not skipped — removed from this list.
   # CloudWatch log retention ≥365 days — dev environment uses 7-30d retention
   # as intentional cost optimization; logs are ephemeral debugging data, not
   # audit records. Re-evaluate per-group when promoting to prod.
@@ -60,12 +60,6 @@ skip-check:
   # Async utility Lambdas (session_sweeper, pricing_refresh) are
   # low-criticality in dev. Add DLQs for async Lambdas in prod.
   - CKV_AWS_116
-  # Lambda reserved concurrency — can throttle during dev testing;
-  # implement per-function limits in prod based on observed traffic
-  - CKV_AWS_115
-  # Lambda X-Ray tracing — adds cost without value at dev traffic levels;
-  # enable in prod for production observability
-  - CKV_AWS_50
 
   # ─── Kubernetes ────────────────────────────────────────────────────────────
   # allowPrivilegeEscalation not set to false — agent containers (chat-agent,

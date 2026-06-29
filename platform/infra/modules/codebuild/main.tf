@@ -84,6 +84,13 @@ resource "aws_codebuild_project" "main" {
     }
   }
 
+  logs_config {
+    cloudwatch_logs {
+      group_name  = "/aws/codebuild/${var.name_prefix}-${each.key}"
+      stream_name = ""
+    }
+  }
+
   tags = var.common_tags
 }
 

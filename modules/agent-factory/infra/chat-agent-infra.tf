@@ -252,12 +252,17 @@ data "archive_file" "session_sweeper_stub" {
 }
 
 resource "aws_lambda_function" "session_sweeper" {
-  function_name = "adp-${var.environment}-chat-session-sweeper"
-  runtime       = "nodejs22.x"
-  handler       = "index.handler"
-  role          = aws_iam_role.session_sweeper.arn
-  timeout       = 60
-  memory_size   = 256
+  function_name                  = "adp-${var.environment}-chat-session-sweeper"
+  runtime                        = "nodejs22.x"
+  handler                        = "index.handler"
+  role                           = aws_iam_role.session_sweeper.arn
+  timeout                        = 60
+  memory_size                    = 256
+  reserved_concurrent_executions = 5
+
+  tracing_config {
+    mode = "Active"
+  }
 
   filename         = data.archive_file.session_sweeper_stub.output_path
   source_code_hash = data.archive_file.session_sweeper_stub.output_base64sha256

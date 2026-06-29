@@ -35,6 +35,12 @@ variable "authorizer_lambda_function_name" {
   }
 }
 
+variable "cloudwatch_kms_key_arn" {
+  description = "ARN of the KMS key for CloudWatch Log Group encryption (CKV_AWS_158)"
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

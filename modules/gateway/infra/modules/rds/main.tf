@@ -200,6 +200,7 @@ resource "aws_db_instance" "read_replica" {
 resource "aws_cloudwatch_log_group" "rds_log_group" {
   name              = "/aws/rds/instance/${aws_db_instance.main.identifier}/postgresql"
   retention_in_days = 30
+  kms_key_id        = var.cloudwatch_kms_key_arn
 
   tags = merge(var.common_tags, {
     Name    = "${var.name_prefix}-rds-logs"

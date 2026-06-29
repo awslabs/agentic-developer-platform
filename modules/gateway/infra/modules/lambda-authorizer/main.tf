@@ -266,8 +266,9 @@ data "archive_file" "authorizer" {
 }
 
 resource "aws_lambda_function" "authorizer" {
-  function_name = "${var.name_prefix}-api-authorizer"
-  description   = "API Gateway Lambda Authorizer for JWT and IAM auth (Issue #239)"
+  function_name                  = "${var.name_prefix}-api-authorizer"
+  description                    = "API Gateway Lambda Authorizer for JWT and IAM auth (Issue #239)"
+  reserved_concurrent_executions = 50
 
   filename         = data.archive_file.authorizer.output_path
   source_code_hash = data.archive_file.authorizer.output_base64sha256
@@ -280,6 +281,10 @@ resource "aws_lambda_function" "authorizer" {
 
   role   = aws_iam_role.authorizer.arn
   layers = [aws_lambda_layer_version.pyjwt.arn]
+
+  tracing_config {
+    mode = "Active"
+  }
 
   environment {
     variables = {
@@ -381,6 +386,7 @@ resource "aws_iam_role_policy" "authorizer" {
 resource "aws_cloudwatch_log_group" "authorizer" {
   name              = "/aws/lambda/${var.name_prefix}-api-authorizer"
   retention_in_days = var.log_retention_days
+  kms_key_id        = var.cloudwatch_kms_key_arn
 
   tags = merge(var.common_tags, {
     Name    = "${var.name_prefix}-api-authorizer-logs"

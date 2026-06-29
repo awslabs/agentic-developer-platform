@@ -45,21 +45,22 @@ module "gateway_lambda" {
   # Chat agent uses the FIFO queue (MessageGroupId=session_id serializes
   # per-session turns). The standard queue still exists for the legacy Python
   # worker but the ingest Lambda only sends to FIFO now.
-  input_queue_url       = aws_sqs_queue.chat_agent_tasks_fifo.url
-  input_queue_arn       = aws_sqs_queue.chat_agent_tasks_fifo.arn
-  response_queue_url    = module.gateway_sqs.response_queue_url
-  response_queue_arn    = module.gateway_sqs.response_queue_arn
-  sessions_table_name   = module.gateway_sessions.table_name
-  sessions_table_arn    = module.gateway_sessions.table_arn
-  artifacts_bucket_arn  = aws_s3_bucket.chat_artifacts.arn
-  artifacts_bucket_name = aws_s3_bucket.chat_artifacts.id
-  artifacts_table_arn   = aws_dynamodb_table.chat_artifacts.arn
-  artifacts_table_name  = aws_dynamodb_table.chat_artifacts.name
-  ws_api_endpoint       = var.gateway_deployed ? module.gateway_apigw[0].stage_invoke_url : ""
-  ws_api_id             = var.gateway_deployed ? module.gateway_apigw[0].api_id : ""
-  ws_execution_arn      = var.gateway_deployed ? module.gateway_apigw[0].execution_arn : ""
-  enable_ws_policies    = true
-  tags                  = { Component = "agent-gateway" }
+  input_queue_url        = aws_sqs_queue.chat_agent_tasks_fifo.url
+  input_queue_arn        = aws_sqs_queue.chat_agent_tasks_fifo.arn
+  response_queue_url     = module.gateway_sqs.response_queue_url
+  response_queue_arn     = module.gateway_sqs.response_queue_arn
+  sessions_table_name    = module.gateway_sessions.table_name
+  sessions_table_arn     = module.gateway_sessions.table_arn
+  artifacts_bucket_arn   = aws_s3_bucket.chat_artifacts.arn
+  artifacts_bucket_name  = aws_s3_bucket.chat_artifacts.id
+  artifacts_table_arn    = aws_dynamodb_table.chat_artifacts.arn
+  artifacts_table_name   = aws_dynamodb_table.chat_artifacts.name
+  ws_api_endpoint        = var.gateway_deployed ? module.gateway_apigw[0].stage_invoke_url : ""
+  ws_api_id              = var.gateway_deployed ? module.gateway_apigw[0].api_id : ""
+  ws_execution_arn       = var.gateway_deployed ? module.gateway_apigw[0].execution_arn : ""
+  enable_ws_policies     = true
+  cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
+  tags                   = { Component = "agent-gateway" }
 }
 
 # --- Gateway Auth (reuse authorizer from gateway module via remote state) ---
@@ -104,6 +105,7 @@ module "gateway_apigw" {
   ingest_lambda_name              = module.gateway_lambda.ingest_lambda_name
   authorizer_lambda_invoke_arn    = local.authorizer_invoke_arn
   authorizer_lambda_function_name = local.authorizer_function_name
+  cloudwatch_kms_key_arn          = aws_kms_key.cloudwatch.arn
   tags                            = { Component = "agent-gateway" }
 }
 

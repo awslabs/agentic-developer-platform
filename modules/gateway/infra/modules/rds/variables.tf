@@ -94,3 +94,9 @@ variable "replica_instance_class" {
   description = "Instance class for read replica (if different from main)"
   default     = ""
 }
+
+variable "cloudwatch_kms_key_arn" {
+  description = "ARN of the KMS key for CloudWatch Log Group encryption (CKV_AWS_158)"
+  type        = string
+  default     = ""
+}

@@ -106,12 +106,17 @@ resource "aws_iam_role_policy" "broker_cognito" {
 # --- Lambda Function ---
 
 resource "aws_lambda_function" "broker" {
-  function_name = local.function_name
-  role          = aws_iam_role.broker.arn
-  handler       = "handler.handler"
-  runtime       = "python3.12"
-  timeout       = 30
-  memory_size   = 128
+  function_name                  = local.function_name
+  role                           = aws_iam_role.broker.arn
+  handler                        = "handler.handler"
+  runtime                        = "python3.12"
+  timeout                        = 30
+  memory_size                    = 128
+  reserved_concurrent_executions = 10
+
+  tracing_config {
+    mode = "Active"
+  }
 
   # Placeholder — deployed via CI/CD after initial terraform apply
   filename         = data.archive_file.placeholder.output_path
@@ -173,6 +178,7 @@ data "archive_file" "placeholder" {
 resource "aws_cloudwatch_log_group" "broker" {
   name              = "/aws/lambda/${local.function_name}"
   retention_in_days = 30
+  kms_key_id        = var.cloudwatch_kms_key_arn
 
   tags = merge(var.common_tags, {
     Name    = "${local.function_name}-logs"

@@ -33,3 +33,9 @@ variable "sqs_queue_name_prefix" {
   description = "SQS queue name prefix for SEARCH() expressions (e.g. adp-dev-eks-cluster-context)"
   type        = string
 }
+
+variable "cloudwatch_kms_key_arn" {
+  description = "ARN of the KMS key for CloudWatch Log Group encryption (CKV_AWS_158)"
+  type        = string
+  default     = ""
+}

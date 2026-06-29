@@ -133,8 +133,9 @@ resource "aws_lambda_layer_version" "psycopg2" {
 # =============================================================================
 
 resource "aws_lambda_function" "usage_tracker" {
-  function_name = "${var.name_prefix}-budget-usage-tracker"
-  description   = "Tracks budget usage from S3 chat logs (Issue #234)"
+  function_name                  = "${var.name_prefix}-budget-usage-tracker"
+  description                    = "Tracks budget usage from S3 chat logs (Issue #234)"
+  reserved_concurrent_executions = 5
 
   filename         = data.archive_file.usage_tracker.output_path
   source_code_hash = data.archive_file.usage_tracker.output_base64sha256
@@ -146,6 +147,10 @@ resource "aws_lambda_function" "usage_tracker" {
 
   role   = aws_iam_role.usage_tracker.arn
   layers = [aws_lambda_layer_version.psycopg2.arn]
+
+  tracing_config {
+    mode = "Active"
+  }
 
   vpc_config {
     subnet_ids         = var.private_subnet_ids
@@ -177,6 +182,7 @@ resource "aws_lambda_function" "usage_tracker" {
 resource "aws_cloudwatch_log_group" "usage_tracker" {
   name              = "/aws/lambda/${var.name_prefix}-budget-usage-tracker"
   retention_in_days = var.log_retention_days
+  kms_key_id        = var.cloudwatch_kms_key_arn
 
   tags = merge(var.common_tags, {
     Name    = "${var.name_prefix}-budget-usage-tracker-logs"
@@ -212,8 +218,9 @@ resource "aws_s3_bucket_notification" "chat_logs" {
 # =============================================================================
 
 resource "aws_lambda_function" "pricing_refresh" {
-  function_name = "${var.name_prefix}-pricing-refresh"
-  description   = "Refreshes model pricing from AWS Pricing API (Issue #234)"
+  function_name                  = "${var.name_prefix}-pricing-refresh"
+  description                    = "Refreshes model pricing from AWS Pricing API (Issue #234)"
+  reserved_concurrent_executions = 2
 
   filename         = data.archive_file.pricing_refresh.output_path
   source_code_hash = data.archive_file.pricing_refresh.output_base64sha256
@@ -225,6 +232,10 @@ resource "aws_lambda_function" "pricing_refresh" {
 
   role   = aws_iam_role.pricing_refresh.arn
   layers = [aws_lambda_layer_version.psycopg2.arn]
+
+  tracing_config {
+    mode = "Active"
+  }
 
   vpc_config {
     subnet_ids         = var.private_subnet_ids
@@ -256,6 +267,7 @@ resource "aws_lambda_function" "pricing_refresh" {
 resource "aws_cloudwatch_log_group" "pricing_refresh" {
   name              = "/aws/lambda/${var.name_prefix}-pricing-refresh"
   retention_in_days = var.log_retention_days
+  kms_key_id        = var.cloudwatch_kms_key_arn
 
   tags = merge(var.common_tags, {
     Name    = "${var.name_prefix}-pricing-refresh-logs"

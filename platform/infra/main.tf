@@ -212,10 +212,11 @@ resource "aws_security_group_rule" "vpc_endpoints_from_eks_cluster" {
 module "ecr" {
   source = "./modules/ecr"
 
-  environment  = var.environment
-  name_prefix  = local.name_prefix
-  common_tags  = local.common_tags
-  repositories = var.ecr_repositories
+  environment            = var.environment
+  name_prefix            = local.name_prefix
+  common_tags            = local.common_tags
+  repositories           = var.ecr_repositories
+  cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 }
 
 # -----------------------------------------------------------------------------

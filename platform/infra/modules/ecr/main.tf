@@ -9,7 +9,7 @@ resource "aws_ecr_repository" "main" {
   }
 
   encryption_configuration {
-    encryption_type = "AES256"
+    encryption_type = "KMS"
   }
 
   tags = merge(var.common_tags, {
@@ -161,6 +161,7 @@ resource "aws_cloudwatch_log_group" "ecr_logs" {
   for_each          = aws_ecr_repository.main
   name              = "/aws/ecr/${each.value.name}"
   retention_in_days = 30
+  kms_key_id        = var.cloudwatch_kms_key_arn
 
   tags = merge(var.common_tags, {
     Name    = "${each.value.name}-logs"

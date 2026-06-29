@@ -8,6 +8,7 @@
 resource "aws_secretsmanager_secret" "webhook_secret" {
   name        = "adp/${var.environment}/webhook-ingress/github-webhook-secret"
   description = "GitHub webhook secret for HMAC-SHA256 signature validation"
+  kms_key_id  = aws_kms_key.secrets.arn
 }
 
 # Placeholder value — will be overwritten during GitHub App webhook configuration
@@ -30,6 +31,7 @@ resource "aws_secretsmanager_secret_version" "webhook_secret" {
 resource "aws_secretsmanager_secret" "github_app_id" {
   name        = "adp/${var.environment}/github-app/adp-agent-platform-id"
   description = "GitHub App ID for the ADP Agent Platform public app"
+  kms_key_id  = aws_kms_key.secrets.arn
 }
 
 resource "aws_secretsmanager_secret_version" "github_app_id" {
@@ -44,6 +46,7 @@ resource "aws_secretsmanager_secret_version" "github_app_id" {
 resource "aws_secretsmanager_secret" "github_app_key" {
   name        = "adp/${var.environment}/github-app/adp-agent-platform-key"
   description = "Private key (PEM) for the ADP Agent Platform public app"
+  kms_key_id  = aws_kms_key.secrets.arn
 }
 
 resource "aws_secretsmanager_secret_version" "github_app_key" {

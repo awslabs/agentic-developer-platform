@@ -95,14 +95,19 @@ resource "aws_iam_role_policy" "pre_token_generation_dynamodb" {
 
 # Lambda Function
 resource "aws_lambda_function" "pre_token_generation" {
-  function_name = "${var.name_prefix}-pre-token-generation"
-  description   = "Cognito Pre Token Generation trigger to inject custom claims"
+  function_name                  = "${var.name_prefix}-pre-token-generation"
+  description                    = "Cognito Pre Token Generation trigger to inject custom claims"
+  reserved_concurrent_executions = 20
 
   filename         = data.archive_file.pre_token_generation.output_path
   source_code_hash = data.archive_file.pre_token_generation.output_base64sha256
 
   handler = "pre_token_generation.handler"
   runtime = "python3.12"
+
+  tracing_config {
+    mode = "Active"
+  }
 
   role = aws_iam_role.pre_token_generation.arn
 
@@ -127,6 +132,7 @@ resource "aws_lambda_function" "pre_token_generation" {
 resource "aws_cloudwatch_log_group" "pre_token_generation" {
   name              = "/aws/lambda/${var.name_prefix}-pre-token-generation"
   retention_in_days = var.environment == "prod" ? 30 : 7
+  kms_key_id        = var.cloudwatch_kms_key_arn
 
   tags = merge(var.common_tags, {
     Name    = "${var.name_prefix}-pre-token-generation-logs"

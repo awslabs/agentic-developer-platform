@@ -302,11 +302,12 @@ module "observability" {
   source = "./modules/observability"
   count  = var.enable_knowledge_layer_otel ? 1 : 0
 
-  environment           = var.environment
-  aws_region            = var.aws_region
-  name_prefix           = local.name_prefix
-  sqs_queue_name_prefix = "${local.cluster_name}-context"
-  tags                  = var.tags
+  environment            = var.environment
+  aws_region             = var.aws_region
+  name_prefix            = local.name_prefix
+  sqs_queue_name_prefix  = "${local.cluster_name}-context"
+  tags                   = var.tags
+  cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 }
 
 # =============================================================================

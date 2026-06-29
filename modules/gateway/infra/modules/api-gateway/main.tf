@@ -253,8 +253,8 @@ resource "aws_api_gateway_rest_api" "main" {
             }
           ]
           x-amazon-apigateway-integration = {
-            type                 = "http_proxy"
-            httpMethod           = "ANY"
+            type       = "http_proxy"
+            httpMethod = "ANY"
             # Preserve the /internal prefix when forwarding to the gateway pod.
             # The Bedrock /agent proxy strips its prefix because the pod serves
             # Bedrock requests at root paths; but the /internal/v1/* routes are
@@ -343,6 +343,7 @@ resource "aws_api_gateway_rest_api" "main" {
 resource "aws_cloudwatch_log_group" "api_gateway" {
   name              = "/aws/api-gateway/${var.name_prefix}-api"
   retention_in_days = var.log_retention_days
+  kms_key_id        = var.cloudwatch_kms_key_arn
 
   tags = merge(var.common_tags, {
     Name    = "${var.name_prefix}-api-gateway-logs"

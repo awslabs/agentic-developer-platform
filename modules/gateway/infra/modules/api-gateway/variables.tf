@@ -161,3 +161,9 @@ variable "enable_broker_route" {
   type        = bool
   default     = false
 }
+
+variable "cloudwatch_kms_key_arn" {
+  description = "ARN of the KMS key for CloudWatch Log Group encryption (CKV_AWS_158)"
+  type        = string
+  default     = ""
+}

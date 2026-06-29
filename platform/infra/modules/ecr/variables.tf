@@ -22,7 +22,7 @@ variable "common_tags" {
 variable "image_tag_mutability" {
   type        = string
   description = "ECR image tag mutability"
-  default     = "MUTABLE"
+  default     = "IMMUTABLE"
   validation {
     condition     = contains(["MUTABLE", "IMMUTABLE"], var.image_tag_mutability)
     error_message = "ECR image tag mutability must be MUTABLE or IMMUTABLE."
@@ -68,5 +68,11 @@ variable "enable_event_notifications" {
 variable "sns_topic_arn" {
   type        = string
   description = "SNS topic ARN for ECR event notifications"
+  default     = ""
+}
+
+variable "cloudwatch_kms_key_arn" {
+  description = "ARN of the KMS key for CloudWatch Log Group encryption (CKV_AWS_158)"
+  type        = string
   default     = ""
 }
