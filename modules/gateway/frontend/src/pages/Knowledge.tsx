@@ -354,15 +354,13 @@ export default function Knowledge() {
                 </div>
               </div>
 
-              {/* Index status chips (Story G — per-tool status) */}
-              {selectedAsset.assetType === 'repo' && (
-                <div>
-                  <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                    Indexing Status
-                  </p>
-                  <AssetStatusChips assetId={selectedAsset.id} />
-                </div>
-              )}
+              {/* Index status chips (Story G — per-tool status; Story 3 #2309 — all types) */}
+              <div>
+                <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                  Indexing Status
+                </p>
+                <AssetStatusChips assetId={selectedAsset.id} assetType={selectedAsset.assetType} />
+              </div>
 
               {/* Error display */}
               {selectedAsset.lastError && (

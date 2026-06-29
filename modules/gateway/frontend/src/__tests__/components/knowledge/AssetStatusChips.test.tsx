@@ -2,15 +2,19 @@
  * Component tests for AssetStatusChips.
  *
  * Issue #1796 (Story G of E10 #1736).
+ * Issue #2309 (Story 3 of EPIC #2292): 4-state rendering, metrics, workerPod.
  *
  * Tests:
  * - Loading state
  * - Error state
  * - Repo not found (not yet indexed)
- * - No stages (no stage data)
- * - Full render with chips from fixture
+ * - No stages — repo type (no stage data)
+ * - No stages — url/doc type (stage tracking not available)
+ * - Full render with 4-state chips (verified/failed/skipped/not-available)
+ * - Metrics display on verified stages
+ * - WorkerPod display on failed stages
  * - Compact mode renders dots
- * - Failed stages show error toggle
+ * - Failed stages show error toggle with workerPod
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -46,6 +50,8 @@ const fullStatusResponse = {
       error: null,
       startedAt: '2026-06-20T10:01:00Z',
       completedAt: '2026-06-20T10:02:00Z',
+      metrics: { files: 150 },
+      workerPod: null,
     },
     {
       stage: 'cgc_structural',
@@ -54,39 +60,50 @@ const fullStatusResponse = {
       error: null,
       startedAt: '2026-06-20T10:02:00Z',
       completedAt: '2026-06-20T10:03:00Z',
+      metrics: { symbols: 5000 },
+      workerPod: 'worker-abc-123',
     },
     {
       stage: 'embed_vectors',
-      status: 'running',
+      status: 'verified',
       artifactRef: null,
       error: null,
       startedAt: '2026-06-20T10:03:00Z',
-      completedAt: null,
+      completedAt: '2026-06-20T10:04:00Z',
+      metrics: { vectors: 12000 },
+      workerPod: 'worker-abc-123',
     },
     {
       stage: 'sbom_source',
-      status: 'pending',
+      status: 'verified',
       artifactRef: null,
       error: null,
-      startedAt: null,
-      completedAt: null,
+      startedAt: '2026-06-20T10:04:00Z',
+      completedAt: '2026-06-20T10:05:00Z',
+      metrics: { packages: 87 },
+      workerPod: 'worker-abc-123',
     },
     {
       stage: 'deepwiki',
+      status: 'failed',
+      artifactRef: null,
+      error: 'Timeout after 300s',
+      startedAt: '2026-06-20T10:05:00Z',
+      completedAt: '2026-06-20T10:10:00Z',
+      metrics: null,
+      workerPod: 'worker-wiki-456',
+    },
+    {
+      stage: 'graphrag',
       status: 'skipped',
       artifactRef: null,
       error: null,
       startedAt: null,
       completedAt: null,
+      metrics: null,
+      workerPod: null,
     },
-    {
-      stage: 'zoekt_index',
-      status: 'failed',
-      artifactRef: null,
-      error: 'Timeout after 300s',
-      startedAt: '2026-06-20T10:03:00Z',
-      completedAt: '2026-06-20T10:08:00Z',
-    },
+    // zoekt_index intentionally missing (no row) → should render "not available"
   ],
 };
 
@@ -135,7 +152,7 @@ describe('AssetStatusChips', () => {
     expect(screen.getByText('Not yet indexed')).toBeInTheDocument();
   });
 
-  it('shows "No stage data" when repo found but no stages', async () => {
+  it('shows "No stage data" when repo-type asset has empty stages', async () => {
     mockGetAssetStatus.mockResolvedValue({
       assetId: 'asset-001',
       sourceRef: 'https://github.com/acme/my-service',
@@ -146,14 +163,54 @@ describe('AssetStatusChips', () => {
       stages: [],
     });
 
-    render(<AssetStatusChips assetId="asset-001" />);
+    render(<AssetStatusChips assetId="asset-001" assetType="repo" />);
     await waitFor(() => {
       expect(screen.getByTestId('asset-status-no-stages')).toBeInTheDocument();
     });
     expect(screen.getByText('No stage data')).toBeInTheDocument();
   });
 
-  it('renders chips for all canonical stages with correct status', async () => {
+  it('shows "Stage tracking not yet available" for url asset with zero stages', async () => {
+    mockGetAssetStatus.mockResolvedValue({
+      assetId: 'asset-url-001',
+      sourceRef: 'https://docs.example.com',
+      repoFound: true,
+      runId: null,
+      runStatus: null,
+      runStartedAt: null,
+      stages: [],
+    });
+
+    render(<AssetStatusChips assetId="asset-url-001" assetType="url" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('asset-status-no-stages')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText('Stage tracking not yet available for this asset type'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows "Stage tracking not yet available" for doc asset with zero stages', async () => {
+    mockGetAssetStatus.mockResolvedValue({
+      assetId: 'asset-doc-001',
+      sourceRef: 'uploaded-doc.pdf',
+      repoFound: true,
+      runId: null,
+      runStatus: null,
+      runStartedAt: null,
+      stages: [],
+    });
+
+    render(<AssetStatusChips assetId="asset-doc-001" assetType="doc" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('asset-status-no-stages')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText('Stage tracking not yet available for this asset type'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders 4-state chips: verified, failed, skipped, not-available', async () => {
     mockGetAssetStatus.mockResolvedValue(fullStatusResponse);
 
     render(<AssetStatusChips assetId="asset-001" />);
@@ -161,24 +218,102 @@ describe('AssetStatusChips', () => {
       expect(screen.getByTestId('asset-status-chips')).toBeInTheDocument();
     });
 
-    // All 6 canonical stages should be rendered as chips
-    expect(screen.getByTestId('stage-chip-clone')).toBeInTheDocument();
-    expect(screen.getByTestId('stage-chip-cgc_structural')).toBeInTheDocument();
-    expect(screen.getByTestId('stage-chip-embed_vectors')).toBeInTheDocument();
-    expect(screen.getByTestId('stage-chip-sbom_source')).toBeInTheDocument();
-    expect(screen.getByTestId('stage-chip-deepwiki')).toBeInTheDocument();
-    expect(screen.getByTestId('stage-chip-zoekt_index')).toBeInTheDocument();
+    // Verified stages render with ✓
+    const cloneChip = screen.getByTestId('stage-chip-clone');
+    expect(cloneChip).toHaveTextContent('✓');
+    expect(cloneChip).toHaveTextContent('Clone');
 
-    // Labels should render correctly
-    expect(screen.getByText('Clone')).toBeInTheDocument();
-    expect(screen.getByText('Structural')).toBeInTheDocument();
-    expect(screen.getByText('Vectors')).toBeInTheDocument();
-    expect(screen.getByText('SBOM')).toBeInTheDocument();
-    expect(screen.getByText('Wiki')).toBeInTheDocument();
-    expect(screen.getByText('Zoekt')).toBeInTheDocument();
+    const codeGraphChip = screen.getByTestId('stage-chip-cgc_structural');
+    expect(codeGraphChip).toHaveTextContent('✓');
+    expect(codeGraphChip).toHaveTextContent('Code Graph');
+
+    // Failed stage renders with ✗
+    const wikiChip = screen.getByTestId('stage-chip-deepwiki');
+    expect(wikiChip).toHaveTextContent('✗');
+    expect(wikiChip).toHaveTextContent('Wiki');
+
+    // Skipped stage renders with "skipped" label
+    const graphragChip = screen.getByTestId('stage-chip-graphrag');
+    expect(graphragChip).toHaveTextContent('Knowledge Graph');
+    expect(graphragChip).toHaveTextContent('skipped');
+
+    // Not-available stage (zoekt_index has no row) renders with dash
+    const zoektChip = screen.getByTestId('stage-chip-zoekt_index');
+    expect(zoektChip).toHaveTextContent('Code Search');
+    expect(zoektChip).toHaveTextContent('—');
   });
 
-  it('shows error toggle when stages have failures', async () => {
+  it('renders friendly labels (canonical names from design)', async () => {
+    mockGetAssetStatus.mockResolvedValue(fullStatusResponse);
+
+    render(<AssetStatusChips assetId="asset-001" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('asset-status-chips')).toBeInTheDocument();
+    });
+
+    // Check friendly labels are rendered via their chips (test-ids are stable)
+    expect(screen.getByTestId('stage-chip-clone')).toHaveTextContent('Clone');
+    expect(screen.getByTestId('stage-chip-cgc_structural')).toHaveTextContent('Code Graph');
+    expect(screen.getByTestId('stage-chip-embed_vectors')).toHaveTextContent('Embeddings');
+    expect(screen.getByTestId('stage-chip-sbom_source')).toHaveTextContent('Dependencies (SBOM)');
+    expect(screen.getByTestId('stage-chip-deepwiki')).toHaveTextContent('Wiki');
+    expect(screen.getByTestId('stage-chip-zoekt_index')).toHaveTextContent('Code Search');
+    expect(screen.getByTestId('stage-chip-graphrag')).toHaveTextContent('Knowledge Graph');
+  });
+
+  it('renders metrics for verified stages', async () => {
+    mockGetAssetStatus.mockResolvedValue(fullStatusResponse);
+
+    render(<AssetStatusChips assetId="asset-001" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('asset-status-chips')).toBeInTheDocument();
+    });
+
+    // Clone has metrics: { files: 150 }
+    const cloneMetrics = screen.getByTestId('stage-metrics-clone');
+    expect(cloneMetrics).toHaveTextContent('150 files');
+
+    // Code Graph has metrics: { symbols: 5000 }
+    const cgcMetrics = screen.getByTestId('stage-metrics-cgc_structural');
+    expect(cgcMetrics).toHaveTextContent('5,000 symbols');
+
+    // Embeddings has metrics: { vectors: 12000 }
+    const embedMetrics = screen.getByTestId('stage-metrics-embed_vectors');
+    expect(embedMetrics).toHaveTextContent('12,000 vectors');
+
+    // SBOM has metrics: { packages: 87 }
+    const sbomMetrics = screen.getByTestId('stage-metrics-sbom_source');
+    expect(sbomMetrics).toHaveTextContent('87 packages');
+  });
+
+  it('renders metrics with multiple values (nodes/edges)', async () => {
+    mockGetAssetStatus.mockResolvedValue({
+      ...fullStatusResponse,
+      stages: [
+        {
+          stage: 'scip_structural',
+          status: 'verified',
+          artifactRef: null,
+          error: null,
+          startedAt: '2026-06-20T10:02:00Z',
+          completedAt: '2026-06-20T10:03:00Z',
+          metrics: { nodes: 12548, edges: 16320 },
+          workerPod: null,
+        },
+      ],
+    });
+
+    render(<AssetStatusChips assetId="asset-001" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('asset-status-chips')).toBeInTheDocument();
+    });
+
+    const scipMetrics = screen.getByTestId('stage-metrics-scip_structural');
+    expect(scipMetrics).toHaveTextContent('12,548 nodes');
+    expect(scipMetrics).toHaveTextContent('16,320 edges');
+  });
+
+  it('shows workerPod in error details for failed stages', async () => {
     mockGetAssetStatus.mockResolvedValue(fullStatusResponse);
 
     render(<AssetStatusChips assetId="asset-001" />);
@@ -193,6 +328,10 @@ describe('AssetStatusChips', () => {
     // Click to show errors
     await userEvent.click(errorToggle);
     expect(screen.getByText('Timeout after 300s')).toBeInTheDocument();
+
+    // WorkerPod should be shown for log lookup
+    const podElement = screen.getByTestId('worker-pod-deepwiki');
+    expect(podElement).toHaveTextContent('pod: worker-wiki-456');
   });
 
   it('renders compact mode with dots', async () => {
@@ -223,6 +362,31 @@ describe('AssetStatusChips', () => {
       expect(screen.getByTestId('asset-status-no-repo')).toBeInTheDocument();
     });
     expect(screen.getByText('-')).toBeInTheDocument();
+  });
+
+  it('does not render metrics for stages without metrics', async () => {
+    mockGetAssetStatus.mockResolvedValue({
+      ...fullStatusResponse,
+      stages: [
+        {
+          stage: 'clone',
+          status: 'verified',
+          artifactRef: null,
+          error: null,
+          startedAt: '2026-06-20T10:01:00Z',
+          completedAt: '2026-06-20T10:02:00Z',
+          metrics: null,
+          workerPod: null,
+        },
+      ],
+    });
+
+    render(<AssetStatusChips assetId="asset-001" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('asset-status-chips')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByTestId('stage-metrics-clone')).not.toBeInTheDocument();
   });
 });
 
