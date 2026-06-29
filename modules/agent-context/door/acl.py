@@ -243,9 +243,9 @@ class PostgresACLStore:
 
         query = """
             SELECT repo_name FROM repositories
-            WHERE $1 = ANY(allowed_principals)
-               OR $2 = ANY(allowed_principals)
-               OR allowed_principals && $3::text[]
+            WHERE %s = ANY(allowed_principals)
+               OR %s = ANY(allowed_principals)
+               OR allowed_principals && %s::text[]
         """
         params = [PUBLIC_SENTINEL, login, teams]
 
@@ -278,18 +278,18 @@ class PostgresACLStore:
         query = """
             SELECT repo_name FROM repositories
             WHERE (
-                (tenant_id IS NULL OR tenant_id = $4)
+                (tenant_id IS NULL OR tenant_id = %s)
                 AND (
-                    $1 = ANY(allowed_principals)
-                    OR $2 = ANY(allowed_principals)
-                    OR allowed_principals && $3::text[]
+                    %s = ANY(allowed_principals)
+                    OR %s = ANY(allowed_principals)
+                    OR allowed_principals && %s::text[]
                 )
             )
             OR (
-                $5 != '' AND owner_sub = $5
+                %s != '' AND owner_sub = %s
             )
         """
-        params = [PUBLIC_SENTINEL, login, teams, tenant_id, owner_sub]
+        params = [tenant_id, PUBLIC_SENTINEL, login, teams, owner_sub, owner_sub]
 
         conn = self._pool.getconn()
         try:
