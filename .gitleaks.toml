@@ -28,6 +28,28 @@ paths = [
   '''modules/gateway/frontend/tests/e2e/test_budget_ratelimit_smoke\.py''',
   '''data/security/2026-06-05-class-A-gitleaks-allowlist-audit\.md''',
   '''docs/bedrock-agentore-dg\.md''',
+
+  # Probe Phase-1 remediation (#2312) — verified synthetic test fixtures, doc samples,
+  # and scanner baseline. All confirmed false positives in #2312 triage.
+  '''modules/agent-factory/agent/src/experience-save-hook\.test\.ts''',
+  '''modules/agent-factory/agent/src/run-completion-event\.test\.ts''',
+  '''\.github/security/semgrep-baseline\.sarif''',
+  '''modules/agent-context/tests/unit/test_write_path\.py''',
+  '''modules/gateway/tests/internal/test_assume_role_routes\.py''',
+  '''modules/gateway/tests/README\.md''',
+  '''modules/agent-factory/webhook-ingress/lambda/github/tests/test_auto_provision_secret\.py''',
+  '''modules/gateway/tests/activity/test_routes\.py''',
+  '''docs/design-notes/2212-external-integration-cross-service-design\.md''',
+  '''agent_learning/2026-04-22-issue-95-learnings\.md''',
+  '''modules/agent-context/tests/unit/test_github_repos\.py''',
+  '''modules/agent-factory/agent-worker-image/tests/test_entrypoint\.py''',
+  '''modules/gateway/tests/admin/test_connections_service\.py''',
+  '''modules/gateway/tests/knowledge/test_github_app_service\.py''',
+  '''agent_learning/2026-04-20-issue-63-learnings\.md''',
+  '''agent_learning/2026-04-24-issue-130-learnings\.md''',
+  '''modules/agent-context/tests/unit/test_indexes\.py''',
+  '''\.github/workflows/agent-factory-infra-apply\.yml''',
+  '''\.github/workflows/gateway-deploy\.yml''',
 ]
 regexes = [
   '''AKIAIOSFODNN7EXAMPLE''',
