@@ -3,6 +3,7 @@
  *
  * Issue #1796 (Story G of E10 #1736).
  * Issue #2309 (Story 3 of EPIC #2292): 4-state rendering, metrics, workerPod.
+ * Issue #2310 (Story 5 of EPIC #2292): Live polling, polling indicator, enablePolling prop.
  *
  * Tests:
  * - Loading state
@@ -15,10 +16,12 @@
  * - WorkerPod display on failed stages
  * - Compact mode renders dots
  * - Failed stages show error toggle with workerPod
+ * - Polling indicator shown for non-terminal states
+ * - No polling indicator when enablePolling=false
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AssetStatusChips, statusColor } from '@/components/knowledge/AssetStatusChips';
 
@@ -387,6 +390,99 @@ describe('AssetStatusChips', () => {
     });
 
     expect(screen.queryByTestId('stage-metrics-clone')).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// statusColor utility tests
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Polling behavior tests (Issue #2310)
+// ---------------------------------------------------------------------------
+
+describe('AssetStatusChips — polling behavior', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows polling indicator when status is non-terminal (indexing)', async () => {
+    const indexingResponse = {
+      ...fullStatusResponse,
+      runStatus: 'indexing',
+      stages: [
+        { stage: 'clone', status: 'verified', artifactRef: null, error: null, startedAt: null, completedAt: null, metrics: { files: 50 }, workerPod: null },
+        { stage: 'embed_vectors', status: 'running', artifactRef: null, error: null, startedAt: null, completedAt: null, metrics: null, workerPod: 'worker-1' },
+      ],
+    };
+    mockGetAssetStatus.mockResolvedValue(indexingResponse);
+
+    render(<AssetStatusChips assetId="asset-001" enablePolling={true} />);
+
+    // Advance timers and flush promises
+    await act(async () => { vi.advanceTimersByTime(0); });
+
+    expect(screen.getByTestId('polling-indicator')).toBeInTheDocument();
+    expect(screen.getByText('Updating live')).toBeInTheDocument();
+  });
+
+  it('does not show polling indicator when status is terminal', async () => {
+    mockGetAssetStatus.mockResolvedValue(fullStatusResponse); // runStatus: 'completed'
+
+    render(<AssetStatusChips assetId="asset-001" enablePolling={true} />);
+
+    await act(async () => { vi.advanceTimersByTime(0); });
+
+    expect(screen.getByTestId('asset-status-chips')).toBeInTheDocument();
+    expect(screen.queryByTestId('polling-indicator')).not.toBeInTheDocument();
+  });
+
+  it('does not show polling indicator when enablePolling is false', async () => {
+    const indexingResponse = {
+      ...fullStatusResponse,
+      runStatus: 'indexing',
+      stages: [
+        { stage: 'clone', status: 'running', artifactRef: null, error: null, startedAt: null, completedAt: null, metrics: null, workerPod: null },
+      ],
+    };
+    mockGetAssetStatus.mockResolvedValue(indexingResponse);
+
+    render(<AssetStatusChips assetId="asset-001" enablePolling={false} />);
+
+    await act(async () => { vi.advanceTimersByTime(0); });
+
+    // With enablePolling=false, the hook doesn't fetch at all, so we get loading/empty state
+    expect(screen.queryByTestId('polling-indicator')).not.toBeInTheDocument();
+  });
+
+  it('calls onStatusChange when status transitions', async () => {
+    const onStatusChange = vi.fn();
+    const indexingResponse = {
+      ...fullStatusResponse,
+      runStatus: 'indexing',
+      stages: [
+        { stage: 'clone', status: 'running', artifactRef: null, error: null, startedAt: null, completedAt: null, metrics: null, workerPod: null },
+      ],
+    };
+    mockGetAssetStatus.mockResolvedValue(indexingResponse);
+
+    render(
+      <AssetStatusChips
+        assetId="asset-001"
+        enablePolling={true}
+        onStatusChange={onStatusChange}
+      />,
+    );
+
+    await act(async () => { vi.advanceTimersByTime(0); });
+
+    // Initial transition: null → indexing
+    expect(onStatusChange).toHaveBeenCalledWith(null, 'indexing');
   });
 });
 

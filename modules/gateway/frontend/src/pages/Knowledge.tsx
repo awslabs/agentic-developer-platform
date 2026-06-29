@@ -7,7 +7,7 @@
  * - Right: project context stub (until #1728)
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Tabs, TabsList, Tab, TabPanel } from '@/components/ui/Tabs';
@@ -163,6 +163,25 @@ export default function Knowledge() {
       toastRef.current.error('Failed to reindex asset');
     }
   };
+
+  // Refresh asset list when ingestion status transitions (live polling callback)
+  const handleStatusChange = useCallback(
+    (_oldStatus: string | null, newStatus: string | null) => {
+      // Refresh the list to update the badge when a terminal state is reached
+      // or when the status transitions (queued→indexing, indexing→indexed, etc.)
+      if (newStatus) {
+        loadAssets();
+      }
+    },
+    [loadAssets],
+  );
+
+  // Determine if the selected asset is in a non-terminal state (should poll)
+  const shouldPollDetail = useMemo(() => {
+    if (!selectedAsset) return false;
+    const terminalStatuses = new Set(['indexed', 'failed', 'removed']);
+    return !terminalStatuses.has(selectedAsset.status);
+  }, [selectedAsset]);
 
   return (
     <div className="h-full flex flex-col">
@@ -354,12 +373,17 @@ export default function Knowledge() {
                 </div>
               </div>
 
-              {/* Index status chips (Story G — per-tool status; Story 3 #2309 — all types) */}
+              {/* Index status chips (Story G — per-tool status; Story 3 #2309 — all types; Story 5 #2310 — live) */}
               <div>
                 <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
                   Indexing Status
                 </p>
-                <AssetStatusChips assetId={selectedAsset.id} assetType={selectedAsset.assetType} />
+                <AssetStatusChips
+                  assetId={selectedAsset.id}
+                  assetType={selectedAsset.assetType}
+                  enablePolling={shouldPollDetail}
+                  onStatusChange={handleStatusChange}
+                />
               </div>
 
               {/* Error display */}

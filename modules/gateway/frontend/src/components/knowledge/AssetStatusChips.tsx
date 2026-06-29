@@ -8,9 +8,9 @@
  * names, metrics, workerPod, 4-state stages (verified/failed/skipped/not-available).
  */
 
-import { useState, useEffect } from 'react';
-import { getAssetStatus } from '@/services/knowledge';
-import type { AssetStatusResponse, AssetIndexStage } from '@/types';
+import { useState } from 'react';
+import { usePollingStatus } from '@/hooks/usePollingStatus';
+import type { AssetIndexStage } from '@/types';
 
 /** The canonical indexing stages (display order). */
 const STAGES = [
@@ -72,6 +72,10 @@ export interface AssetStatusChipsProps {
   assetType?: string;
   /** Compact mode shows only chip icons inline in the asset list. */
   compact?: boolean;
+  /** Enable live polling (stops on terminal state). Defaults to true. */
+  enablePolling?: boolean;
+  /** Called when the run status changes (e.g. queued→indexing→indexed). */
+  onStatusChange?: (oldStatus: string | null, newStatus: string | null) => void;
 }
 
 /**
@@ -84,38 +88,18 @@ export interface AssetStatusChipsProps {
  * - skipped (row exists with status=skipped) → muted "skipped (disabled)"
  * - no row → gray "not available"
  */
-export function AssetStatusChips({ assetId, assetType, compact = false }: AssetStatusChipsProps) {
-  const [status, setStatus] = useState<AssetStatusResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function fetchStatus() {
-      setIsLoading(true);
-      setError(null);
-      try {
-        const result = await getAssetStatus(assetId);
-        if (!cancelled) {
-          setStatus(result);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load status');
-        }
-      } finally {
-        if (!cancelled) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    fetchStatus();
-    return () => {
-      cancelled = true;
-    };
-  }, [assetId]);
+export function AssetStatusChips({
+  assetId,
+  assetType,
+  compact = false,
+  enablePolling = true,
+  onStatusChange,
+}: AssetStatusChipsProps) {
+  const { status, isLoading, error, isPolling } = usePollingStatus({
+    assetId,
+    enabled: enablePolling,
+    onStatusChange,
+  });
 
   if (isLoading) {
     return (
@@ -201,6 +185,13 @@ export function AssetStatusChips({ assetId, assetType, compact = false }: AssetS
             <StageChip key={s.stage} stageName={s.stage} stage={s} />
           ))}
       </div>
+      {/* Live-update indicator when polling is active */}
+      {isPolling && (
+        <p className="text-xs text-gray-400 dark:text-gray-500" data-testid="polling-indicator">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse mr-1 align-middle" />
+          Updating live
+        </p>
+      )}
       {/* Show errors for failed stages (with workerPod) */}
       {status.stages.some((s) => s.status === 'failed') && (
         <StageErrors stages={status.stages.filter((s) => s.status === 'failed')} />
