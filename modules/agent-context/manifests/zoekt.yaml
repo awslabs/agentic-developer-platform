@@ -31,12 +31,33 @@ spec:
     spec:
       serviceAccountName: ${SERVICE_ACCOUNT}
       initContainers:
-      - name: ensure-index-dir
+      - name: prepare-index
         image: busybox:1.36
-        command: ["sh", "-c", "ls /data/index && echo 'Index directory accessible'"]
+        command: ["sh", "-c"]
+        args:
+          - |
+            echo "Preparing index directory..."
+            mkdir -p /data/index
+            echo "Symlinking shard dirs from S3..."
+            for dir in /mnt/s3-shards/*/; do
+              if [ -d "$dir" ]; then
+                name=$(basename "$dir")
+                ln -sf "$dir" "/data/index/$name"
+                echo "  linked: $name"
+              fi
+            done
+            for f in /mnt/s3-shards/*.zoekt; do
+              if [ -f "$f" ]; then
+                ln -sf "$f" "/data/index/$(basename $f)"
+              fi
+            done
+            echo "Index dir contents:"
+            ls -la /data/index/
         volumeMounts:
+        - name: scratch
+          mountPath: /data
         - name: index-data
-          mountPath: /data/index
+          mountPath: /mnt/s3-shards
           subPath: zoekt-shards
           readOnly: true
       containers:
@@ -54,8 +75,10 @@ spec:
           name: http
           protocol: TCP
         volumeMounts:
+        - name: scratch
+          mountPath: /data
         - name: index-data
-          mountPath: /data/index
+          mountPath: /mnt/s3-shards
           subPath: zoekt-shards
           readOnly: true
         resources:
@@ -85,6 +108,8 @@ spec:
       - name: index-data
         persistentVolumeClaim:
           claimName: platform-data
+      - name: scratch
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
