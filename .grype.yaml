@@ -1022,6 +1022,48 @@ ignore:
   # Source: High loop cycle 11 (#615).
   # ============================================================================
 
+  # ============================================================================
+  # Gateway infra tests: go-getter symlink attack (GHSA-wjrx-6529-hcj3).
+  # github.com/hashicorp/go-getter is an indirect dependency of Terratest,
+  # used only in integration tests — NOT shipped in any production image.
+  # v1.7.6 does not resolve the advisory and no fixed version is published.
+  # Re-evaluate quarterly (next: 2026-09-29).
+  # Source: Issue #2353, EPIC #615.
+  # ============================================================================
+
+  - vulnerability: GHSA-wjrx-6529-hcj3
+    package:
+      type: go-module
+      name: github.com/hashicorp/go-getter
+
+  # ============================================================================
+  # Test fixtures: urllib3 1.26.18 intentionally-vulnerable pinning.
+  # The only source of urllib3 1.26.18 in the repo is the planted test fixture
+  # at modules/agent-context/tests/fixtures/vulnerable-requirements.txt (and its
+  # CycloneDX SBOM). Production lockfiles (uv.lock) ship urllib3 2.7.0 which is
+  # fully patched. These findings are test data, not shipping code.
+  # Re-evaluate quarterly (next: 2026-09-29).
+  # Source: Issue #2353, EPIC #615.
+  # ============================================================================
+
+  # GHSA-gm62-xv2j-4w53: urllib3 decompression bomb — test fixture only.
+  - vulnerability: GHSA-gm62-xv2j-4w53
+    package:
+      type: python
+      name: urllib3
+
+  # GHSA-38jv-5279-wg99: urllib3 redirect-link DoS — test fixture only.
+  - vulnerability: GHSA-38jv-5279-wg99
+    package:
+      type: python
+      name: urllib3
+
+  # GHSA-2xpw-w6gg-jr37: urllib3 decompression DoS — test fixture only.
+  - vulnerability: GHSA-2xpw-w6gg-jr37
+    package:
+      type: python
+      name: urllib3
+
   # GHSA-7f5h-v6xp-fcq8: Starlette path traversal. Fixed in source (pyproject.toml
   # pins starlette>=0.46). Will clear on next gateway image rebuild.
   # Source: https://github.com/advisories/GHSA-7f5h-v6xp-fcq8

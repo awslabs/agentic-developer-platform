@@ -70,6 +70,21 @@ Resources:
 
   ADPScopedWritePolicy:
     Type: AWS::IAM::Policy
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F4
+            reason: >
+              Wildcard action is intentional — the scoped-write role delegates
+              service-level write permission to tenant-specified services via the
+              AllowedServices parameter. Resource scope is constrained by
+              AllowedResourceArns. This is the designed trust model for
+              tenant-controlled scoped access.
+          - id: W43
+            reason: >
+              Wildcard action is intentional — same rationale as F4. The tenant
+              explicitly opts in to service-level wildcards via the
+              AllowedServices parameter at stack creation time.
     Properties:
       PolicyName: adp-scoped-write-policy
       Roles:
