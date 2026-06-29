@@ -13,9 +13,20 @@
 #
 # Each entry below is a verified false positive (Probe scan 2026-06-28, #2312).
 
-# --- Test fixtures: synthetic JWTs/tokens in unit tests (detected-jwt-token) ---
-modules/agent-factory/agent/src/experience-save-hook.test.ts
-modules/agent-factory/agent/src/run-completion-event.test.ts
+# --- Test directories: synthetic credentials / fixtures (#2312, r/all scan 2026-06-29) ---
+# The full registry ruleset (r/all) flags hardcoded test secrets, sample JWTs,
+# fake tokens and keys throughout the test suites (jwt-python-hardcoded-secret,
+# detected-github-token, detected-private-key, detected-jwt-token, etc.) — 122
+# such findings, all in test fixtures, none in shipping code. Tests deliberately
+# embed fake secrets and are not deployed, so path-excluding test dirs is the
+# safe, standard treatment. Production source is NOT excluded here (it is handled
+# by rule-scoped same-line `# nosemgrep`, preserving future coverage).
+tests/
+modules/*/tests/
+modules/*/*/tests/
+modules/*/*/*/tests/
+modules/*/*/*/*/tests/
+**/*.test.ts
 
 # --- Documentation & scan artifacts: sample tokens, not live secrets ---
 # The semgrep baseline SARIF contains finding fingerprints (incl. token strings)
