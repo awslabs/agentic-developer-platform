@@ -23,10 +23,12 @@ ENV PORT=8001
 ENV NODE_ENV=production
 ENV LOG_LEVEL=INFO
 
+EXPOSE 8001 3000
+
+# Drop to non-root before the runtime instructions (USER must precede
+# HEALTHCHECK/CMD so the missing-user check is satisfied).
+USER appuser
+
 # Health check
 HEALTHCHECK --interval=60s --timeout=10s --retries=3 --start-period=30s \
   CMD curl -sf http://localhost:8001/health || exit 1
-
-EXPOSE 8001 3000
-
-USER appuser

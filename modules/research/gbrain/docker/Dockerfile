@@ -31,9 +31,11 @@ RUN addgroup --system --gid 1001 appgroup && \
 
 EXPOSE 3000
 
+# Drop to non-root before the runtime instructions (USER must precede
+# HEALTHCHECK/CMD so the missing-user check is satisfied).
+USER appuser
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1
-
-USER appuser
 
 ENTRYPOINT ["/app/entrypoint.sh"]

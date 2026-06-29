@@ -30,11 +30,13 @@ RUN addgroup --system --gid 1001 appgroup && \
 # Expose MCP port
 EXPOSE 5100
 
+# Drop to non-root before the runtime instructions (USER must precede
+# HEALTHCHECK/CMD so the missing-user check is satisfied).
+USER appuser
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:5100/health || exit 1
-
-USER appuser
 
 # Run the server
 CMD ["uvicorn", "door.server:app", "--host", "0.0.0.0", "--port", "5100"]
