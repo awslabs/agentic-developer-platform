@@ -1,0 +1,48 @@
+name: Mirror main to awslabs
+
+# Mirrors this repo's `main` branch (full history) to
+# awslabs/agentic-developer-platform on every merge to main.
+#
+# One-way push mirror: awslabs/main is treated as a read-only downstream copy.
+# A force push is used so the mirror always exactly matches our main — do NOT
+# commit directly to the awslabs repo, it will be overwritten.
+#
+# Requires a repo secret AWSLABS_MIRROR_TOKEN: a token with `contents: write`
+# on awslabs/agentic-developer-platform (fine-grained PAT scoped to that repo,
+# or a GitHub App installation token). The default GITHUB_TOKEN cannot push
+# across repositories/orgs.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # allow manual re-sync
+
+concurrency:
+  group: mirror-to-awslabs
+  cancel-in-progress: false   # never interrupt a push mid-flight
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: arc-runner-org
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so all commits are mirrored
+
+      - name: Push main to awslabs (full history)
+        env:
+          MIRROR_TOKEN: ${{ secrets.AWSLABS_MIRROR_TOKEN }}
+        run: |
+          if [ -z "${MIRROR_TOKEN}" ]; then
+            echo "::error::AWSLABS_MIRROR_TOKEN secret is not set — cannot mirror. See workflow header."
+            exit 1
+          fi
+          # Force-push our main to the downstream mirror's main.
+          git push --force \
+            "https://x-access-token:${MIRROR_TOKEN}@github.com/awslabs/agentic-developer-platform.git" \
+            HEAD:refs/heads/main
+          echo "Mirrored $(git rev-parse --short HEAD) to awslabs/agentic-developer-platform main"
