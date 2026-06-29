@@ -293,7 +293,8 @@ async def list_assets(
     params["limit"] = page_size
     params["offset"] = offset
     rows_result = await db.execute(
-        text(f"""  # nosemgrep: avoid-sqlalchemy-text
+        # nosemgrep: avoid-sqlalchemy-text
+        text(f"""
             SELECT id, asset_type, source_ref, display_name, tags, metadata,
                    tenant_id, owner_sub, project_id, status, last_error,
                    retry_count, registered_by, created_at, updated_at
