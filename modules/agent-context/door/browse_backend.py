@@ -16,6 +16,15 @@ from .acl import SearchHit
 
 log = logging.getLogger(__name__)
 
+# Known S3 content root directories — URIs starting with these are routed
+# directly to S3 instead of the repo→Zoekt path.
+_CONTENT_ROOTS = frozenset({"content", "code-indexes", "sbom"})
+
+# Action aliases: users pass "list"/"read" but the backend uses "ls"/"read".
+_ACTION_ALIASES: dict[str, str] = {
+    "list": "ls",
+}
+
 
 async def browse(
     action: str,
@@ -33,10 +42,13 @@ async def browse(
     Parameters
     ----------
     action:
-        Action to perform: "ls" (list), "tree" (recursive list), "info" (metadata).
+        Action to perform: "ls"/"list" (list), "tree" (recursive list),
+        "info" (metadata), "read" (fetch object content).
     uri:
         URI path to browse. Root "/" lists repos, "/repo-name" lists content types,
         "/repo-name/path" lists files via Zoekt.
+        Content paths like "content/wikis" or "content/wikis/file.md" are routed
+        directly to S3.
     db_pool:
         Database connection pool for catalog queries.
     s3_client:
@@ -55,6 +67,9 @@ async def browse(
     List of SearchHit representing directory entries.
     """
     uri = uri.strip().rstrip("/")
+
+    # Normalize action aliases (e.g. "list" → "ls")
+    action = _ACTION_ALIASES.get(action, action)
 
     if action == "ls":
         return await _list_path(
@@ -84,6 +99,12 @@ async def browse(
             bucket=bucket,
             content_prefix=content_prefix,
         )
+    elif action == "read":
+        return await _read_content(
+            uri,
+            s3_client=s3_client,
+            bucket=bucket,
+        )
     else:
         log.warning("Unknown browse action: %s", action)
         return []
@@ -101,9 +122,15 @@ async def _list_path(
 ) -> list[SearchHit]:
     """List contents at a URI path.
 
-    For URIs with >1 path components (e.g., /repo-name/subdir), uses Zoekt to
-    list files in the repo's directory tree — Zoekt is the source of truth for
-    indexed source files.
+    Two URI schemes are supported:
+
+    1. **Content-path URIs** (start with a known content root like "content/"):
+       Route directly to S3 listing. E.g., "content/wikis" lists all wiki files,
+       "content/code-indexes" lists code-index JSONs.
+
+    2. **Repo-path URIs** (everything else):
+       Root "/" lists repos from catalog; "/repo-name" lists top-level via Zoekt;
+       "/repo-name/subdir" lists deeper paths via Zoekt.
     """
     parts = [p for p in uri.split("/") if p]
 
@@ -111,6 +138,18 @@ async def _list_path(
     if not parts:
         return await _list_repos(db_pool, s3_client=s3_client, bucket=bucket)
 
+    # --- Content-path routing ---
+    # If the first path component is a known content root (e.g., "content"),
+    # route directly to S3 listing rather than treating it as a repo name.
+    if parts[0] in _CONTENT_ROOTS:
+        s3_prefix = "/".join(parts)
+        return await _list_s3_prefix(
+            s3_prefix,
+            s3_client=s3_client,
+            bucket=bucket,
+        )
+
+    # --- Repo-path routing ---
     repo_name = parts[0]
 
     # Repo level with no sub-path: list top-level directories from Zoekt
@@ -393,6 +432,126 @@ async def _list_s3_content(
         return results
     except Exception:
         log.warning("Failed to list S3 content at %s", prefix, exc_info=True)
+        return []
+
+
+async def _list_s3_prefix(
+    prefix: str,
+    *,
+    s3_client: Any | None,
+    bucket: str,
+) -> list[SearchHit]:
+    """List S3 objects directly under a prefix path.
+
+    Used for content-path URIs (e.g., "content/wikis") that map directly to
+    S3 key prefixes without requiring a repo name → safe_name transform.
+    """
+    if s3_client is None or not bucket:
+        log.debug("No s3_client or bucket — returning empty for prefix %s", prefix)
+        return []
+
+    prefix = prefix.rstrip("/") + "/"
+
+    try:
+        response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix, Delimiter="/")
+
+        results: list[SearchHit] = []
+
+        # Add "directories" (common prefixes)
+        for cp in response.get("CommonPrefixes", []):
+            dir_path = cp["Prefix"].rstrip("/")
+            dir_name = dir_path.split("/")[-1]
+            results.append(
+                SearchHit(
+                    repo_name="",
+                    data={
+                        "name": dir_name,
+                        "path": dir_path,
+                        "entry_type": "directory",
+                    },
+                )
+            )
+
+        # Add files (objects)
+        for obj in response.get("Contents", []):
+            key = obj["Key"]
+            name = key.split("/")[-1]
+            if not name:
+                continue
+            results.append(
+                SearchHit(
+                    repo_name="",
+                    data={
+                        "name": name,
+                        "path": key,
+                        "size": obj.get("Size", 0),
+                        "entry_type": "file",
+                        "last_modified": obj.get("LastModified", ""),
+                    },
+                )
+            )
+
+        return results
+    except Exception:
+        log.warning("Failed to list S3 prefix %s", prefix, exc_info=True)
+        return []
+
+
+async def _read_content(
+    uri: str,
+    *,
+    s3_client: Any | None,
+    bucket: str,
+) -> list[SearchHit]:
+    """Read the content of an S3 object by its key path.
+
+    Used for action="read" — fetches the actual content of a file stored in S3
+    (e.g., a wiki markdown file at "content/wikis/HKUDS-Vibe-Trading-wiki.md").
+
+    Returns a single-element list with the content in the data dict,
+    or an empty list if the object does not exist or cannot be read.
+    """
+    if s3_client is None or not bucket:
+        log.debug("No s3_client or bucket — cannot read %s", uri)
+        return []
+
+    if not uri:
+        log.debug("Empty URI for read action")
+        return []
+
+    # The URI is the S3 key (strip leading slash if present)
+    s3_key = uri.lstrip("/")
+
+    try:
+        response = s3_client.get_object(Bucket=bucket, Key=s3_key)
+        body = response["Body"].read()
+
+        # Try to decode as text; if it fails, report it as binary
+        try:
+            content = body.decode("utf-8")
+        except (UnicodeDecodeError, AttributeError):
+            content = body.hex()
+
+        name = s3_key.split("/")[-1]
+        return [
+            SearchHit(
+                repo_name="",
+                data={
+                    "name": name,
+                    "path": s3_key,
+                    "content": content,
+                    "size": len(body),
+                    "entry_type": "file",
+                },
+            )
+        ]
+    except Exception as exc:
+        # Handle NoSuchKey gracefully
+        exc_name = type(exc).__name__
+        if "NoSuchKey" in exc_name or "NoSuchKey" in str(exc):
+            log.debug("S3 object not found: %s/%s", bucket, s3_key)
+        else:
+            log.warning("Failed to read S3 object %s/%s", bucket, s3_key, exc_info=True)
         return []
 
 

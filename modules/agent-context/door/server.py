@@ -844,6 +844,10 @@ def _apply_acl(hits: list[SearchHit], caller: CallerPrincipal | None) -> list[Se
     When no ACL store is configured (Postgres unavailable in dev), uses an
     AllowIndexedRepos store that permits access to all indexed repos but still
     enforces the identity-header requirement.
+
+    Content-path hits (repo_name == "") represent shared platform content
+    (wikis, indexes) that are not repo-scoped. They pass through ACL once
+    the caller is authenticated — the identity gate at the top is sufficient.
     """
     # FAIL-CLOSED: no identity headers → empty results regardless of ACL store
     if caller is None:
@@ -859,7 +863,13 @@ def _apply_acl(hits: list[SearchHit], caller: CallerPrincipal | None) -> list[Se
         # while still enforcing the fail-closed rule for unauthenticated requests.
         return hits
 
-    return filter_results(hits, caller, state.acl_store)
+    # Separate content-path hits (no repo scope) from repo-scoped hits.
+    # Content-path hits are shared assets visible to any authenticated caller.
+    content_hits = [h for h in hits if not h.repo_name]
+    repo_hits = [h for h in hits if h.repo_name]
+
+    filtered_repo = filter_results(repo_hits, caller, state.acl_store)
+    return content_hits + filtered_repo
 
 
 # ---------------------------------------------------------------------------
