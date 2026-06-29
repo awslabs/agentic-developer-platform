@@ -2,7 +2,7 @@
 # Hosted Agent Worker — KEDA ScaledJob
 # =============================================================================
 # Spawns agent pods from the adp-<env>-agent-submit.fifo queue. One pod per
-# message; FIFO groups serialize per tenant (MessageGroupId = installation_id).
+# message; FIFO groups serialize per issue (MessageGroupId = tenant#repo#issue).
 #
 # Design ref: docs/hosted-platform-design.md §SQS queue + KEDA ScaledJob
 # Issue: #346

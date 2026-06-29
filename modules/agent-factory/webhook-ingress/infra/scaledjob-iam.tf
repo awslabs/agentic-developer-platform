@@ -201,6 +201,7 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
         Sid    = "SQSQueueMgmt"
         Effect = "Allow"
         Action = [
+          "sqs:ChangeMessageVisibility",
           "sqs:DeleteMessage",
           "sqs:GetQueueAttributes",
           "sqs:ReceiveMessage"

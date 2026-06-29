@@ -2879,3 +2879,168 @@ class TestIdempotencyGuard:
         mock_subprocess_run.assert_called()
         # Message deleted after run completion
         mock_delete_msg.assert_called_once()
+
+
+# --- Test: VisibilityHeartbeat ---
+
+
+class TestVisibilityHeartbeat:
+    """Tests for the SQS visibility heartbeat daemon thread."""
+
+    def test_heartbeat_extends_visibility_at_interval(self, monkeypatch):
+        """Heartbeat calls change_message_visibility at the configured interval."""
+        import entrypoint
+        from entrypoint import VisibilityHeartbeat
+
+        # Use very short intervals for testing
+        monkeypatch.setattr(entrypoint, "HEARTBEAT_INTERVAL", 0.1)
+        monkeypatch.setattr(entrypoint, "HEARTBEAT_EXTEND", 300)
+
+        mock_sqs = MagicMock()
+        with patch("entrypoint.boto3.client", return_value=mock_sqs):
+            hb = VisibilityHeartbeat(
+                queue_url="https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+                region="us-east-1",
+                receipt_handle="test-receipt-handle",
+            )
+            hb.start()
+
+            # Wait for a few heartbeat cycles
+            import time
+
+            time.sleep(0.35)
+
+            hb.stop()
+
+        # Should have called change_message_visibility at least twice
+        assert mock_sqs.change_message_visibility.call_count >= 2
+        # Verify correct parameters
+        call_kwargs = mock_sqs.change_message_visibility.call_args[1]
+        assert call_kwargs["QueueUrl"] == "https://sqs.us-east-1.amazonaws.com/123/q.fifo"
+        assert call_kwargs["ReceiptHandle"] == "test-receipt-handle"
+        assert call_kwargs["VisibilityTimeout"] == 300
+
+    def test_heartbeat_stops_cleanly_on_stop(self, monkeypatch):
+        """Heartbeat thread exits promptly when stop() is called."""
+        import entrypoint
+        from entrypoint import VisibilityHeartbeat
+
+        monkeypatch.setattr(entrypoint, "HEARTBEAT_INTERVAL", 60)
+        monkeypatch.setattr(entrypoint, "HEARTBEAT_EXTEND", 300)
+
+        mock_sqs = MagicMock()
+        with patch("entrypoint.boto3.client", return_value=mock_sqs):
+            hb = VisibilityHeartbeat(
+                queue_url="https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+                region="us-east-1",
+                receipt_handle="test-receipt-handle",
+            )
+            hb.start()
+
+            import time
+
+            time.sleep(0.05)  # Let the thread start
+
+            hb.stop()
+
+            # Thread should be dead after stop returns
+            assert not hb._thread.is_alive()
+
+        # With 60s interval and near-instant stop, no extensions should fire
+        assert mock_sqs.change_message_visibility.call_count == 0
+
+    def test_heartbeat_exception_does_not_abort(self, monkeypatch):
+        """A heartbeat failure logs a warning but does not crash the thread."""
+        import entrypoint
+        from entrypoint import VisibilityHeartbeat
+
+        monkeypatch.setattr(entrypoint, "HEARTBEAT_INTERVAL", 0.05)
+        monkeypatch.setattr(entrypoint, "HEARTBEAT_EXTEND", 300)
+
+        mock_sqs = MagicMock()
+        mock_sqs.change_message_visibility.side_effect = Exception("AccessDenied")
+
+        with patch("entrypoint.boto3.client", return_value=mock_sqs):
+            hb = VisibilityHeartbeat(
+                queue_url="https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+                region="us-east-1",
+                receipt_handle="test-receipt-handle",
+            )
+            hb.start()
+
+            import time
+
+            time.sleep(0.2)
+
+            # Thread should still be alive despite repeated failures
+            assert hb._thread.is_alive()
+            assert hb._consecutive_failures >= 3
+
+            hb.stop()
+
+        # Verify it attempted multiple times (didn't die on first failure)
+        assert mock_sqs.change_message_visibility.call_count >= 3
+
+    def test_heartbeat_tracks_extension_count(self, monkeypatch):
+        """Heartbeat correctly counts successful extensions."""
+        import entrypoint
+        from entrypoint import VisibilityHeartbeat
+
+        monkeypatch.setattr(entrypoint, "HEARTBEAT_INTERVAL", 0.05)
+        monkeypatch.setattr(entrypoint, "HEARTBEAT_EXTEND", 300)
+
+        mock_sqs = MagicMock()
+        with patch("entrypoint.boto3.client", return_value=mock_sqs):
+            hb = VisibilityHeartbeat(
+                queue_url="https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+                region="us-east-1",
+                receipt_handle="test-receipt-handle",
+            )
+            hb.start()
+
+            import time
+
+            time.sleep(0.18)
+
+            hb.stop()
+
+        assert hb._extensions == mock_sqs.change_message_visibility.call_count
+        assert hb._extensions >= 2
+        assert hb._consecutive_failures == 0
+
+    def test_heartbeat_resets_failure_count_on_success(self, monkeypatch):
+        """After a transient failure, a success resets the consecutive counter."""
+        import entrypoint
+        from entrypoint import VisibilityHeartbeat
+
+        monkeypatch.setattr(entrypoint, "HEARTBEAT_INTERVAL", 0.05)
+        monkeypatch.setattr(entrypoint, "HEARTBEAT_EXTEND", 300)
+
+        call_count = {"n": 0}
+
+        def side_effect(**kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise Exception("Transient network error")
+            return {}
+
+        mock_sqs = MagicMock()
+        mock_sqs.change_message_visibility.side_effect = side_effect
+
+        with patch("entrypoint.boto3.client", return_value=mock_sqs):
+            hb = VisibilityHeartbeat(
+                queue_url="https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+                region="us-east-1",
+                receipt_handle="test-receipt-handle",
+            )
+            hb.start()
+
+            import time
+
+            time.sleep(0.25)
+
+            hb.stop()
+
+        # After the transient failure, subsequent successes reset the counter
+        assert hb._consecutive_failures == 0
+        assert hb._extensions >= 3  # At least 3 successes (calls 1, 3, 4+)

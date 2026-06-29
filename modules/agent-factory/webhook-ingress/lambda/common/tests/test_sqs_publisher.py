@@ -3,11 +3,18 @@
 import json
 from unittest.mock import MagicMock, patch
 
+# The module-level SUBMIT_QUEUE_URL in sqs_publisher is evaluated at import
+# time, so patching os.environ alone is insufficient when another test file
+# imports the module first with a different URL.  We patch the module-level
+# constant directly alongside os.environ to guarantee test isolation.
+_TEST_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/123/queue.fifo"
+
 
 class TestPublishEnvelope:
+    @patch("common.sqs_publisher.SUBMIT_QUEUE_URL", _TEST_QUEUE_URL)
     @patch.dict(
         "os.environ",
-        {"SUBMIT_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123/queue.fifo"},
+        {"SUBMIT_QUEUE_URL": _TEST_QUEUE_URL},
     )
     @patch("common.sqs_publisher._sqs", None)
     @patch("common.sqs_publisher.boto3")
@@ -30,10 +37,7 @@ class TestPublishEnvelope:
         assert result == "msg-xyz"
         mock_sqs.send_message.assert_called_once()
         call_kwargs = mock_sqs.send_message.call_args[1]
-        assert (
-            call_kwargs["QueueUrl"]
-            == "https://sqs.us-east-1.amazonaws.com/123/queue.fifo"
-        )
+        assert call_kwargs["QueueUrl"] == _TEST_QUEUE_URL
         # Per-run group ID (not per-tenant) to avoid head-of-line blocking.
         assert call_kwargs["MessageGroupId"] == "tenant-123#org/repo#5"
         assert "MessageDeduplicationId" in call_kwargs
@@ -43,6 +47,7 @@ class TestPublishEnvelope:
         assert body["tenant_id"] == "tenant-123"
         assert body["channel"] == "github"
 
+    @patch("common.sqs_publisher.SUBMIT_QUEUE_URL", "")
     @patch.dict("os.environ", {"SUBMIT_QUEUE_URL": ""})
     def test_missing_queue_url_returns_none(self) -> None:
         from common.sqs_publisher import publish_envelope
@@ -50,9 +55,10 @@ class TestPublishEnvelope:
         result = publish_envelope({"tenant_id": "t1"})
         assert result is None
 
+    @patch("common.sqs_publisher.SUBMIT_QUEUE_URL", _TEST_QUEUE_URL)
     @patch.dict(
         "os.environ",
-        {"SUBMIT_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123/queue.fifo"},
+        {"SUBMIT_QUEUE_URL": _TEST_QUEUE_URL},
     )
     @patch("common.sqs_publisher._sqs", None)
     @patch("common.sqs_publisher.boto3")
@@ -75,9 +81,10 @@ class TestPublishEnvelope:
         call_kwargs = mock_sqs.send_message.call_args[1]
         assert call_kwargs["MessageGroupId"] == "unique-tenant#o/r#1"
 
+    @patch("common.sqs_publisher.SUBMIT_QUEUE_URL", _TEST_QUEUE_URL)
     @patch.dict(
         "os.environ",
-        {"SUBMIT_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123/queue.fifo"},
+        {"SUBMIT_QUEUE_URL": _TEST_QUEUE_URL},
     )
     @patch("common.sqs_publisher._sqs", None)
     @patch("common.sqs_publisher.boto3")
@@ -112,9 +119,10 @@ class TestPublishEnvelope:
         assert calls[0][1]["MessageGroupId"] == "t#o/r#1"
         assert calls[1][1]["MessageGroupId"] == "t#o/r#2"
 
+    @patch("common.sqs_publisher.SUBMIT_QUEUE_URL", _TEST_QUEUE_URL)
     @patch.dict(
         "os.environ",
-        {"SUBMIT_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123/queue.fifo"},
+        {"SUBMIT_QUEUE_URL": _TEST_QUEUE_URL},
     )
     @patch("common.sqs_publisher._sqs", None)
     @patch("common.sqs_publisher.boto3")

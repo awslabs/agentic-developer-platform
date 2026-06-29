@@ -21,9 +21,9 @@ variable "tags" {
 # -----------------------------------------------------------------------------
 
 variable "sqs_visibility_timeout" {
-  description = "SQS visibility timeout in seconds. Should match pod activeDeadlineSeconds so a killed pod's message becomes visible for retry promptly. Too long = stuck-message pain when pods die; too short = live pods racing re-delivery."
+  description = "SQS base visibility timeout in seconds (dead-worker detection window). Decoupled from activeDeadlineSeconds — healthy workers extend visibility via a heartbeat thread (ChangeMessageVisibility every ~120s, extending by ~300s). A dead worker stops heartbeating and its message frees after this timeout. Keep this short (~5min) so stuck messages unblock their FIFO group quickly."
   type        = number
-  default     = 21600 # 6h — matches pod activeDeadlineSeconds (see scaledjob.tf). Bumped from 90min so a long-running deploy orchestrator can finish in ONE pod (no cross-pod self-handoff, which is fragile). Max allowed by SQS is 12h.
+  default     = 300 # 5min — dead-worker detection window. Worker heartbeat extends visibility while alive. Previously 21600 (6h, coupled to activeDeadlineSeconds); decoupled by #2324.
 }
 
 variable "sqs_max_receive_count" {
@@ -122,9 +122,9 @@ variable "agent_image" {
 }
 
 variable "agent_pod_deadline_seconds" {
-  description = "Max runtime for an agent pod before Kubernetes kills it. MUST match sqs_visibility_timeout so a killed pod releases its SQS message for retry at the same instant."
+  description = "Max runtime for an agent pod before Kubernetes kills it. Decoupled from sqs_visibility_timeout (#2324) — the worker heartbeat bridges the gap. This controls the absolute max run time; sqs_visibility_timeout controls dead-worker detection speed."
   type        = number
-  default     = 21600 # 6h — matches sqs_visibility_timeout. Bumped from 90min so a long-running deploy orchestrator (which dispatches + `gh run watch`es each pipeline phase end-to-end) completes in a SINGLE pod, avoiding fragile cross-pod self-handoff.
+  default     = 21600 # 6h — max run time for long deploy orchestrators. Independent of sqs_visibility_timeout (300s); worker heartbeat extends visibility while alive.
 }
 
 variable "agent_warm_pool_replicas" {

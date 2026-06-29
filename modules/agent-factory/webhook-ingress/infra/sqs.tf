@@ -1,8 +1,10 @@
 # =============================================================================
 # SQS FIFO Queue + Dead-Letter Queue
 # =============================================================================
-# FIFO ensures ordered processing per tenant (MessageGroupId = installation_id).
+# FIFO ensures ordered processing per issue (MessageGroupId = tenant#repo#issue).
 # Content-based deduplication prevents duplicate webhook deliveries.
+# Base visibility_timeout is short (~5min) for fast dead-worker detection;
+# healthy workers extend via ChangeMessageVisibility heartbeat (#2324).
 # =============================================================================
 
 resource "aws_sqs_queue" "agent_submit_dlq" {

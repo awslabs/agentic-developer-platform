@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import boto3
@@ -102,6 +103,94 @@ def _delete_message(queue_url: str, region: str, receipt_handle: str) -> None:
         QueueUrl=queue_url,
         ReceiptHandle=receipt_handle,
     )
+
+
+# ---------------------------------------------------------------------------
+# SQS visibility heartbeat — keeps long-running agent messages in-flight
+# without requiring the base visibility_timeout to match max run time.
+# ---------------------------------------------------------------------------
+
+# Defaults: extend visibility by 300s every 120s. Missing ~2 consecutive
+# heartbeats frees the message (safety margin = 300 - 120 = 180s).
+HEARTBEAT_INTERVAL = int(os.environ.get("HEARTBEAT_INTERVAL", "120"))
+HEARTBEAT_EXTEND = int(os.environ.get("HEARTBEAT_EXTEND", "300"))
+
+
+class VisibilityHeartbeat:
+    """Daemon thread that periodically extends SQS message visibility.
+
+    Ensures a healthy, long-running worker keeps its message in-flight
+    indefinitely while a dead worker's message frees in ~5 minutes (the base
+    visibility timeout) because the heartbeat stops.
+
+    Usage:
+        hb = VisibilityHeartbeat(queue_url, region, receipt_handle)
+        hb.start()
+        # ... run agent ...
+        hb.stop()  # blocks until thread exits
+    """
+
+    def __init__(self, queue_url: str, region: str, receipt_handle: str) -> None:
+        self._queue_url = queue_url
+        self._region = region
+        self._receipt_handle = receipt_handle
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._extensions = 0
+        self._consecutive_failures = 0
+
+    def start(self) -> None:
+        """Start the heartbeat daemon thread."""
+        self._thread = threading.Thread(
+            target=self._run, name="sqs-visibility-heartbeat", daemon=True
+        )
+        self._thread.start()
+        logger.info(
+            "Heartbeat started (interval=%ds, extend=%ds)",
+            HEARTBEAT_INTERVAL,
+            HEARTBEAT_EXTEND,
+        )
+
+    def stop(self) -> None:
+        """Signal the heartbeat to stop and wait for it to exit.
+
+        Must be called BEFORE _delete_message to avoid racing the receipt
+        handle invalidation.
+        """
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=HEARTBEAT_INTERVAL + 5)
+        logger.info("Heartbeat stopped (total extensions=%d)", self._extensions)
+
+    def _run(self) -> None:
+        """Heartbeat loop: sleep for interval, then extend visibility."""
+        # Create a per-thread SQS client (boto3 clients are not thread-safe).
+        try:
+            sqs = boto3.client("sqs", region_name=self._region)
+        except Exception as exc:
+            logger.warning("Heartbeat: failed to create SQS client: %s", exc)
+            return
+        while not self._stop_event.wait(timeout=HEARTBEAT_INTERVAL):
+            try:
+                sqs.change_message_visibility(
+                    QueueUrl=self._queue_url,
+                    ReceiptHandle=self._receipt_handle,
+                    VisibilityTimeout=HEARTBEAT_EXTEND,
+                )
+                self._extensions += 1
+                self._consecutive_failures = 0
+                logger.debug("Heartbeat extended visibility (extensions=%d)", self._extensions)
+            except Exception as exc:
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= 3:
+                    logger.warning(
+                        "Heartbeat: %d consecutive failures (latest: %s). "
+                        "Message may become visible for redelivery.",
+                        self._consecutive_failures,
+                        exc,
+                    )
+                else:
+                    logger.debug("Heartbeat extension failed (will retry): %s", exc)
 
 
 def _is_already_completed(repo: str, issue: int, token: str) -> bool:
@@ -721,12 +810,22 @@ def main() -> int:
     bootstrap_log.step_success(8, "bootstrap_complete")
     bootstrap_log.close()
 
+    # Start SQS visibility heartbeat — keeps the message in-flight for the
+    # duration of the agent run without requiring a 6h base visibility timeout.
+    # A dead worker's heartbeat stops → message frees in ~5min for retry.
+    heartbeat = VisibilityHeartbeat(queue_url, region, receipt_handle)
+    heartbeat.start()
+
     logger.info("Execing agent-worker.js with persona=%s branch=%s", persona, branch_name)
     result = subprocess.run(
         ["node", AGENT_BINARY],
         cwd=WORK_DIR,
         env=agent_env,
     )
+
+    # Stop heartbeat BEFORE any message deletion to avoid racing the receipt
+    # handle invalidation. Must join to ensure no in-flight API call.
+    heartbeat.stop()
 
     # Terminate sigv4-proxy if it was started
     if proxy_process is not None:
