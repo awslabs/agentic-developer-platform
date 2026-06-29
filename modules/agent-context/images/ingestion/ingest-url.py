@@ -19,7 +19,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
-from xml.etree import ElementTree
+from defusedxml import ElementTree
 
 import requests
 

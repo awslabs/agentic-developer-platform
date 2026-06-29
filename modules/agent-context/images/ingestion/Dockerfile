@@ -76,6 +76,7 @@ RUN pip install --no-cache-dir \
     tree-sitter-typescript \
     tree-sitter-go \
     requests \
+    defusedxml>=0.7.1 \
     crawl4ai \
     boto3 \
     gremlinpython \
