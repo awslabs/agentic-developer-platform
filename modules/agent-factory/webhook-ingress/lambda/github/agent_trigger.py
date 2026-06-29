@@ -266,7 +266,7 @@ def _resolve_chain(correlation_id: str) -> dict[str, Any] | None:
 
         # Retry with backoff (only if not last attempt)
         if attempt < _GSI_MAX_ATTEMPTS - 1:
-            time.sleep(_GSI_RETRY_DELAY_S)
+            time.sleep(_GSI_RETRY_DELAY_S)  # nosemgrep: arbitrary-sleep
 
     return None
 

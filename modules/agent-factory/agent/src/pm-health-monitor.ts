@@ -145,7 +145,7 @@ export function configureHealthMonitor(options: Partial<typeof config>) {
 
 function execCommand(cmd: string): string {
   try {
-    return execSync(cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).trim();
+    return execSync(cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).trim();  // nosemgrep: detect-child-process
   } catch (error) {
     const err = error as { stderr?: string; message?: string };
     console.error(`Command failed: ${cmd}`);

@@ -345,6 +345,6 @@ class TokenManager:
             # nosemgrep: unverified-jwt-decode — debug/logging helper only;
             # never used for authz decisions. Verified decode happens in
             # validate_token() (line 166) with self.secret_key signature check.
-            return jwt.decode(token, options={"verify_signature": False})
+            return jwt.decode(token, options={"verify_signature": False})  # nosemgrep: unverified-jwt-decode
         except Exception:
             return None

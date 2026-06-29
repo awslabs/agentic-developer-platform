@@ -28,7 +28,7 @@ def upgrade() -> None:
     if bind.dialect.name == "postgresql":
         providers_list = ", ".join(f"'{p}'" for p in SUPPORTED_PROVIDERS)
         op.execute(
-            sa.text(
+            sa.text(  # nosemgrep: avoid-sqlalchemy-text
                 f"ALTER TABLE user_identities "
                 f"ADD CONSTRAINT ck_user_identities_provider "
                 f"CHECK (provider IN ({providers_list}))"

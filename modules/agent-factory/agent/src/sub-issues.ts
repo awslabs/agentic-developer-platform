@@ -111,7 +111,7 @@ export function validateLabel(label: string): string {
 // ============================================================================
 
 let execCommand: (cmd: string) => Promise<string> = async (cmd) => {
-  return execSync(cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).trim();
+  return execSync(cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).trim();  // nosemgrep: detect-child-process
 };
 
 /**

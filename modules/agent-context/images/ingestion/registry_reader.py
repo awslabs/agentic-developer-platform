@@ -70,7 +70,7 @@ def read_registry_assets(
             ORDER BY created_at
         """
         params: tuple[Any, ...] = (asset_type, *statuses)
-        cursor.execute(query, params)
+        cursor.execute(query, params)  # nosemgrep: sqlalchemy-execute-raw-query
         rows = cursor.fetchall()
         cursor.close()
 

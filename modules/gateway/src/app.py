@@ -163,7 +163,7 @@ def create_app() -> FastAPI:
     logger.info("Token context middleware enabled")
 
     # Error handler for BedrockGatewayError
-    @app.exception_handler(BedrockGatewayError)
+    @app.exception_handler(BedrockGatewayError)  # nosemgrep: useless-inner-function
     # nosemgrep: useless-inner-function — registered via @app.exception_handler decorator
     async def gateway_error_handler(request: Request, exc: BedrockGatewayError):
         logger.warning(
@@ -184,11 +184,11 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=exc.status_code, content=content)
 
     # Health endpoints
-    @app.get("/health")
+    @app.get("/health")  # nosemgrep: useless-inner-function
     async def health():  # nosemgrep: useless-inner-function — registered via @app.get decorator
         return {"status": "healthy"}
 
-    @app.get("/ready")
+    @app.get("/ready")  # nosemgrep: useless-inner-function
     async def ready():  # nosemgrep: useless-inner-function — registered via @app.get decorator
         return {"status": "ready"}
 

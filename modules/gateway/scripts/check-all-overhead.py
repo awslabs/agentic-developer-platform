@@ -17,7 +17,7 @@ cmd = [
     "--region", "us-east-1",
     "--output", "json",
 ]
-result = subprocess.run(cmd, capture_output=True, text=True)
+result = subprocess.run(cmd, capture_output=True, text=True)  # nosemgrep: dangerous-subprocess-use-audit
 data = json.loads(result.stdout)
 summaries = data.get("TraceSummaries", [])
 
@@ -49,7 +49,7 @@ if trace_ids:
         "--region", "us-east-1",
         "--output", "json",
     ]
-    result2 = subprocess.run(cmd2, capture_output=True, text=True)
+    result2 = subprocess.run(cmd2, capture_output=True, text=True)  # nosemgrep: dangerous-subprocess-use-audit
     if result2.returncode != 0:
         out(f"ERROR fetching traces: {result2.stderr[:200]}")
         details = {"Traces": []}

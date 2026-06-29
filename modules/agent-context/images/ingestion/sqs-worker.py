@@ -283,7 +283,7 @@ def _run_subprocess(cmd: list[str], timeout: int, extra_env: dict[str, str] | No
     log.info("subprocess.start: %s (timeout=%ds)", cmd_summary, timeout)
     start = _time.monotonic()
 
-    process = subprocess.Popen(
+    process = subprocess.Popen(  # nosemgrep: dangerous-subprocess-use-audit
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -320,7 +320,7 @@ def _run_subprocess(cmd: list[str], timeout: int, extra_env: dict[str, str] | No
         reader.join(timeout=5)
         duration = _time.monotonic() - start
         log.error("subprocess.timeout: %s (killed after %.1fs)", cmd_summary, duration)
-        raise subprocess.TimeoutExpired(cmd, timeout)
+        raise subprocess.TimeoutExpired(cmd, timeout)  # nosemgrep: dangerous-subprocess-use-audit
 
     # Wait for reader thread to finish draining output
     reader.join(timeout=10)

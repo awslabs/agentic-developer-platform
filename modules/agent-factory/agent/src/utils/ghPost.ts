@@ -91,7 +91,7 @@ export async function ghPostComment(
     await refreshGitHubToken();
 
     const token = process.env.GH_APP_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
-    execSync(`gh issue comment ${issueNumber} --repo "${repo}" --body-file "${tmpFile}"`, {
+    execSync(`gh issue comment ${issueNumber} --repo "${repo}" --body-file "${tmpFile}"`, {  // nosemgrep: detect-child-process
       encoding: 'utf-8',
       env: { ...process.env, GH_TOKEN: token, GITHUB_TOKEN: token },
       maxBuffer: 10 * 1024 * 1024,

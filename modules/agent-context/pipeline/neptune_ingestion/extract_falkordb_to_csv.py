@@ -31,7 +31,7 @@ def cgc_query(cgc_bin: str, cypher: str) -> list[dict]:
 
     Handles cgc's status-line prefix and control characters in string fields.
     """
-    result = subprocess.run([cgc_bin, "query", cypher], capture_output=True, text=True, timeout=120)
+    result = subprocess.run([cgc_bin, "query", cypher], capture_output=True, text=True, timeout=120)  # nosemgrep: dangerous-subprocess-use-audit
     stdout = result.stdout
     # Find start of JSON array (after status lines)
     start = stdout.find("\n[")

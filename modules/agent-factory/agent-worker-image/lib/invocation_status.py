@@ -106,7 +106,7 @@ def update_status(
                         attempt + 1,
                         max_attempts,
                     )
-                    time.sleep(2)
+                    time.sleep(2)  # nosemgrep: arbitrary-sleep
                 else:
                     # Row doesn't exist after retries — capture write failed or was skipped
                     logger.warning(

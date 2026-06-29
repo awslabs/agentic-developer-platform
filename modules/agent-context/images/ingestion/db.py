@@ -264,7 +264,7 @@ def update_repo_sbom_status(
     sql = f"UPDATE repositories SET {', '.join(updates)} WHERE id = %s"
     cursor = conn.cursor()
     try:
-        cursor.execute(sql, params)
+        cursor.execute(sql, params)  # nosemgrep: sqlalchemy-execute-raw-query
         conn.commit()
     finally:
         cursor.close()

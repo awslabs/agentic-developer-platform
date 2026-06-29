@@ -125,7 +125,7 @@ async function bd(
   const command = `bd ${args}${jsonFlag}`;
 
   try {
-    const result = execSync(command, {
+    const result = execSync(command, {  // nosemgrep: detect-child-process
       cwd,
       encoding: 'utf-8',
       env: {

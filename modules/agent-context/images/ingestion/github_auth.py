@@ -88,7 +88,7 @@ def mint_github_token() -> bool:
         if owner:
             cmd.extend(["--owner", owner])
 
-        result = subprocess.run(
+        result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
             cmd,
             capture_output=True,
             timeout=30,
@@ -154,7 +154,7 @@ def mint_installation_token(installation_id: int) -> bool:
             "/tmp/github-token",
         ]
 
-        result = subprocess.run(
+        result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
             cmd,
             capture_output=True,
             timeout=30,

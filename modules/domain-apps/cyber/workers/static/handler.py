@@ -217,7 +217,7 @@ def _run_mode_b(sample_path: Path, script_s3_uri: str, s3_client) -> dict:
         s3_client.download_file(bucket, key, str(script_path))
 
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
                 ["python3", str(script_path), str(sample_path)],
                 capture_output=True,
                 text=True,

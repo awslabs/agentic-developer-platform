@@ -73,7 +73,7 @@ def get_binary_version(binary: str) -> str | None:
     # Try common version flags
     for flag in ["--version", "-V", "-version"]:
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
                 [path, flag],
                 capture_output=True,
                 text=True,

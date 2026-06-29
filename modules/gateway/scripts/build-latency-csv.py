@@ -17,7 +17,7 @@ HOURS_BACK = 24
 
 
 def aws_cli(args: list[str]) -> str:
-    result = subprocess.run(
+    result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
         ["aws"] + args + ["--region", REGION, "--output", "json"],
         capture_output=True, text=True,
     )

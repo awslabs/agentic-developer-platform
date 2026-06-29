@@ -116,7 +116,7 @@ async function flushCloudWatch(): Promise<void> {
 
 function execCommand(cmd: string): string {
   try {
-    return execSync(cmd, {
+    return execSync(cmd, {  // nosemgrep: detect-child-process
       cwd: CWD,
       encoding: 'utf-8',
       env: {

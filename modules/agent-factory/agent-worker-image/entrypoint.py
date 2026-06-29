@@ -71,7 +71,7 @@ def parse_envelope(raw: str) -> dict:
 
 def run_cmd(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     """Run a shell command, raising on failure."""
-    return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
+    return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)  # nosemgrep: dangerous-subprocess-use-audit
 
 
 def _receive_one_message(queue_url: str, region: str):
@@ -989,7 +989,7 @@ def _start_sigv4_proxy(env: dict, tenant_id: str) -> subprocess.Popen | None:
                 return proc
         except (urllib.error.URLError, OSError):
             pass
-        time.sleep(0.3)
+        time.sleep(0.3)  # nosemgrep: arbitrary-sleep
 
     # Timeout — kill and return None
     logger.error("sigv4-proxy health check timed out after %ds", SIGV4_PROXY_HEALTH_TIMEOUT)

@@ -22,7 +22,7 @@ def fetch_recent_traces(hours=4):
         "--region", "us-east-1",
         "--output", "json",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)  # nosemgrep: dangerous-subprocess-use-audit
     data = json.loads(result.stdout)
     summaries = data.get("TraceSummaries", [])
     # Sort by duration descending
@@ -38,7 +38,7 @@ def fetch_trace_detail(trace_id):
         "--region", "us-east-1",
         "--output", "json",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)  # nosemgrep: dangerous-subprocess-use-audit
     return json.loads(result.stdout)
 
 

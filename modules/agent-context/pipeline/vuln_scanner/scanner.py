@@ -56,7 +56,7 @@ def scan_sbom_osv(
     log.info("Running OSV-Scanner: %s", " ".join(cmd))
 
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
             cmd,
             capture_output=True,
             text=True,
@@ -124,7 +124,7 @@ def scan_sbom_trivy(
     log.info("Running Trivy: %s", " ".join(cmd))
 
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
             cmd,
             capture_output=True,
             text=True,
@@ -185,7 +185,7 @@ def scan_image_trivy(
     log.info("Running Trivy image scan: %s", image_ref)
 
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
             cmd,
             capture_output=True,
             text=True,

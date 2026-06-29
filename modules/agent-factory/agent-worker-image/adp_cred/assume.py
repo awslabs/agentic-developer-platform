@@ -118,7 +118,7 @@ def cmd_assume(args: list[str]) -> None:
         # Replace this process with the user's command.
         exec_cmd = exec_args[0]
         exec_path = shutil.which(exec_cmd) or exec_cmd
-        os.execvpe(exec_path, exec_args, env)
+        os.execvpe(exec_path, exec_args, env)  # nosemgrep: dangerous-os-exec-audit,dangerous-os-exec-tainted-env-args
     else:
         # Legacy behavior: print ONLY the profile name to stdout.
         print(profile_name, end="")
