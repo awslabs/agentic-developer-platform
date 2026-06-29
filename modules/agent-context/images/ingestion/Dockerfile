@@ -8,6 +8,18 @@
 #   docker build -t agent-context/ingestion:latest .
 #   docker tag agent-context/ingestion:latest ${ECR_REGISTRY}/agent-context/ingestion:latest
 #   docker push ${ECR_REGISTRY}/agent-context/ingestion:latest
+# zoekt-git-index binary, copied from the SAME official image the webserver runs
+# (ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG}) so the indexer and webserver are
+# guaranteed version-matched (#2361). This replaces a `go install` that pinned a
+# non-existent pseudo-version. ZOEKT_IMAGE_TAG defaults to "latest" (matches
+# manifests/zoekt.yaml + config.env).
+ARG ZOEKT_IMAGE_TAG=latest
+FROM ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG} AS zoekt
+# Resolve the indexer binary to a fixed path regardless of where the upstream
+# image places it (avoids hardcoding /usr/local/bin which may drift).
+SHELL ["/bin/sh", "-c"]
+RUN cp "$(command -v zoekt-git-index || find / -name zoekt-git-index -type f 2>/dev/null | head -1)" /zoekt-git-index
+
 FROM public.ecr.aws/docker/library/python:3.13-slim
 
 # System deps: git for cloning, build tools for tree-sitter native extensions
@@ -48,12 +60,10 @@ ENV GOPATH="/root/go"
 # scip-go (module at github.com/scip-code/scip-go, binary in cmd/scip-go)
 RUN go install github.com/scip-code/scip-go/cmd/scip-go@v0.2.7
 
-# zoekt-git-index — builds .zoekt shards from a git checkout (#2361)
-# Pinned to match the webserver image (ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG}).
-# sourcegraph/zoekt uses pseudo-versions; pin to a release tag matching the webserver.
-# When ZOEKT_IMAGE_TAG is bumped in config.env, bump this version in lockstep.
-ARG ZOEKT_VERSION=v0.0.0-20250515195411-23548e7be9e0
-RUN go install github.com/sourcegraph/zoekt/cmd/zoekt-git-index@${ZOEKT_VERSION}
+# zoekt-git-index — builds .zoekt shards from a git checkout (#2361).
+# Copied from the official zoekt image (the `zoekt` build stage above) so it's
+# the exact same version as the webserver — no fragile go-install pseudo-version.
+COPY --from=zoekt /zoekt-git-index /usr/local/bin/zoekt-git-index
 
 # Ruby + Sorbet (for scip-ruby — best-effort on untyped repos)
 RUN apt-get update && \
