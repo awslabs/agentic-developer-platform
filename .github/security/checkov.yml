@@ -7,6 +7,7 @@ framework:
   - cloudformation
   - dockerfile
   - kubernetes
+  - github_actions
 
 directory:
   - modules/gateway/infra
@@ -14,16 +15,43 @@ directory:
   - modules/agent-context/terraform
   - platform/infra
   - modules/agent-factory/agent-worker-image/aws
+  - modules/gateway/k8s
+  - modules/agent-factory/agent/k8s
+  - modules/agent-factory/gateway/k8s
+  - modules/agent-context/kubernetes
+  - modules/domain-apps/cyber/k8s
+  - .github/workflows
 
 # Skip checks that produce excessive false-positives in dev environments.
 # These are accepted-risk for dev; re-evaluate when promoting to prod.
+#
+# Band classification (Probe triage #2312 / EPIC #615):
+#   Band A (this file) — by-design, dev-appropriate, or vendored; config-only skip
+#   Band B (#2380)     — real Terraform hardening fixes
+#   Band C (#2384)     — IAM/EKS/RDS judgment calls requiring architect triage
+#
+# DO NOT add IAM rules (CKV_AWS_109/111/286/287/288/289/290/355/356),
+# KMS-encryption rules, or EKS-public-endpoint rules here — those are Band B/C.
 skip-check:
+  # ─── AWS: S3 ───────────────────────────────────────────────────────────────
   # S3 bucket logging — not needed in dev
   - CKV_AWS_18
   # S3 bucket versioning — controlled via Terraform var, not always needed
   - CKV_AWS_21
+  # S3 cross-region replication — CRR is a prod-DR control, not needed in
+  # single-region dev environment; all buckets are non-critical dev data
+  - CKV_AWS_144
+  # S3 event notifications — not all buckets need event-driven processing;
+  # notifications are added per-bucket when a consumer exists (e.g. ingestion)
+  - CKV2_AWS_62
+
+  # ─── AWS: CloudWatch / Lambda ──────────────────────────────────────────────
   # CloudWatch log encryption — not required in dev
   - CKV_AWS_158
+  # CloudWatch log retention ≥365 days — dev environment uses 7-30d retention
+  # as intentional cost optimization; logs are ephemeral debugging data, not
+  # audit records. Re-evaluate per-group when promoting to prod.
+  - CKV_AWS_338
   # Lambda code signing — unnecessary friction in dev iteration cycle;
   # implement for prod to verify deployment artifact integrity
   - CKV_AWS_272
@@ -38,6 +66,41 @@ skip-check:
   # Lambda X-Ray tracing — adds cost without value at dev traffic levels;
   # enable in prod for production observability
   - CKV_AWS_50
+
+  # ─── Kubernetes ────────────────────────────────────────────────────────────
+  # allowPrivilegeEscalation not set to false — agent containers (chat-agent,
+  # agent-worker, cyber-worker, ingestion) need to run toolchains (git, npm,
+  # pip, go) that require default Linux capabilities. EKS Auto Mode + Pod
+  # Identity provide isolation; re-evaluate with restricted PSS in prod.
+  - CKV_K8S_20
+
+  # ─── GitHub Actions ────────────────────────────────────────────────────────
+  # Top-level permissions not declared — deploy/agent workflows legitimately
+  # need write access to packages, deployments, and issues. Repo is private
+  # with branch protection; org-level token permissions provide the outer bound.
+  # Tighten per-workflow as part of GHA hardening (future work).
+  - CKV2_GHA_1
+  # Unsanitized user inputs in run steps — flagged on internal parameterized
+  # deploy workflows (_deploy-eks.yml) where inputs come from trusted
+  # workflow_call callers within the same repo, not external PRs. No public
+  # fork attack surface (repo is private, Actions restricted to org members).
+  - CKV_GHA_7
+
+  # ─── Dockerfile ────────────────────────────────────────────────────────────
+  # HEALTHCHECK not defined — batch/CronJob containers (ingestion, token-refresher,
+  # cyber-worker) and short-lived CI runners (arc-runner) are health-managed by
+  # their orchestrator (K8s liveness probes, ECS task health, GitHub Actions).
+  # HEALTHCHECK is redundant and can mask orchestrator-level restarts.
+  - CKV_DOCKER_2
+  # USER not set — ingestion Dockerfile and gateway Dockerfile run as root
+  # because they need to install system packages at build time and the
+  # runtime is isolated inside EKS pods with non-root security context
+  # enforced at the pod spec level. Arc-runner runs as root by design (CI).
+  - CKV_DOCKER_3
+  # sudo usage — no Dockerfiles use sudo (verified), but the rule triggers on
+  # apt-get patterns in multi-stage builds. Accept globally; actual privilege
+  # is controlled by USER directive and K8s securityContext.
+  - CKV2_DOCKER_1
 
 compact: true
 quiet: true
