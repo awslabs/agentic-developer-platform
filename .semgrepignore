@@ -1,0 +1,25 @@
+# .semgrepignore — path exclusions for semgrep (gitignore syntax).
+#
+# Read by the GitLab-side Probe SAST scanner (and local semgrep runs). Probe
+# honors repo-root tool config files (.gitleaks.toml, .banditrc) but NOT inline
+# `# nosemgrep` comments — so adjudicated false positives in NON-PRODUCTION
+# files are excluded here by path.
+#
+# SCOPE POLICY (deliberately conservative — see issue #2314 / triage #2312):
+# Only non-production files are path-excluded. Production source files are NOT
+# listed here, even when they carry adjudicated-FP findings, because a path
+# exclude blinds semgrep to ALL future (potentially real) findings in that file.
+# Production-source FPs are handled by rule-level suppression instead, not here.
+#
+# Each entry below is a verified false positive (Probe scan 2026-06-28, #2312).
+
+# --- Test fixtures: synthetic JWTs/tokens in unit tests (detected-jwt-token) ---
+modules/agent-factory/agent/src/experience-save-hook.test.ts
+modules/agent-factory/agent/src/run-completion-event.test.ts
+
+# --- Documentation & scan artifacts: sample tokens, not live secrets ---
+# The semgrep baseline SARIF contains finding fingerprints (incl. token strings)
+# from prior scans — scanning it is circular.
+.github/security/semgrep-baseline.sarif
+# Security audit note documenting allowlisted sample credentials.
+data/security/2026-06-05-class-A-gitleaks-allowlist-audit.md
