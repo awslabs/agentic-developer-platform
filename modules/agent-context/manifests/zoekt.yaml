@@ -30,6 +30,15 @@ spec:
         app.kubernetes.io/component: search
     spec:
       serviceAccountName: ${SERVICE_ACCOUNT}
+      initContainers:
+      - name: ensure-index-dir
+        image: busybox:1.36
+        command: ["sh", "-c", "ls /data/index && echo 'Index directory accessible'"]
+        volumeMounts:
+        - name: index-data
+          mountPath: /data/index
+          subPath: zoekt-shards
+          readOnly: true
       containers:
       - name: zoekt-webserver
         image: ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG}
@@ -48,6 +57,7 @@ spec:
         - name: index-data
           mountPath: /data/index
           subPath: zoekt-shards
+          readOnly: true
         resources:
           requests:
             cpu: "500m"
@@ -93,20 +103,3 @@ spec:
     targetPort: 6070
     protocol: TCP
   type: ClusterIP
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: zoekt-index
-  namespace: ${NAMESPACE}
-  labels:
-    app.kubernetes.io/name: zoekt-webserver
-    app.kubernetes.io/part-of: agent-context-platform
-    app.kubernetes.io/component: search
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: ebs-gp3
-  resources:
-    requests:
-      storage: 20Gi
