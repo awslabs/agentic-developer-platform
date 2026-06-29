@@ -161,6 +161,17 @@ def handle_agent_trigger(event: dict, context) -> dict:
         "type": "Bot",
     }
 
+    # Resolve installation_id for the chain's tenant (Issue #2336)
+    from common.installation_resolver import resolve_installation_for_tenant
+
+    installation_id = resolve_installation_for_tenant(chain_tenant_id or "")
+    if installation_id is None:
+        logger.warning(
+            "agent_trigger: no installation_id for tenant=%r — cannot dispatch",
+            chain_tenant_id,
+        )
+        return _response(422, {"error": "no_installation_for_tenant"})
+
     # Build minimal payload for envelope (target context)
     payload = {
         "action": "agent_trigger",
@@ -171,7 +182,7 @@ def handle_agent_trigger(event: dict, context) -> dict:
         },
         "repository": {"full_name": target_repo},
         "sender": sender,
-        "installation": {"id": 0},
+        "installation": {"id": installation_id},
     }
 
     # Call spawn_persona (the single enforcement point)
@@ -188,7 +199,7 @@ def handle_agent_trigger(event: dict, context) -> dict:
         sender=sender,
         event_type="agent_trigger",
         action="trigger",
-        installation_id=0,
+        installation_id=installation_id,
         repo=target_repo,
         payload=payload,
         intent_trigger="agent_trigger",

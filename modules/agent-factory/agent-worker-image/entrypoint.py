@@ -281,6 +281,29 @@ def main() -> int:
     arrived_at = envelope.get("arrived_at", "")
     actor = envelope.get("actor", {})
 
+    # Issue #2336: Defense-in-depth — if installation_id is 0/None/"0", the
+    # token-mint will 404 deterministically. Delete the poison message to
+    # prevent FIFO head-of-line blocking and exit cleanly.
+    if installation_id in (0, None, "0"):
+        logger.error(
+            "FATAL: installation_id=%r is invalid (message_id=%s, repo=%s, issue=%s). "
+            "Deleting poison message to prevent FIFO jam.",
+            installation_id,
+            message_id,
+            repo,
+            issue,
+        )
+        bootstrap_log.step_error(
+            1, "parse_envelope", RuntimeError(f"invalid installation_id={installation_id}")
+        )
+        bootstrap_log.close()
+        try:
+            _delete_message(queue_url, region, receipt_handle)
+            logger.info("Poison message deleted (installation_id=0 guard)")
+        except Exception as exc:
+            logger.error("Failed to delete poison message: %s", exc)
+        return 1
+
     # Read correlation context from SQS envelope.
     # ENVELOPE CONTRACT: handler.py publishes correlation fields NESTED under
     # envelope["correlation"] (see handler.py:711-718). Do NOT read them top-level.

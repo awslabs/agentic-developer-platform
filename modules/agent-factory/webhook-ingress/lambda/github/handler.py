@@ -122,8 +122,20 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
                 "auto_registered": True,
             }
         )
+        # Issue #2336: Write reverse-lookup row (org_id → installation_id)
+        # so EventBridge/agent-trigger handlers can resolve a real
+        # installation_id without calling the GitHub API.
+        table.put_item(
+            Item={
+                "identity_type": "org_installation",
+                "identity_value": org_login,
+                "installation_id": installation_id,
+                "updated_at": now,
+                "auto_registered": True,
+            }
+        )
         logger.info(
-            "Auto-registered installation_id=%d → org_id=%s",
+            "Auto-registered installation_id=%d → org_id=%s (forward + reverse)",
             installation_id,
             org_login,
         )

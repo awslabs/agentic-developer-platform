@@ -95,6 +95,21 @@ def spawn_persona(
         SpawnResult with success=True and message_id, or success=False and
         block_reason explaining why the spawn was blocked.
     """
+    # --- Guard 0: installation_id validation (Issue #2336) ---
+    # Reject messages with installation_id=0/None before they reach SQS.
+    # A dispatch with no valid installation will deterministically crash the
+    # worker at token-mint time and jam the FIFO queue.
+    if installation_id in (0, None) and event_type != "test":
+        logger.warning(
+            "spawn_persona: invalid installation_id=%r for persona=%s "
+            "event_type=%s — blocking",
+            installation_id,
+            persona,
+            event_type,
+        )
+        _emit_metric("InvalidInstallationIdBlocked", {"persona": persona})
+        return SpawnResult(success=False, block_reason="invalid_installation_id")
+
     # --- Guard 1: Persona validation ---
     if persona not in VALID_PERSONAS:
         logger.warning("spawn_persona: unknown persona %r — blocking", persona)

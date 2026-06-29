@@ -160,9 +160,10 @@ class TestChainResolution:
         result = json.loads(resp["body"])
         assert result["error"] == "unknown_chain"
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._resolve_chain")
-    def test_valid_chain_calls_spawn_persona(self, mock_resolve, mock_spawn):
+    def test_valid_chain_calls_spawn_persona(self, mock_resolve, mock_spawn, mock_install):
         """Valid chain record leads to spawn_persona call."""
         mock_resolve.return_value = _chain_record()
         mock_spawn.return_value = MagicMock(success=True, message_id="msg-123", block_reason=None)
@@ -176,9 +177,10 @@ class TestChainResolution:
         assert result["message_id"] == "msg-123"
         mock_spawn.assert_called_once()
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._resolve_chain")
-    def test_chain_depth_incremented(self, mock_resolve, mock_spawn):
+    def test_chain_depth_incremented(self, mock_resolve, mock_spawn, mock_install):
         """Chain depth from record is incremented by 1 in correlation_ctx."""
         mock_resolve.return_value = _chain_record(chain_depth=3)
         mock_spawn.return_value = MagicMock(success=True, message_id="msg-456", block_reason=None)
@@ -189,9 +191,10 @@ class TestChainResolution:
         call_kwargs = mock_spawn.call_args[1]
         assert call_kwargs["correlation_ctx"]["chain_depth"] == 4
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._resolve_chain")
-    def test_root_human_from_chain_not_body(self, mock_resolve, mock_spawn):
+    def test_root_human_from_chain_not_body(self, mock_resolve, mock_spawn, mock_install):
         """root_human_id comes from the chain record, not the request body."""
         mock_resolve.return_value = _chain_record(root_human_id="real-human-999")
         mock_spawn.return_value = MagicMock(success=True, message_id="msg-789", block_reason=None)
@@ -203,9 +206,10 @@ class TestChainResolution:
         call_kwargs = mock_spawn.call_args[1]
         assert call_kwargs["correlation_ctx"]["root_human_id"] == "real-human-999"
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._resolve_chain")
-    def test_parent_invocation_id_from_body(self, mock_resolve, mock_spawn):
+    def test_parent_invocation_id_from_body(self, mock_resolve, mock_spawn, mock_install):
         """parent_invocation_id comes from the body (caller declares itself)."""
         mock_resolve.return_value = _chain_record()
         mock_spawn.return_value = MagicMock(success=True, message_id="msg-pid", block_reason=None)
@@ -237,9 +241,10 @@ class TestCrossTenantCheck:
         result = json.loads(resp["body"])
         assert result["error"] == "cross_tenant"
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._resolve_chain")
-    def test_matching_tenant_allowed(self, mock_resolve, mock_spawn):
+    def test_matching_tenant_allowed(self, mock_resolve, mock_spawn, mock_install):
         """Body tenant_id == chain tenant_id is fine."""
         mock_resolve.return_value = _chain_record(tenant_id="my-tenant")
         mock_spawn.return_value = MagicMock(success=True, message_id="msg-t", block_reason=None)
@@ -248,9 +253,10 @@ class TestCrossTenantCheck:
         resp = handle_agent_trigger(event, None)
         assert resp["statusCode"] == 202
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._resolve_chain")
-    def test_no_body_tenant_allowed(self, mock_resolve, mock_spawn):
+    def test_no_body_tenant_allowed(self, mock_resolve, mock_spawn, mock_install):
         """Body without tenant_id (omitted) bypasses cross-tenant check."""
         mock_resolve.return_value = _chain_record(tenant_id="my-tenant")
         mock_spawn.return_value = MagicMock(success=True, message_id="msg-nt", block_reason=None)
@@ -268,9 +274,10 @@ class TestCrossTenantCheck:
 class TestGuardRejections:
     """Guard rejections surface as 422 guard_rejected."""
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._resolve_chain")
-    def test_guard_rejected_returns_422(self, mock_resolve, mock_spawn):
+    def test_guard_rejected_returns_422(self, mock_resolve, mock_spawn, mock_install):
         """When spawn_persona blocks, return 422 with guard_rejected."""
         mock_resolve.return_value = _chain_record()
         mock_spawn.return_value = MagicMock(
@@ -283,9 +290,10 @@ class TestGuardRejections:
         assert result["error"] == "guard_rejected"
         assert result["detail"] == "chain_depth_exceeded"
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._resolve_chain")
-    def test_sqs_failure_returns_500(self, mock_resolve, mock_spawn):
+    def test_sqs_failure_returns_500(self, mock_resolve, mock_spawn, mock_install):
         """SQS publish failure returns 500 enqueue_failed."""
         mock_resolve.return_value = _chain_record()
         mock_spawn.return_value = MagicMock(

@@ -196,7 +196,18 @@ def handle_eventbridge(event: dict, context) -> dict:
     if issue_number:
         payload["issue"] = {"number": issue_number, "title": reason[:120]}
 
-    # 10. Build a mock ResolvedIdentity for spawn_persona
+    # 10. Resolve installation_id for this tenant (Issue #2336)
+    from common.installation_resolver import resolve_installation_for_tenant
+
+    installation_id = resolve_installation_for_tenant(identity_result.org_id)
+    if installation_id is None:
+        logger.warning(
+            "EventBridge: no installation_id for org_id=%r — cannot dispatch",
+            identity_result.org_id,
+        )
+        return _response(422, {"error": "no_installation_for_tenant"})
+
+    # 11. Build a mock ResolvedIdentity for spawn_persona
     from common.identity_resolver import ResolvedIdentity
 
     resolved_identity = ResolvedIdentity(
@@ -208,7 +219,7 @@ def handle_eventbridge(event: dict, context) -> dict:
         bot_kind="",
     )
 
-    # 11. Call spawn_persona (single enforcement point)
+    # 12. Call spawn_persona (single enforcement point)
     from common.spawn_persona import spawn_persona
 
     spawn_result = spawn_persona(
@@ -222,7 +233,7 @@ def handle_eventbridge(event: dict, context) -> dict:
         sender=sender,
         event_type="eventbridge",
         action=detail_type,
-        installation_id=0,
+        installation_id=installation_id,
         repo=repo,
         payload=payload,
         intent_trigger="eventbridge_rule",

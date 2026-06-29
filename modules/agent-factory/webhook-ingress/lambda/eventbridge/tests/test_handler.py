@@ -224,9 +224,10 @@ class TestEventBridgeIdentityResolution:
         assert result["statusCode"] == 403
         assert "persona_not_allowed" in result["body"]
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("eventbridge.handler._get_rate_limiter")
     @patch("eventbridge.handler._get_service_identity_mod")
-    def test_persona_in_allowed_list_passes(self, mock_svc_mod, mock_rl):
+    def test_persona_in_allowed_list_passes(self, mock_svc_mod, mock_rl, mock_resolve):
         """Persona in allowed_personas passes authorization."""
         from eventbridge.handler import handle_eventbridge
 
@@ -244,9 +245,10 @@ class TestEventBridgeIdentityResolution:
 
         assert result["statusCode"] == 202
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("eventbridge.handler._get_rate_limiter")
     @patch("eventbridge.handler._get_service_identity_mod")
-    def test_empty_allowed_personas_permits_all(self, mock_svc_mod, mock_rl):
+    def test_empty_allowed_personas_permits_all(self, mock_svc_mod, mock_rl, mock_resolve):
         """Empty allowed_personas means no restriction (all personas OK)."""
         from eventbridge.handler import handle_eventbridge
 
@@ -288,9 +290,10 @@ class TestEventBridgeRateLimit:
 class TestEventBridgeRootLineage:
     """Tests that EventBridge events create correct ROOT lineage."""
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("eventbridge.handler._get_rate_limiter")
     @patch("eventbridge.handler._get_service_identity_mod")
-    def test_root_lineage_is_human_rooted_false(self, mock_svc_mod, mock_rl):
+    def test_root_lineage_is_human_rooted_false(self, mock_svc_mod, mock_rl, mock_resolve):
         """EventBridge spawns have is_human_rooted=false."""
         from eventbridge.handler import handle_eventbridge
 
@@ -324,9 +327,10 @@ class TestEventBridgeRootLineage:
         assert body["is_human_rooted"] is False
         assert "correlation_id" in body
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("eventbridge.handler._get_rate_limiter")
     @patch("eventbridge.handler._get_service_identity_mod")
-    def test_correlation_id_is_new_uuid(self, mock_svc_mod, mock_rl):
+    def test_correlation_id_is_new_uuid(self, mock_svc_mod, mock_rl, mock_resolve):
         """Each EventBridge event gets a fresh correlation_id (new chain)."""
         from eventbridge.handler import handle_eventbridge
 
@@ -349,9 +353,10 @@ class TestEventBridgeRootLineage:
 
             uuid.UUID(correlation_ctx["correlation_id"])  # Raises if invalid
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("eventbridge.handler._get_rate_limiter")
     @patch("eventbridge.handler._get_service_identity_mod")
-    def test_event_type_is_eventbridge(self, mock_svc_mod, mock_rl):
+    def test_event_type_is_eventbridge(self, mock_svc_mod, mock_rl, mock_resolve):
         """spawn_persona is called with event_type='eventbridge'."""
         from eventbridge.handler import handle_eventbridge
 
@@ -376,9 +381,10 @@ class TestEventBridgeRootLineage:
 class TestEventBridgeDedupKey:
     """Tests for alarm dedup_key in channel_key."""
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("eventbridge.handler._get_rate_limiter")
     @patch("eventbridge.handler._get_service_identity_mod")
-    def test_dedup_key_used_in_channel_key(self, mock_svc_mod, mock_rl):
+    def test_dedup_key_used_in_channel_key(self, mock_svc_mod, mock_rl, mock_resolve):
         """dedup_key from adp_trigger is used in channel_key for pointer writes."""
         from eventbridge.handler import handle_eventbridge
 
@@ -397,9 +403,10 @@ class TestEventBridgeDedupKey:
             call_kwargs = mock_spawn.call_args.kwargs
             assert call_kwargs["channel_key"] == "eventbridge:high-error-rate-alarm"
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("eventbridge.handler._get_rate_limiter")
     @patch("eventbridge.handler._get_service_identity_mod")
-    def test_fallback_channel_key_without_dedup_key(self, mock_svc_mod, mock_rl):
+    def test_fallback_channel_key_without_dedup_key(self, mock_svc_mod, mock_rl, mock_resolve):
         """Without dedup_key, channel_key falls back to source:detail-type:identity."""
         from eventbridge.handler import handle_eventbridge
 
@@ -423,9 +430,10 @@ class TestEventBridgeDedupKey:
 class TestEventBridgeSpawnFailure:
     """Tests for spawn_persona failure handling."""
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("eventbridge.handler._get_rate_limiter")
     @patch("eventbridge.handler._get_service_identity_mod")
-    def test_sqs_failure_returns_500(self, mock_svc_mod, mock_rl):
+    def test_sqs_failure_returns_500(self, mock_svc_mod, mock_rl, mock_resolve):
         """SQS publish failure returns 500."""
         from eventbridge.handler import handle_eventbridge
 
@@ -443,9 +451,10 @@ class TestEventBridgeSpawnFailure:
 
         assert result["statusCode"] == 500
 
+    @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=124731131)
     @patch("eventbridge.handler._get_rate_limiter")
     @patch("eventbridge.handler._get_service_identity_mod")
-    def test_guard_block_returns_200_no_op(self, mock_svc_mod, mock_rl):
+    def test_guard_block_returns_200_no_op(self, mock_svc_mod, mock_rl, mock_resolve):
         """Guard blocks (e.g. depth exceeded) return 200 no_op."""
         from eventbridge.handler import handle_eventbridge
 
