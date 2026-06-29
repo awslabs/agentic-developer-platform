@@ -16,6 +16,7 @@ Uses mocks for psycopg2 (no live DB required).
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -165,7 +166,8 @@ class TestVerifyStage:
         assert "status = 'verified'" in sql
         assert "verified_at" in sql
         assert params[0] == "s3://bucket/key.json"  # artifact_ref
-        assert params[3] == "stage-uuid"  # WHERE id = %s
+        assert params[3] is None  # metrics (not provided)
+        assert params[4] == "stage-uuid"  # WHERE id = %s
         mock_conn.commit.assert_called_once()
 
     def test_sets_completed_at(self, mock_conn):
@@ -408,13 +410,15 @@ class TestStageTracker:
                 tracker._commit_sha = "sha123"
                 tracker._run_id = "run-uuid-001"
                 tracker._results = []
+                tracker._worker_pod = "test-pod"
 
                 with tracker.stage("clone") as ctx:
                     ctx.set_artifact("/path/to/clone")
                     ctx.verify(lambda: True)
 
                 mock_verify.assert_called_once_with(
-                    mock_conn, "stage-uuid-001", "/path/to/clone"
+                    mock_conn, "stage-uuid-001", "/path/to/clone",
+                    metrics=None,
                 )
                 assert tracker.results[0].status == "verified"
 
@@ -432,6 +436,7 @@ class TestStageTracker:
                 tracker._commit_sha = "sha123"
                 tracker._run_id = "run-uuid-001"
                 tracker._results = []
+                tracker._worker_pod = "test-pod"
 
                 with tracker.stage("deepwiki") as ctx:
                     ctx.set_artifact("s3://bucket/wiki.md")
@@ -455,6 +460,7 @@ class TestStageTracker:
                 tracker._commit_sha = "sha123"
                 tracker._run_id = "run-uuid-001"
                 tracker._results = []
+                tracker._worker_pod = "test-pod"
 
                 with tracker.stage("sbom_source") as _ctx:
                     raise RuntimeError("Syft crashed")
@@ -478,6 +484,7 @@ class TestStageTracker:
                 tracker._commit_sha = "sha123"
                 tracker._run_id = "run-uuid-001"
                 tracker._results = []
+                tracker._worker_pod = "test-pod"
 
                 with tracker.stage("clone") as ctx:
                     ctx.set_artifact("/path/to/clone")
@@ -506,3 +513,175 @@ class TestStageTracker:
                     mock_conn, "run-uuid-001", "org/repo", "deepwiki", "feature disabled"
                 )
                 assert tracker.results[0].status == "skipped"
+
+
+# ---------------------------------------------------------------------------
+# Issue #2305: per-stage metrics + worker_pod tests
+# ---------------------------------------------------------------------------
+
+
+class TestStartStageWorkerPod:
+    """Test worker_pod is written to stage row on start."""
+
+    def test_worker_pod_passed_to_insert(self, mock_conn):
+        import db
+
+        db.start_stage(mock_conn, "run-uuid", "org/repo", "clone", worker_pod="ingestion-abc123")
+        cursor = mock_conn.cursor.return_value
+        sql = cursor.execute.call_args[0][0]
+        params = cursor.execute.call_args[0][1]
+
+        assert "worker_pod" in sql
+        assert params[-1] == "ingestion-abc123"
+
+    def test_worker_pod_none_by_default(self, mock_conn):
+        import db
+
+        db.start_stage(mock_conn, "run-uuid", "org/repo", "clone")
+        cursor = mock_conn.cursor.return_value
+        params = cursor.execute.call_args[0][1]
+
+        # Last param is worker_pod, should be None when not specified
+        assert params[-1] is None
+
+
+class TestVerifyStageMetrics:
+    """Test metrics JSONB is written on verify."""
+
+    def test_metrics_written_as_json(self, mock_conn):
+        import db
+
+        db.verify_stage(
+            mock_conn, "stage-uuid", "s3://bucket/key.json",
+            metrics={"symbols": 42, "files": 10},
+        )
+        cursor = mock_conn.cursor.return_value
+        sql = cursor.execute.call_args[0][0]
+        params = cursor.execute.call_args[0][1]
+
+        assert "metrics" in sql
+        # metrics is JSON-serialized; it's the 4th param (after artifact_ref, now, now)
+        import json
+        assert json.loads(params[3]) == {"symbols": 42, "files": 10}
+
+    def test_metrics_none_by_default(self, mock_conn):
+        import db
+
+        db.verify_stage(mock_conn, "stage-uuid", "artifact-ref")
+        cursor = mock_conn.cursor.return_value
+        params = cursor.execute.call_args[0][1]
+
+        # metrics param should be None when not specified
+        assert params[3] is None
+
+    def test_metrics_empty_dict_serialized(self, mock_conn):
+        import db
+
+        db.verify_stage(
+            mock_conn, "stage-uuid", "artifact-ref",
+            metrics={},
+        )
+        cursor = mock_conn.cursor.return_value
+        params = cursor.execute.call_args[0][1]
+
+        import json
+        assert json.loads(params[3]) == {}
+
+
+class TestScipStructuralValidStage:
+    """Test that scip_structural is now a valid stage name."""
+
+    def test_scip_structural_in_valid_stages(self):
+        import db
+
+        assert "scip_structural" in db.VALID_STAGES
+
+    def test_start_stage_accepts_scip_structural(self, mock_conn):
+        import db
+
+        stage_id = db.start_stage(mock_conn, "run-uuid", "org/repo", "scip_structural")
+        assert stage_id
+
+
+class TestStageTrackerWorkerPod:
+    """Test StageTracker captures POD_NAME and passes it to start_stage."""
+
+    @patch("db.create_index_run", return_value="run-uuid-001")
+    def test_captures_pod_name_from_env(self, mock_create_run, mock_conn):
+        from stage_tracker import StageTracker
+
+        with patch.dict(os.environ, {"POD_NAME": "ingestion-worker-xyz789"}):
+            tracker = StageTracker(mock_conn, "org/repo", "repo-uuid", "sha123")
+            assert tracker._worker_pod == "ingestion-worker-xyz789"
+
+    @patch("db.create_index_run", return_value="run-uuid-001")
+    def test_falls_back_to_hostname(self, mock_create_run, mock_conn):
+        from stage_tracker import StageTracker
+
+        with patch.dict(os.environ, {}, clear=False):
+            # Remove POD_NAME if set
+            env_copy = os.environ.copy()
+            env_copy.pop("POD_NAME", None)
+            with patch.dict(os.environ, env_copy, clear=True):
+                with patch("socket.gethostname", return_value="my-hostname"):
+                    tracker = StageTracker(mock_conn, "org/repo", "repo-uuid", "sha123")
+                    assert tracker._worker_pod == "my-hostname"
+
+    @patch("db.create_index_run", return_value="run-uuid-001")
+    def test_worker_pod_passed_to_start_stage(self, mock_create_run, mock_conn):
+        from stage_tracker import StageTracker
+
+        with patch.dict(os.environ, {"POD_NAME": "ingestion-worker-abc"}):
+            with patch("db.start_stage", return_value="stage-uuid-001") as mock_start:
+                with patch("db.verify_stage"):
+                    tracker = StageTracker(mock_conn, "org/repo", "repo-uuid", "sha123")
+
+                    with tracker.stage("clone") as ctx:
+                        ctx.set_artifact("/path/to/clone")
+                        ctx.verify(lambda: True)
+
+                    mock_start.assert_called_once_with(
+                        mock_conn, "run-uuid-001", "org/repo", "clone",
+                        worker_pod="ingestion-worker-abc",
+                    )
+
+
+class TestStageTrackerSetMetrics:
+    """Test StageContext.set_metrics and metrics passing to verify_stage."""
+
+    @patch("db.create_index_run", return_value="run-uuid-001")
+    def test_set_metrics_passed_to_verify_stage(self, mock_create_run, mock_conn):
+        from stage_tracker import StageTracker
+
+        with patch.dict(os.environ, {"POD_NAME": "test-pod"}):
+            with patch("db.start_stage", return_value="stage-uuid-001"):
+                with patch("db.verify_stage") as mock_verify:
+                    tracker = StageTracker(mock_conn, "org/repo", "repo-uuid", "sha123")
+
+                    with tracker.stage("cgc_structural") as ctx:
+                        ctx.set_artifact("s3://bucket/code-index.md")
+                        ctx.set_metrics({"symbols": 100, "files": 25})
+                        ctx.verify(lambda: True)
+
+                    mock_verify.assert_called_once_with(
+                        mock_conn, "stage-uuid-001", "s3://bucket/code-index.md",
+                        metrics={"symbols": 100, "files": 25},
+                    )
+
+    @patch("db.create_index_run", return_value="run-uuid-001")
+    def test_no_metrics_passes_none(self, mock_create_run, mock_conn):
+        from stage_tracker import StageTracker
+
+        with patch.dict(os.environ, {"POD_NAME": "test-pod"}):
+            with patch("db.start_stage", return_value="stage-uuid-001"):
+                with patch("db.verify_stage") as mock_verify:
+                    tracker = StageTracker(mock_conn, "org/repo", "repo-uuid", "sha123")
+
+                    with tracker.stage("clone") as ctx:
+                        ctx.set_artifact("/path/to/clone")
+                        ctx.verify(lambda: True)
+
+                    mock_verify.assert_called_once_with(
+                        mock_conn, "stage-uuid-001", "/path/to/clone",
+                        metrics=None,
+                    )

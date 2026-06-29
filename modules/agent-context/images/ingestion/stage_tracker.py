@@ -21,9 +21,11 @@ Usage in ingest-repo.py:
 from __future__ import annotations
 
 import logging
+import os
+import socket
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import db as stage_db
@@ -61,10 +63,18 @@ class StageContext:
     _artifact_ref: str | None = None
     _verified: bool = False
     _error: str | None = None
+    _metrics: dict | None = field(default=None, repr=False)
 
     def set_artifact(self, ref: str) -> None:
         """Record the artifact reference (S3 key, path, index name, etc.)."""
         self._artifact_ref = ref
+
+    def set_metrics(self, data: dict) -> None:
+        """Record per-stage metrics (e.g. {"symbols": 42, "files": 10}).
+
+        Stored as JSONB in index_run_stages.metrics for the detailed ingestion view.
+        """
+        self._metrics = data
 
     def verify(self, check_fn: Callable[[], bool]) -> bool:
         """Run the read-back verification. Returns True if artifact confirmed.
@@ -106,6 +116,8 @@ class StageTracker:
         self._commit_sha = commit_sha
         self._run_id = stage_db.create_index_run(conn, repo_id, repo, commit_sha)
         self._results: list[StageResult] = []
+        # Capture worker pod name for log correlation (downward API or hostname fallback)
+        self._worker_pod: str = os.environ.get("POD_NAME") or socket.gethostname()
         # Set run_id in correlation context for all subsequent logs
         safe_emit(set_correlation_context, run_id=self._run_id)
 
@@ -159,7 +171,10 @@ class StageTracker:
             pass  # fail-open: missing attrs are acceptable
 
         ctx = StageContext(_stage_name=stage_name)
-        stage_id = stage_db.start_stage(self._conn, self._run_id, self._repo, stage_name)
+        stage_id = stage_db.start_stage(
+            self._conn, self._run_id, self._repo, stage_name,
+            worker_pod=self._worker_pod,
+        )
         stage_start_time = time.monotonic()
 
         # Start OTel span (fail-open: wrap in try/except so tracing never blocks)
@@ -207,7 +222,9 @@ class StageTracker:
         # Determine final state (unchanged from pre-tracing behavior)
         stage_duration_ms = (time.monotonic() - stage_start_time) * 1000
         if ctx._verified and ctx._artifact_ref:
-            stage_db.verify_stage(self._conn, stage_id, ctx._artifact_ref)
+            stage_db.verify_stage(
+                self._conn, stage_id, ctx._artifact_ref, metrics=ctx._metrics
+            )
             self._results.append(StageResult(
                 stage=stage_name,
                 status="verified",

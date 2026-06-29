@@ -1427,6 +1427,10 @@ def ingest_repo(
                         try:
                             with tracker.stage("cgc_structural") as ctx:
                                 ctx.set_artifact(s3_key)
+                                ctx.set_metrics({
+                                    "symbols": len(code_index.get("symbols", [])),
+                                    "files": len(code_index.get("imports", {})),
+                                })
                                 ctx.verify(lambda: _verify_s3_object(s3_store, s3_key))
                         except Exception as e:
                             log.warning("cgc_structural stage tracking failed: %s", e)
@@ -1492,6 +1496,7 @@ def ingest_repo(
                             try:
                                 with tracker.stage("deepwiki") as ctx:
                                     ctx.set_artifact(wiki_s3_key)
+                                    ctx.set_metrics({"chars": len(wiki)})
                                     ctx.verify(lambda: _verify_s3_object(s3_store, wiki_s3_key))
                             except Exception as e:
                                 log.warning("deepwiki stage tracking failed: %s", e)
@@ -1564,7 +1569,12 @@ def ingest_repo(
                         try:
                             with tracker.stage("graphrag") as ctx:
                                 entity_count = graphrag_result.get("entities", 0)
+                                rel_count = graphrag_result.get("relationships", 0)
                                 ctx.set_artifact(f"neptune:{org_repo}:entities={entity_count}")
+                                ctx.set_metrics({
+                                    "entities": entity_count,
+                                    "relationships": rel_count,
+                                })
                                 ctx.verify(lambda: entity_count > 0)
                         except Exception as e:
                             log.warning("graphrag stage tracking failed: %s", e)
@@ -1605,7 +1615,12 @@ def ingest_repo(
                         if scip_status == "complete":
                             with tracker.stage("scip_structural") as ctx:
                                 edge_count = scip_result.get("edges", 0)
+                                node_count = scip_result.get("nodes", 0)
                                 ctx.set_artifact(f"neptune:{org_repo}:edges={edge_count}")
+                                ctx.set_metrics({
+                                    "nodes": node_count,
+                                    "edges": edge_count,
+                                })
                                 ctx.verify(lambda: edge_count > 0)
                         elif scip_status == "no_languages":
                             tracker.mark_skipped("scip_structural", "no SCIP-supported languages")
@@ -1654,6 +1669,17 @@ def ingest_repo(
                         if sbom_result == "complete":
                             with tracker.stage("sbom_source") as ctx:
                                 ctx.set_artifact(sbom_s3_key)
+                                # Count dependencies from the uploaded SBOM
+                                dep_count = 0
+                                try:
+                                    obj = s3_store._s3.get_object(
+                                        Bucket=s3_store.bucket_name, Key=sbom_s3_key
+                                    )
+                                    sbom_data = json.loads(obj["Body"].read())
+                                    dep_count = len(sbom_data.get("components", []))
+                                except Exception:
+                                    pass  # best-effort count
+                                ctx.set_metrics({"dependencies": dep_count})
                                 ctx.verify(lambda: _verify_s3_object(s3_store, sbom_s3_key))
                         else:
                             with tracker.stage("sbom_source") as ctx:

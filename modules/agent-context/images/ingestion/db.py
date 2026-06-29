@@ -25,6 +25,7 @@ VALID_STAGES = frozenset(
     {
         "clone",
         "cgc_structural",
+        "scip_structural",
         "embed_vectors",
         "sbom_source",
         "sbom_image",
@@ -300,11 +301,16 @@ def start_stage(
     run_id: str,
     repo: str,
     stage: str,
+    *,
+    worker_pod: str | None = None,
 ) -> str:
     """Mark a stage as running. Returns the stage row id.
 
     Increments attempts counter. Creates the row if it doesn't exist for this
     run_id+stage combination, otherwise updates the existing row.
+
+    Args:
+        worker_pod: The Kubernetes pod name running this stage (for log lookup).
     """
     if stage not in VALID_STAGES:
         raise ValueError(f"Invalid stage: {stage!r}. Must be one of {sorted(VALID_STAGES)}")
@@ -315,13 +321,14 @@ def start_stage(
     try:
         cursor.execute(
             """
-            INSERT INTO index_run_stages (id, run_id, repo, stage, status, attempts, started_at)
-            VALUES (%s, %s, %s, %s, 'running', 1, %s)
+            INSERT INTO index_run_stages
+                (id, run_id, repo, stage, status, attempts, started_at, worker_pod)
+            VALUES (%s, %s, %s, %s, 'running', 1, %s, %s)
             """,
-            (stage_id, run_id, repo, stage, now),
+            (stage_id, run_id, repo, stage, now, worker_pod),
         )
         conn.commit()
-        log.info("Stage %s started for run %s (repo=%s)", stage, run_id, repo)
+        log.info("Stage %s started for run %s (repo=%s, pod=%s)", stage, run_id, repo, worker_pod)
     except Exception:
         conn.rollback()
         raise
@@ -334,12 +341,21 @@ def verify_stage(
     conn,
     stage_id: str,
     artifact_ref: str,
+    *,
+    metrics: dict | None = None,
 ) -> None:
     """Mark a stage as verified after read-back confirms the artifact exists.
 
     This is the ONLY path to 'verified' status. Sets verified_at timestamp.
+
+    Args:
+        metrics: Optional per-stage metrics dict (e.g. {"symbols": 42, "files": 10}).
+                 Stored as JSONB for the detailed ingestion view.
     """
+    import json as _json
+
     now = datetime.now(timezone.utc)
+    metrics_json = _json.dumps(metrics) if metrics is not None else None
     cursor = conn.cursor()
     try:
         cursor.execute(
@@ -348,13 +364,14 @@ def verify_stage(
             SET status = 'verified',
                 artifact_ref = %s,
                 verified_at = %s,
-                completed_at = %s
+                completed_at = %s,
+                metrics = %s
             WHERE id = %s
             """,
-            (artifact_ref, now, now, stage_id),
+            (artifact_ref, now, now, metrics_json, stage_id),
         )
         conn.commit()
-        log.info("Stage %s verified (artifact=%s)", stage_id, artifact_ref)
+        log.info("Stage %s verified (artifact=%s, metrics=%s)", stage_id, artifact_ref, metrics)
     except Exception:
         conn.rollback()
         raise

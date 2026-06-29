@@ -44,6 +44,11 @@ spec:
                   name: agent-context-secrets
                   optional: true
             env:
+              # Pod name for stage tracking (log correlation — issue #2305)
+              - name: POD_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.name
               # Override: SQS workers clone to ephemeral /tmp (not persistent storage)
               - name: CLONE_BASE
                 value: /tmp/repos
