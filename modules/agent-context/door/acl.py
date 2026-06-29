@@ -184,8 +184,19 @@ def filter_results(
         )
         return []
 
-    # Filter: only pass hits whose repo is in the allowed set
-    filtered = [hit for hit in results if hit.repo_name in allowed_repos]
+    # Filter: only pass hits whose repo is in the allowed set.
+    # Handle format mismatch: hits may use short names ("Vibe-Trading") while
+    # the DB stores full org/repo ("HKUDS/Vibe-Trading"). Build a secondary
+    # lookup by the repo part (after /) to handle short-name hits.
+    allowed_short_names: set[str] = set()
+    for repo in allowed_repos:
+        if "/" in repo:
+            allowed_short_names.add(repo.split("/", 1)[1])
+    filtered = [
+        hit
+        for hit in results
+        if hit.repo_name in allowed_repos or hit.repo_name in allowed_short_names
+    ]
 
     if len(filtered) < len(results):
         log.debug(
