@@ -173,6 +173,8 @@ class AssetIndexStage(BaseModel):
     error: str | None = None
     started_at: str | None = None
     completed_at: str | None = None
+    metrics: dict[str, Any] | None = None
+    worker_pod: str | None = None
 
 
 class AssetStatusResponse(BaseModel):

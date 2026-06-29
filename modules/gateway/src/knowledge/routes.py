@@ -477,8 +477,8 @@ async def get_asset_status(
     stages_result = await db.execute(
         text("""
             SELECT s.run_id, s.stage, s.status, s.artifact_ref, s.error,
-                   s.started_at, s.completed_at, r.status AS run_status,
-                   r.started_at AS run_started_at
+                   s.started_at, s.completed_at, s.metrics, s.worker_pod,
+                   r.status AS run_status, r.started_at AS run_started_at
             FROM index_run_stages s
             LEFT JOIN index_runs r ON r.id = s.run_id
             WHERE s.repo = :repo
@@ -505,6 +505,8 @@ async def get_asset_status(
                 error=sr.error,
                 started_at=sr.started_at.isoformat() if sr.started_at else None,
                 completed_at=sr.completed_at.isoformat() if sr.completed_at else None,
+                metrics=sr.metrics,
+                worker_pod=sr.worker_pod,
             )
         )
 

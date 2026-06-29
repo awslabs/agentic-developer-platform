@@ -669,6 +669,8 @@ export interface AssetIndexStage {
   error: string | null;
   startedAt: string | null;
   completedAt: string | null;
+  metrics: Record<string, any> | null;
+  workerPod: string | null;
 }
 
 /** Response from GET /api/agent-context/assets/{id}/status. */

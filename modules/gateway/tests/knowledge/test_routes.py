@@ -347,6 +347,8 @@ class TestGetAssetStatus:
                 self.error = None
                 self.started_at = None
                 self.completed_at = None
+                self.metrics = None
+                self.worker_pod = None
                 self.run_status = "complete"
                 self.run_started_at = None
 
@@ -365,6 +367,66 @@ class TestGetAssetStatus:
         assert data["repo_found"] is True
         assert [s["stage"] for s in data["stages"]] == ["clone", "deepwiki"]
         assert data["stages"][1]["status"] == "failed"
+
+    @pytest.mark.anyio
+    async def test_status_returns_metrics_and_worker_pod(self, make_client, fake_user):
+        """Stage rows with metrics (JSONB) and worker_pod (TEXT) surface in response (#2307)."""
+        asset_id = uuid.uuid4()
+        asset_row = FakeRow(
+            id=asset_id,
+            source_ref="https://github.com/acme/my-service",
+            status="complete",
+        )
+
+        class StageRow:
+            def __init__(self, stage, status, metrics=None, worker_pod=None):
+                self.run_id = "run-1"
+                self.stage = stage
+                self.status = status
+                self.artifact_ref = None
+                self.error = None
+                self.started_at = None
+                self.completed_at = None
+                self.metrics = metrics
+                self.worker_pod = worker_pod
+                self.run_status = "complete"
+                self.run_started_at = None
+
+        db = FakeAsyncSession()
+        db.execute_results = [
+            FakeResult(rows=[asset_row]),
+            FakeResult(
+                rows=[
+                    StageRow(
+                        "cgc_structural",
+                        "verified",
+                        metrics={"symbols": 142, "edges": 305},
+                        worker_pod="worker-abc-123",
+                    ),
+                    StageRow("deepwiki", "running", metrics=None, worker_pod="worker-def-456"),
+                ]
+            ),
+        ]
+
+        async with make_client(db, fake_user) as client:
+            resp = await client.get(f"/api/agent-context/assets/{asset_id}/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        stages = data["stages"]
+        assert len(stages) == 2
+
+        # First stage has both metrics and worker_pod populated.
+        assert stages[0]["metrics"] == {"symbols": 142, "edges": 305}
+        assert stages[0]["worker_pod"] == "worker-abc-123"
+
+        # Second stage has null metrics but worker_pod set.
+        assert stages[1]["metrics"] is None
+        assert stages[1]["worker_pod"] == "worker-def-456"
+
+        # Existing fields still present.
+        assert stages[0]["stage"] == "cgc_structural"
+        assert stages[0]["status"] == "verified"
 
     @pytest.mark.anyio
     async def test_status_no_stages_means_not_found(self, make_client, fake_user):

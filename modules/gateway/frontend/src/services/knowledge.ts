@@ -173,6 +173,8 @@ export async function getAssetStatus(assetId: string): Promise<AssetStatusRespon
       error: string | null;
       started_at: string | null;
       completed_at: string | null;
+      metrics: Record<string, any> | null;
+      worker_pod: string | null;
     }>;
   }>(`/api/agent-context/assets/${assetId}/status`);
 
@@ -345,6 +347,8 @@ function transformStage(raw: {
   error: string | null;
   started_at: string | null;
   completed_at: string | null;
+  metrics: Record<string, any> | null;
+  worker_pod: string | null;
 }): AssetIndexStage {
   return {
     stage: raw.stage,
@@ -353,5 +357,7 @@ function transformStage(raw: {
     error: raw.error,
     startedAt: raw.started_at,
     completedAt: raw.completed_at,
+    metrics: raw.metrics,
+    workerPod: raw.worker_pod,
   };
 }
