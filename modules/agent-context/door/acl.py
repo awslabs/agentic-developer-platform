@@ -241,11 +241,13 @@ class PostgresACLStore:
         login = principal.github_login or ""
         teams = principal.github_teams or []
 
+        # allowed_principals is jsonb (array of strings).
+        # Use ? (element exists) and ?| (any element exists) operators.
         query = """
             SELECT repo_name FROM repositories
-            WHERE %s = ANY(allowed_principals)
-               OR %s = ANY(allowed_principals)
-               OR allowed_principals && %s::text[]
+            WHERE allowed_principals ? %s
+               OR allowed_principals ? %s
+               OR allowed_principals ?| %s
         """
         params = [PUBLIC_SENTINEL, login, teams]
 
@@ -275,14 +277,16 @@ class PostgresACLStore:
         # The query combines three visibility paths via UNION to keep logic clear.
         # Path 1+2: shared + same-tenant repos where principals match
         # Path 3: individual repos where owner_sub matches (no principal check)
+        # allowed_principals is jsonb (array of strings).
+        # Use ? (element exists) and ?| (any element exists) operators.
         query = """
             SELECT repo_name FROM repositories
             WHERE (
                 (tenant_id IS NULL OR tenant_id = %s)
                 AND (
-                    %s = ANY(allowed_principals)
-                    OR %s = ANY(allowed_principals)
-                    OR allowed_principals && %s::text[]
+                    allowed_principals ? %s
+                    OR allowed_principals ? %s
+                    OR allowed_principals ?| %s
                 )
             )
             OR (
