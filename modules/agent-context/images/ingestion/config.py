@@ -109,6 +109,11 @@ class Settings(BaseSettings):
     github_app_key_secret: str = ""
     github_app_owner: str = ""
 
+    # --- Zoekt indexing (code search shards, #2361) -----------------------------
+    zoekt_index_enabled: bool = True
+    zoekt_shards_s3_prefix: str = "zoekt-shards"  # S3 key prefix for .zoekt shard files
+    zoekt_index_timeout: int = 600  # seconds for zoekt-git-index CLI execution
+
     # --- SBOM generation (dual-rail, #1358) ------------------------------------
     sbom_enabled: bool = True
     sbom_s3_prefix: str = "sbom"  # S3 key prefix within platform-data bucket
@@ -134,7 +139,7 @@ class Settings(BaseSettings):
     min_learnings_threshold: int = 5
     max_unsynthesized_age_days: int = 7
 
-    @field_validator("deepwiki_enabled", "graphrag_enabled", mode="before")
+    @field_validator("deepwiki_enabled", "graphrag_enabled", "zoekt_index_enabled", mode="before")
     @classmethod
     def _parse_bool_string(cls, v: object) -> object:
         """Accept 'true'/'false' strings from env vars."""

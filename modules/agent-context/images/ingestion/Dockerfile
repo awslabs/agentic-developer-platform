@@ -48,6 +48,13 @@ ENV GOPATH="/root/go"
 # scip-go (module at github.com/scip-code/scip-go, binary in cmd/scip-go)
 RUN go install github.com/scip-code/scip-go/cmd/scip-go@v0.2.7
 
+# zoekt-git-index — builds .zoekt shards from a git checkout (#2361)
+# Pinned to match the webserver image (ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG}).
+# sourcegraph/zoekt uses pseudo-versions; pin to a release tag matching the webserver.
+# When ZOEKT_IMAGE_TAG is bumped in config.env, bump this version in lockstep.
+ARG ZOEKT_VERSION=v0.0.0-20250515195411-23548e7be9e0
+RUN go install github.com/sourcegraph/zoekt/cmd/zoekt-git-index@${ZOEKT_VERSION}
+
 # Ruby + Sorbet (for scip-ruby — best-effort on untyped repos)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ruby ruby-dev bundler && \

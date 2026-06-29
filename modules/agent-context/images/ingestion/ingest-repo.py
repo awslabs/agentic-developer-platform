@@ -80,6 +80,11 @@ CODE_INDEX_S3_PREFIX = settings.code_index_s3_prefix
 S3_VECTORS_BUCKET = settings.s3_vectors_bucket
 S3_VECTORS_SHARD_COUNT = settings.s3_vectors_shard_count
 
+# Zoekt indexing configuration (#2361)
+ZOEKT_INDEX_ENABLED = settings.zoekt_index_enabled
+ZOEKT_SHARDS_S3_PREFIX = settings.zoekt_shards_s3_prefix
+ZOEKT_INDEX_TIMEOUT = settings.zoekt_index_timeout
+
 # ---------------------------------------------------------------------------
 # S3 content store + wiki store imports
 # ---------------------------------------------------------------------------
@@ -1057,6 +1062,132 @@ def scip_structural_ingest(
 
 
 # ---------------------------------------------------------------------------
+# Zoekt indexing — build .zoekt shards and upload to S3 (#2361)
+# ---------------------------------------------------------------------------
+
+
+def _run_zoekt_index(
+    clone_path: str,
+    org_repo: str,
+    s3_store: S3ContentStore,
+) -> dict[str, Any]:
+    """Run zoekt-git-index on a cloned repo and upload shards to S3.
+
+    Steps:
+      1. Run `zoekt-git-index -index <tmpdir> <clone_path>` -> .zoekt shard files
+      2. Upload each .zoekt shard to s3://<bucket>/zoekt-shards/<org>/<repo>/
+      3. Verify at least one shard via head_object
+
+    Returns dict with keys: status, shards, shard_bytes, artifact_key, error
+    """
+    import glob
+    import tempfile
+
+    zoekt_timeout = ZOEKT_INDEX_TIMEOUT
+    shards_prefix = ZOEKT_SHARDS_S3_PREFIX
+
+    # Create a temp directory for index output
+    index_dir = tempfile.mkdtemp(prefix="zoekt-index-")
+
+    try:
+        # Step 1: Run zoekt-git-index
+        try:
+            subprocess.run(
+                ["zoekt-git-index", "-index", index_dir, clone_path],
+                check=True,
+                capture_output=True,
+                timeout=zoekt_timeout,
+            )
+        except FileNotFoundError:
+            log.warning("zoekt-git-index binary not found — skipping for %s", org_repo)
+            return {"status": "binary_not_found", "error": "zoekt-git-index not installed"}
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode()[:500] if e.stderr else ""
+            log.warning("zoekt-git-index exited %d for %s: %s", e.returncode, org_repo, stderr)
+            return {"status": "index_failed", "error": f"exit code {e.returncode}: {stderr}"}
+        except subprocess.TimeoutExpired:
+            log.warning("zoekt-git-index timed out (%ds) for %s", zoekt_timeout, org_repo)
+            return {"status": "timeout", "error": f"timed out after {zoekt_timeout}s"}
+
+        # Step 2: Find and upload .zoekt shard files
+        shard_files = glob.glob(os.path.join(index_dir, "*.zoekt"))
+        if not shard_files:
+            log.warning("zoekt-git-index produced no shards for %s", org_repo)
+            return {"status": "no_shards", "error": "no .zoekt files produced"}
+
+        total_bytes = 0
+        uploaded_keys = []
+        s3_key_prefix = f"{shards_prefix}/{org_repo}"
+
+        for shard_path in shard_files:
+            shard_name = os.path.basename(shard_path)
+            s3_key = f"{s3_key_prefix}/{shard_name}"
+            shard_size = os.path.getsize(shard_path)
+            total_bytes += shard_size
+
+            try:
+                # Use upload_file for large shards (auto multipart for files > 8MB)
+                s3_store._s3.upload_file(
+                    Filename=shard_path,
+                    Bucket=s3_store.bucket_name,
+                    Key=s3_key,
+                    ExtraArgs={
+                        "ContentType": "application/octet-stream",
+                        "Metadata": {
+                            "org_repo": org_repo,
+                            "shard_name": shard_name,
+                        },
+                    },
+                )
+                uploaded_keys.append(s3_key)
+                log.info(
+                    "Zoekt shard uploaded: s3://%s/%s (%d bytes)",
+                    s3_store.bucket_name,
+                    s3_key,
+                    shard_size,
+                )
+            except Exception as e:
+                log.error("S3 upload failed for zoekt shard %s of %s: %s", shard_name, org_repo, e)
+                return {
+                    "status": "upload_failed",
+                    "error": f"S3 upload failed for {shard_name}: {e}",
+                    "shards": len(uploaded_keys),
+                    "shard_bytes": total_bytes,
+                }
+
+        # Step 3: Verify first uploaded shard via head_object
+        if uploaded_keys:
+            try:
+                s3_store._s3.head_object(Bucket=s3_store.bucket_name, Key=uploaded_keys[0])
+            except Exception as e:
+                log.warning("Zoekt shard verification failed for %s: %s", uploaded_keys[0], e)
+                return {
+                    "status": "verify_failed",
+                    "error": f"head_object failed: {e}",
+                    "shards": len(uploaded_keys),
+                    "shard_bytes": total_bytes,
+                    "artifact_key": uploaded_keys[0],
+                }
+
+        log.info(
+            "Zoekt indexing complete for %s: %d shards, %d bytes total",
+            org_repo,
+            len(uploaded_keys),
+            total_bytes,
+        )
+        return {
+            "status": "complete",
+            "shards": len(uploaded_keys),
+            "shard_bytes": total_bytes,
+            "artifact_key": uploaded_keys[0] if uploaded_keys else "",
+        }
+
+    finally:
+        # Clean up temp index directory
+        shutil.rmtree(index_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Source SBOM generation (Rail 1 — #1358)
 # ---------------------------------------------------------------------------
 
@@ -1269,6 +1400,7 @@ def ingest_repo(
     result: dict[str, Any] = {
         "repo": org_repo,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "zoekt_index": "skipped",
         "s3_upload": "skipped",
         "code_index": "skipped",
         "deepwiki": "skipped",
@@ -1372,6 +1504,52 @@ def ingest_repo(
         except Exception as e:
             log.warning("Clone stage tracking failed: %s", e)
 
+    # Step 1b: Zoekt indexing — build .zoekt shards and upload to S3 (#2361)
+    if ZOEKT_INDEX_ENABLED:
+        skip_zoekt_stage = tracker and tracker.should_skip("zoekt_index")
+        if skip_zoekt_stage:
+            log.info("Skipping zoekt_index for %s — already verified at %s", org_repo, commit_sha)
+            tracker.mark_skipped("zoekt_index", "already verified at current SHA")
+            result["zoekt_index"] = "skipped_verified"
+        else:
+            try:
+                zoekt_result = _run_zoekt_index(clone_path, org_repo, s3_store)
+                result["zoekt_index"] = zoekt_result.get("status", "unknown")
+
+                # Stage tracking
+                if tracker:
+                    try:
+                        zoekt_status = zoekt_result.get("status", "")
+                        if zoekt_status == "complete":
+                            with tracker.stage("zoekt_index") as ctx:
+                                shard_count = zoekt_result.get("shards", 0)
+                                shard_bytes = zoekt_result.get("shard_bytes", 0)
+                                artifact_key = zoekt_result.get("artifact_key", "")
+                                ctx.set_artifact(artifact_key)
+                                ctx.set_metrics(
+                                    {
+                                        "shards": shard_count,
+                                        "shard_bytes": shard_bytes,
+                                    }
+                                )
+                                ctx.verify(lambda: _verify_s3_object(s3_store, artifact_key))
+                        else:
+                            with tracker.stage("zoekt_index") as ctx:
+                                ctx.fail(zoekt_result.get("error", f"status={zoekt_status}"))
+                    except Exception as e:
+                        log.warning("zoekt_index stage tracking failed: %s", e)
+            except Exception as e:
+                log.warning("Zoekt indexing failed for %s: %s — continuing", org_repo, e)
+                result["zoekt_index"] = f"error: {e}"
+                if tracker:
+                    try:
+                        with tracker.stage("zoekt_index") as ctx:
+                            ctx.fail(str(e))
+                    except Exception:
+                        pass
+    elif tracker:
+        tracker.mark_skipped("zoekt_index", "zoekt_index disabled")
+
     # Step 2: Run cgc -> code-index.json -> filesystem + S3 markdown summary
     if not skip_cgc:
         # Check if we can skip (already verified at this SHA)
@@ -1427,10 +1605,12 @@ def ingest_repo(
                         try:
                             with tracker.stage("cgc_structural") as ctx:
                                 ctx.set_artifact(s3_key)
-                                ctx.set_metrics({
-                                    "symbols": len(code_index.get("symbols", [])),
-                                    "files": len(code_index.get("imports", {})),
-                                })
+                                ctx.set_metrics(
+                                    {
+                                        "symbols": len(code_index.get("symbols", [])),
+                                        "files": len(code_index.get("imports", {})),
+                                    }
+                                )
                                 ctx.verify(lambda: _verify_s3_object(s3_store, s3_key))
                         except Exception as e:
                             log.warning("cgc_structural stage tracking failed: %s", e)
@@ -1571,10 +1751,12 @@ def ingest_repo(
                                 entity_count = graphrag_result.get("entities", 0)
                                 rel_count = graphrag_result.get("relationships", 0)
                                 ctx.set_artifact(f"neptune:{org_repo}:entities={entity_count}")
-                                ctx.set_metrics({
-                                    "entities": entity_count,
-                                    "relationships": rel_count,
-                                })
+                                ctx.set_metrics(
+                                    {
+                                        "entities": entity_count,
+                                        "relationships": rel_count,
+                                    }
+                                )
                                 ctx.verify(lambda: entity_count > 0)
                         except Exception as e:
                             log.warning("graphrag stage tracking failed: %s", e)
@@ -1617,10 +1799,12 @@ def ingest_repo(
                                 edge_count = scip_result.get("edges", 0)
                                 node_count = scip_result.get("nodes", 0)
                                 ctx.set_artifact(f"neptune:{org_repo}:edges={edge_count}")
-                                ctx.set_metrics({
-                                    "nodes": node_count,
-                                    "edges": edge_count,
-                                })
+                                ctx.set_metrics(
+                                    {
+                                        "nodes": node_count,
+                                        "edges": edge_count,
+                                    }
+                                )
                                 ctx.verify(lambda: edge_count > 0)
                         elif scip_status == "no_languages":
                             tracker.mark_skipped("scip_structural", "no SCIP-supported languages")

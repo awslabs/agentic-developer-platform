@@ -38,6 +38,10 @@ data:
   WIKI_S3_BUCKET: "${S3_FILES_BUCKET}"
   S3_CONTENT_PREFIX: "${S3_CONTENT_PREFIX}"
 
+  # --- Zoekt indexing (#2361) ---
+  ZOEKT_INDEX_ENABLED: "true"
+  ZOEKT_SHARDS_S3_PREFIX: "zoekt-shards"
+
   # --- SBOM ---
   SBOM_ENABLED: "true"
 
