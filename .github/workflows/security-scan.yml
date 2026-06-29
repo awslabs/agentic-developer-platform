@@ -115,10 +115,20 @@ jobs:
           pip install semgrep==${{ env.SEMGREP_VERSION }}
           pip install 'setuptools<80'
 
+      - name: Fetch semgrep registry ruleset
+        # Use the full published registry ruleset (r/all) — the same set the
+        # GitLab-side Probe scanner runs — instead of `--config auto`. `auto`
+        # resolves rules over the network per-run and can drift / require login;
+        # r/all is the deterministic superset and keeps the two scanners aligned
+        # so a finding suppressed for Probe is also suppressed here.
+        run: |
+          curl -fsSL --retry 3 https://semgrep.dev/c/r/all -o /tmp/semgrep-rules-all.yaml
+          test -s /tmp/semgrep-rules-all.yaml
+
       - name: Run Semgrep
         run: |
           semgrep scan \
-            --config auto \
+            --config /tmp/semgrep-rules-all.yaml \
             --config .github/security/semgrep.yml \
             --sarif \
             --output semgrep-results.sarif \
