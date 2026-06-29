@@ -34,7 +34,7 @@ from .project_filter import (
     apply_project_filter,
     resolve_project_repos,
 )
-from .remember_backend import remember
+from .remember_backend import recall_memory, remember
 from .search_backend import ZoektSearchBackend
 from .structural_backend import impact, understand
 from .tracing import get_tracer, setup_tracing, shutdown_tracing
@@ -434,7 +434,7 @@ async def _dispatch_tool(
         return project_scope
 
     if name == "search":
-        return await _handle_search(arguments, caller, project_scope)
+        return await _handle_search(arguments, caller, project_scope, headers=headers)
     elif name == "understand":
         return await _handle_understand(arguments, caller, project_scope)
     elif name == "impact":
@@ -500,6 +500,8 @@ async def _handle_search(
     arguments: dict[str, Any],
     caller: CallerPrincipal | None,
     project_scope: ProjectScope | None = None,
+    *,
+    headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Handle the search verb: exact (Zoekt), semantic, or memory.
 
@@ -516,9 +518,17 @@ async def _handle_search(
 
     # Route by scope
     if scope == "memory":
-        # Memory search doesn't go through repo ACL (personal context has its own isolation)
-        # but we still need identity headers — the experience tool enforces them
-        return {"results": [], "total": 0, "query": query}
+        # Memory search routes through recall_memory (personal context isolation).
+        # Requires identity headers — the experience tool enforces them.
+        if state.experience_tool is None or headers is None:
+            return {"results": [], "total": 0, "query": query}
+        results = await recall_memory(
+            query,
+            experience_tool=state.experience_tool,
+            headers=headers,
+            limit=limit,
+        )
+        return {"results": results, "total": len(results), "query": query}
 
     if scope == "docs" and config.semantic_enabled:
         # Semantic search via S3 Vectors — scoped per caller (#1774)

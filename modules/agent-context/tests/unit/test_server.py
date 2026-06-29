@@ -250,6 +250,132 @@ class TestRememberVerb:
 
 
 # ---------------------------------------------------------------------------
+# Search scope=memory tests
+# ---------------------------------------------------------------------------
+
+
+class TestSearchMemoryScope:
+    """Verify search with scope=memory routes through recall_memory."""
+
+    @pytest.mark.asyncio
+    async def test_search_memory_no_experience_tool_returns_empty(self, client):
+        """When experience_tool is None, search scope=memory returns empty."""
+        resp = await client.post(
+            "/call",
+            content=json.dumps(
+                {
+                    "name": "search",
+                    "arguments": {"query": "deployment strategy", "scope": "memory"},
+                }
+            ).encode(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["results"] == []
+        assert body["total"] == 0
+
+    @pytest.mark.asyncio
+    async def test_search_memory_with_experience_tool_returns_results(self, client):
+        """When experience_tool is configured, search scope=memory returns recall results."""
+        import math
+        import uuid
+
+        from door.server import state
+        from personal_context.experience_tool import ExperienceTool
+        from personal_context.storage import PersonalContextStore
+
+        class _FakeBackend:
+            def __init__(self):
+                self._store = {}
+
+            def put(self, path, data):
+                self._store[path] = data
+
+            def get(self, path):
+                return self._store.get(path)
+
+            def delete(self, path):
+                self._store.pop(path, None)
+
+            def list_prefix(self, prefix):
+                return [v for k, v in self._store.items() if k.startswith(prefix)]
+
+        class _FakeEmbedder:
+            def __init__(self, dim=64):
+                self.dimension = dim
+
+            def embed(self, text):
+                vec = [0.0] * self.dimension
+                for ch in text.lower():
+                    vec[ord(ch) % self.dimension] += 1.0
+                norm = math.sqrt(sum(x * x for x in vec))
+                if norm > 0:
+                    vec = [x / norm for x in vec]
+                return vec
+
+        backend = _FakeBackend()
+        store = PersonalContextStore(backend)
+        tool = ExperienceTool(store=store, embedding_client=_FakeEmbedder())
+
+        # Inject the experience tool into server state
+        original = state.experience_tool
+        state.experience_tool = tool
+        try:
+            owner_sub = str(uuid.uuid4())
+            headers = {"X-Owner-Sub": owner_sub, "X-Tenant-Id": "org-test"}
+
+            # First: save a memory via remember
+            resp = await client.post(
+                "/call",
+                content=json.dumps(
+                    {
+                        "name": "remember",
+                        "arguments": {
+                            "session_id": "sess-abc",
+                            "messages": [
+                                {"role": "user", "content": "How to scale EKS nodes?"},
+                                {"role": "assistant", "content": "Use cluster autoscaler."},
+                            ],
+                            "outcome": "Learned EKS scaling via cluster autoscaler.",
+                        },
+                    }
+                ).encode(),
+                headers=headers,
+            )
+            assert resp.status_code == 200
+            remember_body = resp.json()
+            assert remember_body["stored"] is True
+
+            # Now: search with scope=memory should find it
+            resp = await client.post(
+                "/call",
+                content=json.dumps(
+                    {
+                        "name": "search",
+                        "arguments": {
+                            "query": "EKS cluster autoscaler scaling",
+                            "scope": "memory",
+                        },
+                    }
+                ).encode(),
+                headers=headers,
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["total"] >= 1, f"Expected memory results, got: {body}"
+            assert len(body["results"]) >= 1
+            # Verify result contains the stored content
+            found = any(
+                "autoscaler" in r.get("content", "").lower()
+                or "eks" in r.get("content", "").lower()
+                for r in body["results"]
+            )
+            assert found, f"Expected EKS/autoscaler in results: {body['results']}"
+        finally:
+            state.experience_tool = original
+
+
+# ---------------------------------------------------------------------------
 # Experience verb tests
 # ---------------------------------------------------------------------------
 
