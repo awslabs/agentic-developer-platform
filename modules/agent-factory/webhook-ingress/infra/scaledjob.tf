@@ -145,6 +145,13 @@ locals {
           spec:
             serviceAccountName: ${kubernetes_service_account.agent_scaledjob_sa.metadata[0].name}
             restartPolicy: Never
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 1001
+              runAsGroup: 1001
+              fsGroup: 1001
+              seccompProfile:
+                type: RuntimeDefault
             containers:
               - name: agent-worker
                 image: ${local.agent_image}
@@ -198,6 +205,11 @@ ${local.otel_env_block}
                     cpu: "4"
                     memory: 8Gi
                     ephemeral-storage: 50Gi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
       triggers:
         - type: aws-sqs-queue
           authenticationRef:

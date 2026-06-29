@@ -158,6 +158,13 @@ locals {
           # Evict instantly when a real agent preempts — no grace period needed
           # for a do-nothing placeholder.
           terminationGracePeriodSeconds: 0
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            fsGroup: 1001
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: balloon
               image: ${local.agent_image}
@@ -175,6 +182,11 @@ locals {
                   cpu: "1"
                   memory: 4Gi
                   ephemeral-storage: 50Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
   YAML
 }
 
@@ -260,6 +272,13 @@ locals {
           tolerations:
             - operator: Exists
           terminationGracePeriodSeconds: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            fsGroup: 1001
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: prepull
               image: ${local.agent_image}
@@ -272,6 +291,11 @@ locals {
                 limits:
                   cpu: "50m"
                   memory: 64Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
   YAML
 }
 
