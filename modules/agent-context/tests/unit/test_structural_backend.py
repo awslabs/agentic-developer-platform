@@ -15,6 +15,7 @@ import pytest
 from door.structural_backend import (
     _find_callers,
     _matches_target,
+    _normalize_symbol,
     _parse_target,
     impact,
     load_code_index,
@@ -122,6 +123,30 @@ class TestParseTarget:
         assert repo == "just-a-name"
         assert target == ""
 
+    def test_org_repo_no_symbol_path_branch(self):
+        """Bug #2405: 'HKUDS/Vibe-Trading' (no ::) must be treated as org/repo, not repo/path."""
+        repo, target = _parse_target("HKUDS/Vibe-Trading")
+        assert repo == "HKUDS/Vibe-Trading"
+        assert target == ""
+
+    def test_org_repo_no_symbol_path_branch_lowercase(self):
+        """Bug #2405: org/repo detection works regardless of casing."""
+        repo, target = _parse_target("addyosmani/agent-skills")
+        assert repo == "addyosmani/agent-skills"
+        assert target == ""
+
+    def test_org_repo_with_file_path(self):
+        """3+ components with dotted last: first component is repo (eval compat)."""
+        repo, target = _parse_target("CopilotKit/packages/react-core/src/hooks.ts")
+        assert repo == "CopilotKit"
+        assert target == "packages/react-core/src/hooks.ts"
+
+    def test_org_repo_symbol_bug_2405(self):
+        """Bug #2405: 'HKUDS/Vibe-Trading::Artifact' must parse correctly."""
+        repo, target = _parse_target("HKUDS/Vibe-Trading::Artifact")
+        assert repo == "HKUDS/Vibe-Trading"
+        assert target == "Artifact"
+
 
 # ---------------------------------------------------------------------------
 # _matches_target tests
@@ -146,6 +171,59 @@ class TestMatchesTarget:
 
     def test_empty_target_returns_false(self):
         assert not _matches_target("", "connect_db", "src/db.py")
+
+    def test_exact_class_name_match(self):
+        """Bug #2405: Artifact class matches by exact symbol name."""
+        assert _matches_target("Artifact", "Artifact", "agent/api_server.py")
+
+    def test_case_insensitive_partial(self):
+        """Partial match is case-insensitive."""
+        assert _matches_target("artifact", "Artifact", "agent/api_server.py")
+
+
+# ---------------------------------------------------------------------------
+# _normalize_symbol tests
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeSymbol:
+    def test_standard_fields(self):
+        """Symbol field takes priority over name."""
+        result = _normalize_symbol({"symbol": "Foo", "kind": "class", "file": "a.py", "line": 1})
+        assert result == {
+            "symbol": "Foo",
+            "kind": "class",
+            "file": "a.py",
+            "line": 1,
+            "signature": "",
+        }
+
+    def test_name_type_fallback(self):
+        """Falls back to name/type fields from code-index JSON."""
+        result = _normalize_symbol({"name": "Bar", "type": "function", "file": "b.py", "line": 5})
+        assert result == {
+            "symbol": "Bar",
+            "kind": "function",
+            "file": "b.py",
+            "line": 5,
+            "signature": "",
+        }
+
+    def test_whitespace_stripped(self):
+        """Bug #2405: whitespace in symbol names is stripped."""
+        result = _normalize_symbol(
+            {
+                "name": "  Artifact ",
+                "type": " class",
+                "file": " agent/api_server.py ",
+                "line": 61,
+                "signature": " def foo() ",
+            }
+        )
+        assert result["symbol"] == "Artifact"
+        assert result["kind"] == "class"
+        assert result["file"] == "agent/api_server.py"
+        assert result["signature"] == "def foo()"
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +336,44 @@ class TestUnderstand:
             assert hit.data.get("source") == "code-index-fallback"
             assert hit.data.get("repo_id") == "fixture-repo"
 
+    @pytest.mark.asyncio
+    async def test_understand_org_repo_overview(self, mock_s3_client):
+        """Bug #2405: understand('org/fixture-repo') returns overview (repo-level)."""
+        hits = await understand(
+            "org/fixture-repo",
+            s3_client=mock_s3_client,
+            bucket="test-bucket",
+            prefix="content/code-indexes",
+        )
+        # org/fixture-repo has no dot in last component → treated as org/repo (repo-level)
+        assert len(hits) > 0
+        for hit in hits:
+            assert hit.data.get("source") == "code-index-fallback"
+
+    @pytest.mark.asyncio
+    async def test_understand_org_repo_symbol(self, mock_s3_client):
+        """Bug #2405: understand('org/fixture-repo::connect_db') finds the symbol."""
+        hits = await understand(
+            "org/fixture-repo::connect_db",
+            s3_client=mock_s3_client,
+            bucket="test-bucket",
+            prefix="content/code-indexes",
+        )
+        assert len(hits) > 0
+        assert hits[0].data["symbol"] == "connect_db"
+        assert hits[0].data["file"] == "src/db.py"
+
+    @pytest.mark.asyncio
+    async def test_understand_org_repo_symbol_not_found(self, mock_s3_client):
+        """Bug #2405: non-existent symbol returns empty (not crash)."""
+        hits = await understand(
+            "org/fixture-repo::nonexistent_thing",
+            s3_client=mock_s3_client,
+            bucket="test-bucket",
+            prefix="content/code-indexes",
+        )
+        assert hits == []
+
 
 # ---------------------------------------------------------------------------
 # impact verb tests
@@ -298,6 +414,19 @@ class TestImpact:
             prefix="content/code-indexes",
         )
         assert hits == []
+
+    @pytest.mark.asyncio
+    async def test_impact_org_repo_symbol(self, mock_s3_client):
+        """Bug #2405: impact('org/fixture-repo::handle_request') finds callers."""
+        hits = await impact(
+            "org/fixture-repo::handle_request",
+            s3_client=mock_s3_client,
+            bucket="test-bucket",
+            prefix="content/code-indexes",
+        )
+        assert len(hits) > 0
+        callers = [h.data.get("symbol", "") for h in hits]
+        assert "connect_db" in callers
 
 
 # ---------------------------------------------------------------------------

@@ -31,14 +31,18 @@ def _normalize_symbol(defn: dict) -> dict:
     """Normalize a symbol entry to canonical field names.
 
     The code-index JSON uses 'name'/'type' but our code expects 'symbol'/'kind'.
-    This bridges the gap so both formats work.
+    This bridges the gap so both formats work. Strips whitespace from string
+    fields to handle production indexes with trailing spaces (Bug #2405).
     """
+    symbol = (defn.get("symbol") or defn.get("name", "")).strip()
+    kind = (defn.get("kind") or defn.get("type", "")).strip()
+    file_path = defn.get("file", "").strip()
     return {
-        "symbol": defn.get("symbol") or defn.get("name", ""),
-        "kind": defn.get("kind") or defn.get("type", ""),
-        "file": defn.get("file", ""),
+        "symbol": symbol,
+        "kind": kind,
+        "file": file_path,
         "line": defn.get("line", 0),
-        "signature": defn.get("signature", ""),
+        "signature": defn.get("signature", "").strip(),
     }
 
 
@@ -915,13 +919,15 @@ def _extract_repo_id(parts: list[str]) -> tuple[str, str]:
 
     Uses heuristics to determine if repo_id is one or two components:
     - If first part looks like a domain (contains .), use first 3 (github.com/org/repo)
+    - If exactly 2 components and last has no dot: org/repo (Bug #2405 fix)
     - Otherwise use first 1 (short repo name — most common for eval corpus)
 
-    Note: for path-based targets (no ::), the eval corpus convention is that the
-    first component is always the repo short name (e.g., "CopilotKit/packages/react-core"
-    where "CopilotKit" is the repo and "packages/react-core" is the path). We do NOT
-    attempt org/repo detection here to preserve backward compatibility with the eval
-    golden dataset.
+    Note: for path-based targets (no ::) with 3+ components, the eval corpus
+    convention is that the first component is always the repo short name
+    (e.g., "CopilotKit/packages/react-core" where "CopilotKit" is the repo
+    and "packages/react-core" is the path). The 2-component case with no dot
+    is unambiguously org/repo (e.g., "HKUDS/Vibe-Trading") because a meaningful
+    file/directory path requires an extension or deeper nesting.
     """
     if not parts:
         return ("", "")
@@ -933,6 +939,14 @@ def _extract_repo_id(parts: list[str]) -> tuple[str, str]:
         repo_id = f"{parts[0]}/{parts[1]}/{parts[2]}"
         remaining = "/".join(parts[3:]) if len(parts) > 3 else ""
         return (repo_id, remaining)
+
+    # Exactly 2 components, last has no dot: org/repo format (Bug #2405).
+    # Rationale: a directory or file path always has a dot extension (e.g., "db.py")
+    # or deeper nesting (3+ components like "repo/dir/file.py"). Two bare words
+    # (e.g., "HKUDS/Vibe-Trading") are always org/repo. This mirrors the heuristic
+    # already proven correct in _extract_repo_id_for_symbol (Bug #1635 fix).
+    if len(parts) == 2 and "." not in parts[-1]:
+        return ("/".join(parts), "")
 
     # Default: first component is the repo_id (short-name format)
     # This handles the common eval pattern: "CopilotKit/packages/react-core"
