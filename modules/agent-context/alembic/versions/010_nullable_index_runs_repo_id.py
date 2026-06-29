@@ -9,7 +9,7 @@ valid repositories row. When NULL, it means this run belongs to a non-repo asset
 (URL/doc) whose identity is tracked via index_run_stages.repo = registry_asset_id.
 
 Revision ID: 010_nullable_index_runs_repo_id
-Revises: 009_stage_metrics_and_pod
+Revises: 009_stage_metrics_pod
 Create Date: 2026-06-29
 """
 
@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "010_nullable_index_runs_repo_id"
-down_revision: str = "009_stage_metrics_and_pod"
+down_revision: str = "009_stage_metrics_pod"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
