@@ -205,7 +205,7 @@ async def lifespan(app: FastAPI):
         try:
             import httpx
 
-            from ..personal_context.backends.s3_vectors_backend import S3VectorsCodeStore
+            from personal_context.backends.s3_vectors_backend import S3VectorsCodeStore
 
             state.semantic_code_store = S3VectorsCodeStore(
                 bucket_name=config.s3_vectors_bucket,
@@ -240,13 +240,13 @@ async def lifespan(app: FastAPI):
 def _init_experience_tool() -> None:
     """Initialize the experience tool with appropriate backends."""
     try:
-        from ..personal_context.embeddings import LiteLLMEmbeddingClient
-        from ..personal_context.experience_tool import ExperienceTool
-        from ..personal_context.storage import PersonalContextStore
+        from personal_context.embeddings import LiteLLMEmbeddingClient
+        from personal_context.experience_tool import ExperienceTool
+        from personal_context.storage import PersonalContextStore
 
         # Use S3 AGFS backend if bucket is configured
         if config.s3_bucket:
-            from ..personal_context.backends.s3_backend import S3AGFSBackend
+            from personal_context.backends.s3_backend import S3AGFSBackend
 
             backend = S3AGFSBackend(bucket_name=config.s3_bucket, region_name=config.s3_region)
         else:
@@ -259,7 +259,7 @@ def _init_experience_tool() -> None:
         # S3 Vectors embedding store (if configured)
         embedding_store = None
         if config.s3_vectors_bucket:
-            from ..personal_context.backends.s3_vectors_backend import S3VectorsEmbeddingStore
+            from personal_context.backends.s3_vectors_backend import S3VectorsEmbeddingStore
 
             embedding_store = S3VectorsEmbeddingStore(
                 bucket_name=config.s3_vectors_bucket,
