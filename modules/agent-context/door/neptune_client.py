@@ -54,6 +54,26 @@ def get_neptune_driver():
     return _driver
 
 
+def reset_neptune_driver() -> None:
+    """Close and discard the cached Neptune driver.
+
+    Safely closes the existing driver (tolerating errors during close)
+    and clears the module-level cache so the next ``get_neptune_driver()``
+    call creates a fresh connection with a new IAM auth token.
+
+    Used by ``neptune_available()`` to recover from stale connections
+    caused by IAM SigV4 token expiry (~15 min tokens) or dead connection
+    pools after extended idle periods.
+    """
+    global _driver
+    if _driver is not None:
+        try:
+            _driver.close()
+        except Exception:
+            log.debug("Ignoring error while closing stale Neptune driver")
+        _driver = None
+
+
 def neptune_enabled() -> bool:
     """Check if Neptune feature flag is enabled."""
     return os.environ.get("NEPTUNE_ENABLED", "false").lower() in ("true", "1", "yes")
@@ -65,7 +85,12 @@ def neptune_available() -> bool:
     Returns False if:
     - Feature flag NEPTUNE_ENABLED is not set
     - Driver could not be created (no endpoint configured)
-    - Connection test fails (Neptune unreachable)
+    - Connection test fails on both initial and retry attempt
+
+    On first connection failure, resets the cached driver (clearing stale
+    IAM tokens / dead pools) and retries once with a fresh connection.
+    This handles IAM SigV4 token expiry (~15 min tokens) and connection
+    pool death after ~1.5h idle without requiring periodic refresh timers.
     """
     if not neptune_enabled():
         return False
@@ -79,7 +104,20 @@ def neptune_available() -> bool:
             session.run("RETURN 1").consume()
         return True
     except Exception:
-        log.warning("Neptune unreachable - falling back to code-index.json")
+        log.warning("Neptune connection failed — resetting driver and retrying once")
+        reset_neptune_driver()
+
+    # Retry with a fresh driver (new IAM auth token + connection pool)
+    driver = get_neptune_driver()
+    if not driver:
+        return False
+
+    try:
+        with driver.session() as session:
+            session.run("RETURN 1").consume()
+        return True
+    except Exception:
+        log.warning("Neptune unreachable after driver reset — falling back to code-index.json")
         return False
 
 
