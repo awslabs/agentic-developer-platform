@@ -1,8 +1,8 @@
 """Native MCP server (Streamable HTTP) for the Door.
 
-Mounts on the existing FastAPI app at ``/mcp``, exposing the same 6 verbs
-(search, understand, impact, browse, remember, experience) as native MCP tools
-over JSON-RPC 2.0.
+Mounts on the existing FastAPI app at ``/mcp``, exposing the same 7 verbs
+(search, understand, impact, browse, remember, experience, secure) as native
+MCP tools over JSON-RPC 2.0.
 
 Design decisions (Issue #1602, approved design):
 - ``stateless_http=True`` is an ACL-correctness requirement: guarantees each
@@ -130,7 +130,7 @@ mcp_server = FastMCP(
     name="context-mcp",
     instructions=(
         "Knowledge Layer code verbs: search, understand, impact, browse, "
-        "remember, experience. All results are ACL-filtered per caller identity."
+        "remember, experience, secure. All results are ACL-filtered per caller identity."
     ),
     stateless_http=True,
     # The sub-app is mounted at /mcp on the parent FastAPI app, so the internal
@@ -272,6 +272,38 @@ async def mcp_experience(
     caller = extract_caller_principal(headers)
     dispatch = _get_dispatch_tool()
     result = await dispatch("experience", arguments, headers, caller)
+    return json.dumps(result, default=str)
+
+
+@mcp_server.tool(name="secure")
+async def mcp_secure(
+    cve: str = "",
+    repo: str = "",
+    package: str = "",
+    action: str = "identify",
+    severity_min: str = "",
+    reachable_only: bool = False,
+    project: str = "",
+    ctx: Context = None,  # type: ignore[assignment]
+) -> str:
+    """Identify, locate, and plan remediation for vulnerabilities."""
+    headers = _get_headers_from_context(ctx)
+    caller = extract_caller_principal(headers)
+    arguments: dict[str, Any] = {"action": action}
+    if cve:
+        arguments["cve"] = cve
+    if repo:
+        arguments["repo"] = repo
+    if package:
+        arguments["package"] = package
+    if severity_min:
+        arguments["severity_min"] = severity_min
+    if reachable_only:
+        arguments["reachable_only"] = reachable_only
+    if project:
+        arguments["project"] = project
+    dispatch = _get_dispatch_tool()
+    result = await dispatch("secure", arguments, headers, caller)
     return json.dumps(result, default=str)
 
 

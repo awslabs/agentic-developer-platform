@@ -1,12 +1,13 @@
 """Context MCP Server — the verb surface for the Knowledge layer.
 
-Exposes 6 tools at :5100:
+Exposes 7 tools at :5100:
   - search: exact code search (Zoekt) + optional semantic + memory
   - understand: structural backend (code-index.json)
   - impact: call-graph analysis (code-index.json + cross-repo Zoekt)
   - browse: catalog + S3 content listing
   - remember: session memory persistence
   - experience: personal context (save/recall/list_syntheses)
+  - secure: vulnerability identification, remediation planning, verification
 
 Every verb result routes through door/acl.py (fail-closed).
 Verb logic lives in importable functions for later gateway re-route.
@@ -120,6 +121,31 @@ TOOLS: list[dict[str, Any]] = [
             "visibility": {"type": "string", "enum": ["private", "shared"], "required": False},
             "limit": {"type": "integer", "required": False},
             "cross_persona": {"type": "boolean", "required": False},
+        },
+    },
+    {
+        "name": "secure",
+        "description": (
+            "Identify, locate, and plan remediation for vulnerabilities. "
+            "Given a CVE, repo, or package, returns reachability-scored findings "
+            "with remediation guidance. The security entry point."
+        ),
+        "parameters": {
+            "cve": {"type": "string", "required": False},
+            "repo": {"type": "string", "required": False},
+            "package": {"type": "string", "required": False},
+            "action": {
+                "type": "string",
+                "enum": ["identify", "plan", "verify"],
+                "required": False,
+            },
+            "severity_min": {
+                "type": "string",
+                "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                "required": False,
+            },
+            "reachable_only": {"type": "boolean", "required": False},
+            "project": {"type": "string", "required": False},
         },
     },
 ]
@@ -445,6 +471,8 @@ async def _dispatch_tool(
         return await _handle_remember(arguments, headers)
     elif name == "experience":
         return await _handle_experience(arguments, headers)
+    elif name == "secure":
+        return await _handle_secure(arguments, caller, project_scope, headers=headers)
     else:
         return {"error": f"Unknown tool: {name}"}
 
@@ -840,6 +868,112 @@ async def _handle_experience(arguments: dict[str, Any], headers: dict[str, str])
         return state.experience_tool.handle(arguments, headers)
     except Exception as e:
         return {"error": str(e)}
+
+
+async def _handle_secure(
+    arguments: dict[str, Any],
+    caller: CallerPrincipal | None,
+    project_scope: ProjectScope | None = None,
+    *,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Handle the secure verb: vulnerability identification, planning, verification.
+
+    Input validation (fail-fast):
+    - At least one of cve, repo, package required
+    - action=plan requires both cve AND repo
+    - action=verify requires cve
+    - Unknown action returns validation error
+
+    ACL: fail-closed — unauthenticated caller returns empty findings.
+    """
+    cve = arguments.get("cve", "")
+    repo = arguments.get("repo", "")
+    package = arguments.get("package", "")
+    action = arguments.get("action", "identify")
+    severity_min = arguments.get("severity_min", "")
+    reachable_only = arguments.get("reachable_only", False)
+
+    # Input validation: at least one filter required
+    if not cve and not repo and not package:
+        return {
+            "error": "At least one of 'cve', 'repo', or 'package' is required",
+            "code": "validation_error",
+        }
+
+    # Validate action value
+    valid_actions = ("identify", "plan", "verify")
+    if action not in valid_actions:
+        return {
+            "error": f"Unknown action '{action}'. Must be one of: {', '.join(valid_actions)}",
+            "code": "validation_error",
+        }
+
+    # Action-specific validation
+    if action == "plan" and (not cve or not repo):
+        return {
+            "error": "action='plan' requires both 'cve' and 'repo'",
+            "code": "validation_error",
+        }
+
+    if action == "verify" and not cve:
+        return {
+            "error": "action='verify' requires 'cve'",
+            "code": "validation_error",
+        }
+
+    # ACL fail-closed: no identity → empty results
+    if caller is None or not caller.is_resolved:
+        return {
+            "action": action,
+            "findings": [],
+            "findings_count": 0,
+            "error": "unauthorized",
+        }
+
+    # Resolve tenant_id for Neptune scope filtering
+    tenant_id = caller.tenant_id if caller else None
+
+    # Dispatch to backend
+    from .secure_backend import handle_identify, handle_plan, handle_verify
+
+    if action == "identify":
+        return await handle_identify(
+            cve=cve,
+            repo=repo,
+            package=package,
+            severity_min=severity_min,
+            reachable_only=reachable_only,
+            db_pool=state.db_pool,
+            acl_store=state.acl_store,
+            caller=caller,
+            zoekt_backend=state.zoekt,
+            neptune_driver=state.neptune_driver,
+            s3_client=state.s3_client,
+            s3_bucket=config.s3_bucket or "",
+            tenant_id=tenant_id,
+        )
+    elif action == "plan":
+        return await handle_plan(
+            cve=cve,
+            repo=repo,
+            db_pool=state.db_pool,
+            acl_store=state.acl_store,
+            caller=caller,
+            zoekt_backend=state.zoekt,
+            neptune_driver=state.neptune_driver,
+            s3_client=state.s3_client,
+            s3_bucket=config.s3_bucket or "",
+            tenant_id=tenant_id,
+        )
+    elif action == "verify":
+        return await handle_verify(
+            cve=cve,
+            repo=repo or "",
+            db_pool=state.db_pool,
+        )
+
+    return {"error": f"Unhandled action: {action}", "code": "internal_error"}
 
 
 # ---------------------------------------------------------------------------
