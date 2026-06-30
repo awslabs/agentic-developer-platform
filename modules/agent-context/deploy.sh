@@ -114,6 +114,17 @@ if [ -f "${SCRIPT_DIR}/kubernetes/serviceaccount.yaml" ]; then
   fi
 fi
 
+# Issue #2433: If NEPTUNE_ENDPOINT is still empty after config.env, try SSM
+# (endpoint may have been published by a prior infra-apply).
+if [ -z "${NEPTUNE_ENDPOINT:-}" ]; then
+  NEPTUNE_ENDPOINT=$(aws ssm get-parameter \
+    --name "/adp/${ENVIRONMENT:-dev}/agent-context/neptune-endpoint" \
+    --query "Parameter.Value" --output text 2>/dev/null || echo "")
+  NEPTUNE_PORT=$(aws ssm get-parameter \
+    --name "/adp/${ENVIRONMENT:-dev}/agent-context/neptune-port" \
+    --query "Parameter.Value" --output text 2>/dev/null || echo "${NEPTUNE_PORT:-8182}")
+fi
+
 # Deploy centralized ConfigMap (single source of truth for all non-secret config)
 echo ""
 echo "Deploying agent-context-config ConfigMap..."

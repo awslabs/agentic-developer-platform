@@ -355,6 +355,43 @@ resource "aws_ssm_parameter" "ingestion_queue_url" {
 }
 
 # =============================================================================
+# SSM Parameters: Neptune Endpoint + Port (Issue #2433)
+# =============================================================================
+# Publishes the Neptune cluster endpoint and port to SSM so the deploy workflow
+# can inject them into the ConfigMap without requiring local Terraform state
+# access. Same pattern as ingestion_queue_url (Issue #2213).
+
+resource "aws_ssm_parameter" "neptune_endpoint" {
+  count = var.neptune_enabled ? 1 : 0
+
+  name  = "/adp/${var.environment}/agent-context/neptune-endpoint"
+  type  = "String"
+  value = module.neptune_serverless[0].cluster_endpoint
+
+  description = "Neptune Serverless endpoint for agent-context graph queries"
+
+  tags = merge(var.tags, {
+    ManagedBy = "terraform"
+    Module    = "agent-context"
+  })
+}
+
+resource "aws_ssm_parameter" "neptune_port" {
+  count = var.neptune_enabled ? 1 : 0
+
+  name  = "/adp/${var.environment}/agent-context/neptune-port"
+  type  = "String"
+  value = tostring(module.neptune_serverless[0].cluster_port)
+
+  description = "Neptune Serverless port for agent-context graph queries"
+
+  tags = merge(var.tags, {
+    ManagedBy = "terraform"
+    Module    = "agent-context"
+  })
+}
+
+# =============================================================================
 # KEDA operator SQS-scaler access for the ingestion ScaledJob (Issue #2213)
 # =============================================================================
 # KEDA's aws-eks pod-identity provider authenticates as the keda-operator SA

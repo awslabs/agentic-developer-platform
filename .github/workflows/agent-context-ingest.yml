@@ -106,8 +106,13 @@ jobs:
           JOB_NAME="manual-refresh-${GITHUB_SHA::8}"
           echo "Creating ingestion job: $JOB_NAME"
 
-          # Neptune endpoint for SCIP graph loading
-          NEPTUNE_EP="adp-dev-eks-cluster-graphrag.cluster-civhekhiupfe.us-east-1.neptune.amazonaws.com"
+          # Issue #2433: Read Neptune endpoint from SSM (published by infra-apply).
+          NEPTUNE_EP=$(aws ssm get-parameter \
+            --name "/adp/dev/agent-context/neptune-endpoint" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          if [ -z "$NEPTUNE_EP" ]; then
+            echo "WARNING: Neptune endpoint not found in SSM. SCIP graph loading will be skipped."
+          fi
 
           if [ "$FULL_REINDEX" = "true" ]; then
             echo "full_reindex=true — injecting FORCE_REINDEX + NEPTUNE env vars"
