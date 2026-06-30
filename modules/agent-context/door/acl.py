@@ -138,6 +138,51 @@ def extract_caller_principal(headers: dict[str, str]) -> CallerPrincipal | None:
 
 
 # ---------------------------------------------------------------------------
+# Repo-name normalization helpers
+# ---------------------------------------------------------------------------
+
+# Common domain prefixes that Zoekt prepends to repo names.
+_DOMAIN_PREFIXES = ("github.com/", "gitlab.com/", "bitbucket.org/")
+
+
+def _normalize_repo_name(name: str) -> str:
+    """Normalize a repo name by stripping domain prefixes.
+
+    "github.com/HKUDS/Vibe-Trading" → "HKUDS/Vibe-Trading"
+    "HKUDS/Vibe-Trading" → "HKUDS/Vibe-Trading"
+    "Vibe-Trading" → "Vibe-Trading"
+    """
+    for prefix in _DOMAIN_PREFIXES:
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
+def _build_allowed_lookup(allowed_repos: set[str]) -> set[str]:
+    """Build a lookup set covering all repo name formats.
+
+    For each allowed repo "HKUDS/Vibe-Trading", adds:
+    - "HKUDS/Vibe-Trading" (exact, as stored in DB)
+    - "Vibe-Trading" (short name — used by structural backend)
+    """
+    lookup: set[str] = set()
+    for repo in allowed_repos:
+        normalized = _normalize_repo_name(repo)
+        lookup.add(normalized)
+        # Also add the short name (part after first /)
+        if "/" in normalized:
+            lookup.add(normalized.split("/", 1)[1])
+    return lookup
+
+
+def _repo_is_allowed(repo_name: str, allowed_lookup: set[str]) -> bool:
+    """Check if a repo name (in any format) is in the allowed set."""
+    # Normalize the hit's repo name (strip domain prefix)
+    normalized = _normalize_repo_name(repo_name)
+    return normalized in allowed_lookup
+
+
+# ---------------------------------------------------------------------------
 # Filter
 # ---------------------------------------------------------------------------
 
@@ -185,18 +230,13 @@ def filter_results(
         return []
 
     # Filter: only pass hits whose repo is in the allowed set.
-    # Handle format mismatch: hits may use short names ("Vibe-Trading") while
-    # the DB stores full org/repo ("HKUDS/Vibe-Trading"). Build a secondary
-    # lookup by the repo part (after /) to handle short-name hits.
-    allowed_short_names: set[str] = set()
-    for repo in allowed_repos:
-        if "/" in repo:
-            allowed_short_names.add(repo.split("/", 1)[1])
-    filtered = [
-        hit
-        for hit in results
-        if hit.repo_name in allowed_repos or hit.repo_name in allowed_short_names
-    ]
+    # Handle format mismatch between different sources:
+    # - DB stores: "HKUDS/Vibe-Trading" (org/repo)
+    # - Structural backend uses: "Vibe-Trading" (short name)
+    # - Zoekt returns: "github.com/HKUDS/Vibe-Trading" (domain-qualified)
+    # Normalize by building lookup sets for all formats.
+    allowed_normalized = _build_allowed_lookup(allowed_repos)
+    filtered = [hit for hit in results if _repo_is_allowed(hit.repo_name, allowed_normalized)]
 
     if len(filtered) < len(results):
         log.debug(
