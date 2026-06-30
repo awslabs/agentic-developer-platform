@@ -254,7 +254,7 @@ def _init_experience_tool() -> None:
             backend = _NoOpBackend()
 
         store = PersonalContextStore(backend)
-        embedding_client = LiteLLMEmbeddingClient(base_url=config.litellm_url)
+        embedding_client = LiteLLMEmbeddingClient(proxy_url=config.litellm_url)
 
         # S3 Vectors embedding store (if configured)
         embedding_store = None
