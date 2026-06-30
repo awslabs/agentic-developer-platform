@@ -347,6 +347,26 @@ else
   echo "Skipping Personal Context Synthesis CronJob (SYNTHESIS_ENABLED=false)"
 fi
 
+# Deploy Vulnerability Scan CronJob (daily 7am UTC — after refresh produces SBOMs)
+if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
+  echo "Skipping Vulnerability Scan CronJob (--personal-context-only mode)"
+elif [ "${VULN_SCAN_ENABLED:-true}" = "true" ]; then
+  echo ""
+  echo "Deploying Vulnerability Scan CronJob..."
+
+  # Ensure _common.sh is sourced for template_file
+  [[ "$(type -t template_file)" == "function" ]] || source "${SCRIPT_DIR}/scripts/_common.sh"
+
+  export NAMESPACE SERVICE_ACCOUNT INGESTION_IMAGE VULN_SCAN_SCHEDULE
+  template_file "${SCRIPT_DIR}/manifests/vuln-scan-cronjob.yaml" | kubectl apply -f -
+
+  echo "  CronJob deployed: schedule='${VULN_SCAN_SCHEDULE}'"
+  echo "  Manual trigger: kubectl create job --from=cronjob/vuln-scan manual-vuln-scan -n ${NAMESPACE}"
+else
+  echo ""
+  echo "Skipping Vulnerability Scan CronJob (VULN_SCAN_ENABLED=false)"
+fi
+
 # Validate
 if [ "${SKIP_VALIDATE:-false}" != "true" ]; then
   echo ""
@@ -386,6 +406,9 @@ else
   fi
   if [ "${INGESTION_REFRESH_ENABLED:-true}" = "true" ]; then
     echo "  Ingestion:     CronJob ingestion-refresh (${INGESTION_REFRESH_SCHEDULE})"
+  fi
+  if [ "${VULN_SCAN_ENABLED:-true}" = "true" ]; then
+    echo "  Vuln Scan:     CronJob vuln-scan (${VULN_SCAN_SCHEDULE})"
   fi
   if [ "${SYNTHESIS_ENABLED:-true}" = "true" ]; then
     echo "  Synthesis:     CronJob personal-context-synthesis (${SYNTHESIS_SCHEDULE:-0 3 * * *})"

@@ -120,6 +120,10 @@ class Settings(BaseSettings):
     syft_timeout: int = 120  # seconds for syft CLI execution
     sbom_db_enabled: bool = True  # Write dependency rows to Postgres (best-effort)
 
+    # --- Vulnerability scanning (#2536) ----------------------------------------
+    vuln_scan_enabled: bool = True
+    vuln_scan_schedule: str = "0 7 * * *"  # Daily at 7am UTC (1h after repo refresh)
+
     # --- Registry reader (Issue #2182) -----------------------------------------
     # knowledge_assets lives in agent_context (this DB). No cross-DB config needed.
     # (gateway_db_name / gateway_db_host removed — registry uses own DB directly)
