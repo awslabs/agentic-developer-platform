@@ -81,7 +81,12 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "browse",
-        "description": "Navigate the indexed content filesystem",
+        "description": (
+            "Navigate the indexed content filesystem. "
+            "Start with browse(action='ls', uri='/') to discover all indexed repos "
+            "and their capabilities (code_search, call_graph, wiki, sbom, vectors "
+            "with metrics). Use the capability manifest to plan which verbs to call."
+        ),
         "parameters": {
             "action": {"type": "string", "required": True},
             "uri": {"type": "string", "required": True},

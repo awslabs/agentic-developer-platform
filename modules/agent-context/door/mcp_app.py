@@ -130,7 +130,14 @@ mcp_server = FastMCP(
     name="context-mcp",
     instructions=(
         "Knowledge Layer code verbs: search, understand, impact, browse, "
-        "remember, experience, secure. All results are ACL-filtered per caller identity."
+        "remember, experience, secure. All results are ACL-filtered per caller identity.\n\n"
+        "DISCOVERY: call browse(action='ls', uri='/') to enumerate all indexed repos. "
+        "Each entry includes a capabilities manifest showing what's available "
+        "(code_search, call_graph, wiki, sbom, vectors) with metrics "
+        "(files, symbols, nodes, edges, chars, dependencies). "
+        "Use this to plan which verbs to call — e.g. if a repo has "
+        "call_graph.ready=true with 3000+ nodes, impact() will be effective; "
+        "if vectors.ready=false, skip semantic search."
     ),
     stateless_http=True,
     # The sub-app is mounted at /mcp on the parent FastAPI app, so the internal
@@ -211,7 +218,7 @@ async def mcp_browse(
     project: str = "",
     ctx: Context = None,  # type: ignore[assignment]
 ) -> str:
-    """Navigate the indexed content filesystem."""
+    """Navigate the indexed content filesystem. Start with browse(action='ls', uri='/') to discover all indexed repos and their capabilities."""
     headers = _get_headers_from_context(ctx)
     caller = extract_caller_principal(headers)
     arguments: dict[str, Any] = {"action": action, "uri": uri, "depth": depth}

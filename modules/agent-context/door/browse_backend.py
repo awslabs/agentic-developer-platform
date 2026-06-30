@@ -2,6 +2,12 @@
 
 Lists indexed repos from the Postgres catalog/S3 and source files from Zoekt.
 Provides importable functions for the Context MCP server.
+
+Discovery entry point: ``browse(action="ls", uri="/")`` returns the catalog of
+all indexed repos with a **rich capability manifest** per repo. The manifest is
+built from ``index_run_stages`` (verified/skipped status + metrics) — the source
+of truth for what each repo actually has indexed — NOT the stale
+``repositories.*_status`` columns.
 """
 
 from __future__ import annotations
@@ -15,6 +21,19 @@ import httpx
 from .acl import SearchHit
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Stage → capability mapping: translates index_run_stages.stage values to
+# user-facing capability keys used in the manifest.
+# ---------------------------------------------------------------------------
+_STAGE_TO_CAPABILITY: dict[str, str] = {
+    "zoekt_index": "code_search",
+    "cgc_structural": "code_search",  # contributes files/symbols to code_search
+    "scip_structural": "call_graph",
+    "deepwiki": "wiki",
+    "sbom_source": "sbom",
+    "graphrag": "vectors",
+}
 
 # Known S3 content root directories — URIs starting with these are routed
 # directly to S3 instead of the repo→Zoekt path.
@@ -180,7 +199,11 @@ async def _list_path(
 async def _list_repos(
     db_pool: Any | None, s3_client: Any | None = None, bucket: str = ""
 ) -> list[SearchHit]:
-    """List all indexed repos from the catalog (Postgres) or S3 fallback.
+    """List all indexed repos from the catalog with rich capability manifests.
+
+    Returns each repo with a capability manifest built from ``index_run_stages``
+    (the source of truth for what's actually indexed). This lets agents plan
+    which verbs to call without blind probing.
 
     When Postgres is unavailable (rds_enabled=false), discovers repos from the
     code-indexes/ S3 prefix — each file is named {org}-{repo}.json.
@@ -191,29 +214,64 @@ async def _list_repos(
             conn = db_pool.getconn()
             try:
                 with conn.cursor() as cur:
+                    # Step 1: fetch repos (columns that EXIST in the schema)
                     cur.execute(
-                        "SELECT repo_name, description FROM repositories ORDER BY repo_name LIMIT 200"
+                        "SELECT repo_name, git_url, indexed_at"
+                        " FROM repositories ORDER BY repo_name LIMIT 200"
                     )
-                    rows = cur.fetchall()
-                    if rows:
-                        return [
-                            SearchHit(
-                                repo_name=row[0],
-                                data={
-                                    "repo_id": row[0],
-                                    "type": "repository",
-                                    "description": row[1] or "",
-                                    "entry_type": "directory",
-                                },
-                            )
-                            for row in rows
-                        ]
+                    repo_rows = cur.fetchall()
+                    if not repo_rows:
+                        # Table exists but empty — fall through to S3
+                        db_pool.putconn(conn)
+                        # Let the S3 fallback below handle it
+                        return await _list_repos_s3_fallback(s3_client, bucket)
+
+                    # Step 2: fetch capabilities from index_run_stages
+                    # Get the LATEST row per (repo, stage) with status in
+                    # ('verified', 'skipped') — these represent the final state.
+                    cur.execute(
+                        """
+                        SELECT DISTINCT ON (repo, stage)
+                            repo, stage, status, metrics
+                        FROM index_run_stages
+                        WHERE status IN ('verified', 'skipped')
+                        ORDER BY repo, stage, completed_at DESC NULLS LAST
+                        """
+                    )
+                    stage_rows = cur.fetchall()
+
+                    # Build per-repo capability index
+                    capabilities_by_repo = _build_capabilities_index(stage_rows)
+
+                    # Step 3: assemble results
+                    results: list[SearchHit] = []
+                    for row in repo_rows:
+                        repo_name = row[0]
+                        git_url = row[1] or ""
+                        indexed_at = row[2]
+
+                        manifest = capabilities_by_repo.get(repo_name, {})
+                        data: dict[str, Any] = {
+                            "repo_id": repo_name,
+                            "type": "repository",
+                            "entry_type": "directory",
+                            "git_url": git_url,
+                            "indexed_at": str(indexed_at) if indexed_at else None,
+                            "capabilities": manifest,
+                        }
+                        results.append(SearchHit(repo_name=repo_name, data=data))
+                    return results
             finally:
                 db_pool.putconn(conn)
         except Exception:
             log.warning("Failed to list repos from catalog", exc_info=True)
 
-    # S3 fallback: discover repos from code-indexes/ prefix
+    # S3 fallback
+    return await _list_repos_s3_fallback(s3_client, bucket)
+
+
+async def _list_repos_s3_fallback(s3_client: Any | None, bucket: str) -> list[SearchHit]:
+    """Discover repos from code-indexes/ S3 prefix (fallback when no DB)."""
     if s3_client is not None and bucket:
         try:
             response = s3_client.list_objects_v2(
@@ -225,7 +283,6 @@ async def _list_repos(
                 # code-indexes/{org}-{repo}.json → extract repo name
                 filename = key.split("/")[-1]
                 if filename.endswith(".json") and filename != "":
-                    # Convert org-repo.json back to a display name
                     repo_name = filename.removesuffix(".json")
                     results.append(
                         SearchHit(
@@ -233,8 +290,8 @@ async def _list_repos(
                             data={
                                 "repo_id": repo_name,
                                 "type": "repository",
-                                "description": "",
                                 "entry_type": "directory",
+                                "capabilities": {},
                             },
                         )
                     )
@@ -246,6 +303,52 @@ async def _list_repos(
 
     log.debug("No repos found (no db_pool and no S3 fallback)")
     return []
+
+
+def _build_capabilities_index(
+    stage_rows: list[tuple],
+) -> dict[str, dict[str, Any]]:
+    """Build per-repo capability manifests from index_run_stages rows.
+
+    Each row is (repo, stage, status, metrics). Aggregates into the manifest
+    shape: {capability_key: {ready: bool, ...metrics}}.
+
+    Manifest shape per repo::
+
+        {
+            "code_search": {"ready": true, "files": 549, "symbols": 5000, "size_bytes": 27661540},
+            "call_graph": {"ready": true, "nodes": 3512, "edges": 2923},
+            "wiki": {"ready": true, "chars": 14616},
+            "sbom": {"ready": true, "dependencies": 415},
+            "vectors": {"ready": false}
+        }
+    """
+    caps: dict[str, dict[str, Any]] = {}
+
+    for repo, stage, status, metrics in stage_rows:
+        capability_key = _STAGE_TO_CAPABILITY.get(stage)
+        if capability_key is None:
+            continue
+
+        if repo not in caps:
+            caps[repo] = {}
+
+        is_ready = status == "verified"
+
+        # Merge metrics into the capability entry
+        # Multiple stages can contribute to the same capability (e.g. zoekt_index
+        # and cgc_structural both feed code_search) — merge their metrics.
+        existing = caps[repo].get(capability_key, {"ready": False})
+        existing["ready"] = existing.get("ready", False) or is_ready
+
+        if metrics and isinstance(metrics, dict):
+            for k, v in metrics.items():
+                if v is not None:
+                    existing[k] = v
+
+        caps[repo][capability_key] = existing
+
+    return caps
 
 
 def _list_repo_content_types(repo_name: str) -> list[SearchHit]:
@@ -563,37 +666,70 @@ async def _get_info(
     bucket: str,
     content_prefix: str,
 ) -> list[SearchHit]:
-    """Get metadata for a specific path."""
+    """Get metadata for a specific path, including rich capability manifest.
+
+    For root ("/") returns a description of the catalog.
+    For a repo name returns the full capability manifest from index_run_stages.
+    """
     parts = [p for p in uri.split("/") if p]
     if not parts:
         return [
             SearchHit(
                 repo_name="",
-                data={"type": "root", "description": "Agent Context content index"},
+                data={
+                    "type": "root",
+                    "description": (
+                        "Agent Context catalog. Use browse(action='ls', uri='/') "
+                        "to enumerate all indexed repos and their capabilities."
+                    ),
+                },
             )
         ]
 
-    repo_name = parts[0]
+    # Repo names may contain slashes (e.g. "HKUDS/Vibe-Trading") so try
+    # joining the first two parts as org/repo before falling back to parts[0].
+    repo_name = "/".join(parts[:2]) if len(parts) >= 2 else parts[0]
 
-    # Repo info from catalog
-    if len(parts) == 1 and db_pool is not None:
+    # Repo info from catalog + rich capability manifest
+    if len(parts) <= 2 and db_pool is not None:
         try:
             conn = db_pool.getconn()
             try:
                 with conn.cursor() as cur:
+                    # Fetch repo metadata (real columns only)
                     cur.execute(
-                        "SELECT repo_name, description FROM repositories WHERE repo_name = %s",
+                        "SELECT repo_name, git_url, indexed_at"
+                        " FROM repositories WHERE repo_name = %s",
                         (repo_name,),
                     )
                     row = cur.fetchone()
                     if row:
+                        # Fetch capability stages for this repo
+                        cur.execute(
+                            """
+                            SELECT DISTINCT ON (stage)
+                                stage, status, metrics
+                            FROM index_run_stages
+                            WHERE repo = %s AND status IN ('verified', 'skipped')
+                            ORDER BY stage, completed_at DESC NULLS LAST
+                            """,
+                            (repo_name,),
+                        )
+                        stage_rows = cur.fetchall()
+                        # Build manifest — reuse same helper (wrap in expected tuple shape)
+                        stage_tuples = [(repo_name, s[0], s[1], s[2]) for s in stage_rows]
+                        caps_index = _build_capabilities_index(stage_tuples)
+                        manifest = caps_index.get(repo_name, {})
+
                         return [
                             SearchHit(
                                 repo_name=row[0],
                                 data={
                                     "repo_id": row[0],
                                     "type": "repository",
-                                    "description": row[1] or "",
+                                    "git_url": row[1] or "",
+                                    "indexed_at": str(row[2]) if row[2] else None,
+                                    "capabilities": manifest,
                                 },
                             )
                         ]
