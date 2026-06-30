@@ -36,23 +36,11 @@ spec:
         command: ["sh", "-c"]
         args:
           - |
-            echo "Preparing index directory..."
+            echo "Copying shard files from S3 to flat index dir..."
             mkdir -p /data/index
-            echo "Symlinking shard dirs from S3..."
-            for dir in /mnt/s3-shards/*/; do
-              if [ -d "$dir" ]; then
-                name=$(basename "$dir")
-                ln -sf "$dir" "/data/index/$name"
-                echo "  linked: $name"
-              fi
-            done
-            for f in /mnt/s3-shards/*.zoekt; do
-              if [ -f "$f" ]; then
-                ln -sf "$f" "/data/index/$(basename $f)"
-              fi
-            done
-            echo "Index dir contents:"
-            ls -la /data/index/
+            find /mnt/s3-shards -name "*.zoekt" -exec cp {} /data/index/ \;
+            echo "Shard files:"
+            ls /data/index/*.zoekt 2>/dev/null | wc -l
         volumeMounts:
         - name: scratch
           mountPath: /data
@@ -77,10 +65,6 @@ spec:
         volumeMounts:
         - name: scratch
           mountPath: /data
-        - name: index-data
-          mountPath: /mnt/s3-shards
-          subPath: zoekt-shards
-          readOnly: true
         resources:
           requests:
             cpu: "500m"
@@ -92,7 +76,7 @@ spec:
           httpGet:
             path: /
             port: 6070
-          initialDelaySeconds: 5
+          initialDelaySeconds: 15
           periodSeconds: 10
           timeoutSeconds: 3
           failureThreshold: 3
