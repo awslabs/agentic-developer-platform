@@ -1,6 +1,7 @@
 """Business logic for the connections module.
 
 Issue #465: GitHub App install-start, install-callback, list, and delete.
+Issue #2593: Platform-admin GitHub App registration via manifest conversion flow.
 
 Design notes:
 - State nonces reuse the existing magic_link_nonces table with provider="github_install".
@@ -13,11 +14,13 @@ Design notes:
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,11 +40,13 @@ from .schemas import (
     DeleteConnectionResponse,
     GitHubConnectionItem,
     InstallStartResponse,
+    RegisterAppStartResponse,
 )
 
 logger = logging.getLogger(__name__)
 
 _PROVIDER_GITHUB_INSTALL = "github_install"
+_PROVIDER_GITHUB_APP_REGISTER = "github_app_register"
 _NONCE_TTL_SECONDS = 900  # 15 minutes
 
 # ---------------------------------------------------------------------------
@@ -614,3 +619,388 @@ async def delete_connection(
     )
 
     return DeleteConnectionResponse(deleted=True, installation_id=installation_id)
+
+
+# ---------------------------------------------------------------------------
+# GitHub App registration via manifest conversion (Issue #2593)
+# ---------------------------------------------------------------------------
+
+
+def _get_environment() -> str:
+    """Return the deployment environment (dev/staging/prod)."""
+    return os.environ.get("ENVIRONMENT", "dev")
+
+
+def _check_existing_app_secret() -> tuple[str, str] | None:
+    """Check if a GitHub App is already registered in Secrets Manager.
+
+    Returns (app_id, app_slug) if found, None otherwise.
+    The secret paths match register-github-app.sh / webhook-ingress/infra/secrets.tf:
+        adp/<env>/github-app/adp-agent-platform-id
+    """
+    import boto3
+    from botocore.exceptions import ClientError
+
+    env = _get_environment()
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    id_path = f"adp/{env}/github-app/adp-agent-platform-id"
+
+    try:
+        sm = boto3.client("secretsmanager", region_name=region)
+        resp = sm.get_secret_value(SecretId=id_path)
+        app_id = resp.get("SecretString", "")
+        if app_id and len(app_id) > 0:
+            # Derive slug from settings if available, else from convention
+            settings = get_settings()
+            app_slug = settings.github_app_slug or "adp-agent-platform"
+            return (app_id, app_slug)
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        if error_code in ("ResourceNotFoundException", "InvalidRequestException"):
+            return None
+        logger.warning("Error checking existing app secret: %s", exc)
+    except Exception as exc:
+        logger.warning("Unexpected error checking existing app secret: %s", exc)
+    return None
+
+
+def _build_app_manifest(
+    *,
+    webhook_url: str,
+    callback_url: str,
+) -> dict[str, Any]:
+    """Build the GitHub App manifest per the GitHub App Manifest spec.
+
+    See: https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest
+    """
+    return {
+        "name": "adp-agent-platform",
+        "url": "https://github.com/apps/adp-agent-platform",
+        "hook_attributes": {
+            "url": webhook_url,
+            "active": True,
+        },
+        "redirect_url": callback_url,
+        "public": False,
+        "default_permissions": {
+            "contents": "write",
+            "issues": "write",
+            "pull_requests": "write",
+            "checks": "write",
+            "metadata": "read",
+        },
+        "default_events": [
+            "issues",
+            "issue_comment",
+            "pull_request",
+            "pull_request_review",
+            "pull_request_review_comment",
+            "label",
+        ],
+    }
+
+
+async def register_app_start(
+    *,
+    owner_type: str,
+    org: str | None,
+    cognito_sub: str,
+    user_id: str,
+    db: AsyncSession,
+) -> RegisterAppStartResponse:
+    """Generate a manifest and state nonce for the GitHub App manifest conversion flow.
+
+    Issue #2593: Platform-admin endpoint to register the deployment's GitHub App
+    via GitHub's manifest conversion flow, replacing manual register-github-app.sh.
+
+    First checks Secrets Manager for an existing App (prevents duplicate Apps).
+    If an App is already registered, returns status='already_registered'.
+
+    Args:
+        owner_type: 'user' or 'org' — where to create the App on GitHub.
+        org:        GitHub org login (required when owner_type='org').
+        cognito_sub: Caller's Cognito subject (for nonce).
+        user_id:    Caller's internal user ID (for nonce).
+        db:         Database session.
+    """
+    # Check for already-registered App
+    existing = _check_existing_app_secret()
+    if existing is not None:
+        app_id, app_slug = existing
+        logger.info(
+            "register-app-start: App already registered (id=%s, slug=%s)",
+            app_id,
+            app_slug,
+        )
+        return RegisterAppStartResponse(
+            status="already_registered",
+            app_slug=app_slug,
+            app_id=app_id,
+        )
+
+    # Validate owner_type
+    if owner_type not in ("user", "org"):
+        raise HTTPException(
+            status_code=400,
+            detail="owner_type must be 'user' or 'org'",
+        )
+    if owner_type == "org" and not org:
+        raise HTTPException(
+            status_code=400,
+            detail="org is required when owner_type='org'",
+        )
+
+    # Build the POST URL based on owner_type
+    if owner_type == "user":
+        post_url = "https://github.com/settings/apps/new"
+    else:
+        post_url = f"https://github.com/organizations/{org}/settings/apps/new"
+
+    # Determine the webhook URL from SSM or env
+    webhook_url = os.environ.get("WEBHOOK_URL", "")
+    if not webhook_url:
+        # Try SSM parameter (same pattern as register-github-app.sh)
+        try:
+            import boto3
+
+            env = _get_environment()
+            region = os.environ.get("AWS_REGION", "us-east-1")
+            ssm = boto3.client("ssm", region_name=region)
+            param = ssm.get_parameter(Name=f"/adp/{env}/webhook-ingress/webhook-url")
+            webhook_url = param["Parameter"]["Value"]
+        except Exception as exc:
+            logger.warning("Could not resolve webhook URL from SSM: %s", exc)
+            webhook_url = ""
+
+    # Build callback URL — the gateway endpoint that handles the code exchange
+    settings = get_settings()
+    base_url = settings.gateway_base_url or ""
+    callback_url = f"{base_url}/api/admin/connections/github/app/register-callback"
+
+    # Build the manifest
+    manifest = _build_app_manifest(
+        webhook_url=webhook_url,
+        callback_url=callback_url,
+    )
+
+    # Generate state nonce (reuse magic_link_nonces table)
+    jti = str(uuid.uuid4())
+    now = datetime.now(UTC)
+    expires_at = now + timedelta(seconds=_NONCE_TTL_SECONDS)
+
+    await store_nonce(
+        jti=jti,
+        provider=_PROVIDER_GITHUB_APP_REGISTER,
+        provider_user_id=cognito_sub,
+        channel_context=None,
+        target_user_id=user_id,
+        expires_at=expires_at,
+        db=db,
+    )
+
+    logger.info(
+        "register-app-start: manifest generated jti=%s user=%s owner_type=%s org=%s",
+        jti,
+        user_id,
+        owner_type,
+        org or "(personal)",
+    )
+
+    return RegisterAppStartResponse(
+        status="ready",
+        manifest=manifest,
+        post_url=post_url,
+        state=jti,
+    )
+
+
+async def register_app_callback(
+    *,
+    code: str,
+    state: str,
+    db: AsyncSession,
+) -> str:
+    """Exchange the GitHub manifest conversion code for App credentials and store them.
+
+    Issue #2593: After the admin submits the manifest on GitHub and GitHub
+    redirects back with a `code`, this function:
+    1. Validates the state nonce (CSRF protection).
+    2. POSTs to GitHub's /app-manifests/{code}/conversions endpoint.
+    3. Stores the returned credentials in Secrets Manager at the shared paths.
+
+    Returns the frontend redirect URL on success.
+
+    Raises:
+        NonceNotFoundError — state not in DB
+        TokenExpiredError  — state expired
+        NonceAlreadyConsumedError — state already used
+        HTTPException      — GitHub API failure or storage failure
+    """
+    from sqlalchemy import select, update
+
+    # 1. Validate + consume state nonce
+    stmt = select(MagicLinkNonce).where(
+        MagicLinkNonce.jti == state,
+        MagicLinkNonce.provider == _PROVIDER_GITHUB_APP_REGISTER,
+    )
+    result = await db.execute(stmt)
+    nonce = result.scalar_one_or_none()
+
+    if nonce is None:
+        raise NonceNotFoundError(f"State token not found: {state}")
+
+    now = datetime.now(UTC)
+    expires_at = nonce.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at < now:
+        raise TokenExpiredError("State token has expired")
+
+    if nonce.consumed_at is not None:
+        raise NonceAlreadyConsumedError(f"State token already used: {state}")
+
+    # Atomically consume (prevents races)
+    consume_stmt = (
+        update(MagicLinkNonce)
+        .where(MagicLinkNonce.jti == state, MagicLinkNonce.consumed_at.is_(None))
+        .values(consumed_at=now)
+        .returning(MagicLinkNonce.jti)
+    )
+    consume_result = await db.execute(consume_stmt)
+    consumed_jti = consume_result.scalar_one_or_none()
+    if consumed_jti is None:
+        raise NonceAlreadyConsumedError(f"State token already used (concurrent): {state}")
+    await db.commit()
+
+    logger.info("register-app-callback: nonce consumed jti=%s", state)
+
+    # 2. Exchange code for App credentials via GitHub API
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            f"https://api.github.com/app-manifests/{code}/conversions",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+
+    if resp.status_code != 201:
+        logger.error(
+            "register-app-callback: GitHub conversions API returned %d: %s",
+            resp.status_code,
+            resp.text[:500],
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="GitHub App manifest conversion failed. The code may have expired.",
+        )
+
+    data = resp.json()
+    app_id = str(data.get("id", ""))
+    app_slug = data.get("slug", "")
+    pem = data.get("pem", "")
+    client_id = data.get("client_id", "")
+    client_secret = data.get("client_secret", "")
+    webhook_secret = data.get("webhook_secret", "")
+
+    if not app_id or not pem:
+        logger.error("register-app-callback: missing id or pem in GitHub response")
+        raise HTTPException(
+            status_code=502,
+            detail="GitHub returned incomplete App credentials.",
+        )
+
+    # 3. Store credentials in Secrets Manager at the shared paths
+    await _store_app_credentials(
+        app_id=app_id,
+        app_slug=app_slug,
+        pem=pem,
+        client_id=client_id,
+        client_secret=client_secret,
+        webhook_secret=webhook_secret,
+    )
+
+    logger.info(
+        "register-app-callback: App registered successfully id=%s slug=%s",
+        app_id,
+        app_slug,
+    )
+
+    # Return frontend redirect URL
+    settings = get_settings()
+    frontend_url = settings.gateway_base_url or ""
+    return f"{frontend_url}/settings/connections?github_app=registered"
+
+
+async def _store_app_credentials(
+    *,
+    app_id: str,
+    app_slug: str,
+    pem: str,
+    client_id: str,
+    client_secret: str,
+    webhook_secret: str,
+) -> None:
+    """Store GitHub App credentials in Secrets Manager at the shared paths.
+
+    Paths match register-github-app.sh / webhook-ingress/infra/secrets.tf:
+        adp/<env>/github-app/adp-agent-platform-id   → app_id
+        adp/<env>/github-app/adp-agent-platform-key  → private key PEM
+
+    Additional metadata (slug, client_id, client_secret, webhook_secret) is stored
+    in a JSON secret alongside:
+        adp/<env>/github-app/adp-agent-platform-meta → JSON blob
+    """
+    import asyncio
+    import json
+
+    import boto3
+    from botocore.exceptions import ClientError
+
+    env = _get_environment()
+    region = os.environ.get("AWS_REGION", "us-east-1")
+
+    def _store_sync() -> None:
+        sm = boto3.client("secretsmanager", region_name=region)
+
+        id_path = f"adp/{env}/github-app/adp-agent-platform-id"
+        key_path = f"adp/{env}/github-app/adp-agent-platform-key"
+        meta_path = f"adp/{env}/github-app/adp-agent-platform-meta"
+
+        meta_payload = json.dumps(
+            {
+                "app_id": app_id,
+                "app_slug": app_slug,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "webhook_secret": webhook_secret,
+            }
+        )
+
+        for path, value, desc in [
+            (id_path, app_id, f"GitHub App ID for adp-agent-platform ({env})"),
+            (key_path, pem, f"GitHub App private key for adp-agent-platform ({env})"),
+            (meta_path, meta_payload, f"GitHub App metadata for adp-agent-platform ({env})"),
+        ]:
+            try:
+                sm.create_secret(
+                    Name=path,
+                    Description=desc,
+                    SecretString=value,
+                    Tags=[
+                        {"Key": "ManagedBy", "Value": "adp-gateway-register"},
+                        {"Key": "AppSlug", "Value": app_slug},
+                    ],
+                )
+                logger.info("Created secret: %s", path)
+            except ClientError as exc:
+                error_code = exc.response.get("Error", {}).get("Code", "")
+                if error_code == "ResourceExistsException":
+                    # Update existing secret
+                    sm.put_secret_value(SecretId=path, SecretString=value)
+                    logger.info("Updated existing secret: %s", path)
+                else:
+                    logger.error("Failed to store secret %s: %s", path, exc)
+                    raise
+
+    await asyncio.to_thread(_store_sync)

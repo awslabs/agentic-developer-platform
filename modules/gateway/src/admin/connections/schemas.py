@@ -1,11 +1,13 @@
 """Pydantic schemas for the connections module.
 
 Issue #465: GitHub App install + connection management API.
+Issue #2593: Platform-admin GitHub App registration via manifest conversion flow.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -56,3 +58,50 @@ class ConnectionsListResponse(BaseModel):
 class DeleteConnectionResponse(BaseModel):
     deleted: bool
     installation_id: int
+
+
+# ---------------------------------------------------------------------------
+# register (Issue #2593: platform-admin GitHub App registration)
+# ---------------------------------------------------------------------------
+
+
+class RegisterAppStartRequest(BaseModel):
+    """Request body for POST /api/admin/connections/github/app/register-start."""
+
+    owner_type: str = Field(
+        default="org",
+        description="'user' or 'org'. Controls whether the App is created under the caller's personal account or an org.",
+    )
+    org: str | None = Field(
+        default=None,
+        description="GitHub organization login (required when owner_type='org').",
+    )
+
+
+class RegisterAppStartResponse(BaseModel):
+    """Response from POST /api/admin/connections/github/app/register-start."""
+
+    status: str = Field(
+        ...,
+        description="'ready' (proceed with manifest POST) or 'already_registered'.",
+    )
+    manifest: dict[str, Any] | None = Field(
+        default=None,
+        description="GitHub App manifest JSON to POST to GitHub (only when status='ready').",
+    )
+    post_url: str | None = Field(
+        default=None,
+        description="GitHub URL to POST the manifest to (only when status='ready').",
+    )
+    state: str | None = Field(
+        default=None,
+        description="CSRF state nonce (only when status='ready').",
+    )
+    app_slug: str | None = Field(
+        default=None,
+        description="Existing App slug (only when status='already_registered').",
+    )
+    app_id: str | None = Field(
+        default=None,
+        description="Existing App ID (only when status='already_registered').",
+    )

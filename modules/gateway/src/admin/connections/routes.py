@@ -1,12 +1,15 @@
 """FastAPI router for the connections module.
 
 Issue #465: GitHub App install + connection management.
+Issue #2593: Platform-admin GitHub App registration via manifest conversion flow.
 
 Endpoints:
     POST   /admin/connections/github/install-start
     GET    /admin/connections/github/install-callback
     GET    /admin/connections
     DELETE /admin/connections/github/{installation_id}
+    POST   /admin/connections/github/app/register-start    (platform_admin only)
+    GET    /admin/connections/github/app/register-callback  (platform_admin via state nonce)
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin.access_control import AccessControl
+from src.admin.exceptions import AccessDeniedError
 from src.auth.dependencies import get_current_user, require_admin
 from src.auth.magic_link import (
     NonceAlreadyConsumedError,
@@ -33,15 +38,25 @@ from .schemas import (
     ConnectionsListResponse,
     DeleteConnectionResponse,
     InstallStartResponse,
+    RegisterAppStartRequest,
+    RegisterAppStartResponse,
 )
 from .service import (
     delete_connection,
     install_callback,
     install_start,
     list_connections,
+    register_app_callback,
+    register_app_start,
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _get_access_control(db: AsyncSession = Depends(get_db)) -> AccessControl:
+    """Provide an AccessControl instance for platform_admin checks."""
+    return AccessControl(db)
+
 
 # NOTE: prefix is "/admin/connections", NOT "/api/admin/connections". CloudFront
 # fronts the gateway with an /api/* behavior whose viewer-request function strips
@@ -202,3 +217,88 @@ async def disconnect_github(
             exc,
         )
         raise HTTPException(status_code=500, detail="Failed to disconnect installation") from exc
+
+
+# ---------------------------------------------------------------------------
+# GitHub App registration (Issue #2593: manifest conversion flow)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/github/app/register-start", response_model=RegisterAppStartResponse)
+async def github_app_register_start(
+    body: RegisterAppStartRequest,
+    current_user: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
+    db: AsyncSession = Depends(get_db),
+) -> RegisterAppStartResponse:
+    """Generate a GitHub App manifest for the manifest conversion flow.
+
+    Platform-admin only. Returns a manifest to POST to GitHub, or
+    'already_registered' if an App already exists for this deployment.
+    """
+    try:
+        access.require_platform_admin(current_user)
+    except AccessDeniedError:
+        raise HTTPException(
+            status_code=403,
+            detail="Platform administrator privileges required",
+        )
+
+    try:
+        return await register_app_start(
+            owner_type=body.owner_type,
+            org=body.org,
+            cognito_sub=current_user.user_id,
+            user_id=current_user.user_id,
+            db=db,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("register-app-start failed for user=%s: %s", current_user.user_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to initiate GitHub App registration") from exc
+
+
+@router.get("/github/app/register-callback")
+async def github_app_register_callback(
+    code: str = "",
+    state: str = "",
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Handle the GitHub manifest conversion callback.
+
+    GitHub redirects the admin's browser here with ?code=&state= after
+    they submit the manifest. This endpoint is NOT behind get_current_user
+    because GitHub redirects without an Authorization header — the state
+    nonce is the authenticator (same pattern as install-callback).
+
+    Exchanges the code for App credentials and stores them in Secrets Manager.
+    """
+    if not code:
+        return _redirect_error("missing_code", "Missing code parameter from GitHub redirect")
+    if not state:
+        return _redirect_error("missing_state", "Missing state parameter from GitHub redirect")
+
+    try:
+        redirect_url = await register_app_callback(
+            code=code,
+            state=state,
+            db=db,
+        )
+        return RedirectResponse(url=redirect_url, status_code=302)
+
+    except (NonceNotFoundError, TokenExpiredError) as exc:
+        logger.warning("register-app-callback invalid state jti=%s: %s", state, exc)
+        return _redirect_error("invalid_state", "Registration link has expired or is invalid. Please try again.")
+
+    except NonceAlreadyConsumedError as exc:
+        logger.warning("register-app-callback replayed state jti=%s: %s", state, exc)
+        return _redirect_error("state_replayed", "Registration link already used. Please start a new registration.")
+
+    except HTTPException as exc:
+        logger.error("register-app-callback HTTP error: %s", exc.detail)
+        return _redirect_error("github_error", str(exc.detail))
+
+    except Exception as exc:
+        logger.error("register-app-callback unexpected error: %s", exc)
+        return _redirect_error("internal_error", "An unexpected error occurred during App registration.")
