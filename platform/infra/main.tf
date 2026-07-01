@@ -33,6 +33,16 @@ terraform {
 
 data "aws_caller_identity" "current" {}
 
+# Issue #2563: Check whether the CI runner role exists before referencing it in
+# EKS access entries. On a fresh-account first deploy, this role is created by
+# agent-factory/runner-iam (a later phase) and doesn't exist yet. The data
+# source returns an empty arns list (no error) when no matching role is found,
+# letting us conditionally exclude it from cluster_admin_principal_arns.
+data "aws_iam_roles" "ci_runner" {
+  name_regex  = "^${local.name_prefix}-agent-runner-role$"
+  path_prefix = "/"
+}
+
 locals {
   name_prefix  = coalesce(var.name_prefix, "adp-${var.environment}")
   state_bucket = coalesce(var.state_bucket, "adp-terraform-state-${data.aws_caller_identity.current.account_id}")
@@ -63,11 +73,16 @@ locals {
   # would drop the human Admin entry and a human apply (as Admin) would drop
   # the runner entry — a flip-flop that tripped the destroy-safety gate every
   # apply. The other human operator role(s) go in extra_cluster_admin_principal_arns.
+  #
+  # Issue #2563: On a fresh-account first deploy, this role doesn't exist yet
+  # (created later by agent-factory/runner-iam). We conditionally include it
+  # using a data lookup so that aws_eks_access_entry doesn't fail with
+  # InvalidParameterException when the principal doesn't exist.
   ci_runner_role_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-runner-role"
 
   cluster_admin_principal_arns = distinct(concat(
     [local.deployer_role_arn],
-    [local.ci_runner_role_arn],
+    length(data.aws_iam_roles.ci_runner.arns) > 0 ? [local.ci_runner_role_arn] : [],
     var.extra_cluster_admin_principal_arns,
   ))
 }
