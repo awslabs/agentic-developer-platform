@@ -188,10 +188,14 @@ The phases at a glance (each step idempotent and re-runnable):
 | 6b | Gateway second pass — wire ALB (MOCK API GW → real routes) | `wire-gateway-alb.sh --apply` | Gateway |
 | 6c | Broker Lambda code (real GitHub-login handler) | `modules/gateway/scripts/deploy-broker.sh` | Login |
 | 6d | Seed the first admin (org/user/role) | `modules/gateway/scripts/bootstrap-admin.sh` | Login |
-| 7 | Webhook agent stack + agent-runtime image | `webhook-ingress/scripts/deploy-webhook-ingress.sh` | Agents |
-| 8 | Create + wire the GitHub App | `webhook-ingress/scripts/register-github-app.sh <org>` | Agents |
+| 7 | Webhook agent stack + agent-runtime image (warm pool + image-prepull) | `webhook-ingress/scripts/deploy-webhook-ingress.sh` | Agents |
+| 8 | Bedrock model access (⚠️ human — console *Subscribe*, no CLI) | *(AWS console)* | Agents |
+| 9 | Create + wire the GitHub App (⚠️ human browser install) | `webhook-ingress/scripts/register-github-app.sh <org>` | Agents |
+| 10 | End-to-end smoke test | *(curl + `@agent-developer` task)* | Verify |
 
-**`deploy-all.sh` chains Phases 1–6 (incl. the 6b ALB pass) but NOT 6c, 6d, 7, 8.** Why: Terraform ships *placeholders* for things a push-triggered CI workflow normally publishes (the MOCK API Gateway body, a 503 broker Lambda stub, `:latest` image refs, the webhook Lambda zip). A fresh manual deploy fires none of those, so `deploy-all.sh` alone leaves you without working login, a first admin, or the agent path — run the 6c/6d/7/8 scripts (deploy-quickstart.md sequences them; don't skip them).
+Phase numbering matches the canonical sequence in [`deploy-quickstart.md`](docs/adp-platform-deployment/deploy-quickstart.md). The **ADP-managed** (pipeline) equivalent of these same phases — run as GitHub Actions workflows (`platform-infra-apply.yml`, `gateway-deploy.yml`, `webhook-ingress-deploy.yml`, …) instead of local scripts — is captured in the per-deploy-instance runbook (e.g. issue #1320). Same phases, two execution mechanisms; don't mix them in one run.
+
+**`deploy-all.sh` chains Phases 1–6 (incl. the 6b ALB pass) but NOT 6c, 6d, 7, 8, 9.** Why: Terraform ships *placeholders* for things a push-triggered CI workflow normally publishes (the MOCK API Gateway body, a 503 broker Lambda stub, `:latest` image refs, the webhook Lambda zip). A fresh manual deploy fires none of those, so `deploy-all.sh` alone leaves you without working login, a first admin, or the agent path — run the 6c/6d/7/9 scripts and enable Bedrock access (Phase 8) manually (deploy-quickstart.md sequences them; don't skip them).
 
 `deploy-all.sh` flags:
 

@@ -659,13 +659,55 @@ The complete stage-by-stage path, each step backed by a re-runnable script:
    hangs silently after "Session initialized" — see the gotcha above.
 9. `@agent-developer <task>` in an issue/PR comment → webhook → SQS → KEDA → agent-worker pod
 
-## Phases 7–9 (full ARC path) — `deploy-all.sh` ⚠️ unverified here
+## Phase 7 — Webhook ingress + warm pool
 
-`deploy-all.sh` runs bootstrap → preflight → platform infra → gateway infra →
-backend image build (CodeBuild) → k8s deploy → frontend → agent factory → agent
-gateway, including a two-pass gateway apply for the ALB. It does NOT deploy the
-webhook-ingress stack or build the agent-runtime/broker artifacts — use the
-stage-by-stage scripts above for the webhook agent path.
+`webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev` builds the
+agent-runtime image, packages the webhook Lambda zip, and terraform-applies the
+stack (incl. `warm-pool.tf` balloon Deployment + image-prepull DaemonSet for
+~10-15s agent starts). **Verify**: webhook API GW deployed; SQS FIFO
+`adp-dev-agent-submit.fifo`; KEDA pods Running; ScaledJob `agent-scaledjob` in
+`adp-agents`; `agent-warm-pool` + `agent-image-prepull` READY. Smoke: unsigned
+`POST /dev/github` → 401 (HMAC reject = path live).
+
+## Phase 8 — Bedrock model access ⚠️ HUMAN STEP (no CLI)
+
+Enable the agent model (e.g. Claude Opus) in the **Bedrock console → Model
+access** of the target account (performs the AWS Marketplace *Subscribe* — no
+CLI path). Until enabled, the agent hangs silently after "Session initialized"
+(gateway returns an empty 200 `text/event-stream`). Verify with a
+`bedrock-runtime invoke-model` once the user confirms.
+
+## Phase 9 — GitHub App ⚠️ HUMAN browser step
+
+`webhook-ingress/scripts/register-github-app.sh <org> --env dev` creates the App;
+the user then installs it on the target repo (UI "Link GitHub" or
+`github.com/apps/<slug>/installations/new`).
+
+## Phase 10 — End-to-end smoke test
+
+Run the frontend/backend/Cognito probes below, then confirm an
+`@agent-developer <task>` comment on the linked repo spawns an agent-worker pod
+and opens a PR (proves webhook → SQS → KEDA → worker → gateway → Bedrock).
+
+> **Agent Context (Code Intelligence Layer) is a separate, optional follow-on** —
+> not part of the phases above. Deploy it after the platform is up with
+> `deploy-all.sh --agent-context-only` (or the `agent-context-*` workflows on the
+> ADP-managed track). It provisions context-mcp, ingestion, Neptune/GraphRAG,
+> and the MCP verbs (search/understand/impact/browse/secure/…). It has its own
+> post-deploy activation steps (image build, migrations, vuln-scan cron, Neptune
+> wiring) — see the agent-context module docs.
+
+> **ADP-managed (pipeline) equivalent.** The same Phases 1–10 can be run as
+> GitHub Actions workflows (`platform-infra-apply.yml`, `gateway-infra-apply.yml`,
+> `gateway-deploy.yml`, `github-auth-broker-deploy.yml`, `webhook-ingress-deploy.yml`)
+> instead of the local scripts above — that's the per-deploy-instance runbook
+> (e.g. issue #1320). Same phase sequence, different execution mechanism; pick one
+> track per deploy, don't interleave.
+
+**`deploy-all.sh` shortcut (⚠️ unverified here):** chains bootstrap → preflight →
+platform infra → gateway infra → backend build → k8s deploy → frontend (incl. the
+two-pass ALB apply), i.e. Phases 1–6b. It does NOT do 6c/6d/7 or the human steps
+8/9 — run those stage-by-stage as above.
 
 **Verify when done:**
 ```bash

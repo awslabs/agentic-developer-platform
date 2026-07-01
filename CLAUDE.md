@@ -91,7 +91,9 @@ behaviors that still apply on top of that doc:
    Note: a committed copy from a fresh clone is NOT a record of your deploy —
    verify against real AWS state, don't trust its statuses.
 3. **Keep the user informed** between phases with brief status; only stop for
-   genuine input (AWS account choice, the GitHub App browser steps in Phase 8).
+   genuine input (AWS account choice, Bedrock model access in the console, and
+   the GitHub App browser install — the two human steps near the end; see the
+   phase numbering in deploy-quickstart.md).
 4. **The "placeholder artifact" rule:** Terraform ships placeholders for things a
    separate push-triggered CI workflow normally publishes (broker Lambda code,
    agent-runtime image, webhook Lambda zip, the ALB-gated API GW body). A fresh
