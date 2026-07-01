@@ -84,6 +84,9 @@ def download_sbom(s3_client, bucket: str, key: str, dest_dir: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+_FIELD_LENGTH_WARN_THRESHOLD = 1024  # Log a warning if fields exceed this length
+
+
 def upsert_vulnerabilities(conn, findings: list) -> int:
     """Upsert normalized vulnerability findings into the vulnerabilities table.
 
@@ -115,6 +118,20 @@ def upsert_vulnerabilities(conn, findings: list) -> int:
             ecosystem = f.package_ecosystem or "unknown"
             pkg = f"pkg:{ecosystem}/{f.package_name}" if f.package_name else f.cve_id
 
+            # Belt-and-suspenders: warn on unusually long field values
+            affected = f.affected_versions or "all"
+            safe = f.fixed_version
+            if len(pkg) > _FIELD_LENGTH_WARN_THRESHOLD:
+                log.warning("Long package value (%d chars) for %s", len(pkg), f.cve_id)
+            if len(affected) > _FIELD_LENGTH_WARN_THRESHOLD:
+                log.warning(
+                    "Long affected_versions value (%d chars) for %s",
+                    len(affected),
+                    f.cve_id,
+                )
+            if safe and len(safe) > _FIELD_LENGTH_WARN_THRESHOLD:
+                log.warning("Long safe_version value (%d chars) for %s", len(safe), f.cve_id)
+
             details = json.dumps(
                 {
                     "aliases": f.aliases,
@@ -132,8 +149,8 @@ def upsert_vulnerabilities(conn, findings: list) -> int:
                     str(uuid.uuid4()),
                     f.cve_id,
                     pkg,
-                    f.affected_versions or "all",
-                    f.fixed_version,
+                    affected,
+                    safe,
                     f.severity or "UNKNOWN",
                     details,
                     f.detected_at or datetime.now(timezone.utc),
