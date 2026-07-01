@@ -111,7 +111,12 @@ runs:
 
         # Cross-account assume already populated AWS_* into env (via the
         # helper) — surface them to subsequent steps too.
+        # Issue #2566: mask credentials BEFORE writing to GITHUB_ENV so the
+        # runner redacts them from all subsequent log output.
         if [ -n "${ADP_CUSTOMER_ACCOUNT_ID:-}" ] && [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
+          echo "::add-mask::${AWS_ACCESS_KEY_ID}"
+          echo "::add-mask::${AWS_SECRET_ACCESS_KEY}"
+          echo "::add-mask::${AWS_SESSION_TOKEN}"
           {
             echo "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}"
             echo "AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}"
