@@ -669,13 +669,43 @@ stack (incl. `warm-pool.tf` balloon Deployment + image-prepull DaemonSet for
 `adp-agents`; `agent-warm-pool` + `agent-image-prepull` READY. Smoke: unsigned
 `POST /dev/github` → 401 (HMAC reject = path live).
 
-## Phase 8 — Bedrock model access ⚠️ HUMAN STEP (no CLI)
+## Phase 8 — Bedrock model access ⚠️ CONDITIONAL (has a CLI path)
 
-Enable the agent model (e.g. Claude Opus) in the **Bedrock console → Model
-access** of the target account (performs the AWS Marketplace *Subscribe* — no
-CLI path). Until enabled, the agent hangs silently after "Session initialized"
-(gateway returns an empty 200 `text/event-stream`). Verify with a
-`bedrock-runtime invoke-model` once the user confirms.
+The agent model must be invokable in the target account. **For the default
+model this usually needs NO action** — the `us.` cross-region inference profiles
+for Sonnet 4.6 / Opus 4.6 / Haiku 4.5 are invokable out-of-the-box on tested
+accounts (verified on 261421447505). The old "no CLI, console-only" note is
+outdated.
+
+**1. Check first** (don't assume it's blocked):
+```bash
+aws bedrock-runtime invoke-model --model-id us.anthropic.claude-sonnet-4-6 \
+  --body '{"anthropic_version":"bedrock-2023-05-31","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}' \
+  --cli-binary-format raw-in-base64-out /dev/stdout
+```
+A real JSON message = access is live → **skip the rest of this phase.** If the
+default model already works you are done here.
+
+**2. If a chosen model returns `AccessDeniedException` — enable it via API**
+(the programmatic equivalent of the console *Subscribe*, no browser needed):
+```bash
+OFFER=$(aws bedrock list-foundation-model-agreement-offers \
+  --model-id <anthropic.claude-...> --query 'offers[0].offerToken' --output text)
+aws bedrock create-foundation-model-agreement \
+  --model-id <anthropic.claude-...> --offer-token "$OFFER"
+# agreement goes NOT_AVAILABLE → PENDING → AVAILABLE; the invoke entitlement can
+# take several minutes to propagate after that. Re-test invoke until it succeeds.
+```
+
+**3. Blocked cases that DO need a human:**
+- `AccessDeniedException: ... private marketplace eligibility` → the model is not
+  on the account's **AWS Private Marketplace** allow-list. A Private Marketplace
+  admin (org/management account) must add it first; then step 2 works.
+- If the agreement shows `AVAILABLE` but invoke still 403s well past ~20 min, the
+  runtime entitlement is stuck → AWS support case.
+
+Until the model is invokable, the agent hangs silently after "Session
+initialized" (gateway returns an empty 200 `text/event-stream`).
 
 ## Phase 9 — GitHub App ⚠️ HUMAN browser step
 
