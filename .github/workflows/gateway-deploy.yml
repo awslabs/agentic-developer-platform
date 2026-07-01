@@ -89,6 +89,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.backend == 'true'
     # Runner already has AWS creds via IRSA (adp-dev-agent-runner-role)
+    permissions:
+      contents: read
+      actions: write  # Required by "Trigger gateway-infra re-apply" step (gh workflow run)
 
     steps:
       - uses: actions/checkout@v4

@@ -168,6 +168,19 @@ resource "aws_iam_policy" "lambda_secrets" {
             "secretsmanager:TagResource"
           ]
           Resource = "arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:adp/${var.environment}/tenants/*"
+        },
+        {
+          # Issue #2567: The webhook secret, GitHub App ID, and GitHub App key
+          # are encrypted with aws_kms_key.secrets (CMK). Without kms:Decrypt
+          # on this key, GetSecretValue returns AccessDeniedException even though
+          # the secretsmanager:GetSecretValue permission is granted above.
+          Sid    = "SecretsKMSDecrypt"
+          Effect = "Allow"
+          Action = [
+            "kms:Decrypt",
+            "kms:DescribeKey"
+          ]
+          Resource = aws_kms_key.secrets.arn
         }
       ],
       var.internal_api_key_arn != "" ? [
