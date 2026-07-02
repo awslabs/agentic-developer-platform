@@ -535,6 +535,84 @@ class TestRegisterAppStartService:
                 )
             assert exc_info.value.status_code == 400
 
+    @pytest.mark.asyncio
+    async def test_empty_webhook_url_raises_422(self):
+        """Issue #2674: missing webhook endpoint raises 422, not a blank manifest."""
+        from fastapi import HTTPException
+
+        from src.admin.connections.service import register_app_start
+
+        mock_db = AsyncMock()
+
+        with (
+            patch(
+                "src.admin.connections.service._check_existing_app_secret",
+                return_value=None,
+            ),
+            patch.dict("os.environ", {"WEBHOOK_URL": ""}, clear=False),
+            patch("boto3.client") as mock_boto,
+        ):
+            # Simulate SSM ParameterNotFound → webhook_url stays empty
+            mock_ssm = MagicMock()
+            mock_ssm.get_parameter.side_effect = Exception("ParameterNotFound")
+            mock_boto.return_value = mock_ssm
+
+            with pytest.raises(HTTPException) as exc_info:
+                await register_app_start(
+                    owner_type="org",
+                    org="test-org",
+                    cognito_sub="sub-123",
+                    user_id="user-001",
+                    db=mock_db,
+                )
+
+            assert exc_info.value.status_code == 422
+            assert "webhook endpoint not configured" in exc_info.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_reads_correct_ssm_param_name(self):
+        """Issue #2674: register_app_start reads /adp/<env>/webhook-ingress/endpoint."""
+        from src.admin.connections.service import register_app_start
+
+        mock_db = AsyncMock()
+
+        with (
+            patch(
+                "src.admin.connections.service._check_existing_app_secret",
+                return_value=None,
+            ),
+            patch(
+                "src.admin.connections.service.store_nonce",
+                new=AsyncMock(),
+            ),
+            patch.dict(
+                "os.environ",
+                {"WEBHOOK_URL": "", "ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"},
+                clear=False,
+            ),
+            patch("boto3.client") as mock_boto,
+            patch(
+                "src.admin.connections.service.get_settings",
+                return_value=MagicMock(gateway_base_url="https://gw.test.com", github_app_slug=""),
+            ),
+        ):
+            mock_ssm = MagicMock()
+            mock_ssm.get_parameter.return_value = {"Parameter": {"Value": "https://webhook.test.com/github"}}
+            mock_boto.return_value = mock_ssm
+
+            result = await register_app_start(
+                owner_type="org",
+                org="my-org",
+                cognito_sub="sub-123",
+                user_id="user-001",
+                db=mock_db,
+            )
+
+            # Verify correct SSM parameter name was used (first call is webhook)
+            mock_ssm.get_parameter.assert_any_call(Name="/adp/dev/webhook-ingress/endpoint")
+            assert result.status == "ready"
+            assert result.manifest["hook_attributes"]["url"] == "https://webhook.test.com/github"
+
 
 class TestRegisterAppCallbackService:
     """Tests for the register_app_callback service function."""

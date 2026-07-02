@@ -232,9 +232,9 @@ if [ -z "$WEBHOOK_URL" ]; then
   info "Detecting webhook URL from Terraform state..."
   WEBHOOK_URL=$(cd "$(dirname "$0")/../infra" && terraform output -raw webhook_url 2>/dev/null || echo "")
   if [ -z "$WEBHOOK_URL" ]; then
-    # Fallback: try SSM parameter
+    # Fallback: try SSM parameter (matches Terraform-created param in outputs.tf)
     WEBHOOK_URL=$(aws ssm get-parameter \
-      --name "/adp/${ENVIRONMENT}/webhook-ingress/webhook-url" \
+      --name "/adp/${ENVIRONMENT}/webhook-ingress/endpoint" \
       --query "Parameter.Value" --output text \
       --region "$AWS_REGION" 2>/dev/null || echo "")
   fi

@@ -824,18 +824,31 @@ async def register_app_start(
     # Determine the webhook URL from SSM or env
     webhook_url = os.environ.get("WEBHOOK_URL", "")
     if not webhook_url:
-        # Try SSM parameter (same pattern as register-github-app.sh)
+        # Try SSM parameter — matches Terraform-created param name in
+        # modules/agent-factory/webhook-ingress/infra/outputs.tf
         try:
             import boto3
 
             env = _get_environment()
             region = os.environ.get("AWS_REGION", "us-east-1")
             ssm = boto3.client("ssm", region_name=region)
-            param = ssm.get_parameter(Name=f"/adp/{env}/webhook-ingress/webhook-url")
+            param = ssm.get_parameter(Name=f"/adp/{env}/webhook-ingress/endpoint")
             webhook_url = param["Parameter"]["Value"]
         except Exception as exc:
             logger.warning("Could not resolve webhook URL from SSM: %s", exc)
             webhook_url = ""
+
+    # Issue #2674: fail fast with a clear error instead of building a manifest
+    # with a blank hook_attributes.url that GitHub rejects opaquely.
+    if not webhook_url:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Webhook endpoint not configured. Deploy webhook-ingress first "
+                "(Terraform creates SSM /adp/<env>/webhook-ingress/endpoint), "
+                "or set the WEBHOOK_URL environment variable."
+            ),
+        )
 
     # Build callback URL — the gateway endpoint that handles the code exchange
     settings = get_settings()
