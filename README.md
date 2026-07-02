@@ -291,4 +291,4 @@ adp/
 
 ## License
 
-Private — Internal use only. **An open-source license is coming** (see "Where this is heading" above); until it lands, treat this repo as internal.
+This project is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
