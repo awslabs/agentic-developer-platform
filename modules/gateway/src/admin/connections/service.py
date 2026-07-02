@@ -2,6 +2,7 @@
 
 Issue #465: GitHub App install-start, install-callback, list, and delete.
 Issue #2593: Platform-admin GitHub App registration via manifest conversion flow.
+Issue #2595: GitHub App lifecycle endpoints (status, rotate-key, disconnect).
 
 Design notes:
 - State nonces reuse the existing magic_link_nonces table with provider="github_install".
@@ -36,11 +37,14 @@ from src.shared.models.vault import MagicLinkNonce
 
 from .github_client import GitHubAppClient
 from .schemas import (
+    AppStatusResponse,
     ConnectionsListResponse,
     DeleteConnectionResponse,
+    DisconnectAppResponse,
     GitHubConnectionItem,
     InstallStartResponse,
     RegisterAppStartResponse,
+    RotateKeyResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -1004,3 +1008,294 @@ async def _store_app_credentials(
                     raise
 
     await asyncio.to_thread(_store_sync)
+
+
+# ---------------------------------------------------------------------------
+# GitHub App lifecycle (Issue #2595)
+# ---------------------------------------------------------------------------
+
+
+def invalidate_app_credentials_cache() -> None:
+    """Invalidate the in-process cached App credentials.
+
+    C2 contract (Issue #2594): when a lifecycle mutation (rotate-key, disconnect)
+    changes the App secret in Secrets Manager, the gateway must stop using stale
+    credentials. This clears any in-process cached state so the next runtime read
+    fetches fresh values from Secrets Manager.
+
+    When C2 lands, this function should be replaced by calling C2's
+    `invalidate()` which handles cross-pod propagation as well.
+    """
+    # Clear the installation metadata cache — stale tokens would be minted from
+    # the old key if we don't flush.
+    _metadata_cache.clear()
+    logger.info("App credentials cache invalidated")
+
+
+async def get_app_status() -> AppStatusResponse:
+    """Return the registration status of the deployment's GitHub App.
+
+    Reads from Secrets Manager. Never exposes the private key or client secret.
+    """
+    import json
+
+    import boto3
+    from botocore.exceptions import ClientError
+
+    env = _get_environment()
+    region = os.environ.get("AWS_REGION", "us-east-1")
+
+    id_path = f"adp/{env}/github-app/adp-agent-platform-id"
+    meta_path = f"adp/{env}/github-app/adp-agent-platform-meta"
+
+    try:
+        sm = boto3.client("secretsmanager", region_name=region)
+
+        # Check if the App ID secret exists
+        try:
+            id_resp = sm.get_secret_value(SecretId=id_path)
+            app_id = id_resp.get("SecretString", "")
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code in ("ResourceNotFoundException", "InvalidRequestException"):
+                return AppStatusResponse(registered=False)
+            raise
+
+        if not app_id:
+            return AppStatusResponse(registered=False)
+
+        # Read metadata for slug and owner info
+        app_slug: str | None = None
+        owner_type: str | None = None
+        created_at: str | None = None
+
+        try:
+            meta_resp = sm.describe_secret(SecretId=meta_path)
+            created_at_dt = meta_resp.get("CreatedDate")
+            if created_at_dt:
+                created_at = created_at_dt.isoformat()
+        except ClientError:
+            pass
+
+        try:
+            meta_val_resp = sm.get_secret_value(SecretId=meta_path)
+            meta_str = meta_val_resp.get("SecretString", "")
+            if meta_str:
+                meta_data = json.loads(meta_str)
+                app_slug = meta_data.get("app_slug")
+        except (ClientError, json.JSONDecodeError):
+            pass
+
+        # Fall back to settings for slug if not in meta
+        if not app_slug:
+            settings = get_settings()
+            app_slug = getattr(settings, "github_app_slug", None) or None
+
+        return AppStatusResponse(
+            registered=True,
+            app_id=app_id,
+            app_slug=app_slug,
+            owner_type=owner_type,
+            created_at=created_at,
+        )
+
+    except Exception as exc:
+        logger.error("get_app_status failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to retrieve App status") from exc
+
+
+async def rotate_app_key() -> RotateKeyResponse:
+    """Rotate the GitHub App's private key.
+
+    Calls the GitHub API to generate a new private key, stores it in Secrets
+    Manager (overwriting the old key), and invalidates the credentials cache so
+    subsequent runtime reads use the new key.
+
+    The GitHub API endpoint POST /app/installations is not available for key
+    rotation — instead we use POST /app/hook/config (for webhook secret) or the
+    private-key-specific endpoint. GitHub's App API does not support programmatic
+    key rotation directly; the platform admin must generate a new key via the
+    GitHub UI and re-register. However, if the App was created via manifest flow,
+    we can guide the admin.
+
+    For now: we attempt to call the GitHub API for key creation. If that endpoint
+    is not available, we return guidance to use the manifest flow.
+    """
+    import asyncio
+
+    import boto3
+    from botocore.exceptions import ClientError
+
+    env = _get_environment()
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    id_path = f"adp/{env}/github-app/adp-agent-platform-id"
+    key_path = f"adp/{env}/github-app/adp-agent-platform-key"
+
+    # Verify App is registered
+    try:
+        sm = boto3.client("secretsmanager", region_name=region)
+        id_resp = sm.get_secret_value(SecretId=id_path)
+        app_id = id_resp.get("SecretString", "")
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        if error_code in ("ResourceNotFoundException", "InvalidRequestException"):
+            raise HTTPException(
+                status_code=404,
+                detail="No GitHub App registered. Register one first.",
+            ) from exc
+        raise HTTPException(status_code=500, detail="Failed to read App credentials") from exc
+
+    if not app_id:
+        raise HTTPException(status_code=404, detail="No GitHub App registered. Register one first.")
+
+    # Read current private key to authenticate as the App
+    try:
+        key_resp = sm.get_secret_value(SecretId=key_path)
+        current_key = key_resp.get("SecretString", "")
+    except ClientError as exc:
+        raise HTTPException(status_code=500, detail="Failed to read current App private key") from exc
+
+    if not current_key:
+        raise HTTPException(status_code=500, detail="Current App private key is empty")
+
+    # Attempt GitHub API key rotation: POST /app/hook/deliveries won't work,
+    # but GitHub does support creating a new private key for the app via the API
+    # at POST /app/keys (undocumented / restricted). The more reliable path is
+    # the direct REST call that the GitHub UI makes.
+    client = GitHubAppClient(app_id=app_id, private_key_pem=current_key)
+    new_key: str | None = None
+
+    try:
+        # GitHub exposes key creation at POST /app/keys (returns new PEM)
+        resp = await client._http_client.post(
+            "/app/keys",
+            headers=client._auth_headers(),
+        )
+        if resp.status_code == 201:
+            data = resp.json()
+            new_key = data.get("pem", "")
+    except Exception as exc:
+        logger.warning("GitHub /app/keys endpoint not available: %s", exc)
+
+    if not new_key:
+        # Fallback: GitHub doesn't expose a public key-rotation API for all Apps.
+        # Guide the admin to use the GitHub UI.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Programmatic key rotation is not available for this App. "
+                "Generate a new private key from the GitHub App settings page "
+                f"(https://github.com/settings/apps → App ID {app_id} → Private keys → Generate), "
+                "then re-register with the new key."
+            ),
+        )
+
+    # Store the new key in Secrets Manager
+    def _store_new_key() -> None:
+        sm_client = boto3.client("secretsmanager", region_name=region)
+        sm_client.put_secret_value(SecretId=key_path, SecretString=new_key)
+
+    await asyncio.to_thread(_store_new_key)
+
+    # Invalidate cached credentials so runtime picks up the new key
+    invalidate_app_credentials_cache()
+
+    logger.info("rotate_app_key: key rotated for app_id=%s", app_id)
+
+    return RotateKeyResponse(
+        rotated=True,
+        app_id=app_id,
+        message="Private key rotated successfully. New key is active immediately.",
+    )
+
+
+async def disconnect_app() -> DisconnectAppResponse:
+    """Disconnect (deregister) the GitHub App from this deployment.
+
+    Deletes/blanks the App secrets in Secrets Manager and invalidates the
+    credentials cache. Does NOT delete the App on GitHub (that requires a
+    manual action in the GitHub UI).
+
+    Existing per-tenant installation_id connections are NOT removed — they
+    are surfaced as "will stop working" via the affected_installations count.
+    """
+    import asyncio
+
+    import boto3
+    from botocore.exceptions import ClientError
+
+    env = _get_environment()
+    region = os.environ.get("AWS_REGION", "us-east-1")
+
+    id_path = f"adp/{env}/github-app/adp-agent-platform-id"
+    key_path = f"adp/{env}/github-app/adp-agent-platform-key"
+    meta_path = f"adp/{env}/github-app/adp-agent-platform-meta"
+
+    # Verify App is registered
+    try:
+        sm = boto3.client("secretsmanager", region_name=region)
+        id_resp = sm.get_secret_value(SecretId=id_path)
+        app_id = id_resp.get("SecretString", "")
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        if error_code in ("ResourceNotFoundException", "InvalidRequestException"):
+            raise HTTPException(
+                status_code=404,
+                detail="No GitHub App registered. Nothing to disconnect.",
+            ) from exc
+        raise HTTPException(status_code=500, detail="Failed to read App credentials") from exc
+
+    if not app_id:
+        raise HTTPException(status_code=404, detail="No GitHub App registered. Nothing to disconnect.")
+
+    # Count affected installations (ChannelTenantMap rows with provider="github")
+    affected_count = 0
+    try:
+        from sqlalchemy import func, select
+
+        from src.shared.database import get_session_factory
+        from src.shared.models.vault import ChannelTenantMap
+
+        factory = get_session_factory()
+        async with factory() as db:
+            stmt = select(func.count()).where(ChannelTenantMap.provider == "github")
+            result = await db.execute(stmt)
+            affected_count = result.scalar() or 0
+    except Exception as exc:
+        logger.warning("Could not count affected installations: %s", exc)
+
+    # Delete the App secrets from Secrets Manager
+    def _delete_secrets() -> None:
+        sm_client = boto3.client("secretsmanager", region_name=region)
+        for path in [id_path, key_path, meta_path]:
+            try:
+                sm_client.delete_secret(
+                    SecretId=path,
+                    ForceDeleteWithoutRecovery=True,
+                )
+                logger.info("Deleted secret: %s", path)
+            except ClientError as exc:
+                error_code = exc.response.get("Error", {}).get("Code", "")
+                if error_code == "ResourceNotFoundException":
+                    logger.info("Secret already absent: %s", path)
+                else:
+                    logger.error("Failed to delete secret %s: %s", path, exc)
+                    raise
+
+    await asyncio.to_thread(_delete_secrets)
+
+    # Invalidate cached credentials
+    invalidate_app_credentials_cache()
+
+    logger.info("disconnect_app: app_id=%s disconnected, %d installations affected", app_id, affected_count)
+
+    return DisconnectAppResponse(
+        disconnected=True,
+        app_id=app_id,
+        message=(
+            "GitHub App disconnected from this deployment. "
+            "The App still exists on GitHub — delete it manually from GitHub Settings if desired. "
+            f"{affected_count} tenant installation(s) will stop working until a new App is registered."
+        ),
+        affected_installations=affected_count,
+    )

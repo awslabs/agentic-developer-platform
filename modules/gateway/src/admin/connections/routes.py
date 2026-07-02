@@ -2,6 +2,7 @@
 
 Issue #465: GitHub App install + connection management.
 Issue #2593: Platform-admin GitHub App registration via manifest conversion flow.
+Issue #2595: GitHub App lifecycle endpoints (status, rotate-key, disconnect).
 
 Endpoints:
     POST   /admin/connections/github/install-start
@@ -10,6 +11,9 @@ Endpoints:
     DELETE /admin/connections/github/{installation_id}
     POST   /admin/connections/github/app/register-start    (platform_admin only)
     GET    /admin/connections/github/app/register-callback  (platform_admin via state nonce)
+    GET    /admin/connections/github/app/status             (platform_admin only)
+    POST   /admin/connections/github/app/rotate-key         (platform_admin only)
+    POST   /admin/connections/github/app/disconnect         (platform_admin only)
 """
 
 from __future__ import annotations
@@ -35,19 +39,25 @@ from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
 from .schemas import (
+    AppStatusResponse,
     ConnectionsListResponse,
     DeleteConnectionResponse,
+    DisconnectAppResponse,
     InstallStartResponse,
     RegisterAppStartRequest,
     RegisterAppStartResponse,
+    RotateKeyResponse,
 )
 from .service import (
     delete_connection,
+    disconnect_app,
+    get_app_status,
     install_callback,
     install_start,
     list_connections,
     register_app_callback,
     register_app_start,
+    rotate_app_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -302,3 +312,88 @@ async def github_app_register_callback(
     except Exception as exc:
         logger.error("register-app-callback unexpected error: %s", exc)
         return _redirect_error("internal_error", "An unexpected error occurred during App registration.")
+
+
+# ---------------------------------------------------------------------------
+# GitHub App lifecycle (Issue #2595: status, rotate-key, disconnect)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/github/app/status", response_model=AppStatusResponse)
+async def github_app_status(
+    current_user: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
+) -> AppStatusResponse:
+    """Return registration status of the deployment's GitHub App.
+
+    Platform-admin only. Never returns the private key or client secret.
+    """
+    try:
+        access.require_platform_admin(current_user)
+    except AccessDeniedError:
+        raise HTTPException(
+            status_code=403,
+            detail="Platform administrator privileges required",
+        )
+
+    try:
+        return await get_app_status()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("app-status failed for user=%s: %s", current_user.user_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to retrieve App status") from exc
+
+
+@router.post("/github/app/rotate-key", response_model=RotateKeyResponse)
+async def github_app_rotate_key(
+    current_user: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
+) -> RotateKeyResponse:
+    """Rotate the GitHub App's private key.
+
+    Platform-admin only. Generates a new key via the GitHub API, stores it in
+    Secrets Manager, and invalidates the credentials cache.
+    """
+    try:
+        access.require_platform_admin(current_user)
+    except AccessDeniedError:
+        raise HTTPException(
+            status_code=403,
+            detail="Platform administrator privileges required",
+        )
+
+    try:
+        return await rotate_app_key()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("app-rotate-key failed for user=%s: %s", current_user.user_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to rotate App key") from exc
+
+
+@router.post("/github/app/disconnect", response_model=DisconnectAppResponse)
+async def github_app_disconnect(
+    current_user: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
+) -> DisconnectAppResponse:
+    """Disconnect (deregister) the GitHub App from this deployment.
+
+    Platform-admin only. Deletes App secrets from Secrets Manager and
+    invalidates credentials cache. Does NOT delete the App on GitHub.
+    """
+    try:
+        access.require_platform_admin(current_user)
+    except AccessDeniedError:
+        raise HTTPException(
+            status_code=403,
+            detail="Platform administrator privileges required",
+        )
+
+    try:
+        return await disconnect_app()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("app-disconnect failed for user=%s: %s", current_user.user_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to disconnect App") from exc

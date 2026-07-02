@@ -2,6 +2,7 @@
 
 Issue #465: GitHub App install + connection management API.
 Issue #2593: Platform-admin GitHub App registration via manifest conversion flow.
+Issue #2595: GitHub App lifecycle endpoints (status, rotate-key, disconnect).
 """
 
 from __future__ import annotations
@@ -104,4 +105,45 @@ class RegisterAppStartResponse(BaseModel):
     app_id: str | None = Field(
         default=None,
         description="Existing App ID (only when status='already_registered').",
+    )
+
+
+# ---------------------------------------------------------------------------
+# App lifecycle (Issue #2595)
+# ---------------------------------------------------------------------------
+
+
+class AppStatusResponse(BaseModel):
+    """Response from GET /api/admin/connections/github/app/status."""
+
+    registered: bool = Field(..., description="Whether a GitHub App is registered for this deployment")
+    app_slug: str | None = Field(default=None, description="GitHub App slug (if registered)")
+    app_id: str | None = Field(default=None, description="GitHub App numeric ID (if registered)")
+    owner_type: str | None = Field(
+        default=None,
+        description="'Organization' or 'User' — where the App was created on GitHub (if known)",
+    )
+    created_at: str | None = Field(
+        default=None,
+        description="ISO-8601 timestamp when the App secret was last written (if available)",
+    )
+
+
+class RotateKeyResponse(BaseModel):
+    """Response from POST /api/admin/connections/github/app/rotate-key."""
+
+    rotated: bool = Field(..., description="Whether the key was successfully rotated")
+    app_id: str | None = Field(default=None, description="GitHub App ID the key was rotated for")
+    message: str = Field(..., description="Human-readable status message")
+
+
+class DisconnectAppResponse(BaseModel):
+    """Response from POST /api/admin/connections/github/app/disconnect."""
+
+    disconnected: bool = Field(..., description="Whether the App was successfully disconnected")
+    app_id: str | None = Field(default=None, description="The App ID that was disconnected")
+    message: str = Field(..., description="Human-readable status message")
+    affected_installations: int = Field(
+        default=0,
+        description="Number of tenant installations that will stop working",
     )
