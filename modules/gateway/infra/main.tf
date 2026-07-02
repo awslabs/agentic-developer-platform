@@ -426,6 +426,36 @@ resource "aws_iam_role_policy" "gateway_vault_secrets" {
   })
 }
 
+# Issue #2652: The github-app secrets (adp/<env>/github-app/*) are encrypted
+# with the webhook-ingress CMK (alias/adp-<env>-webhook-secrets). Without
+# kms:Decrypt on this key, secretsmanager:GetSecretValue returns
+# AccessDeniedException even though the SecretsManager permission is granted
+# above — same bug class as #2567 (webhook Lambda KMS gap).
+# Referenced by alias so key rotation doesn't break the policy.
+data "aws_kms_alias" "webhook_secrets" {
+  name = "alias/adp-${var.environment}-webhook-secrets"
+}
+
+resource "aws_iam_role_policy" "gateway_webhook_secrets_kms" {
+  name = "${local.name_prefix}-policy-gateway-webhook-secrets-kms"
+  role = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "WebhookSecretsKMSDecrypt"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource = [data.aws_kms_alias.webhook_secrets.target_key_arn]
+      }
+    ]
+  })
+}
+
 # Cross-account Bedrock pool assume role (if pool accounts configured)
 resource "aws_iam_role_policy" "gateway_cross_account" {
   count = length(var.pool_account_arns) > 0 ? 1 : 0
