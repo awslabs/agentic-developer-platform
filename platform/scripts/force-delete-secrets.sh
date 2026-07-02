@@ -8,10 +8,11 @@ set -euo pipefail
 # recovery window). This prevents re-deploy name collisions.
 #
 # SAFETY: Explicitly NEVER touches:
-#   - adp/gh-app-*     (GitHub App credentials — survive by design)
-#   - adp/*/gh-app-*   (GitHub App credentials — org-scoped pattern)
-#   - adp-terraform-*  (Terraform state backend)
-#   - rds!*            (AWS-managed RDS secrets — let AWS handle lifecycle)
+#   - adp/gh-app-*       (GitHub App credentials — survive by design)
+#   - adp/*/gh-app-*     (GitHub App credentials — org-scoped pattern)
+#   - adp/*/github-app/* (GitHub App credentials — webhook-ingress module)
+#   - adp-terraform-*    (Terraform state backend)
+#   - rds!*              (AWS-managed RDS secrets — let AWS handle lifecycle)
 #
 # Usage:
 #   ./force-delete-secrets.sh "bedrockgw-dev-" "adp/dev/gateway/test-"
@@ -29,7 +30,7 @@ for arg in "$@"; do
     --help)
       echo "Usage: $0 [--dry-run] <prefix> [prefix ...]"
       echo "Force-deletes Secrets Manager secrets matching the given prefixes."
-      echo "Protected prefixes (never deleted): adp/gh-app-*, adp/*/gh-app-*, adp-terraform-*, rds!*"
+      echo "Protected prefixes (never deleted): adp/gh-app-*, adp/*/gh-app-*, adp/*/github-app/*, adp-terraform-*, rds!*"
       exit 0
       ;;
     *) PREFIXES+=("$arg") ;;
@@ -49,8 +50,12 @@ PROTECTED=0
 # Protected patterns — these are NEVER deleted regardless of prefix match
 is_protected() {
   local name="$1"
-  # GitHub App credentials (any org pattern)
+  # GitHub App credentials (legacy org-scoped pattern)
   if [[ "$name" == adp/gh-app-* ]] || [[ "$name" == adp/*/gh-app-* ]]; then
+    return 0
+  fi
+  # GitHub App credentials (webhook-ingress module pattern)
+  if [[ "$name" == adp/*/github-app/* ]]; then
     return 0
   fi
   # Terraform state backend
