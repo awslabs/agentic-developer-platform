@@ -7,9 +7,25 @@ on:
         description: 'Type "webhook-ingress" to confirm destruction'
         required: true
         type: string
+      customer_account_id:
+        description: 'Customer-linked AWS account to destroy in (cross-account mode).'
+        required: false
+        default: ''
+      customer_aws_label:
+        description: 'Vaulted credential label (when customer_account_id is set).'
+        required: false
+        default: ''
+      customer_user_id:
+        description: 'ADP users.id UUID (when customer_account_id is set).'
+        required: false
+        default: ''
+      environment:
+        description: 'Deployment environment (dev/staging/prod).'
+        required: false
+        default: 'dev'
 
 concurrency:
-  group: webhook-ingress-deploy
+  group: webhook-ingress-deploy-${{ inputs.customer_account_id || 'default' }}
   cancel-in-progress: false
 
 env:
@@ -39,6 +55,11 @@ jobs:
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
+        with:
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
 
       - name: Install required CLI tools
         run: |
