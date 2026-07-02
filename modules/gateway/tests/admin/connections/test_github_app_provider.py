@@ -301,3 +301,58 @@ class TestInvalidateIntegration:
 
         slug = provider.get_slug()
         assert slug == "new-slug"
+
+
+class TestPlaceholderSentinel:
+    """Issue #2659: Placeholder secret values must not be treated as real credentials."""
+
+    @patch("src.admin.connections.github_app_provider.boto3")
+    def test_placeholder_app_id_falls_back_to_env(self, mock_boto3, monkeypatch):
+        """When SM returns the placeholder for app_id, provider treats it as absent."""
+        sm = _make_sm_client(app_id="PLACEHOLDER_SET_BY_REGISTER_SCRIPT")
+        mock_boto3.client.return_value = sm
+
+        monkeypatch.setenv("BG_GITHUB_APP_ID", "env-fallback-id")
+        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "env-fallback-key")
+        monkeypatch.setenv("BG_GITHUB_APP_SLUG", "env-fallback-slug")
+
+        provider = GitHubAppCredsProvider(ttl_seconds=60)
+        app_id, key = provider.get_credentials()
+
+        assert app_id == "env-fallback-id"
+        assert key == "env-fallback-key"
+
+    @patch("src.admin.connections.github_app_provider.boto3")
+    def test_placeholder_private_key_falls_back_to_env(self, mock_boto3, monkeypatch):
+        """When SM returns the placeholder for private_key, provider treats it as absent."""
+        sm = _make_sm_client(
+            app_id="12345",
+            private_key="PLACEHOLDER_SET_BY_REGISTER_SCRIPT",
+        )
+        mock_boto3.client.return_value = sm
+
+        monkeypatch.setenv("BG_GITHUB_APP_ID", "env-fallback-id")
+        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "env-fallback-key")
+        monkeypatch.setenv("BG_GITHUB_APP_SLUG", "env-fallback-slug")
+
+        provider = GitHubAppCredsProvider(ttl_seconds=60)
+        app_id, key = provider.get_credentials()
+
+        assert app_id == "env-fallback-id"
+        assert key == "env-fallback-key"
+
+    @patch("src.admin.connections.github_app_provider.boto3")
+    def test_placeholder_returns_empty_when_no_env_fallback(self, mock_boto3, monkeypatch):
+        """Placeholder in SM + no env vars → empty strings (caller handles unconfigured)."""
+        sm = _make_sm_client(app_id="PLACEHOLDER_SET_BY_REGISTER_SCRIPT")
+        mock_boto3.client.return_value = sm
+
+        monkeypatch.setenv("BG_GITHUB_APP_ID", "")
+        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "")
+        monkeypatch.setenv("BG_GITHUB_APP_SLUG", "")
+
+        provider = GitHubAppCredsProvider(ttl_seconds=60)
+        app_id, key = provider.get_credentials()
+
+        assert app_id == ""
+        assert key == ""

@@ -54,6 +54,17 @@ _PROVIDER_GITHUB_INSTALL = "github_install"
 _PROVIDER_GITHUB_APP_REGISTER = "github_app_register"
 _NONCE_TTL_SECONDS = 900  # 15 minutes
 
+# Terraform seeds secrets with this literal placeholder at deploy time
+# (modules/agent-factory/webhook-ingress/infra/secrets.tf:39,54).
+# It must never be treated as a real App credential.
+_PLACEHOLDER_SENTINEL = "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"
+
+
+def _is_placeholder(value: str) -> bool:
+    """Return True if the value is the deploy-time placeholder, not a real credential."""
+    return value.strip() == _PLACEHOLDER_SENTINEL
+
+
 # ---------------------------------------------------------------------------
 # Simple in-process cache for GitHub installation metadata
 # (avoids repeated API calls when the user refreshes the connections list)
@@ -652,7 +663,7 @@ def _check_existing_app_secret() -> tuple[str, str] | None:
         sm = boto3.client("secretsmanager", region_name=region)
         resp = sm.get_secret_value(SecretId=id_path)
         app_id = resp.get("SecretString", "")
-        if app_id and len(app_id) > 0:
+        if app_id and len(app_id) > 0 and not _is_placeholder(app_id):
             # Derive slug from settings if available, else from convention
             settings = get_settings()
             app_slug = settings.github_app_slug or "adp-agent-platform"
@@ -1212,7 +1223,7 @@ async def get_app_status() -> AppStatusResponse:
                 ) from exc
             raise
 
-        if not app_id:
+        if not app_id or _is_placeholder(app_id):
             return AppStatusResponse(registered=False)
 
         # Read metadata for slug and owner info
@@ -1298,7 +1309,7 @@ async def rotate_app_key() -> RotateKeyResponse:
             ) from exc
         raise HTTPException(status_code=500, detail="Failed to read App credentials") from exc
 
-    if not app_id:
+    if not app_id or _is_placeholder(app_id):
         raise HTTPException(status_code=404, detail="No GitHub App registered. Register one first.")
 
     # Read current private key to authenticate as the App
@@ -1308,7 +1319,7 @@ async def rotate_app_key() -> RotateKeyResponse:
     except ClientError as exc:
         raise HTTPException(status_code=500, detail="Failed to read current App private key") from exc
 
-    if not current_key:
+    if not current_key or _is_placeholder(current_key):
         raise HTTPException(status_code=500, detail="Current App private key is empty")
 
     # Attempt GitHub API key rotation: POST /app/hook/deliveries won't work,
@@ -1398,7 +1409,7 @@ async def disconnect_app() -> DisconnectAppResponse:
             ) from exc
         raise HTTPException(status_code=500, detail="Failed to read App credentials") from exc
 
-    if not app_id:
+    if not app_id or _is_placeholder(app_id):
         raise HTTPException(status_code=404, detail="No GitHub App registered. Nothing to disconnect.")
 
     # Count affected installations (ChannelTenantMap rows with provider="github")

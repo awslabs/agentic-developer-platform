@@ -16,11 +16,16 @@ from sqlalchemy.pool import StaticPool
 
 from src.admin.connections.github_client import GitHubAppClient
 from src.admin.connections.service import (
+    _PLACEHOLDER_SENTINEL,
     _PROVIDER_GITHUB_INSTALL,
+    _is_placeholder,
     delete_connection,
+    disconnect_app,
+    get_app_status,
     install_callback,
     install_start,
     list_connections,
+    rotate_app_key,
 )
 from src.admin.connections.tenant_secret import (
     _seed_secret_sync,
@@ -660,3 +665,156 @@ class TestSeedTenantGitHubAppSecret:
 
         assert result["success"] is True
         mock_seed.assert_called_once_with("org-test-001", 124731131)
+
+
+# ---------------------------------------------------------------------------
+# Placeholder sentinel handling (Issue #2659)
+# ---------------------------------------------------------------------------
+
+
+class TestPlaceholderSentinel:
+    """The deploy-time placeholder must never be treated as a real credential."""
+
+    def test_is_placeholder_exact_match(self):
+        assert _is_placeholder("PLACEHOLDER_SET_BY_REGISTER_SCRIPT") is True
+
+    def test_is_placeholder_with_whitespace(self):
+        assert _is_placeholder("  PLACEHOLDER_SET_BY_REGISTER_SCRIPT  ") is True
+
+    def test_is_placeholder_real_app_id(self):
+        assert _is_placeholder("12345678") is False
+
+    def test_is_placeholder_empty_string(self):
+        assert _is_placeholder("") is False
+
+    def test_sentinel_constant_matches_terraform(self):
+        # The constant must match the exact value from secrets.tf:39,54
+        assert _PLACEHOLDER_SENTINEL == "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"
+
+
+class TestGetAppStatusPlaceholder:
+    """get_app_status must return registered=False for placeholder secrets."""
+
+    async def test_returns_not_registered_when_app_id_is_placeholder(self, monkeypatch):
+        """The main bug fix: placeholder app_id → registered=False."""
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {"SecretString": "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"}
+
+        with patch("boto3.client", return_value=mock_sm):
+            result = await get_app_status()
+
+        assert result.registered is False
+        assert result.app_id is None
+
+    async def test_returns_registered_for_real_app_id(self, monkeypatch):
+        """A real app_id still yields registered=True."""
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_sm = MagicMock()
+
+        def _get_secret_value(SecretId):  # noqa: N803
+            if SecretId.endswith("-id"):
+                return {"SecretString": "12345678"}
+            if SecretId.endswith("-meta"):
+                return {"SecretString": '{"app_slug": "my-app"}'}
+            return {"SecretString": ""}
+
+        mock_sm.get_secret_value.side_effect = _get_secret_value
+        mock_sm.describe_secret.return_value = {}
+
+        with patch("boto3.client", return_value=mock_sm):
+            result = await get_app_status()
+
+        assert result.registered is True
+        assert result.app_id == "12345678"
+
+    async def test_returns_not_registered_when_app_id_empty(self, monkeypatch):
+        """Empty app_id still yields registered=False (pre-existing behavior)."""
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {"SecretString": ""}
+
+        with patch("boto3.client", return_value=mock_sm):
+            result = await get_app_status()
+
+        assert result.registered is False
+
+
+class TestRotateAppKeyPlaceholder:
+    """rotate_app_key must reject the placeholder as not-registered."""
+
+    async def test_rejects_placeholder_app_id(self, monkeypatch):
+        """Rotating a placeholder secret should 404, not try to use it as a key."""
+        from fastapi import HTTPException
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {"SecretString": "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"}
+
+        with patch("boto3.client", return_value=mock_sm):
+            with pytest.raises(HTTPException) as exc_info:
+                await rotate_app_key()
+            assert exc_info.value.status_code == 404
+            assert "No GitHub App registered" in str(exc_info.value.detail)
+
+
+class TestDisconnectAppPlaceholder:
+    """disconnect_app must reject the placeholder as not-registered."""
+
+    async def test_rejects_placeholder_app_id(self, monkeypatch):
+        """Disconnecting a placeholder secret should 404."""
+        from fastapi import HTTPException
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {"SecretString": "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"}
+
+        with patch("boto3.client", return_value=mock_sm):
+            with pytest.raises(HTTPException) as exc_info:
+                await disconnect_app()
+            assert exc_info.value.status_code == 404
+            assert "No GitHub App registered" in str(exc_info.value.detail)
+
+
+class TestCheckExistingAppSecretPlaceholder:
+    """_check_existing_app_secret must return None for placeholder values."""
+
+    def test_placeholder_returns_none(self, monkeypatch):
+        from src.admin.connections.service import _check_existing_app_secret
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {"SecretString": "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"}
+
+        with patch("boto3.client", return_value=mock_sm):
+            result = _check_existing_app_secret()
+
+        assert result is None
+
+    def test_real_app_id_returns_tuple(self, monkeypatch):
+        from src.admin.connections.service import _check_existing_app_secret
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("BG_GITHUB_APP_SLUG", "my-app")
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {"SecretString": "12345678"}
+
+        with patch("boto3.client", return_value=mock_sm):
+            result = _check_existing_app_secret()
+
+        assert result is not None
+        assert result[0] == "12345678"

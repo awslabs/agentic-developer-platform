@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_TTL_SECONDS = 300  # 5 minutes
 
+# Terraform seeds secrets with this literal placeholder at deploy time
+# (modules/agent-factory/webhook-ingress/infra/secrets.tf:39,54).
+# It must never be treated as a real App credential.
+_PLACEHOLDER_SENTINEL = "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"
+
 
 @dataclass
 class _CachedCreds:
@@ -138,11 +143,11 @@ class GitHubAppCredsProvider:
             return None
 
         app_id = self._read_secret(sm, id_path)
-        if not app_id:
+        if not app_id or app_id.strip() == _PLACEHOLDER_SENTINEL:
             return None
 
         private_key = self._read_secret(sm, key_path)
-        if not private_key:
+        if not private_key or private_key.strip() == _PLACEHOLDER_SENTINEL:
             return None
 
         # Slug: try meta secret first, fall back to env var
