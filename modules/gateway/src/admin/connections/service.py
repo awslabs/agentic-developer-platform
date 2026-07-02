@@ -639,6 +639,8 @@ async def delete_connection(
 # GitHub App registration via manifest conversion (Issue #2593)
 # ---------------------------------------------------------------------------
 
+_APP_NAME_BASE = "adp-agent-platform"
+
 
 def _get_environment() -> str:
     """Return the deployment environment (dev/staging/prod)."""
@@ -664,9 +666,10 @@ def _check_existing_app_secret() -> tuple[str, str] | None:
         resp = sm.get_secret_value(SecretId=id_path)
         app_id = resp.get("SecretString", "")
         if app_id and len(app_id) > 0 and not _is_placeholder(app_id):
-            # Derive slug from settings if available, else from convention
+            # Derive slug from settings — no hardcoded fallback since App names
+            # are owner-prefixed and deployment-specific (#2677).
             settings = get_settings()
-            app_slug = settings.github_app_slug or "adp-agent-platform"
+            app_slug = settings.github_app_slug or _APP_NAME_BASE
             return (app_id, app_slug)
     except ClientError as exc:
         error_code = exc.response.get("Error", {}).get("Code", "")
@@ -678,11 +681,32 @@ def _check_existing_app_secret() -> tuple[str, str] | None:
     return None
 
 
+def _derive_app_name(*, owner: str | None, app_name: str | None = None) -> str:
+    """Derive a unique GitHub App name for the manifest.
+
+    GitHub App names are globally unique across ALL of GitHub. Mirrors the
+    approach in register-github-app.sh:302-303 which prefixes the org name.
+
+    Priority:
+    1. Explicit app_name from the caller (UI-editable field) — use as-is.
+    2. Owner-prefixed: "<owner>-adp-agent-platform" (e.g. "my-org-adp-agent-platform").
+    3. Bare base name if no owner context (shouldn't happen in practice).
+
+    Issue #2677: Fixes the hardcoded name collision on 2nd+ deployments.
+    """
+    if app_name:
+        return app_name
+    if owner:
+        return f"{owner}-{_APP_NAME_BASE}"
+    return _APP_NAME_BASE
+
+
 def _build_app_manifest(
     *,
     webhook_url: str,
     callback_url: str,
     oauth_callback_url: str = "",
+    app_name: str = _APP_NAME_BASE,
 ) -> dict[str, Any]:
     """Build the GitHub App manifest per the GitHub App Manifest spec.
 
@@ -694,10 +718,12 @@ def _build_app_manifest(
         oauth_callback_url: User-authorization OAuth callback URL. When set,
             the App can perform "Sign in with GitHub" directly — no separate
             OAuth App needed (#2607).
+        app_name: Globally unique GitHub App name. Defaults to the base name
+            but should be owner-prefixed for multi-deployment uniqueness (#2677).
     """
     manifest: dict[str, Any] = {
-        "name": "adp-agent-platform",
-        "url": "https://github.com/apps/adp-agent-platform",
+        "name": app_name,
+        "url": f"https://github.com/apps/{app_name}",
         "hook_attributes": {
             "url": webhook_url,
             "active": True,
@@ -734,6 +760,7 @@ async def register_app_start(
     *,
     owner_type: str,
     org: str | None,
+    app_name: str | None = None,
     cognito_sub: str,
     user_id: str,
     db: AsyncSession,
@@ -749,6 +776,8 @@ async def register_app_start(
     Args:
         owner_type: 'user' or 'org' — where to create the App on GitHub.
         org:        GitHub org login (required when owner_type='org').
+        app_name:   Optional custom App name. When omitted, defaults to
+                    '<owner>-adp-agent-platform' for global uniqueness (#2677).
         cognito_sub: Caller's Cognito subject (for nonce).
         user_id:    Caller's internal user ID (for nonce).
         db:         Database session.
@@ -779,6 +808,12 @@ async def register_app_start(
             status_code=400,
             detail="org is required when owner_type='org'",
         )
+
+    # Issue #2677: Derive a globally unique App name.
+    # GitHub App names are unique across ALL of GitHub. Mirror the CLI script
+    # (register-github-app.sh:302-303) which uses org-prefixed names.
+    owner = org if owner_type == "org" else None
+    resolved_app_name = _derive_app_name(owner=owner, app_name=app_name)
 
     # Build the POST URL based on owner_type
     if owner_type == "user":
@@ -829,6 +864,7 @@ async def register_app_start(
         webhook_url=webhook_url,
         callback_url=callback_url,
         oauth_callback_url=oauth_callback_url,
+        app_name=resolved_app_name,
     )
 
     # Generate state nonce (reuse magic_link_nonces table)
@@ -859,6 +895,7 @@ async def register_app_start(
         manifest=manifest,
         post_url=post_url,
         state=jti,
+        suggested_app_name=resolved_app_name,
     )
 
 

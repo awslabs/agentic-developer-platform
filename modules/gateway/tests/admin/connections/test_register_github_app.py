@@ -377,7 +377,7 @@ class TestRegisterAppStartService:
 
     @pytest.mark.asyncio
     async def test_generates_manifest_when_no_existing_app(self):
-        """register_app_start generates manifest if no existing App."""
+        """register_app_start generates manifest with org-prefixed name (#2677)."""
         from src.admin.connections.service import register_app_start
 
         mock_db = AsyncMock()
@@ -407,7 +407,9 @@ class TestRegisterAppStartService:
 
         assert result.status == "ready"
         assert result.manifest is not None
-        assert result.manifest["name"] == "adp-agent-platform"
+        # Issue #2677: name is org-prefixed for global uniqueness
+        assert result.manifest["name"] == "my-org-adp-agent-platform"
+        assert result.manifest["url"] == "https://github.com/apps/my-org-adp-agent-platform"
         assert result.manifest["hook_attributes"]["url"] == "https://webhook.test.com/github"
         assert result.manifest["redirect_url"] == "https://gw.test.com/api/admin/connections/github/app/register-callback"
         assert result.manifest["public"] is False
@@ -416,10 +418,46 @@ class TestRegisterAppStartService:
         assert "issues" in result.manifest["default_events"]
         assert result.post_url == "https://github.com/organizations/my-org/settings/apps/new"
         assert result.state is not None
+        assert result.suggested_app_name == "my-org-adp-agent-platform"
+
+    @pytest.mark.asyncio
+    async def test_custom_app_name_overrides_default(self):
+        """Explicit app_name in request overrides the org-prefixed default (#2677)."""
+        from src.admin.connections.service import register_app_start
+
+        mock_db = AsyncMock()
+
+        with (
+            patch(
+                "src.admin.connections.service._check_existing_app_secret",
+                return_value=None,
+            ),
+            patch(
+                "src.admin.connections.service.store_nonce",
+                new=AsyncMock(),
+            ),
+            patch.dict("os.environ", {"WEBHOOK_URL": "https://webhook.test.com/github"}),
+            patch(
+                "src.admin.connections.service.get_settings",
+                return_value=MagicMock(gateway_base_url="https://gw.test.com", github_app_slug=""),
+            ),
+        ):
+            result = await register_app_start(
+                owner_type="org",
+                org="my-org",
+                app_name="custom-app-name",
+                cognito_sub="sub-123",
+                user_id="user-001",
+                db=mock_db,
+            )
+
+        assert result.manifest["name"] == "custom-app-name"
+        assert result.manifest["url"] == "https://github.com/apps/custom-app-name"
+        assert result.suggested_app_name == "custom-app-name"
 
     @pytest.mark.asyncio
     async def test_user_owner_type_url(self):
-        """owner_type='user' produces the personal settings URL."""
+        """owner_type='user' produces the personal settings URL and base name (#2677)."""
         from src.admin.connections.service import register_app_start
 
         mock_db = AsyncMock()
@@ -448,6 +486,8 @@ class TestRegisterAppStartService:
             )
 
         assert result.post_url == "https://github.com/settings/apps/new"
+        # No org owner context → falls back to base name
+        assert result.manifest["name"] == "adp-agent-platform"
 
     @pytest.mark.asyncio
     async def test_invalid_owner_type_raises_400(self):
@@ -586,9 +626,11 @@ class TestManifestStructure:
         manifest = _build_app_manifest(
             webhook_url="https://webhook.example.com/github",
             callback_url="https://gw.example.com/api/admin/connections/github/app/register-callback",
+            app_name="test-org-adp-agent-platform",
         )
 
-        assert manifest["name"] == "adp-agent-platform"
+        assert manifest["name"] == "test-org-adp-agent-platform"
+        assert manifest["url"] == "https://github.com/apps/test-org-adp-agent-platform"
         assert manifest["hook_attributes"]["url"] == "https://webhook.example.com/github"
         assert manifest["hook_attributes"]["active"] is True
         assert manifest["redirect_url"] == "https://gw.example.com/api/admin/connections/github/app/register-callback"
@@ -648,12 +690,15 @@ class TestManifestStructure:
             webhook_url="https://webhook.example.com",
             callback_url="https://callback.example.com",
             oauth_callback_url=oauth_url,
+            app_name="my-org-adp-agent-platform",
         )
 
         assert manifest["callback_urls"] == [oauth_url]
         assert manifest["request_oauth_on_install"] is False
         # redirect_url (manifest conversion) must still be present
         assert manifest["redirect_url"] == "https://callback.example.com"
+        # App name must be the one passed in
+        assert manifest["name"] == "my-org-adp-agent-platform"
 
     def test_manifest_omits_callback_urls_when_no_oauth_url(self):
         """When oauth_callback_url is empty, manifest has no callback_urls field."""
@@ -994,3 +1039,74 @@ class TestUpdateBrokerLambdaEnv:
         assert updated_env["GITHUB_CLIENT_ID"] == "Iv1.new_id"
         # CALLBACK_URL is NOT overwritten (SSM failed, so keep old value)
         assert updated_env["CALLBACK_URL"] == "https://old.example.com/auth/github/callback"
+
+
+# ---------------------------------------------------------------------------
+# Issue #2677: App name uniqueness tests
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveAppName:
+    """Tests for _derive_app_name — globally unique name derivation."""
+
+    def test_explicit_app_name_used_as_is(self):
+        """Explicit app_name takes priority over owner-prefixed default."""
+        from src.admin.connections.service import _derive_app_name
+
+        result = _derive_app_name(owner="my-org", app_name="my-custom-app")
+        assert result == "my-custom-app"
+
+    def test_org_prefixed_when_no_explicit_name(self):
+        """Without app_name, uses '<owner>-adp-agent-platform'."""
+        from src.admin.connections.service import _derive_app_name
+
+        result = _derive_app_name(owner="aws-sophos-test", app_name=None)
+        assert result == "aws-sophos-test-adp-agent-platform"
+
+    def test_falls_back_to_base_when_no_owner(self):
+        """Without owner or app_name, falls back to base name."""
+        from src.admin.connections.service import _derive_app_name
+
+        result = _derive_app_name(owner=None, app_name=None)
+        assert result == "adp-agent-platform"
+
+    def test_explicit_name_wins_over_no_owner(self):
+        """Explicit app_name used even when owner is None."""
+        from src.admin.connections.service import _derive_app_name
+
+        result = _derive_app_name(owner=None, app_name="user-custom-app")
+        assert result == "user-custom-app"
+
+    def test_empty_string_app_name_treated_as_none(self):
+        """Empty string app_name falls through to owner-prefixed."""
+        from src.admin.connections.service import _derive_app_name
+
+        result = _derive_app_name(owner="acme-corp", app_name="")
+        assert result == "acme-corp-adp-agent-platform"
+
+
+class TestManifestAppName:
+    """Tests for _build_app_manifest app_name handling (#2677)."""
+
+    def test_default_app_name_is_base(self):
+        """Without app_name kwarg, manifest uses base name (backward compat)."""
+        from src.admin.connections.service import _build_app_manifest
+
+        manifest = _build_app_manifest(
+            webhook_url="https://webhook.example.com",
+            callback_url="https://callback.example.com",
+        )
+        assert manifest["name"] == "adp-agent-platform"
+        assert manifest["url"] == "https://github.com/apps/adp-agent-platform"
+
+    def test_custom_app_name_in_manifest(self):
+        """Custom app_name flows into manifest name and url fields."""
+        from src.admin.connections.service import _build_app_manifest
+
+        manifest = _build_app_manifest(
+            webhook_url="https://webhook.example.com",
+            callback_url="https://callback.example.com",
+            app_name="my-org-adp-agent-platform",
+        )
+        assert manifest["name"] == "my-org-adp-agent-platform"
+        assert manifest["url"] == "https://github.com/apps/my-org-adp-agent-platform"

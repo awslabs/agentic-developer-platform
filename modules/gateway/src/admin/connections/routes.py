@@ -258,6 +258,7 @@ async def github_app_register_start(
         return await register_app_start(
             owner_type=body.owner_type,
             org=body.org,
+            app_name=body.app_name,
             cognito_sub=current_user.user_id,
             user_id=current_user.user_id,
             db=db,

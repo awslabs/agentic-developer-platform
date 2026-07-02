@@ -77,6 +77,14 @@ class RegisterAppStartRequest(BaseModel):
         default=None,
         description="GitHub organization login (required when owner_type='org').",
     )
+    app_name: str | None = Field(
+        default=None,
+        description=(
+            "Optional custom GitHub App name. If omitted, defaults to "
+            "'<owner>-adp-agent-platform' (org-prefixed to avoid global name collisions). "
+            "GitHub App names are globally unique across all of GitHub."
+        ),
+    )
 
 
 class RegisterAppStartResponse(BaseModel):
@@ -97,6 +105,12 @@ class RegisterAppStartResponse(BaseModel):
     state: str | None = Field(
         default=None,
         description="CSRF state nonce (only when status='ready').",
+    )
+    suggested_app_name: str | None = Field(
+        default=None,
+        description=(
+            "The resolved App name used in the manifest (only when status='ready'). Useful for the frontend to display what name will be registered."
+        ),
     )
     app_slug: str | None = Field(
         default=None,
