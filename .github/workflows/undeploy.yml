@@ -1,0 +1,361 @@
+name: Undeploy (Full Teardown)
+
+on:
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: 'Type the target AWS account ID (12 digits) to confirm destruction.'
+        required: true
+        type: string
+      dry_run:
+        description: 'When true, runs terraform plan -destroy (report only, no destruction).'
+        required: false
+        type: boolean
+        default: false
+      skip_phases:
+        description: 'Comma-separated phases to skip (agent-context,webhook-ingress,agent-factory,gateway,platform).'
+        required: false
+        default: ''
+      include_bootstrap:
+        description: 'Also destroy the Terraform state backend (S3 + DynamoDB). IRREVERSIBLE.'
+        required: false
+        type: boolean
+        default: false
+      customer_account_id:
+        description: 'Customer-linked AWS account to destroy in (cross-account mode).'
+        required: false
+        default: ''
+      customer_aws_label:
+        description: 'Vaulted credential label (when customer_account_id is set).'
+        required: false
+        default: ''
+      customer_user_id:
+        description: 'ADP users.id UUID (when customer_account_id is set).'
+        required: false
+        default: ''
+      environment:
+        description: 'Deployment environment (dev/staging/prod).'
+        required: false
+        default: 'dev'
+
+concurrency:
+  group: undeploy-${{ inputs.customer_account_id || 'default' }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Phase 0: Guard — validate account_id matches resolved caller/customer
+  # ---------------------------------------------------------------------------
+  guard:
+    name: Guard (validate account_id)
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    outputs:
+      account_id: ${{ steps.validate.outputs.account_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+
+      - name: Validate account_id matches caller
+        id: validate
+        run: |
+          set -e
+          # Determine which account ID to validate against
+          if [ -n "${{ inputs.customer_account_id }}" ]; then
+            EXPECTED_ACCOUNT="${{ inputs.customer_account_id }}"
+            echo "Cross-account mode: validating against customer account"
+          else
+            EXPECTED_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+            echo "Single-account mode: validating against caller identity"
+          fi
+
+          INPUT_ACCOUNT="${{ inputs.account_id }}"
+
+          echo "Expected: $EXPECTED_ACCOUNT"
+          echo "Provided: $INPUT_ACCOUNT"
+
+          if [ "$INPUT_ACCOUNT" != "$EXPECTED_ACCOUNT" ]; then
+            echo "::error::account_id input ($INPUT_ACCOUNT) does not match target account ($EXPECTED_ACCOUNT). Aborting to prevent cross-account misfire."
+            exit 1
+          fi
+
+          echo "account_id=$EXPECTED_ACCOUNT" >> "$GITHUB_OUTPUT"
+          echo "Guard passed: account_id confirmed."
+
+  # ---------------------------------------------------------------------------
+  # Destroy — run undeploy phases sequentially via shared library
+  # ---------------------------------------------------------------------------
+  destroy:
+    name: Destroy Modules
+    needs: guard
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
+      - name: Configure kubectl
+        run: |
+          set -e
+          CLUSTER_NAME="adp-${ENVIRONMENT}-eks-cluster"
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "${{ env.AWS_REGION }}" 2>/dev/null || {
+            echo "WARNING: Could not configure kubectl. EKS cluster may not exist."
+          }
+
+      - name: Run undeploy phases
+        env:
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+          SKIP_PHASES: ${{ inputs.skip_phases }}
+        run: |
+          set -e
+          export ROOT_DIR="${GITHUB_WORKSPACE}"
+          export ENVIRONMENT="${{ env.ENVIRONMENT }}"
+          export AWS_REGION="${{ env.AWS_REGION }}"
+
+          # Source the shared phase library
+          source platform/scripts/undeploy-phases.sh
+
+          # Parse skip_phases CSV into an array
+          IFS=',' read -ra SKIPPED <<< "$SKIP_PHASES"
+
+          is_skipped() {
+            local phase="$1"
+            for s in "${SKIPPED[@]}"; do
+              # Trim whitespace
+              s=$(echo "$s" | xargs)
+              if [ "$s" = "$phase" ]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          FAILED=0
+
+          # --- Phase 1: Agent Context ---
+          if is_skipped "agent-context"; then
+            echo "::notice::Skipping phase: agent-context (user request)"
+          else
+            echo "::group::Phase 1/5: Agent Context"
+            if phase_agent_context; then
+              echo "::notice::Phase agent-context: complete"
+            else
+              echo "::error::Phase agent-context: FAILED"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          fi
+          [ $FAILED -ne 0 ] && exit 1
+
+          # --- Phase 2: Webhook Ingress ---
+          if is_skipped "webhook-ingress"; then
+            echo "::notice::Skipping phase: webhook-ingress (user request)"
+          else
+            echo "::group::Phase 2/5: Webhook Ingress"
+            if phase_webhook_ingress; then
+              echo "::notice::Phase webhook-ingress: complete"
+            else
+              echo "::error::Phase webhook-ingress: FAILED"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          fi
+          [ $FAILED -ne 0 ] && exit 1
+
+          # --- Phase 3: Agent Factory ---
+          if is_skipped "agent-factory"; then
+            echo "::notice::Skipping phase: agent-factory (user request)"
+          else
+            echo "::group::Phase 3/5: Agent Factory"
+            if phase_agent_factory; then
+              echo "::notice::Phase agent-factory: complete"
+            else
+              echo "::error::Phase agent-factory: FAILED"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          fi
+          [ $FAILED -ne 0 ] && exit 1
+
+          # --- Phase 4: Gateway ---
+          if is_skipped "gateway"; then
+            echo "::notice::Skipping phase: gateway (user request)"
+          else
+            echo "::group::Phase 4/5: Gateway"
+            if phase_gateway; then
+              echo "::notice::Phase gateway: complete"
+            else
+              echo "::error::Phase gateway: FAILED"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          fi
+          [ $FAILED -ne 0 ] && exit 1
+
+          # --- Phase 5: Platform ---
+          if is_skipped "platform"; then
+            echo "::notice::Skipping phase: platform (user request)"
+          else
+            echo "::group::Phase 5/5: Platform"
+            if phase_platform; then
+              echo "::notice::Phase platform: complete"
+            else
+              echo "::error::Phase platform: FAILED"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          fi
+
+          exit $FAILED
+
+      - name: Summary
+        if: always()
+        env:
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+          SKIP_PHASES: ${{ inputs.skip_phases }}
+        run: |
+          echo "## Undeploy Orchestrator" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Account**: ${{ needs.guard.outputs.account_id }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Environment**: ${{ env.ENVIRONMENT }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Dry run**: ${DRY_RUN}" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$SKIP_PHASES" ]; then
+            echo "- **Skipped phases**: ${SKIP_PHASES}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Destroy Order" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. agent-context" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. webhook-ingress" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. agent-factory" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. gateway" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. platform" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Note**: Terraform state backend is NOT destroyed unless \`include_bootstrap\` is enabled." >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Bootstrap destroy — opt-in, IRREVERSIBLE, runs only after all modules
+  # ---------------------------------------------------------------------------
+  bootstrap:
+    name: Destroy State Backend (opt-in)
+    needs: destroy
+    if: inputs.include_bootstrap == true
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+
+      - name: Install AWS CLI
+        run: |
+          set -e
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          aws --version
+
+      - name: Destroy Terraform state backend
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          ENVIRONMENT: ${{ env.ENVIRONMENT }}
+        run: |
+          set -e
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
+          LOCK_TABLE="adp-terraform-locks"
+
+          echo "Destroying state backend..."
+          echo "  Bucket: $STATE_BUCKET"
+          echo "  Table:  $LOCK_TABLE"
+
+          # Empty and delete the S3 bucket
+          if aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null; then
+            echo "Emptying state bucket..."
+            bash platform/scripts/empty-s3-buckets.sh "$STATE_BUCKET"
+            echo "Deleting state bucket..."
+            aws s3api delete-bucket --bucket "$STATE_BUCKET" --region "$AWS_REGION" || {
+              echo "::warning::Could not delete bucket $STATE_BUCKET. May need manual cleanup."
+            }
+          else
+            echo "State bucket $STATE_BUCKET does not exist. Skipping."
+          fi
+
+          # Delete DynamoDB lock table
+          if aws dynamodb describe-table --table-name "$LOCK_TABLE" --region "$AWS_REGION" > /dev/null 2>&1; then
+            echo "Deleting DynamoDB lock table..."
+            aws dynamodb delete-table --table-name "$LOCK_TABLE" --region "$AWS_REGION" > /dev/null || {
+              echo "::warning::Could not delete DynamoDB table $LOCK_TABLE."
+            }
+          else
+            echo "DynamoDB table $LOCK_TABLE does not exist. Skipping."
+          fi
+
+          echo "State backend destruction complete."
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Bootstrap Destroy" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Terraform state backend (S3 bucket + DynamoDB lock table) has been destroyed." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**To redeploy**, run \`platform/scripts/bootstrap.sh\` first." >> "$GITHUB_STEP_SUMMARY"
