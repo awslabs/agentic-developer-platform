@@ -671,12 +671,20 @@ def _build_app_manifest(
     *,
     webhook_url: str,
     callback_url: str,
+    oauth_callback_url: str = "",
 ) -> dict[str, Any]:
     """Build the GitHub App manifest per the GitHub App Manifest spec.
 
     See: https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest
+
+    Args:
+        webhook_url: Webhook delivery URL (hook_attributes.url).
+        callback_url: Manifest-conversion redirect URL (redirect_url).
+        oauth_callback_url: User-authorization OAuth callback URL. When set,
+            the App can perform "Sign in with GitHub" directly — no separate
+            OAuth App needed (#2607).
     """
-    return {
+    manifest: dict[str, Any] = {
         "name": "adp-agent-platform",
         "url": "https://github.com/apps/adp-agent-platform",
         "hook_attributes": {
@@ -701,6 +709,14 @@ def _build_app_manifest(
             "label",
         ],
     }
+
+    # Issue #2607: Enable user-authorization OAuth so the App can perform
+    # "Sign in with GitHub" (eliminates the separate OAuth App).
+    if oauth_callback_url:
+        manifest["callback_urls"] = [oauth_callback_url]
+        manifest["request_oauth_on_install"] = False
+
+    return manifest
 
 
 async def register_app_start(
@@ -780,10 +796,28 @@ async def register_app_start(
     base_url = settings.gateway_base_url or ""
     callback_url = f"{base_url}/api/admin/connections/github/app/register-callback"
 
+    # Issue #2607: Resolve the OAuth callback URL for the broker's login flow.
+    # The broker sits behind API Gateway at /auth/github/callback. Same SSM
+    # parameter that wire-github-app.sh uses.
+    oauth_callback_url = ""
+    try:
+        import boto3
+
+        env = _get_environment()
+        region = os.environ.get("AWS_REGION", "us-east-1")
+        ssm = boto3.client("ssm", region_name=region)
+        param = ssm.get_parameter(Name=f"/adp/{env}/gateway/apigw-invoke-url")
+        apigw_url = param["Parameter"]["Value"]
+        if apigw_url:
+            oauth_callback_url = f"{apigw_url}/auth/github/callback"
+    except Exception as exc:
+        logger.warning("Could not resolve OAuth callback URL from SSM: %s", exc)
+
     # Build the manifest
     manifest = _build_app_manifest(
         webhook_url=webhook_url,
         callback_url=callback_url,
+        oauth_callback_url=oauth_callback_url,
     )
 
     # Generate state nonce (reuse magic_link_nonces table)
@@ -923,6 +957,10 @@ async def register_app_callback(
         webhook_secret=webhook_secret,
     )
 
+    # Issue #2607: Update the broker Lambda's GITHUB_CLIENT_ID and CALLBACK_URL
+    # env vars so login works immediately without wire-github-app.sh.
+    await _update_broker_lambda_env(client_id=client_id)
+
     # Issue #2594: Invalidate the cached provider so subsequent requests use
     # the freshly-stored credentials without a pod restart.
     get_github_app_provider().invalidate()
@@ -937,6 +975,75 @@ async def register_app_callback(
     settings = get_settings()
     frontend_url = settings.gateway_base_url or ""
     return f"{frontend_url}/settings/connections?github_app=registered"
+
+
+async def _update_broker_lambda_env(*, client_id: str) -> None:
+    """Update the login broker Lambda's GITHUB_CLIENT_ID and CALLBACK_URL env vars.
+
+    Issue #2607: After App registration stores credentials in Secrets Manager,
+    the broker Lambda still needs its non-secret env vars updated so it can
+    build the OAuth authorize URL. This mirrors what wire-github-app.sh does
+    in steps 2b-2c.
+
+    Non-fatal: if the Lambda doesn't exist yet or the update fails, log a
+    warning. The broker will work once the env is set manually or on next deploy.
+    """
+    import asyncio
+
+    import boto3
+
+    env = _get_environment()
+    region = os.environ.get("AWS_REGION", "us-east-1")
+
+    def _update_sync() -> None:
+        lambda_client = boto3.client("lambda", region_name=region)
+        function_name = f"bedrockgw-{env}-github-auth-broker"
+
+        # Resolve the OAuth callback URL from SSM (same as wire-github-app.sh)
+        callback_url = ""
+        try:
+            ssm = boto3.client("ssm", region_name=region)
+            param = ssm.get_parameter(Name=f"/adp/{env}/gateway/apigw-invoke-url")
+            apigw_url = param["Parameter"]["Value"]
+            if apigw_url:
+                callback_url = f"{apigw_url}/auth/github/callback"
+        except Exception as exc:
+            logger.warning("Could not resolve broker callback URL from SSM: %s", exc)
+
+        try:
+            # Get current env vars
+            config = lambda_client.get_function_configuration(
+                FunctionName=function_name,
+            )
+            current_env = config.get("Environment", {}).get("Variables", {})
+
+            # Update the non-secret env vars
+            current_env["GITHUB_CLIENT_ID"] = client_id
+            if callback_url:
+                current_env["CALLBACK_URL"] = callback_url
+
+            lambda_client.update_function_configuration(
+                FunctionName=function_name,
+                Environment={"Variables": current_env},
+            )
+            logger.info(
+                "Updated broker Lambda env: GITHUB_CLIENT_ID=%s CALLBACK_URL=%s",
+                client_id[:8] + "..." if len(client_id) > 8 else client_id,
+                callback_url or "(unchanged)",
+            )
+        except lambda_client.exceptions.ResourceNotFoundException:
+            logger.warning(
+                "Broker Lambda %s not found — login env not updated. Run wire-github-app.sh after gateway-infra deploy.",
+                function_name,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not update broker Lambda env for %s: %s. Login will work after manual env update or next deploy.",
+                function_name,
+                exc,
+            )
+
+    await asyncio.to_thread(_update_sync)
 
 
 async def _store_app_credentials(
@@ -1009,6 +1116,37 @@ async def _store_app_credentials(
                 else:
                     logger.error("Failed to store secret %s: %s", path, exc)
                     raise
+
+        # Issue #2607: Write-through to the broker's OAuth secret so
+        # "Sign in with GitHub" works immediately after App registration
+        # without a separate wire-github-app.sh step.
+        if client_id and client_secret:
+            oauth_path = f"adp/{env}/cognito/github-oauth-credentials"
+            oauth_payload = json.dumps({"client_id": client_id, "client_secret": client_secret})
+            try:
+                sm.create_secret(
+                    Name=oauth_path,
+                    Description=f"GitHub OAuth credentials for login broker ({env})",
+                    SecretString=oauth_payload,
+                    Tags=[
+                        {"Key": "ManagedBy", "Value": "adp-gateway-register"},
+                        {"Key": "AppSlug", "Value": app_slug},
+                    ],
+                )
+                logger.info("Created broker OAuth secret: %s", oauth_path)
+            except ClientError as exc:
+                error_code = exc.response.get("Error", {}).get("Code", "")
+                if error_code == "ResourceExistsException":
+                    sm.put_secret_value(SecretId=oauth_path, SecretString=oauth_payload)
+                    logger.info("Updated broker OAuth secret: %s", oauth_path)
+                else:
+                    # Non-fatal: broker login won't work but App registration
+                    # itself succeeded. Log and continue.
+                    logger.warning(
+                        "Could not write broker OAuth secret %s: %s",
+                        oauth_path,
+                        exc,
+                    )
 
     await asyncio.to_thread(_store_sync)
 

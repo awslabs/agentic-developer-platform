@@ -549,6 +549,10 @@ class TestRegisterAppCallbackService:
                 new=AsyncMock(),
             ),
             patch(
+                "src.admin.connections.service._update_broker_lambda_env",
+                new=AsyncMock(),
+            ),
+            patch(
                 "src.admin.connections.service.get_settings",
                 return_value=MagicMock(gateway_base_url="https://gw.test.com"),
             ),
@@ -634,3 +638,359 @@ class TestManifestStructure:
         )
 
         assert manifest["hook_attributes"]["url"] == webhook
+
+    def test_manifest_includes_callback_urls_when_oauth_url_provided(self):
+        """Issue #2607: manifest includes callback_urls for user-authorization OAuth."""
+        from src.admin.connections.service import _build_app_manifest
+
+        oauth_url = "https://api.example.com/auth/github/callback"
+        manifest = _build_app_manifest(
+            webhook_url="https://webhook.example.com",
+            callback_url="https://callback.example.com",
+            oauth_callback_url=oauth_url,
+        )
+
+        assert manifest["callback_urls"] == [oauth_url]
+        assert manifest["request_oauth_on_install"] is False
+        # redirect_url (manifest conversion) must still be present
+        assert manifest["redirect_url"] == "https://callback.example.com"
+
+    def test_manifest_omits_callback_urls_when_no_oauth_url(self):
+        """When oauth_callback_url is empty, manifest has no callback_urls field."""
+        from src.admin.connections.service import _build_app_manifest
+
+        manifest = _build_app_manifest(
+            webhook_url="https://webhook.example.com",
+            callback_url="https://callback.example.com",
+            oauth_callback_url="",
+        )
+
+        assert "callback_urls" not in manifest
+        assert "request_oauth_on_install" not in manifest
+
+    def test_manifest_without_oauth_url_arg_omits_callback_urls(self):
+        """Default (no oauth_callback_url kwarg) omits callback_urls."""
+        from src.admin.connections.service import _build_app_manifest
+
+        manifest = _build_app_manifest(
+            webhook_url="https://webhook.example.com",
+            callback_url="https://callback.example.com",
+        )
+
+        assert "callback_urls" not in manifest
+        assert "request_oauth_on_install" not in manifest
+
+
+# ---------------------------------------------------------------------------
+# Issue #2607: Broker OAuth credential write-through tests
+# ---------------------------------------------------------------------------
+
+
+class TestBrokerOAuthWriteThrough:
+    """Tests for the write-through of OAuth creds to broker secret path."""
+
+    @pytest.mark.asyncio
+    async def test_store_credentials_writes_broker_oauth_secret(self):
+        """_store_app_credentials writes client_id/secret to broker's SM path."""
+        from src.admin.connections.service import _store_app_credentials
+
+        created_secrets = {}
+
+        class FakeSM:
+            def create_secret(self, **kwargs):
+                name = kwargs["Name"]
+                created_secrets[name] = kwargs["SecretString"]
+
+        with (
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
+            patch("boto3.client", return_value=FakeSM()),
+        ):
+            await _store_app_credentials(
+                app_id="123456",
+                app_slug="adp-agent-platform",
+                pem="-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
+                client_id="Iv1.abc123",
+                client_secret="s3cr3t_value",
+                webhook_secret="whsec_xyz",
+            )
+
+        # The broker's OAuth secret should be created
+        oauth_path = "adp/dev/cognito/github-oauth-credentials"
+        assert oauth_path in created_secrets
+        import json
+
+        oauth_data = json.loads(created_secrets[oauth_path])
+        assert oauth_data["client_id"] == "Iv1.abc123"
+        assert oauth_data["client_secret"] == "s3cr3t_value"
+
+    @pytest.mark.asyncio
+    async def test_store_credentials_skips_broker_secret_when_no_client_id(self):
+        """If client_id is empty, don't write the broker OAuth secret."""
+        from src.admin.connections.service import _store_app_credentials
+
+        created_secrets = {}
+
+        class FakeSM:
+            def create_secret(self, **kwargs):
+                name = kwargs["Name"]
+                created_secrets[name] = kwargs["SecretString"]
+
+        with (
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
+            patch("boto3.client", return_value=FakeSM()),
+        ):
+            await _store_app_credentials(
+                app_id="123456",
+                app_slug="adp-agent-platform",
+                pem="-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
+                client_id="",
+                client_secret="",
+                webhook_secret="whsec_xyz",
+            )
+
+        oauth_path = "adp/dev/cognito/github-oauth-credentials"
+        assert oauth_path not in created_secrets
+
+    @pytest.mark.asyncio
+    async def test_store_credentials_updates_existing_broker_secret(self):
+        """If broker OAuth secret already exists, update it (don't fail)."""
+        from botocore.exceptions import ClientError
+
+        from src.admin.connections.service import _store_app_credentials
+
+        put_calls = {}
+
+        class FakeSM:
+            def create_secret(self, **kwargs):
+                name = kwargs["Name"]
+                if "cognito/github-oauth-credentials" in name:
+                    raise ClientError(
+                        {"Error": {"Code": "ResourceExistsException", "Message": "exists"}},
+                        "CreateSecret",
+                    )
+                # Other secrets succeed
+
+            def put_secret_value(self, **kwargs):
+                put_calls[kwargs["SecretId"]] = kwargs["SecretString"]
+
+        with (
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
+            patch("boto3.client", return_value=FakeSM()),
+        ):
+            await _store_app_credentials(
+                app_id="123456",
+                app_slug="adp-agent-platform",
+                pem="-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
+                client_id="Iv1.abc123",
+                client_secret="new_secret",
+                webhook_secret="whsec_xyz",
+            )
+
+        oauth_path = "adp/dev/cognito/github-oauth-credentials"
+        assert oauth_path in put_calls
+        import json
+
+        oauth_data = json.loads(put_calls[oauth_path])
+        assert oauth_data["client_id"] == "Iv1.abc123"
+        assert oauth_data["client_secret"] == "new_secret"
+
+    @pytest.mark.asyncio
+    async def test_client_secret_never_logged_or_returned(self):
+        """client_secret must not appear in log output or return values."""
+        from src.admin.connections.service import register_app_callback
+
+        mock_db = AsyncMock()
+        mock_nonce = MagicMock()
+        mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
+        mock_nonce.consumed_at = None
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_nonce
+
+        mock_consume_result = MagicMock()
+        mock_consume_result.scalar_one_or_none.return_value = "consumed-jti"
+
+        call_count = [0]
+
+        async def mock_execute(stmt):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return mock_result
+            return mock_consume_result
+
+        mock_db.execute = mock_execute
+        mock_db.commit = AsyncMock()
+
+        github_response = {
+            "id": 99999,
+            "slug": "my-app",
+            "pem": "-----BEGIN RSA PRIVATE KEY-----\nKEY\n-----END RSA PRIVATE KEY-----",
+            "client_id": "Iv1.test_id",
+            "client_secret": "SUPER_SECRET_VALUE_MUST_NOT_LEAK",
+            "webhook_secret": "whsec_test",
+        }
+
+        mock_http_response = MagicMock()
+        mock_http_response.status_code = 201
+        mock_http_response.json.return_value = github_response
+
+        with (
+            patch("httpx.AsyncClient") as mock_client_cls,
+            patch(
+                "src.admin.connections.service._store_app_credentials",
+                new=AsyncMock(),
+            ),
+            patch(
+                "src.admin.connections.service._update_broker_lambda_env",
+                new=AsyncMock(),
+            ),
+            patch(
+                "src.admin.connections.service.get_settings",
+                return_value=MagicMock(gateway_base_url="https://gw.test.com"),
+            ),
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_http_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
+            result = await register_app_callback(
+                code="test-code",
+                state="test-state",
+                db=mock_db,
+            )
+
+        assert "SUPER_SECRET_VALUE_MUST_NOT_LEAK" not in result
+        assert "PRIVATE KEY" not in result
+
+
+class TestUpdateBrokerLambdaEnv:
+    """Tests for _update_broker_lambda_env (Issue #2607)."""
+
+    @pytest.mark.asyncio
+    async def test_updates_lambda_env_vars(self):
+        """Updates GITHUB_CLIENT_ID and CALLBACK_URL on the broker Lambda."""
+        from src.admin.connections.service import _update_broker_lambda_env
+
+        updated_env = {}
+
+        class FakeLambda:
+            class exceptions:  # noqa: N801 — matches boto3 API shape
+                class ResourceNotFoundException(Exception):  # noqa: N818
+                    pass
+
+            def get_function_configuration(self, **kwargs):
+                assert kwargs["FunctionName"] == "bedrockgw-dev-github-auth-broker"
+                return {
+                    "Environment": {
+                        "Variables": {
+                            "GITHUB_CLIENT_ID": "",
+                            "CALLBACK_URL": "",
+                            "COGNITO_USER_POOL_ID": "us-east-1_Pool",
+                        }
+                    }
+                }
+
+            def update_function_configuration(self, **kwargs):
+                updated_env.update(kwargs["Environment"]["Variables"])
+
+        class FakeSSM:
+            def get_parameter(self, **kwargs):
+                return {"Parameter": {"Value": "https://api.example.com"}}
+
+        def fake_boto_client(service, **kwargs):
+            if service == "lambda":
+                return FakeLambda()
+            if service == "ssm":
+                return FakeSSM()
+            raise ValueError(f"Unexpected service: {service}")
+
+        with (
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
+            patch("boto3.client", side_effect=fake_boto_client),
+        ):
+            await _update_broker_lambda_env(client_id="Iv1.new_client")
+
+        assert updated_env["GITHUB_CLIENT_ID"] == "Iv1.new_client"
+        assert updated_env["CALLBACK_URL"] == "https://api.example.com/auth/github/callback"
+        # Existing vars preserved
+        assert updated_env["COGNITO_USER_POOL_ID"] == "us-east-1_Pool"
+
+    @pytest.mark.asyncio
+    async def test_handles_missing_lambda_gracefully(self):
+        """If broker Lambda doesn't exist, warn but don't raise."""
+        from src.admin.connections.service import _update_broker_lambda_env
+
+        class FakeLambda:
+            class exceptions:  # noqa: N801 — matches boto3 API shape
+                class ResourceNotFoundException(Exception):  # noqa: N818
+                    pass
+
+            def get_function_configuration(self, **kwargs):
+                raise self.exceptions.ResourceNotFoundException("not found")
+
+        class FakeSSM:
+            def get_parameter(self, **kwargs):
+                return {"Parameter": {"Value": "https://api.example.com"}}
+
+        def fake_boto_client(service, **kwargs):
+            if service == "lambda":
+                return FakeLambda()
+            if service == "ssm":
+                return FakeSSM()
+            raise ValueError(f"Unexpected service: {service}")
+
+        with (
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
+            patch("boto3.client", side_effect=fake_boto_client),
+        ):
+            # Should not raise
+            await _update_broker_lambda_env(client_id="Iv1.test")
+
+    @pytest.mark.asyncio
+    async def test_handles_ssm_failure_gracefully(self):
+        """If SSM param is missing, CALLBACK_URL is not updated."""
+        from src.admin.connections.service import _update_broker_lambda_env
+
+        updated_env = {}
+
+        class FakeLambda:
+            class exceptions:  # noqa: N801 — matches boto3 API shape
+                class ResourceNotFoundException(Exception):  # noqa: N818
+                    pass
+
+            def get_function_configuration(self, **kwargs):
+                return {
+                    "Environment": {
+                        "Variables": {
+                            "GITHUB_CLIENT_ID": "",
+                            "CALLBACK_URL": "https://old.example.com/auth/github/callback",
+                        }
+                    }
+                }
+
+            def update_function_configuration(self, **kwargs):
+                updated_env.update(kwargs["Environment"]["Variables"])
+
+        class FakeSSM:
+            def get_parameter(self, **kwargs):
+                raise Exception("Parameter not found")
+
+        def fake_boto_client(service, **kwargs):
+            if service == "lambda":
+                return FakeLambda()
+            if service == "ssm":
+                return FakeSSM()
+            raise ValueError(f"Unexpected service: {service}")
+
+        with (
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
+            patch("boto3.client", side_effect=fake_boto_client),
+        ):
+            await _update_broker_lambda_env(client_id="Iv1.new_id")
+
+        # GITHUB_CLIENT_ID is updated
+        assert updated_env["GITHUB_CLIENT_ID"] == "Iv1.new_id"
+        # CALLBACK_URL is NOT overwritten (SSM failed, so keep old value)
+        assert updated_env["CALLBACK_URL"] == "https://old.example.com/auth/github/callback"
