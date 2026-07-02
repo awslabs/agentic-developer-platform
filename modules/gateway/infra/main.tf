@@ -640,40 +640,9 @@ module "cloudwatch_dashboard" {
   pod_deployment_name        = "bedrockgateway"
 }
 
-# =============================================================================
-# Security Group Rules for EKS Auto Mode Cluster SG
-# =============================================================================
-# EKS Auto Mode creates its own cluster security group that is used by managed
-# node pools and pods. These rules allow pods to reach RDS and Redis.
-# =============================================================================
-
-# Allow EKS cluster SG to access RDS on port 5432
-resource "aws_security_group_rule" "eks_cluster_to_rds" {
-  description              = "Allow EKS Auto Mode pods to access RDS PostgreSQL"
-  type                     = "ingress"
-  from_port                = 5432
-  to_port                  = 5432
-  protocol                 = "tcp"
-  security_group_id        = local.rds_security_group_id
-  source_security_group_id = local.cluster_security_group_id
-
-  depends_on = [module.rds]
-}
-
-# Allow EKS cluster SG to access Redis on port 6379
-resource "aws_security_group_rule" "eks_cluster_to_redis" {
-  count = var.enable_redis ? 1 : 0
-
-  description              = "Allow EKS Auto Mode pods to access ElastiCache Redis"
-  type                     = "ingress"
-  from_port                = 6379
-  to_port                  = 6379
-  protocol                 = "tcp"
-  security_group_id        = local.redis_security_group_id
-  source_security_group_id = local.cluster_security_group_id
-
-  depends_on = [module.redis]
-}
+# NOTE: EKS→RDS (5432) and EKS→Redis (6379) security group rules are owned by
+# platform infra (platform/infra/main.tf) — do NOT duplicate them here.
+# See: https://github.com/aws-e/adp/issues/2590
 
 # =============================================================================
 # RDS Bootstrap Module (Issue #60)
@@ -703,7 +672,6 @@ module "rds_bootstrap" {
 
   depends_on = [
     module.rds,
-    aws_security_group_rule.eks_cluster_to_rds,
   ]
 }
 
