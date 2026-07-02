@@ -57,7 +57,8 @@ Same dependency order as the [self-managed deploy](./self-managed-deploy.md), bu
 | 6 | Gateway frontend (S3 + CloudFront SPA) | code ready (same Stage A–D) | #690 | |
 | 7 | Webhook ingress (API GW + Lambda + SQS + DynamoDB) | code ready (same Stage A–D) | #691 | |
 | 8 | Agent delivery (KEDA + ARC + WebSocket API + chat infra) | code ready (same Stage A–D) | #692 | |
-| 9 | Smoke test | _pending end-to-end verification_ | #693 | |
+| 9 | GitHub App (UI flow or CLI fallback) | _pending end-to-end verification_ | #693 | `platform_admin` (Phase 6d) opens Settings → Connections → "Set up GitHub App" (manifest flow). CLI fallback: `register-github-app.sh`. |
+| 10 | Smoke test | _pending end-to-end verification_ | | |
 
 ## What to expect: Phase 1 (Bootstrap)
 

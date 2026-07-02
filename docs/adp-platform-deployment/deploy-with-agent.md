@@ -42,11 +42,14 @@ aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
 ```
 
 **There is no upfront GitHub setup.** For the agent (webhook) path, GitHub is
-wired at the **END** (`register-github-app.sh`, Phase 8), after the infra it
-points at exists. Gateway-only needs no GitHub at all. (An older version of this
-file opened with a "Phase 0: GitHub setup" / `setup-org.sh` + 3 org-owned apps
-step — that was the legacy ARC onboarding track and is **superseded**; do not run
-it. ARC runners remain useful as a deterministic-pipeline *execution* model — see
+wired at the **END** (Phase 8b), after the infra it points at exists.
+Gateway-only needs no GitHub at all. The **primary path** is the UI flow:
+the Phase-6d `platform_admin` opens Settings → Connections → "Set up GitHub App"
+(manifest flow). The CLI fallback (`register-github-app.sh`) remains for
+headless environments. (An older version of this file opened with a "Phase 0:
+GitHub setup" / `setup-org.sh` + 3 org-owned apps step — that was the legacy ARC
+onboarding track and is **superseded**; do not run it. ARC runners remain useful
+as a deterministic-pipeline *execution* model — see
 `modules/agent-factory/SETUP-GUIDE.md` — but not as the deploy path.)
 
 ## The phases (follow deploy-quickstart.md for exact commands)
@@ -66,7 +69,7 @@ Each step is idempotent and re-runnable.
 | 6d | Seed the first admin (org/user/role + Cognito claims) | `modules/gateway/scripts/bootstrap-admin.sh` | Login |
 | 7 | Webhook agent stack + agent-runtime image (incl. warm pool + image-prepull) | `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh` | Agents |
 | 8a | **Bedrock model access — HUMAN STEP** (console, not CLI) | *(escalate to user — see below)* | Agents |
-| 8b | Create + wire the GitHub App | `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org>` | Agents |
+| 8b | Create + wire the GitHub App | **UI:** Settings → Connections → "Set up GitHub App" (as `platform_admin`). **CLI fallback:** `register-github-app.sh <org>` | Agents |
 
 > The webhook agent path (Phases 7–8) is **verified end-to-end** (account
 > `919157478356`): GitHub mention → webhook → SQS → KEDA → worker → gateway →
@@ -92,9 +95,11 @@ then continue once they confirm:
      --body '{"anthropic_version":"bedrock-2023-05-31","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}' \
      --cli-binary-format raw-in-base64-out /dev/stdout   # a real JSON message = enabled
    ```
-2. **GitHub App browser steps (Phase 8b).** `register-github-app.sh` and the
-   per-repo "Link GitHub" install involve a browser/OAuth flow. Run the script,
-   then hand the user the install URL.
+2. **GitHub App browser steps (Phase 8b).** The primary path is the UI: the
+   `platform_admin` opens Settings → Connections → "Set up GitHub App" (manifest
+   flow). For headless environments, fall back to `register-github-app.sh`. Both
+   involve a browser/OAuth flow. Hand the user the install URL afterward if the
+   App wasn't installed during the manifest flow.
 
 **Critical — the "placeholder artifact" rule.** `deploy-all.sh` chains Phases
 1–6 (incl. 6b) but **NOT 6c, 6d, 7, or 8.** Terraform ships *placeholders* for
@@ -212,7 +217,8 @@ Break silence ONLY when:
 - **Bedrock model access (Phase 8a)** — ask the user to enable the model in the
   console; you cannot. Don't proceed to summon an agent until they confirm (else
   it hangs silently).
-- The GitHub App browser steps in Phase 8b (`register-github-app.sh`).
+- The GitHub App browser steps in Phase 8b (UI flow: Settings → Connections →
+  "Set up GitHub App"; or CLI fallback `register-github-app.sh`).
 - A required CLI tool is missing at preflight.
 - A failure has retried twice without success — explain what failed, what you
   tried, and ask for guidance.

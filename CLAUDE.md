@@ -85,14 +85,15 @@ behaviors that still apply on top of that doc:
    `aws sts get-caller-identity` resolves to (via the active `AWS_PROFILE`).
    Show the account + ARN and get the user's confirmation before Phase 1. There
    is **no upfront GitHub setup** — for the webhook agent path GitHub is wired at
-   the END (`register-github-app.sh`), and gateway-only needs no GitHub at all.
+   the END (UI flow: Settings → Connections → "Set up GitHub App"; or CLI
+   fallback `register-github-app.sh`), and gateway-only needs no GitHub at all.
 2. **Maintain `.adp-deploy-state.json`** (see Deployment State above): update it
    after each phase; on startup, resume from the first non-complete phase.
    Note: a committed copy from a fresh clone is NOT a record of your deploy —
    verify against real AWS state, don't trust its statuses.
 3. **Keep the user informed** between phases with brief status; only stop for
    genuine input (AWS account choice, Bedrock model access in the console, and
-   the GitHub App browser install — the two human steps near the end; see the
+   the GitHub App setup — UI flow preferred, CLI fallback for headless; see the
    phase numbering in deploy-quickstart.md).
 4. **The "placeholder artifact" rule:** Terraform ships placeholders for things a
    separate push-triggered CI workflow normally publishes (broker Lambda code,
@@ -213,7 +214,7 @@ Deletes the Terraform state backend (S3 bucket + DynamoDB lock table). Requires 
 | `platform/scripts/wire-gateway-alb.sh` | Discover internal ALB → SSM; `--apply` re-applies gateway-infra with ALB vars + redeploys API GW stage (gateway second pass — switches API GW from MOCK to real `/{proxy+}` + `/auth/github` routes) |
 | `modules/gateway/scripts/deploy-broker.sh` | Publish the real github-auth-broker Lambda code (terraform ships a 503 placeholder); required for GitHub login |
 | `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh` | Deploy the ARC-free webhook agent path: build agent-runtime image + package/upload webhook Lambda zip + terraform apply (NOT covered by deploy-all.sh) |
-| `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh` | Create + wire the GitHub App (calls wire-github-app.sh); non-interactive flags; private-by-default visibility |
+| `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh` | CLI fallback for GitHub App registration (the primary path is the UI: Settings → Connections → "Set up GitHub App"); calls wire-github-app.sh; non-interactive flags; private-by-default visibility |
 | `platform/infra/main.tf` | Shared platform Terraform |
 | `platform/infra/modules/codebuild/` | CodeBuild projects (4 docker builds only) |
 | `modules/gateway/README.md` | Gateway detailed documentation |

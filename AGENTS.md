@@ -14,9 +14,10 @@ The essentials, so you don't start down the wrong path:
 
 - **Confirm the target AWS account first** (`aws sts get-caller-identity` via the
   active `AWS_PROFILE`) and get the user's OK before Phase 1.
-- **There is no upfront GitHub setup.** GitHub is wired at the END
-  (`register-github-app.sh`) for the agent path. Any "Phase 0 / setup-org / 3
-  org-owned apps" instruction is the superseded legacy ARC track — do not run it.
+- **There is no upfront GitHub setup.** GitHub is wired at the END for the agent
+  path (UI flow: Settings → Connections → "Set up GitHub App"; or CLI fallback
+  `register-github-app.sh`). Any "Phase 0 / setup-org / 3 org-owned apps"
+  instruction is the superseded legacy ARC track — do not run it.
 - **`deploy-all.sh` chains Phases 1–6 only** — the broker, first-admin bootstrap,
   webhook stack, and GitHub App (6c/6d/7/8) are separate scripts.
 

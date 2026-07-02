@@ -4,6 +4,11 @@ set -euo pipefail
 # =============================================================================
 # ADP — Register GitHub App (ADP Agent Platform) + wire it into the platform
 # =============================================================================
+# CLI FALLBACK for GitHub App registration. The PRIMARY path is the UI:
+#   Settings → Connections → "Set up GitHub App" (manifest flow)
+# performed by the Phase-6d bootstrap platform_admin. Use this script for
+# headless / CI environments where no browser session is available.
+#
 # Creates (or verifies) the GitHub App customers install, stores its App ID +
 # private key in Secrets Manager, then calls wire-github-app.sh to point the
 # running platform (gateway UI install flow + GitHub login) at it.

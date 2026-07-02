@@ -37,10 +37,11 @@ aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
 
 That handles bootstrap, infrastructure, image builds, K8s deployment, frontend,
 and the gateway ALB second pass. **GitHub is not set up upfront** — for the
-webhook agent path, wire GitHub at the end with `register-github-app.sh` (see
-Phase 3b). `deploy-all.sh` does NOT deploy the webhook-ingress stack or build the
-broker/agent-runtime artifacts — use the stage-by-stage scripts in Phase 3b for
-the agent path.
+webhook agent path, wire GitHub at the end via the UI (Settings → Connections →
+"Set up GitHub App" as the `platform_admin`) or the CLI fallback
+`register-github-app.sh` (see Phase 3b). `deploy-all.sh` does NOT deploy the
+webhook-ingress stack or build the broker/agent-runtime artifacts — use the
+stage-by-stage scripts in Phase 3b for the agent path.
 
 ### Deployment config
 
@@ -210,11 +211,12 @@ them, so each has a standalone, idempotent script:
 | **Broker Lambda code** | `modules/gateway/scripts/deploy-broker.sh` | Terraform creates the `github-auth-broker` Lambda with a 503 placeholder zip. This packages + uploads + updates the real code. Required for GitHub login. |
 | **First-admin bootstrap** | `modules/gateway/scripts/bootstrap-admin.sh` | A fresh deploy has no `users` rows, so onboarding shows "request access" for everyone — including the seeded Cognito admin — with no one able to approve. `create_test_users=true` only makes the Cognito user, not the DB rows. This seeds the first admin's org/tenant/dept/team/user + cognito identity (role `platform_admin`) so they become "registered" and can approve real users. Idempotent; `--email`/`--pool-id`/`--org` overrides for an SSO admin. (Runs `python -m src.admin.onboarding.bootstrap_admin` in the gateway pod — the deployed image must contain that module.) |
 | **Webhook-ingress stack** | `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh` | deploy-all.sh does NOT deploy this. One cohesive step: builds the `adp-agent-runtime` worker image (CodeBuild), packages + uploads the webhook Lambda zip, and `terraform apply`s the stack (API GW → Lambda → SQS → KEDA → agent-worker). |
-| **GitHub App wiring** | `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org>` | Final step. Creates the GitHub App (visibility prompt; private by default), stores creds, and calls `wire-github-app.sh` to point the running platform (UI "Link GitHub" install + login) at it. Pass `--client-secret` to also wire GitHub login. |
+| **GitHub App wiring** | **UI (primary):** Settings → Connections → "Set up GitHub App" (manifest flow; the Phase-6d `platform_admin` is the actor). **CLI fallback:** `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org>` | Final step. The UI flow (recommended) lets the `platform_admin` create + wire the App from the browser — creds are stored automatically. The CLI script is the fallback for headless / CI environments: creates the App (visibility prompt; private by default), stores creds, and calls `wire-github-app.sh`. Pass `--client-secret` to also wire GitHub login. Org owners get an org-owned App; non-owners get a user-owned App (both work). |
 
 All scripts support `--dry-run` and `--skip-*` flags and are safe to re-run.
-After GitHub App wiring, install the App on a repo
-(`https://github.com/apps/<app-slug>/installations/new`) and `@mention` an agent
+After GitHub App wiring (UI or CLI), install the App on the target repo(s)
+(the UI prompts for this; for CLI use
+`https://github.com/apps/<app-slug>/installations/new`) and `@mention` an agent
 (e.g. `@agent-developer ...`) in an issue/PR comment to trigger it.
 
 > **The "placeholder artifact" rule of thumb:** Terraform ships a placeholder for

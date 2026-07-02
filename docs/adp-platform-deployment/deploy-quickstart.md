@@ -43,7 +43,7 @@ export AWS_PROFILE=<profile> AWS_REGION=us-east-1   # the account everything key
 ./modules/gateway/scripts/bootstrap-admin.sh --env dev   # Phase 6d (seed first admin)
 # Agent path (optional):
 ./modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev   # Phase 7
-./modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev  # Phase 8
+./modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev  # Phase 9 (or use the UI — see Phase 9 below)
 ```
 
 `deploy-all.sh` chains Phases 1–6 (incl. the ALB pass) but **not** the webhook
@@ -109,10 +109,10 @@ If you just want to see the platform work with the least setup,
 > **No upfront GitHub setup.** Older docs had a "Phase 0" that ran `setup-org.sh`
 > + `create-github-apps.sh` first. That was the legacy **ARC** track (3 org-owned
 > apps, repo push). It's removed here: the webhook agent path wires GitHub at the
-> **end** (Phase 8, `register-github-app.sh`), after the infra it points at
-> exists. The only thing you need before Phase 1 is the right **AWS profile**
-> (above) — `config/deployment.yml` is optional (account resolves from the
-> profile if absent).
+> **end** (Phase 9 — UI flow or `register-github-app.sh` CLI fallback), after the
+> infra it points at exists. The only thing you need before Phase 1 is the right
+> **AWS profile** (above) — `config/deployment.yml` is optional (account resolves
+> from the profile if absent).
 
 ---
 
@@ -591,17 +591,35 @@ kubectl get daemonset agent-image-prepull -n adp-agents        # READY = node co
 # (confirmed live on 919: 168ms cached vs 31s cold).
 ```
 
-### Then wire GitHub — `register-github-app.sh` (operator runbook)
+### Then wire GitHub — UI flow (primary) or `register-github-app.sh` (fallback)
 
-After the stack is up, run `register-github-app.sh` to make GitHub integration
-live. It creates the GitHub App (`adp-agent-platform`) people install on their
-repos, points its webhook at this deployment's API Gateway, and stores the App's
-credentials in **this deployment's** Secrets Manager. **One App per deployment.**
+After the webhook-ingress stack is up, wire GitHub so agent mentions trigger
+webhook events. This creates the GitHub App (`adp-agent-platform`) people install
+on their repos, points its webhook at this deployment's API Gateway, and stores
+the App's credentials in **this deployment's** Secrets Manager. **One App per
+deployment.**
 
-This is an **interactive, per-operator** step (it opens a browser to create the
-App) — the only two things you substitute are **your AWS account** and **your
-GitHub org**; everything else (webhook URL, permissions, secret paths) is
-auto-derived.
+#### Primary path: UI flow (recommended)
+
+The **Phase-6d bootstrap `platform_admin`** performs this step:
+
+1. Log in as the `platform_admin` (the admin seeded in Phase 6d).
+2. Navigate to **Settings → Connections → "Set up GitHub App"**.
+3. Click through the GitHub manifest flow — GitHub prompts you to name the app
+   and select the org/account to own it.
+4. On success the UI stores App ID + private key + webhook secret in Secrets
+   Manager and wires them into the platform automatically.
+5. Install the App on the target repo(s) when prompted.
+
+> **Org-owner vs user-owned App.** If the `platform_admin` is an org owner on
+> GitHub, the manifest flow creates an **org-owned** App (visible at
+> `github.com/organizations/<org>/settings/apps`). Non-owners get a user-owned
+> App. Both work; org-owned is preferred for production / shared deployments.
+
+#### Fallback: CLI (`register-github-app.sh`)
+
+For headless / CI environments where no browser session is available, use the
+script directly:
 
 ```bash
 # 1. Credentials for the account you deployed INTO (cross-account: assume the
@@ -619,10 +637,10 @@ gh auth status
 #    ./...register-github-app.sh <your-org> --env dev --owner-type user --repo <your-org>/<repo>
 ```
 
-> **Org-owner vs user-owned App.** Creating an **org-owned** App (the default)
-> requires **org-owner** rights on `<your-org>` — many people don't have that.
-> If you don't, pass **`--owner-type user`** to create the App under your own
-> account instead (any user can; install it on repos you admin). For a shared
+> **Org-owner vs user-owned App (CLI path).** Creating an **org-owned** App (the
+> default) requires **org-owner** rights on `<your-org>` — many people don't have
+> that. If you don't, pass **`--owner-type user`** to create the App under your
+> own account instead (any user can; install it on repos you admin). For a shared
 > team deployment, have an org owner run it with the default `--owner-type org`.
 > Use `--repo <owner/name>` to set the install-target repo in the printed URL
 > (defaults to `<your-org>/adp`).
@@ -638,9 +656,11 @@ The script will:
   / `--client-secret` as flags to skip the prompts), then store them in Secrets
   Manager + wire the gateway.
 
-Then **install the App** on the repo(s) you'll trigger agents from:
-`https://github.com/apps/<app-slug>/installations/new` (repo-admin only) — or via
-the gateway UI "Link GitHub" flow.
+#### After wiring (either path)
+
+Install the App on the repo(s) you'll trigger agents from (the UI flow prompts
+for this; for CLI use `https://github.com/apps/<app-slug>/installations/new` —
+repo-admin only).
 
 **Verify:** comment `@agent-developer say hello` on an issue in an installed repo
 → a worker pod spawns (`kubectl get pods -n adp-agents`) and the agent replies.
@@ -652,8 +672,8 @@ The complete stage-by-stage path, each step backed by a re-runnable script:
 3. `modules/gateway/scripts/deploy-broker.sh --env dev` — broker Lambda code (Phase 6c)
 4. `modules/gateway/scripts/bootstrap-admin.sh --env dev` — first-admin DB rows (Phase 6d; REQUIRED for login)
 5. `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev` — webhook stack
-6. `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev [--client-secret <s>]` — create + wire the GitHub App
-7. Install the App on a target repo (UI "Link GitHub" or `github.com/apps/<slug>/installations/new`)
+6. **GitHub App** — UI (primary): log in as `platform_admin` → Settings → Connections → "Set up GitHub App" → manifest flow. CLI fallback: `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev [--client-secret <s>]`
+7. Install the App on the target repo(s) when prompted (or `github.com/apps/<slug>/installations/new`)
 8. **Bedrock console → Model access → enable Claude Opus 4.6** (one-time, manual,
    per account; CLI can't do the Marketplace subscribe). Without it the agent
    hangs silently after "Session initialized" — see the gotcha above.
@@ -709,9 +729,47 @@ initialized" (gateway returns an empty 200 `text/event-stream`).
 
 ## Phase 9 — GitHub App ⚠️ HUMAN browser step
 
-`webhook-ingress/scripts/register-github-app.sh <org> --env dev` creates the App;
-the user then installs it on the target repo (UI "Link GitHub" or
-`github.com/apps/<slug>/installations/new`).
+The GitHub App connects the platform to your GitHub org so agent mentions
+trigger webhook events. The **Phase-6d bootstrap `platform_admin`** is the actor
+for this step (they have the `platform_admin` role required by Settings →
+Connections).
+
+### Primary path: UI flow (recommended)
+
+1. Log in as the `platform_admin` (the admin seeded in Phase 6d).
+2. Navigate to **Settings → Connections → "Set up GitHub App"**.
+3. Click through the GitHub manifest flow — GitHub prompts you to name the app
+   and select the org/account to own it.
+4. On success the UI stores App ID + private key + webhook secret in Secrets
+   Manager and wires them into the platform automatically.
+5. Install the App on the target repo(s) when prompted (or later via
+   `https://github.com/apps/<app-slug>/installations/new`).
+
+> **Org-owner vs. user-owned:** If the `platform_admin` is not an org owner on
+> GitHub, the manifest flow creates a *user-owned* app. Org owners get an
+> org-owned app (visible at `github.com/organizations/<org>/settings/apps`).
+> Both work; org-owned is preferred for production.
+
+### Fallback: CLI (`register-github-app.sh`)
+
+For headless / CI environments where no browser session is available:
+
+```bash
+modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev [--client-secret <s>]
+```
+
+The script creates the App, stores creds in Secrets Manager, and calls
+`wire-github-app.sh`. Pass `--client-secret` to also wire GitHub login in the
+same run. See the script's `--help` for all non-interactive flags (`--app-id`,
+`--pem-path`, `--visibility`).
+
+### Verify
+
+After either path, confirm the App is wired:
+```bash
+aws secretsmanager get-secret-value --secret-id adp/gh-app-id --query SecretString --output text   # non-empty App ID
+# Then: install the App on a repo and post @agent-developer in an issue → webhook fires
+```
 
 ## Phase 10 — End-to-end smoke test
 
