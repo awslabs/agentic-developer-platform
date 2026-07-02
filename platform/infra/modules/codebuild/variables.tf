@@ -23,3 +23,13 @@ variable "security_scans_bucket_name" {
   description = "Name of the security scans S3 bucket (passed as env var to CodeBuild)"
   type        = string
 }
+
+variable "account_id" {
+  description = "AWS account ID (passed as ACCOUNT_ID env var to CodeBuild projects)"
+  type        = string
+}
+
+variable "ecr_registry" {
+  description = "ECR registry URL e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com (passed as REGISTRY env var to CodeBuild projects)"
+  type        = string
+}
