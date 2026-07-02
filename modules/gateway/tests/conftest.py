@@ -504,6 +504,21 @@ def override_get_current_user_regular(valid_token_context: TokenContext):
 # =============================================================================
 
 
+@pytest.fixture(autouse=True)
+def _reset_github_app_provider():
+    """Reset the GitHubAppCredsProvider singleton between tests.
+
+    Issue #2594: The provider caches credentials in-process. Without this
+    reset, tests that change BG_GITHUB_APP_* env vars see stale cached values
+    from previous tests.
+    """
+    from src.admin.connections.github_app_provider import _reset_provider_for_testing
+
+    _reset_provider_for_testing(None)
+    yield
+    _reset_provider_for_testing(None)
+
+
 @pytest.fixture
 async def cleanup_after_test(db_session: AsyncSession):
     """Clean up database after each test.

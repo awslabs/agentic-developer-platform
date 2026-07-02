@@ -35,6 +35,7 @@ from src.auth.magic_link import (
 from src.shared.config import get_settings
 from src.shared.models.vault import MagicLinkNonce
 
+from .github_app_provider import get_github_app_provider
 from .github_client import GitHubAppClient
 from .schemas import (
     AppStatusResponse,
@@ -89,38 +90,36 @@ def _cache_invalidate(installation_id: int) -> None:
 def _get_github_app_slug() -> str:
     """Return the GitHub App slug used for the install URL.
 
-    Reads the BG_GITHUB_APP_SLUG env var (Settings.github_app_slug). This is
-    deployment config — there is NO hardcoded fallback on purpose. A blank value
-    means the App identity was never wired into the gateway; returning a guessed
-    slug would silently point the UI's install button at the wrong App (the user
-    installs App X while the gateway can only authenticate as App Y → the install
-    never attaches, and nothing shows in the UI). Fail loudly instead.
+    Resolution order (Issue #2594):
+      1. Secrets Manager cache (adp/<env>/github-app/adp-agent-platform-meta)
+      2. BG_GITHUB_APP_SLUG env var (backward-compatible fallback)
+
+    A blank value means the App identity was never wired; fail loudly rather
+    than point the UI at the wrong App.
     """
-    settings = get_settings()
-    slug = getattr(settings, "github_app_slug", "") or ""
+    provider = get_github_app_provider()
+    slug = provider.get_slug()
     if not slug:
         raise HTTPException(
             status_code=503,
             detail=(
-                "GitHub App not configured: set BG_GITHUB_APP_SLUG (and "
-                "BG_GITHUB_APP_ID / BG_GITHUB_APP_PRIVATE_KEY) on the gateway. "
-                "Run register-github-app.sh / wire-github-app.sh for this deployment."
+                "GitHub App not configured. Register via Settings > Connections "
+                "or set BG_GITHUB_APP_SLUG (and BG_GITHUB_APP_ID / "
+                "BG_GITHUB_APP_PRIVATE_KEY) on the gateway."
             ),
         )
     return slug
 
 
 def _get_github_app_credentials() -> tuple[str, str]:
-    """Return (app_id, private_key_pem) from settings.
+    """Return (app_id, private_key_pem) for the platform GitHub App.
 
-    Reads:
-        BG_GITHUB_APP_ID         — numeric App ID
-        BG_GITHUB_APP_PRIVATE_KEY — PEM-encoded RSA private key
+    Resolution order (Issue #2594):
+      1. Secrets Manager cache (adp/<env>/github-app/adp-agent-platform-{id,key})
+      2. BG_GITHUB_APP_ID / BG_GITHUB_APP_PRIVATE_KEY env vars (fallback)
     """
-    settings = get_settings()
-    app_id: str = getattr(settings, "github_app_id", "") or ""
-    private_key: str = getattr(settings, "github_app_private_key", "") or ""
-    return app_id, private_key
+    provider = get_github_app_provider()
+    return provider.get_credentials()
 
 
 # ---------------------------------------------------------------------------
@@ -923,6 +922,10 @@ async def register_app_callback(
         client_secret=client_secret,
         webhook_secret=webhook_secret,
     )
+
+    # Issue #2594: Invalidate the cached provider so subsequent requests use
+    # the freshly-stored credentials without a pod restart.
+    get_github_app_provider().invalidate()
 
     logger.info(
         "register-app-callback: App registered successfully id=%s slug=%s",
