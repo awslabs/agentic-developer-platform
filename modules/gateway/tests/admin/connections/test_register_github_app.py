@@ -670,10 +670,6 @@ class TestRegisterAppCallbackService:
                 "src.admin.connections.service._update_broker_lambda_env",
                 new=AsyncMock(),
             ),
-            patch(
-                "src.admin.connections.service.get_settings",
-                return_value=MagicMock(gateway_base_url="https://gw.test.com"),
-            ),
         ):
             mock_client = AsyncMock()
             mock_client.post.return_value = mock_http_response
@@ -692,6 +688,8 @@ class TestRegisterAppCallbackService:
         assert "SECRET" not in result
         assert "secret_value" not in result
         assert "github_app=registered" in result
+        # Issue #2682: redirect must be a relative path (same-tab flow)
+        assert result == "/settings/connections?github_app=registered"
 
 
 class TestManifestStructure:
@@ -967,10 +965,6 @@ class TestBrokerOAuthWriteThrough:
                 "src.admin.connections.service._update_broker_lambda_env",
                 new=AsyncMock(),
             ),
-            patch(
-                "src.admin.connections.service.get_settings",
-                return_value=MagicMock(gateway_base_url="https://gw.test.com"),
-            ),
         ):
             mock_client = AsyncMock()
             mock_client.post.return_value = mock_http_response
@@ -1188,3 +1182,131 @@ class TestManifestAppName:
         )
         assert manifest["name"] == "my-org-adp-agent-platform"
         assert manifest["url"] == "https://github.com/apps/my-org-adp-agent-platform"
+
+
+# ---------------------------------------------------------------------------
+# Issue #2682: Callback redirect uses relative path (session handoff fix)
+# ---------------------------------------------------------------------------
+
+
+class TestCallbackRedirectRelativePath:
+    """Tests that register_app_callback returns a relative URL (Issue #2682).
+
+    The callback must use a relative path so the SPA session (same-tab flow)
+    is preserved when the browser follows the 302 redirect. Absolute URLs
+    were breaking because the new tab had no auth session.
+    """
+
+    @pytest.mark.asyncio
+    async def test_callback_returns_relative_redirect_path(self):
+        """register_app_callback redirect URL is relative, not absolute."""
+        from src.admin.connections.service import register_app_callback
+
+        mock_db = AsyncMock()
+        mock_nonce = MagicMock()
+        mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
+        mock_nonce.consumed_at = None
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_nonce
+
+        mock_consume_result = MagicMock()
+        mock_consume_result.scalar_one_or_none.return_value = "consumed-jti"
+
+        call_count = [0]
+
+        async def mock_execute(stmt):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return mock_result
+            return mock_consume_result
+
+        mock_db.execute = mock_execute
+        mock_db.commit = AsyncMock()
+
+        github_response = {
+            "id": 77777,
+            "slug": "my-platform-app",
+            "pem": "-----BEGIN RSA PRIVATE KEY-----\nKEY\n-----END RSA PRIVATE KEY-----",
+            "client_id": "Iv1.client123",
+            "client_secret": "cs_secret",
+            "webhook_secret": "whsec_abc",
+        }
+
+        mock_http_response = MagicMock()
+        mock_http_response.status_code = 201
+        mock_http_response.json.return_value = github_response
+
+        with (
+            patch("httpx.AsyncClient") as mock_client_cls,
+            patch(
+                "src.admin.connections.service._store_app_credentials",
+                new=AsyncMock(),
+            ),
+            patch(
+                "src.admin.connections.service._update_broker_lambda_env",
+                new=AsyncMock(),
+            ),
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_http_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
+            result = await register_app_callback(
+                code="real-code",
+                state="valid-state",
+                db=mock_db,
+            )
+
+        # Must be a relative path — no scheme, no host
+        assert result.startswith("/")
+        assert not result.startswith("http")
+        assert result == "/settings/connections?github_app=registered"
+
+
+class TestCallbackEntryLogging:
+    """Tests that the callback route logs at entry before validation (Issue #2682)."""
+
+    def test_callback_logs_entry_before_state_check(self, app, mock_db, caplog):
+        """Callback route logs entry even when state is missing."""
+        import logging
+
+        user = _make_user(is_admin=True)
+        client = _make_client(app, user=user, mock_db=mock_db)
+
+        with caplog.at_level(logging.INFO, logger="src.admin.connections.routes"):
+            resp = client.get(
+                "/admin/connections/github/app/register-callback?code=abc123",
+                follow_redirects=False,
+            )
+
+        # The response should be a redirect to missing_state error
+        assert resp.status_code == 302
+        assert "error=missing_state" in resp.headers["location"]
+
+        # But the entry log should have been emitted BEFORE the error redirect
+        assert any("register-app-callback: entry" in record.message for record in caplog.records)
+
+    def test_callback_logs_entry_with_both_params(self, app, mock_db, caplog):
+        """Callback route logs entry with both code and state present."""
+        import logging
+
+        user = _make_user(is_admin=True)
+        client = _make_client(app, user=user, mock_db=mock_db)
+
+        with (
+            caplog.at_level(logging.INFO, logger="src.admin.connections.routes"),
+            patch(
+                "src.admin.connections.routes.register_app_callback",
+                new=AsyncMock(return_value="/settings/connections?github_app=registered"),
+            ),
+        ):
+            resp = client.get(
+                "/admin/connections/github/app/register-callback?code=abc123&state=state-xyz",
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 302
+        assert any("register-app-callback: entry code_present=True state_present=True" in record.message for record in caplog.records)

@@ -156,8 +156,10 @@ export default function Connections() {
         return;
       }
       if (result.post_url && result.manifest) {
-        // Submit manifest to GitHub in a new tab via a hidden form POST
-        submitManifestToGitHub(result.post_url, JSON.stringify(result.manifest));
+        // Submit manifest to GitHub in the same tab (preserves SPA session for
+        // the callback redirect). State nonce is included as a form field so
+        // GitHub echoes it back as ?state= on the redirect.
+        submitManifestToGitHub(result.post_url, JSON.stringify(result.manifest), result.state);
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to start registration';
@@ -267,20 +269,31 @@ function ComingSoonTile({ name, icon }: { name: string; icon: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: submit manifest to GitHub via form POST (opens in new tab)
+// Helper: submit manifest to GitHub via form POST (same tab)
 // ---------------------------------------------------------------------------
 
-function submitManifestToGitHub(postUrl: string, manifest: string): void {
+function submitManifestToGitHub(postUrl: string, manifest: string, state?: string | null): void {
   const form = document.createElement('form');
   form.method = 'POST';
   form.action = postUrl;
-  form.target = '_blank';
+  // No target="_blank" — stay in the same tab so the callback redirect
+  // lands in a window that already has the SPA auth session (Issue #2682).
 
-  const input = document.createElement('input');
-  input.type = 'hidden';
-  input.name = 'manifest';
-  input.value = manifest;
-  form.appendChild(input);
+  const manifestInput = document.createElement('input');
+  manifestInput.type = 'hidden';
+  manifestInput.name = 'manifest';
+  manifestInput.value = manifest;
+  form.appendChild(manifestInput);
+
+  // GitHub echoes the state field back as ?state= on the post-create redirect.
+  // Without this, the callback receives no state and fails with missing_state.
+  if (state) {
+    const stateInput = document.createElement('input');
+    stateInput.type = 'hidden';
+    stateInput.name = 'state';
+    stateInput.value = state;
+    form.appendChild(stateInput);
+  }
 
   document.body.appendChild(form);
   form.submit();

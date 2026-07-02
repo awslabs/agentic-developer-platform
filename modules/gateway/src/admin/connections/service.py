@@ -1032,10 +1032,10 @@ async def register_app_callback(
         app_slug,
     )
 
-    # Return frontend redirect URL
-    settings = get_settings()
-    frontend_url = settings.gateway_base_url or ""
-    return f"{frontend_url}/settings/connections?github_app=registered"
+    # Return frontend redirect URL (relative path — same pattern as
+    # install-callback; avoids routing issues with absolute URLs and
+    # ensures the SPA session is preserved in the same-tab flow).
+    return "/settings/connections?github_app=registered"
 
 
 async def _update_broker_lambda_env(*, client_id: str) -> None:

@@ -285,6 +285,14 @@ async def github_app_register_callback(
 
     Exchanges the code for App credentials and stores them in Secrets Manager.
     """
+    # Issue #2682: Log at entry BEFORE any validation so we can confirm
+    # whether GitHub's redirect is reaching the backend at all.
+    logger.info(
+        "register-app-callback: entry code_present=%s state_present=%s",
+        bool(code),
+        bool(state),
+    )
+
     if not code:
         return _redirect_error("missing_code", "Missing code parameter from GitHub redirect")
     if not state:
