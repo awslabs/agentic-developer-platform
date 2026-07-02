@@ -451,7 +451,26 @@ Verify:
 ```bash
 # Log in as the admin (email/password), then:
 curl -s -H "Authorization: Bearer <admin-jwt>" https://<apigw>/dev/admin/access/status   # {"status":"registered"}
+
+# CRITICAL: verify Cognito attributes are set (the script does this automatically,
+# but confirm manually if you ran an older version or suspect a partial run):
+POOL_ID=$(aws ssm get-parameter --name /adp/dev/cognito/user-pool-id --query Parameter.Value --output text)
+ADMIN_EMAIL="<admin-email>"  # from adp/dev/gateway/test-admin-credentials or your SSO admin
+aws cognito-idp admin-get-user --user-pool-id "$POOL_ID" --username "$ADMIN_EMAIL" \
+  --query 'UserAttributes[?Name==`custom:role` || Name==`custom:org_id`]'
+# Expected: custom:role=platform_admin, custom:org_id=platform-admin (or your --org value)
+# If MISSING: the admin will log in but the UI will NOT show platform-admin views
+# (e.g. GitHub App "Set up" CTA hidden). Re-run bootstrap-admin.sh to fix.
 ```
+
+> **⚠️ Pipeline gap:** The ADP-managed pipeline (`gateway-deploy.yml`) does **NOT**
+> run `bootstrap-admin.sh`. On a pipeline-driven deploy, an operator must run this
+> script manually after Phase 6c (gateway backend is healthy). If this step is
+> skipped or partially completes, the first admin will have DB access but the
+> frontend will not recognize them as `platform_admin` — the pre-token Lambda reads
+> Cognito attributes, not the DB. The script now verifies attributes on completion
+> and fails loudly if they're missing; older versions do not — use the manual check
+> above.
 
 ## Agent Factory — Webhook-Ingress stack (ARC-free agent path) ✅ verified
 
