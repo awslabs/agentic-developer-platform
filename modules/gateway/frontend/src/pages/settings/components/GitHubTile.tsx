@@ -2,10 +2,19 @@
  * GitHubTile — GitHub App connection section on the Connections page.
  *
  * Issue #465: Shows current installations + install button.
+ * Issue #2596: Registration + lifecycle states (platform_admin gated).
+ *
+ * Renders one of four states:
+ * - platform_admin + not registered → "Set up GitHub App" with owner choice
+ * - platform_admin + registered → app info + Rotate/Disconnect + install UI
+ * - non-platform_admin + not registered → "ask a platform admin" message
+ * - any admin + registered → existing install/connect UI (unchanged)
  */
 
+import { useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { type GitHubConnectionItem } from '@/services/connections';
+import type { AppStatusResponse } from '@/services/connections';
 import { InstallationCard } from './InstallationCard';
 
 interface GitHubTileProps {
@@ -14,6 +23,16 @@ interface GitHubTileProps {
   onInstall: () => void;
   onDisconnect: (installationId: number) => Promise<void>;
   isInstalling: boolean;
+  /** Whether the current user is a platform admin. */
+  isPlatformAdmin: boolean;
+  /** GitHub App registration status (null while loading). */
+  appStatus: AppStatusResponse | null;
+  /** Called when admin initiates registration with owner choice. */
+  onRegister: (ownerType: 'user' | 'org', org?: string) => Promise<void>;
+  /** Called to rotate the App private key. */
+  onRotateKey: () => Promise<void>;
+  /** Called to disconnect (unregister) the App entirely. */
+  onDisconnectApp: () => Promise<void>;
 }
 
 export function GitHubTile({
@@ -22,7 +41,19 @@ export function GitHubTile({
   onInstall,
   onDisconnect,
   isInstalling,
+  isPlatformAdmin,
+  appStatus,
+  onRegister,
+  onRotateKey,
+  onDisconnectApp,
 }: GitHubTileProps) {
+  // For non-platform-admins, appStatus is null (they can't call the status endpoint).
+  // In that case, assume registered so the existing install UI is shown.
+  // Only show "not registered" when we have an explicit false from the API.
+  const isRegistered = isPlatformAdmin
+    ? (appStatus?.registered ?? false)
+    : (appStatus?.registered ?? true);
+
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-gray-700 dark:bg-gray-900">
       {/* Header */}
@@ -43,43 +74,260 @@ export function GitHubTile({
           <div>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">GitHub</h2>
             <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
-              Install the ADP Agent app on your GitHub org to trigger agents from labels and
-              @-mentions.
+              {isRegistered
+                ? 'Install the ADP Agent app on your GitHub org to trigger agents from labels and @-mentions.'
+                : 'Register a GitHub App to enable agent triggers and integrations.'}
             </p>
           </div>
         </div>
 
-        <Button
-          onClick={onInstall}
-          disabled={isInstalling || isLoading}
-          isLoading={isInstalling}
-          variant={connections.length > 0 ? 'secondary' : 'primary'}
-          size="sm"
-        >
-          {isInstalling
-            ? 'Opening GitHub…'
-            : connections.length > 0
-              ? '+ Add another connection'
-              : 'Install on GitHub'}
-        </Button>
+        {/* Install button — only shown when app is registered */}
+        {isRegistered && (
+          <Button
+            onClick={onInstall}
+            disabled={isInstalling || isLoading}
+            isLoading={isInstalling}
+            variant={connections.length > 0 ? 'secondary' : 'primary'}
+            size="sm"
+          >
+            {isInstalling
+              ? 'Opening GitHub…'
+              : connections.length > 0
+                ? '+ Add another connection'
+                : 'Install on GitHub'}
+          </Button>
+        )}
       </div>
 
-      {/* Installations list */}
-      {isLoading ? (
+      {/* Body — varies by registration state + role */}
+      {isLoading && !appStatus ? (
         <div className="mt-4 animate-pulse space-y-3">
           <div className="h-16 rounded-lg bg-gray-100 dark:bg-gray-800" />
         </div>
-      ) : connections.length > 0 ? (
-        <div className="mt-4 space-y-3">
-          {connections.map((conn) => (
-            <InstallationCard
-              key={conn.installation_id}
-              connection={conn}
-              onDisconnect={onDisconnect}
+      ) : !isRegistered ? (
+        // --- Unregistered state ---
+        isPlatformAdmin ? (
+          <RegistrationForm onRegister={onRegister} />
+        ) : (
+          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-900/20">
+            <p className="text-sm text-amber-800 dark:text-amber-200">
+              GitHub isn&apos;t set up yet &mdash; ask a platform admin to configure the GitHub App.
+            </p>
+          </div>
+        )
+      ) : (
+        // --- Registered state ---
+        <>
+          {/* App info (platform admin only) */}
+          {isPlatformAdmin && appStatus && (
+            <AppInfoPanel
+              appStatus={appStatus}
+              onRotateKey={onRotateKey}
+              onDisconnectApp={onDisconnectApp}
             />
-          ))}
-        </div>
-      ) : null}
+          )}
+
+          {/* Installations list */}
+          {isLoading ? (
+            <div className="mt-4 animate-pulse space-y-3">
+              <div className="h-16 rounded-lg bg-gray-100 dark:bg-gray-800" />
+            </div>
+          ) : connections.length > 0 ? (
+            <div className="mt-4 space-y-3">
+              {connections.map((conn) => (
+                <InstallationCard
+                  key={conn.installation_id}
+                  connection={conn}
+                  onDisconnect={onDisconnect}
+                />
+              ))}
+            </div>
+          ) : null}
+        </>
+      )}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// RegistrationForm — owner_type choice + Create button (platform_admin only)
+// ---------------------------------------------------------------------------
+
+function RegistrationForm({
+  onRegister,
+}: {
+  onRegister: (ownerType: 'user' | 'org', org?: string) => Promise<void>;
+}) {
+  const [ownerType, setOwnerType] = useState<'user' | 'org'>('user');
+  const [orgName, setOrgName] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const canSubmit = ownerType === 'user' || orgName.trim().length > 0;
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setIsSubmitting(true);
+    try {
+      await onRegister(ownerType, ownerType === 'org' ? orgName.trim() : undefined);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-700 dark:bg-blue-900/20">
+        <p className="text-sm font-medium text-blue-800 dark:text-blue-200">
+          Set up GitHub App
+        </p>
+        <p className="mt-1 text-sm text-blue-700 dark:text-blue-300">
+          Create a GitHub App to enable agent triggers. This opens GitHub in a new tab
+          where you&apos;ll approve the app creation.
+        </p>
+      </div>
+
+      {/* Owner type radio */}
+      <fieldset>
+        <legend className="text-sm font-medium text-gray-700 dark:text-gray-300">
+          App owner
+        </legend>
+        <div className="mt-2 space-y-2">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="owner_type"
+              value="user"
+              checked={ownerType === 'user'}
+              onChange={() => setOwnerType('user')}
+              className="h-4 w-4 text-primary-600 focus:ring-primary-500"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">
+              Personal account (user-owned)
+            </span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="owner_type"
+              value="org"
+              checked={ownerType === 'org'}
+              onChange={() => setOwnerType('org')}
+              className="h-4 w-4 text-primary-600 focus:ring-primary-500"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">
+              Organization
+            </span>
+          </label>
+        </div>
+      </fieldset>
+
+      {/* Org name input (shown when org selected) */}
+      {ownerType === 'org' && (
+        <div>
+          <label
+            htmlFor="github-org-name"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            Organization name
+          </label>
+          <input
+            id="github-org-name"
+            type="text"
+            value={orgName}
+            onChange={(e) => setOrgName(e.target.value)}
+            placeholder="my-org"
+            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+          />
+        </div>
+      )}
+
+      {/* Submit */}
+      <Button
+        onClick={handleSubmit}
+        disabled={!canSubmit || isSubmitting}
+        isLoading={isSubmitting}
+        variant="primary"
+        size="md"
+      >
+        {isSubmitting ? 'Creating…' : 'Create on GitHub'}
+      </Button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AppInfoPanel — shows app slug/ID + Rotate/Disconnect (platform_admin only)
+// ---------------------------------------------------------------------------
+
+function AppInfoPanel({
+  appStatus,
+  onRotateKey,
+  onDisconnectApp,
+}: {
+  appStatus: AppStatusResponse;
+  onRotateKey: () => Promise<void>;
+  onDisconnectApp: () => Promise<void>;
+}) {
+  const [isRotating, setIsRotating] = useState(false);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+
+  const handleRotate = async () => {
+    setIsRotating(true);
+    try {
+      await onRotateKey();
+    } finally {
+      setIsRotating(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!confirmDisconnect) {
+      setConfirmDisconnect(true);
+      return;
+    }
+    setIsDisconnecting(true);
+    try {
+      await onDisconnectApp();
+    } finally {
+      setIsDisconnecting(false);
+      setConfirmDisconnect(false);
+    }
+  };
+
+  return (
+    <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+            {appStatus.app_slug ?? 'GitHub App'}
+          </p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            ID: {appStatus.app_id ?? 'unknown'}
+            {appStatus.owner_type && ` · ${appStatus.owner_type}`}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={handleRotate}
+            disabled={isRotating || isDisconnecting}
+            isLoading={isRotating}
+            variant="outline"
+            size="sm"
+          >
+            Rotate key
+          </Button>
+          <Button
+            onClick={handleDisconnect}
+            disabled={isRotating || isDisconnecting}
+            isLoading={isDisconnecting}
+            variant={confirmDisconnect ? 'danger' : 'outline'}
+            size="sm"
+          >
+            {confirmDisconnect ? 'Confirm disconnect?' : 'Disconnect app'}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }

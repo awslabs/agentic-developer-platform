@@ -17,23 +17,29 @@ vi.mock('@/services/connections', () => ({
   startGitHubInstall: vi.fn(),
   listConnections: vi.fn(),
   deleteGitHubConnection: vi.fn(),
+  getGitHubAppStatus: vi.fn(),
+  startGitHubAppRegistration: vi.fn(),
+  rotateGitHubAppKey: vi.fn(),
+  disconnectGitHubApp: vi.fn(),
 }));
 
-// Connections calls useAuth() to read the current user (free-tier banner gating).
-// Mock the hook so the page can render without a full AuthProvider + auth bootstrap.
+// Connections calls useAuth() to read the current user (free-tier banner gating)
+// and hasRole for platform_admin check. Mock both.
 vi.mock('@/hooks/useAuth', () => ({
-  useAuth: () => ({ user: { orgId: 'org-test' } }),
+  useAuth: () => ({ user: { orgId: 'org-test' }, hasRole: () => false }),
 }));
 
 import {
   startGitHubInstall,
   listConnections,
   deleteGitHubConnection,
+  getGitHubAppStatus,
 } from '@/services/connections';
 
 const mockStartGitHubInstall = startGitHubInstall as ReturnType<typeof vi.fn>;
 const mockListConnections = listConnections as ReturnType<typeof vi.fn>;
 const mockDeleteGitHubConnection = deleteGitHubConnection as ReturnType<typeof vi.fn>;
+const mockGetGitHubAppStatus = getGitHubAppStatus as ReturnType<typeof vi.fn>;
 
 function renderConnections(initialEntries: string[] = ['/settings/connections']) {
   return render(
@@ -49,6 +55,14 @@ describe('Connections Page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockListConnections.mockResolvedValue({ connections: [] });
+    // Default: app is registered so Install button is visible (existing test expectations)
+    mockGetGitHubAppStatus.mockResolvedValue({
+      registered: true,
+      app_slug: 'adp-agent',
+      app_id: '123',
+      owner_type: 'Organization',
+      created_at: '2026-06-01T00:00:00Z',
+    });
   });
 
   describe('Empty state rendering', () => {

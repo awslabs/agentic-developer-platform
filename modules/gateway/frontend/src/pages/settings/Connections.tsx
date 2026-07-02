@@ -2,11 +2,14 @@
  * Connections page — link external services (GitHub, Slack, etc.) to ADP.
  *
  * Issue #465: GitHub App install + auto-provision flow.
+ * Issue #2596: GitHub App registration + lifecycle states (platform_admin gated).
  *
  * URL: /settings/connections
  *
  * On arrival with ?success=1 the page shows a success toast and refreshes
  * the connection list. On ?error=<code>&message=<msg> it shows an error toast.
+ * On arrival with ?github_app=registered it shows a success toast and refetches
+ * the app status.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -14,10 +17,16 @@ import { useSearchParams } from 'react-router-dom';
 import { useToast } from '@/contexts/ToastContext';
 import { FreeTierBanner } from '@/components/FreeTierBanner';
 import { useAuth } from '@/hooks/useAuth';
+import { AdminRole } from '@/types';
 import {
   deleteGitHubConnection,
+  disconnectGitHubApp,
+  getGitHubAppStatus,
   listConnections,
+  rotateGitHubAppKey,
+  startGitHubAppRegistration,
   startGitHubInstall,
+  type AppStatusResponse,
   type GitHubConnectionItem,
 } from '@/services/connections';
 import { GitHubTile } from './components/GitHubTile';
@@ -28,23 +37,23 @@ const ADP_DEFAULT_ORG_ID = '00000000-0000-4000-a000-000000000001';
 export default function Connections() {
   const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
-  const { user } = useAuth();
+  const { user, hasRole } = useAuth();
+
+  const isPlatformAdmin = hasRole(AdminRole.PLATFORM_ADMIN);
 
   const [connections, setConnections] = useState<GitHubConnectionItem[]>([]);
+  const [appStatus, setAppStatus] = useState<AppStatusResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isInstalling, setIsInstalling] = useState(false);
 
   // -------------------------------------------------------------------------
-  // Load connections
+  // Load connections + app status
   // -------------------------------------------------------------------------
 
   const loadConnections = useCallback(async () => {
     setIsLoading(true);
     try {
       const data = await listConnections();
-      // Guard against a malformed/empty response (e.g. an error body without a
-      // connections array) — GitHubTile does connections.length and would crash
-      // on undefined. Default to [] so the page renders the empty state instead.
       setConnections(data?.connections ?? []);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to load connections';
@@ -54,24 +63,39 @@ export default function Connections() {
     }
   }, [toast]);
 
+  const loadAppStatus = useCallback(async () => {
+    if (!isPlatformAdmin) return;
+    try {
+      const status = await getGitHubAppStatus();
+      setAppStatus(status);
+    } catch {
+      // Non-critical — if status fails we simply don't show app info.
+      // The tile still renders based on the absence of appStatus.
+    }
+  }, [isPlatformAdmin]);
+
   useEffect(() => {
     loadConnections();
-  }, [loadConnections]);
+    loadAppStatus();
+  }, [loadConnections, loadAppStatus]);
 
   // -------------------------------------------------------------------------
-  // Handle redirect back from GitHub (success or error)
+  // Handle redirect back from GitHub (success or error or app registered)
   // -------------------------------------------------------------------------
 
   useEffect(() => {
     const success = searchParams.get('success');
     const errorCode = searchParams.get('error');
     const errorMessage = searchParams.get('message');
+    const githubApp = searchParams.get('github_app');
 
     if (success === '1') {
       toast.success('GitHub connected! You can now trigger agents from this org.');
-      // Reload so the new installation appears in the list
       loadConnections();
-      // Clean up URL params
+      setSearchParams({}, { replace: true });
+    } else if (githubApp === 'registered') {
+      toast.success('GitHub App registered successfully!');
+      loadAppStatus();
       setSearchParams({}, { replace: true });
     } else if (errorCode) {
       const displayMessage =
@@ -100,7 +124,7 @@ export default function Connections() {
   };
 
   // -------------------------------------------------------------------------
-  // Disconnect handler
+  // Disconnect handler (installation-level)
   // -------------------------------------------------------------------------
 
   const handleDisconnect = async (installationId: number) => {
@@ -112,6 +136,61 @@ export default function Connections() {
       const message = err instanceof Error ? err.message : 'Failed to disconnect installation';
       toast.error(message);
       throw err; // Let InstallationCard reset its state
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // Registration handler — manifest flow (Issue #2596)
+  // -------------------------------------------------------------------------
+
+  const handleRegister = async (ownerType: 'user' | 'org', org?: string) => {
+    try {
+      const result = await startGitHubAppRegistration({ owner_type: ownerType, org });
+      if (result.status === 'already_registered') {
+        toast.success('GitHub App is already registered.');
+        await loadAppStatus();
+        return;
+      }
+      if (result.post_url && result.manifest) {
+        // Submit manifest to GitHub in a new tab via a hidden form POST
+        submitManifestToGitHub(result.post_url, JSON.stringify(result.manifest));
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to start registration';
+      toast.error(message);
+      throw err;
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // Rotate key handler (Issue #2596)
+  // -------------------------------------------------------------------------
+
+  const handleRotateKey = async () => {
+    try {
+      const result = await rotateGitHubAppKey();
+      toast.success(result.message || 'Key rotated successfully.');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to rotate key';
+      toast.error(message);
+      throw err;
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // Disconnect app handler (Issue #2596)
+  // -------------------------------------------------------------------------
+
+  const handleDisconnectApp = async () => {
+    try {
+      const result = await disconnectGitHubApp();
+      toast.success(result.message || 'GitHub App disconnected.');
+      setAppStatus({ registered: false, app_slug: null, app_id: null, owner_type: null, created_at: null });
+      setConnections([]);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to disconnect app';
+      toast.error(message);
+      throw err;
     }
   };
 
@@ -140,11 +219,16 @@ export default function Connections() {
           onInstall={handleInstall}
           onDisconnect={handleDisconnect}
           isInstalling={isInstalling}
+          isPlatformAdmin={isPlatformAdmin}
+          appStatus={appStatus}
+          onRegister={handleRegister}
+          onRotateKey={handleRotateKey}
+          onDisconnectApp={handleDisconnectApp}
         />
 
         {/* Future integrations — placeholder tiles */}
-        <ComingSoonTile name="Slack" icon="💬" />
-        <ComingSoonTile name="Google" icon="🔵" />
+        <ComingSoonTile name="Slack" icon="&#128172;" />
+        <ComingSoonTile name="Google" icon="&#128309;" />
       </div>
     </div>
   );
@@ -175,4 +259,25 @@ function ComingSoonTile({ name, icon }: { name: string; icon: string }) {
       </div>
     </section>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Helper: submit manifest to GitHub via form POST (opens in new tab)
+// ---------------------------------------------------------------------------
+
+function submitManifestToGitHub(postUrl: string, manifest: string): void {
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = postUrl;
+  form.target = '_blank';
+
+  const input = document.createElement('input');
+  input.type = 'hidden';
+  input.name = 'manifest';
+  input.value = manifest;
+  form.appendChild(input);
+
+  document.body.appendChild(form);
+  form.submit();
+  document.body.removeChild(form);
 }
