@@ -27,6 +27,8 @@ interface GitHubTileProps {
   isPlatformAdmin: boolean;
   /** GitHub App registration status (null while loading). */
   appStatus: AppStatusResponse | null;
+  /** Whether the status fetch failed (e.g. AccessDenied / 503). */
+  appStatusError?: boolean;
   /** Called when admin initiates registration with owner choice. */
   onRegister: (ownerType: 'user' | 'org', org?: string) => Promise<void>;
   /** Called to rotate the App private key. */
@@ -43,6 +45,7 @@ export function GitHubTile({
   isInstalling,
   isPlatformAdmin,
   appStatus,
+  appStatusError = false,
   onRegister,
   onRotateKey,
   onDisconnectApp,
@@ -50,8 +53,11 @@ export function GitHubTile({
   // For non-platform-admins, appStatus is null (they can't call the status endpoint).
   // In that case, assume registered so the existing install UI is shown.
   // Only show "not registered" when we have an explicit false from the API.
+  // IMPORTANT: If the status fetch *failed* (appStatusError=true), do NOT default
+  // to unregistered for platform admins — that would show the "Set up GitHub App"
+  // CTA which can overwrite a live App's credentials. Show an error state instead.
   const isRegistered = isPlatformAdmin
-    ? (appStatus?.registered ?? false)
+    ? (appStatusError ? undefined : (appStatus?.registered ?? false))
     : (appStatus?.registered ?? true);
 
   return (
@@ -74,15 +80,17 @@ export function GitHubTile({
           <div>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">GitHub</h2>
             <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
-              {isRegistered
-                ? 'Install the ADP Agent app on your GitHub org to trigger agents from labels and @-mentions.'
-                : 'Register a GitHub App to enable agent triggers and integrations.'}
+              {isRegistered === undefined
+                ? 'GitHub App status could not be determined.'
+                : isRegistered
+                  ? 'Install the ADP Agent app on your GitHub org to trigger agents from labels and @-mentions.'
+                  : 'Register a GitHub App to enable agent triggers and integrations.'}
             </p>
           </div>
         </div>
 
-        {/* Install button — only shown when app is registered */}
-        {isRegistered && (
+        {/* Install button — only shown when app is confirmed registered */}
+        {isRegistered === true && (
           <Button
             onClick={onInstall}
             disabled={isInstalling || isLoading}
@@ -103,6 +111,18 @@ export function GitHubTile({
       {isLoading && !appStatus ? (
         <div className="mt-4 animate-pulse space-y-3">
           <div className="h-16 rounded-lg bg-gray-100 dark:bg-gray-800" />
+        </div>
+      ) : isRegistered === undefined ? (
+        // --- Status unavailable (e.g. AccessDenied / 503) ---
+        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-700 dark:bg-red-900/20">
+          <p className="text-sm font-medium text-red-800 dark:text-red-200">
+            Unable to check GitHub App status
+          </p>
+          <p className="mt-1 text-sm text-red-700 dark:text-red-300">
+            The status check failed (possibly an IAM permissions issue). A GitHub App
+            may already be registered &mdash; do not re-register without confirming.
+            Check the gateway logs or contact an administrator.
+          </p>
         </div>
       ) : !isRegistered ? (
         // --- Unregistered state ---

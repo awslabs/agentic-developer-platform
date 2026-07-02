@@ -43,6 +43,7 @@ export default function Connections() {
 
   const [connections, setConnections] = useState<GitHubConnectionItem[]>([]);
   const [appStatus, setAppStatus] = useState<AppStatusResponse | null>(null);
+  const [appStatusError, setAppStatusError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isInstalling, setIsInstalling] = useState(false);
 
@@ -68,9 +69,12 @@ export default function Connections() {
     try {
       const status = await getGitHubAppStatus();
       setAppStatus(status);
+      setAppStatusError(false);
     } catch {
-      // Non-critical — if status fails we simply don't show app info.
-      // The tile still renders based on the absence of appStatus.
+      // Mark that we failed to fetch status so the tile can distinguish
+      // "not registered" from "status unavailable" and avoid showing the
+      // dangerous "Set up GitHub App" CTA that could overwrite a live App.
+      setAppStatusError(true);
     }
   }, [isPlatformAdmin]);
 
@@ -221,6 +225,7 @@ export default function Connections() {
           isInstalling={isInstalling}
           isPlatformAdmin={isPlatformAdmin}
           appStatus={appStatus}
+          appStatusError={appStatusError}
           onRegister={handleRegister}
           onRotateKey={handleRotateKey}
           onDisconnectApp={handleDisconnectApp}

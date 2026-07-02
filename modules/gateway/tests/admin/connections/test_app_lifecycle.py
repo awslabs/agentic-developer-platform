@@ -425,6 +425,35 @@ class TestGetAppStatusService:
         assert result.app_slug is None
 
     @pytest.mark.asyncio
+    async def test_returns_503_on_access_denied(self):
+        """get_app_status returns 503 (not 500) when IAM denies access to the secret.
+
+        Issue #2619: AccessDenied must NOT masquerade as 'unregistered' or as a bare
+        500 that the UI interprets as 'unregistered'. The 503 signals 'status unavailable'
+        so the frontend can show an error state instead of the dangerous registration CTA.
+        """
+        from botocore.exceptions import ClientError
+        from fastapi import HTTPException
+
+        from src.admin.connections.service import get_app_status
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "User: arn:... is not authorized"}},
+            "GetSecretValue",
+        )
+
+        with (
+            patch("boto3.client", return_value=mock_sm),
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_app_status()
+
+        assert exc_info.value.status_code == 503
+        assert "access denied" in exc_info.value.detail.lower()
+
+    @pytest.mark.asyncio
     async def test_returns_registered_with_metadata(self):
         """get_app_status returns correct data when App is registered."""
         import json

@@ -1200,6 +1200,16 @@ async def get_app_status() -> AppStatusResponse:
             error_code = exc.response.get("Error", {}).get("Code", "")
             if error_code in ("ResourceNotFoundException", "InvalidRequestException"):
                 return AppStatusResponse(registered=False)
+            if error_code in ("AccessDeniedException", "AccessDenied"):
+                logger.warning(
+                    "get_app_status: AccessDenied reading %s — IAM policy may be missing adp/*/github-app/* grant on the gateway role",
+                    id_path,
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="Unable to determine App registration status — access denied reading secrets. "
+                    "The gateway IAM role may need the adp/*/github-app/* grant.",
+                ) from exc
             raise
 
         if not app_id:
@@ -1240,6 +1250,8 @@ async def get_app_status() -> AppStatusResponse:
             created_at=created_at,
         )
 
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("get_app_status failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to retrieve App status") from exc

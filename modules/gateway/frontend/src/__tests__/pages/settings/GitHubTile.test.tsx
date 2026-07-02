@@ -316,4 +316,44 @@ describe('GitHubTile', () => {
       expect(screen.queryByText(/ask a platform admin/i)).not.toBeInTheDocument();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // State 5: platform_admin + status fetch failed (Issue #2619)
+  // -------------------------------------------------------------------------
+
+  describe('platform_admin + status fetch error', () => {
+    const props = {
+      ...defaultProps,
+      isPlatformAdmin: true,
+      appStatus: null,
+      appStatusError: true,
+    };
+
+    it('shows error state instead of registration CTA when status fetch fails', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText('Unable to check GitHub App status')).toBeInTheDocument();
+    });
+
+    it('does NOT show "Set up GitHub App" CTA when status is unavailable', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.queryByText('Set up GitHub App')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Create on GitHub/i })).not.toBeInTheDocument();
+    });
+
+    it('does NOT show Install on GitHub button when status is unavailable', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.queryByText('Install on GitHub')).not.toBeInTheDocument();
+    });
+
+    it('shows guidance about possible IAM issue', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(
+        screen.getByText(/do not re-register without confirming/i),
+      ).toBeInTheDocument();
+    });
+  });
 });
