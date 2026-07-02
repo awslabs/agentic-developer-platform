@@ -285,20 +285,50 @@ Bedrock usage is pay-per-token on top of infrastructure costs.
 
 ## Teardown
 
-```bash
-# Destroy all module infrastructure (reverse order)
-./platform/scripts/deploy-all.sh --destroy
+### Primary: `undeploy.sh`
 
-# Then destroy the state backend (separate step, requires typed confirmation)
+```bash
+# Interactive teardown — requires typed 12-digit account ID
+./platform/scripts/undeploy.sh
+
+# Preview what would be destroyed (no changes made)
+./platform/scripts/undeploy.sh --dry-run
+
+# Resume from a specific phase (e.g., after a partial failure)
+./platform/scripts/undeploy.sh --from gateway
+
+# Skip a specific phase
+./platform/scripts/undeploy.sh --skip agent_context
+
+# Also destroy the Terraform state backend (prompts separately)
+./platform/scripts/undeploy.sh --bootstrap
+```
+
+Destroy order: agent-context → webhook-ingress → agent-factory → gateway → platform.
+Maintains `.adp-undeploy-state.json` for resume. Retries failed phases up to 2×.
+
+For ADP-managed environments, use `.github/workflows/undeploy.yml` (workflow_dispatch)
+which provides the same capabilities via GitHub Actions.
+
+### Legacy path (retained)
+
+```bash
+# LEGACY — use undeploy.sh instead
+./platform/scripts/deploy-all.sh --destroy
 ./platform/scripts/bootstrap-destroy.sh
 ```
 
-Destroy order: agent-context → agent-factory → gateway → platform.
+> `deploy-all.sh --destroy` is retained for backward compatibility but lacks the
+> typed-account-ID gate, dry-run mode, resume capability, and the webhook-ingress
+> phase. Prefer `undeploy.sh` for all new teardowns.
 
-Resources that survive by design:
-- Terraform state backend (until you run `bootstrap-destroy.sh`)
-- GitHub App credentials in Secrets Manager
+### Resources that survive by design
+
+- Terraform state backend (S3 + DynamoDB) — only destroyed with `--bootstrap`
+- GitHub App secrets (`adp/gh-app-*`, `adp/*/gh-app-*` in Secrets Manager)
+- Webhook-ingress GitHub App secrets (`adp/*/github-app/*` in Secrets Manager)
 - GitHub Apps themselves (delete manually in GitHub org settings)
+- AWS-managed RDS secrets (`rds!*`) — AWS handles their lifecycle
 
 ## CI/CD After Initial Deploy
 

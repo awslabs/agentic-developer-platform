@@ -850,10 +850,39 @@ Items marked *(fixed on `main`)* only bite on older checkouts.
 
 ## Teardown
 
+### Primary: `undeploy.sh` (self-managed) / `undeploy.yml` (ADP-managed)
+
 ```bash
-./platform/scripts/deploy-all.sh --destroy      # reverse order: agent-context → agent-factory → gateway → platform
+# Self-managed — interactive, typed-account-ID gate
+./platform/scripts/undeploy.sh
+
+# Dry-run first (recommended) — shows what exists, what would be destroyed
+./platform/scripts/undeploy.sh --dry-run
+
+# Include state backend destruction
+./platform/scripts/undeploy.sh --bootstrap
+```
+
+For ADP-managed environments, dispatch `.github/workflows/undeploy.yml` via the
+Actions UI (requires typed 12-digit account ID input).
+
+Both paths destroy in reverse dependency order: agent-context → webhook-ingress →
+agent-factory → gateway → platform. Both support `--dry-run` / `dry_run`, phase
+skipping, and optional state-backend destruction.
+
+### Legacy path (retained)
+
+```bash
+./platform/scripts/deploy-all.sh --destroy      # LEGACY — lacks account-ID gate, dry-run, resume
 ./platform/scripts/bootstrap-destroy.sh         # state backend, separate, typed confirmation
 ```
 
-Survives by design: state backend (until `bootstrap-destroy.sh`), GitHub App
-secrets, the GitHub Apps themselves (delete manually in org settings).
+> `deploy-all.sh --destroy` is retained for backward compatibility but is no
+> longer recommended. Use `undeploy.sh` or `undeploy.yml` instead.
+
+### Resources that survive by design
+
+- Terraform state backend (until `--bootstrap` / `include_bootstrap`)
+- GitHub App secrets (`adp/gh-app-*`, `adp/*/github-app/*` in Secrets Manager)
+- GitHub Apps themselves (delete manually in org settings)
+- AWS-managed RDS secrets (`rds!*`)
