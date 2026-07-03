@@ -59,7 +59,8 @@ for STATE_KEY in \
   "${ENVIRONMENT}/platform/terraform.tfstate" \
   "${ENVIRONMENT}/modules/gateway/terraform.tfstate" \
   "${ENVIRONMENT}/modules/agent-factory/terraform.tfstate" \
-  "${ENVIRONMENT}/modules/agent-context/terraform.tfstate"; do
+  "${ENVIRONMENT}/modules/agent-context/terraform.tfstate" \
+  "${ENVIRONMENT}/modules/webhook-ingress/terraform.tfstate"; do
 
   if aws s3api head-object --bucket "$STATE_BUCKET" --key "$STATE_KEY" > /dev/null 2>&1; then
     # Check if the state has any resources (not just an empty state)
