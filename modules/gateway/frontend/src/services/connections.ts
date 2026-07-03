@@ -58,6 +58,8 @@ export interface RegisterAppStartResponse {
 
 export interface AppStatusResponse {
   registered: boolean;
+  /** Whether "Sign in with GitHub" is wired (broker OAuth secret populated). Issue #2708. */
+  login_enabled?: boolean;
   app_slug: string | null;
   app_id: string | null;
   owner_type: string | null;

@@ -1008,8 +1008,12 @@ async def register_app_callback(
             detail="GitHub returned incomplete App credentials.",
         )
 
-    # 3. Store credentials in Secrets Manager at the shared paths
-    await _store_app_credentials(
+    # 3. Store credentials in Secrets Manager at the shared paths.
+    # Issue #2708: the OAuth write-through result tells us whether "Sign in with
+    # GitHub" is actually wired. The broker derives its client_id/callback at
+    # runtime (no more Lambda-env mutation), so this secret write is the only
+    # login side effect the register flow has.
+    login_enabled = await _store_app_credentials(
         app_id=app_id,
         app_slug=app_slug,
         pem=pem,
@@ -1018,93 +1022,25 @@ async def register_app_callback(
         webhook_secret=webhook_secret,
     )
 
-    # Issue #2607: Update the broker Lambda's GITHUB_CLIENT_ID and CALLBACK_URL
-    # env vars so login works immediately without wire-github-app.sh.
-    await _update_broker_lambda_env(client_id=client_id)
-
     # Issue #2594: Invalidate the cached provider so subsequent requests use
     # the freshly-stored credentials without a pod restart.
     get_github_app_provider().invalidate()
 
     logger.info(
-        "register-app-callback: App registered successfully id=%s slug=%s",
+        "register-app-callback: App registered successfully id=%s slug=%s login_enabled=%s",
         app_id,
         app_slug,
+        login_enabled,
     )
 
     # Return frontend redirect URL (relative path — same pattern as
     # install-callback; avoids routing issues with absolute URLs and
     # ensures the SPA session is preserved in the same-tab flow).
-    return "/settings/connections?github_app=registered"
-
-
-async def _update_broker_lambda_env(*, client_id: str) -> None:
-    """Update the login broker Lambda's GITHUB_CLIENT_ID and CALLBACK_URL env vars.
-
-    Issue #2607: After App registration stores credentials in Secrets Manager,
-    the broker Lambda still needs its non-secret env vars updated so it can
-    build the OAuth authorize URL. This mirrors what wire-github-app.sh does
-    in steps 2b-2c.
-
-    Non-fatal: if the Lambda doesn't exist yet or the update fails, log a
-    warning. The broker will work once the env is set manually or on next deploy.
-    """
-    import asyncio
-
-    import boto3
-
-    env = _get_environment()
-    region = os.environ.get("AWS_REGION", "us-east-1")
-
-    def _update_sync() -> None:
-        lambda_client = boto3.client("lambda", region_name=region)
-        function_name = f"bedrockgw-{env}-github-auth-broker"
-
-        # Resolve the OAuth callback URL from SSM (same as wire-github-app.sh)
-        callback_url = ""
-        try:
-            ssm = boto3.client("ssm", region_name=region)
-            param = ssm.get_parameter(Name=f"/adp/{env}/gateway/apigw-invoke-url")
-            apigw_url = param["Parameter"]["Value"]
-            if apigw_url:
-                callback_url = f"{apigw_url}/auth/github/callback"
-        except Exception as exc:
-            logger.warning("Could not resolve broker callback URL from SSM: %s", exc)
-
-        try:
-            # Get current env vars
-            config = lambda_client.get_function_configuration(
-                FunctionName=function_name,
-            )
-            current_env = config.get("Environment", {}).get("Variables", {})
-
-            # Update the non-secret env vars
-            current_env["GITHUB_CLIENT_ID"] = client_id
-            if callback_url:
-                current_env["CALLBACK_URL"] = callback_url
-
-            lambda_client.update_function_configuration(
-                FunctionName=function_name,
-                Environment={"Variables": current_env},
-            )
-            logger.info(
-                "Updated broker Lambda env: GITHUB_CLIENT_ID=%s CALLBACK_URL=%s",
-                client_id[:8] + "..." if len(client_id) > 8 else client_id,
-                callback_url or "(unchanged)",
-            )
-        except lambda_client.exceptions.ResourceNotFoundException:
-            logger.warning(
-                "Broker Lambda %s not found — login env not updated. Run wire-github-app.sh after gateway-infra deploy.",
-                function_name,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Could not update broker Lambda env for %s: %s. Login will work after manual env update or next deploy.",
-                function_name,
-                exc,
-            )
-
-    await asyncio.to_thread(_update_sync)
+    # Issue #2708: surface a partial-success signal so the UI can warn that
+    # login isn't wired instead of showing a plain success toast.
+    if login_enabled:
+        return "/settings/connections?github_app=registered"
+    return "/settings/connections?github_app=registered&login_enabled=false"
 
 
 async def _store_app_credentials(
@@ -1115,7 +1051,7 @@ async def _store_app_credentials(
     client_id: str,
     client_secret: str,
     webhook_secret: str,
-) -> None:
+) -> bool:
     """Store GitHub App credentials in Secrets Manager at the shared paths.
 
     Paths match register-github-app.sh / webhook-ingress/infra/secrets.tf:
@@ -1125,6 +1061,13 @@ async def _store_app_credentials(
     Additional metadata (slug, client_id, client_secret, webhook_secret) is stored
     in a JSON secret alongside:
         adp/<env>/github-app/adp-agent-platform-meta → JSON blob
+
+    Returns:
+        Whether the broker OAuth write-through succeeded — i.e. whether "Sign in
+        with GitHub" is now wired (Issue #2708). True when there was nothing to
+        write (no client_id/secret) OR the write landed; False when the write was
+        attempted but failed (e.g. AccessDenied). The App-creds writes themselves
+        still raise on failure — only the login write-through is soft-failed.
     """
     import asyncio
     import json
@@ -1135,7 +1078,7 @@ async def _store_app_credentials(
     env = _get_environment()
     region = os.environ.get("AWS_REGION", "us-east-1")
 
-    def _store_sync() -> None:
+    def _store_sync() -> bool:
         sm = boto3.client("secretsmanager", region_name=region)
 
         id_path = f"adp/{env}/github-app/adp-agent-platform-id"
@@ -1178,38 +1121,47 @@ async def _store_app_credentials(
                     logger.error("Failed to store secret %s: %s", path, exc)
                     raise
 
-        # Issue #2607: Write-through to the broker's OAuth secret so
+        # Issue #2607/#2708: Write-through to the broker's OAuth secret so
         # "Sign in with GitHub" works immediately after App registration
-        # without a separate wire-github-app.sh step.
-        if client_id and client_secret:
-            oauth_path = f"adp/{env}/cognito/github-oauth-credentials"
-            oauth_payload = json.dumps({"client_id": client_id, "client_secret": client_secret})
-            try:
-                sm.create_secret(
-                    Name=oauth_path,
-                    Description=f"GitHub OAuth credentials for login broker ({env})",
-                    SecretString=oauth_payload,
-                    Tags=[
-                        {"Key": "ManagedBy", "Value": "adp-gateway-register"},
-                        {"Key": "AppSlug", "Value": app_slug},
-                    ],
-                )
-                logger.info("Created broker OAuth secret: %s", oauth_path)
-            except ClientError as exc:
-                error_code = exc.response.get("Error", {}).get("Code", "")
-                if error_code == "ResourceExistsException":
-                    sm.put_secret_value(SecretId=oauth_path, SecretString=oauth_payload)
-                    logger.info("Updated broker OAuth secret: %s", oauth_path)
-                else:
-                    # Non-fatal: broker login won't work but App registration
-                    # itself succeeded. Log and continue.
-                    logger.warning(
-                        "Could not write broker OAuth secret %s: %s",
-                        oauth_path,
-                        exc,
-                    )
+        # without a separate wire-github-app.sh step. The broker reads
+        # client_id + client_secret from this secret at runtime (#2708).
+        if not (client_id and client_secret):
+            # Nothing to wire — treat as "no login side effect required".
+            # (GitHub always returns client_id/secret from the manifest
+            # conversion, so this is a defensive branch.)
+            return True
 
-    await asyncio.to_thread(_store_sync)
+        oauth_path = f"adp/{env}/cognito/github-oauth-credentials"
+        oauth_payload = json.dumps({"client_id": client_id, "client_secret": client_secret})
+        try:
+            sm.create_secret(
+                Name=oauth_path,
+                Description=f"GitHub OAuth credentials for login broker ({env})",
+                SecretString=oauth_payload,
+                Tags=[
+                    {"Key": "ManagedBy", "Value": "adp-gateway-register"},
+                    {"Key": "AppSlug", "Value": app_slug},
+                ],
+            )
+            logger.info("Created broker OAuth secret: %s", oauth_path)
+            return True
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code == "ResourceExistsException":
+                sm.put_secret_value(SecretId=oauth_path, SecretString=oauth_payload)
+                logger.info("Updated broker OAuth secret: %s", oauth_path)
+                return True
+            # Non-fatal for App registration, but login is NOT wired. Issue
+            # #2708: surface this to the caller instead of swallowing so the
+            # UI can warn the operator rather than report silent success.
+            logger.warning(
+                "Could not write broker OAuth secret %s (login not wired): %s",
+                oauth_path,
+                exc,
+            )
+            return False
+
+    return await asyncio.to_thread(_store_sync)
 
 
 # ---------------------------------------------------------------------------
@@ -1232,6 +1184,37 @@ def invalidate_app_credentials_cache() -> None:
     # the old key if we don't flush.
     _metadata_cache.clear()
     logger.info("App credentials cache invalidated")
+
+
+def _check_login_enabled(sm: Any) -> bool:
+    """Return whether the broker OAuth secret holds a real, non-placeholder client_id.
+
+    Issue #2708: "Sign in with GitHub" is only usable when the broker's OAuth
+    secret (adp/<env>/cognito/github-oauth-credentials) has been populated with a
+    real client_id — Terraform seeds it with the literal "PLACEHOLDER". A cheap
+    read; failures (missing secret, AccessDenied, malformed JSON) all resolve to
+    False rather than raising, so status stays informative even when login isn't
+    wired. ``sm`` is an already-constructed Secrets Manager client (reused from
+    the caller so we don't create a second one).
+    """
+    import json
+
+    from botocore.exceptions import ClientError
+
+    env = _get_environment()
+    oauth_path = f"adp/{env}/cognito/github-oauth-credentials"
+
+    try:
+        resp = sm.get_secret_value(SecretId=oauth_path)
+        raw = resp.get("SecretString", "")
+        if not raw:
+            return False
+        data = json.loads(raw)
+        client_id = (data.get("client_id") or "").strip()
+        return bool(client_id) and client_id != "PLACEHOLDER" and not _is_placeholder(client_id)
+    except (ClientError, json.JSONDecodeError, TypeError) as exc:
+        logger.info("login_enabled check: could not read %s (login treated as not wired): %s", oauth_path, exc)
+        return False
 
 
 async def get_app_status() -> AppStatusResponse:
@@ -1303,9 +1286,14 @@ async def get_app_status() -> AppStatusResponse:
             settings = get_settings()
             app_slug = getattr(settings, "github_app_slug", None) or None
 
+        # Issue #2708: report whether "Sign in with GitHub" is actually wired
+        # by checking the broker OAuth secret holds a real client_id.
+        login_enabled = _check_login_enabled(sm)
+
         return AppStatusResponse(
             registered=True,
             install_ready=bool(app_slug),
+            login_enabled=login_enabled,
             app_id=app_id,
             app_slug=app_slug,
             owner_type=owner_type,

@@ -666,10 +666,6 @@ class TestRegisterAppCallbackService:
                 "src.admin.connections.service._store_app_credentials",
                 new=AsyncMock(),
             ),
-            patch(
-                "src.admin.connections.service._update_broker_lambda_env",
-                new=AsyncMock(),
-            ),
         ):
             mock_client = AsyncMock()
             mock_client.post.return_value = mock_http_response
@@ -961,10 +957,6 @@ class TestBrokerOAuthWriteThrough:
                 "src.admin.connections.service._store_app_credentials",
                 new=AsyncMock(),
             ),
-            patch(
-                "src.admin.connections.service._update_broker_lambda_env",
-                new=AsyncMock(),
-            ),
         ):
             mock_client = AsyncMock()
             mock_client.post.return_value = mock_http_response
@@ -982,135 +974,173 @@ class TestBrokerOAuthWriteThrough:
         assert "PRIVATE KEY" not in result
 
 
-class TestUpdateBrokerLambdaEnv:
-    """Tests for _update_broker_lambda_env (Issue #2607)."""
+class TestLoginEnabledSignal:
+    """Issue #2708: register flow reports whether GitHub login got wired."""
 
     @pytest.mark.asyncio
-    async def test_updates_lambda_env_vars(self):
-        """Updates GITHUB_CLIENT_ID and CALLBACK_URL on the broker Lambda."""
-        from src.admin.connections.service import _update_broker_lambda_env
+    async def test_store_credentials_returns_true_on_success(self):
+        """_store_app_credentials returns True when the OAuth secret write lands."""
+        from src.admin.connections.service import _store_app_credentials
 
-        updated_env = {}
-
-        class FakeLambda:
-            class exceptions:  # noqa: N801 — matches boto3 API shape
-                class ResourceNotFoundException(Exception):  # noqa: N818
-                    pass
-
-            def get_function_configuration(self, **kwargs):
-                assert kwargs["FunctionName"] == "bedrockgw-dev-github-auth-broker"
-                return {
-                    "Environment": {
-                        "Variables": {
-                            "GITHUB_CLIENT_ID": "",
-                            "CALLBACK_URL": "",
-                            "COGNITO_USER_POOL_ID": "us-east-1_Pool",
-                        }
-                    }
-                }
-
-            def update_function_configuration(self, **kwargs):
-                updated_env.update(kwargs["Environment"]["Variables"])
-
-        class FakeSSM:
-            def get_parameter(self, **kwargs):
-                return {"Parameter": {"Value": "https://api.example.com"}}
-
-        def fake_boto_client(service, **kwargs):
-            if service == "lambda":
-                return FakeLambda()
-            if service == "ssm":
-                return FakeSSM()
-            raise ValueError(f"Unexpected service: {service}")
+        class FakeSM:
+            def create_secret(self, **kwargs):
+                pass
 
         with (
             patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
-            patch("boto3.client", side_effect=fake_boto_client),
+            patch("boto3.client", return_value=FakeSM()),
         ):
-            await _update_broker_lambda_env(client_id="Iv1.new_client")
+            result = await _store_app_credentials(
+                app_id="123456",
+                app_slug="adp-agent-platform",
+                pem="-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
+                client_id="Iv1.abc123",
+                client_secret="s3cr3t",
+                webhook_secret="whsec_xyz",
+            )
 
-        assert updated_env["GITHUB_CLIENT_ID"] == "Iv1.new_client"
-        assert updated_env["CALLBACK_URL"] == "https://api.example.com/auth/github/callback"
-        # Existing vars preserved
-        assert updated_env["COGNITO_USER_POOL_ID"] == "us-east-1_Pool"
+        assert result is True
 
     @pytest.mark.asyncio
-    async def test_handles_missing_lambda_gracefully(self):
-        """If broker Lambda doesn't exist, warn but don't raise."""
-        from src.admin.connections.service import _update_broker_lambda_env
+    async def test_store_credentials_returns_false_on_oauth_access_denied(self):
+        """OAuth-secret AccessDenied → returns False; App-creds writes still succeed."""
+        from botocore.exceptions import ClientError
 
-        class FakeLambda:
-            class exceptions:  # noqa: N801 — matches boto3 API shape
-                class ResourceNotFoundException(Exception):  # noqa: N818
-                    pass
+        from src.admin.connections.service import _store_app_credentials
 
-            def get_function_configuration(self, **kwargs):
-                raise self.exceptions.ResourceNotFoundException("not found")
+        class FakeSM:
+            def create_secret(self, **kwargs):
+                if "cognito/github-oauth-credentials" in kwargs["Name"]:
+                    raise ClientError(
+                        {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
+                        "CreateSecret",
+                    )
+                # App-creds secrets succeed
 
-        class FakeSSM:
-            def get_parameter(self, **kwargs):
-                return {"Parameter": {"Value": "https://api.example.com"}}
-
-        def fake_boto_client(service, **kwargs):
-            if service == "lambda":
-                return FakeLambda()
-            if service == "ssm":
-                return FakeSSM()
-            raise ValueError(f"Unexpected service: {service}")
+            def put_secret_value(self, **kwargs):
+                pass
 
         with (
             patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
-            patch("boto3.client", side_effect=fake_boto_client),
+            patch("boto3.client", return_value=FakeSM()),
         ):
-            # Should not raise
-            await _update_broker_lambda_env(client_id="Iv1.test")
+            result = await _store_app_credentials(
+                app_id="123456",
+                app_slug="adp-agent-platform",
+                pem="-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
+                client_id="Iv1.abc123",
+                client_secret="s3cr3t",
+                webhook_secret="whsec_xyz",
+            )
+
+        assert result is False
 
     @pytest.mark.asyncio
-    async def test_handles_ssm_failure_gracefully(self):
-        """If SSM param is missing, CALLBACK_URL is not updated."""
-        from src.admin.connections.service import _update_broker_lambda_env
+    async def test_callback_redirect_carries_login_disabled_on_failure(self):
+        """register_app_callback appends login_enabled=false when the write fails."""
+        from src.admin.connections.service import register_app_callback
 
-        updated_env = {}
+        mock_db = AsyncMock()
+        mock_nonce = MagicMock()
+        mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
+        mock_nonce.consumed_at = None
 
-        class FakeLambda:
-            class exceptions:  # noqa: N801 — matches boto3 API shape
-                class ResourceNotFoundException(Exception):  # noqa: N818
-                    pass
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_nonce
+        mock_consume_result = MagicMock()
+        mock_consume_result.scalar_one_or_none.return_value = "consumed-jti"
 
-            def get_function_configuration(self, **kwargs):
-                return {
-                    "Environment": {
-                        "Variables": {
-                            "GITHUB_CLIENT_ID": "",
-                            "CALLBACK_URL": "https://old.example.com/auth/github/callback",
-                        }
-                    }
-                }
+        call_count = [0]
 
-            def update_function_configuration(self, **kwargs):
-                updated_env.update(kwargs["Environment"]["Variables"])
+        async def mock_execute(stmt):
+            call_count[0] += 1
+            return mock_result if call_count[0] == 1 else mock_consume_result
 
-        class FakeSSM:
-            def get_parameter(self, **kwargs):
-                raise Exception("Parameter not found")
+        mock_db.execute = mock_execute
+        mock_db.commit = AsyncMock()
 
-        def fake_boto_client(service, **kwargs):
-            if service == "lambda":
-                return FakeLambda()
-            if service == "ssm":
-                return FakeSSM()
-            raise ValueError(f"Unexpected service: {service}")
+        github_response = {
+            "id": 12345,
+            "slug": "test-app",
+            "pem": "-----BEGIN RSA PRIVATE KEY-----\nK\n-----END RSA PRIVATE KEY-----",
+            "client_id": "Iv1.abc",
+            "client_secret": "s",
+            "webhook_secret": "whsec",
+        }
+        mock_http_response = MagicMock()
+        mock_http_response.status_code = 201
+        mock_http_response.json.return_value = github_response
 
         with (
-            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
-            patch("boto3.client", side_effect=fake_boto_client),
+            patch("httpx.AsyncClient") as mock_client_cls,
+            patch(
+                "src.admin.connections.service._store_app_credentials",
+                new=AsyncMock(return_value=False),
+            ),
         ):
-            await _update_broker_lambda_env(client_id="Iv1.new_id")
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_http_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
 
-        # GITHUB_CLIENT_ID is updated
-        assert updated_env["GITHUB_CLIENT_ID"] == "Iv1.new_id"
-        # CALLBACK_URL is NOT overwritten (SSM failed, so keep old value)
-        assert updated_env["CALLBACK_URL"] == "https://old.example.com/auth/github/callback"
+            result = await register_app_callback(code="c", state="s", db=mock_db)
+
+        assert result == "/settings/connections?github_app=registered&login_enabled=false"
+
+    @pytest.mark.asyncio
+    async def test_callback_redirect_clean_on_success(self):
+        """Success path redirect carries github_app=registered without the failure flag."""
+        from src.admin.connections.service import register_app_callback
+
+        mock_db = AsyncMock()
+        mock_nonce = MagicMock()
+        mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
+        mock_nonce.consumed_at = None
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_nonce
+        mock_consume_result = MagicMock()
+        mock_consume_result.scalar_one_or_none.return_value = "consumed-jti"
+
+        call_count = [0]
+
+        async def mock_execute(stmt):
+            call_count[0] += 1
+            return mock_result if call_count[0] == 1 else mock_consume_result
+
+        mock_db.execute = mock_execute
+        mock_db.commit = AsyncMock()
+
+        github_response = {
+            "id": 12345,
+            "slug": "test-app",
+            "pem": "-----BEGIN RSA PRIVATE KEY-----\nK\n-----END RSA PRIVATE KEY-----",
+            "client_id": "Iv1.abc",
+            "client_secret": "s",
+            "webhook_secret": "whsec",
+        }
+        mock_http_response = MagicMock()
+        mock_http_response.status_code = 201
+        mock_http_response.json.return_value = github_response
+
+        with (
+            patch("httpx.AsyncClient") as mock_client_cls,
+            patch(
+                "src.admin.connections.service._store_app_credentials",
+                new=AsyncMock(return_value=True),
+            ),
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_http_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
+            result = await register_app_callback(code="c", state="s", db=mock_db)
+
+        assert result == "/settings/connections?github_app=registered"
+        assert "login_enabled" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -1241,10 +1271,6 @@ class TestCallbackRedirectRelativePath:
             patch("httpx.AsyncClient") as mock_client_cls,
             patch(
                 "src.admin.connections.service._store_app_credentials",
-                new=AsyncMock(),
-            ),
-            patch(
-                "src.admin.connections.service._update_broker_lambda_env",
                 new=AsyncMock(),
             ),
         ):

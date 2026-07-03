@@ -464,6 +464,7 @@ class TestGetAppStatusService:
         mock_sm.get_secret_value.side_effect = [
             {"SecretString": "3410773"},  # id_path
             {"SecretString": json.dumps({"app_slug": "adp-agent-platform", "client_id": "Iv1.abc"})},  # meta_path
+            {"SecretString": json.dumps({"client_id": "Iv1.abc", "client_secret": "s"})},  # oauth secret (#2708)
         ]
         mock_sm.describe_secret.return_value = {
             "CreatedDate": datetime(2026, 6, 15, 10, 0, 0),
@@ -478,6 +479,7 @@ class TestGetAppStatusService:
         assert result.registered is True
         assert result.app_id == "3410773"
         assert result.app_slug == "adp-agent-platform"
+        assert result.login_enabled is True
 
     @pytest.mark.asyncio
     async def test_status_never_returns_sensitive_fields(self):
@@ -499,6 +501,9 @@ class TestGetAppStatusService:
                     }
                 )
             },  # meta_path
+            {
+                "SecretString": json.dumps({"client_id": "Iv1.abc", "client_secret": "super_secret_value"})
+            },  # oauth secret (#2708) — must not leak either
         ]
         mock_sm.describe_secret.return_value = {"CreatedDate": datetime(2026, 6, 15, 10, 0, 0)}
 
@@ -571,6 +576,7 @@ class TestStatusInstallReady:
         mock_sm.get_secret_value.side_effect = [
             {"SecretString": "3410773"},
             {"SecretString": json.dumps({"app_slug": "adp-agent-platform"})},
+            {"SecretString": json.dumps({"client_id": "Iv1.abc", "client_secret": "s"})},  # oauth (#2708)
         ]
         mock_sm.describe_secret.return_value = {"CreatedDate": datetime(2026, 6, 15, 10, 0, 0)}
 
@@ -594,6 +600,7 @@ class TestStatusInstallReady:
         mock_sm.get_secret_value.side_effect = [
             {"SecretString": "3410773"},
             {"SecretString": json.dumps({"client_id": "Iv1.abc"})},  # no app_slug
+            {"SecretString": json.dumps({"client_id": "Iv1.abc", "client_secret": "s"})},  # oauth (#2708)
         ]
         mock_sm.describe_secret.return_value = {"CreatedDate": datetime(2026, 6, 15, 10, 0, 0)}
 
@@ -606,6 +613,63 @@ class TestStatusInstallReady:
 
         assert result.registered is True
         assert result.install_ready is False
+
+
+class TestStatusLoginEnabled:
+    """Issue #2708: get_app_status surfaces login_enabled from the OAuth secret."""
+
+    @pytest.mark.asyncio
+    async def test_login_enabled_false_when_oauth_placeholder(self):
+        """Placeholder client_id in the OAuth secret → login_enabled False."""
+        import json
+
+        from src.admin.connections.service import get_app_status
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.side_effect = [
+            {"SecretString": "3410773"},  # id_path
+            {"SecretString": json.dumps({"app_slug": "adp-agent-platform"})},  # meta
+            {"SecretString": json.dumps({"client_id": "PLACEHOLDER", "client_secret": "PLACEHOLDER"})},  # oauth
+        ]
+        mock_sm.describe_secret.return_value = {"CreatedDate": datetime(2026, 6, 15, 10, 0, 0)}
+
+        with (
+            patch("boto3.client", return_value=mock_sm),
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
+        ):
+            result = await get_app_status()
+
+        assert result.registered is True
+        assert result.login_enabled is False
+
+    @pytest.mark.asyncio
+    async def test_login_enabled_false_when_oauth_secret_missing(self):
+        """OAuth secret absent (ResourceNotFound) → login_enabled False, no raise."""
+        import json
+
+        from botocore.exceptions import ClientError
+
+        from src.admin.connections.service import get_app_status
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.side_effect = [
+            {"SecretString": "3410773"},  # id_path
+            {"SecretString": json.dumps({"app_slug": "adp-agent-platform"})},  # meta
+            ClientError(  # oauth secret read fails
+                {"Error": {"Code": "ResourceNotFoundException", "Message": "nope"}},
+                "GetSecretValue",
+            ),
+        ]
+        mock_sm.describe_secret.return_value = {"CreatedDate": datetime(2026, 6, 15, 10, 0, 0)}
+
+        with (
+            patch("boto3.client", return_value=mock_sm),
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
+        ):
+            result = await get_app_status()
+
+        assert result.registered is True
+        assert result.login_enabled is False
 
 
 class TestInvalidateAppCredentialsCache:

@@ -168,6 +168,26 @@ describe('Connections Page', () => {
     });
   });
 
+  describe('App registered callback (query param ?github_app=registered)', () => {
+    it('shows success toast when login is wired', async () => {
+      renderConnections(['/settings/connections?github_app=registered']);
+
+      await waitFor(() => {
+        expect(screen.getByText('GitHub App registered successfully!')).toBeInTheDocument();
+      });
+    });
+
+    it('shows a warning toast when login_enabled=false (Issue #2708)', async () => {
+      renderConnections(['/settings/connections?github_app=registered&login_enabled=false']);
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/"Sign in with GitHub" is not wired yet/i),
+        ).toBeInTheDocument();
+      });
+    });
+  });
+
   describe('Error callback (query params ?error=...&message=...)', () => {
     it('shows error toast with message from query param', async () => {
       renderConnections(['/settings/connections?error=expired_nonce&message=Token+expired']);

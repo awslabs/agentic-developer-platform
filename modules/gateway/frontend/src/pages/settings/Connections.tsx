@@ -98,7 +98,16 @@ export default function Connections() {
       loadConnections();
       setSearchParams({}, { replace: true });
     } else if (githubApp === 'registered') {
-      toast.success('GitHub App registered successfully!');
+      // Issue #2708: the register flow appends login_enabled=false when the
+      // broker OAuth-secret write-through failed (e.g. IAM). Warn instead of
+      // reporting plain success so the operator knows login isn't wired.
+      if (searchParams.get('login_enabled') === 'false') {
+        toast.warning(
+          'GitHub App registered, but "Sign in with GitHub" is not wired yet. See the connection status below.',
+        );
+      } else {
+        toast.success('GitHub App registered successfully!');
+      }
       loadAppStatus();
       setSearchParams({}, { replace: true });
     } else if (errorCode) {

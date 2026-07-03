@@ -35,7 +35,7 @@ def env_setup(monkeypatch):
     # Reset cached secrets and module-level config between tests
     import handler as h
 
-    h._github_client_secret = None
+    h._github_oauth_creds = None
     h._github_org_token = None
     h.ALLOWLIST_MODE = "open"
 
@@ -182,7 +182,7 @@ class TestCallbackEndpoint:
         import handler
 
         # Set up the cached secret so state verification works
-        handler._github_client_secret = "test-secret-123"
+        handler._github_oauth_creds = {"client_id": "test-client-id", "client_secret": "test-secret-123"}
 
         state = _make_valid_state("test-secret-123")
 
@@ -240,7 +240,7 @@ class TestCallbackEndpoint:
         monkeypatch.setenv("ALLOWLIST_MODE", "org")
         # Reload the module-level var
         handler.ALLOWLIST_MODE = "org"
-        handler._github_client_secret = "test-secret-123"
+        handler._github_oauth_creds = {"client_id": "test-client-id", "client_secret": "test-secret-123"}
 
         state = _make_valid_state("test-secret-123")
 
@@ -272,7 +272,7 @@ class TestCallbackEndpoint:
         """Existing user still gets tokens (provision is idempotent)."""
         import handler
 
-        handler._github_client_secret = "test-secret-123"
+        handler._github_oauth_creds = {"client_id": "test-client-id", "client_secret": "test-secret-123"}
         state = _make_valid_state("test-secret-123")
 
         mock_exchange.return_value = "gh-access-token"
@@ -370,7 +370,7 @@ class TestAPIGatewayV1EventShape:
         """API Gateway v1 callback with cookies in headers."""
         import handler
 
-        handler._github_client_secret = "test-secret-123"
+        handler._github_oauth_creds = {"client_id": "test-client-id", "client_secret": "test-secret-123"}
         state = _make_valid_state("test-secret-123")
 
         event = {
@@ -386,9 +386,11 @@ class TestAPIGatewayV1EventShape:
             "queryStringParameters": {"code": "test-code", "state": state},
         }
 
-        with patch("handler.exchange_code_for_token") as mock_exchange, \
-             patch("handler.get_github_user") as mock_get_user, \
-             patch("handler.provision_and_authenticate") as mock_provision:
+        with (
+            patch("handler.exchange_code_for_token") as mock_exchange,
+            patch("handler.get_github_user") as mock_get_user,
+            patch("handler.provision_and_authenticate") as mock_provision,
+        ):
             mock_exchange.return_value = "gh-token"
             mock_get_user.return_value = {
                 "id": 100,
@@ -454,7 +456,7 @@ class TestRefreshTokenInResponse:
         """Response redirect includes refresh_token parameter."""
         import handler
 
-        handler._github_client_secret = "test-secret-123"
+        handler._github_oauth_creds = {"client_id": "test-client-id", "client_secret": "test-secret-123"}
         state = _make_valid_state("test-secret-123")
 
         mock_exchange.return_value = "gh-token"
@@ -482,3 +484,67 @@ class TestRefreshTokenInResponse:
 
         location = response["headers"]["Location"]
         assert "refresh_token=my-refresh-token" in location
+
+
+class TestClientIdResolution:
+    """Issue #2708: client_id resolves from the OAuth secret, env is fallback."""
+
+    def test_uses_client_id_from_secret(self, mock_secrets):
+        """A real client_id in the OAuth secret is used over the env var."""
+        import handler
+
+        mock_secrets.get_secret_value.return_value = {"SecretString": json.dumps({"client_id": "Iv1.from_secret", "client_secret": "s"})}
+        assert handler._get_github_client_id() == "Iv1.from_secret"
+
+    def test_falls_back_to_env_when_secret_placeholder(self, mock_secrets):
+        """Placeholder client_id in the secret falls back to GITHUB_CLIENT_ID env (embark1)."""
+        import handler
+
+        mock_secrets.get_secret_value.return_value = {"SecretString": json.dumps({"client_id": "PLACEHOLDER", "client_secret": "s"})}
+        # GITHUB_CLIENT_ID env is "test-client-id" (module-level, set at import)
+        assert handler._get_github_client_id() == "test-client-id"
+
+    def test_falls_back_to_env_when_secret_empty(self, mock_secrets):
+        """Empty client_id in the secret falls back to the env var."""
+        import handler
+
+        mock_secrets.get_secret_value.return_value = {"SecretString": json.dumps({"client_id": "", "client_secret": "s"})}
+        assert handler._get_github_client_id() == "test-client-id"
+
+
+class TestCallbackUrlDerivation:
+    """Issue #2708: CALLBACK_URL is derived from requestContext; env var wins."""
+
+    def test_env_var_wins_when_set(self):
+        """When CALLBACK_URL env is set it is used verbatim."""
+        import handler
+
+        handler.CALLBACK_URL = "https://env.example.com/api/auth/github/callback"
+        try:
+            event = {"requestContext": {"domainName": "api.other.com", "stage": "prod"}}
+            assert handler._derive_callback_url(event) == "https://env.example.com/api/auth/github/callback"
+        finally:
+            handler.CALLBACK_URL = ""
+
+    def test_derives_from_request_context_with_stage(self):
+        """Derived URL is https://<domain>/<stage>/auth/github/callback."""
+        import handler
+
+        handler.CALLBACK_URL = ""
+        event = {"requestContext": {"domainName": "abc123.execute-api.us-east-1.amazonaws.com", "stage": "prod"}}
+        assert handler._derive_callback_url(event) == "https://abc123.execute-api.us-east-1.amazonaws.com/prod/auth/github/callback"
+
+    def test_derives_without_default_stage(self):
+        """The $default stage is not part of the invoke path."""
+        import handler
+
+        handler.CALLBACK_URL = ""
+        event = {"requestContext": {"domainName": "d.example.com", "stage": "$default"}}
+        assert handler._derive_callback_url(event) == "https://d.example.com/auth/github/callback"
+
+    def test_returns_empty_when_no_context(self):
+        """No env var and no domainName yields an empty string (no broken redirect)."""
+        import handler
+
+        handler.CALLBACK_URL = ""
+        assert handler._derive_callback_url({"requestContext": {}}) == ""

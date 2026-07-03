@@ -138,6 +138,21 @@ export function GitHubTile({
       ) : (
         // --- Registered state ---
         <>
+          {/* Issue #2708: warn when the App is registered but GitHub sign-in
+              isn't wired (broker OAuth secret missing/placeholder). */}
+          {isPlatformAdmin && appStatus?.login_enabled === false && (
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-900/20">
+              <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                GitHub sign-in not wired
+              </p>
+              <p className="mt-1 text-sm text-amber-700 dark:text-amber-300">
+                The App is registered, but &ldquo;Sign in with GitHub&rdquo; won&apos;t work until the
+                OAuth credentials are stored. Re-register the App, or see the deployment docs for
+                wiring login manually.
+              </p>
+            </div>
+          )}
+
           {/* App info (platform admin only) */}
           {isPlatformAdmin && appStatus && (
             <AppInfoPanel

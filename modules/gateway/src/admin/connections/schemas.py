@@ -139,6 +139,15 @@ class AppStatusResponse(BaseModel):
             "will 503 until the slug is recoverable (Issue #2700)."
         ),
     )
+    login_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether 'Sign in with GitHub' is wired — true iff the broker OAuth "
+            "secret (adp/<env>/cognito/github-oauth-credentials) holds a real, "
+            "non-placeholder client_id. False means the login button is dead until "
+            "the App is (re-)registered or credentials are seeded (Issue #2708)."
+        ),
+    )
     app_slug: str | None = Field(default=None, description="GitHub App slug (if registered)")
     app_id: str | None = Field(default=None, description="GitHub App numeric ID (if registered)")
     owner_type: str | None = Field(

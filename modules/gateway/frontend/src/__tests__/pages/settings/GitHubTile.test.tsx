@@ -223,6 +223,47 @@ describe('GitHubTile', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Issue #2708: registered but login not wired
+  // -------------------------------------------------------------------------
+
+  describe('platform_admin + registered + login not wired', () => {
+    const props = {
+      ...defaultProps,
+      isPlatformAdmin: true,
+      appStatus: { ...registeredStatus, login_enabled: false },
+    };
+
+    it('shows the "GitHub sign-in not wired" warning', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText('GitHub sign-in not wired')).toBeInTheDocument();
+    });
+
+    it('still shows the app info panel (App is registered)', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText('adp-agent-dev')).toBeInTheDocument();
+    });
+
+    it('does NOT show the warning when login_enabled is true', () => {
+      render(
+        <GitHubTile
+          {...props}
+          appStatus={{ ...registeredStatus, login_enabled: true }}
+        />,
+      );
+
+      expect(screen.queryByText('GitHub sign-in not wired')).not.toBeInTheDocument();
+    });
+
+    it('does NOT show the warning for non-platform-admins', () => {
+      render(<GitHubTile {...props} isPlatformAdmin={false} />);
+
+      expect(screen.queryByText('GitHub sign-in not wired')).not.toBeInTheDocument();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // State 3: non-platform_admin + unregistered
   // -------------------------------------------------------------------------
 
