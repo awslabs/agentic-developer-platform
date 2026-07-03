@@ -25,9 +25,12 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project     = var.project_name
+      Project     = "adp"
       Environment = var.environment
+      Module      = "agent-factory"
       ManagedBy   = "terraform"
+      Owner       = "agent-team"
+      CostCenter  = "engineering"
     }
   }
 }

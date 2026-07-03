@@ -13,10 +13,11 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project     = "BedrockGateway"
+      Project     = "adp"
       Environment = var.environment
+      Module      = "gateway"
       ManagedBy   = "terraform"
-      Owner       = "platform-team"
+      Owner       = "gateway-team"
       CostCenter  = var.cost_center
     }
   }
@@ -47,10 +48,11 @@ locals {
 
   # Common tags to merge with provider default tags
   common_tags = {
-    Project     = "BedrockGateway"
+    Project     = "adp"
     Environment = var.environment
+    Module      = "gateway"
     ManagedBy   = "terraform"
-    Owner       = "platform-team"
+    Owner       = "gateway-team"
     CostCenter  = var.cost_center
   }
 

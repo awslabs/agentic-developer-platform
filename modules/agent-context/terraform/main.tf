@@ -10,9 +10,12 @@ provider "aws" {
 
   default_tags {
     tags = merge(var.tags, {
-      Project     = "agent-context-platform"
+      Project     = "adp"
       Environment = var.environment
+      Module      = "agent-context"
       ManagedBy   = "terraform"
+      Owner       = "agent-team"
+      CostCenter  = "engineering"
     })
   }
 }

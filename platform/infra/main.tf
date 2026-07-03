@@ -49,7 +49,10 @@ locals {
   common_tags = {
     Project     = "adp"
     Environment = var.environment
+    Module      = "platform"
     ManagedBy   = "terraform"
+    Owner       = "platform-team"
+    CostCenter  = "engineering"
   }
 
   # Deployer principal that should get EKS cluster-admin.

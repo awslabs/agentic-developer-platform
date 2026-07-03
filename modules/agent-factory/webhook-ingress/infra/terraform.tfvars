@@ -12,8 +12,8 @@ aws_region  = "us-east-1"
 # content unmasking (prompts/tool I/O) stays OFF (deferred data-governance).
 enable_agent_otel = true
 
-tags = {
-  Project   = "adp"
-  Module    = "webhook-ingress"
-  ManagedBy = "terraform"
-}
+# Provider-level default_tags (in main.tf) now supply Project/Module/ManagedBy/
+# Owner/CostCenter for every resource. The overlapping `tags` map that used to
+# live here re-declared those keys and fought default_tags, so it was removed
+# (#888). Resource-level `merge(var.tags, {...})` callers still work — var.tags
+# defaults to {} in variables.tf.
