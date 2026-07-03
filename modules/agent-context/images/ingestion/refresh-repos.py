@@ -858,6 +858,13 @@ def main():
         result = run_publisher(force=args.force, triggered_by="daily_refresh")
         log.info("Publisher result: %s", json.dumps(result))
         print(json.dumps(result, indent=2))
+        # Step 1 of the refresh CronJob is FATAL on failure (see
+        # manifests/repo-refresh-cronjob.yaml): a publisher crash means no repo
+        # change detection happened, so surface it loudly instead of exiting 0
+        # and letting the Job report success (#2800).
+        if result.get("status") == "failed":
+            log.error("Publisher failed — failing the refresh Job (Step 1 is fatal)")
+            sys.exit(1)
         return
 
     # --- Legacy Sequential Mode (fallback when SQS is not configured) ---
