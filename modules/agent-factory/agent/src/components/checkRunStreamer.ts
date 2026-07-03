@@ -6,7 +6,10 @@
  * users watching the check page see turn-by-turn activity in near real time.
  *
  * Design constraints:
- *  - Min 2s between PATCH calls, max 30 PATCHes per run
+ *  - Minimum interval between PATCH calls decays with elapsed run time
+ *    (see _currentMinIntervalMs) so a long run keeps updating for its whole
+ *    lifetime instead of freezing after a fixed patch budget. MAX_PATCHES is a
+ *    generous circuit-breaker only, never a normal-operation cap.
  *  - output.text must stay ≤ 65,535 chars (GitHub hard limit); we target 60 KB
  *  - If text would exceed 60 KB, keep first plan turn + last N turns + a hidden-count marker
  *  - Writes final Markdown to /tmp/adp-check-run-final.md so entrypoint.py can
@@ -54,8 +57,27 @@ interface TurnRecord {
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_PATCHES = 30;
-const MIN_PATCH_INTERVAL_MS = 2_000;
+/**
+ * Circuit-breaker only. A logic bug that tries to PATCH in a tight loop is
+ * capped here so it can't hammer the GitHub API into a secondary rate limit.
+ * This is NOT a normal-operation budget: the decaying interval (see
+ * _currentMinIntervalMs) keeps a healthy 60-min run well under this number.
+ */
+const MAX_PATCHES = 150;
+
+/**
+ * Elapsed-time breakpoints for the minimum interval between PATCHes. Early in a
+ * run we update often; as the run gets long we back off so a multi-hour run
+ * stays under the circuit-breaker while still always eventually updating.
+ * Worst-case count on a 60-min run ≈ 24 + 52 + 60 ≈ 136 (< MAX_PATCHES).
+ */
+const INTERVAL_SCHEDULE: Array<{ afterMs: number; intervalMs: number }> = [
+  { afterMs: 15 * 60_000, intervalMs: 45_000 }, // > 15 min elapsed → 45s
+  { afterMs: 2 * 60_000, intervalMs: 15_000 }, //  2–15 min elapsed → 15s
+  { afterMs: 0, intervalMs: 5_000 }, //           0–2 min elapsed → 5s
+];
+/** Throttle marker is shown in the header once the interval reaches this. */
+const THROTTLE_MARKER_MIN_INTERVAL_MS = 15_000;
 /** Target ceiling on output.text; GitHub hard limit is 65,535. */
 const MAX_OUTPUT_BYTES = 60 * 1024; // 60 KB
 /** Path where the final rendered Markdown is written for entrypoint.py. */
@@ -78,8 +100,9 @@ export class CheckRunStreamer {
   private patchCount: number = 0;
   private lastPatchMs: number = 0;
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
-  private midTurnTimer: ReturnType<typeof setInterval> | null = null;
+  private midTurnTimer: ReturnType<typeof setTimeout> | null = null;
   private destroyed: boolean = false;
+  private breakerWarned: boolean = false;
 
   constructor(cfg: CheckRunStreamerConfig) {
     this.cfg = cfg;
@@ -153,8 +176,11 @@ export class CheckRunStreamer {
     if (data.costUsd !== undefined) {
       this.totalCostUsd = data.costUsd;
     }
-    // Fire a final PATCH immediately to capture the complete transcript
-    this._firePatch(true /* immediate */);
+    // Fire a final PATCH immediately to capture the complete transcript.
+    // Pass an explicit 'completed' status: this.destroyed is still false here
+    // (destroy() runs later), so deriving the status from it would render the
+    // final page as "running".
+    this._firePatch(true /* immediate */, 'completed');
   }
 
   /** Clean up timers. Call when the message loop exits. */
@@ -190,13 +216,27 @@ export class CheckRunStreamer {
       : `${this.turns.length} / done`;
     const costLabel = `$${this.totalCostUsd.toFixed(4)}`;
 
-    const header = [
+    const headerLines = [
       `## Agent: ${this.cfg.persona} · issue #${this.cfg.issueNumber}`,
       ``,
       `**Model:** ${this.cfg.model}`,
       `**Cost:** ${costLabel} · **Turn:** ${turnLabel}`,
       `**Elapsed:** ${elapsedSec}s`,
-    ].join('\n');
+    ];
+
+    // While the run is live and updates have decayed to a slow cadence, tell the
+    // reader the page is intentionally throttled (not stuck) and where to look
+    // for finer detail.
+    if (status === 'running') {
+      const intervalMs = this._currentMinIntervalMs();
+      if (intervalMs >= THROTTLE_MARKER_MIN_INTERVAL_MS) {
+        headerLines.push(
+          `_Live updates throttled to every ${Math.round(intervalMs / 1000)}s — full detail in the issue's progress comment._`,
+        );
+      }
+    }
+
+    const header = headerLines.join('\n');
 
     const planSection = this.planText
       ? `\n\n### Plan\n> ${this.planText.split('\n').join('\n> ')}`
@@ -335,12 +375,38 @@ export class CheckRunStreamer {
   // Patch scheduling and debounce
   // ---------------------------------------------------------------------------
 
+  /**
+   * Minimum interval (ms) allowed between PATCHes right now, decaying with
+   * elapsed run time. There is no lifetime cap on the number of PATCHes — a
+   * PATCH is always eventually allowed — so the live page keeps updating for
+   * the whole run instead of freezing after a fixed budget.
+   */
+  private _currentMinIntervalMs(): number {
+    const elapsedMs = Date.now() - this.startTimeMs;
+    for (const step of INTERVAL_SCHEDULE) {
+      if (elapsedMs >= step.afterMs) return step.intervalMs;
+    }
+    // INTERVAL_SCHEDULE always ends with afterMs: 0, so this is unreachable;
+    // fall back to the slowest cadence defensively.
+    return INTERVAL_SCHEDULE[0].intervalMs;
+  }
+
+  /** True once the circuit-breaker is tripped; logs a WARN on the first trip. */
+  private _breakerTripped(): boolean {
+    if (this.patchCount < MAX_PATCHES) return false;
+    if (!this.breakerWarned) {
+      this.breakerWarned = true;
+      this.warn(`circuit-breaker tripped: reached MAX_PATCHES=${MAX_PATCHES}; suppressing further live PATCHes`);
+    }
+    return true;
+  }
+
   private _schedulePatch(): void {
-    if (this.destroyed || this.patchCount >= MAX_PATCHES) return;
+    if (this.destroyed || this._breakerTripped()) return;
     if (this.pendingTimer) return; // already scheduled
 
     const msSinceLast = Date.now() - this.lastPatchMs;
-    const delay = Math.max(0, MIN_PATCH_INTERVAL_MS - msSinceLast);
+    const delay = Math.max(0, this._currentMinIntervalMs() - msSinceLast);
 
     this.pendingTimer = setTimeout(() => {
       this.pendingTimer = null;
@@ -348,11 +414,11 @@ export class CheckRunStreamer {
     }, delay);
   }
 
-  private _firePatch(immediate: boolean): void {
-    if (this.destroyed || this.patchCount >= MAX_PATCHES) return;
+  private _firePatch(immediate: boolean, statusOverride?: 'running' | 'completed'): void {
+    if (this.destroyed || this._breakerTripped()) return;
 
     const msSinceLast = Date.now() - this.lastPatchMs;
-    if (!immediate && msSinceLast < MIN_PATCH_INTERVAL_MS) {
+    if (!immediate && msSinceLast < this._currentMinIntervalMs()) {
       this._schedulePatch();
       return;
     }
@@ -360,7 +426,7 @@ export class CheckRunStreamer {
     this.patchCount++;
     this.lastPatchMs = Date.now();
 
-    const status = this.destroyed ? 'completed' : 'running';
+    const status = statusOverride ?? 'running';
     const md = this.buildMarkdown(status);
 
     // Write final output file for entrypoint.py to pick up
@@ -409,19 +475,27 @@ export class CheckRunStreamer {
     }
   }
 
-  /** Start a setInterval that fires a PATCH every MIN_PATCH_INTERVAL_MS during a long tool call. */
+  /**
+   * Keep the display live during a long-running tool call by firing a PATCH at
+   * the current decayed interval. Self-reschedules (rather than a fixed
+   * setInterval) so the cadence tracks _currentMinIntervalMs as the run ages.
+   */
   private _ensureMidTurnPolling(): void {
     if (this.midTurnTimer) return;
-    this.midTurnTimer = setInterval(() => {
-      if (this.patchCount < MAX_PATCHES && !this.destroyed) {
-        this._firePatch(false);
+    const tick = (): void => {
+      if (this.destroyed || this._breakerTripped()) {
+        this._clearMidTurnTimer();
+        return;
       }
-    }, MIN_PATCH_INTERVAL_MS);
+      this._firePatch(false);
+      this.midTurnTimer = setTimeout(tick, this._currentMinIntervalMs());
+    };
+    this.midTurnTimer = setTimeout(tick, this._currentMinIntervalMs());
   }
 
   private _clearMidTurnTimer(): void {
     if (this.midTurnTimer) {
-      clearInterval(this.midTurnTimer);
+      clearTimeout(this.midTurnTimer);
       this.midTurnTimer = null;
     }
   }

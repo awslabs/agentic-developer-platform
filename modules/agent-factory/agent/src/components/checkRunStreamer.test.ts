@@ -4,7 +4,7 @@
  * Covers:
  *  - Markdown rendering (header, plan, activity, tool details)
  *  - Truncation at the 60 KB threshold
- *  - Debounce: max 30 PATCHes, min 2s interval
+ *  - Decaying-interval throttle (no lifetime freeze), circuit-breaker, marker
  */
 
 import { CheckRunStreamer, CheckRunStreamerConfig } from './checkRunStreamer';
@@ -202,10 +202,181 @@ describe('CheckRunStreamer truncation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Debounce — patch-count cap
+// Throttle — decaying-interval PATCH cadence (no lifetime freeze)
 // ---------------------------------------------------------------------------
 
-describe('CheckRunStreamer debounce / patch cap', () => {
+describe('CheckRunStreamer decaying-interval throttle', () => {
+  /** Records the mocked Date.now at every PATCH plus the request payload. */
+  let patchTimes: number[];
+  let patchPayloads: Array<{ title: string; text: string }>;
+
+  function installFetchMock(): void {
+    patchTimes = [];
+    patchPayloads = [];
+    global.fetch = jest.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+      patchTimes.push(Date.now());
+      const body = JSON.parse(init.body as string) as { output: { title: string; text: string } };
+      patchPayloads.push({ title: body.output.title, text: body.output.text });
+      return { ok: true } as Response;
+    }) as unknown as typeof fetch;
+  }
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    installFetchMock();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  /** Gaps (ms) between consecutive PATCHes. */
+  function gaps(): number[] {
+    const out: number[] = [];
+    for (let i = 1; i < patchTimes.length; i++) out.push(patchTimes[i] - patchTimes[i - 1]);
+    return out;
+  }
+
+  it('fires at ~5s cadence early in a run (mid-turn polling)', () => {
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    // A long tool call at the start of the run should poll every ~5s.
+    s.onToolProgress('Bash');
+    jest.advanceTimersByTime(30_000); // 30s of a long tool call
+    s.destroy();
+
+    expect(patchTimes.length).toBeGreaterThanOrEqual(5); // ~6 patches over 30s
+    for (const g of gaps()) expect(g).toBe(5_000);
+  });
+
+  it('decays to ~45s cadence after 15 simulated minutes', () => {
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    jest.advanceTimersByTime(16 * 60_000); // age the run past 15 min
+    s.onToolProgress('Bash'); // start a long tool call in the slow regime
+    jest.advanceTimersByTime(3 * 60_000); // 3 more minutes
+    s.destroy();
+
+    expect(patchTimes.length).toBeGreaterThanOrEqual(3); // ~4 patches over 3 min
+    for (const g of gaps()) expect(g).toBe(45_000);
+    // The 2s-era cadence would have produced ~90 patches in 3 min — assert we
+    // are decisively NOT doing that.
+    expect(patchTimes.length).toBeLessThan(10);
+  });
+
+  it('mid-turn poller uses the decayed interval, not a hardcoded 2s', () => {
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    jest.advanceTimersByTime(20 * 60_000); // deep into the slow regime
+    s.onToolProgress('Bash');
+    jest.advanceTimersByTime(90_000); // 90s long tool call
+    s.destroy();
+
+    // 90s at 45s cadence → ~2 patches; at 2s it would be ~45.
+    expect(patchTimes.length).toBeLessThanOrEqual(3);
+    for (const g of gaps()) expect(g).toBe(45_000);
+  });
+
+  it('still fires a PATCH for a turn arriving after 40 minutes (no lifetime freeze)', () => {
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+
+    // Generate a chatty first several minutes so the OLD 30-patch lifetime cap
+    // would be long exhausted (a turn every second for ~7 min).
+    for (let i = 0; i < 420; i++) {
+      s.onTurn(turn(i + 1, [{ name: 'Bash', input: { command: `cmd ${i}` } }]));
+      jest.advanceTimersByTime(1_000);
+    }
+    expect(patchTimes.length).toBeGreaterThan(30); // old cap would have frozen here
+
+    // Now jump to 40 minutes elapsed and deliver one more turn.
+    jest.advanceTimersByTime(40 * 60_000);
+    const before = patchTimes.length;
+    s.onTurn(turn(9999, [{ name: 'Bash', input: { command: 'late' } }]));
+    jest.advanceTimersByTime(45_000); // slow-regime interval
+    s.destroy();
+
+    expect(patchTimes.length).toBeGreaterThan(before); // the late turn still updated the page
+  });
+
+  it('keeps a 60-minute chatty run under the circuit-breaker without warning', () => {
+    const warnings: string[] = [];
+    const s = new CheckRunStreamer(makeConfig({ log: (m) => warnings.push(m) }));
+
+    // A turn every second for 60 minutes — the throttle governs the cadence.
+    for (let i = 0; i < 60 * 60; i++) {
+      s.onTurn(turn(i + 1, [{ name: 'Bash', input: { command: `cmd ${i}` } }]));
+      jest.advanceTimersByTime(1_000);
+    }
+    s.destroy();
+
+    expect(patchTimes.length).toBeLessThan(150); // under MAX_PATCHES
+    expect(warnings.some((w) => w.includes('circuit-breaker'))).toBe(false);
+  });
+
+  it('trips the circuit-breaker with a single WARN on a pathologically long run', () => {
+    const warnings: string[] = [];
+    const s = new CheckRunStreamer(makeConfig({ log: (m) => warnings.push(m) }));
+
+    // A ~2.5h chatty run exceeds the ~136-patch worst case for 60 min and
+    // trips the 150 breaker.
+    for (let i = 0; i < 150 * 60; i++) {
+      s.onTurn(turn(i + 1, [{ name: 'Bash', input: { command: `cmd ${i}` } }]));
+      jest.advanceTimersByTime(1_000);
+    }
+    s.destroy();
+
+    expect(patchTimes.length).toBeLessThanOrEqual(150); // capped
+    const breakerWarns = warnings.filter((w) => w.includes('circuit-breaker'));
+    expect(breakerWarns.length).toBe(1); // warned exactly once
+  });
+
+  it('onResult final PATCH renders completed status and writes the final file', () => {
+    const fs = require('fs');
+    const FINAL_PATH = '/tmp/adp-check-run-final.md';
+    try { fs.unlinkSync(FINAL_PATH); } catch { /* ignore */ }
+
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    s.onTurn(turn(1, [], 'Implementing the fix'));
+    s.onResult({ costUsd: 0.12, turns: 1 });
+
+    // The final immediate PATCH must render as completed, not running.
+    const last = patchPayloads[patchPayloads.length - 1];
+    expect(last.title).toContain('completed');
+    expect(last.text).toContain('/ done');
+    expect(last.text).not.toContain('/ running');
+
+    // And it writes the transcript handoff file for entrypoint.py.
+    expect(fs.existsSync(FINAL_PATH)).toBe(true);
+    expect(fs.readFileSync(FINAL_PATH, 'utf8')).toContain('/ done');
+
+    try { fs.unlinkSync(FINAL_PATH); } catch { /* ignore */ }
+  });
+
+  it('warns and does not throw when a PATCH request fails', () => {
+    const warnings: string[] = [];
+    global.fetch = jest.fn().mockRejectedValue(new Error('network down')) as unknown as typeof fetch;
+
+    const s = new CheckRunStreamer(makeConfig({ log: (m) => warnings.push(m) }));
+    expect(() => {
+      s.onTurn(turn(1, [{ name: 'Bash', input: { command: 'ls' } }]));
+      jest.advanceTimersByTime(5_000);
+    }).not.toThrow();
+    s.destroy();
+  });
+
+  it('clears all timers on destroy (no open handles)', () => {
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    s.onTurn(turn(1, [{ name: 'Bash', input: { command: 'ls' } }])); // schedules a pending PATCH
+    s.onToolProgress('Bash'); // schedules the mid-turn poller
+    expect(jest.getTimerCount()).toBeGreaterThan(0);
+
+    s.destroy();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Throttle marker — header hint that live updates are slowed
+// ---------------------------------------------------------------------------
+
+describe('CheckRunStreamer throttle marker', () => {
   beforeEach(() => {
     jest.useFakeTimers();
   });
@@ -214,65 +385,35 @@ describe('CheckRunStreamer debounce / patch cap', () => {
     jest.useRealTimers();
   });
 
-  it('never fires more than 30 PATCHes even with many rapid turns', async () => {
-    const patches: unknown[] = [];
-    global.fetch = jest.fn().mockImplementation(async () => {
-      patches.push(1);
-      return { ok: true } as Response;
-    }) as unknown as typeof fetch;
-
+  it('omits the throttle marker while the interval is 5s', () => {
     const s = new CheckRunStreamer(makeConfig());
-
-    // Simulate 100 rapid turns, each 2+ seconds apart
-    for (let i = 1; i <= 100; i++) {
-      s.onTurn(turn(i, [{ name: 'Bash', input: { command: `cmd ${i}` } }]));
-      jest.advanceTimersByTime(2100);
-      // Let promises run
-      await Promise.resolve();
-    }
-
-    s.destroy();
-
-    // Flush any remaining timers
-    jest.runAllTimers();
-    await Promise.resolve();
-
-    expect(patches.length).toBeLessThanOrEqual(30);
+    s.onTurn(turn(1, [], 'plan'));
+    const md = s.buildMarkdown('running');
+    expect(md).not.toContain('Live updates throttled');
   });
 
-  it('respects min 2s interval between patches', async () => {
-    const patchTimes: number[] = [];
-    let now = 0;
-    const origDateNow = Date.now;
-    Date.now = () => now;
+  it('shows the throttle marker once the interval reaches 15s', () => {
+    const s = new CheckRunStreamer(makeConfig());
+    s.onTurn(turn(1, [], 'plan'));
+    jest.advanceTimersByTime(3 * 60_000); // 3 min elapsed → 15s interval
+    const md = s.buildMarkdown('running');
+    expect(md).toContain('Live updates throttled to every 15s');
+  });
 
-    global.fetch = jest.fn().mockImplementation(async () => {
-      patchTimes.push(now);
-      return { ok: true } as Response;
-    }) as unknown as typeof fetch;
+  it('shows the 45s interval in the marker deep into a run', () => {
+    const s = new CheckRunStreamer(makeConfig());
+    s.onTurn(turn(1, [], 'plan'));
+    jest.advanceTimersByTime(20 * 60_000); // 20 min elapsed → 45s interval
+    const md = s.buildMarkdown('running');
+    expect(md).toContain('Live updates throttled to every 45s');
+  });
 
-    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
-
-    // Two rapid turns with only 500ms between them
-    s.onTurn(turn(1, [{ name: 'Bash', input: { command: 'cmd1' } }]));
-    now += 500;
-    s.onTurn(turn(2, [{ name: 'Read', input: { file_path: 'a.ts' } }]));
-
-    // Advance past the 2s debounce
-    now += 2000;
-    jest.advanceTimersByTime(2000);
-    await Promise.resolve();
-
-    s.destroy();
-    jest.runAllTimers();
-    await Promise.resolve();
-
-    // All intervals between consecutive patches should be >= 2000ms
-    for (let i = 1; i < patchTimes.length; i++) {
-      expect(patchTimes[i] - patchTimes[i - 1]).toBeGreaterThanOrEqual(2000);
-    }
-
-    Date.now = origDateNow;
+  it('never shows the throttle marker on the completed page', () => {
+    const s = new CheckRunStreamer(makeConfig());
+    s.onTurn(turn(1, [], 'plan'));
+    jest.advanceTimersByTime(30 * 60_000);
+    const md = s.buildMarkdown('completed');
+    expect(md).not.toContain('Live updates throttled');
   });
 });
 
