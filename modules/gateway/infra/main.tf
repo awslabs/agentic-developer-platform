@@ -462,6 +462,10 @@ resource "aws_iam_role_policy" "gateway_vault_secrets" {
 # kms:Decrypt on this key, secretsmanager:GetSecretValue returns
 # AccessDeniedException even though the SecretsManager permission is granted
 # above — same bug class as #2567 (webhook Lambda KMS gap).
+# Issue #2797: the register-app flow also WRITES these secrets
+# (PutSecretValue/CreateSecret in _store_app_credentials), which needs
+# kms:GenerateDataKey*/kms:Encrypt on the same CMK — read-only KMS access made
+# UI registration fail with AccessDenied once #2394 pinned the secrets to it.
 # Referenced by alias so key rotation doesn't break the policy.
 data "aws_kms_alias" "webhook_secrets" {
   name = "alias/adp-${var.environment}-webhook-secrets"
@@ -475,11 +479,13 @@ resource "aws_iam_role_policy" "gateway_webhook_secrets_kms" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "WebhookSecretsKMSDecrypt"
+        Sid    = "WebhookSecretsKMSReadWrite"
         Effect = "Allow"
         Action = [
           "kms:Decrypt",
-          "kms:DescribeKey"
+          "kms:DescribeKey",
+          "kms:Encrypt",
+          "kms:GenerateDataKey*"
         ]
         Resource = [data.aws_kms_alias.webhook_secrets.target_key_arn]
       }
