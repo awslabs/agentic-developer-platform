@@ -143,3 +143,14 @@ data:
   AGENT_CONTEXT_ENABLED: "true"
   INGESTION_QUEUE_URL: "__INGESTION_QUEUE_URL__"
   BG_AGENT_CONTEXT_DBNAME: "agent_context"
+
+  # =============================================================================
+  # bedrock-mantle passthrough (Issue #2709, EPIC #2702)
+  # =============================================================================
+  # Routes OpenAI Responses-API traffic (POST /openai/v1/responses) through the
+  # gateway to bedrock-mantle so Codex gets per-tenant metering + allowlist
+  # governance. Upstream auth is SigV4 ONLY via the pod's IRSA chain — the IAM
+  # grant is gated by enable_mantle_passthrough in gateway.tfvars (Terraform).
+  # Kill switch: set BG_MANTLE_ENABLED "false" and redeploy; route returns 503.
+  BG_MANTLE_ENABLED: "true"
+  BG_MANTLE_REGION: "us-east-1"

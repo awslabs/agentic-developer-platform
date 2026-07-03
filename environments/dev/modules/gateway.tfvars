@@ -40,3 +40,10 @@ enable_chat_logging = true
 # adp-dev-eks-cluster). Owned by modules/agent-context (sqs-ingestion module).
 enable_agent_context_sqs          = true
 agent_context_ingestion_queue_arn = "arn:aws:sqs:us-east-1:879318057152:adp-dev-eks-cluster-context-ingestion"
+
+# Issue #2709 (EPIC #2702): grant the gateway IRSA role bedrock:InvokeModel*
+# so the mantle passthrough route (POST /openai/v1/responses) can SigV4-sign
+# requests to bedrock-mantle with its own pod credentials. Pairs with
+# BG_MANTLE_ENABLED in k8s/configmap.yaml — both must be on for the route
+# to serve; flipping either off disables it.
+enable_mantle_passthrough = true
