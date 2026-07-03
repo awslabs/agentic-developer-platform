@@ -75,7 +75,10 @@ resource "helm_release" "arc_runner_set" {
     yamlencode({
       githubConfigUrl    = var.github_repo != "" ? "https://github.com/${var.github_org}/${var.github_repo}" : "https://github.com/${var.github_org}"
       githubConfigSecret = kubernetes_secret.arc_runner.metadata[0].name
-      maxRunners         = 10
+      # 20: deploy + security-scan + agent runs contend for the pool; at 10 the
+      # deploy pipeline sat queued behind Security Scan bursts (live-patched
+      # 2026-07-03, codified here so the next apply doesn't revert it).
+      maxRunners         = 20
       minRunners         = 0
       # Pod template. Always supply the full container spec (image, command,
       # resources) — the chart has no image-only override and overriding
