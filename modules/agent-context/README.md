@@ -38,7 +38,7 @@ When an AI agent (Claude Code, Kiro, Cursor, or an ARC runner) needs to understa
 
 The platform indexes curated repositories, web documentation sites, and (optionally) live AWS infrastructure. Content stays fresh via an incremental refresh that only re-processes what changed, and operators/users can self-register content through the **Knowledge Asset Registry** REST API + management UI.
 
-> **Cost note:** This module is opt-in because the full stack costs roughly **~$800/month idle** (DeepWiki + GraphRAG dominate). Deploy with `--agent-context-only`, or the lean `--personal-context-only` tier (~$280/mo). See [Deployment Cost Tiers](#deployment-cost-tiers).
+> **Cost note:** This module is opt-in. Idle infrastructure cost is dominated by Neptune Serverless (min-capacity floor) and the EKS compute for the backend pods; the dominant *variable* cost is Bedrock usage during ingestion (wiki generation, embeddings, GraphRAG extraction, vuln scanning), which scales with corpus size and re-index frequency. OpenSearch Serverless (`graphrag_enabled`) is disabled by default and is by far the most expensive component if turned on. Deploy with `--agent-context-only`, or the lean `--personal-context-only` tier. See [Deployment Cost Tiers](#deployment-cost-tiers).
 
 ## Architecture
 
@@ -314,13 +314,15 @@ Postgres database `agent_context`, managed by Alembic (`alembic/versions/`):
 
 ### Deployment Cost Tiers
 
-| Mode | Monthly Cost | What's Deployed |
-|------|-------------|-----------------|
-| **Personal-context-only** (`--personal-context-only`) | **~$280/mo** | LiteLLM proxy, Context MCP (Door), S3 Vectors, personal-context synthesis CronJob |
-| **Full stack** (default) | **~$800/mo** | Everything above + Zoekt, DeepWiki, ingestion pipeline (KEDA workers), codegraph |
-| **Incremental** (adding personal context to an existing full deploy) | **~$0–30/mo** | Synthesis CronJob only |
+| Mode | Relative Cost | What's Deployed |
+|------|--------------|-----------------|
+| **Personal-context-only** (`--personal-context-only`) | Lowest — no standing backends beyond the Door + proxy | LiteLLM proxy, Context MCP (Door), S3 Vectors, personal-context synthesis CronJob |
+| **Full stack** (default) | Adds backend pod compute + Neptune min-capacity floor + ingestion Bedrock spend | Everything above + Zoekt, DeepWiki, ingestion pipeline (KEDA workers), codegraph, Neptune Serverless |
+| **Incremental** (adding personal context to an existing full deploy) | Negligible | Synthesis CronJob only |
 
-`--personal-context-only` (or `PERSONAL_CONTEXT_ONLY=true`) deploys the lean per-user experiential-memory stack without the code-intelligence backends. The Context MCP Server (Door) deploys in **both** modes — it is the serving endpoint. Neptune deploys only if `GRAPHRAG_ENABLED=true`.
+Actual spend depends on corpus size, re-index frequency, and Neptune scaling (min/max NCUs in `terraform/variables.tf`) — check Cost Explorer in the target account rather than relying on estimates here. `graphrag_enabled` (OpenSearch Serverless) is the one switch with a large standing cost; it stays off unless explicitly enabled and is guarded by the CI cost check in `agent-context-infra-apply.yml`.
+
+`--personal-context-only` (or `PERSONAL_CONTEXT_ONLY=true`) deploys the lean per-user experiential-memory stack without the code-intelligence backends. The Context MCP Server (Door) deploys in **both** modes — it is the serving endpoint. Neptune deploys only if `neptune_enabled=true` (decoupled from `GRAPHRAG_ENABLED`).
 
 ### Automated (recommended)
 
@@ -344,7 +346,7 @@ cp config.env config.local.env
 # Deploy everything (kubectl + Terraform)
 ./deploy.sh
 
-# Lean personal-context stack (~$280/mo)
+# Lean personal-context stack
 ./deploy.sh --personal-context-only
 
 # Validate
