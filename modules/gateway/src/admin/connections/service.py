@@ -712,6 +712,7 @@ def _build_app_manifest(
     webhook_url: str,
     callback_url: str,
     oauth_callback_url: str = "",
+    setup_url: str = "",
     app_name: str = _APP_NAME_BASE,
 ) -> dict[str, Any]:
     """Build the GitHub App manifest per the GitHub App Manifest spec.
@@ -724,6 +725,12 @@ def _build_app_manifest(
         oauth_callback_url: User-authorization OAuth callback URL. When set,
             the App can perform "Sign in with GitHub" directly — no separate
             OAuth App needed (#2607).
+        setup_url: Post-install redirect URL (setup_url). When set, GitHub
+            redirects the browser here after an install/reconfigure, carrying
+            the ?installation_id=&setup_action=&state= params so the
+            install-callback can consume the nonce and attach the tenant.
+            Without it GitHub leaves the user on github.com and the install
+            never lands in the Connections UI (#2823).
         app_name: Globally unique GitHub App name. Defaults to the base name
             but should be owner-prefixed for multi-deployment uniqueness (#2677).
     """
@@ -758,6 +765,14 @@ def _build_app_manifest(
     if oauth_callback_url:
         manifest["callback_urls"] = [oauth_callback_url]
         manifest["request_oauth_on_install"] = False
+
+    # Issue #2823: Emit setup_url so GitHub redirects the browser to the
+    # install-callback after install/reconfigure. setup_on_update makes GitHub
+    # also redirect after a re-configure — the recovery path for already
+    # installed Apps.
+    if setup_url:
+        manifest["setup_url"] = setup_url
+        manifest["setup_on_update"] = True
 
     return manifest
 
@@ -861,6 +876,12 @@ async def register_app_start(
     base_url = settings.gateway_base_url or ""
     callback_url = f"{base_url}/api/admin/connections/github/app/register-callback"
 
+    # Issue #2823: Post-install redirect. GitHub sends the browser here after an
+    # install/reconfigure with ?installation_id=&setup_action=&state=<jti>, so
+    # install-callback can consume the nonce and attach the tenant. Same base as
+    # callback_url — do not invent a second base-URL source.
+    setup_url = f"{base_url}/api/admin/connections/github/install-callback"
+
     # Issue #2607: Resolve the OAuth callback URL for the broker's login flow.
     # The broker sits behind API Gateway at /auth/github/callback. Same SSM
     # parameter that wire-github-app.sh uses.
@@ -883,6 +904,7 @@ async def register_app_start(
         webhook_url=webhook_url,
         callback_url=callback_url,
         oauth_callback_url=oauth_callback_url,
+        setup_url=setup_url,
         app_name=resolved_app_name,
     )
 

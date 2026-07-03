@@ -412,6 +412,9 @@ class TestRegisterAppStartService:
         assert result.manifest["url"] == "https://github.com/apps/my-org-adp-agent-platform"
         assert result.manifest["hook_attributes"]["url"] == "https://webhook.test.com/github"
         assert result.manifest["redirect_url"] == "https://gw.test.com/api/admin/connections/github/app/register-callback"
+        # Issue #2823: setup_url built from the same base as callback_url
+        assert result.manifest["setup_url"] == "https://gw.test.com/api/admin/connections/github/install-callback"
+        assert result.manifest["setup_on_update"] is True
         assert result.manifest["public"] is False
         assert result.manifest["default_permissions"]["contents"] == "write"
         assert result.manifest["default_permissions"]["metadata"] == "read"
@@ -796,6 +799,33 @@ class TestManifestStructure:
 
         assert "callback_urls" not in manifest
         assert "request_oauth_on_install" not in manifest
+
+    def test_manifest_includes_setup_url_when_provided(self):
+        """Issue #2823: manifest includes setup_url + setup_on_update when set."""
+        from src.admin.connections.service import _build_app_manifest
+
+        setup_url = "https://gw.example.com/api/admin/connections/github/install-callback"
+        manifest = _build_app_manifest(
+            webhook_url="https://webhook.example.com",
+            callback_url="https://callback.example.com",
+            setup_url=setup_url,
+        )
+
+        assert manifest["setup_url"] == setup_url
+        assert manifest["setup_url"].endswith("/api/admin/connections/github/install-callback")
+        assert manifest["setup_on_update"] is True
+
+    def test_manifest_omits_setup_url_when_not_provided(self):
+        """Issue #2823: no setup_url/setup_on_update when the kwarg is empty."""
+        from src.admin.connections.service import _build_app_manifest
+
+        manifest = _build_app_manifest(
+            webhook_url="https://webhook.example.com",
+            callback_url="https://callback.example.com",
+        )
+
+        assert "setup_url" not in manifest
+        assert "setup_on_update" not in manifest
 
 
 # ---------------------------------------------------------------------------
