@@ -23,6 +23,27 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      account_id:
+        description: 'Target AWS account (12 digits). Empty = use platform IRSA / config file.'
+        required: false
+        default: ''
+      customer_account_id:
+        description: 'Customer-linked AWS account to build into (cross-account mode).'
+        required: false
+        default: ''
+      customer_aws_label:
+        description: 'Vaulted credential label.'
+        required: false
+        default: ''
+      customer_user_id:
+        description: 'ADP users.id UUID.'
+        required: false
+        default: ''
+      environment:
+        description: 'Deployment environment.'
+        required: false
+        default: 'dev'
 
 env:
   AWS_REGION: us-east-1
@@ -41,6 +62,12 @@ jobs:
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
+        with:
+          account_id: ${{ inputs.account_id }}
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
 
       - name: Install zip + AWS CLI (bootstrap)
         run: |

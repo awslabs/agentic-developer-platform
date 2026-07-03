@@ -143,6 +143,50 @@ jobs:
             TITLE=$(gh issue view "$tmpl" -R "$GITHUB_REPOSITORY" --json title --jq '.title')
             BODY=$(gh issue view "$tmpl" -R "$GITHUB_REPOSITORY" --json body --jq '.body')
 
+            # Per-phase deploy-instance addendum. The agent-delivery phase (#692)
+            # must build the agent-runtime image for this account and verify it
+            # plus the registry seed, otherwise the first agent run fails with
+            # ImagePullBackOff / UnregisteredServiceAccountError (issue #2731).
+            # Quoted heredoc keeps the gh/aws examples literal (no shell expansion).
+            APPENDIX=""
+            if [ "$slug" = "phase-8-agent-delivery" ]; then
+              APPENDIX=$(cat <<'APX'
+
+          ---
+
+          ### Deploy-instance addendum — build + verify the agent runtime (issue #2731)
+
+          After the `agent-factory-infra-apply.yml` apply for this account **passes**, run these steps before marking the phase PASS:
+
+          1. **Build the agent-runtime image for this account** (nothing else builds it; skipping → `ImagePullBackOff` on the first agent run):
+
+             ```bash
+             gh workflow run agent-worker-image.yml \
+               -f customer_account_id=<acct> \
+               -f customer_aws_label=<label> \
+               -f customer_user_id=<uuid>
+             ```
+
+          2. **Verify the image exists** — at least one image with the `latest` tag (the ScaledJob pulls `adp-agent-runtime:latest`):
+
+             ```bash
+             aws ecr describe-images --repository-name adp-agent-runtime \
+               --query "imageDetails[?contains(imageTags, 'latest')] | length(@)"
+             # expect >= 1
+             ```
+
+          3. **Verify the registry seed** — the `scaledjob-worker` entry must exist (else `/agent` calls 500 with `UnregisteredServiceAccountError`). `seed_agent_registry` now defaults true, so the agent-factory apply creates it automatically; confirm:
+
+             ```bash
+             aws dynamodb get-item --table-name bedrockgw-<env>-agent-registry \
+               --key '{"agent_id":{"S":"scaledjob-worker"}}' \
+               --query 'Item.agent_id.S' --output text
+             # expect: scaledjob-worker
+             ```
+          APX
+          )
+            fi
+
             CHILD_TITLE="[deploy ${CUSTOMER}/${ENV}/${DATE}] ${TITLE}"
             CHILD_BODY=$(cat <<EOF
           > **Deploy instance child** of #${PARENT_NUM} — ${CUSTOMER} / ${ENV} / ${ACCT} / ${DATE}
@@ -151,6 +195,7 @@ jobs:
           ---
 
           ${BODY}
+          ${APPENDIX}
           EOF
           )
 
