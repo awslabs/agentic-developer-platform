@@ -37,6 +37,7 @@ RUN chmod +x /stage/stage-personas.sh
 
 # Copy persona and skill source trees
 COPY modules/agent-factory/rules/personas/ /source/agent-factory/personas/
+COPY modules/agent-factory/skills/ /source/agent-factory/skills/
 COPY modules/domain-apps/ /source/domain-apps/
 
 # Run the staging script to assemble /stage/personas and /stage/skills
