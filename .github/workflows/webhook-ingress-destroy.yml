@@ -84,6 +84,30 @@ jobs:
           aws --version
           terraform version | head -1
 
+      - name: Assert AWS account
+        run: |
+          set -e
+          ACTUAL_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          # In cross-account mode (#2669) load-deploy-config assumes into the
+          # customer account, so the caller identity is the customer's — the
+          # intended destroy target. Prefer that; else the platform account
+          # from the vars.AWS_ACCOUNT_ID repository variable.
+          EXPECTED_ACCOUNT="${{ inputs.customer_account_id }}"
+          if [ -z "$EXPECTED_ACCOUNT" ]; then
+            EXPECTED_ACCOUNT="${{ vars.AWS_ACCOUNT_ID }}"
+          fi
+          if [ -z "$EXPECTED_ACCOUNT" ]; then
+            echo "WARNING: No target account to verify against (neither customer_account_id input nor vars.AWS_ACCOUNT_ID set). Skipping account guard."
+            echo "Consider setting vars.AWS_ACCOUNT_ID to enable cross-account protection."
+            exit 0
+          fi
+          if [ "$ACTUAL_ACCOUNT" != "$EXPECTED_ACCOUNT" ]; then
+            echo "::error::Account mismatch! Expected $EXPECTED_ACCOUNT but got $ACTUAL_ACCOUNT."
+            echo "::error::Refusing to destroy. Check runner IAM / credential configuration."
+            exit 1
+          fi
+          echo "Account verified: $ACTUAL_ACCOUNT"
+
       - name: Configure kubectl
         run: |
           set -e
