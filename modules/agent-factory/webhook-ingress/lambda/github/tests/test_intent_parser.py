@@ -279,6 +279,74 @@ class TestIssueCommentEvents:
         # The order depends on MENTION_TO_PERSONA dict iteration — both are valid
         assert result.persona in ("pm", "developer")
 
+    # --- Issue #2706: codex supervisor persona routing ---
+
+    def test_mention_codex(self):
+        """@agent-codex mention resolves to the codex supervisor persona."""
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-codex please implement this story"},
+            "issue": {"number": 2706},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issue_comment", payload)
+        assert result is not None
+        assert result.persona == "codex"
+        assert result.trigger == "mentioned"
+
+    def test_codex_in_mention_map(self):
+        """The codex mention entry must be present in the routing dict."""
+        assert MENTION_TO_PERSONA.get("@agent-codex") == "codex"
+
+    def test_codex_mention_placed_last_does_not_shadow(self):
+        """Dict-order routing pin (issue #2706): codex is added last, so a comment
+        mentioning both an earlier persona and codex routes to the earlier one
+        (first match in MENTION_TO_PERSONA iteration order wins).
+        """
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-developer and @agent-codex please look"},
+            "issue": {"number": 2706},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issue_comment", payload)
+        assert result is not None
+        # developer appears before codex in MENTION_TO_PERSONA → first-match wins.
+        assert result.persona == "developer"
+
+    def test_codex_mention_alone_still_routes_to_codex(self):
+        """A comment mentioning only codex routes to codex even though it is the
+        last entry in the dict — no earlier entry can shadow it.
+        """
+        payload = {
+            "action": "created",
+            "comment": {"body": "hand this whole issue to @agent-codex"},
+            "issue": {"number": 2706},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issue_comment", payload)
+        assert result is not None
+        assert result.persona == "codex"
+
+    def test_developer_mention_unchanged_by_codex_addition(self):
+        """Regression: developer-agent mention routing is untouched (parser
+        behavior unchanged after adding the codex entry).
+        """
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-developer please implement this"},
+            "issue": {"number": 2706},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issue_comment", payload)
+        assert result is not None
+        assert result.persona == "developer"
+        assert result.trigger == "mentioned"
+
 
 # --- Installation events ---
 
