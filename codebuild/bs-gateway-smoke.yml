@@ -1,0 +1,19 @@
+version: 0.2
+
+# PR-time smoke build for the gateway image: proves modules/gateway/Dockerfile
+# still builds. Build only — NO push, NO tags touched. The deployable image is
+# produced exclusively by bs-gateway-build.yml (gateway-deploy.yml).
+#
+# Used by .github/workflows/gateway-ci.yml "Build Container" via
+# `start-build --buildspec-override codebuild/bs-gateway-smoke.yml` on the
+# gateway-build project (privileged docker). ARC runners have no Docker
+# daemon, so docker builds run here — the platform convention.
+
+phases:
+  build:
+    commands:
+      - cd modules/gateway
+      - docker build --pull -t adp-gateway:pr-smoke .
+  post_build:
+    commands:
+      - docker image inspect adp-gateway:pr-smoke --format 'Smoke build OK — {{.Id}}'
