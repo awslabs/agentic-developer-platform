@@ -14,6 +14,7 @@ from botocore.exceptions import ClientError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from src.admin.connections.github_app_provider import _reset_provider_for_testing
 from src.admin.connections.github_client import GitHubAppClient
 from src.admin.connections.service import (
     _PLACEHOLDER_SENTINEL,
@@ -49,8 +50,20 @@ def _configure_github_app(monkeypatch):
     get_settings() reads BG_GITHUB_APP_SLUG from the environment fresh on each
     call, so setting the env var here makes install_start() resolve a real slug.
     Tests that assert the unconfigured 503 path override this explicitly.
+
+    Issue #2700: the provider resolves Secrets Manager BEFORE env vars and
+    caches in a process-wide singleton. On CI runners with live AWS creds it
+    would read the platform account's real App slug and shadow the env var —
+    so block SM for the whole module and reset the singleton around each test.
     """
     monkeypatch.setenv("BG_GITHUB_APP_SLUG", "test-adp-agent")
+    _reset_provider_for_testing(None)
+    with patch(
+        "src.admin.connections.github_app_provider.boto3.client",
+        side_effect=RuntimeError("Secrets Manager blocked in unit tests"),
+    ):
+        yield
+    _reset_provider_for_testing(None)
 
 
 @pytest.fixture
@@ -184,6 +197,8 @@ class TestInstallStart:
 
         monkeypatch.delenv("BG_GITHUB_APP_SLUG", raising=False)
         monkeypatch.setenv("BG_GITHUB_APP_SLUG", "")
+        # SM is blocked module-wide by the autouse fixture, so the provider
+        # falls back to the (blank) env var — the genuine unconfigured case.
         with pytest.raises(HTTPException) as exc_info:
             await install_start(cognito_sub="sub-abc", user_id="user-001", db=db_session)
         assert exc_info.value.status_code == 503

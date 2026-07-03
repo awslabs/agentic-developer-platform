@@ -517,6 +517,97 @@ class TestGetAppStatusService:
         assert "client_secret" not in result_str
 
 
+class TestInstallStartUnmasking:
+    """Issue #2700: install-start must surface deliberate HTTPExceptions."""
+
+    def test_503_not_masked_as_500(self, app, mock_db):
+        """service.install_start raising HTTPException(503) → response is 503, not 500."""
+        from fastapi import HTTPException
+
+        from src.admin.connections import routes as routes_mod
+
+        user = _make_user(is_admin=True)
+        client = _make_client(app, user=user, mock_db=mock_db)
+
+        detail = "GitHub App not configured. Register via Settings > Connections"
+        with patch.object(
+            routes_mod,
+            "install_start",
+            new=AsyncMock(side_effect=HTTPException(status_code=503, detail=detail)),
+        ):
+            resp = client.post("/admin/connections/github/install-start")
+
+        assert resp.status_code == 503
+        assert "not configured" in resp.json()["detail"].lower()
+
+    def test_unexpected_error_still_500(self, app, mock_db):
+        """Non-HTTPException errors still produce a generic 500."""
+        from src.admin.connections import routes as routes_mod
+
+        user = _make_user(is_admin=True)
+        client = _make_client(app, user=user, mock_db=mock_db)
+
+        with patch.object(
+            routes_mod,
+            "install_start",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
+        ):
+            resp = client.post("/admin/connections/github/install-start")
+
+        assert resp.status_code == 500
+
+
+class TestStatusInstallReady:
+    """Issue #2700: get_app_status surfaces install_ready."""
+
+    @pytest.mark.asyncio
+    async def test_install_ready_true_when_slug_resolves(self):
+        """Slug present in meta → install_ready True."""
+        import json
+
+        from src.admin.connections.service import get_app_status
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.side_effect = [
+            {"SecretString": "3410773"},
+            {"SecretString": json.dumps({"app_slug": "adp-agent-platform"})},
+        ]
+        mock_sm.describe_secret.return_value = {"CreatedDate": datetime(2026, 6, 15, 10, 0, 0)}
+
+        with (
+            patch("boto3.client", return_value=mock_sm),
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
+        ):
+            result = await get_app_status()
+
+        assert result.registered is True
+        assert result.install_ready is True
+
+    @pytest.mark.asyncio
+    async def test_install_ready_false_when_slug_unresolvable(self):
+        """Registered but no slug anywhere → install_ready False."""
+        import json
+
+        from src.admin.connections.service import get_app_status
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.side_effect = [
+            {"SecretString": "3410773"},
+            {"SecretString": json.dumps({"client_id": "Iv1.abc"})},  # no app_slug
+        ]
+        mock_sm.describe_secret.return_value = {"CreatedDate": datetime(2026, 6, 15, 10, 0, 0)}
+
+        # Ensure env-var fallback is also empty so slug stays None
+        with (
+            patch("boto3.client", return_value=mock_sm),
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1", "BG_GITHUB_APP_SLUG": ""}),
+        ):
+            result = await get_app_status()
+
+        assert result.registered is True
+        assert result.install_ready is False
+
+
 class TestInvalidateAppCredentialsCache:
     """Tests for the invalidate function itself."""
 

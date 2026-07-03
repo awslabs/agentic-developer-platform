@@ -1305,6 +1305,7 @@ async def get_app_status() -> AppStatusResponse:
 
         return AppStatusResponse(
             registered=True,
+            install_ready=bool(app_slug),
             app_id=app_id,
             app_slug=app_slug,
             owner_type=owner_type,

@@ -167,12 +167,130 @@ class GitHubAppCredsProvider:
             settings = get_settings()
             slug = getattr(settings, "github_app_slug", "") or ""
 
+        # Issue #2700: self-heal a missing slug. Accounts whose App creds were
+        # seeded out-of-band (manual copy, register-github-app.sh, DR restore of
+        # id/key only) have real app_id + private_key but no stored slug — which
+        # otherwise 503s the install flow. We already hold everything needed to
+        # recover: mint an App JWT and ask GitHub for the App's own slug, then
+        # write it back to the meta secret so the next read is a cache hit.
+        # app_id/private_key are guaranteed real here (placeholder-guarded above).
+        if not slug:
+            slug = self._heal_slug_from_github(sm, meta_path, app_id, private_key)
+
         return _CachedCreds(
             app_id=app_id,
             private_key=private_key,
             slug=slug,
             fetched_at=time.monotonic(),
         )
+
+    def _heal_slug_from_github(
+        self,
+        sm_client: Any,
+        meta_path: str,
+        app_id: str,
+        private_key: str,
+    ) -> str:
+        """Resolve the App slug via GitHub's ``GET /app`` and write it back.
+
+        Returns the healed slug, or "" on any failure. Self-heal must never make
+        things worse than the pre-existing "no slug" state, so every failure path
+        logs a warning and returns "".
+        """
+        try:
+            slug = self._fetch_slug_from_github(app_id, private_key)
+        except Exception as exc:
+            logger.warning(
+                "GitHubAppCredsProvider: could not self-heal slug via GitHub API: %s",
+                exc,
+            )
+            return ""
+
+        if not slug:
+            logger.warning("GitHubAppCredsProvider: GET /app returned no slug; skipping write-back")
+            return ""
+
+        self._write_back_slug(sm_client, meta_path, app_id, slug)
+        logger.info("GitHubAppCredsProvider: self-healed App slug=%s via GitHub API", slug)
+        return slug
+
+    @staticmethod
+    def _fetch_slug_from_github(app_id: str, private_key: str) -> str:
+        """Mint an App JWT and return the App's slug from ``GET /app``."""
+        import httpx
+
+        # Reuse the module's canonical JWT minter rather than a second PyJWT snippet.
+        from src.admin.connections.github_client import GITHUB_API_BASE, _mint_app_jwt
+
+        token = _mint_app_jwt(app_id, private_key)
+        resp = httpx.get(
+            f"{GITHUB_API_BASE}/app",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        return resp.json().get("slug", "") or ""
+
+    def _write_back_slug(
+        self,
+        sm_client: Any,
+        meta_path: str,
+        app_id: str,
+        slug: str,
+    ) -> None:
+        """Read-modify-write the meta secret, setting only app_id + app_slug.
+
+        Deliberately NOT service._store_app_credentials(): that overwrites the
+        full payload and would clobber client_id / client_secret / webhook_secret
+        written by the register flow (#2607). We preserve every existing key and
+        only set the two we own. Creates the secret if it is absent. Never raises
+        — a failed write-back still returns a usable slug for this request.
+        """
+        meta: dict[str, Any] = {}
+        existing = self._read_secret(sm_client, meta_path)
+        if existing:
+            try:
+                parsed = json.loads(existing)
+                if isinstance(parsed, dict):
+                    meta = parsed
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("GitHubAppCredsProvider: existing meta secret is not valid JSON; creating a fresh payload for the healed slug")
+
+        meta["app_slug"] = slug
+        meta["app_id"] = app_id
+        payload = json.dumps(meta)
+
+        try:
+            sm_client.put_secret_value(SecretId=meta_path, SecretString=payload)
+            logger.info("GitHubAppCredsProvider: wrote healed slug back to %s", meta_path)
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code == "ResourceNotFoundException":
+                try:
+                    sm_client.create_secret(Name=meta_path, SecretString=payload)
+                    logger.info("GitHubAppCredsProvider: created meta secret %s with healed slug", meta_path)
+                except Exception as create_exc:
+                    logger.warning(
+                        "GitHubAppCredsProvider: could not create meta secret %s: %s",
+                        meta_path,
+                        create_exc,
+                    )
+            else:
+                logger.warning(
+                    "GitHubAppCredsProvider: could not write healed slug to %s: %s",
+                    meta_path,
+                    exc,
+                )
+        except Exception as exc:
+            logger.warning(
+                "GitHubAppCredsProvider: unexpected error writing healed slug to %s: %s",
+                meta_path,
+                exc,
+            )
 
     @staticmethod
     def _read_secret(sm_client: Any, secret_id: str) -> str:

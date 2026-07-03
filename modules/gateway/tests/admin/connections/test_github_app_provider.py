@@ -247,6 +247,162 @@ class TestGetSlug:
         assert slug == ""
 
 
+class TestSlugSelfHeal:
+    """Issue #2700: self-heal a missing slug via GitHub's GET /app."""
+
+    @staticmethod
+    def _sm_meta_without_slug(*, meta_present: bool = True, extra: dict | None = None) -> MagicMock:
+        """SM mock with real id/key but a meta secret that has no app_slug."""
+        import json
+
+        sm = MagicMock()
+        payload = dict(extra or {})
+
+        def get_secret_value(SecretId: str) -> dict:  # noqa: N803
+            if "id" in SecretId:
+                return {"SecretString": "12345"}
+            if "key" in SecretId:
+                return {"SecretString": "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----"}
+            if "meta" in SecretId:
+                if not meta_present:
+                    raise ClientError(
+                        {"Error": {"Code": "ResourceNotFoundException", "Message": "not found"}},
+                        "GetSecretValue",
+                    )
+                return {"SecretString": json.dumps(payload)}
+            raise ClientError(
+                {"Error": {"Code": "ResourceNotFoundException", "Message": "not found"}},
+                "GetSecretValue",
+            )
+
+        sm.get_secret_value = MagicMock(side_effect=get_secret_value)
+
+        if not meta_present:
+            # Real SM raises ResourceNotFoundException when put-ing to a
+            # nonexistent secret, which drives the create_secret fallback.
+            sm.put_secret_value = MagicMock(
+                side_effect=ClientError(
+                    {"Error": {"Code": "ResourceNotFoundException", "Message": "not found"}},
+                    "PutSecretValue",
+                )
+            )
+        return sm
+
+    @patch("src.admin.connections.github_app_provider.boto3")
+    def test_no_heal_when_slug_present(self, mock_boto3, monkeypatch):
+        """Meta secret already has a slug → no GitHub call, no write-back (heal is lazy)."""
+        sm = _make_sm_client(slug="already-there")
+        mock_boto3.client.return_value = sm
+        monkeypatch.setenv("BG_GITHUB_APP_SLUG", "")
+
+        with patch("httpx.get") as mock_get:
+            provider = GitHubAppCredsProvider(ttl_seconds=60)
+            slug = provider.get_slug()
+
+        assert slug == "already-there"
+        mock_get.assert_not_called()
+        sm.put_secret_value.assert_not_called()
+
+    @patch("httpx.get")
+    @patch("src.admin.connections.github_app_provider.boto3")
+    def test_heals_and_writes_back_only_id_and_slug(self, mock_boto3, mock_get, monkeypatch):
+        """Meta missing, valid id/key → GET /app returns slug, written back with only app_id/app_slug."""
+        import json
+
+        sm = self._sm_meta_without_slug(meta_present=False)
+        mock_boto3.client.return_value = sm
+        monkeypatch.setenv("BG_GITHUB_APP_SLUG", "")
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"slug": "healed-slug"}
+        mock_resp.raise_for_status.return_value = None
+        mock_get.return_value = mock_resp
+
+        # Patch the JWT minter symbol as imported inside the provider module path.
+        with patch("src.admin.connections.github_client._mint_app_jwt", return_value="jwt-token"):
+            provider = GitHubAppCredsProvider(ttl_seconds=60)
+            slug = provider.get_slug()
+
+        assert slug == "healed-slug"
+        # Meta was absent → create_secret used for write-back
+        assert sm.create_secret.called
+        # boto3 create_secret requires Name= (not SecretId=, which is put_secret_value's
+        # param); passing the wrong key raises a ParamValidationError at runtime and the
+        # slug is never persisted. Assert the contract so a regression is caught here.
+        assert "Name" in sm.create_secret.call_args.kwargs
+        assert sm.create_secret.call_args.kwargs["Name"] == "adp/dev/github-app/adp-agent-platform-meta"
+        assert "SecretId" not in sm.create_secret.call_args.kwargs
+        written = json.loads(sm.create_secret.call_args.kwargs["SecretString"])
+        assert written == {"app_slug": "healed-slug", "app_id": "12345"}
+
+    @patch("httpx.get")
+    @patch("src.admin.connections.github_app_provider.boto3")
+    def test_heal_preserves_other_meta_keys(self, mock_boto3, mock_get, monkeypatch):
+        """Meta present WITHOUT slug but WITH client_secret/webhook_secret → heal preserves them."""
+        import json
+
+        sm = self._sm_meta_without_slug(
+            meta_present=True,
+            extra={"client_id": "Iv1.abc", "client_secret": "shh", "webhook_secret": "whsec"},
+        )
+        mock_boto3.client.return_value = sm
+        monkeypatch.setenv("BG_GITHUB_APP_SLUG", "")
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"slug": "healed-slug"}
+        mock_resp.raise_for_status.return_value = None
+        mock_get.return_value = mock_resp
+
+        with patch("src.admin.connections.github_client._mint_app_jwt", return_value="jwt-token"):
+            provider = GitHubAppCredsProvider(ttl_seconds=60)
+            slug = provider.get_slug()
+
+        assert slug == "healed-slug"
+        # Meta existed → put_secret_value used, preserving the register-flow keys
+        assert sm.put_secret_value.called
+        written = json.loads(sm.put_secret_value.call_args.kwargs["SecretString"])
+        assert written["client_id"] == "Iv1.abc"
+        assert written["client_secret"] == "shh"
+        assert written["webhook_secret"] == "whsec"
+        assert written["app_slug"] == "healed-slug"
+        assert written["app_id"] == "12345"
+
+    @patch("httpx.get")
+    @patch("src.admin.connections.github_app_provider.boto3")
+    def test_placeholder_creds_no_github_call(self, mock_boto3, mock_get, monkeypatch):
+        """Placeholder id/key → provider returns None before slug logic, no GitHub call."""
+        sm = _make_sm_client(app_id="PLACEHOLDER_SET_BY_REGISTER_SCRIPT")
+        mock_boto3.client.return_value = sm
+        # No env fallback so slug ends up empty (falls to env fallback path, not heal)
+        monkeypatch.setenv("BG_GITHUB_APP_ID", "")
+        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "")
+        monkeypatch.setenv("BG_GITHUB_APP_SLUG", "")
+
+        provider = GitHubAppCredsProvider(ttl_seconds=60)
+        slug = provider.get_slug()
+
+        assert slug == ""
+        mock_get.assert_not_called()
+
+    @patch("httpx.get")
+    @patch("src.admin.connections.github_app_provider.boto3")
+    def test_github_api_error_returns_empty_no_exception(self, mock_boto3, mock_get, monkeypatch):
+        """GitHub GET /app raises (401/timeout) → empty slug, no exception, no write-back."""
+        sm = self._sm_meta_without_slug(meta_present=True, extra={"client_id": "Iv1.abc"})
+        mock_boto3.client.return_value = sm
+        monkeypatch.setenv("BG_GITHUB_APP_SLUG", "")
+
+        mock_get.side_effect = RuntimeError("401 Unauthorized")
+
+        with patch("src.admin.connections.github_client._mint_app_jwt", return_value="jwt-token"):
+            provider = GitHubAppCredsProvider(ttl_seconds=60)
+            slug = provider.get_slug()
+
+        assert slug == ""
+        sm.put_secret_value.assert_not_called()
+        sm.create_secret.assert_not_called()
+
+
 class TestSingleton:
     """Test get_github_app_provider() singleton behavior."""
 

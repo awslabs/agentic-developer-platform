@@ -123,6 +123,12 @@ async def github_install_start(
             user_id=current_user.user_id,
             db=db,
         )
+    except HTTPException:
+        # Issue #2700: install_start raises a deliberate HTTPException(503,
+        # "GitHub App not configured…") when the slug can't be resolved. The
+        # blanket handler below used to rewrap it into a generic 500, hiding the
+        # actionable detail. Re-raise it verbatim (same pattern as register-start).
+        raise
     except Exception as exc:
         logger.error("install-start failed for user=%s: %s", current_user.user_id, exc)
         raise HTTPException(status_code=500, detail="Failed to initiate GitHub install flow") from exc
@@ -215,6 +221,10 @@ async def disconnect_github(
             caller_org_id=current_user.org_id,
             db=db,
         )
+    except HTTPException:
+        # Issue #2700: surface deliberate HTTPExceptions instead of masking
+        # them as a generic 500 (same audit as install-start).
+        raise
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

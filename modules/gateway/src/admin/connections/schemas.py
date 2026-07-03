@@ -131,6 +131,14 @@ class AppStatusResponse(BaseModel):
     """Response from GET /api/admin/connections/github/app/status."""
 
     registered: bool = Field(..., description="Whether a GitHub App is registered for this deployment")
+    install_ready: bool = Field(
+        default=False,
+        description=(
+            "Whether the install flow is usable — true iff the App slug resolves "
+            "(directly, via env var, or via self-heal). False means install-start "
+            "will 503 until the slug is recoverable (Issue #2700)."
+        ),
+    )
     app_slug: str | None = Field(default=None, description="GitHub App slug (if registered)")
     app_id: str | None = Field(default=None, description="GitHub App numeric ID (if registered)")
     owner_type: str | None = Field(
