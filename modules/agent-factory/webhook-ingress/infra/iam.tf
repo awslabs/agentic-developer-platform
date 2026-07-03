@@ -231,3 +231,53 @@ resource "aws_iam_role_policy_attachment" "lambda_cloudwatch_metrics" {
   role       = aws_iam_role.lambda_execution.name
   policy_arn = aws_iam_policy.lambda_cloudwatch_metrics.arn
 }
+
+# =============================================================================
+# IAM — Gateway Activity read path (issue #2754)
+# =============================================================================
+# The gateway's /api/admin/agent-invocations and /api/me/agent-invocations
+# endpoints Query the webhook-events table (incl. tenant-index) and must decrypt
+# its SSE-KMS key. Both the table and the key are defined in this stack, so we
+# reference them as in-state ARNs (scoped — no table/* or kms:* wildcards).
+#
+# The gateway role (adp-${var.environment}-role-gateway-service) is created by
+# platform/infra (platform/infra/modules/eks/main.tf -> aws_iam_role
+# .gateway_service_irsa), which always applies before this stack, so attaching
+# an inline policy to it by name is safe.
+#
+# Single combined policy named to match the platform account's original
+# hand-patch (adp-dev-policy-gateway-activity-read): PutRolePolicy is an upsert,
+# so this converges on that account without an import. The account's second
+# hand-patched policy (-activity-kms) becomes orphaned and is deleted manually
+# post-apply (see issue #2754 Deployment section).
+resource "aws_iam_role_policy" "gateway_activity_read" {
+  name = "adp-${var.environment}-policy-gateway-activity-read"
+  role = "adp-${var.environment}-role-gateway-service"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "WebhookEventsRead"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:Query",
+          "dynamodb:GetItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.webhook_events.arn,
+          "${aws_dynamodb_table.webhook_events.arn}/index/*",
+        ]
+      },
+      {
+        Sid    = "WebhookEventsKMSDecrypt"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey",
+        ]
+        Resource = [aws_kms_key.dynamodb.arn]
+      }
+    ]
+  })
+}
