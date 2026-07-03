@@ -590,6 +590,12 @@ resource "aws_cognito_user" "test_admin" {
     email          = var.test_admin_email
     email_verified = "true"
     name           = "ADP Test Admin"
+    # Frontend role gating (parseIdTokenForUser in services/auth.ts) grants the
+    # platform-admin UI only when the JWT carries custom:role == "platform_admin".
+    # The pre-token Lambda copies this attribute into the access token, so seeding
+    # it here keeps the frontend in sync with the backend's admins-group check
+    # (otherwise the token is admin to the backend but role-less to the UI). #2790
+    "custom:role" = "platform_admin"
   }
 
   temporary_password = random_password.test_admin[0].result
