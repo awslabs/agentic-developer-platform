@@ -84,6 +84,33 @@ jobs:
           aws --version
           terraform version | head -1
 
+      - name: Configure kubectl
+        run: |
+          set -e
+          CLUSTER_NAME="adp-${{ env.ENVIRONMENT }}-eks-cluster"
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "${{ env.AWS_REGION }}" 2>/dev/null || {
+            echo "WARNING: Could not configure kubectl. EKS cluster may not exist."
+          }
+
+      - name: Delete K8s webhook-ingress resources
+        run: |
+          # Delete KEDA ScaledJob first — stops new agent pods from spawning
+          kubectl delete scaledjob agent-scaledjob -n adp-agents 2>/dev/null || true
+          # Wait for any running agent pods to terminate before removing underlying infra
+          kubectl wait --for=delete pods -l app.kubernetes.io/name=agent-scaledjob -n adp-agents --timeout=60s 2>/dev/null || true
+          # Delete TriggerAuthentication (KEDA credential binding)
+          kubectl delete triggerauthentication agent-scaledjob-aws-auth -n adp-agents 2>/dev/null || true
+          # Delete warm-pool Deployment and PriorityClass
+          kubectl delete deployment agent-warm-pool -n adp-agents 2>/dev/null || true
+          kubectl delete priorityclass adp-agent-overprovision 2>/dev/null || true
+          # Delete image-prepull DaemonSet
+          kubectl delete daemonset agent-image-prepull -n adp-agents 2>/dev/null || true
+          # Delete service account
+          kubectl delete serviceaccount agent-scaledjob-sa -n adp-agents 2>/dev/null || true
+          # Delete network policies
+          kubectl delete networkpolicy default-deny-egress -n adp-agents 2>/dev/null || true
+          kubectl delete networkpolicy agent-scaledjob-egress -n adp-agents 2>/dev/null || true
+
       - name: Clean up Lambda artifacts from S3
         run: |
           echo "Removing Lambda artifacts from S3..."
