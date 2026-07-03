@@ -26,6 +26,7 @@ from src.auth.middleware import (
     API_GATEWAY_HEADER_ACCOUNT_TYPE,
     API_GATEWAY_HEADER_AGENT_ID,
     API_GATEWAY_HEADER_AUTH_SOURCE,
+    API_GATEWAY_HEADER_CALLER_IDENTITY,
     API_GATEWAY_HEADER_DEPARTMENT_ID,
     API_GATEWAY_HEADER_ORG_ID,
     API_GATEWAY_HEADER_TEAM_ID,
@@ -587,3 +588,122 @@ class TestEdgeCases:
 
         # Starlette Headers strips whitespace; code does not add extra stripping
         assert context.team_id == "team-with-spaces"
+
+
+# =============================================================================
+# Issue #2809: Auth middleware must gate IAM extraction on the shared
+# ENFORCED_PATHS registry (not a private duplicate that missed the mantle path)
+# =============================================================================
+
+
+class TestAuthMiddlewareEnforcedPaths:
+    """Tests that TokenContextMiddleware runs IAM extraction for every enforced
+    proxy path — including the OpenAI Responses passthrough (#2809) — and skips
+    non-proxy paths.
+    """
+
+    def _build_app(self):
+        app = FastAPI()
+
+        @app.get("/{full_path:path}")
+        async def catch_all(request: Request, full_path: str):
+            return {"has_context": hasattr(request.state, "token_context")}
+
+        app.add_middleware(TokenContextMiddleware)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_iam_extraction_runs_for_mantle_path(self):
+        """Regression (#2809): the OpenAI Responses path must trigger IAM
+        extraction. Before the fix, /openai/v1/responses was absent from the
+        auth middleware's path list, so extraction never ran and Codex 401'd.
+        """
+        app = self._build_app()
+
+        mock_settings = MagicMock()
+        mock_settings.trust_apigw_headers = True
+
+        with (
+            patch("src.auth.middleware.get_settings", return_value=mock_settings),
+            patch("src.auth.middleware.extract_iam_identity_from_headers", return_value=None) as mock_extract,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.get(
+                    "/openai/v1/responses",
+                    headers={API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::111122223333:assumed-role/agent/session"},
+                )
+
+        assert response.status_code == 200
+        mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/v1/chat/completions",
+            "/v1/messages",
+            "/bedrock/invoke",
+            "/bedrock/invoke-with-response-stream",
+            "/model/some-model/invoke",
+        ],
+    )
+    async def test_iam_extraction_runs_for_preexisting_proxy_paths(self, path):
+        """Guards against a list swap dropping the five pre-existing proxy
+        paths — every one must still trigger IAM extraction.
+        """
+        app = self._build_app()
+
+        mock_settings = MagicMock()
+        mock_settings.trust_apigw_headers = True
+
+        with (
+            patch("src.auth.middleware.get_settings", return_value=mock_settings),
+            patch("src.auth.middleware.extract_iam_identity_from_headers", return_value=None) as mock_extract,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.get(
+                    path,
+                    headers={API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::111122223333:assumed-role/agent/session"},
+                )
+
+        assert response.status_code == 200
+        mock_extract.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["/health", "/admin/models", "/"])
+    async def test_iam_extraction_skipped_for_non_proxy_paths(self, path):
+        """Non-proxy paths (health, admin, root) must NOT trigger IAM extraction
+        — widening the list to these routes would risk auth bypass / spurious
+        errors on admin and health surfaces.
+        """
+        app = self._build_app()
+
+        mock_settings = MagicMock()
+        mock_settings.trust_apigw_headers = True
+
+        with (
+            patch("src.auth.middleware.get_settings", return_value=mock_settings),
+            patch("src.auth.middleware.extract_iam_identity_from_headers", return_value=None) as mock_extract,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.get(
+                    path,
+                    headers={API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::111122223333:assumed-role/agent/session"},
+                )
+
+        assert response.status_code == 200
+        assert response.json()["has_context"] is False
+        mock_extract.assert_not_called()
+
+    def test_auth_middleware_uses_shared_enforced_paths(self):
+        """Single-source guarantee (#2809): the auth middleware must reference
+        the SAME ENFORCED_PATHS object as the shared registry — not a private
+        duplicate. Mirrors tests/shared/test_enforced_paths.py.
+        """
+        from src.auth import middleware as auth_mw
+        from src.shared.enforced_paths import ENFORCED_PATHS
+
+        assert auth_mw.ENFORCED_PATHS is ENFORCED_PATHS

@@ -1,12 +1,18 @@
-"""Single source of truth for proxy paths under budget + rate-limit enforcement.
+"""Single source of truth for proxy paths under auth + budget + rate-limit enforcement.
 
-Both the budget middleware (``src/budget/enforcement_middleware.py``) and the
-rate-limit middleware (``src/ratelimit/enforcement_middleware.py``) gate the same
-set of proxy paths. These lists used to be duplicated, which let new routes slip
-through enforcement (Issue #2792: the ``/openai/v1/responses`` passthrough was
-metered but neither budget- nor rate-limit-enforced). Keeping the list here — and
-importing it from both middlewares — means a new proxy route is registered for
-enforcement in exactly one place.
+Three middlewares gate the same set of proxy paths:
+
+- the auth middleware (``src/auth/middleware.py`` ``TokenContextMiddleware``),
+  which decides where to run IAM-identity extraction,
+- the budget middleware (``src/budget/enforcement_middleware.py``), and
+- the rate-limit middleware (``src/ratelimit/enforcement_middleware.py``).
+
+These lists used to be duplicated, which let new routes slip through enforcement
+(Issue #2792: the ``/openai/v1/responses`` passthrough was metered but neither
+budget- nor rate-limit-enforced; Issue #2809: the auth middleware's copy also
+missed it, so IAM agent auth never ran and Codex traffic 401'd). Keeping the list
+here — and importing it from all three middlewares — means a new proxy route is
+registered for enforcement in exactly one place.
 
 Matching semantics: a request path is enforced when it ``startswith`` any entry,
 so trailing-path routes like ``/model/`` cover ``/model/{id}/invoke``.
