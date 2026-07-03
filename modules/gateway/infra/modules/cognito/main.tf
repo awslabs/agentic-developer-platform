@@ -595,7 +595,15 @@ resource "aws_cognito_user" "test_admin" {
     # The pre-token Lambda copies this attribute into the access token, so seeding
     # it here keeps the frontend in sync with the backend's admins-group check
     # (otherwise the token is admin to the backend but role-less to the UI). #2790
-    "custom:role" = "platform_admin"
+    #
+    # KEY MUST BE BARE ("role", not "custom:role"): the AWS provider normalizes
+    # bare non-standard keys by ADDING the custom: prefix on write, and STRIPS
+    # the prefix when reading state back (flattenAttributeTypes). Writing the
+    # key as "custom:role" makes every subsequent plan see a phantom diff
+    # (- "role" / + "custom:role") whose apply DELETES the live attribute and
+    # re-adds it under a name Cognito rejects into oblivion — the user loses
+    # the role claim on every apply (bit us on 812/261, 2026-07-03).
+    role = "platform_admin"
   }
 
   temporary_password = random_password.test_admin[0].result
