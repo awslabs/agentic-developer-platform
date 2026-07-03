@@ -247,3 +247,195 @@ class TestBashSyntax:
     def test_bash_n_parses_clean(self):
         result = subprocess.run(["bash", "-n", str(SCRIPT)], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# JSONL observability contract (issue #2753)
+#
+# The wrapper now runs `codex exec --json`, tees the raw JSONL to a pod-local
+# file, and pipes it through render-codex-events.py. These tests pin that the
+# structured-output flag is passed, the raw log is persisted byte-for-byte, the
+# renderer produces compact step lines + a verbatim final message, and — most
+# importantly — none of that weakens the pre-existing safety contract above
+# (Codex's own exit code still propagates through the pipe; timeout still 124).
+# ---------------------------------------------------------------------------
+
+RENDER_SCRIPT = SCRIPT.parent / "render-codex-events.py"
+
+# One known-shape Codex `exec --json` event stream (schema verified against the
+# pinned CLI 0.142.5).
+KNOWN_JSONL = "\n".join(
+    [
+        '{"type":"thread.started","thread_id":"019f2732-abc"}',
+        '{"type":"turn.started"}',
+        '{"type":"item.completed","item":{"id":"i0","type":"reasoning","text":"Plan the change"}}',
+        '{"type":"item.completed","item":{"id":"i1","type":"file_change",'
+        '"changes":[{"path":"/tmp/x/hello.txt","kind":"add"}]}}',
+        '{"type":"item.completed","item":{"id":"i2","type":"command_execution",'
+        "\"command\":\"/bin/bash -lc 'ls -la'\",\"exit_code\":0}}",
+        '{"type":"item.completed","item":{"id":"i3","type":"agent_message",'
+        '"text":"Done: created hello.txt.\\nSecond line of the deliverable."}}',
+        '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":10,'
+        '"output_tokens":20,"reasoning_output_tokens":5}}',
+    ]
+)
+
+
+def _make_jsonl_stub(tmp_path: Path, jsonl: str, *, rc: int = 0, stderr: str = "") -> Path:
+    """Stub `codex` that echoes a JSONL stream and fails loudly if --json is absent."""
+    err_line = f"echo {stderr!r} >&2\n" if stderr else ""
+    body = (
+        'seen_json=0\n'
+        'for a in "$@"; do [ "$a" = "--json" ] && seen_json=1; done\n'
+        'if [ "$seen_json" -ne 1 ]; then echo "STUB: --json missing" >&2; exit 99; fi\n'
+        "cat <<'JSONL_EOF'\n" + jsonl + "\nJSONL_EOF\n" + err_line + f"exit {rc}\n"
+    )
+    return _make_stub_codex(tmp_path, body)
+
+
+class TestJsonlObservability:
+    def test_json_flag_is_passed_to_codex(self, tmp_path):
+        stub = _make_stub_codex(tmp_path, _ARGV_ECHO)
+        result = _run(
+            ["write", "do a thing"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+        )
+        assert result.returncode == 0, result.stderr
+        argv = _parse_argv(result.stdout)
+        assert "--json" in argv, f"--json not passed to codex; argv={argv!r}"
+        # Argv integrity still holds: the instruction is the final literal argv.
+        assert argv[-1] == "do a thing"
+
+    def test_known_stream_renders_steps_and_verbatim_final_message(self, tmp_path):
+        stub = _make_jsonl_stub(tmp_path, KNOWN_JSONL)
+        result = _run(
+            ["write", "make hello"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+        )
+        assert result.returncode == 0, result.stderr
+        out = result.stdout
+        assert "[codex reasoning] Plan the change" in out
+        assert "[codex edit] add /tmp/x/hello.txt" in out
+        assert "[codex exec] $ /bin/bash -lc 'ls -la' (exit 0)" in out
+        # Final agent message passes through verbatim (both lines), untruncated.
+        assert "Done: created hello.txt." in out
+        assert "Second line of the deliverable." in out
+        # Trailer carries session id + token usage.
+        assert "session: 019f2732-abc" in out
+        assert "input=100" in out and "output=20" in out
+
+    def test_raw_jsonl_persisted_and_byte_matches_stub(self, tmp_path):
+        runs = tmp_path / "runs"
+        stub = _make_jsonl_stub(tmp_path, KNOWN_JSONL)
+        result = _run(
+            ["write", "make hello"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(runs)},
+        )
+        assert result.returncode == 0, result.stderr
+        logs = list(runs.glob("*.jsonl"))
+        assert len(logs) == 1, f"expected exactly one raw log, got {logs!r}"
+        # The renderer trailer names the same path …
+        assert str(logs[0]) in result.stdout
+        # … and the raw log byte-matches what the stub emitted (heredoc adds \n).
+        assert logs[0].read_text() == KNOWN_JSONL + "\n"
+
+    def test_unknown_event_type_degrades_to_generic_line(self, tmp_path):
+        jsonl = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"t1"}',
+                '{"type":"item.completed","item":{"type":"web_search","query":"foo"}}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"final"}}',
+            ]
+        )
+        stub = _make_jsonl_stub(tmp_path, jsonl)
+        result = _run(
+            ["write", "x"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "[codex web_search]" in result.stdout
+        assert "final" in result.stdout
+
+    def test_malformed_non_json_line_passes_through_without_crash(self, tmp_path):
+        jsonl = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"t1"}',
+                "this is not json at all",
+                '{"type":"item.completed","item":{"type":"agent_message","text":"final"}}',
+            ]
+        )
+        stub = _make_jsonl_stub(tmp_path, jsonl)
+        result = _run(
+            ["write", "x"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "this is not json at all" in result.stdout
+        assert "final" in result.stdout
+
+
+class TestJsonlSafetyContractPreserved:
+    """The JSONL pipe must not weaken the #2705/#2711 safety contract."""
+
+    def test_nonzero_codex_rc_still_propagates_through_pipe(self, tmp_path):
+        # Codex emits events, then exits 5. tee|renderer must NOT mask it —
+        # rc comes from PIPESTATUS[0], not the (0-exit) renderer.
+        stub = _make_jsonl_stub(tmp_path, KNOWN_JSONL, rc=5, stderr="boom: model unreachable")
+        result = _run(
+            ["write", "x"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+        )
+        assert result.returncode == 5, result.stderr
+        assert "boom: model unreachable" in result.stderr
+        assert "exited non-zero (5)" in result.stderr
+        # Events still rendered even though Codex ultimately failed.
+        assert "[codex reasoning] Plan the change" in result.stdout
+
+    def test_hard_timeout_still_returns_124_under_json_pipe(self, tmp_path):
+        stub = _make_stub_codex(tmp_path, "sleep 30\n")
+        result = _run(
+            ["write", "hang please"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_TIMEOUT": "1",
+                "CODEX_RUNS_DIR": str(tmp_path / "runs"),
+            },
+        )
+        assert result.returncode == 124
+        assert "timed out after 1s" in result.stderr
+
+
+class TestRenderer:
+    """Unit tests for render-codex-events.py driven directly on stdin."""
+
+    def _render(self, jsonl: str, *, jsonl_path=None) -> str:
+        args = ["python3", str(RENDER_SCRIPT)]
+        if jsonl_path:
+            args += ["--jsonl-path", jsonl_path]
+        result = subprocess.run(args, input=jsonl, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    def test_final_message_precedes_trailer_and_path_is_named(self):
+        out = self._render(KNOWN_JSONL, jsonl_path="/tmp/codex-runs/x.jsonl")
+        assert out.index("Done: created hello.txt.") < out.index("── codex run summary ──")
+        assert "log:     /tmp/codex-runs/x.jsonl" in out
+
+    def test_empty_input_is_silent(self):
+        assert self._render("") == ""
+
+    def test_intermediate_messages_kept_compact_final_verbatim(self):
+        jsonl = "\n".join(
+            [
+                '{"type":"item.completed","item":{"type":"agent_message","text":"'
+                + "x" * 400
+                + '"}}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"FINAL"}}',
+            ]
+        )
+        out = self._render(jsonl)
+        # The first (intermediate) message is compacted to one truncated line.
+        assert "[codex message]" in out
+        assert "…" in out
+        # The last message is the verbatim deliverable.
+        assert out.rstrip().endswith("FINAL")

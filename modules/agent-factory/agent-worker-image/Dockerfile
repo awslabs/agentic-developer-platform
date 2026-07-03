@@ -157,8 +157,9 @@ RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/te
     rm /tmp/terraform.zip && \
     terraform version
 
-# Install pip-based Python tools (uv, poetry). The slim image has pip built-in.
-RUN pip3 install --no-cache-dir --break-system-packages uv poetry
+# Install pip-based Python tools (uv, poetry, ruff — the pre-submit table in
+# agent-worker.ts tells agents to run `ruff check`; it must exist in the image).
+RUN pip3 install --no-cache-dir --break-system-packages uv poetry ruff
 
 # Python runtime deps for entrypoint.py + lib/ and bundled skills.
 #   boto3             — Secrets Manager, STS, DynamoDB clients (vault_client, sts_assume)

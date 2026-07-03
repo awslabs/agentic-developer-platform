@@ -190,7 +190,37 @@ matrix-#1 path end-to-end.
 
 ---
 
-## 9. Rollback
+## 9. Observability (codex-bridge, Phase 1)
+
+Codex is invoked through `run-codex.sh` with `codex exec --json`, so every
+reasoning step, command execution, and file change comes back as a structured
+JSONL event stream instead of one opaque blob. The wrapper:
+
+- **renders a compact step summary to stdout** — one line per step
+  (`[codex reasoning] …`, `[codex exec] $ cmd (exit 0)`, `[codex edit] add path`),
+  then Codex's final message verbatim, then a trailer with the **session id**,
+  **token usage** (input/cached/output/reasoning), and the raw-log path;
+- **persists the raw JSONL** to `/tmp/codex-runs/<timestamp>-<pid>.jsonl` in the
+  pod. This is pod-local and ephemeral — it dies with the pod, is bounded to one
+  file per invocation, and is never inlined into the agent's context.
+
+**What the live run page shows (the one-turn-late caveat):** the wrapper output
+lives inside the Bash tool result, which does *not* stream to the run page on
+its own in Phase 1. The supervising Claude agent is instructed (in `SKILL.md`)
+to **restate** the compact summary — steps, session id, token usage — in its
+*next* message. That message is what reaches the live run page and the
+completion comment, so the Codex activity appears **one turn after** the wrapper
+returns, not in real time. Real-time streaming is deliberately out of scope for
+Phase 1 (tracked as a separate child of EPIC #2702).
+
+The renderer (`render-codex-events.py`) is tolerant by contract: unknown event
+types collapse to a single generic line and malformed (non-JSON) lines pass
+through raw — it never crashes the run, and Codex's own exit code is preserved
+(the renderer is display-only). If Codex ever ships without a structured-output
+mode, the wrapper would need updating; the pinned CLI `0.142.5` supports
+`--json`.
+
+## 10. Rollback
 
 Codex is additive and opt-in; disabling it does not touch other personas.
 

@@ -20,6 +20,14 @@
 #   * AWS_* reset to pod IRSA defaults  — Codex signs with the pod role, never
 #                                         any assumed customer creds in the env
 #   * non-zero exit surfaces stderr     — the agent sees why Codex failed
+#
+# Observability (issue #2753):
+#   * Codex runs with `--json` (structured JSONL event stream, CLI 0.142.5).
+#   * The raw JSONL is teed to /tmp/codex-runs/<ts>.jsonl (pod-local, ephemeral).
+#   * Events are piped through render-codex-events.py, which prints one compact
+#     line per step, Codex's final message verbatim, then a trailer with the
+#     session id + token usage + JSONL path. Codex's OWN exit code is preserved
+#     via PIPESTATUS — the renderer is display-only and never changes rc.
 
 set -euo pipefail
 
@@ -28,6 +36,11 @@ CODEX_TIMEOUT="${CODEX_TIMEOUT:-600}"
 
 # --- Codex binary (overridable for tests via CODEX_BIN). ---
 CODEX_BIN="${CODEX_BIN:-codex}"
+
+# --- Renderer + raw-log location (issue #2753) ------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RENDER_SCRIPT="${SCRIPT_DIR}/render-codex-events.py"
+CODEX_RUNS_DIR="${CODEX_RUNS_DIR:-/tmp/codex-runs}"
 
 usage() {
     echo "Usage: run-codex.sh {write|review} <instruction-or-file-path>" >&2
@@ -77,14 +90,25 @@ export AWS_REGION="${AWS_REGION:-us-east-1}"
 #   --dangerously-bypass-approvals-and-sandbox : no interactive approval (pod is
 #                                                externally sandboxed + ephemeral)
 #   --skip-git-repo-check                       : run outside a git repo if needed
+#   --json                                      : structured JSONL events (#2753)
 # Model/provider/region come from the baked $HOME/.codex/config.toml.
 # stdin closed so Codex can never block on a prompt; timeout bounds the run.
+#
+# The raw JSONL is teed to a pod-local file and piped through the renderer so
+# the agent (and the live run page) see a compact per-step summary. Codex's own
+# exit code is recovered from PIPESTATUS — the tee/renderer never mask it.
+mkdir -p "${CODEX_RUNS_DIR}"
+JSONL_PATH="${CODEX_RUNS_DIR}/$(date +%Y%m%dT%H%M%S)-$$.jsonl"
+
 set +e
 timeout "${CODEX_TIMEOUT}" "${CODEX_BIN}" exec \
     --dangerously-bypass-approvals-and-sandbox \
     --skip-git-repo-check \
-    "${INSTRUCTION}" </dev/null
-rc=$?
+    --json \
+    "${INSTRUCTION}" </dev/null \
+    | tee "${JSONL_PATH}" \
+    | python3 "${RENDER_SCRIPT}" --jsonl-path "${JSONL_PATH}"
+rc="${PIPESTATUS[0]}"
 set -e
 
 if [ "$rc" -eq 124 ]; then

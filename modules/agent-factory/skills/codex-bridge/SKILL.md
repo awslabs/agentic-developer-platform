@@ -76,6 +76,26 @@ Treat the result as a proposal:
 - **Review mode:** treat Codex's findings as input to your own judgment — a
   cross-model second opinion. Decide which points are valid before acting.
 
+### 4. Restate the run summary (so it lands on the live run page)
+
+The wrapper prints a compact, per-step summary of what Codex did — one line per
+reasoning step / command / file edit, Codex's final message, and a trailer with
+the **session id**, **token usage**, and the raw JSONL log path. That output
+sits inside the Bash tool result, so it does **not** reach the live run page on
+its own.
+
+**In your next message after the wrapper returns**, restate that summary so it
+reaches operators watching the run (it lands one turn late) and appears in the
+completion comment. Keep it compact — **≤ ~20 lines**:
+
+- the per-step lines Codex emitted (reasoning / `exec` / `edit`), trimmed;
+- Codex's final message (or a short paraphrase if it's long);
+- the **session id** and **token usage** from the trailer.
+
+Do **not** paste the raw JSONL — it stays on disk. Reference its path (shown in
+the trailer, under `/tmp/codex-runs/`) only if you need to point at it for deep
+debugging.
+
 ## Guardrails
 
 - **The explicit-trigger gate is mandatory.** No Codex mention → do not run this
