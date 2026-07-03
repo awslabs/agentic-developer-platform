@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from src.budget.pricing import pricing_service
 from src.proxy.mantle_auth import MantleAuth
 from src.shared.database import get_session_factory
 from src.shared.schemas.auth import TokenContext
@@ -267,15 +268,21 @@ class MantlePassthroughService:
         OpenAI family so billing can distinguish it from Claude rows.
         """
         try:
+            input_tokens = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+            # Issue #2792: compute real cost via the shared pricing table instead
+            # of the previous hardcoded 0.0. Unknown models fall back to the
+            # table's conservative "default" pricing (same as the Bedrock proxy).
+            cost_usd = float(pricing_service.calculate_cost(model, input_tokens, output_tokens))
             session_factory = get_session_factory()
             async with session_factory() as session:
                 usage_service = UsageService(session)
                 await usage_service.log_request(
                     context=context,
                     model=model or USAGE_MODEL_FAMILY,
-                    input_tokens=usage.get("input_tokens", 0),
-                    output_tokens=usage.get("output_tokens", 0),
-                    cost_usd=0.0,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_usd=cost_usd,
                     latency_ms=latency_ms,
                     status_code=status_code,
                     request_id=request_id,

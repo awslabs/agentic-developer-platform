@@ -17,6 +17,7 @@ import json
 from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from src.shared.enforced_paths import ENFORCED_PATHS
 from src.shared.logging import get_logger
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.common import RateLimitCheckResult
@@ -25,15 +26,6 @@ from src.shared.timing import get_timings
 from .service import RateLimitService
 
 logger = get_logger(__name__)
-
-# Paths that require rate limit enforcement
-ENFORCED_PATHS = [
-    "/v1/chat/completions",
-    "/v1/messages",
-    "/bedrock/invoke",
-    "/bedrock/invoke-with-response-stream",
-    "/model/",
-]
 
 
 class RateLimitEnforcementMiddleware:

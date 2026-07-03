@@ -71,6 +71,11 @@ def create_test_app(budget_service=None, ratelimit_service=None):
     async def chat_completions(request: Request):
         return JSONResponse(content={"message": "success"})
 
+    # Issue #2792: the OpenAI Responses passthrough must be under enforcement too.
+    @app.post("/openai/v1/responses")
+    async def openai_responses(request: Request):
+        return JSONResponse(content={"message": "success"})
+
     @app.get("/health")
     async def health():
         return {"status": "ok"}
@@ -403,6 +408,92 @@ class TestResponseHeaders:
 
         assert response.status_code == 429
         assert response.headers.get("Retry-After") == "45"
+
+
+class TestMantlePathEnforcement:
+    """Issue #2792: the OpenAI Responses passthrough is now budget + rate-limit enforced."""
+
+    def test_mantle_path_blocked_when_over_budget(self, token_context, mock_budget_service):
+        from src.shared.schemas.budget import EntityType
+
+        mock_budget_service.check_budget_hierarchy = AsyncMock(
+            return_value=EnforcementResult(
+                allowed=False,
+                blocked_reason="Budget exceeded for org org-456",
+                exceeded_entity_type=EntityType.ORGANIZATION,
+                exceeded_entity_id="org-456",
+                budget_amount_usd=Decimal("50.00"),
+                current_spend_usd=Decimal("60.00"),
+                enforcement_mode=EnforcementMode.HARD,
+            )
+        )
+
+        app = create_test_app(budget_service=mock_budget_service)
+
+        @app.middleware("http")
+        async def add_auth_context(request: Request, call_next):
+            request.state.token_context = token_context
+            return await call_next(request)
+
+        client = TestClient(app)
+        response = client.post("/openai/v1/responses", json={"model": "openai.gpt-5.5", "input": "hi"})
+
+        assert response.status_code == 402
+        assert "budget_exceeded" in response.json()["error"]
+
+    def test_mantle_path_allowed_when_under_budget(self, token_context, mock_budget_service):
+        app = create_test_app(budget_service=mock_budget_service)
+
+        @app.middleware("http")
+        async def add_auth_context(request: Request, call_next):
+            request.state.token_context = token_context
+            return await call_next(request)
+
+        client = TestClient(app)
+        response = client.post("/openai/v1/responses", json={"model": "openai.gpt-5.5", "input": "hi"})
+
+        assert response.status_code == 200
+        mock_budget_service.check_budget_hierarchy.assert_awaited()
+
+    def test_mantle_path_rate_limited(self, token_context, mock_ratelimit_service):
+        from src.shared.schemas.common import RateLimitCheckResult
+
+        mock_ratelimit_service.check_rate_limit = AsyncMock(
+            return_value=RateLimitCheckResult(
+                allowed=False,
+                limit_type="rpm",
+                limit=60,
+                remaining=0,
+                retry_after_seconds=30,
+            )
+        )
+
+        app = create_test_app(ratelimit_service=mock_ratelimit_service)
+
+        @app.middleware("http")
+        async def add_auth_context(request: Request, call_next):
+            request.state.token_context = token_context
+            return await call_next(request)
+
+        client = TestClient(app)
+        response = client.post("/openai/v1/responses", json={"model": "openai.gpt-5.5", "input": "hi"})
+
+        assert response.status_code == 429
+        assert "rate_limited" in response.json()["error"]
+
+    def test_mantle_path_allowed_under_rate_limit(self, token_context, mock_ratelimit_service):
+        app = create_test_app(ratelimit_service=mock_ratelimit_service)
+
+        @app.middleware("http")
+        async def add_auth_context(request: Request, call_next):
+            request.state.token_context = token_context
+            return await call_next(request)
+
+        client = TestClient(app)
+        response = client.post("/openai/v1/responses", json={"model": "openai.gpt-5.5", "input": "hi"})
+
+        assert response.status_code == 200
+        mock_ratelimit_service.consume_rate_limit.assert_awaited_once()
 
 
 class TestMultiTenantIsolation:

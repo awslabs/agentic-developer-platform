@@ -300,6 +300,31 @@ class TestMantlePassthrough:
         assert kwargs["output_tokens"] == 3
         assert kwargs["request_id"] == "req-1"
 
+    async def test_metering_computes_real_cost(self, token_context):
+        """Issue #2792: cost_usd must be computed from pricing, not hardcoded 0."""
+
+        # 1000 in / 1000 out for openai.gpt-5.5 → $0.0055 + $0.033 = $0.0385.
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"usage": {"input_tokens": 1000, "output_tokens": 1000}})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        svc = MantlePassthroughService(StubAuth(), "https://bedrock-mantle.us-east-1.api.aws", http_client=client)
+
+        mock_usage = AsyncMock()
+        fake_session = AsyncMock()
+        fake_session.__aenter__.return_value = fake_session
+        fake_session.__aexit__.return_value = False
+
+        with (
+            patch("src.proxy.mantle_service.get_session_factory", return_value=lambda: fake_session),
+            patch("src.proxy.mantle_service.UsageService", return_value=mock_usage),
+        ):
+            await svc.create_response(b"{}", token_context, stream=False, model="openai.gpt-5.5", request_id="req-1")
+
+        kwargs = mock_usage.log_request.await_args.kwargs
+        assert kwargs["cost_usd"] == pytest.approx(0.0385)
+        assert kwargs["cost_usd"] > 0
+
 
 # ============================================================================
 # Route
