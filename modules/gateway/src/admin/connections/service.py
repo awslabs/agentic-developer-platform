@@ -59,6 +59,12 @@ _NONCE_TTL_SECONDS = 900  # 15 minutes
 # It must never be treated as a real App credential.
 _PLACEHOLDER_SENTINEL = "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"
 
+# Issue #2746: in-process TTL cache for the public login_enabled read, so the
+# unauthenticated /auth/login-options endpoint does not hit Secrets Manager on
+# every request. Bounded to ~1 SM read/min/pod. Stores (expires_at_monotonic, value).
+_LOGIN_ENABLED_CACHE: tuple[float, bool] | None = None
+_LOGIN_ENABLED_TTL_SECONDS = 60
+
 
 def _is_placeholder(value: str) -> bool:
     """Return True if the value is the deploy-time placeholder, not a real credential."""
@@ -1026,6 +1032,11 @@ async def register_app_callback(
     # the freshly-stored credentials without a pod restart.
     get_github_app_provider().invalidate()
 
+    # Issue #2746: invalidate the public login_enabled cache so the login page's
+    # "Sign in with GitHub" button flips to enabled promptly after registration
+    # instead of staying disabled until the TTL expires.
+    _invalidate_login_enabled_cache()
+
     logger.info(
         "register-app-callback: App registered successfully id=%s slug=%s login_enabled=%s",
         app_id,
@@ -1215,6 +1226,52 @@ def _check_login_enabled(sm: Any) -> bool:
     except (ClientError, json.JSONDecodeError, TypeError) as exc:
         logger.info("login_enabled check: could not read %s (login treated as not wired): %s", oauth_path, exc)
         return False
+
+
+def _invalidate_login_enabled_cache() -> None:
+    """Clear the cached login_enabled value (Issue #2746).
+
+    Called after the App is registered so the login page flips to enabled
+    promptly instead of waiting out the TTL.
+    """
+    global _LOGIN_ENABLED_CACHE
+    _LOGIN_ENABLED_CACHE = None
+
+
+async def is_github_login_enabled() -> bool:
+    """Public, cached read of the login_enabled signal (Issue #2746).
+
+    Called from the UNAUTHENTICATED /auth/login-options endpoint, so it must be
+    cheap and never raise. Reuses the single-source-of-truth check
+    ``_check_login_enabled`` and caches the result for 60s to bound Secrets
+    Manager reads. On any error, returns the last cached value if one exists,
+    else False (fail-closed on the backend so the UI can fail-open safely).
+    """
+    global _LOGIN_ENABLED_CACHE
+    import asyncio
+
+    import boto3
+
+    now = time.monotonic()
+    if _LOGIN_ENABLED_CACHE is not None and now < _LOGIN_ENABLED_CACHE[0]:
+        return _LOGIN_ENABLED_CACHE[1]
+
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    try:
+
+        def _read() -> bool:
+            sm = boto3.client("secretsmanager", region_name=region)
+            return _check_login_enabled(sm)
+
+        value = await asyncio.to_thread(_read)
+    except Exception as exc:
+        logger.info("is_github_login_enabled: check failed (%s); serving cached/default value", exc)
+        if _LOGIN_ENABLED_CACHE is not None:
+            return _LOGIN_ENABLED_CACHE[1]
+        return False
+
+    _LOGIN_ENABLED_CACHE = (now + _LOGIN_ENABLED_TTL_SECONDS, value)
+    return value
 
 
 async def get_app_status() -> AppStatusResponse:

@@ -7,6 +7,7 @@ import Login from '@/pages/Login';
 vi.mock('@/services/auth', () => ({
   buildLoginUrl: vi.fn(),
   buildGitHubLoginUrl: vi.fn(),
+  fetchLoginOptions: vi.fn(),
 }));
 
 // Mock cognito config
@@ -29,6 +30,11 @@ describe('Login Page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(isCognitoConfigured).mockReturnValue(true);
+    // Default: GitHub login is wired (today's behavior). Individual tests
+    // override this to exercise the disabled / fail-open paths.
+    vi.mocked(authService.fetchLoginOptions).mockResolvedValue({
+      github_login_enabled: true,
+    });
   });
 
   it('renders both GitHub and Email sign-in buttons', () => {
@@ -142,5 +148,72 @@ describe('Login Page', () => {
     await waitFor(() => {
       expect(screen.getByText('Redirecting to login...')).toBeInTheDocument();
     });
+  });
+});
+
+describe('Login Page — GitHub button gating (Issue #2746)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(isCognitoConfigured).mockReturnValue(true);
+  });
+
+  it('enables the GitHub button when login options resolve true', async () => {
+    vi.mocked(authService.fetchLoginOptions).mockResolvedValue({
+      github_login_enabled: true,
+    });
+
+    renderLogin();
+
+    await waitFor(() => {
+      expect(authService.fetchLoginOptions).toHaveBeenCalled();
+    });
+    expect(screen.getByTestId('github-login-btn')).not.toBeDisabled();
+    expect(
+      screen.queryByTestId('github-login-disabled-hint')
+    ).not.toBeInTheDocument();
+  });
+
+  it('disables the GitHub button and shows the hint when options resolve false', async () => {
+    vi.mocked(authService.fetchLoginOptions).mockResolvedValue({
+      github_login_enabled: false,
+    });
+
+    renderLogin();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('github-login-btn')).toBeDisabled();
+    });
+    expect(screen.getByTestId('github-login-disabled-hint')).toBeInTheDocument();
+  });
+
+  it('fails open — button enabled when the options fetch rejects', async () => {
+    // fetchLoginOptions itself fails open, but assert the page tolerates a
+    // rejected promise too (button stays enabled, no hint).
+    vi.mocked(authService.fetchLoginOptions).mockRejectedValue(
+      new Error('network down')
+    );
+
+    renderLogin();
+
+    await waitFor(() => {
+      expect(authService.fetchLoginOptions).toHaveBeenCalled();
+    });
+    expect(screen.getByTestId('github-login-btn')).not.toBeDisabled();
+    expect(
+      screen.queryByTestId('github-login-disabled-hint')
+    ).not.toBeInTheDocument();
+  });
+
+  it('leaves the Email button unaffected when GitHub login is disabled', async () => {
+    vi.mocked(authService.fetchLoginOptions).mockResolvedValue({
+      github_login_enabled: false,
+    });
+
+    renderLogin();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('github-login-btn')).toBeDisabled();
+    });
+    expect(screen.getByTestId('email-login-btn')).not.toBeDisabled();
   });
 });

@@ -1142,6 +1142,67 @@ class TestLoginEnabledSignal:
         assert result == "/settings/connections?github_app=registered"
         assert "login_enabled" not in result
 
+    @pytest.mark.asyncio
+    async def test_callback_invalidates_login_enabled_cache(self):
+        """Issue #2746: a successful register invalidates the public login_enabled cache.
+
+        A stale cached ``False`` (login not wired) must not keep the login page's
+        GitHub button disabled after the App is registered.
+        """
+        from src.admin.connections import service
+        from src.admin.connections.service import register_app_callback
+
+        # Seed a non-expired cached False (login previously not wired).
+        service._LOGIN_ENABLED_CACHE = (service.time.monotonic() + 3600, False)
+
+        mock_db = AsyncMock()
+        mock_nonce = MagicMock()
+        mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
+        mock_nonce.consumed_at = None
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_nonce
+        mock_consume_result = MagicMock()
+        mock_consume_result.scalar_one_or_none.return_value = "consumed-jti"
+
+        call_count = [0]
+
+        async def mock_execute(stmt):
+            call_count[0] += 1
+            return mock_result if call_count[0] == 1 else mock_consume_result
+
+        mock_db.execute = mock_execute
+        mock_db.commit = AsyncMock()
+
+        github_response = {
+            "id": 12345,
+            "slug": "test-app",
+            "pem": "-----BEGIN RSA PRIVATE KEY-----\nK\n-----END RSA PRIVATE KEY-----",
+            "client_id": "Iv1.abc",
+            "client_secret": "s",
+            "webhook_secret": "whsec",
+        }
+        mock_http_response = MagicMock()
+        mock_http_response.status_code = 201
+        mock_http_response.json.return_value = github_response
+
+        with (
+            patch("httpx.AsyncClient") as mock_client_cls,
+            patch(
+                "src.admin.connections.service._store_app_credentials",
+                new=AsyncMock(return_value=True),
+            ),
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_http_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+
+            await register_app_callback(code="c", state="s", db=mock_db)
+
+        assert service._LOGIN_ENABLED_CACHE is None
+
 
 # ---------------------------------------------------------------------------
 # Issue #2677: App name uniqueness tests

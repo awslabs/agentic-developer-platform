@@ -6,8 +6,12 @@
  * 2. "Sign in with Email" — redirects to Cognito hosted UI (default provider selection)
  */
 
-import { useState } from 'react';
-import { buildLoginUrl, buildGitHubLoginUrl } from '@/services/auth';
+import { useEffect, useState } from 'react';
+import {
+  buildLoginUrl,
+  buildGitHubLoginUrl,
+  fetchLoginOptions,
+} from '@/services/auth';
 import { isCognitoConfigured } from '@/config/cognito';
 import { Spinner } from '@/components/ui/Spinner';
 import { Alert } from '@/components/ui/Alert';
@@ -16,6 +20,28 @@ import { Button } from '@/components/ui/Button';
 export default function Login() {
   const [error, setError] = useState<string | null>(null);
   const [isRedirecting, setIsRedirecting] = useState(false);
+  // Issue #2746: null = still loading (render enabled, no disabled-flash);
+  // false = GitHub login not wired on this deployment (render disabled + hint).
+  const [githubLoginEnabled, setGithubLoginEnabled] = useState<boolean | null>(
+    null
+  );
+
+  useEffect(() => {
+    let active = true;
+    fetchLoginOptions()
+      .then((opts) => {
+        if (active) {
+          setGithubLoginEnabled(opts.github_login_enabled);
+        }
+      })
+      .catch(() => {
+        // Fail-open: leave the button enabled (state stays null) if the fetch
+        // rejects. fetchLoginOptions already fails open, so this is defensive.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleGitHubLogin = async () => {
     setError(null);
@@ -82,6 +108,7 @@ export default function Login() {
       {/* GitHub sign-in button */}
       <Button
         onClick={handleGitHubLogin}
+        disabled={githubLoginEnabled === false}
         className="w-full flex items-center justify-center gap-3"
         data-testid="github-login-btn"
       >
@@ -99,6 +126,17 @@ export default function Login() {
         </svg>
         Sign in with GitHub
       </Button>
+
+      {/* Issue #2746: explain why GitHub sign-in is disabled on an unwired deployment */}
+      {githubLoginEnabled === false && (
+        <p
+          className="mt-2 text-sm text-gray-500 dark:text-gray-400"
+          data-testid="github-login-disabled-hint"
+        >
+          GitHub sign-in isn't set up on this deployment yet. An administrator
+          can enable it under Settings → Connections → Set up GitHub App.
+        </p>
+      )}
 
       {/* Visual separator */}
       <div className="relative my-6">
