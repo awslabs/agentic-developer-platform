@@ -64,6 +64,26 @@ class StubAuth:
         return {"Authorization": "AWS4-HMAC-SHA256 Credential=test/x/us-east-1/bedrock/aws4_request", "X-Amz-Date": "20260703T000000Z"}
 
 
+class ChunkedStream(httpx.AsyncByteStream):
+    """Serves a preset list of byte chunks, preserving exact chunk boundaries.
+
+    httpx 0.28 has no ``IteratorStream``; ``ByteStream`` re-chunks on read, which
+    is fine for byte-fidelity but not for exercising specific split points. This
+    stream hands ``aiter_bytes`` exactly the chunks given, so a test can place a
+    split at any byte offset (issue #2828 split-event cases).
+    """
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+    async def aclose(self) -> None:
+        pass
+
+
 def make_service(handler, *, no_log: bool = True) -> MantlePassthroughService:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     svc = MantlePassthroughService(StubAuth(), MANTLE_URL, http_client=client)
@@ -267,6 +287,109 @@ class TestStreamingIntegrity:
         result = await svc.create_response(b"{}", token_context, stream=True, model="openai.gpt-5.5")
         _ = [c async for c in result]
         assert captured["usage"] == {"input_tokens": 9, "output_tokens": 13}
+
+    async def _drive_stream(self, svc, token_context):
+        """Run a streaming call, returning (received_bytes, captured_usage)."""
+        captured = {}
+
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+            captured.update(usage=dict(usage))
+
+        svc._log_usage = spy  # type: ignore[method-assign]
+        result = await svc.create_response(b"{}", token_context, stream=True, model="openai.gpt-5.5")
+        received = b"".join([chunk async for chunk in result])
+        return received, captured.get("usage", {})
+
+    @staticmethod
+    def _chunk_payload(payload: bytes, split_points: list[int]) -> list[bytes]:
+        """Slice ``payload`` into chunks at the given byte offsets."""
+        bounds = [0, *split_points, len(payload)]
+        return [payload[bounds[i] : bounds[i + 1]] for i in range(len(bounds) - 1)]
+
+    async def test_usage_captured_when_completed_event_split_mid_json_two_chunks(self, token_context):
+        # #2828: the terminal response.completed data: line is split mid-JSON
+        # across two chunks. Chunk-local parsing lost this; the stateful sniffer
+        # reassembles it. Byte-fidelity must also hold.
+        completed = b'data: {"type":"response.completed","response":{"usage":{"input_tokens":33,"output_tokens":3540}}}\n\n'
+        payload = b'data: {"type":"response.output_text.delta","delta":"x"}\n\n' + completed
+        # Split inside the completed event's JSON object.
+        split = payload.index(b'"usage"') + 4
+        chunks = self._chunk_payload(payload, [split])
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=ChunkedStream(chunks))
+
+        svc = make_service(handler, no_log=False)
+        received, usage = await self._drive_stream(svc, token_context)
+        assert usage == {"input_tokens": 33, "output_tokens": 3540}
+        assert received == payload
+
+    @pytest.mark.parametrize(
+        "split_points",
+        [
+            [10, 40, 90],  # arbitrary offsets across 4 chunks
+            [5],  # split mid-`data:` prefix of the first event
+            [1, 2, 3, 4, 5, 6],  # byte-at-a-time through the `data: ` prefix
+        ],
+    )
+    async def test_usage_captured_across_arbitrary_split_points(self, token_context, split_points):
+        # #2828: parametrized split offsets, including mid-`data:` prefix. Usage
+        # must be extracted and the passthrough must stay byte-for-byte.
+        completed = b'data: {"type":"response.completed","response":{"usage":{"input_tokens":13,"output_tokens":16}}}\n\n'
+        payload = b'data: {"type":"response.output_text.delta","delta":"hello"}\n\n' + completed
+        valid_points = [p for p in split_points if 0 < p < len(payload)]
+        chunks = self._chunk_payload(payload, valid_points)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=ChunkedStream(chunks))
+
+        svc = make_service(handler, no_log=False)
+        received, usage = await self._drive_stream(svc, token_context)
+        assert usage == {"input_tokens": 13, "output_tokens": 16}
+        assert received == payload
+
+    async def test_usage_captured_when_split_mid_utf8_sequence(self, token_context):
+        # #2828: a multibyte UTF-8 char in a delta is split across a chunk
+        # boundary. Byte-level buffering must reassemble it; usage still parses
+        # and the yielded bytes are unchanged.
+        # "café" — the é is 2 bytes (0xC3 0xA9); split between them.
+        delta_event = 'data: {"type":"response.output_text.delta","delta":"café"}\n\n'.encode()
+        completed = b'data: {"type":"response.completed","response":{"usage":{"input_tokens":7,"output_tokens":21}}}\n\n'
+        payload = delta_event + completed
+        # Find the é bytes and split between the two continuation bytes.
+        e_acute = "é".encode()  # b"\xc3\xa9"
+        idx = payload.index(e_acute)
+        chunks = self._chunk_payload(payload, [idx + 1])
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=ChunkedStream(chunks))
+
+        svc = make_service(handler, no_log=False)
+        received, usage = await self._drive_stream(svc, token_context)
+        assert usage == {"input_tokens": 7, "output_tokens": 21}
+        assert received == payload
+
+    async def test_oversized_carried_fragment_dropped_with_warn(self, token_context, caplog):
+        # #2828 safety valve: if a single line never terminates and the buffer
+        # exceeds the 1 MiB cap, drop it with a WARN — the stream must be
+        # unaffected (bytes still pass through verbatim) and no crash.
+        import logging
+
+        from src.proxy.mantle_service import _MAX_SNIFF_BUFFER_BYTES
+
+        # A gigantic data: line with no trailing newline → never completes.
+        oversized = b"data: " + b"a" * (_MAX_SNIFF_BUFFER_BYTES + 1024)
+        chunks = [oversized[i : i + 65536] for i in range(0, len(oversized), 65536)]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=ChunkedStream(chunks))
+
+        svc = make_service(handler, no_log=False)
+        with caplog.at_level(logging.WARNING, logger="src.proxy.mantle_service"):
+            received, usage = await self._drive_stream(svc, token_context)
+        assert received == b"".join(chunks)  # byte-fidelity preserved
+        assert usage == {}  # no usage extracted, but no crash
+        assert any("buffer exceeded cap" in rec.message for rec in caplog.records)
 
     async def test_malformed_sse_lines_do_not_break_stream(self, token_context):
         # Garbage / non-JSON data lines must be passed through verbatim and must

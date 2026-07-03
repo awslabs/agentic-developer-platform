@@ -46,6 +46,12 @@ MANTLE_RESPONSES_PATH = "/openai/v1/responses"
 # so metering can distinguish it from Claude/Bedrock rows.
 USAGE_MODEL_FAMILY = "openai"
 
+# Safety valve for the per-stream partial-line buffer (issue #2828). A well-formed
+# `response.completed` event is well under this; if a line ever exceeds it (e.g. a
+# missing newline upstream), we drop the buffer with a WARN rather than grow it
+# unboundedly — metering must never threaten gateway pod memory or the stream.
+_MAX_SNIFF_BUFFER_BYTES = 1024 * 1024  # 1 MiB
+
 
 @dataclass
 class MantleResponse:
@@ -56,6 +62,63 @@ class MantleResponse:
     media_type: str = "application/json"
     # Token usage extracted from the Responses-API `usage` block (best-effort).
     usage: dict[str, int] = field(default_factory=dict)
+
+
+class _StreamUsageSniffer:
+    """Stateful, per-stream sniffer for the Responses-API ``usage`` block (#2828).
+
+    The terminal ``response.completed`` SSE event embeds the full accumulated
+    response object, so for any non-trivial output its ``data:`` line is larger
+    than one TCP chunk and arrives split across ``aiter_bytes`` chunks. Parsing
+    each chunk independently never sees a complete line, so usage was lost.
+
+    This sniffer buffers the trailing partial line **at the byte level** (so a
+    split mid-UTF-8 sequence reassembles correctly) and only parses ``data:``
+    lines once a newline completes them. It NEVER touches the bytes yielded to
+    the client — buffering is for sniffing only. Failures are swallowed;
+    metering must never disrupt the passthrough.
+    """
+
+    def __init__(self) -> None:
+        self.usage: dict[str, int] = {}
+        self._buffer = b""
+
+    def feed(self, chunk: bytes) -> None:
+        """Consume one upstream chunk, updating ``usage`` from any complete lines."""
+        self._buffer += chunk
+        # Cap the carried buffer: on overflow drop it (metering must never break
+        # the stream or grow pod memory unboundedly).
+        if len(self._buffer) > _MAX_SNIFF_BUFFER_BYTES:
+            logger.warning(
+                "mantle usage sniffer buffer exceeded cap; dropping partial line",
+                extra={"buffer_bytes": len(self._buffer), "cap_bytes": _MAX_SNIFF_BUFFER_BYTES},
+            )
+            self._buffer = b""
+            return
+        # Split on newlines; the last element is the (possibly incomplete)
+        # trailing fragment, carried forward until its newline arrives.
+        *complete, self._buffer = self._buffer.split(b"\n")
+        for raw in complete:
+            self._parse_line(raw)
+
+    def _parse_line(self, raw: bytes) -> None:
+        try:
+            line = raw.decode("utf-8", errors="ignore").strip()
+            if not line.startswith("data:"):
+                return
+            payload = line[len("data:") :].strip()
+            if not payload or payload == "[DONE]" or not payload.startswith("{"):
+                return
+            data = json.loads(payload)
+            # usage may be top-level or nested under a "response" object.
+            found = data.get("usage")
+            if found is None and isinstance(data.get("response"), dict):
+                found = data["response"].get("usage")
+            parsed = MantlePassthroughService._usage_from_dict(found)
+            if parsed:
+                self.usage.update(parsed)
+        except (json.JSONDecodeError, ValueError, UnicodeError):
+            pass  # never disrupt the stream for usage extraction
 
 
 class MantlePassthroughService:
@@ -173,7 +236,7 @@ class MantlePassthroughService:
     ) -> AsyncIterator[bytes]:
         start = time.monotonic()
         status_code = 502
-        usage: dict[str, int] = {}
+        sniffer = _StreamUsageSniffer()
         headers = self._headers(body)
         client = self._client()
         try:
@@ -181,13 +244,15 @@ class MantlePassthroughService:
                 status_code = resp.status_code
                 async for chunk in resp.aiter_bytes():
                     # Passthrough: yield upstream bytes verbatim, sniff usage as we go.
-                    self._accumulate_stream_usage(chunk, usage)
+                    # The sniffer buffers partial lines internally; the yielded
+                    # bytes are never modified.
+                    sniffer.feed(chunk)
                     yield chunk
         finally:
             if self._http_client is None:
                 await client.aclose()
             latency_ms = (time.monotonic() - start) * 1000
-            await self._log_usage(context, model, usage, int(latency_ms), status_code, request_id, agent_run_id)
+            await self._log_usage(context, model, sniffer.usage, int(latency_ms), status_code, request_id, agent_run_id)
 
     # ------------------------------------------------------------------
     # Usage extraction
@@ -205,33 +270,6 @@ class MantlePassthroughService:
         except (json.JSONDecodeError, ValueError):
             return {}
         return MantlePassthroughService._usage_from_dict(data.get("usage") if isinstance(data, dict) else None)
-
-    def _accumulate_stream_usage(self, chunk: bytes, usage: dict[str, int]) -> None:
-        """Sniff the ``usage`` block from streamed SSE chunks (best-effort).
-
-        The Responses-API stream emits a terminal ``response.completed`` event
-        whose ``response.usage`` carries the final token counts. We parse any
-        ``data:`` line that contains a ``usage`` object and keep the latest.
-        """
-        try:
-            text = chunk.decode("utf-8", errors="ignore")
-            for line in text.split("\n"):
-                line = line.strip()
-                if not line.startswith("data:"):
-                    continue
-                payload = line[len("data:") :].strip()
-                if not payload or payload == "[DONE]" or not payload.startswith("{"):
-                    continue
-                data = json.loads(payload)
-                # usage may be top-level or nested under a "response" object.
-                found = data.get("usage")
-                if found is None and isinstance(data.get("response"), dict):
-                    found = data["response"].get("usage")
-                parsed = self._usage_from_dict(found)
-                if parsed:
-                    usage.update(parsed)
-        except (json.JSONDecodeError, ValueError, UnicodeError):
-            pass  # never disrupt the stream for usage extraction
 
     @staticmethod
     def _usage_from_dict(found: object) -> dict[str, int]:
