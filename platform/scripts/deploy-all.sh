@@ -210,6 +210,15 @@ if [ "$DESTROY" = true ]; then
   step "Destroy 1/4: Agent Context"
   if [ -d "$ROOT_DIR/modules/agent-context/terraform" ]; then
     kubectl delete namespace agent-context --wait=true --timeout=120s 2>/dev/null || true
+
+    # Empty S3 buckets (versioned — terraform cannot delete non-empty)
+    AC_BUCKETS=""
+    for pattern in "agent-context-platform-data-"; do
+      FOUND=$(aws s3api list-buckets --query "Buckets[?starts_with(Name,'${pattern}')].Name" --output text 2>/dev/null || echo "")
+      [ -n "$FOUND" ] && [ "$FOUND" != "None" ] && AC_BUCKETS="$AC_BUCKETS $FOUND"
+    done
+    [ -n "$AC_BUCKETS" ] && bash "$SCRIPT_DIR/empty-s3-buckets.sh" $AC_BUCKETS
+
     cd "$ROOT_DIR/modules/agent-context/terraform"
     terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/agent-context-backend.tfvars" -input=false 2>/dev/null || true
     terraform destroy -var-file="../../../environments/$ENVIRONMENT/modules/agent-context.tfvars" -auto-approve || true

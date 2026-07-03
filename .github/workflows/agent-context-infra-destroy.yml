@@ -100,6 +100,21 @@ jobs:
           set -e
           kubectl delete namespace agent-context --wait=true --timeout=120s 2>/dev/null || true
 
+      - name: Empty S3 buckets
+        run: |
+          set -e
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          AC_BUCKETS=""
+          for pattern in "agent-context-platform-data-"; do
+            FOUND=$(aws s3api list-buckets --query "Buckets[?starts_with(Name,'${pattern}')].Name" --output text 2>/dev/null || echo "")
+            [ -n "$FOUND" ] && [ "$FOUND" != "None" ] && AC_BUCKETS="$AC_BUCKETS $FOUND"
+          done
+          if [ -n "$AC_BUCKETS" ]; then
+            bash platform/scripts/empty-s3-buckets.sh $AC_BUCKETS
+          else
+            echo "No agent-context S3 buckets found to empty."
+          fi
+
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform init -backend-config="../../../${{ env.BACKEND_CONFIG }}" -input=false
