@@ -19,6 +19,7 @@ Issue #143: Async Chat Logging with PII Scrubbing
 Issue #144: Added timing instrumentation for auth and model_resolve segments
 """
 
+import fnmatch
 import json
 import logging
 import time
@@ -34,6 +35,7 @@ from src.auth.middleware import (
     validate_cognito_jwt,
 )
 from src.chat_logging.service import ChatLoggingService, create_streaming_logging_wrapper
+from src.proxy.mantle_service import MantlePassthroughService
 from src.proxy.model_resolver import ModelResolver
 from src.proxy.schemas import (
     AnthropicMessagesRequest,
@@ -64,6 +66,8 @@ router = APIRouter(tags=["proxy"])
 _proxy_service: ProxyService | None = None
 _model_resolver: ModelResolver | None = None
 _chat_logging_service: ChatLoggingService | None = None
+# Issue #2709: bedrock-mantle passthrough for OpenAI Responses-API traffic.
+_mantle_service: MantlePassthroughService | None = None
 
 
 def get_proxy_service() -> ProxyService:
@@ -108,6 +112,26 @@ def set_chat_logging_service(service: ChatLoggingService) -> None:
     """Set the chat logging service instance (for dependency injection)."""
     global _chat_logging_service
     _chat_logging_service = service
+
+
+def get_mantle_service() -> MantlePassthroughService:
+    """Get the bedrock-mantle passthrough service instance (Issue #2709).
+
+    Returns 503 when unconfigured/disabled — the route is inert until the
+    operator sets BG_MANTLE_ENABLED and the API-key secret.
+    """
+    if _mantle_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "mantle_disabled", "message": "OpenAI (bedrock-mantle) passthrough is not enabled"},
+        )
+    return _mantle_service
+
+
+def set_mantle_service(service: MantlePassthroughService | None) -> None:
+    """Set the mantle passthrough service instance (for dependency injection)."""
+    global _mantle_service
+    _mantle_service = service
 
 
 def set_agent_run_id_from_header(request: Request) -> str | None:
@@ -709,6 +733,109 @@ async def invoke_model_stream_by_path(
     except HTTPException:
         raise
     except Exception as e:
+        raise handle_proxy_error(e)
+
+
+# ============================================================================
+# OpenAI Responses-API Passthrough (bedrock-mantle) — Issue #2709
+# ============================================================================
+# Proxies OpenAI Responses-API traffic to the bedrock-mantle endpoint so Codex
+# (and future OpenAI-model clients) route through the gateway and get the same
+# per-tenant metering + model-allowlist governance Claude traffic gets today.
+# Passthrough, NOT translation — the body is forwarded verbatim.
+
+
+def _mantle_model_configured(model: str) -> bool:
+    """Check the requested model matches a configured mantle allowlist pattern.
+
+    This is the route-level gate (which model IDs the mantle route will serve at
+    all). Per-tenant access is enforced separately via the model allowlist
+    (ModelResolver.check_model_access), mirroring the other proxy routes.
+    """
+    settings = get_settings()
+    patterns = [p.strip() for p in settings.mantle_allowed_models.split(",") if p.strip()]
+    return any(fnmatch.fnmatch(model, pattern) for pattern in patterns)
+
+
+@router.post("/openai/v1/responses")
+async def create_openai_response(
+    request: Request,
+    context: Annotated[TokenContext, Depends(get_token_context)],
+    mantle_service: Annotated[MantlePassthroughService, Depends(get_mantle_service)],
+    model_resolver: Annotated[ModelResolver, Depends(get_model_resolver)],
+    _agent_run_id: Annotated[str | None, Depends(set_agent_run_id_from_header)],
+    authorization: Annotated[str | None, Header()] = None,
+    x_api_key: Annotated[str | None, Header(alias="X-Api-Key")] = None,
+) -> Response:
+    """Proxy an OpenAI Responses-API request to bedrock-mantle (Issue #2709).
+
+    The request body is forwarded byte-for-byte; the response (including
+    streaming chunks) is returned verbatim. Usage is metered per tenant.
+
+    Auth/allowlist: identical tenant-auth chain as the other proxy routes, plus
+    a per-tenant model-allowlist check (tenant needs an ``openai.*`` grant).
+    """
+    # Read the raw body once — we forward it verbatim (passthrough, no re-encode).
+    body = await request.body()
+
+    # Parse just enough to determine model + stream flag; do NOT mutate the body.
+    try:
+        parsed = json.loads(body) if body else {}
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=400, detail={"error": "invalid_request", "message": "request body must be valid JSON"})
+
+    model = parsed.get("model", "")
+    if not model:
+        raise HTTPException(status_code=400, detail={"error": "invalid_request", "message": "'model' is required"})
+
+    # Route-level gate: is this an OpenAI model this route is configured to serve?
+    if not _mantle_model_configured(model):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_request", "message": f"model '{model}' is not served by the OpenAI passthrough route"},
+        )
+
+    # Per-tenant model-allowlist enforcement (same middleware as existing routes).
+    # A tenant without an openai.* allowlist entry gets 403.
+    try:
+        model_resolver.check_model_access(model, context)
+    except BedrockGatewayError as e:
+        raise handle_proxy_error(e)
+
+    stream = bool(parsed.get("stream", False))
+    request_id = getattr(request.state, "request_id", None) or str(id(request))
+
+    try:
+        result = await mantle_service.create_response(
+            body,
+            context,
+            stream=stream,
+            model=model,
+            request_id=request_id,
+            agent_run_id=_agent_run_id,
+        )
+
+        if stream:
+            return StreamingResponse(
+                result,
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                    "X-Request-ID": request_id,
+                },
+            )
+
+        # Non-streaming: pass upstream status + body back verbatim, including
+        # upstream 4xx/5xx, with the gateway request-id attached for tracing.
+        return Response(
+            content=result.content,
+            status_code=result.status_code,
+            media_type=result.media_type,
+            headers={"X-Request-ID": request_id},
+        )
+    except BedrockGatewayError as e:
         raise handle_proxy_error(e)
 
 

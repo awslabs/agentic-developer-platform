@@ -327,6 +327,32 @@ resource "aws_iam_role_policy" "gateway_comprehend_pii" {
   })
 }
 
+# Bedrock InvokeModel permissions for the bedrock-mantle / OpenAI passthrough
+# (Issue #2709). The mantle passthrough route (POST /openai/v1/responses) signs
+# upstream requests with SigV4 using the gateway pod's OWN IRSA credentials —
+# unlike the Claude proxy path, which assumes a cross-account pool role. This
+# grants the pod direct bedrock:InvokeModel* so it can reach the mantle endpoint.
+resource "aws_iam_role_policy" "gateway_mantle_bedrock_invoke" {
+  count = var.enable_mantle_passthrough ? 1 : 0
+  name  = "${local.name_prefix}-policy-gateway-mantle-bedrock-invoke"
+  role  = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "MantleBedrockInvoke"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # X-Ray Tracing permissions
 resource "aws_iam_role_policy" "gateway_xray_tracing" {
   count = var.enable_xray_tracing ? 1 : 0

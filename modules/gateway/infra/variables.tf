@@ -339,6 +339,16 @@ variable "enable_xray_tracing" {
   default     = false
 }
 
+# Issue #2709: bedrock-mantle passthrough for OpenAI Responses-API traffic.
+# When enabled, grants the gateway pod's IRSA role direct bedrock:InvokeModel*
+# so it can SigV4-sign requests to the mantle/OpenAI endpoint with its own
+# credentials (the Claude proxy path uses cross-account assume-role instead).
+variable "enable_mantle_passthrough" {
+  type        = bool
+  description = "Enable bedrock:InvokeModel* IAM permissions for the bedrock-mantle OpenAI passthrough (Issue #2709)."
+  default     = false
+}
+
 # =============================================================================
 # CloudFront Access Logging
 # =============================================================================

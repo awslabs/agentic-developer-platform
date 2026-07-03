@@ -80,6 +80,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize proxy service: {e}")
 
+    # Issue #2709: Initialize the bedrock-mantle passthrough service for OpenAI
+    # Responses-API traffic (Codex metering/governance). Only wired when enabled;
+    # otherwise the route returns 503 (get_mantle_service raises).
+    try:
+        settings = get_settings()
+        if settings.mantle_enabled:
+            from src.proxy.mantle_auth import make_mantle_auth
+            from src.proxy.mantle_service import MantlePassthroughService
+            from src.proxy.routes import set_mantle_service
+
+            base_url = settings.mantle_base_url.replace("{region}", settings.mantle_region)
+            auth = make_mantle_auth(settings.mantle_region)
+            set_mantle_service(MantlePassthroughService(auth, base_url))
+            logger.info("Mantle passthrough service initialized", extra={"auth_mode": "sigv4"})
+        else:
+            logger.info("Mantle passthrough disabled (BG_MANTLE_ENABLED not set)")
+    except Exception as e:
+        logger.error(f"Failed to initialize mantle passthrough service: {e}")
+
     yield
 
     # Issue #144: Shutdown tracing on app shutdown
