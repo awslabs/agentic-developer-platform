@@ -459,7 +459,12 @@ resource "aws_iam_role_policy" "gateway_vault_secrets" {
           # secret here so "Sign in with GitHub" works right after registration,
           # and get_app_status reads it to report login_enabled. Narrow to this
           # exact secret family — NOT adp/*/cognito/*.
-          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/cognito/github-oauth-credentials*"
+          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/cognito/github-oauth-credentials*",
+          # Issue #2824: the register flow writes the manifest-conversion
+          # webhook_secret here so webhooks from a UI-registered App pass HMAC
+          # validation in the webhook-ingress Lambda. Terraform seeds this secret
+          # with a placeholder and never updates it. Narrow to this exact secret.
+          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/webhook-ingress/github-webhook-secret*"
         ]
       },
       {

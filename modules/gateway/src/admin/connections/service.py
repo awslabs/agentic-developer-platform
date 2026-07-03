@@ -1154,6 +1154,30 @@ async def _store_app_credentials(
                     logger.error("Failed to store secret %s: %s", path, exc)
                     raise
 
+        # Issue #2824: Write-through to the webhook-ingress secret so that
+        # webhooks from a UI-registered App pass HMAC validation. The Lambda
+        # validates signatures against adp/<env>/webhook-ingress/github-webhook-secret
+        # (WEBHOOK_SECRET_ARN), which Terraform seeds with a placeholder and never
+        # updates (ignore_changes = [secret_string]). Without this write the meta
+        # secret holds the real webhook_secret but the ingress secret keeps the
+        # placeholder — so every delivery fails with 401 invalid_signature.
+        #
+        # Terraform owns the secret's existence, so we put_secret_value directly
+        # (no create fallback). A ResourceNotFound / any ClientError is a soft-fail
+        # warning — the webhook path is dead until wired, but App registration and
+        # login still succeed (same soft-fail contract as the OAuth write-through).
+        if webhook_secret:
+            ingress_secret_path = f"adp/{env}/webhook-ingress/github-webhook-secret"
+            try:
+                sm.put_secret_value(SecretId=ingress_secret_path, SecretString=webhook_secret)
+                logger.info("Wrote webhook secret to ingress path: %s", ingress_secret_path)
+            except ClientError as exc:
+                logger.warning(
+                    "Could not write webhook-ingress secret %s (webhook path not wired): %s",
+                    ingress_secret_path,
+                    exc,
+                )
+
         # Issue #2607/#2708: Write-through to the broker's OAuth secret so
         # "Sign in with GitHub" works immediately after App registration
         # without a separate wire-github-app.sh step. The broker reads

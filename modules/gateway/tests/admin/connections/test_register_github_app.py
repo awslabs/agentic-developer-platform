@@ -848,6 +848,11 @@ class TestBrokerOAuthWriteThrough:
                 name = kwargs["Name"]
                 created_secrets[name] = kwargs["SecretString"]
 
+            def put_secret_value(self, **kwargs):
+                # Issue #2824: the ingress webhook-secret write-through uses
+                # put_secret_value directly (Terraform owns the secret).
+                pass
+
         with (
             patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
             patch("boto3.client", return_value=FakeSM()),
@@ -881,6 +886,11 @@ class TestBrokerOAuthWriteThrough:
             def create_secret(self, **kwargs):
                 name = kwargs["Name"]
                 created_secrets[name] = kwargs["SecretString"]
+
+            def put_secret_value(self, **kwargs):
+                # Issue #2824: the ingress webhook-secret write-through uses
+                # put_secret_value directly (Terraform owns the secret).
+                pass
 
         with (
             patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
@@ -1004,6 +1014,112 @@ class TestBrokerOAuthWriteThrough:
         assert "PRIVATE KEY" not in result
 
 
+class TestWebhookSecretWriteThrough:
+    """Issue #2824: register flow writes webhook_secret to the ingress secret.
+
+    The webhook-ingress Lambda validates HMAC against
+    adp/<env>/webhook-ingress/github-webhook-secret. Without this write-through,
+    that secret keeps the Terraform placeholder and every delivery from a
+    UI-registered App fails with 401 invalid_signature.
+    """
+
+    @pytest.mark.asyncio
+    async def test_writes_ingress_secret_when_present(self):
+        """_store_app_credentials writes webhook_secret to the ingress SM path."""
+        from src.admin.connections.service import _store_app_credentials
+
+        put_calls = {}
+
+        class FakeSM:
+            def create_secret(self, **kwargs):
+                pass
+
+            def put_secret_value(self, **kwargs):
+                put_calls[kwargs["SecretId"]] = kwargs["SecretString"]
+
+        with (
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
+            patch("boto3.client", return_value=FakeSM()),
+        ):
+            await _store_app_credentials(
+                app_id="123456",
+                app_slug="adp-agent-platform",
+                pem="-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
+                client_id="Iv1.abc123",
+                client_secret="s3cr3t",
+                webhook_secret="whsec_real_value",
+            )
+
+        ingress_path = "adp/dev/webhook-ingress/github-webhook-secret"
+        assert ingress_path in put_calls
+        assert put_calls[ingress_path] == "whsec_real_value"
+
+    @pytest.mark.asyncio
+    async def test_skips_ingress_secret_when_webhook_secret_empty(self):
+        """Empty webhook_secret → no ingress secret write."""
+        from src.admin.connections.service import _store_app_credentials
+
+        put_calls = {}
+
+        class FakeSM:
+            def create_secret(self, **kwargs):
+                pass
+
+            def put_secret_value(self, **kwargs):
+                put_calls[kwargs["SecretId"]] = kwargs["SecretString"]
+
+        with (
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
+            patch("boto3.client", return_value=FakeSM()),
+        ):
+            await _store_app_credentials(
+                app_id="123456",
+                app_slug="adp-agent-platform",
+                pem="-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
+                client_id="Iv1.abc123",
+                client_secret="s3cr3t",
+                webhook_secret="",
+            )
+
+        ingress_path = "adp/dev/webhook-ingress/github-webhook-secret"
+        assert ingress_path not in put_calls
+
+    @pytest.mark.asyncio
+    async def test_ingress_secret_write_soft_fails_on_client_error(self):
+        """A ClientError on the ingress write is a soft-fail — registration still succeeds."""
+        from botocore.exceptions import ClientError
+
+        from src.admin.connections.service import _store_app_credentials
+
+        class FakeSM:
+            def create_secret(self, **kwargs):
+                pass
+
+            def put_secret_value(self, **kwargs):
+                if "webhook-ingress/github-webhook-secret" in kwargs["SecretId"]:
+                    raise ClientError(
+                        {"Error": {"Code": "ResourceNotFoundException", "Message": "not found"}},
+                        "PutSecretValue",
+                    )
+
+        with (
+            patch.dict("os.environ", {"ENVIRONMENT": "dev", "AWS_REGION": "us-east-1"}),
+            patch("boto3.client", return_value=FakeSM()),
+        ):
+            # Must not raise — the webhook write is soft-fail, like the OAuth write-through.
+            result = await _store_app_credentials(
+                app_id="123456",
+                app_slug="adp-agent-platform",
+                pem="-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
+                client_id="Iv1.abc123",
+                client_secret="s3cr3t",
+                webhook_secret="whsec_real_value",
+            )
+
+        # login_enabled result (OAuth write) is unaffected by the webhook soft-fail.
+        assert result is True
+
+
 class TestLoginEnabledSignal:
     """Issue #2708: register flow reports whether GitHub login got wired."""
 
@@ -1014,6 +1130,11 @@ class TestLoginEnabledSignal:
 
         class FakeSM:
             def create_secret(self, **kwargs):
+                pass
+
+            def put_secret_value(self, **kwargs):
+                # Issue #2824: the ingress webhook-secret write-through uses
+                # put_secret_value directly (Terraform owns the secret).
                 pass
 
         with (
