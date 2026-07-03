@@ -81,6 +81,33 @@ class WebhookMetrics:
             }
         )
 
+    def record_sibling_app(self, repo: str, sibling_login: str) -> None:
+        """Record detection of a sibling ADP App on the same repo (issue #2732).
+
+        Emitted when a foreign ADP-family bot comment (carries the
+        ``adp-correlation:`` marker but is not our own App's bot) is delivered
+        to our webhook — a signal that a second ADP deployment's App is
+        installed on the same repo and executing the same triggers.
+
+        Advisory only: this method never blocks or rejects the event.
+
+        Args:
+            repo: The full repo name (e.g. "aws-innovate/adp").
+            sibling_login: The foreign bot's login (e.g. "aws-e-adp-agent-dev[bot]").
+        """
+        self._metric_data.append(
+            {
+                "MetricName": "SiblingAppDetected",
+                "Dimensions": [
+                    {"Name": "Repo", "Value": repo},
+                    {"Name": "SiblingLogin", "Value": sibling_login},
+                ],
+                "Value": 1,
+                "Unit": "Count",
+                "Timestamp": time.time(),
+            }
+        )
+
     def record_rejected(self, reason: str) -> None:
         """Record a rejected webhook with distinct RejectedReason dimension.
 

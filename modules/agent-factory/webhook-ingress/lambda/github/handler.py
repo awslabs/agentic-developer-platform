@@ -275,6 +275,111 @@ def _auto_provision_tenant_github_app_secret(tenant_id: str, installation_id: in
         _emit_metric("AutoRegister.SecretCreationFailed")
 
 
+# Issue #2732: sibling-App detection state.
+#
+# Our own GitHub App slug, resolved once per container from the
+# adp-agent-platform-meta secret (PR #2701 pattern). Sentinel `None` = not yet
+# resolved; "" = resolved-but-unavailable (skip detection to avoid mis-flagging
+# our own traffic). A foreign ADP bot comment (marker present, login != ours)
+# means a second ADP deployment's App is installed on the same repo.
+_own_app_slug: str | None = None
+
+# Dedup set for WARNING logs: (repo, sibling_login) already warned this
+# container. Cheap, resets on cold start — good enough for advisory logging.
+# The CloudWatch metric is still emitted on every event (it's the durable
+# record); only the log line is deduped.
+_sibling_warned: set[tuple[str, str]] = set()
+
+
+def _get_own_app_slug() -> str:
+    """Return our own GitHub App slug, cached module-level (issue #2732).
+
+    Reads ``app_slug`` from the platform App's ``-meta`` secret
+    (``adp/<env>/github-app/adp-agent-platform-meta``), matching the resolution
+    used by the gateway's GitHubAppCredsProvider (PR #2701). Returns "" on any
+    failure — callers treat "" as "cannot determine own slug" and skip sibling
+    detection rather than risk mis-flagging our own bot's comments.
+    """
+    global _own_app_slug
+    if _own_app_slug is not None:
+        return _own_app_slug
+
+    _own_app_slug = ""  # fail-safe default; overwritten on success
+    env = os.environ.get("ENVIRONMENT", "dev")
+    meta_path = f"adp/{env}/github-app/adp-agent-platform-meta"
+    try:
+        resp = _get_sm_client().get_secret_value(SecretId=meta_path)
+        meta = json.loads(resp["SecretString"])
+        _own_app_slug = (meta.get("app_slug") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Sibling detection: could not resolve own App slug: %s", exc)
+    return _own_app_slug
+
+
+def _detect_sibling_app(payload: dict, repo: str) -> None:
+    """Advisory detection of a sibling ADP App installed on the same repo.
+
+    Issue #2732: GitHub fans every webhook to ALL installed Apps, so when a
+    second ADP deployment's App is installed on a repo we're also on, that
+    deployment's agent bot-comments arrive at OUR webhook too. Those comments
+    carry the ``adp-correlation:`` marker, which unambiguously identifies them
+    as ADP-family traffic. We flag a sibling when ALL of:
+
+      1. ``sender.type == "Bot"``,
+      2. the comment body contains a valid ``adp-correlation:`` marker, and
+      3. the sender login is NOT our own App's bot (``<slug>[bot]``).
+
+    On detection we emit the ``SiblingAppDetected`` CloudWatch metric and log a
+    deduped WARNING. This is OBSERVABILITY ONLY: it never comments on the issue
+    and never blocks the event (a repo may legitimately host two Apps during a
+    migration). The existing ``unknown_user`` short-circuit still applies.
+
+    Best-effort: any exception is swallowed so detection never breaks the
+    webhook path.
+    """
+    try:
+        sender = payload.get("sender", {}) or {}
+        if sender.get("type") != "Bot":
+            return
+
+        body = (payload.get("comment", {}) or {}).get("body", "") or ""
+        from common.marker_parse import has_valid_marker
+
+        if not has_valid_marker(body):
+            return
+
+        sender_login = sender.get("login", "") or ""
+
+        # Own-slug gate: if we can't determine our own slug, skip — we must not
+        # risk flagging our own bot's comments as a sibling.
+        own_slug = _get_own_app_slug()
+        if not own_slug:
+            return
+        if sender_login == f"{own_slug}[bot]":
+            return  # our own traffic
+
+        # Confirmed foreign ADP-family bot comment → sibling App on this repo.
+        try:
+            _get_metrics().record_sibling_app(repo=repo, sibling_login=sender_login)
+            _get_metrics().flush()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Sibling detection: metric emit failed: %s", exc)
+
+        dedup_key = (repo, sender_login)
+        if dedup_key not in _sibling_warned:
+            _sibling_warned.add(dedup_key)
+            logger.warning(
+                "Sibling ADP App detected on repo=%s: foreign agent bot %r "
+                "(carries adp-correlation marker) — a second ADP deployment's "
+                "App is installed here and may execute the same triggers. "
+                "Advisory only; event not blocked.",
+                repo,
+                sender_login,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Sibling detection failed (non-fatal): %s", exc)
+
+
 _correlation_store_mod = None
 
 
@@ -653,6 +758,13 @@ def handler(event: dict, context) -> dict:
     print(
         f"DBG handler:identity install_id={installation_id} repo={repo!r} sender_id={sender_id} sender_login={sender.get('login', '')!r}"
     )
+
+    # 4a. Issue #2732: Advisory sibling-App detection. Run BEFORE identity
+    # resolution — a foreign ADP deployment's bot comment resolves as
+    # `unknown_user` and 403s below, so detection must happen first. This is
+    # observability only: it emits a metric + deduped WARNING and never blocks.
+    if event_type == "issue_comment":
+        _detect_sibling_app(payload, repo)
 
     # 5. Resolve identity (tenant + sender) via identity-index
     resolved, outcome_reason = _get_identity_resolver().resolve(installation_id, sender_id)
