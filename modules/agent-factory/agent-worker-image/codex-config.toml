@@ -1,23 +1,46 @@
 # Codex CLI config for headless `codex exec` in the agent-worker pod.
 # Baked into the image at $HOME/.codex/config.toml (HOME=/home/agent).
-# Design settled by spike #2703; story #2704.
+# Design settled by spike #2703; story #2704; v1→v2 cutover in #2713.
 #
-# Model path: openai.gpt-5.5 is served from the Bedrock `bedrock-mantle`
-# endpoint (us-east-1, Responses API only). Access is enabled-by-default —
-# first invoke auto-subscribes (~15-min settling window). It never appears in
-# `bedrock list-foundation-models`; that absence is not an access problem.
+# Model path (v2 — gateway cutover, #2713): openai.gpt-5.5 is reached THROUGH
+# the platform gateway, not by calling bedrock-mantle directly. Codex POSTs to
+# the local sigv4-proxy sidecar (127.0.0.1:9090), which strips the inbound
+# `authorization` header, re-signs for `execute-api`, and forwards to API GW
+# `/agent/{proxy+}`. API GW strips the `/agent` prefix, so the gateway pod
+# receives exactly `/openai/v1/responses` — the #2709 mantle passthrough route.
+# This gives OpenAI tokens the same per-tenant metering + allowlist governance
+# Claude traffic already gets, and attaches the run-id (x-agent-runid) the
+# sidecar injects so gateway usage_logs join to the check-run transcript.
 #
-# Auth: AWS SDK credential chain via pod IRSA (zero secrets). The ScaledJob
-# role already grants bedrock:InvokeModel*. Fallback is AWS_BEARER_TOKEN_BEDROCK
-# from Secrets Manager, injected as an env var (no config change needed).
+# Auth: SigV4 only, NO API keys (operator decision 2026-07-03). The custom
+# provider below carries a *placeholder* env_key — Codex 0.142.5 requires the
+# env var to EXIST but does not validate its value (verified on the dev
+# ScaledJob role); the sidecar discards the Bearer header and re-signs with pod
+# IRSA. The placeholder is set via ENV in the Dockerfile.
 
 model = "openai.gpt-5.5"
-model_provider = "amazon-bedrock"
+model_provider = "adp-gateway"
 
 # Non-interactive pod: never prompt for approval and never block on a TTY.
 # `on-failure`/`on-request` would hang a KEDA-scaled pod with no terminal.
 approval_policy = "never"
 
-# AWS region for the built-in amazon-bedrock provider (mantle is us-east-1).
+# v2 provider: route through the sigv4-proxy sidecar → API GW → gateway pod.
+# base_url ends at `/openai/v1`; with wire_api="responses" Codex appends
+# `/responses`, producing exactly `/openai/v1/responses` at the gateway
+# (verified against Codex 0.142.5). env_key names an env var that must exist
+# but whose value is irrelevant (sidecar re-signs) — no tenant key is minted.
+[model_providers.adp-gateway]
+name = "ADP Gateway (bedrock-mantle passthrough)"
+base_url = "http://127.0.0.1:9090/openai/v1"
+wire_api = "responses"
+env_key = "ADP_GATEWAY_PLACEHOLDER_KEY"
+
+# Emergency soak-window fallback ONLY (#2713 I3): the original built-in
+# provider that signs bedrock directly via the pod IRSA credential chain. To
+# roll back the cutover, set `model_provider = "amazon-bedrock"`. This path
+# works ONLY while the direct IRSA grant exists — i.e. before Step 2's IAM Deny
+# lands (soak gate ≥ 2026-07-10). Once the Deny is applied, this fallback is
+# blocked; rollback is then: revert Step 2 first, then Step 1.
 [model_providers.amazon-bedrock.aws]
 region = "us-east-1"

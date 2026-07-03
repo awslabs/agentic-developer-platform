@@ -236,6 +236,14 @@ ENV HOME=/home/agent
 ENV PATH="/app/node_modules/.bin:${PATH}"
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 
+# Codex v2 gateway cutover (#2713): the custom `adp-gateway` provider in
+# codex-config.toml declares env_key=ADP_GATEWAY_PLACEHOLDER_KEY. Codex 0.142.5
+# requires this env var to EXIST (a missing var is a hard startup error) but
+# never validates its value — the sigv4-proxy sidecar strips the Bearer header
+# and re-signs with pod IRSA. This is a placeholder, NOT a secret: no tenant API
+# key is minted (SigV4-only invariant). Do not source it from Secrets Manager.
+ENV ADP_GATEWAY_PLACEHOLDER_KEY="unused-sidecar-restrips-and-resigns"
+
 # Healthcheck: verify node and python are available
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD node --version && python3 --version

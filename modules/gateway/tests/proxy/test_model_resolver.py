@@ -49,6 +49,14 @@ class TestModelResolver:
         # Mistral models should be allowed
         assert model_resolver.is_model_allowed("mistral.mistral-7b-instruct-v0:2", token_context)
 
+    def test_is_model_allowed_openai_default_2713(self, model_resolver: ModelResolver, token_context: TokenContext) -> None:
+        """OpenAI models (bedrock-mantle passthrough) are in the default allowlist.
+
+        #2713 C1: without an openai.* default, the /openai/v1/responses route's
+        check_model_access would 403 every Codex run after cutover.
+        """
+        assert model_resolver.is_model_allowed("openai.gpt-5.5", token_context)
+
     def test_is_model_allowed_with_restrictions(self, model_resolver_with_restrictions: ModelResolver, token_context: TokenContext) -> None:
         """Test model access check with restricted patterns."""
         # test-org-456 only allows claude-3-5-sonnet-* models
