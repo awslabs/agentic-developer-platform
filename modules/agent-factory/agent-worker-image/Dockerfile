@@ -114,6 +114,13 @@ RUN corepack enable && \
     corepack prepare pnpm@latest --activate && \
     corepack prepare yarn@stable --activate
 
+# Install the OpenAI Codex CLI (issue #2704, EPIC #2702). Pinned so the image
+# is reproducible and doesn't inherit a surprise "latest". Invoked headlessly
+# as `codex exec` against Bedrock (openai.gpt-5.5); config baked in below.
+ARG CODEX_VERSION=0.142.5
+RUN npm install -g "@openai/codex@${CODEX_VERSION}" && \
+    codex --version
+
 # Install GitHub CLI from official tarball (not apt) to avoid inheriting
 # Debian's Go 1.19 toolchain CVEs (7 critical Go stdlib CVEs cleared).
 ARG GH_VERSION=2.92.0
@@ -193,6 +200,11 @@ COPY --from=builder --chown=agent:agent /build/prod_modules/ /app/node_modules/
 # Copy staged personas and skills
 COPY --from=stager --chown=agent:agent /stage/personas/ /app/personas/
 COPY --from=stager --chown=agent:agent /stage/skills/ /app/skills/
+
+# Codex CLI config (issue #2704). Codex reads $HOME/.codex/config.toml; the
+# runtime HOME is /home/agent (non-root `agent` user), so it lands there —
+# NOT /root/.codex. Auth is the pod IRSA credential chain (zero secrets).
+COPY --chown=agent:agent modules/agent-factory/agent-worker-image/codex-config.toml /home/agent/.codex/config.toml
 
 # Copy entrypoint and its lib/ support modules (vault_client, github_token, sts_assume)
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/entrypoint.py /app/entrypoint.py
