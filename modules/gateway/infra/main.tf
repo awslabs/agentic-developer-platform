@@ -330,8 +330,16 @@ resource "aws_iam_role_policy" "gateway_comprehend_pii" {
 # Bedrock InvokeModel permissions for the bedrock-mantle / OpenAI passthrough
 # (Issue #2709). The mantle passthrough route (POST /openai/v1/responses) signs
 # upstream requests with SigV4 using the gateway pod's OWN IRSA credentials —
-# unlike the Claude proxy path, which assumes a cross-account pool role. This
-# grants the pod direct bedrock:InvokeModel* so it can reach the mantle endpoint.
+# unlike the Claude proxy path, which assumes a cross-account pool role.
+#
+# bedrock-mantle is its OWN service (prefix "bedrock-mantle:"), not part of the
+# "bedrock:" service. The upstream inference call authorizes against
+# bedrock-mantle:CreateInference on the mantle project resource — NOT
+# bedrock:InvokeModel*. Spike #2703 missed this because it tested from a role
+# with AdministratorAccess attached, which masked the real required action;
+# the gateway pod's own role got 401 access_denied until this grant was added
+# (Issue #2817). The bedrock:InvokeModel* statement below is kept because the
+# mantle docs are ambiguous about whether some model paths still check it.
 resource "aws_iam_role_policy" "gateway_mantle_bedrock_invoke" {
   count = var.enable_mantle_passthrough ? 1 : 0
   name  = "${local.name_prefix}-policy-gateway-mantle-bedrock-invoke"
@@ -348,6 +356,14 @@ resource "aws_iam_role_policy" "gateway_mantle_bedrock_invoke" {
           "bedrock:InvokeModelWithResponseStream"
         ]
         Resource = "*"
+      },
+      {
+        Sid    = "MantleCreateInference"
+        Effect = "Allow"
+        Action = [
+          "bedrock-mantle:CreateInference"
+        ]
+        Resource = "arn:aws:bedrock-mantle:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:project/default"
       }
     ]
   })
