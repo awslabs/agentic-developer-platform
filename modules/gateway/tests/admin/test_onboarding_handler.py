@@ -737,3 +737,87 @@ class TestSyncCognitoRoleClaims:
             # Must not raise — approval already committed.
             approval._sync_cognito_role_claims(cognito_sub="sub-abc", org_id="acme", role="org_admin", team_id="t")
         mock_metric.assert_called_with("ADP/Onboarding", "OnboardingApproval.CognitoClaimSyncFailure")
+
+    def test_email_signup_no_listusers_on_common_path(self):
+        """Email-signup user (username == sub): first attempt succeeds, no ListUsers."""
+        from src.admin.onboarding import approval
+
+        mock_client = MagicMock()
+        with (
+            patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=True),
+            patch("boto3.client", return_value=mock_client),
+        ):
+            approval._sync_cognito_role_claims(cognito_sub="sub-uuid", org_id="acme", role="org_admin", team_id="t")
+
+        mock_client.admin_update_user_attributes.assert_called_once()
+        assert mock_client.admin_update_user_attributes.call_args.kwargs["Username"] == "sub-uuid"
+        mock_client.list_users.assert_not_called()
+
+    def _user_not_found_error(self):
+        from botocore.exceptions import ClientError
+
+        return ClientError(
+            {"Error": {"Code": "UserNotFoundException", "Message": "User does not exist."}},
+            "AdminUpdateUserAttributes",
+        )
+
+    def test_github_user_falls_back_to_listusers_by_sub(self):
+        """GitHub user (username GitHub_<id> != sub): first attempt raises
+        UserNotFound → ListUsers-by-sub resolves the real username → retry succeeds."""
+        from src.admin.onboarding import approval
+
+        mock_client = MagicMock()
+        mock_client.admin_update_user_attributes.side_effect = [self._user_not_found_error(), None]
+        mock_client.list_users.return_value = {"Users": [{"Username": "GitHub_20402445"}]}
+        with (
+            patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=True),
+            patch("boto3.client", return_value=mock_client),
+            patch("src.admin.onboarding.approval._emit_metric") as mock_metric,
+        ):
+            approval._sync_cognito_role_claims(cognito_sub="c4d8c4a8-uuid", org_id="acme", role="org_admin", team_id="t")
+
+        mock_client.list_users.assert_called_once()
+        lu_kwargs = mock_client.list_users.call_args.kwargs
+        assert lu_kwargs["UserPoolId"] == "us-east-1_pool"
+        assert lu_kwargs["Filter"] == 'sub = "c4d8c4a8-uuid"'
+        assert mock_client.admin_update_user_attributes.call_count == 2
+        assert mock_client.admin_update_user_attributes.call_args.kwargs["Username"] == "GitHub_20402445"
+        mock_metric.assert_not_called()
+
+    def test_listusers_empty_is_best_effort(self):
+        """ListUsers returns no user: warn + metric, no raise (approval still commits)."""
+        from src.admin.onboarding import approval
+
+        mock_client = MagicMock()
+        mock_client.admin_update_user_attributes.side_effect = self._user_not_found_error()
+        mock_client.list_users.return_value = {"Users": []}
+        with (
+            patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=True),
+            patch("boto3.client", return_value=mock_client),
+            patch("src.admin.onboarding.approval._emit_metric") as mock_metric,
+        ):
+            approval._sync_cognito_role_claims(cognito_sub="sub-uuid", org_id="acme", role="org_admin", team_id="t")
+
+        mock_client.list_users.assert_called_once()
+        assert mock_client.admin_update_user_attributes.call_count == 1  # no retry
+        mock_metric.assert_called_with("ADP/Onboarding", "OnboardingApproval.CognitoClaimSyncFailure")
+
+    def test_retry_failure_is_best_effort(self):
+        """ListUsers resolves but the retry raises: warn + metric, no raise."""
+        from src.admin.onboarding import approval
+
+        mock_client = MagicMock()
+        mock_client.admin_update_user_attributes.side_effect = [
+            self._user_not_found_error(),
+            Exception("cognito down on retry"),
+        ]
+        mock_client.list_users.return_value = {"Users": [{"Username": "GitHub_1"}]}
+        with (
+            patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=True),
+            patch("boto3.client", return_value=mock_client),
+            patch("src.admin.onboarding.approval._emit_metric") as mock_metric,
+        ):
+            approval._sync_cognito_role_claims(cognito_sub="sub-uuid", org_id="acme", role="org_admin", team_id="t")
+
+        assert mock_client.admin_update_user_attributes.call_count == 2
+        mock_metric.assert_called_with("ADP/Onboarding", "OnboardingApproval.CognitoClaimSyncFailure")
