@@ -245,7 +245,7 @@ class TestErrorHandling:
     @respx.mock
     async def test_timeout_returns_empty(self):
         """Z4a: Timeout returns empty list, not exception."""
-        respx.get("http://zoekt:6070/api/search").mock(side_effect=httpx.ReadTimeout("timed out"))
+        respx.post("http://zoekt:6070/api/search").mock(side_effect=httpx.ReadTimeout("timed out"))
 
         backend = ZoektSearchBackend("http://zoekt:6070", timeout=0.1)
         results = await backend.search("query")
@@ -255,7 +255,7 @@ class TestErrorHandling:
     @respx.mock
     async def test_http_500_returns_empty(self):
         """Z4b: HTTP 500 returns empty list."""
-        respx.get("http://zoekt:6070/api/search").mock(return_value=httpx.Response(500))
+        respx.post("http://zoekt:6070/api/search").mock(return_value=httpx.Response(500))
 
         backend = ZoektSearchBackend("http://zoekt:6070")
         results = await backend.search("query")
@@ -265,7 +265,7 @@ class TestErrorHandling:
     @respx.mock
     async def test_http_503_returns_empty(self):
         """Z4c: HTTP 503 (service unavailable) returns empty list."""
-        respx.get("http://zoekt:6070/api/search").mock(return_value=httpx.Response(503))
+        respx.post("http://zoekt:6070/api/search").mock(return_value=httpx.Response(503))
 
         backend = ZoektSearchBackend("http://zoekt:6070")
         results = await backend.search("query")
@@ -275,7 +275,7 @@ class TestErrorHandling:
     @respx.mock
     async def test_malformed_json_returns_empty(self):
         """Z4d: Malformed JSON response returns empty list."""
-        respx.get("http://zoekt:6070/api/search").mock(
+        respx.post("http://zoekt:6070/api/search").mock(
             return_value=httpx.Response(200, text="not json")
         )
 
@@ -300,7 +300,7 @@ class TestErrorHandling:
                 }
             }
         )
-        respx.get("http://zoekt:6070/api/search").mock(
+        respx.post("http://zoekt:6070/api/search").mock(
             return_value=httpx.Response(200, text=response_body)
         )
 
@@ -316,7 +316,7 @@ class TestErrorHandling:
     async def test_search_with_repo_scope(self):
         """Z4f: Repo-scoped search passes repos parameter."""
         response_body = json.dumps({"Result": {"FileMatches": []}})
-        route = respx.get("http://zoekt:6070/api/search").mock(
+        route = respx.post("http://zoekt:6070/api/search").mock(
             return_value=httpx.Response(200, text=response_body)
         )
 
@@ -325,7 +325,7 @@ class TestErrorHandling:
 
         assert route.called
         request = route.calls[0].request
-        assert "repos" in str(request.url)
+        assert "org/repo" in request.content.decode()
 
 
 # ===========================================================================

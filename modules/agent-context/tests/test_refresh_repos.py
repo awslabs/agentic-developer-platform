@@ -629,6 +629,8 @@ class TestRefreshMintToken:
         with open(source_path) as f:
             source = f.read()
 
-        assert "from github_auth import mint_github_token" in source
+        import re
+
+        assert re.search(r"from github_auth import .*\bmint_github_token\b", source)
         # The _mint_github_token wrapper should delegate to the shared helper
         assert "return mint_github_token()" in source

@@ -2,7 +2,7 @@
 
 Tests:
 - extract_org_repo handles various URL formats
-- _get_gateway_connection raises when GATEWAY_DB_NAME not set
+- read_registry_assets uses db.get_connection (issue #2182); no gateway cross-DB connection
 - read_registry_assets returns RegistryAsset dataclass instances
 """
 
@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 # Add the ingestion source to sys.path for direct imports
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "images" / "ingestion"))
@@ -55,7 +54,7 @@ class TestExtractOrgRepo:
 class TestReadRegistryAssets:
     """Tests for read_registry_assets with mocked DB connection."""
 
-    @patch("registry_reader._get_gateway_connection")
+    @patch("db.get_connection")
     def test_returns_assets_from_db(self, mock_conn_fn):
         """Reads rows from gateway DB and returns RegistryAsset list."""
         import uuid
@@ -80,7 +79,7 @@ class TestReadRegistryAssets:
         assert assets[0].installation_id == 12345
         mock_conn.close.assert_called_once()
 
-    @patch("registry_reader._get_gateway_connection")
+    @patch("db.get_connection")
     def test_empty_result(self, mock_conn_fn):
         """Returns empty list when no assets match."""
         mock_cursor = MagicMock()
@@ -95,7 +94,7 @@ class TestReadRegistryAssets:
         assert assets == []
         mock_conn.close.assert_called_once()
 
-    @patch("registry_reader._get_gateway_connection")
+    @patch("db.get_connection")
     def test_shared_asset_has_null_tenant(self, mock_conn_fn):
         """Public/shared assets have tenant_id=None."""
         import uuid
@@ -116,7 +115,7 @@ class TestReadRegistryAssets:
         assert assets[0].tenant_id is None
         assert assets[0].installation_id is None
 
-    @patch("registry_reader._get_gateway_connection")
+    @patch("db.get_connection")
     def test_personal_asset_has_owner_sub(self, mock_conn_fn):
         """Personal assets carry owner_sub."""
         import uuid
@@ -135,38 +134,3 @@ class TestReadRegistryAssets:
         assets = read_registry_assets("repo")
         assert assets[0].owner_sub == "user-abc"
         assert assets[0].tenant_id == "t1"
-
-
-# ---------------------------------------------------------------------------
-# _get_gateway_connection error handling
-# ---------------------------------------------------------------------------
-
-
-class TestGetGatewayConnection:
-    """Tests for _get_gateway_connection error cases."""
-
-    def test_raises_when_gateway_db_name_empty(self, monkeypatch):
-        """Raises RuntimeError when GATEWAY_DB_NAME is not set."""
-        from config import settings
-
-        monkeypatch.setattr(settings, "gateway_db_name", "")
-        monkeypatch.setattr(settings, "gateway_db_host", "")
-        monkeypatch.delenv("DB_HOST", raising=False)
-
-        from registry_reader import _get_gateway_connection
-
-        with pytest.raises(RuntimeError, match="GATEWAY_DB_NAME not set"):
-            _get_gateway_connection()
-
-    def test_raises_when_no_host(self, monkeypatch):
-        """Raises RuntimeError when no host is available."""
-        from config import settings
-
-        monkeypatch.setattr(settings, "gateway_db_name", "bedrockgateway")
-        monkeypatch.setattr(settings, "gateway_db_host", "")
-        monkeypatch.delenv("DB_HOST", raising=False)
-
-        from registry_reader import _get_gateway_connection
-
-        with pytest.raises(RuntimeError, match="Neither GATEWAY_DB_HOST nor DB_HOST"):
-            _get_gateway_connection()

@@ -336,7 +336,6 @@ def _build_basic_code_index(clone_path: str, org_repo: str) -> dict[str, Any]:
                 continue
 
             file_imports: list[str] = []
-            file_internal_deps: list[str] = []
 
             for i, line in enumerate(lines[:2000]):
                 stripped = line.strip()

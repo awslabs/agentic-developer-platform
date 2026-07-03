@@ -64,7 +64,10 @@ jobs:
       - name: Install dependencies
         working-directory: modules/agent-context
         run: |
-          pip install pytest pytest-asyncio httpx respx pydantic pydantic-settings asgi-lifespan
+          pip install pytest pytest-asyncio httpx respx pydantic pydantic-settings asgi-lifespan \
+            boto3 sqlalchemy fastapi mcp requests pyyaml uvicorn \
+            psycopg2-binary python-hcl2 neo4j python-ulid \
+            opentelemetry-sdk opentelemetry-exporter-otlp
 
       - name: Run Tests
         working-directory: modules/agent-context

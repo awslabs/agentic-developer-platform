@@ -12,7 +12,6 @@ Uses mocks for psycopg2 (no live DB required).
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import os
 import sys
@@ -208,7 +207,6 @@ class TestIngestUrlStageTracking:
 
     def test_ingest_url_accepts_registry_asset_id_param(self):
         """Verify ingest_url function accepts registry_asset_id parameter."""
-        import inspect
 
         # We need to mock dependencies before importing
         with patch.dict(sys.modules, {

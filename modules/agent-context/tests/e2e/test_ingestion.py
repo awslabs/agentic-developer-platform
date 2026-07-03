@@ -125,7 +125,7 @@ class TestNewRepoIngest:
         """Add a known repo, run ingestion, and search for it."""
         # This is a longer integration test — add a small well-known repo
         test_repo = "octocat/Hello-World"
-        repo_file = temp_repo_list(extra=[test_repo])
+        temp_repo_list(extra=[test_repo])
 
         # Trigger ingestion (this would need the modified repos.txt in the configmap)
         # For now, we just verify the mechanism works in principle

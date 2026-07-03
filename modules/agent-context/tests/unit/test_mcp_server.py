@@ -77,7 +77,7 @@ class TestSchemaConversion:
     def test_all_six_tools_have_schemas(self):
         """Exactly 6 tools produce valid schemas (single source of truth)."""
         schemas = [_tools_to_json_schema(t) for t in TOOLS]
-        assert len(schemas) == 6
+        assert len(schemas) == 7
         for schema in schemas:
             assert schema["type"] == "object"
 
@@ -96,7 +96,7 @@ class TestMCPServerRegistration:
         from door.mcp_app import mcp_server
 
         result = await mcp_server.list_tools()
-        assert len(result) == 6
+        assert len(result) == 7
 
     @pytest.mark.asyncio
     async def test_mcp_tool_names_match_tools_constant(self):
@@ -327,9 +327,9 @@ class TestLegacyRESTPreserved:
         resp = await client.get("/tools")
         assert resp.status_code == 200
         tools = resp.json()
-        assert len(tools) == 6
+        assert len(tools) == 7
         names = {t["name"] for t in tools}
-        assert names == {"search", "understand", "impact", "browse", "remember", "experience"}
+        assert names == {"search", "understand", "impact", "browse", "remember", "experience", "secure"}
 
     @pytest.mark.asyncio
     async def test_post_call_still_works(self, client):
@@ -419,6 +419,7 @@ class TestToolsConstantIntegrity:
             "browse",
             "remember",
             "experience",
+            "secure",
         }
 
     def test_tools_descriptions_used(self):
@@ -447,7 +448,7 @@ class TestToolsConstantIntegrity:
 class TestProjectParameterExposed:
     """Verify 'project' parameter is exposed on the 4 retrieval verbs."""
 
-    RETRIEVAL_VERBS = ("search", "understand", "impact", "browse")
+    RETRIEVAL_VERBS = ("search", "understand", "impact", "browse", "secure")
 
     def test_tools_constant_includes_project(self):
         """All 4 retrieval verbs have 'project' in their TOOLS parameters."""

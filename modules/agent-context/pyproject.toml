@@ -41,3 +41,8 @@ addopts = "-m 'not live_only and not graphrag and not workflow'"
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+# Ingestion scripts configure sys.path / logging / env before imports by design.
+"images/ingestion/*.py" = ["E402"]
+"tests/unit/test_sqs_scope.py" = ["E402"]
