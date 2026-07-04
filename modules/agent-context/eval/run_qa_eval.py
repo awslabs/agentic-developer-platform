@@ -108,13 +108,24 @@ class VerbReport:
 # ---------------------------------------------------------------------------
 
 
-def call_mcp(verb: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """POST to the MCP /call endpoint and return the JSON response."""
+def call_mcp(
+    verb: str, arguments: dict[str, Any], personal: bool = False
+) -> dict[str, Any]:
+    """POST to the MCP /call endpoint and return the JSON response.
+
+    ``personal=True`` forces the personal-context identity headers even for a
+    verb that isn't remember/experience — needed for ``search scope=memory``,
+    which the Door routes through recall_memory and which fails closed (empty)
+    without ``X-Owner-Sub``.
+    """
     url = f"{MCP_URL}/call"
     payload = json.dumps({"name": verb, "arguments": arguments}).encode()
 
-    # Use personal headers for remember/experience verbs
-    headers = PERSONAL_HEADERS if verb in ("remember", "experience") else HEADERS
+    # Use personal headers for remember/experience verbs, or when explicitly
+    # requested (e.g. a memory-scoped search).
+    headers = (
+        PERSONAL_HEADERS if (personal or verb in ("remember", "experience")) else HEADERS
+    )
 
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
     try:
@@ -369,6 +380,9 @@ def score_remember(case: dict, response: dict) -> tuple[bool, float, str]:
                     "limit": 5,
                     "project": case.get("repo", ""),
                 },
+                # scope=memory routes through recall_memory, which fails closed
+                # without X-Owner-Sub — force personal identity headers.
+                personal=True,
             )
             recall_results = recall_resp.get("results", [])
             if recall_results:
