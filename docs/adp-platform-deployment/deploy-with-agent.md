@@ -68,7 +68,7 @@ Each step is idempotent and re-runnable.
 | 6c | Broker Lambda code (real GitHub-login handler) | `modules/gateway/scripts/deploy-broker.sh` | Login |
 | 6d | Seed the first admin (org/user/role + Cognito claims) | `modules/gateway/scripts/bootstrap-admin.sh` | Login |
 | 7 | Webhook agent stack + agent-runtime image (incl. warm pool + image-prepull) | `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh` | Agents |
-| 8a | **Bedrock model access — HUMAN STEP** (console, not CLI) | *(escalate to user — see below)* | Agents |
+| 8a | Bedrock model access (marketplace agreements, CLI-only) | `platform/scripts/enable-bedrock-models.sh` (also runs automatically in deploy-all.sh / platform-infra-apply.yml) | Agents |
 | 8b | Create + wire the GitHub App | **UI:** Settings → Connections → "Set up GitHub App" (as `platform_admin`). **CLI fallback:** `register-github-app.sh <org>` | Agents |
 
 > The webhook agent path (Phases 7–8) is **verified end-to-end** (account
@@ -79,23 +79,29 @@ Each step is idempotent and re-runnable.
 > image-prepull DaemonSet (PR #1316, on by default in Phase 7) make agents start
 > in ~10–15s instead of 1–2 min.
 
-### ⚠️ Two steps you (the agent) CANNOT do — escalate to the user
+### Phase 8a is now CLI-automated (no console step)
 
-These have no CLI path. When you reach them, **stop and ask the user to do them**,
-then continue once they confirm:
+**Bedrock model access.** The old guidance ("console-only, escalate to the
+user") is outdated — `platform/scripts/enable-bedrock-models.sh` performs the
+AWS Marketplace `Subscribe` programmatically (`create-foundation-model-agreement`)
+for every ACTIVE Anthropic model, and both deploy tracks run it automatically.
+Run it standalone if agents misbehave. Until access is enabled, the agent
+**hangs silently after "Session initialized"** or ends "no changes needed"
+with $0.0000 / 1 turn (the gateway returns HTTP 200 with an empty
+`text/event-stream`; no error). Verify with a real invoke:
+```bash
+aws bedrock-runtime invoke-model --model-id us.anthropic.claude-opus-4-6-v1 \
+  --body '{"anthropic_version":"bedrock-2023-05-31","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}' \
+  --cli-binary-format raw-in-base64-out /dev/stdout   # a real JSON message = enabled
+```
+The ONE remaining human case: an org **private marketplace** policy blocking a
+model (`AccessDeniedException: ... private marketplace eligibility`) — a
+Private Marketplace admin in the org/management account must whitelist the
+product; then re-run the script.
 
-1. **Bedrock model access (Phase 8a).** Claude Opus 4.6 (and any model the agent
-   uses) must be enabled in the **Bedrock console → Model access** of the target
-   account — this performs an AWS Marketplace `Subscribe` that the CLI cannot do.
-   Until it's enabled, the agent **hangs silently after "Session initialized"**
-   (the gateway returns HTTP 200 with an empty `text/event-stream`; no error).
-   Verify it's done with:
-   ```bash
-   aws bedrock-runtime invoke-model --model-id us.anthropic.claude-opus-4-6-v1 \
-     --body '{"anthropic_version":"bedrock-2023-05-31","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}' \
-     --cli-binary-format raw-in-base64-out /dev/stdout   # a real JSON message = enabled
-   ```
-2. **GitHub App browser steps (Phase 8b).** The primary path is the UI: the
+### ⚠️ One step you (the agent) CANNOT do — escalate to the user
+
+**GitHub App browser steps (Phase 8b).** The primary path is the UI: the
    `platform_admin` opens Settings → Connections → "Set up GitHub App" (manifest
    flow). For headless environments, fall back to `register-github-app.sh`. Both
    involve a browser/OAuth flow. Hand the user the install URL afterward if the
@@ -121,7 +127,7 @@ failures with **no clear error message** (the worst kind for an agent):
   initialized"** — the `execute-api` VPC-endpoint DNS hijack (403 on every
   `/agent` call) and Bedrock model access / `global.` vs `us.` profile. Both have
   diagnose + fix commands. On latest `main` the VPC-endpoint fix is already in
-  IaC; model access is the human step above.
+  IaC; model access is automated by `enable-bedrock-models.sh` (Phase 8a above).
 - **"Slow first agent (1–2 min)"** — cold-node + image-pull latency; fixed by the
   warm pool + image-prepull (Phase 7, default-on). Not a failure, just slow.
 

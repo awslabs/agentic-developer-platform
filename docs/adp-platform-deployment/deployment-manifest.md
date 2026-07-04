@@ -15,6 +15,7 @@ State key: `dev/platform/terraform.tfstate`
 | ECR repos | ECR | `aws ecr describe-repositories --query 'repositories[?starts_with(repositoryName,\`adp-\`)].repositoryName'` | adp-gateway, adp-agent-runtime |
 | IAM roles | IAM | `aws iam list-roles --query 'Roles[?starts_with(RoleName,\`adp-dev\`)].RoleName'` | cluster role, node role |
 | OIDC provider | IAM | `aws iam list-open-id-connect-providers` | EKS OIDC listed |
+| Bedrock model agreements | Bedrock | `aws bedrock get-foundation-model-availability --model-id anthropic.claude-opus-4-6-v1 --query 'agreementAvailability.status'` | AVAILABLE (set by `platform/scripts/enable-bedrock-models.sh`, run automatically by deploy-all.sh / platform-infra-apply.yml) |
 
 ## Gateway Module
 

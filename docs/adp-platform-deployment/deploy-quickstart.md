@@ -560,11 +560,12 @@ diagnosing the symptom.)
 2. **Bedrock model access / wrong inference-profile prefix.** The agent invokes
    `us.anthropic.claude-opus-4-6-v1` (#1304; older images used
    `global.anthropic.claude-opus-4-6-v1`). On a fresh account:
-   - **Model access must be enabled** for Claude Opus 4.6 in the **Bedrock console
-     → Model access** (this performs the AWS Marketplace `Subscribe` the API error
-     names; it **cannot** be done purely via CLI). Until then, `InvokeModel`
-     returns `AccessDeniedException: ... aws-marketplace:Subscribe ...`. Takes
-     ~2 min to propagate after enabling.
+   - **Model access must be enabled** for Claude Opus 4.6 — run
+     `platform/scripts/enable-bedrock-models.sh` (CLI-only; accepts the
+     marketplace agreement the API error names — the old "console-only" note
+     is outdated, and both deploy tracks now run this automatically). Until
+     then, `InvokeModel` returns `AccessDeniedException: ...
+     aws-marketplace:Subscribe ...`. Takes ~2 min to propagate after enabling.
    - **Use the `us.` profile, not `global.`** — the `global.` cross-region profile
      is not enabled on every account (919 returns `ValidationException: invalid
      model identifier`); `us.anthropic.claude-opus-4-6-v1` works on every account
@@ -693,9 +694,11 @@ The complete stage-by-stage path, each step backed by a re-runnable script:
 5. `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev` — webhook stack
 6. **GitHub App** — UI (primary): log in as `platform_admin` → Settings → Connections → "Set up GitHub App" → manifest flow. CLI fallback: `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev [--client-secret <s>]`
 7. Install the App on the target repo(s) when prompted (or `github.com/apps/<slug>/installations/new`)
-8. **Bedrock console → Model access → enable Claude Opus 4.6** (one-time, manual,
-   per account; CLI can't do the Marketplace subscribe). Without it the agent
-   hangs silently after "Session initialized" — see the gotcha above.
+8. `platform/scripts/enable-bedrock-models.sh` — Bedrock marketplace agreements
+   (one-time per account, CLI-only, idempotent; also runs automatically inside
+   deploy-all.sh and platform-infra-apply.yml). Without it the agent hangs
+   silently after "Session initialized" or ends "no changes needed" with
+   $0.0000 / 1 turn — see the gotcha above.
 9. `@agent-developer <task>` in an issue/PR comment → webhook → SQS → KEDA → agent-worker pod
 
 ## Phase 7 — Webhook ingress + warm pool
@@ -708,35 +711,35 @@ stack (incl. `warm-pool.tf` balloon Deployment + image-prepull DaemonSet for
 `adp-agents`; `agent-warm-pool` + `agent-image-prepull` READY. Smoke: unsigned
 `POST /dev/github` → 401 (HMAC reject = path live).
 
-## Phase 8 — Bedrock model access ⚠️ CONDITIONAL (has a CLI path)
+## Phase 8 — Bedrock model access ✅ automated (CLI-only)
 
-The agent model must be invokable in the target account. **For the default
-model this usually needs NO action** — the `us.` cross-region inference profiles
-for Sonnet 4.6 / Opus 4.6 / Haiku 4.5 are invokable out-of-the-box on tested
-accounts (verified on 261421447505). The old "no CLI, console-only" note is
-outdated.
+The agent model must be invokable in the target account. This is now a
+scripted step — `platform/scripts/enable-bedrock-models.sh` discovers every
+ACTIVE Anthropic model from the Bedrock API and accepts its marketplace
+agreement via CLI (the programmatic equivalent of the console *Subscribe*).
+It runs **automatically** in both deploy tracks (`deploy-all.sh` after
+preflight; `platform-infra-apply.yml` before terraform). Idempotent — safe
+to run standalone at any time:
 
-**1. Check first** (don't assume it's blocked):
+```bash
+./platform/scripts/enable-bedrock-models.sh   # all ACTIVE Anthropic models
+```
+
+Only the models the platform invokes at runtime (Opus 4.6, Sonnet 4.6 — the
+`REQUIRED_MODELS` list in the script) are deploy-blocking; newer releases are
+enabled best-effort so an org restriction on a brand-new model never blocks
+an infra deploy.
+
+**Verify** (source of truth is `invoke`, not agreement status):
 ```bash
 aws bedrock-runtime invoke-model --model-id us.anthropic.claude-sonnet-4-6 \
   --body '{"anthropic_version":"bedrock-2023-05-31","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}' \
   --cli-binary-format raw-in-base64-out /dev/stdout
 ```
-A real JSON message = access is live → **skip the rest of this phase.** If the
-default model already works you are done here.
+A real JSON message = access is live. The entitlement can take a few minutes
+to propagate after the agreement activates; re-test until it succeeds.
 
-**2. If a chosen model returns `AccessDeniedException` — enable it via API**
-(the programmatic equivalent of the console *Subscribe*, no browser needed):
-```bash
-OFFER=$(aws bedrock list-foundation-model-agreement-offers \
-  --model-id <anthropic.claude-...> --query 'offers[0].offerToken' --output text)
-aws bedrock create-foundation-model-agreement \
-  --model-id <anthropic.claude-...> --offer-token "$OFFER"
-# agreement goes NOT_AVAILABLE → PENDING → AVAILABLE; the invoke entitlement can
-# take several minutes to propagate after that. Re-test invoke until it succeeds.
-```
-
-**3. Blocked cases that DO need a human:**
+**Blocked cases that DO need a human:**
 - `AccessDeniedException: ... private marketplace eligibility` → the model is not
   on the account's **AWS Private Marketplace** allow-list. A Private Marketplace
   admin (org/management account) must add it first; then step 2 works.

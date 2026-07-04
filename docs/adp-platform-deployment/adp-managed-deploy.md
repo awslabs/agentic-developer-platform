@@ -139,6 +139,8 @@ When the workflow runs:
 4. Helper exports those creds to `$GITHUB_ENV`. Subsequent `terraform`, `aws`, `kubectl` steps in the same job use them, landing operations on **your** account.
 5. The `terraform init` step also passes `-backend-config="bucket=$STATE_BUCKET"`, so state goes to `adp-terraform-state-<your-account-id>` (created in Phase 1).
 
+Before terraform, `platform-infra-apply.yml` runs `platform/scripts/enable-bedrock-models.sh` against the target account: it discovers all ACTIVE Anthropic models from the Bedrock API and accepts their marketplace agreements via CLI. Fresh customer accounts have no agreements — without this step every Claude call fails with `AccessDeniedException` (`aws-marketplace:Subscribe`) and agent runs silently end "no changes needed". The step is idempotent; only models the platform invokes at runtime are deploy-blocking, the rest (newly released models) are best-effort.
+
 You can confirm your account is the deploy target by tailing CloudTrail in your AWS account during the workflow run — you should see `AssumeRole` from the gateway IRSA principal, then a flurry of `CreateVpc`, `CreateCluster`, etc. signed by the resulting session principal.
 
 **Failure modes specific to this path**:
@@ -149,6 +151,7 @@ You can confirm your account is the deploy target by tailing CloudTrail in your 
 | Vault role's `MaxSessionDuration` too short | Long-running terraform applies hit `ExpiredToken` partway through | Edit the role and set `MaxSessionDuration: 12h` (max). Re-trigger the phase. |
 | Wrong `user_id` in deploy-instance config | Gateway returns `credential_not_found` | The orchestrator constructs the config from your dashboard profile; if it picks the wrong user_id, fix in the deploy-instance issue body and re-trigger. |
 | Gateway down | Workflow's Load step warns `gateway unreachable`, falls through to platform IRSA, terraform tries to deploy to platform account | Ops issue — check `kubectl get pods -n adp-gateway`. Halt the deploy until gateway is healthy. |
+| Bedrock agreement missing (step skipped/failed) | Agent runs on the new deployment end "no changes needed" with $0.0000 / 1 turn; pod logs show `AccessDeniedException` citing `aws-marketplace:Subscribe` | Run `platform/scripts/enable-bedrock-models.sh` with creds for the target account, or re-trigger the phase (the workflow runs it automatically). Org private-marketplace policies can block newly released models — org admin must whitelist the product. |
 
 ## Validation per phase
 

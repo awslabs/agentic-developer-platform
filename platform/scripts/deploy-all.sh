@@ -98,6 +98,15 @@ fi
 ok "AWS Account: $ACCOUNT_ID | Region: $AWS_REGION | Env: $ENVIRONMENT"
 
 # ---------------------------------------------------------------------------
+# Accept Bedrock marketplace agreements for the Claude models the platform
+# invokes. Fresh accounts have none; without them every model call fails with
+# AccessDeniedException and the agent-worker misreports it as "no changes
+# needed". Idempotent — skips models already enabled.
+# ---------------------------------------------------------------------------
+step "Bedrock model access"
+bash "$SCRIPT_DIR/enable-bedrock-models.sh" || fail "Bedrock model agreements could not be enabled. Agents cannot invoke Claude without them."
+
+# ---------------------------------------------------------------------------
 # Detect operator's public IP and lock EKS public API to /32 (portable)
 # ---------------------------------------------------------------------------
 # Anyone cloning this repo can run the script without editing tfvars. The

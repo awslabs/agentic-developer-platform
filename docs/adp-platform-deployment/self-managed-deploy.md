@@ -16,7 +16,7 @@ Step-by-step guide to deploy the Agentic Developer Platform from a fresh clone t
 
 AWS account requirements:
 - Admin-level IAM access (or at minimum: EKS, ECR, RDS, ElastiCache, Cognito, CloudFront, S3, IAM, Secrets Manager, SQS, API Gateway, Lambda, DynamoDB, CodeBuild)
-- Bedrock model access enabled (Claude Sonnet, Claude Opus, Titan V2 embeddings)
+- Bedrock model access: enabled **automatically** by the deploy — `deploy-all.sh` runs `platform/scripts/enable-bedrock-models.sh` right after preflight, which discovers all ACTIVE Anthropic models from the Bedrock API and accepts their marketplace agreements via CLI (idempotent, no console step). Fresh accounts have no agreements; without them every Claude call fails with `AccessDeniedException` (`aws-marketplace:Subscribe`) and agents misreport it as "no changes needed". Requires `bedrock:ListFoundationModels`, `bedrock:GetFoundationModelAvailability`, `bedrock:ListFoundationModelAgreementOffers`, `bedrock:CreateFoundationModelAgreement`, `aws-marketplace:Subscribe`, `aws-marketplace:ViewSubscriptions`. If your AWS org runs a **private marketplace**, newly released models may fail with "private marketplace eligibility" until an org admin whitelists them — non-fatal unless it's a model the platform invokes at runtime.
 - Region: `us-east-1` (default; configurable)
 
 ## Quick Start (Automated)
@@ -189,6 +189,7 @@ Flags:
 | `--local` | Use local Docker for image builds (instead of CodeBuild) |
 
 The script:
+- Accepts Bedrock marketplace agreements for all ACTIVE Anthropic models (`enable-bedrock-models.sh` — see Prerequisites; fails the deploy only if a runtime-required model can't be enabled)
 - Detects your public IP and locks the EKS API to it (`/32` CIDR)
 - Runs Terraform directly for all infrastructure
 - Uses CodeBuild for Docker image builds (or local Docker with `--local`)
@@ -207,6 +208,7 @@ them, so each has a standalone, idempotent script:
 
 | Step | Script | Why it's needed |
 |------|--------|-----------------|
+| **Bedrock model agreements** | `platform/scripts/enable-bedrock-models.sh` | Fresh accounts have no marketplace agreement for Anthropic models — every Claude call fails with `AccessDeniedException` and agent runs silently end "no changes needed". deploy-all.sh runs this automatically; run it standalone when deploying module-by-module. Idempotent, CLI-only. |
 | **Gateway second pass (ALB)** | `platform/scripts/wire-gateway-alb.sh --apply` | The gateway API Gateway ships a MOCK OpenAPI body until the ALB is wired. This discovers the EKS Ingress ALB, re-applies gateway-infra with the ALB vars, and forces a stage redeploy so the real routes (backend `/{proxy+}` + `/auth/github`) go live. Run after the gateway backend pods are up. |
 | **Broker Lambda code** | `modules/gateway/scripts/deploy-broker.sh` | Terraform creates the `github-auth-broker` Lambda with a 503 placeholder zip. This packages + uploads + updates the real code. Required for GitHub login. |
 | **First-admin bootstrap** | `modules/gateway/scripts/bootstrap-admin.sh` | A fresh deploy has no `users` rows, so onboarding shows "request access" for everyone — including the seeded Cognito admin — with no one able to approve. `create_test_users=true` only makes the Cognito user, not the DB rows. This seeds the first admin's org/tenant/dept/team/user + cognito identity (role `platform_admin`) so they become "registered" and can approve real users. Idempotent; `--email`/`--pool-id`/`--org` overrides for an SSO admin. (Runs `python -m src.admin.onboarding.bootstrap_admin` in the gateway pod — the deployed image must contain that module.) |
@@ -350,6 +352,16 @@ To validate that CI-managed infrastructure is in place:
 ```
 
 ## Troubleshooting
+
+### Agent runs end "no changes needed" with $0.0000 / 1 turn
+
+The model call never succeeded — the Claude SDK inside agent-worker swallows LLM failures as a graceful no-op. Most common cause on a fresh account: missing Bedrock marketplace agreement. Check and fix:
+```bash
+aws bedrock get-foundation-model-availability --model-id anthropic.claude-opus-4-6-v1 \
+  --query 'agreementAvailability.status' --output text   # NOT_AVAILABLE = this is your problem
+./platform/scripts/enable-bedrock-models.sh              # accepts agreements, polls until active
+```
+If agreements are fine, check the agent pod logs for 403 `agent_not_registered` (scaledjob role missing from the account's `bedrockgw-dev-agent-registry`) or other sigv4-chain errors.
 
 ### EKS nodes not appearing
 

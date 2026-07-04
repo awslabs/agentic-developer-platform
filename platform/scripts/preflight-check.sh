@@ -217,6 +217,21 @@ else
   warn "Bedrock: cannot list models (gateway needs bedrock:InvokeModel at runtime)"
 fi
 
+# Bedrock marketplace agreements — fresh accounts have none, and without them
+# every Claude invoke fails with AccessDeniedException (the agent-worker then
+# misreports the failure as "no changes needed"). deploy-all.sh and
+# platform-infra-apply.yml accept them via enable-bedrock-models.sh.
+for model in anthropic.claude-opus-4-6-v1 anthropic.claude-sonnet-4-6; do
+  AGREEMENT=$(aws bedrock get-foundation-model-availability --model-id "$model" \
+    --region "${AWS_REGION:-us-east-1}" \
+    --query 'agreementAvailability.status' --output text 2>/dev/null || echo "UNKNOWN")
+  if [ "$AGREEMENT" = "AVAILABLE" ]; then
+    pass "Bedrock agreement: $model active"
+  else
+    warn "Bedrock agreement: $model is $AGREEMENT — deploy will accept it via enable-bedrock-models.sh"
+  fi
+done
+
 # Secrets Manager
 if aws secretsmanager list-secrets --region "${AWS_REGION:-us-east-1}" --max-results 1 &>/dev/null; then
   pass "Secrets Manager: ListSecrets OK"
