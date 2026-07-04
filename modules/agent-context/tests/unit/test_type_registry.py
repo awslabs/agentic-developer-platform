@@ -21,6 +21,7 @@ from agent_context.ingestion.type_registry import (
     get_type_config,
     is_valid_asset_type,
     list_asset_types,
+    normalize_repo_source_ref,
     validate_source_ref,
 )
 
@@ -116,6 +117,66 @@ class TestValidateSourceRef:
     def test_unknown_type_returns_false(self):
         """Unknown asset type always fails validation."""
         assert validate_source_ref("unknown", "https://anything.com") is False
+
+
+class TestNormalizeRepoSourceRef:
+    """Tests for normalize_repo_source_ref() (Issue #2864)."""
+
+    CANONICAL = "https://github.com/octocat/Hello-World"
+
+    def test_full_https_url_passthrough(self):
+        """A well-formed HTTPS URL normalizes to itself."""
+        assert normalize_repo_source_ref(self.CANONICAL) == self.CANONICAL
+
+    def test_bare_slug(self):
+        """A bare org/repo slug becomes the canonical URL."""
+        assert normalize_repo_source_ref("octocat/Hello-World") == self.CANONICAL
+
+    def test_trailing_slash(self):
+        """A trailing slash is stripped."""
+        assert normalize_repo_source_ref(self.CANONICAL + "/") == self.CANONICAL
+
+    def test_dot_git_suffix(self):
+        """A trailing .git is stripped."""
+        assert normalize_repo_source_ref(self.CANONICAL + ".git") == self.CANONICAL
+
+    def test_ssh_form(self):
+        """git@github.com: form normalizes to the canonical HTTPS URL."""
+        assert normalize_repo_source_ref("git@github.com:octocat/Hello-World") == self.CANONICAL
+
+    def test_double_prefixed_url_collapses(self):
+        """The Issue #2864 corruption: a double-prefixed URL collapses to canonical."""
+        doubled = "https://github.com/https://github.com/octocat/Hello-World"
+        assert normalize_repo_source_ref(doubled) == self.CANONICAL
+
+    def test_surrounding_whitespace_trimmed(self):
+        """Leading/trailing whitespace is ignored."""
+        assert normalize_repo_source_ref("  octocat/Hello-World  ") == self.CANONICAL
+
+    def test_dots_and_dashes_in_repo_name_preserved(self):
+        """Valid repo names with dots/dashes are not mangled."""
+        assert (
+            normalize_repo_source_ref("my-org/repo.name-v2")
+            == "https://github.com/my-org/repo.name-v2"
+        )
+
+    def test_extra_path_segments_rejected(self):
+        """A URL with extra path segments is not a valid org/repo slug."""
+        assert normalize_repo_source_ref("https://github.com/octocat/Hello-World/tree/main") is None
+
+    def test_missing_repo_rejected(self):
+        """An org with no repo is rejected."""
+        assert normalize_repo_source_ref("https://github.com/octocat") is None
+        assert normalize_repo_source_ref("octocat") is None
+
+    def test_non_github_url_rejected(self):
+        """A non-GitHub URL does not reduce to a slug and is rejected."""
+        assert normalize_repo_source_ref("https://gitlab.com/octocat/Hello-World") is None
+
+    def test_empty_rejected(self):
+        """Empty / whitespace-only input is rejected."""
+        assert normalize_repo_source_ref("") is None
+        assert normalize_repo_source_ref("   ") is None
 
 
 class TestGetSteps:

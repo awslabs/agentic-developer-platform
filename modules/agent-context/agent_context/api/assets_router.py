@@ -38,7 +38,11 @@ from agent_context.api.assets_schemas import (
 )
 from agent_context.api.bulk_parser import MAX_FILE_SIZE_BYTES, MAX_LINES, parse_bulk_file
 from agent_context.ingestion.dispatch import dispatch_ingestion
-from agent_context.ingestion.type_registry import is_valid_asset_type, validate_source_ref
+from agent_context.ingestion.type_registry import (
+    is_valid_asset_type,
+    normalize_repo_source_ref,
+    validate_source_ref,
+)
 
 logger = logging.getLogger("agent_context.api.assets")
 
@@ -121,6 +125,23 @@ async def register_asset(
             status_code=400,
             detail=f"Unknown asset_type: '{body.asset_type}'. Supported types: repo, url, doc",
         )
+
+    # Normalize repo source_refs to the canonical GitHub URL form (Issue #2864).
+    # Accepts a full URL or a bare org/repo slug and collapses accidental
+    # double-prefixing; rejects anything that isn't a valid org/repo slug with
+    # 422. Downstream quota/dedup/insert all operate on the canonical form so
+    # the same repo can't be re-registered under a different spelling.
+    if body.asset_type == "repo":
+        normalized = normalize_repo_source_ref(body.source_ref)
+        if normalized is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "source_ref must be a GitHub repo URL "
+                    "(https://github.com/<org>/<repo>) or an <org>/<repo> slug"
+                ),
+            )
+        body.source_ref = normalized
 
     # Validate source_ref pattern for the type
     if not validate_source_ref(body.asset_type, body.source_ref):
