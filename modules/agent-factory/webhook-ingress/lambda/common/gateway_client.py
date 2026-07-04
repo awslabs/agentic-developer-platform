@@ -146,6 +146,71 @@ def resolve_user_by_identity(provider: str, provider_user_id: str) -> dict | Non
         return None
 
 
+def resolve_installation_by_id(installation_id: str) -> dict | None:
+    """Call POST /internal/v1/resolve-installation to resolve the owning tenant.
+
+    Issue #2769: Postgres is authoritative for the installation_id → tenant
+    mapping. Returns dict {"tenant_id": <org_id>} on a 200 hit, or None on
+    404 / error (fail-open: callers keep their DDB answer on None).
+    """
+    if not GATEWAY_API_URL:
+        logger.warning(
+            "GATEWAY_API_URL not set — cannot resolve installation via gateway"
+        )
+        return None
+
+    url = f"{GATEWAY_API_URL}/internal/v1/resolve-installation"
+    body = {"installation_id": str(installation_id)}
+
+    api_key = _resolve_internal_api_key()
+    if not api_key:
+        logger.warning(
+            "Internal API key not available — cannot resolve installation via gateway"
+        )
+        return None
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Internal-Api-Key": api_key,
+    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status in (200, 201):
+                data = json.loads(resp.read().decode("utf-8"))
+                tenant_id = data.get("tenant_id", "")
+                if tenant_id:
+                    return {"tenant_id": tenant_id}
+            return None
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            logger.info(
+                "resolve_installation_by_id: 404 for installation_id=%s",
+                installation_id,
+            )
+            return None
+        logger.error(
+            "resolve_installation_by_id HTTP error %d for installation_id=%s: %s",
+            e.code,
+            installation_id,
+            e.reason,
+        )
+        return None
+    except Exception as e:
+        logger.error(
+            "resolve_installation_by_id failed for installation_id=%s: %s",
+            installation_id,
+            e,
+        )
+        return None
+
+
 def post_provenance(
     actor_user_id: str,
     triggered_by: str | None,

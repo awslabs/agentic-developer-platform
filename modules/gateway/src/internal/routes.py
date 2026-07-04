@@ -33,7 +33,7 @@ from src.shared.config import get_settings
 from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import new_uuid
-from src.shared.models.organization import User
+from src.shared.models.organization import Organization, User
 from src.shared.models.vault import ChannelTenantMap, MagicLinkNonce, UserIdentity  # noqa: F401
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,16 @@ class ResolveUserResponse(BaseModel):
 
 class ResolveUserNotFoundResponse(BaseModel):
     magic_link_url: str
+
+
+class ResolveInstallationRequest(BaseModel):
+    """Body for POST /internal/v1/resolve-installation."""
+
+    installation_id: str
+
+
+class ResolveInstallationResponse(BaseModel):
+    tenant_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -377,4 +387,60 @@ async def resolve_user(
             "message": "No linked identity found. Share the magic_link_url in-channel.",
             "magic_link_url": magic_link_url,
         },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Endpoint: POST /internal/v1/resolve-installation
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/resolve-installation",
+    response_model=ResolveInstallationResponse,
+    summary="Resolve a GitHub App installation to its ADP tenant",
+    description=(
+        "Issue #2769: Postgres is the single source of truth for the "
+        "installation_id → tenant mapping. Returns the ADP tenant (organization) "
+        "that owns the given GitHub App installation_id, looked up from "
+        "organizations.github_installation_ids. Used by the webhook-ingress "
+        "auto-register write-guard (known-tenant check) and the read-time drift "
+        "safety-net. Returns 404 when no organization claims the installation."
+    ),
+    responses={
+        200: {"description": "Installation resolved to a tenant"},
+        404: {"description": "No organization owns this installation"},
+    },
+)
+async def resolve_installation(
+    body: ResolveInstallationRequest,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_internal_or_irsa),
+) -> ResolveInstallationResponse:
+    installation_id = (body.installation_id or "").strip()
+    if not installation_id:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": "Unknown installation"},
+        )
+
+    # Postgres query intent: organizations WHERE :iid = ANY(github_installation_ids)
+    # (backed by the GIN index ix_organizations_github_installation_ids on
+    # Postgres, migration 005). We fetch candidate orgs and match in Python so
+    # the same code path works against the SQLite JSON column used in tests;
+    # the org set per account is small (a handful of tenants).
+    stmt = select(Organization)
+    result = await db.execute(stmt)
+    for org in result.scalars().all():
+        ids = [str(i) for i in (org.github_installation_ids or [])]
+        if installation_id in ids:
+            return ResolveInstallationResponse(tenant_id=org.id)
+
+    logger.info(
+        "resolve-installation miss — no org owns installation_id=%s",
+        installation_id,
+    )
+    raise HTTPException(
+        status_code=404,
+        detail={"error": "not_found", "message": "Unknown installation"},
     )

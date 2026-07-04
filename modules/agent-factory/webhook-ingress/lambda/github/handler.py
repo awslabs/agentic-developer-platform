@@ -88,58 +88,147 @@ def _get_identity_resolver():
 
 
 def _auto_register_installation(installation_id: int, org_login: str) -> str | None:
-    """Write an installation_id → org_id row to the identity-index.
+    """Write an installation_id → tenant row to the identity-index (guarded).
 
-    Called when webhooks reveal a previously-unknown installation. We default
-    the ADP org_id to the GitHub org login (e.g. `sophos-hackathon`). If that
-    GitHub org's login isn't a known ADP tenant, we skip the write (caller
-    will 403 with "unknown_installation"). This keeps the "if the org is
-    registered we just work" contract without requiring ops to manually map
-    each installation.
+    Issue #2769: Postgres is the single source of truth for the
+    installation → tenant mapping. Auto-register must NEVER clobber a
+    Postgres-owned row (one written by the gateway write-through, which never
+    sets ``auto_registered``). The write-guard:
 
-    Returns the org_id we wrote, or None if we couldn't determine a tenant.
+      1. GetItem the ``github_installation_id`` row.
+      2. Row exists WITHOUT ``auto_registered`` → Postgres-owned → no-op. If
+         the stored org differs from this webhook's org login, emit
+         ``InstallationTenantDrift`` (visibility only). Returns the stored
+         tenant so downstream provisioning still works.
+      3. No row → resolve the installation to a *known ADP tenant* via the
+         gateway (``resolve-installation``; Postgres-authoritative, subsumes
+         #2724). On a match, write the **Postgres tenant** (not the raw org
+         login — that was the phantom-tenant bug) tagged ``auto_registered``,
+         using ``ConditionExpression=attribute_not_exists(auto_registered)`` on
+         the non-clobber path. On no match, skip → caller 403
+         ``unknown_installation`` (unchanged contract).
+      4. Row exists WITH ``auto_registered`` → idempotent refresh OK.
+
+    The same guard is applied to the reverse-lookup ``org_installation`` row
+    (#2336).
+
+    Returns the tenant/org_id owning the installation, or None if we couldn't
+    determine a known tenant.
     """
     if not org_login:
         return None
     resolver = _get_identity_resolver()
     try:
         table = resolver._get_table()
-        # Idempotent write — if the row already exists, overwrite with the
-        # same data. We use the GitHub org login as the ADP tenant id by
-        # convention; if the operator wants a different tenant mapping,
-        # they can overwrite this row explicitly.
+        # Step 1: read-before-write.
+        existing = table.get_item(
+            Key={
+                "identity_type": "github_installation_id",
+                "identity_value": str(installation_id),
+            }
+        ).get("Item")
+
+        # Step 2: Postgres-owned row (no auto_registered flag) → do not clobber.
+        if existing is not None and not existing.get("auto_registered"):
+            stored_org = existing.get("org_id", "")
+            if stored_org and stored_org != org_login:
+                logger.warning(
+                    "InstallationTenantDrift: installation_id=%d Postgres-owned "
+                    "tenant=%s but webhook org login=%s — keeping Postgres tenant",
+                    installation_id,
+                    stored_org,
+                    org_login,
+                )
+                _emit_metric("InstallationTenantDrift")
+            else:
+                logger.info(
+                    "Auto-register no-op: installation_id=%d already Postgres-owned (tenant=%s)",
+                    installation_id,
+                    stored_org,
+                )
+            return stored_org or None
+
+        # Step 3: no row → known-tenant check (Postgres is authoritative).
+        # A refresh of an existing auto_registered row (step 4) reuses the
+        # already-stored tenant to stay idempotent.
+        if existing is None:
+            pg = _get_gateway_client().resolve_installation_by_id(str(installation_id))
+            tenant_id = pg.get("tenant_id") if pg else None
+            if not tenant_id:
+                logger.info(
+                    "Auto-register skip: installation_id=%d (org login=%s) is not a "
+                    "known ADP tenant — caller will 403 unknown_installation",
+                    installation_id,
+                    org_login,
+                )
+                return None
+        else:
+            # Step 4: idempotent refresh of an auto_registered row.
+            tenant_id = existing.get("org_id") or org_login
+
         now = datetime.now(UTC).isoformat()
         # Identity rows are authoritative; offboarding deletes them explicitly.
         # No TTL — writers were previously setting a 7d/30d/365d expiry assuming
         # a reconcile job would refresh, but rows GC'd silently and broke webhook
         # routing for active users (#TBD bug).
-        table.put_item(
-            Item={
-                "identity_type": "github_installation_id",
-                "identity_value": str(installation_id),
-                "org_id": org_login,
-                "updated_at": now,
-                "auto_registered": True,
-            }
-        )
-        # Issue #2336: Write reverse-lookup row (org_id → installation_id)
-        # so EventBridge/agent-trigger handlers can resolve a real
-        # installation_id without calling the GitHub API.
-        table.put_item(
-            Item={
+        forward_item = {
+            "identity_type": "github_installation_id",
+            "identity_value": str(installation_id),
+            "org_id": tenant_id,
+            "updated_at": now,
+            "auto_registered": True,
+        }
+        if existing is None:
+            # Non-clobber path: only write when we would not overwrite a
+            # Postgres-owned row that appeared between our read and write.
+            try:
+                table.put_item(
+                    Item=forward_item,
+                    ConditionExpression="attribute_not_exists(auto_registered)",
+                )
+            except Exception as cond_exc:  # noqa: BLE001
+                # ConditionalCheckFailedException → a Postgres-owned row won the
+                # race; respect it and no-op.
+                if "ConditionalCheckFailed" in type(cond_exc).__name__ or (
+                    "ConditionalCheckFailed" in str(cond_exc)
+                ):
+                    logger.info(
+                        "Auto-register lost race for installation_id=%d — "
+                        "Postgres-owned row present, no-op",
+                        installation_id,
+                    )
+                    return tenant_id
+                raise
+        else:
+            table.put_item(Item=forward_item)
+
+        # Issue #2336: Write reverse-lookup row (org_id → installation_id) so
+        # EventBridge/agent-trigger handlers can resolve a real installation_id
+        # without calling the GitHub API. Guard it the same way: never clobber a
+        # Postgres-owned reverse row.
+        reverse_existing = table.get_item(
+            Key={
                 "identity_type": "org_installation",
-                "identity_value": org_login,
-                "installation_id": installation_id,
-                "updated_at": now,
-                "auto_registered": True,
+                "identity_value": tenant_id,
             }
-        )
+        ).get("Item")
+        if reverse_existing is None or reverse_existing.get("auto_registered"):
+            table.put_item(
+                Item={
+                    "identity_type": "org_installation",
+                    "identity_value": tenant_id,
+                    "installation_id": installation_id,
+                    "updated_at": now,
+                    "auto_registered": True,
+                }
+            )
+
         logger.info(
-            "Auto-registered installation_id=%d → org_id=%s (forward + reverse)",
+            "Auto-registered installation_id=%d → tenant=%s (forward + reverse)",
             installation_id,
-            org_login,
+            tenant_id,
         )
-        return org_login
+        return tenant_id
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to auto-register installation_id=%d: %s", installation_id, exc)
         return None

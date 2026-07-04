@@ -119,6 +119,28 @@ def _emit_bot_action_metric(bot_kind: str, org_id: str) -> None:
         logger.warning("Failed to emit BotActionTriggered metric: %s", e)
 
 
+def _emit_installation_tenant_drift_metric() -> None:
+    """Emit CloudWatch metric when DDB and Postgres disagree on a tenant.
+
+    Issue #2769: fired when the installation → tenant mapping resolved from the
+    identity-index disagrees with Postgres (the source of truth).
+    """
+    try:
+        cw = _get_cloudwatch()
+        cw.put_metric_data(
+            Namespace="ADP/IdentityResolver",
+            MetricData=[
+                {
+                    "MetricName": "InstallationTenantDrift",
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:
+        logger.warning("Failed to emit InstallationTenantDrift metric: %s", e)
+
+
 def _emit_identity_index_drift_metric() -> None:
     """Emit CloudWatch metric when v2 DDB and Postgres disagree on user_id."""
     try:
@@ -207,6 +229,30 @@ def resolve(
 
         org_id = tenant_item["org_id"]
         user_provisioning_mode = tenant_item.get("user_provisioning_mode", "strict")
+
+        # Step 1b: Installation-tenant drift safety-net (Issue #2769).
+        # Cross-check the DDB installation → tenant mapping against Postgres
+        # (the source of truth) via POST /internal/v1/resolve-installation.
+        # On disagreement: trust Postgres, emit InstallationTenantDrift, log
+        # both tenants. On gateway miss/error: keep the DDB answer (fail-open —
+        # no hard RDS dependency on the webhook path). Flag-gated by the same
+        # RESOLVE_CANONICAL_VIA_GATEWAY switch as the user safety-net (#702).
+        if _resolve_canonical_via_gateway_enabled():
+            from common.gateway_client import resolve_installation_by_id
+
+            pg_install = resolve_installation_by_id(str(installation_id))
+            if pg_install and pg_install.get("tenant_id"):
+                pg_tenant = pg_install["tenant_id"]
+                if pg_tenant != org_id:
+                    logger.warning(
+                        "InstallationTenantDrift: installation_id=%d DDB tenant=%s, "
+                        "Postgres tenant=%s — trusting Postgres",
+                        installation_id,
+                        org_id,
+                        pg_tenant,
+                    )
+                    _emit_installation_tenant_drift_metric()
+                    org_id = pg_tenant
 
         # Step 2: Resolve sender (feature-flag-gated, Issue #537)
         user_item = None
