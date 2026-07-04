@@ -6,8 +6,9 @@
 # Personal-context indexes are created dynamically per-user at runtime.
 #
 # NOTE: aws_s3vectors_* resources require AWS provider >= 5.101 (not yet
-# released as of 2026-06-12). The bucket and indexes are created via AWS CLI
-# as a manual step. This module manages only the IAM policy attachment.
+# released as of 2026-06-12). The bucket and indexes are provisioned via AWS
+# CLI (scripts/ensure-vector-bucket.sh, invoked from deploy.sh) as an
+# idempotent step. This module manages only the IAM policy attachment.
 # When provider support lands, uncomment the resources below.
 # =============================================================================
 
@@ -35,19 +36,47 @@ locals {
 # IAM Policy for S3 Vectors access
 # =============================================================================
 
+# S3 Vectors defines two resource types with these ARN formats
+# (AWS Service Authorization Reference, service prefix "s3vectors"):
+#   VectorBucket : arn:aws:s3vectors:<region>:<account>:bucket/<bucket-name>
+#   Index        : arn:aws:s3vectors:<region>:<account>:bucket/<bucket-name>/index/<index-name>
+# The earlier "vector-bucket/<name>" form was wrong and matched no request, so
+# every call (CreateIndex, QueryVectors, PutVectors, ...) was denied. Actions
+# are scoped to the resource type each one operates on.
 data "aws_iam_policy_document" "s3_vectors" {
+  # ListVectorBuckets is account-scoped — it takes no resource ARN, so it must
+  # be granted on "*".
   statement {
-    sid    = "S3VectorsAccess"
+    sid       = "S3VectorsListBuckets"
+    effect    = "Allow"
+    actions   = ["s3vectors:ListVectorBuckets"]
+    resources = ["*"]
+  }
+
+  # Bucket-level actions operate on the VectorBucket resource type.
+  statement {
+    sid    = "S3VectorsBucket"
     effect = "Allow"
     actions = [
       "s3vectors:CreateVectorBucket",
       "s3vectors:DeleteVectorBucket",
       "s3vectors:GetVectorBucket",
-      "s3vectors:ListVectorBuckets",
+      "s3vectors:ListIndexes",
+    ]
+    resources = [
+      "arn:aws:s3vectors:${var.aws_region}:${var.account_id}:bucket/adp-*",
+    ]
+  }
+
+  # Index-level actions operate on the Index resource type (bucket/<name>/index/<name>).
+  # CreateIndex targets the Index being created, so it is scoped here (not to the bucket).
+  statement {
+    sid    = "S3VectorsIndex"
+    effect = "Allow"
+    actions = [
       "s3vectors:CreateIndex",
       "s3vectors:DeleteIndex",
       "s3vectors:GetIndex",
-      "s3vectors:ListIndexes",
       "s3vectors:PutVectors",
       "s3vectors:GetVectors",
       "s3vectors:DeleteVectors",
@@ -55,7 +84,7 @@ data "aws_iam_policy_document" "s3_vectors" {
       "s3vectors:QueryVectors",
     ]
     resources = [
-      "arn:aws:s3vectors:${var.aws_region}:${var.account_id}:vector-bucket/adp-*",
+      "arn:aws:s3vectors:${var.aws_region}:${var.account_id}:bucket/adp-*/index/*",
     ]
   }
 }

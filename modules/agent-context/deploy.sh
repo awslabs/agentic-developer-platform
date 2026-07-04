@@ -76,6 +76,20 @@ else
   echo "  ebs-gp3 StorageClass already exists"
 fi
 
+# Ensure the S3 Vectors bucket exists (semantic search + personal-context memory).
+# The Terraform aws_s3vectors_vector_bucket resource is commented out pending
+# AWS provider >= 5.101, so the bucket is provisioned via the AWS CLI here.
+# Idempotent — safe to run repeatedly. Non-fatal: memory/search features degrade
+# but the rest of the stack still deploys if this fails.
+if [ "${S3_VECTORS_ENABLED:-true}" = "true" ] && [ -f "${SCRIPT_DIR}/scripts/ensure-vector-bucket.sh" ]; then
+  echo ""
+  echo "Ensuring S3 Vectors bucket..."
+  bash "${SCRIPT_DIR}/scripts/ensure-vector-bucket.sh" || {
+    echo "WARNING: S3 Vectors bucket provisioning failed. remember/experience and"
+    echo "         semantic search will not work until the bucket exists."
+  }
+fi
+
 # Deploy S3 Files storage (S3-backed persistent volumes via EFS CSI driver)
 # Creates S3 bucket, EFS file system, mount targets, and K8s PV/PVC.
 # Idempotent — safe to run repeatedly. Requires Terraform + AWS credentials.
