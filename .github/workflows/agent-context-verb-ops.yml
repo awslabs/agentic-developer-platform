@@ -1,0 +1,212 @@
+# =============================================================================
+# Agent Context — Verb Ops (scratch, #2493/#2864/#2487)
+# =============================================================================
+# One-off operational workflow for the MCP verb-fix arc. Runs in-cluster pods
+# from the ARC runner (laptop -> EKS API path is dead; runner path works).
+# Actions are individually toggleable so each dispatch is a small, auditable
+# step: Door verb verification, Neptune backfill (#2493), corrupt-row cleanup
+# (#2864), and the QA eval (#2487).
+#
+# Delete this file once #2487 is closed.
+# =============================================================================
+
+name: Agent Context Verb Ops
+
+on:
+  workflow_dispatch:
+    inputs:
+      door_verify:
+        description: 'Run Door verb verification probes (browse/search/impact)'
+        type: boolean
+        default: true
+      backfill:
+        description: 'Neptune backfill from S3 CSVs (#2493)'
+        type: choice
+        options: [skip, dry-run, apply]
+        default: skip
+      backfill_repo:
+        description: 'Optional --repo filter for backfill (org/repo)'
+        type: string
+        default: ''
+      cleanup:
+        description: 'Corrupt repo_id row cleanup (#2864)'
+        type: choice
+        options: [skip, dry-run, apply, verify]
+        default: skip
+      eval:
+        description: 'Run the QA verb eval (#2487) and upload results artifact'
+        type: boolean
+        default: false
+
+jobs:
+  verb-ops:
+    runs-on: arc-runner-org
+    timeout-minutes: 60
+    env:
+      NS: agent-context
+      INGESTION_IMAGE: 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:latest
+      NEPTUNE_ENDPOINT: adp-dev-eks-cluster-graphrag.cluster-civhekhiupfe.us-east-1.neptune.amazonaws.com
+      S3_FILES_BUCKET: agent-context-platform-data-879318057152
+    steps:
+      - name: Account guard
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "AWS Account: $ACCOUNT_ID"
+          if [ "$ACCOUNT_ID" != "879318057152" ]; then
+            echo "FATAL: expected 879318057152 (embark1), got $ACCOUNT_ID"; exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name adp-dev-eks-cluster --region us-east-1
+          # Remove leftover pod from the interrupted 2026-07-04 manual backfill
+          kubectl delete pod backfill-2493 -n "$NS" --ignore-not-found
+
+      # -----------------------------------------------------------------
+      # Door verb verification (handover Outstanding #2)
+      # -----------------------------------------------------------------
+      - name: Door verb verification
+        if: ${{ inputs.door_verify }}
+        run: |
+          cat > /tmp/door_verify.py <<'PYEOF'
+          import json, urllib.request
+
+          MCP = "http://context-mcp.agent-context.svc.cluster.local:5100"
+          HEADERS = {
+              "Content-Type": "application/json",
+              "X-GitHub-Login": "ops-verify",
+              "X-GitHub-Teams": "platform-team",
+          }
+
+          def call(name, args):
+              req = urllib.request.Request(
+                  MCP + "/call",
+                  data=json.dumps({"name": name, "arguments": args}).encode(),
+                  headers=HEADERS, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=90) as r:
+                      return json.loads(r.read())
+              except urllib.error.HTTPError as e:
+                  body = e.read().decode(errors="replace")
+                  try:
+                      return json.loads(body)
+                  except Exception:
+                      return {"error": f"HTTP {e.code}: {body[:400]}"}
+              except Exception as e:
+                  return {"error": str(e)}
+
+          def show(title, resp, limit=3000):
+              print(f"\n===== {title} =====")
+              s = json.dumps(resp, indent=2)
+              print(s[:limit] + ("\n...[truncated]" if len(s) > limit else ""))
+
+          # 1. Catalog root: capability flags per repo + corrupt-row check
+          cat = call("browse", {"action": "list", "uri": ""})
+          show("browse(ls) catalog root", cat, 6000)
+          txt = json.dumps(cat)
+          print("\nCorrupt URL-shaped repo_id present:", "https://github.com/http" in txt or '"https://github.com/octocat' in txt)
+
+          # 2. NL semantic search on Vibe-Trading
+          show("NL search (vibe buy decision)", call("search", {
+              "query": "how does the trading agent decide when to buy",
+              "scope": "code", "limit": 5, "project": "HKUDS/Vibe-Trading"}))
+
+          # 3. impact on DeepTutor + Vibe-Trading symbols (Neptune-backed)
+          show("impact DeepTutor::truncate_for_display", call("impact", {
+              "target": "HKUDS/DeepTutor::truncate_for_display",
+              "cross_repo": False, "project": "HKUDS/DeepTutor"}))
+          show("impact Vibe-Trading::Position", call("impact", {
+              "target": "Vibe-Trading::Position",
+              "cross_repo": False, "project": "HKUDS/Vibe-Trading"}))
+
+          # 4. Repo-scoped browse (PR #2503)
+          show("browse(ls) Vibe-Trading root", call("browse", {
+              "action": "list", "uri": "", "depth": 1,
+              "project": "HKUDS/Vibe-Trading"}))
+          show("browse(ls) Vibe-Trading agent/", call("browse", {
+              "action": "list", "uri": "agent/", "depth": 1,
+              "project": "HKUDS/Vibe-Trading"}))
+          PYEOF
+          kubectl run door-verify-$(date +%s) \
+            --image="$INGESTION_IMAGE" --restart=Never --rm -i \
+            --overrides='{"spec":{"serviceAccountName":"agent-context-sa"}}' \
+            -n "$NS" --command -- python3 - < /tmp/door_verify.py
+
+      # -----------------------------------------------------------------
+      # Neptune backfill (#2493)
+      # -----------------------------------------------------------------
+      - name: Neptune backfill
+        if: ${{ inputs.backfill != 'skip' }}
+        run: |
+          ARGS=""
+          if [ "${{ inputs.backfill }}" = "apply" ]; then ARGS="--apply"; fi
+          if [ -n "${{ inputs.backfill_repo }}" ]; then ARGS="$ARGS --repo ${{ inputs.backfill_repo }}"; fi
+          echo "Running backfill with args: $ARGS"
+          kubectl run backfill-2493-wf-$(date +%s) \
+            --image="$INGESTION_IMAGE" --restart=Never --rm -i \
+            --overrides='{"spec":{"serviceAccountName":"agent-context-sa"}}' \
+            --env="PYTHONPATH=/app" \
+            --env="S3_FILES_BUCKET=$S3_FILES_BUCKET" \
+            --env="NEPTUNE_ENDPOINT=$NEPTUNE_ENDPOINT" \
+            --env="NEPTUNE_PORT=8182" \
+            --env="AWS_REGION=us-east-1" \
+            -n "$NS" --command -- python3 - $ARGS \
+            < modules/agent-context/scripts/backfill_neptune_from_s3.py
+
+      # -----------------------------------------------------------------
+      # Corrupt-row cleanup (#2864)
+      # -----------------------------------------------------------------
+      - name: Corrupt repo_id cleanup
+        if: ${{ inputs.cleanup != 'skip' }}
+        run: |
+          ARGS=""
+          if [ "${{ inputs.cleanup }}" = "apply" ]; then ARGS="--apply"; fi
+          if [ "${{ inputs.cleanup }}" = "verify" ]; then ARGS="--verify"; fi
+          echo "Running cleanup with args: $ARGS"
+          kubectl run cleanup-2864-$(date +%s) \
+            --image="$INGESTION_IMAGE" --restart=Never --rm -i \
+            --overrides='{"spec":{"serviceAccountName":"agent-context-sa"}}' \
+            --env="PYTHONPATH=/app" \
+            --env="DB_HOST=bedrockgw-dev-postgres.civhekhiupfe.us-east-1.rds.amazonaws.com" \
+            --env="DB_NAME=agent_context" \
+            --env="DB_PORT=5432" \
+            --env="DB_USER=agent_context_svc" \
+            --env="DB_USE_IAM_AUTH=true" \
+            --env="AWS_REGION=us-east-1" \
+            -n "$NS" --command -- python3 - $ARGS \
+            < modules/agent-context/scripts/cleanup_corrupt_repo_ids.py
+
+      # -----------------------------------------------------------------
+      # QA verb eval (#2487)
+      # -----------------------------------------------------------------
+      - name: Run QA eval
+        if: ${{ inputs.eval }}
+        run: |
+          POD="eval-2487"
+          kubectl delete pod "$POD" -n "$NS" --ignore-not-found
+          kubectl run "$POD" \
+            --image="$INGESTION_IMAGE" --restart=Never \
+            --overrides='{"spec":{"serviceAccountName":"agent-context-sa"}}' \
+            -n "$NS" --command -- sleep 2700
+          kubectl wait --for=condition=Ready pod/"$POD" -n "$NS" --timeout=180s
+          kubectl cp modules/agent-context/eval "$NS/$POD":/tmp/eval
+          # Eval exits non-zero when below target; capture output either way
+          kubectl exec -n "$NS" "$POD" -- python3 /tmp/eval/run_qa_eval.py || true
+          mkdir -p eval-results
+          kubectl cp "$NS/$POD":/tmp/eval/results eval-results
+          kubectl delete pod "$POD" -n "$NS"
+          echo "===== RESULT FILES ====="
+          ls -la eval-results || true
+          for f in eval-results/*.md; do
+            echo "===== $f ====="; cat "$f"
+          done
+
+      - name: Upload eval results
+        if: ${{ inputs.eval }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-eval-results
+          path: eval-results/
+          if-no-files-found: ignore
