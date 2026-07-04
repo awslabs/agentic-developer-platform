@@ -91,6 +91,12 @@ data:
   WIKI_LLM_MODEL: "${WIKI_LLM_MODEL}"
 
   # --- GraphRAG (Neptune + OpenSearch) ---
+  # #2912: enable the Door's Neptune read path so impact/understand use the
+  # graph instead of code-index-fallback. Safe to set true unconditionally —
+  # neptune_client.neptune_available() probes the live connection and falls
+  # back to code-index if the endpoint is empty or unreachable (self-healing
+  # on IAM token expiry / dead pools). Flip to "false" as a kill switch.
+  NEPTUNE_ENABLED: "true"
   NEPTUNE_ENDPOINT: "${NEPTUNE_ENDPOINT}"
   NEPTUNE_PORT: "${NEPTUNE_PORT}"
   OPENSEARCH_ENDPOINT: "${OPENSEARCH_ENDPOINT}"

@@ -32,6 +32,12 @@ _STAGE_TO_CAPABILITY: dict[str, str] = {
     "scip_structural": "call_graph",
     "deepwiki": "wiki",
     "sbom_source": "sbom",
+    # Both stages produce semantic vectors: `embed_vectors` writes source-code
+    # embeddings to S3 Vectors (#2297), `graphrag` writes GraphRAG vectors.
+    # `_build_capabilities_index` OR-merges `ready`, so either verified stage
+    # flips `vectors.ready` true. `embed_vectors` was previously unmapped, which
+    # left `vectors.ready` permanently false even when embeddings existed (#2912).
+    "embed_vectors": "vectors",
     "graphrag": "vectors",
 }
 

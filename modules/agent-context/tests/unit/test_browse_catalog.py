@@ -157,6 +157,10 @@ SAMPLE_STAGES = [
     ("HKUDS/Vibe-Trading", "scip_structural", "verified", {"nodes": 3512, "edges": 2923}),
     ("HKUDS/Vibe-Trading", "deepwiki", "verified", {"chars": 14616}),
     ("HKUDS/Vibe-Trading", "sbom_source", "verified", {"dependencies": 415}),
+    # #2912: embed_vectors (source-code embeddings → S3 Vectors) feeds the
+    # `vectors` capability. graphrag is skipped by design; embed_vectors verified
+    # must be enough to flip vectors.ready true.
+    ("HKUDS/Vibe-Trading", "embed_vectors", "verified", {"vectors": 1613, "files": 210}),
     ("HKUDS/Vibe-Trading", "graphrag", "skipped", None),
     # DeepTutor: partial
     ("HKUDS/DeepTutor", "zoekt_index", "verified", {"shards": 1, "shard_bytes": 15000000}),
@@ -260,7 +264,7 @@ class TestCapabilityManifest:
 
     @pytest.mark.asyncio
     async def test_vibe_trading_full_manifest(self, catalog_db_pool):
-        """Vibe-Trading has code_search, call_graph, wiki, sbom; vectors skipped."""
+        """Vibe-Trading has code_search, call_graph, wiki, sbom, vectors."""
         results = await browse("ls", "/", db_pool=catalog_db_pool)
         vibe = next(r for r in results if r.repo_name == "HKUDS/Vibe-Trading")
         caps = vibe.data["capabilities"]
@@ -284,8 +288,10 @@ class TestCapabilityManifest:
         assert caps["sbom"]["ready"] is True
         assert caps["sbom"]["dependencies"] == 415
 
-        # vectors from graphrag (skipped → not ready)
-        assert caps["vectors"]["ready"] is False
+        # vectors: embed_vectors verified flips ready true even though graphrag
+        # is skipped (both map to the `vectors` capability; ready is OR-merged).
+        assert caps["vectors"]["ready"] is True
+        assert caps["vectors"]["vectors"] == 1613
 
     @pytest.mark.asyncio
     async def test_partial_manifest(self, catalog_db_pool):
@@ -345,6 +351,22 @@ class TestBuildCapabilitiesIndex:
         result = _build_capabilities_index(rows)
         assert result == {"repo-a": {"vectors": {"ready": False}}}
 
+    def test_embed_vectors_maps_to_vectors(self):
+        """#2912: embed_vectors (verified) → vectors.ready=True with metrics."""
+        rows = [("repo-a", "embed_vectors", "verified", {"vectors": 1613, "files": 210})]
+        result = _build_capabilities_index(rows)
+        assert result["repo-a"]["vectors"]["ready"] is True
+        assert result["repo-a"]["vectors"]["vectors"] == 1613
+
+    def test_vectors_or_merge_embed_over_skipped_graphrag(self):
+        """#2912: embed_vectors verified flips vectors.ready even if graphrag skipped."""
+        rows = [
+            ("repo-a", "graphrag", "skipped", None),
+            ("repo-a", "embed_vectors", "verified", {"vectors": 42}),
+        ]
+        result = _build_capabilities_index(rows)
+        assert result["repo-a"]["vectors"]["ready"] is True
+
     def test_multiple_stages_merge(self):
         """Multiple stages contributing to same capability merge metrics."""
         rows = [
@@ -399,6 +421,7 @@ class TestStageMapping:
             "scip_structural",
             "deepwiki",
             "sbom_source",
+            "embed_vectors",
             "graphrag",
         }
         assert expected == set(_STAGE_TO_CAPABILITY.keys())
