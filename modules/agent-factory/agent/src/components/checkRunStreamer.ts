@@ -80,6 +80,12 @@ const INTERVAL_SCHEDULE: Array<{ afterMs: number; intervalMs: number }> = [
 const THROTTLE_MARKER_MIN_INTERVAL_MS = 15_000;
 /** Target ceiling on output.text; GitHub hard limit is 65,535. */
 const MAX_OUTPUT_BYTES = 60 * 1024; // 60 KB
+/**
+ * Rolling cap on retained Codex sub-step lines (issue #2884). Keeps the Codex
+ * section from dominating the 60 KB budget on a long delegation; the full
+ * history stays in the archival JSONL (#2753).
+ */
+const MAX_CODEX_LINES = 200;
 /** Path where the final rendered Markdown is written for entrypoint.py. */
 const FINAL_OUTPUT_PATH = '/tmp/adp-check-run-final.md';
 
@@ -96,6 +102,8 @@ export class CheckRunStreamer {
   private planText: string | null = null;
   private reasoningThoughts: string[] = [];
   private totalCostUsd: number = 0;
+  /** Compact Codex sub-step lines (issue #2884), rolling, bounded. */
+  private codexLines: string[] = [];
 
   private patchCount: number = 0;
   private lastPatchMs: number = 0;
@@ -155,6 +163,33 @@ export class CheckRunStreamer {
     }
 
     this.turns.push({ turn: data.turn, tools, textPreview });
+    this._schedulePatch();
+  }
+
+  /**
+   * Stream compact Codex sub-step lines to the live page (issue #2884).
+   *
+   * Called by CodexEventWatcher while a codex-bridge delegation is in flight —
+   * the delegation is ONE Bash tool call from the SDK's point of view, so
+   * without this the page goes dark for its whole duration. The lines are
+   * accumulated and rendered under a bounded "### Codex" section, then flushed
+   * via the SAME decaying-throttle/PATCH-budget path as onTurn (`_schedulePatch`)
+   * — this deliberately adds NO second PATCH path, so the #2801 circuit-breaker
+   * and cadence still govern the whole page.
+   */
+  onCodexActivity(lines: string[]): void {
+    if (this.destroyed) return;
+    if (!lines || lines.length === 0) return;
+    for (const line of lines) {
+      if (typeof line === 'string' && line.length > 0) {
+        this.codexLines.push(line);
+      }
+    }
+    // Keep the section bounded so a very long delegation can't dominate the
+    // 60 KB budget; the archival JSONL (#2753) retains the full history.
+    if (this.codexLines.length > MAX_CODEX_LINES) {
+      this.codexLines = this.codexLines.slice(-MAX_CODEX_LINES);
+    }
     this._schedulePatch();
   }
 
@@ -244,11 +279,13 @@ export class CheckRunStreamer {
 
     const reasoningSection = this._renderReasoningSection(this.reasoningThoughts);
 
+    const codexSection = this._renderCodexSection();
+
     const activitySection = this.turns.length > 0
       ? `\n\n### Activity\n${this._renderActivity()}`
       : '';
 
-    const full = header + planSection + reasoningSection + activitySection;
+    const full = header + planSection + reasoningSection + codexSection + activitySection;
     if (Buffer.byteLength(full, 'utf8') <= MAX_OUTPUT_BYTES) {
       return full;
     }
@@ -338,9 +375,25 @@ export class CheckRunStreamer {
     return `\n\n### Reasoning\n${bullets}`;
   }
 
+  /**
+   * Render the live Codex delegation sub-steps (issue #2884) as a fenced block
+   * so the nested "codex ▸ …" one-liners read as a distinct, monospaced stream
+   * interleaved into the run page. Empty (and thus invisible) when no Codex
+   * delegation has streamed anything — the inert default.
+   */
+  private _renderCodexSection(): string {
+    if (this.codexLines.length === 0) return '';
+    return `\n\n### Codex\n\`\`\`\n${this.codexLines.join('\n')}\n\`\`\``;
+  }
+
   private _truncated(header: string, planSection: string): string {
     const reasoningSection = this._renderReasoningSection(this.reasoningThoughts.slice(-20));
-    const base = header + planSection + reasoningSection;
+    // Keep a bounded tail of Codex lines in the truncated view so a live
+    // delegation stays visible even when the transcript overflows 60 KB.
+    const codexSection = this.codexLines.length > 0
+      ? `\n\n### Codex\n\`\`\`\n${this.codexLines.slice(-40).join('\n')}\n\`\`\``
+      : '';
+    const base = header + planSection + reasoningSection + codexSection;
     const baseBytes = Buffer.byteLength(base, 'utf8');
     const budget = MAX_OUTPUT_BYTES - baseBytes - 200; // reserve for hidden-count marker
 

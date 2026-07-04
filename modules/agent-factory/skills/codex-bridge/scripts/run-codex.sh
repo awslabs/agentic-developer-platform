@@ -42,6 +42,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RENDER_SCRIPT="${SCRIPT_DIR}/render-codex-events.py"
 CODEX_RUNS_DIR="${CODEX_RUNS_DIR:-/tmp/codex-runs}"
 
+# --- Live-stream events file (issue #2884) ----------------------------------
+# In addition to the per-run archival tee above, append the SAME JSONL event
+# stream to one stable, well-known path so the agent-worker's codexEventWatcher
+# has a single file to tail. The watcher forwards compact per-step summaries to
+# the live run page WHILE Codex is running (Phase 1 only rendered them after the
+# fact). This file is truncated at the start of each delegation (tee without
+# -a), so the watcher — which owns the stable path for the whole worker
+# lifecycle — sees each delegation as a fresh write sequence.
+CODEX_EVENTS_FILE="${CODEX_EVENTS_FILE:-/tmp/codex-events/current.jsonl}"
+
 usage() {
     echo "Usage: run-codex.sh {write|review} <instruction-or-file-path>" >&2
     echo "  write  \"<instruction>\"   Codex authors/edits code in the current dir" >&2
@@ -100,13 +110,22 @@ export AWS_REGION="${AWS_REGION:-us-east-1}"
 mkdir -p "${CODEX_RUNS_DIR}"
 JSONL_PATH="${CODEX_RUNS_DIR}/$(date +%Y%m%dT%H%M%S)-$$.jsonl"
 
+# Ensure the stable live-stream file's directory exists. `tee` (no -a) truncates
+# it, so each delegation starts the watcher's view fresh (issue #2884).
+mkdir -p "$(dirname "${CODEX_EVENTS_FILE}")"
+
+# Tee the raw JSONL to BOTH sinks in a single pass: the per-run archival log
+# (unchanged, #2753) and the stable live-stream file the worker tails (#2884).
+# PIPESTATUS[0] still refers to `timeout ... codex` (first pipe element), so
+# Codex's own exit code is preserved exactly as before — tee/renderer never
+# mask it.
 set +e
 timeout "${CODEX_TIMEOUT}" "${CODEX_BIN}" exec \
     --dangerously-bypass-approvals-and-sandbox \
     --skip-git-repo-check \
     --json \
     "${INSTRUCTION}" </dev/null \
-    | tee "${JSONL_PATH}" \
+    | tee "${JSONL_PATH}" "${CODEX_EVENTS_FILE}" \
     | python3 "${RENDER_SCRIPT}" --jsonl-path "${JSONL_PATH}"
 rc="${PIPESTATUS[0]}"
 set -e

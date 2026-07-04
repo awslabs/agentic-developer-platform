@@ -405,6 +405,88 @@ class TestJsonlSafetyContractPreserved:
         assert "timed out after 1s" in result.stderr
 
 
+class TestLiveEventsFile:
+    """Live-stream events-file contract (issue #2884).
+
+    The wrapper additionally tees the SAME JSONL stream to a stable, well-known
+    path (CODEX_EVENTS_FILE) so the agent-worker's codexEventWatcher has one
+    file to tail while Codex runs. These tests pin that:
+      - the stable file receives the identical event stream;
+      - the per-run archival tee (#2753) is unchanged and byte-matches;
+      - the file is TRUNCATED (not appended) at delegation start;
+      - Codex's own exit code still propagates (PIPESTATUS unaffected).
+    """
+
+    def test_events_file_receives_the_event_stream(self, tmp_path):
+        events_file = tmp_path / "events" / "current.jsonl"
+        stub = _make_jsonl_stub(tmp_path, KNOWN_JSONL)
+        result = _run(
+            ["write", "make hello"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_RUNS_DIR": str(tmp_path / "runs"),
+                "CODEX_EVENTS_FILE": str(events_file),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        assert events_file.is_file(), "stable events file was not written"
+        # The stable file carries the identical raw JSONL stream.
+        assert events_file.read_text() == KNOWN_JSONL + "\n"
+
+    def test_events_file_matches_archival_tee_byte_for_byte(self, tmp_path):
+        events_file = tmp_path / "events" / "current.jsonl"
+        runs = tmp_path / "runs"
+        stub = _make_jsonl_stub(tmp_path, KNOWN_JSONL)
+        result = _run(
+            ["write", "make hello"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_RUNS_DIR": str(runs),
+                "CODEX_EVENTS_FILE": str(events_file),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        logs = list(runs.glob("*.jsonl"))
+        assert len(logs) == 1, f"expected exactly one archival log, got {logs!r}"
+        # Both sinks of the single tee see the same bytes (#2753 tee unchanged).
+        assert events_file.read_text() == logs[0].read_text()
+
+    def test_events_file_is_truncated_not_appended(self, tmp_path):
+        events_file = tmp_path / "events" / "current.jsonl"
+        events_file.parent.mkdir(parents=True)
+        # Pre-seed the stable file with a prior delegation's content.
+        events_file.write_text("STALE PRIOR DELEGATION CONTENT\n")
+        stub = _make_jsonl_stub(tmp_path, KNOWN_JSONL)
+        result = _run(
+            ["write", "make hello"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_RUNS_DIR": str(tmp_path / "runs"),
+                "CODEX_EVENTS_FILE": str(events_file),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        # tee (no -a) must have truncated the stale content.
+        assert "STALE PRIOR DELEGATION CONTENT" not in events_file.read_text()
+        assert events_file.read_text() == KNOWN_JSONL + "\n"
+
+    def test_nonzero_rc_still_propagates_with_events_file_set(self, tmp_path):
+        events_file = tmp_path / "events" / "current.jsonl"
+        stub = _make_jsonl_stub(tmp_path, KNOWN_JSONL, rc=5, stderr="boom")
+        result = _run(
+            ["write", "x"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_RUNS_DIR": str(tmp_path / "runs"),
+                "CODEX_EVENTS_FILE": str(events_file),
+            },
+        )
+        # Adding the second tee sink must not disturb PIPESTATUS[0].
+        assert result.returncode == 5, result.stderr
+        assert "exited non-zero (5)" in result.stderr
+        assert events_file.read_text() == KNOWN_JSONL + "\n"
+
+
 class TestRenderer:
     """Unit tests for render-codex-events.py driven directly on stdin."""
 

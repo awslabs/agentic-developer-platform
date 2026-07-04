@@ -48,6 +48,10 @@ import { postProvenance } from './lib/provenanceClient';
 // Check Run Streamer — per-turn live streaming to GitHub Check Run output
 import { CheckRunStreamer } from './components/checkRunStreamer';
 
+// Codex Event Watcher — stream Codex delegation sub-steps to the live page
+// while a codex-bridge delegation is in flight (issue #2884, EPIC #2702).
+import { CodexEventWatcher } from './components/codexEventWatcher';
+
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
 import {
   KNOWLEDGE_LAYER_ENABLED,
@@ -1112,6 +1116,22 @@ Now, complete the assigned task.`;
   }
   // ─────────────────────────────────────────────────────────────────────────
 
+  // ── Codex Event Watcher ───────────────────────────────────────────────────
+  // Tail the stable Codex events file (written by run-codex.sh, #2884) and
+  // stream compact per-step summaries to BOTH live sinks while a codex-bridge
+  // delegation runs. Inert by default (no file → zero PATCHes/noise); never
+  // throws into the worker loop; owned by the worker lifecycle (start now,
+  // dispose in finally). Runs in every worker — only Codex-delegating runs
+  // produce an events file for it to see.
+  const codexEventWatcher = new CodexEventWatcher({
+    eventsFile: process.env.CODEX_EVENTS_FILE,
+    checkRunStreamer,
+    liveComment: activeLiveComment,
+    log: (msg) => log('WARN', msg),
+  });
+  codexEventWatcher.start();
+  // ─────────────────────────────────────────────────────────────────────────
+
   log('INFO', 'Starting agent execution...');
   console.log('\n' + '═'.repeat(60));
   console.log(`Starting @agent-${AGENT_TYPE} Query`);
@@ -1284,6 +1304,9 @@ Now, complete the assigned task.`;
       }
     } finally {
       clearInterval(heartbeat);
+      // Stop the Codex event watcher before the streamer so no late poll can
+      // forward into a destroyed streamer (issue #2884).
+      codexEventWatcher.dispose();
       // Clean up the Check Run streamer timers
       if (checkRunStreamer) {
         checkRunStreamer.destroy();
