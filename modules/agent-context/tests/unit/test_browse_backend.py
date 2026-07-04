@@ -13,6 +13,7 @@ Issue #2406.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -597,8 +598,20 @@ class TestRepoScopedListing:
         )
         sent = json.loads(route.calls[0].request.content)
         # Repo anchored exactly on the full org/repo name, path prefix applied.
-        assert "r:^HKUDS/Vibe\\-Trading$" in sent["q"]
+        assert "r:^([^/]+/)?HKUDS/Vibe\\-Trading$" in sent["q"]
         assert "f:^agent/backtest/engines/" in sent["q"]
+
+    def test_repo_filter_matches_domain_qualified_and_bare_names(self):
+        """The r: regex must match live Zoekt shard names, which are
+        domain-qualified ("github.com/org/repo"), as well as bare catalog
+        slugs — but never a fork with a suffix."""
+        from door.browse_backend import _zoekt_repo_filter
+
+        pattern = re.compile(_zoekt_repo_filter("HKUDS/Vibe-Trading"))
+        assert pattern.search("github.com/HKUDS/Vibe-Trading")
+        assert pattern.search("HKUDS/Vibe-Trading")
+        assert not pattern.search("github.com/HKUDS/Vibe-Trading-fork")
+        assert not pattern.search("evil.com/prefix/HKUDS/Vibe-Trading-fork")
 
     @pytest.mark.asyncio
     @respx.mock
@@ -731,7 +744,7 @@ class TestUnscopedOrgRepoListing:
         assert {"agent", "README.md"} <= names
         # org/repo consumed as the repo name, not split into repo=HKUDS.
         sent = json.loads(route.calls[0].request.content)
-        assert "r:^HKUDS/Vibe\\-Trading$" in sent["q"]
+        assert "r:^([^/]+/)?HKUDS/Vibe\\-Trading$" in sent["q"]
 
     @pytest.mark.asyncio
     @respx.mock
@@ -748,5 +761,5 @@ class TestUnscopedOrgRepoListing:
         names = {h.data["name"] for h in results}
         assert "api_server.py" in names
         sent = json.loads(route.calls[0].request.content)
-        assert "r:^HKUDS/Vibe\\-Trading$" in sent["q"]
+        assert "r:^([^/]+/)?HKUDS/Vibe\\-Trading$" in sent["q"]
         assert "f:^agent/" in sent["q"]

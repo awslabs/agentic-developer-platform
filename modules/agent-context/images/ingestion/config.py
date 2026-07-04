@@ -121,8 +121,10 @@ class Settings(BaseSettings):
     # bucket (provisioned by #2486) produces a clean stage skip, not a crash.
     embed_vectors_enabled: bool = True
     # LiteLLM proxy model id for embeddings — must match the Door's read-side
-    # query model (door/server.py) so write/read vectors are comparable.
-    embed_model: str = "amazon.titan-embed-text-v2:0"
+    # query model (door/server.py) so write/read vectors are comparable. The
+    # proxy registers Bedrock models under a "bedrock/" prefix (see
+    # manifests/litellm-config.yaml); the bare id 400s.
+    embed_model: str = "bedrock/amazon.titan-embed-text-v2:0"
 
     # --- SBOM generation (dual-rail, #1358) ------------------------------------
     sbom_enabled: bool = True

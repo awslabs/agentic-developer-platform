@@ -617,7 +617,7 @@ async def _handle_semantic_search(
         # Generate query embedding via LiteLLM (async — does not block event loop)
         embed_response = await state.semantic_http_client.post(
             f"{config.litellm_url}/embeddings",
-            json={"input": query, "model": "amazon.titan-embed-text-v2:0"},
+            json={"input": query, "model": "bedrock/amazon.titan-embed-text-v2:0"},
         )
         embed_response.raise_for_status()
         query_vector = embed_response.json()["data"][0]["embedding"]

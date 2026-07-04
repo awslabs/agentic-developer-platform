@@ -143,6 +143,25 @@ async def browse(
         return []
 
 
+def _zoekt_repo_filter(repo_name: str) -> str:
+    """Build a Zoekt ``r:`` regex that matches a repo in any naming form.
+
+    Zoekt shard repository names are domain-qualified
+    ("github.com/HKUDS/Vibe-Trading") while the catalog stores bare
+    "org/repo" slugs. A strictly-anchored ``^org/repo$`` therefore matches
+    nothing against live shards — allow an optional ``<domain>/`` prefix
+    while still anchoring the tail so "HKUDS/Vibe-Trading" never matches
+    "HKUDS/Vibe-Trading-fork".
+    """
+    escaped_name = re.escape(repo_name)
+    if "/" in repo_name:
+        # Full "org/repo": exact match, or exact match after a domain prefix.
+        return f"^([^/]+/)?{escaped_name}$"
+    # Bare repo name: anchor with a "/" prefix so "skills" matches
+    # "github.com/mattpocock/skills" but not "agent-skills".
+    return f"/{escaped_name}$"
+
+
 def _is_content_root(uri: str) -> bool:
     """True if the URI's first path component is a known S3 content root."""
     parts = [p for p in uri.split("/") if p]
@@ -427,16 +446,7 @@ async def _list_zoekt_files(
 
     # Build Zoekt query to find files in this repo under the path.
     # Use "f:" filter to match file paths, "r:" to scope to repo.
-    escaped_name = re.escape(repo_name)
-    if "/" in repo_name:
-        # Full "org/repo" name (matches the catalog / Zoekt repository name):
-        # anchor both ends so "HKUDS/Vibe-Trading" matches exactly and does not
-        # also match "HKUDS/Vibe-Trading-fork".
-        repo_filter = f"^{escaped_name}$"
-    else:
-        # Bare repo name: anchor with a "/" prefix so "skills" matches
-        # "github.com/mattpocock/skills" but not "agent-skills".
-        repo_filter = f"/{escaped_name}$"
+    repo_filter = _zoekt_repo_filter(repo_name)
     if path_prefix:
         query = f"r:{repo_filter} f:^{path_prefix}/"
     else:
@@ -539,11 +549,7 @@ async def _read_zoekt_file(
     if not file_path:
         return []
 
-    escaped_name = re.escape(repo_name)
-    if "/" in repo_name:
-        repo_filter = f"^{escaped_name}$"
-    else:
-        repo_filter = f"/{escaped_name}$"
+    repo_filter = _zoekt_repo_filter(repo_name)
     # Anchor the file path exactly so we fetch the one file, not substrings.
     escaped_path = re.escape(file_path)
     query = f"r:{repo_filter} f:^{escaped_path}$"

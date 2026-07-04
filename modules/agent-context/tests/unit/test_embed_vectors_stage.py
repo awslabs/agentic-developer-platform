@@ -105,7 +105,7 @@ class TestEmbedVectorsConfig:
     def test_default_model(self):
         from config import Settings
 
-        assert Settings().embed_model == "amazon.titan-embed-text-v2:0"
+        assert Settings().embed_model == "bedrock/amazon.titan-embed-text-v2:0"
 
 
 # ---------------------------------------------------------------------------
