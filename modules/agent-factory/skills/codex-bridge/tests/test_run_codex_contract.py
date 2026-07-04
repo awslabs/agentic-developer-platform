@@ -163,6 +163,253 @@ class TestReviewMode:
         # Read-only intent must be explicit in the synthesized prompt.
         assert "Do not modify any files." in prompt
 
+    # --- Persona-parameterized review prompt (issue #2945 §8c) --------------
+    # These pin the additive-calibration behavior WITHOUT weakening the two
+    # assertions above (target path + read-only sentence stay verbatim).
+
+    # Today's exact per-file review prompt, held here so the no-op path is
+    # asserted byte-for-byte (missing distilled file must not change one byte).
+    _EXACT_REVIEW_PROMPT_TMPL = (
+        "Review the file '{path}' for correctness, bugs, and clear improvements. "
+        "Report your findings as a concise list. Do not modify any files."
+    )
+
+    def test_review_with_distilled_prepends_before_review_sentence(self, tmp_path):
+        target = tmp_path / "changed.py"
+        target.write_text("def f():\n    return 1\n")
+        distilled_dir = tmp_path / "distilled"
+        _write_distilled(distilled_dir, "reviewer", "# reviewer pack\nREVIEW-CANARY\n")
+        stub = _make_stub_codex(tmp_path, _ARGV_ECHO)
+        result = _run(
+            ["review", str(target)],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_DISTILLED_DIR": str(distilled_dir),
+                "AGENT_TYPE": "reviewer",
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        prompt = _parse_argv(result.stdout)[-1]
+        # Distilled content is present and precedes the review instruction …
+        assert "REVIEW-CANARY" in prompt
+        base = self._EXACT_REVIEW_PROMPT_TMPL.format(path=str(target))
+        assert base in prompt
+        assert prompt.index("REVIEW-CANARY") < prompt.index(base)
+        # … and the pinned assertions still hold on the calibrated prompt.
+        assert str(target) in prompt
+        assert "Do not modify any files." in prompt
+
+    def test_review_without_distilled_is_byte_identical_to_today(self, tmp_path):
+        target = tmp_path / "changed.py"
+        target.write_text("def f():\n    return 1\n")
+        # Point at an empty distilled dir so no <type>.md resolves.
+        distilled_dir = tmp_path / "distilled"
+        distilled_dir.mkdir()
+        stub = _make_stub_codex(tmp_path, _ARGV_ECHO)
+        result = _run(
+            ["review", str(target)],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_DISTILLED_DIR": str(distilled_dir),
+                "AGENT_TYPE": "developer",
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        prompt = _parse_argv(result.stdout)[-1]
+        # Byte-identical to today's exact prompt string.
+        assert prompt == self._EXACT_REVIEW_PROMPT_TMPL.format(path=str(target))
+
+
+# Deterministic identity so `git commit` never prompts / fails in CI.
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@e",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@e",
+}
+
+
+def _git(repo: Path, *args) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        env={**os.environ, **_GIT_ENV},
+        check=True,
+        capture_output=True,
+    )
+
+
+def _commit_all(repo: Path, message: str) -> None:
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", message)
+
+
+def _init_git_repo_with_change(tmp_path: Path) -> Path:
+    """Create a git repo with a committed base and one staged+committed change.
+
+    Returns the repo path. Leaves a diff between HEAD and an earlier ref named
+    'base'. `git diff base...` (three-dot) resolves via merge-base = base.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "app.py").write_text("def a():\n    return 1\n")
+    _commit_all(repo, "base")
+    _git(repo, "branch", "base")
+    (repo / "app.py").write_text("def a():\n    return 2  # CHANGED-LINE\n")
+    _commit_all(repo, "change")
+    return repo
+
+
+class TestReviewDiffMode:
+    """PR-level review mode (issue #2945): `run-codex.sh review-diff [<base>]`."""
+
+    def test_happy_path_single_argv_readonly_prompt(self, tmp_path):
+        repo = _init_git_repo_with_change(tmp_path)
+        stub = _make_stub_codex(tmp_path, _ARGV_ECHO)
+        result = _run(
+            ["review-diff", "base"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+            cwd=str(repo),
+        )
+        assert result.returncode == 0, result.stderr
+        argv = _parse_argv(result.stdout)
+        prompt = argv[-1]
+        # The diff hunk content is embedded in the prompt …
+        assert "CHANGED-LINE" in prompt
+        assert "Review the following unified diff" in prompt
+        assert "Do not modify any files." in prompt
+        # … as a SINGLE literal argv (no shell evaluation of diff content).
+        assert prompt == argv[-1]
+        assert argv[0] == "exec"
+
+    def test_diff_content_is_data_not_shell_evaluated(self, tmp_path):
+        # A diff line containing $(whoami) must survive verbatim, proving the
+        # diff is passed as data, never shell-interpolated.
+        repo = _init_git_repo_with_change(tmp_path)
+        (repo / "app.py").write_text("x = '$(whoami)'  # `id`\n")
+        _commit_all(repo, "inject")
+        stub = _make_stub_codex(tmp_path, _ARGV_ECHO)
+        result = _run(
+            ["review-diff", "base"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+            cwd=str(repo),
+        )
+        assert result.returncode == 0, result.stderr
+        prompt = _parse_argv(result.stdout)[-1]
+        assert "$(whoami)" in prompt and "`id`" in prompt
+
+    def test_defaults_to_origin_main(self, tmp_path):
+        # No base ref given → wrapper uses origin/main. We create a local ref
+        # named origin/main so the default resolves in this hermetic repo.
+        repo = _init_git_repo_with_change(tmp_path)
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/main", "base"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+        stub = _make_stub_codex(tmp_path, _ARGV_ECHO)
+        result = _run(
+            ["review-diff"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+            cwd=str(repo),
+        )
+        assert result.returncode == 0, result.stderr
+        assert "CHANGED-LINE" in _parse_argv(result.stdout)[-1]
+
+    def test_distilled_pack_prepended(self, tmp_path):
+        repo = _init_git_repo_with_change(tmp_path)
+        distilled_dir = tmp_path / "distilled"
+        _write_distilled(distilled_dir, "reviewer", "# reviewer pack\nDIFF-REVIEW-CANARY\n")
+        stub = _make_stub_codex(tmp_path, _ARGV_ECHO)
+        result = _run(
+            ["review-diff", "base"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_DISTILLED_DIR": str(distilled_dir),
+                "AGENT_TYPE": "reviewer",
+                "CODEX_RUNS_DIR": str(tmp_path / "runs"),
+            },
+            cwd=str(repo),
+        )
+        assert result.returncode == 0, result.stderr
+        prompt = _parse_argv(result.stdout)[-1]
+        assert "DIFF-REVIEW-CANARY" in prompt
+        assert prompt.index("DIFF-REVIEW-CANARY") < prompt.index(
+            "Review the following unified diff"
+        )
+
+    def test_empty_diff_exits_zero_without_invoking_codex(self, tmp_path):
+        repo = _init_git_repo_with_change(tmp_path)
+        # Diff HEAD against itself → empty diff.
+        stub = _make_stub_codex(tmp_path, "echo SHOULD_NOT_RUN\n")
+        result = _run(
+            ["review-diff", "HEAD"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+            cwd=str(repo),
+        )
+        assert result.returncode == 0, result.stderr
+        assert "SHOULD_NOT_RUN" not in result.stdout
+        assert "no changes vs HEAD" in result.stderr
+
+    def test_outside_git_repo_exits_2_before_codex(self, tmp_path):
+        # tmp_path is not a git repo.
+        not_repo = tmp_path / "plain"
+        not_repo.mkdir()
+        stub = _make_stub_codex(tmp_path, "echo SHOULD_NOT_RUN\n")
+        result = _run(
+            ["review-diff", "base"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+            cwd=str(not_repo),
+        )
+        assert result.returncode == 2
+        assert "must run inside a git repository" in result.stderr
+        assert "SHOULD_NOT_RUN" not in result.stdout
+
+    def test_bad_base_ref_exits_2_before_codex(self, tmp_path):
+        repo = _init_git_repo_with_change(tmp_path)
+        stub = _make_stub_codex(tmp_path, "echo SHOULD_NOT_RUN\n")
+        result = _run(
+            ["review-diff", "no-such-ref"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+            cwd=str(repo),
+        )
+        assert result.returncode == 2
+        assert "base ref not found" in result.stderr
+        assert "SHOULD_NOT_RUN" not in result.stdout
+
+    def test_oversized_diff_truncated_with_marker(self, tmp_path):
+        repo = _init_git_repo_with_change(tmp_path)
+        # Write a large change so the diff exceeds a tiny cap.
+        (repo / "big.py").write_text("# pad\n" + ("y = 1  # line\n" * 2000))
+        _commit_all(repo, "big")
+        stub = _make_stub_codex(tmp_path, _ARGV_ECHO)
+        result = _run(
+            ["review-diff", "base"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_DIFF_MAX_BYTES": "512",
+                "CODEX_RUNS_DIR": str(tmp_path / "runs"),
+            },
+            cwd=str(repo),
+        )
+        assert result.returncode == 0, result.stderr
+        prompt = _parse_argv(result.stdout)[-1]
+        assert "[diff truncated at 512 bytes]" in prompt
+        assert "truncated at 512 bytes" in prompt  # prompt note too
+
+    def test_extra_args_exit_2_with_usage(self, tmp_path):
+        repo = _init_git_repo_with_change(tmp_path)
+        stub = _make_stub_codex(tmp_path, "echo SHOULD_NOT_RUN\n")
+        result = _run(
+            ["review-diff", "base", "extra"],
+            env_extra={"CODEX_BIN": str(stub)},
+            cwd=str(repo),
+        )
+        assert result.returncode == 2
+        assert "Usage:" in result.stderr
+
 
 class TestTimeout:
     def test_hard_timeout_kills_hung_codex_and_returns_124(self, tmp_path):

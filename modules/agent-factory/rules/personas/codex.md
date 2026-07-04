@@ -99,7 +99,12 @@ Follow this loop for the issue:
 
 3. **Delegate each task via codex-bridge.** For each task, invoke the
    codex-bridge skill (write mode) with a single, precise instruction. Give
-   Codex enough context to succeed but keep the scope tight.
+   Codex enough context to succeed but keep the scope tight. For a *review*
+   ask, pick the right read-only mode: `review <file>` for one file, or
+   `review-diff [<base-ref>]` when you want Codex to second-opinion the whole
+   PR-level diff (`git diff <base>...`, base defaults to `origin/main`) with
+   cross-file context instead of looping files one at a time. Both review modes
+   are persona-calibrated by the distilled pack you select below.
 
 4. **Review every Codex diff before accepting.** After each delegation, run
    `git diff` and read every changed line. Verify it does exactly what you

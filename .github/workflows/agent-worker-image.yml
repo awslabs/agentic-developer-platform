@@ -17,6 +17,7 @@ on:
       - 'modules/agent-factory/agent/**'
       - 'modules/agent-factory/agent-worker-image/**'
       - 'modules/agent-factory/rules/personas/**'
+      - 'modules/agent-factory/skills/**'
       - 'modules/domain-apps/*/agent/**'
       - 'codebuild/bs-agent-runtime.yml'
       - '.github/workflows/agent-worker-image.yml'

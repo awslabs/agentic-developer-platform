@@ -55,11 +55,36 @@ Codex as a single argument (no shell interpretation of the text).
 .claude/skills/codex-bridge/scripts/run-codex.sh write "Add a hello_world() function to hello.py that prints 'hello world'."
 ```
 
-**Review mode** — Codex reviews a file and reports findings (read-only intent):
+**Review mode** — Codex reviews a single file and reports findings (read-only intent):
 
 ```bash
 .claude/skills/codex-bridge/scripts/run-codex.sh review path/to/changed_file.py
 ```
+
+**Review-diff mode** — Codex reviews a whole PR-level diff at once (read-only
+intent), so it has cross-file context instead of one file at a time:
+
+```bash
+# Review the working tree vs. the default base (origin/main):
+.claude/skills/codex-bridge/scripts/run-codex.sh review-diff
+# …or against an explicit base ref:
+.claude/skills/codex-bridge/scripts/run-codex.sh review-diff main
+```
+
+`review-diff` builds `git diff <base>...` (three-dot / merge-base semantics),
+caps it at `CODEX_DIFF_MAX_BYTES` (default 262144; a truncation marker is added
+and Codex is told when the diff is cut), and passes it to Codex as a single
+literal argument — the diff content is data, never shell-evaluated. An empty diff
+exits 0 without invoking Codex (no spend on nothing); running outside a git repo
+or against a bad base ref exits 2 *before* Codex runs.
+
+**Persona-calibrated review.** In both `review` and `review-diff`, when a
+distilled persona pack resolves (`${CODEX_DISTILLED_DIR}/${AGENT_TYPE}.md`, the
+same file used for the `AGENTS.md` render), its conventions + quality bar are
+prepended to the review instruction so findings are persona-aware. If no pack
+resolves, the review prompt is byte-identical to the un-calibrated default. The
+`AGENTS.md` render still applies in review modes too — the prepend is additive
+calibration of the task, not a replacement.
 
 The script prints Codex's final message to stdout. A non-zero exit means Codex
 failed or timed out — its stderr is surfaced; report it, do not silently retry
