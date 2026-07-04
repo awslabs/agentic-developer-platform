@@ -13,7 +13,7 @@ jobs:
     runs-on: arc-runner-org
     timeout-minutes: 15
     env:
-      NS: adp-gateway-agents
+      NS: adp-agents
     steps:
       - name: Account guard
         run: |
