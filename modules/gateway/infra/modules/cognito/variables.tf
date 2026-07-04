@@ -170,3 +170,9 @@ variable "cloudwatch_kms_key_arn" {
   type        = string
   default     = ""
 }
+
+variable "enable_reserved_concurrency" {
+  description = "Enable reserved concurrent executions on Cognito trigger Lambdas. Set to false on fresh accounts where Lambda quota is too low (Issue #2910)."
+  type        = bool
+  default     = true
+}

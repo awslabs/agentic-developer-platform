@@ -340,7 +340,9 @@ jobs:
         # changed and trigger an edge cache invalidation. Without invalidation, /api/*
         # changes (e.g. enabling the VPC origin behavior) sit behind hours-old cached
         # SPA HTML responses at the edge POPs — see deploy-instance #1062.
-        run: terraform apply tfplan 2>&1 | tee /tmp/tf-apply-output.txt
+        run: |
+          set -euo pipefail
+          terraform apply tfplan 2>&1 | tee /tmp/tf-apply-output.txt
 
       - name: Invalidate CloudFront /api/* on distribution change
         if: steps.apply.outcome == 'success'

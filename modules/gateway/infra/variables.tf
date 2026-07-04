@@ -404,6 +404,16 @@ variable "api_gateway_log_retention_days" {
 }
 
 # =============================================================================
+# Lambda Reserved Concurrency (Issue #2910)
+# =============================================================================
+
+variable "enable_lambda_reserved_concurrency" {
+  type        = bool
+  description = "Enable reserved concurrent executions on gateway Lambda functions. Set to false on fresh accounts where the Lambda concurrency quota is too low (sum of reservations must leave >= 100 unreserved)."
+  default     = true
+}
+
+# =============================================================================
 # Agent Context Ingestion (Issue #1797)
 # =============================================================================
 

@@ -112,7 +112,7 @@ resource "aws_lambda_function" "broker" {
   runtime                        = "python3.12"
   timeout                        = 30
   memory_size                    = 128
-  reserved_concurrent_executions = 10
+  reserved_concurrent_executions = var.enable_reserved_concurrency ? 10 : -1
 
   tracing_config {
     mode = "Active"

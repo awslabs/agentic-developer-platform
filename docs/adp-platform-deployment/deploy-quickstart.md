@@ -276,6 +276,29 @@ pipeline. RDS provisioning dominates (~10 min).
   are both true — **fixed on `main` (PR #1218)**. (Was: a `count` keyed off the
   broker Lambda's apply-time-computed ARN.)
 
+### ⚠️ Fresh-account Lambda concurrency quota (Issue #2910)
+
+Gateway lambdas reserve 97 total concurrent executions (authorizer 50, pre-token
+20, pre-signup 10, broker 10, usage-tracker 5, pricing-refresh 2). AWS requires
+the account's **unreserved** pool to stay ≥ 100 after all reservations, so
+`UnreservedConcurrentExecutions` must be ≥ 197 at apply time. Fresh accounts
+default to a 1000 total quota (`L-B99A9384`) with the full pool unreserved
+(fine), but two situations pin the unreserved pool low even at a 1000 total quota:
+- new/restricted accounts with a lower `L-B99A9384` quota; and
+- **SCP-locked or shared-pool accounts** where another reserved lambda consumes
+  most of the total quota (e.g. Workshop-Studio sandbox accounts run a
+  `WSConcurrencyCurtailer` function that reserves ~890, pinning unreserved at the
+  100 floor). Here a Service Quotas increase is often SCP-denied, so Option B is
+  the only path.
+
+`preflight-check.sh` now reads `UnreservedConcurrentExecutions` (not the total
+quota) and warns if that pool is too low. If it warns:
+- **Option A**: request a Service Quotas increase for `L-B99A9384` (only helps if
+  the *total* quota is the constraint; SCP-locked accounts will get AccessDenied).
+- **Option B** (always works): set `enable_lambda_reserved_concurrency = false` in
+  `environments/dev/modules/gateway.tfvars`. Lambdas will run unreserved
+  (no throttle protection) until the pool frees up; then flip back to `true`.
+
 Verify:
 ```bash
 aws rds describe-db-instances --query 'DBInstances[?starts_with(DBInstanceIdentifier,`bedrockgw`)].DBInstanceStatus' --output text   # available

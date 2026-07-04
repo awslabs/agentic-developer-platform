@@ -639,6 +639,9 @@ module "cognito" {
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 
+  # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
+  enable_reserved_concurrency = var.enable_lambda_reserved_concurrency
+
   # Issue #769: removed `depends_on = [module.cloudfront]`. The implicit
   # dependency through callback_urls/logout_urls (which reference
   # module.cloudfront.distribution_domain_name) already enforces ordering.
@@ -805,6 +808,9 @@ module "budget_lambda" {
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 
+  # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
+  enable_reserved_concurrency = var.enable_lambda_reserved_concurrency
+
   # Ensure the psycopg2 layer zip is built+uploaded before this module's
   # aws_s3_object data source reads it.
   depends_on = [module.s3_chat_logs, module.rds, null_resource.build_psycopg2_layer]
@@ -905,6 +911,9 @@ module "lambda_authorizer" {
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
+
+  # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
+  enable_reserved_concurrency = var.enable_lambda_reserved_concurrency
 
   # Ensure the pyjwt layer zip is built+uploaded before this module's
   # aws_s3_object data source reads it.
@@ -1210,6 +1219,9 @@ module "github_auth_broker" {
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
+
+  # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
+  enable_reserved_concurrency = var.enable_lambda_reserved_concurrency
 
   # Issue #1011: API Gateway route is now defined in the api-gateway module's
   # OpenAPI body. The broker module only creates the Lambda + IAM.

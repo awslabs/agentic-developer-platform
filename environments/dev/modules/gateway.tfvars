@@ -47,3 +47,15 @@ agent_context_ingestion_queue_arn = "arn:aws:sqs:us-east-1:879318057152:adp-dev-
 # BG_MANTLE_ENABLED in k8s/configmap.yaml — both must be on for the route
 # to serve; flipping either off disables it.
 enable_mantle_passthrough = true
+
+# Issue #2910: Lambda reserved concurrency. The gateway reserves 97 total
+# across 6 lambdas; unreserved must stay >= 100 (L-B99A9384). Disabled here
+# because dev is where fresh/sandbox accounts get deployed — including
+# SCP-locked / shared-pool accounts (e.g. #2899 on 979157915401) where the
+# unreserved pool is pinned at the 100 floor and a quota increase is
+# SCP-denied, so any reservation makes the apply's PutFunctionConcurrency
+# fail. The var-file value overrides TF_VAR_ env, so this must be set here to
+# be effective per-deploy. The variables.tf default stays true, so prod (and
+# any env with headroom) keeps reserved-concurrency throttle isolation via
+# its own tfvars / the default.
+enable_lambda_reserved_concurrency = false

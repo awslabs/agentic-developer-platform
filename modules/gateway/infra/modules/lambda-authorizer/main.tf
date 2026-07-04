@@ -268,7 +268,7 @@ data "archive_file" "authorizer" {
 resource "aws_lambda_function" "authorizer" {
   function_name                  = "${var.name_prefix}-api-authorizer"
   description                    = "API Gateway Lambda Authorizer for JWT and IAM auth (Issue #239)"
-  reserved_concurrent_executions = 50
+  reserved_concurrent_executions = var.enable_reserved_concurrency ? 50 : -1
 
   filename         = data.archive_file.authorizer.output_path
   source_code_hash = data.archive_file.authorizer.output_base64sha256
