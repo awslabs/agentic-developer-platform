@@ -363,6 +363,10 @@ jobs:
 
           template_file manifests/litellm-config.yaml | kubectl apply -f -
           template_file manifests/litellm-proxy.yaml | kubectl apply -f -
+          # The image is pinned to the mutable ":latest" tag, so `kubectl apply`
+          # sees no manifest diff on a rebuild and would leave the old pod
+          # running. Force a rollout so the new image is actually pulled.
+          kubectl rollout restart deploy/litellm-proxy -n ${NAMESPACE} || true
           echo "LiteLLM proxy deployed"
 
       - name: Deploy DeepWiki ConfigMap
@@ -417,6 +421,10 @@ jobs:
 
           export NAMESPACE SERVICE_ACCOUNT CONTEXT_MCP_IMAGE
           template_file manifests/context-mcp.yaml | kubectl apply -f -
+          # The image is pinned to the mutable ":latest" tag, so `kubectl apply`
+          # sees no manifest diff on a rebuild and would leave the old pod
+          # running. Force a rollout so the new image is actually pulled.
+          kubectl rollout restart deploy/context-mcp -n ${NAMESPACE} || true
           echo "Context MCP Server deployed"
 
       - name: Deploy Ingestion CronJob + KEDA ScaledJob
