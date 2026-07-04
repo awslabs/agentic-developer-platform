@@ -521,3 +521,240 @@ class TestRenderer:
         assert "…" in out
         # The last message is the verbatim deliverable.
         assert out.rstrip().endswith("FINAL")
+
+
+# ---------------------------------------------------------------------------
+# Persona prompt-pack contract (issue #2891, spike #2839 §3–§4)
+#
+# Before `codex exec`, the wrapper renders the adp-owned distilled persona file
+# (`${CODEX_DISTILLED_DIR}/${AGENT_TYPE}.md`) as `AGENTS.md` into the delegation
+# cwd, and removes/restores it on EXIT. These tests pin:
+#   - present + no repo AGENTS.md  → AGENTS.md exists DURING the call, GONE after;
+#   - distilled file absent        → no AGENTS.md, byte-identical to prior behavior;
+#   - pre-existing repo AGENTS.md  → distilled-first + original during; exact bytes
+#                                    restored after;
+#   - failure + timeout paths      → trap still deletes/restores, PIPESTATUS rc
+#                                    still propagates;
+#   - the JSONL event-file tee (#2884) is unaffected by rendering.
+# ---------------------------------------------------------------------------
+
+# Stub that reports the cwd's AGENTS.md state DURING the codex run, wrapped in
+# sentinels so the test can inspect the exact bytes Codex would have seen.
+_AGENTS_PROBE_OPEN = "<<<AGENTS_BEGIN>>>"
+_AGENTS_PROBE_CLOSE = "<<<AGENTS_END>>>"
+_AGENTS_PROBE = (
+    'if [ -f "$PWD/AGENTS.md" ]; then\n'
+    '    printf "<<<AGENTS_BEGIN>>>%s<<<AGENTS_END>>>" "$(cat "$PWD/AGENTS.md")"\n'
+    "else\n"
+    '    printf "<<<AGENTS_BEGIN>>>__ABSENT__<<<AGENTS_END>>>"\n'
+    "fi\n"
+)
+
+
+def _probe_agents_during_run(stdout: str) -> str:
+    """Recover the AGENTS.md bytes the stub saw while Codex was running."""
+    _, _, rest = stdout.partition(_AGENTS_PROBE_OPEN)
+    value, _, _ = rest.partition(_AGENTS_PROBE_CLOSE)
+    return value
+
+
+def _write_distilled(dir_path: Path, agent_type: str, content: str) -> Path:
+    dir_path.mkdir(parents=True, exist_ok=True)
+    f = dir_path / f"{agent_type}.md"
+    f.write_text(content)
+    return f
+
+
+class TestPersonaPromptPack:
+    def test_distilled_rendered_during_and_removed_after(self, tmp_path):
+        # A developer distilled file exists; the cwd has no repo AGENTS.md.
+        distilled_dir = tmp_path / "distilled"
+        _write_distilled(distilled_dir, "developer", "# conventions\nCANARY-CONVENTION\n")
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        stub = _make_stub_codex(tmp_path, _AGENTS_PROBE)
+        result = _run(
+            ["write", "do a thing"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_DISTILLED_DIR": str(distilled_dir),
+                "AGENT_TYPE": "developer",
+                "CODEX_RUNS_DIR": str(tmp_path / "runs"),
+            },
+            cwd=str(workdir),
+        )
+        assert result.returncode == 0, result.stderr
+        # DURING the run, AGENTS.md held the distilled content.
+        seen = _probe_agents_during_run(result.stdout)
+        assert "CANARY-CONVENTION" in seen
+        # AFTER exit, the trap removed it (we created it, so it's gone).
+        assert not (workdir / "AGENTS.md").exists()
+
+    def test_project_doc_max_bytes_passed_when_rendering(self, tmp_path):
+        distilled_dir = tmp_path / "distilled"
+        _write_distilled(distilled_dir, "developer", "# conventions\n")
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        stub = _make_stub_codex(tmp_path, _ARGV_ECHO)
+        result = _run(
+            ["write", "do a thing"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_DISTILLED_DIR": str(distilled_dir),
+                "AGENT_TYPE": "developer",
+                "CODEX_PROJECT_DOC_MAX_BYTES": "12345",
+            },
+            cwd=str(workdir),
+        )
+        assert result.returncode == 0, result.stderr
+        argv = _parse_argv(result.stdout)
+        # The per-run -c override is present (NOT a config-file write).
+        assert "-c" in argv
+        assert "project_doc_max_bytes=12345" in argv
+        # Instruction still the final literal argv.
+        assert argv[-1] == "do a thing"
+
+    def test_absent_distilled_is_noop_no_agents_md_and_no_doc_arg(self, tmp_path):
+        # No distilled file for this AGENT_TYPE → wrapper behaves as today.
+        distilled_dir = tmp_path / "distilled"
+        distilled_dir.mkdir()  # empty: no <type>.md
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        stub = _make_stub_codex(tmp_path, _ARGV_ECHO + _AGENTS_PROBE)
+        result = _run(
+            ["write", "do a thing"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_DISTILLED_DIR": str(distilled_dir),
+                "AGENT_TYPE": "developer",
+            },
+            cwd=str(workdir),
+        )
+        assert result.returncode == 0, result.stderr
+        # No AGENTS.md created (byte-identical to prior behavior).
+        assert "__ABSENT__" in _probe_agents_during_run(result.stdout)
+        assert not (workdir / "AGENTS.md").exists()
+        # No project_doc_max_bytes override injected on the no-op path.
+        argv = _parse_argv(result.stdout)
+        assert not any(a.startswith("project_doc_max_bytes=") for a in argv)
+
+    def test_agent_type_defaults_to_developer(self, tmp_path):
+        # AGENT_TYPE unset → the wrapper picks developer.md.
+        distilled_dir = tmp_path / "distilled"
+        _write_distilled(distilled_dir, "developer", "# dev conventions\nDEV-CANARY\n")
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        stub = _make_stub_codex(tmp_path, _AGENTS_PROBE)
+        env = {
+            "CODEX_BIN": str(stub),
+            "CODEX_DISTILLED_DIR": str(distilled_dir),
+            "CODEX_RUNS_DIR": str(tmp_path / "runs"),
+        }
+        # Ensure AGENT_TYPE is not inherited from the caller's env.
+        full_env = {k: v for k, v in os.environ.items() if k != "AGENT_TYPE"}
+        full_env.update(env)
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "write", "do a thing"],
+            capture_output=True,
+            text=True,
+            env=full_env,
+            cwd=str(workdir),
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "DEV-CANARY" in _probe_agents_during_run(result.stdout)
+
+    def test_preexisting_repo_agents_md_distilled_first_then_restored(self, tmp_path):
+        distilled_dir = tmp_path / "distilled"
+        _write_distilled(distilled_dir, "developer", "ADP-DISTILLED-BLOCK\n")
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        original = "# Repo's own AGENTS.md\nREPO-ORIGINAL-CONTENT\n"
+        (workdir / "AGENTS.md").write_text(original)
+        stub = _make_stub_codex(tmp_path, _AGENTS_PROBE)
+        result = _run(
+            ["write", "do a thing"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_DISTILLED_DIR": str(distilled_dir),
+                "AGENT_TYPE": "developer",
+            },
+            cwd=str(workdir),
+        )
+        assert result.returncode == 0, result.stderr
+        seen = _probe_agents_during_run(result.stdout)
+        # DURING: distilled block FIRST, then the original content.
+        assert "ADP-DISTILLED-BLOCK" in seen
+        assert "REPO-ORIGINAL-CONTENT" in seen
+        assert seen.index("ADP-DISTILLED-BLOCK") < seen.index("REPO-ORIGINAL-CONTENT")
+        # AFTER: exact original bytes restored (byte-for-byte).
+        assert (workdir / "AGENTS.md").read_text() == original
+
+    def test_trap_restores_on_nonzero_exit(self, tmp_path):
+        distilled_dir = tmp_path / "distilled"
+        _write_distilled(distilled_dir, "developer", "ADP-DISTILLED\n")
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        original = "REPO-ORIGINAL\n"
+        (workdir / "AGENTS.md").write_text(original)
+        # Stub exits non-zero.
+        stub = _make_stub_codex(tmp_path, "echo boom >&2\nexit 3\n")
+        result = _run(
+            ["write", "do a thing"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_DISTILLED_DIR": str(distilled_dir),
+                "AGENT_TYPE": "developer",
+            },
+            cwd=str(workdir),
+        )
+        # PIPESTATUS exit code still propagates …
+        assert result.returncode == 3
+        assert "exited non-zero (3)" in result.stderr
+        # … and the trap restored the original bytes despite the failure.
+        assert (workdir / "AGENTS.md").read_text() == original
+
+    def test_trap_deletes_created_file_on_timeout(self, tmp_path):
+        distilled_dir = tmp_path / "distilled"
+        _write_distilled(distilled_dir, "developer", "ADP-DISTILLED\n")
+        workdir = tmp_path / "work"
+        workdir.mkdir()  # no repo AGENTS.md → wrapper creates it
+        stub = _make_stub_codex(tmp_path, "sleep 30\n")
+        result = _run(
+            ["write", "hang please"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_DISTILLED_DIR": str(distilled_dir),
+                "AGENT_TYPE": "developer",
+                "CODEX_TIMEOUT": "1",
+            },
+            cwd=str(workdir),
+        )
+        assert result.returncode == 124
+        assert "timed out after 1s" in result.stderr
+        # The trap fired on timeout: the created AGENTS.md is gone.
+        assert not (workdir / "AGENTS.md").exists()
+
+    def test_events_file_tee_unaffected_by_rendering(self, tmp_path):
+        # #2884 regression: rendering AGENTS.md must not disturb the JSONL tee.
+        distilled_dir = tmp_path / "distilled"
+        _write_distilled(distilled_dir, "developer", "ADP-DISTILLED\n")
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        events_file = tmp_path / "events" / "current.jsonl"
+        stub = _make_jsonl_stub(tmp_path, KNOWN_JSONL)
+        result = _run(
+            ["write", "make hello"],
+            env_extra={
+                "CODEX_BIN": str(stub),
+                "CODEX_DISTILLED_DIR": str(distilled_dir),
+                "AGENT_TYPE": "developer",
+                "CODEX_RUNS_DIR": str(tmp_path / "runs"),
+                "CODEX_EVENTS_FILE": str(events_file),
+            },
+            cwd=str(workdir),
+        )
+        assert result.returncode == 0, result.stderr
+        assert events_file.read_text() == KNOWN_JSONL + "\n"
+        # AGENTS.md cleaned up afterwards.
+        assert not (workdir / "AGENTS.md").exists()

@@ -59,6 +59,28 @@ def test_domain_skill_still_stages(tmp_path: Path) -> None:
     assert (stage / "skills" / "stage-1-triage" / "SKILL.md").exists()
 
 
+def test_core_persona_subdir_is_staged_recursively(tmp_path: Path) -> None:
+    # Regression for issue #2891: a persona subdirectory (e.g. the Codex
+    # `codex-distilled/` fileset) must reach the staged tree. A flat `*.md`
+    # glob would silently drop it, making the wrapper a permanent no-op.
+    source = tmp_path / "source"
+    stage = tmp_path / "stage"
+    personas = source / "agent-factory" / "personas"
+    (personas / "codex-distilled").mkdir(parents=True)
+    (personas / "developer.md").write_text("# developer\n")
+    (personas / "codex-distilled" / "developer.md").write_text("# distilled developer\n")
+
+    result = _run_stage(source, stage)
+    assert result.returncode == 0, result.stderr
+
+    # Top-level persona still staged (regression).
+    assert (stage / "personas" / "developer.md").exists()
+    # The nested distilled fileset is staged recursively.
+    nested = stage / "personas" / "codex-distilled" / "developer.md"
+    assert nested.exists(), result.stdout + result.stderr
+    assert "distilled developer" in nested.read_text()
+
+
 def test_domain_skill_overrides_core_of_same_name(tmp_path: Path) -> None:
     source = tmp_path / "source"
     stage = tmp_path / "stage"

@@ -25,9 +25,16 @@ STAGE_ROOT="${2:?Usage: stage-personas.sh <source_root> <stage_root>}"
 mkdir -p "${STAGE_ROOT}/personas" "${STAGE_ROOT}/skills"
 
 # --- Stage core agent-factory personas ---
+# Copy the top-level persona *.md files AND any persona subdirectories (e.g.
+# `codex-distilled/`, issue #2891) recursively, so nested persona filesets reach
+# the staged tree — a flat `*.md` glob would silently drop them.
 CORE_PERSONAS="${SOURCE_ROOT}/agent-factory/personas"
 if [ -d "${CORE_PERSONAS}" ]; then
     cp -f "${CORE_PERSONAS}"/*.md "${STAGE_ROOT}/personas/" 2>/dev/null || true
+    for sub in "${CORE_PERSONAS}"/*/; do
+        [ -d "${sub}" ] || continue
+        cp -rf "${sub}" "${STAGE_ROOT}/personas/$(basename "${sub}")"
+    done
     echo "[stage] Copied core personas from ${CORE_PERSONAS}"
 fi
 
