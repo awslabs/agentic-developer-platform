@@ -85,6 +85,11 @@ ZOEKT_INDEX_ENABLED = settings.zoekt_index_enabled
 ZOEKT_SHARDS_S3_PREFIX = settings.zoekt_shards_s3_prefix
 ZOEKT_INDEX_TIMEOUT = settings.zoekt_index_timeout
 
+# embed_vectors configuration (source-code semantic search, #2297)
+EMBED_VECTORS_ENABLED = settings.embed_vectors_enabled
+EMBED_MODEL = settings.embed_model
+LLM_EMBED_BASE_URL = settings.llm_base_url
+
 # ---------------------------------------------------------------------------
 # S3 content store + wiki store imports
 # ---------------------------------------------------------------------------
@@ -1187,6 +1192,40 @@ def _run_zoekt_index(
 
 
 # ---------------------------------------------------------------------------
+# embed_vectors — source-code embeddings into S3 Vectors (#2297)
+# ---------------------------------------------------------------------------
+
+
+def _run_embed_vectors(
+    clone_path: str,
+    org_repo: str,
+    scope,
+) -> dict[str, Any]:
+    """Embed a repo's source files into S3 Vectors for semantic code search.
+
+    Delegates to code_embedder.embed_code_repo. Fail-open: a missing/unconfigured
+    S3 Vectors bucket (provisioned separately in #2486) returns a skip status
+    rather than raising, so the rest of the pipeline is unaffected.
+
+    Returns the embed_code_repo result dict (keys: status, vectors, files, index).
+    """
+    from code_embedder import LiteLLMEmbeddingClient, embed_code_repo
+
+    embedding_client = LiteLLMEmbeddingClient(base_url=LLM_EMBED_BASE_URL, model=EMBED_MODEL)
+    return embed_code_repo(
+        clone_path,
+        org_repo,
+        bucket_name=S3_VECTORS_BUCKET,
+        embedding_client=embedding_client,
+        region_name=settings.effective_s3_vectors_region,
+        visibility=scope.visibility,
+        tenant_id=scope.tenant_id,
+        owner_sub=scope.owner_sub,
+        shard_count=S3_VECTORS_SHARD_COUNT,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Source SBOM generation (Rail 1 — #1358)
 # ---------------------------------------------------------------------------
 
@@ -1400,6 +1439,7 @@ def ingest_repo(
         "repo": org_repo,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "zoekt_index": "skipped",
+        "embed_vectors": "skipped",
         "s3_upload": "skipped",
         "code_index": "skipped",
         "deepwiki": "skipped",
@@ -1548,6 +1588,60 @@ def ingest_repo(
                         pass
     elif tracker:
         tracker.mark_skipped("zoekt_index", "zoekt_index disabled")
+
+    # Step 1c: embed_vectors — source-code embeddings into S3 Vectors (#2297)
+    # Fail-open: a missing/unconfigured S3 Vectors bucket (provisioned in #2486)
+    # is recorded as a clean skip, not a failure — Zoekt/code-index are unaffected.
+    if EMBED_VECTORS_ENABLED:
+        skip_embed_stage = tracker and tracker.should_skip("embed_vectors")
+        if skip_embed_stage:
+            log.info("Skipping embed_vectors for %s — already verified at %s", org_repo, commit_sha)
+            tracker.mark_skipped("embed_vectors", "already verified at current SHA")
+            result["embed_vectors"] = "skipped_verified"
+        else:
+            try:
+                embed_result = _run_embed_vectors(clone_path, org_repo, scope)
+                embed_status = embed_result.get("status", "unknown")
+                result["embed_vectors"] = embed_status
+
+                if tracker:
+                    try:
+                        if embed_status == "complete":
+                            with tracker.stage("embed_vectors") as ctx:
+                                index_name = embed_result.get("index", "")
+                                vector_count = embed_result.get("vectors", 0)
+                                ctx.set_artifact(f"s3vectors:{index_name}:repo={org_repo}")
+                                ctx.set_metrics(
+                                    {
+                                        "vectors": vector_count,
+                                        "files": embed_result.get("files", 0),
+                                    }
+                                )
+                                # embed_code_repo already read-back verified the write.
+                                ctx.verify(lambda: vector_count > 0)
+                        elif embed_status in (
+                            "bucket_not_configured",
+                            "bucket_missing",
+                            "no_source",
+                        ):
+                            # Expected skips: bucket pending #2486, or nothing to embed.
+                            tracker.mark_skipped("embed_vectors", embed_status)
+                        else:
+                            with tracker.stage("embed_vectors") as ctx:
+                                ctx.fail(embed_result.get("error", f"status={embed_status}"))
+                    except Exception as e:
+                        log.warning("embed_vectors stage tracking failed: %s", e)
+            except Exception as e:
+                log.warning("embed_vectors failed for %s: %s — continuing", org_repo, e)
+                result["embed_vectors"] = f"error: {e}"
+                if tracker:
+                    try:
+                        with tracker.stage("embed_vectors") as ctx:
+                            ctx.fail(str(e))
+                    except Exception:
+                        pass
+    elif tracker:
+        tracker.mark_skipped("embed_vectors", "embed_vectors disabled")
 
     # Step 2: Run cgc -> code-index.json -> filesystem + S3 markdown summary
     if not skip_cgc:

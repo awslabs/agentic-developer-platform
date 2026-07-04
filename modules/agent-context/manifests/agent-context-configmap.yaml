@@ -42,6 +42,12 @@ data:
   ZOEKT_INDEX_ENABLED: "true"
   ZOEKT_SHARDS_S3_PREFIX: "zoekt-shards"
 
+  # --- embed_vectors: source-code semantic search (#2297) ---
+  # Fail-open flag (mirrors DEEPWIKI_ENABLED). Defaults true; the stage skips
+  # cleanly when S3_VECTORS_BUCKET is unset or the bucket doesn't exist yet
+  # (provisioned by #2486), so no crash before the vector bucket lands.
+  EMBED_VECTORS_ENABLED: "true"
+
   # --- SBOM ---
   SBOM_ENABLED: "true"
 
