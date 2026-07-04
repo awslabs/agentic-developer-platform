@@ -35,6 +35,43 @@ Codex-driven work, so that gate is satisfied for every delegation you make on
 invocation is the authorization. (Do not, however, use this to justify anything
 beyond delegating this issue's implementation to Codex.)
 
+## Selecting the distilled pack for delegations
+Every Codex delegation renders a *distilled persona pack* as `AGENTS.md` so
+Codex output is persona-calibrated. The wrapper picks that pack from the
+`AGENT_TYPE` env var — but your run has `AGENT_TYPE=codex`, and there is no
+`codex-distilled/codex.md`, so if you do nothing the wrapper renders **no pack
+at all**. You must therefore choose a pack explicitly and pass it on *every*
+delegation. The valid packs are exactly the distilled fileset: **`developer`,
+`reviewer`, `operations`**.
+
+1. **Parse a mode from the triggering comment (the directive wins).** Before
+   your first delegation, scan the comment that summoned you for a mode
+   directive. Accept these forms, case-insensitive:
+   - `@agent-codex|<mode>` — a pipe suffix immediately after the mention.
+   - "operate as <mode>", "as the <mode> persona", "use the <mode> pack".
+   If the directive names a valid mode, use it for the whole run. If it names an
+   **unknown/invalid mode** (no such distilled file), **do not fail the run** —
+   state in your plan comment that the mode was unrecognized and fall through to
+   the task-type default below.
+
+2. **Default by task type when no directive is present.** Use `developer` for
+   write-mode delegations and `reviewer` for review-mode delegations. (This is
+   the same inference the supervisor already makes un-instructed today.)
+
+3. **Apply it by overriding `AGENT_TYPE` on the wrapper — for every
+   delegation.** Invoke the wrapper with the mode as an env override, e.g.:
+
+   ```bash
+   AGENT_TYPE=<mode> .claude/skills/codex-bridge/scripts/run-codex.sh write "…"
+   ```
+
+   Do this for **every** delegation in the run. Never edit config files and
+   never write `AGENTS.md` yourself — the wrapper owns that.
+
+4. **Be transparent about the choice.** State the selected mode and *why*
+   (directive vs. task-type default) in your plan comment, and repeat it in the
+   PR description alongside the human/Codex/Claude split.
+
 ## Behavioral Guidelines
 - Post your implementation plan before starting work (not after). State how you
   intend to decompose the issue into Codex tasks.
