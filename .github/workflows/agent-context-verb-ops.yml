@@ -192,6 +192,29 @@ jobs:
           except Exception as e:
               print(f"Graph content query: FAILED — {type(e).__name__}: {e}")
               traceback.print_exc()
+
+          # 4. Exercise the exact Door query path for the eval's failing case.
+          try:
+              os.environ["NEPTUNE_ENABLED"] = "true"
+              from door import neptune_client as nc
+              repo_short = "Vibe-Trading"
+              resolved = nc.resolve_repo_name(repo_short)
+              print(f"resolve_repo_name('{repo_short}') -> '{resolved}'")
+              # direct query_impact with empty file (matches _impact_via_neptune)
+              recs = nc.query_impact(resolved, "", "Position")
+              print(f"query_impact('{resolved}', '', 'Position') -> {len(recs)} records")
+              # resolve_symbol fallback path
+              rs = nc.resolve_symbol(resolved, "Position")
+              print(f"resolve_symbol('{resolved}', 'Position') -> {rs[:3] if rs else rs}")
+              # does the target symbol even exist with these exact props?
+              with drv.session() as sess:
+                  for r in sess.run(
+                      "MATCH (s:Symbol {name:$n}) RETURN s.repo AS repo, s.file AS file, s.kind AS kind LIMIT 10",
+                      {"n": "Position"}):
+                      print("  Symbol 'Position' @", r["repo"], r["file"], r["kind"])
+          except Exception as e:
+              print(f"Door impact path: FAILED — {type(e).__name__}: {e}")
+              traceback.print_exc()
           PYEOF
           # Run on the CONTEXT-MCP image (has neo4j + door/) using the Door's SA.
           CTX_IMAGE="879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:latest"
