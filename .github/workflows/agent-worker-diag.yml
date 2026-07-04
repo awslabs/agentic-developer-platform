@@ -1,66 +1,34 @@
-# =============================================================================
-# Agent Worker Diagnostic (scratch) — why is adp-dev-agent-submit.fifo not
-# draining? Inspects the KEDA ScaledJob + worker pods in adp-gateway-agents.
-# Delete after the queue jam is resolved.
-# =============================================================================
 name: Agent Worker Diag
-
 on:
   workflow_dispatch: {}
-
 jobs:
   diag:
     runs-on: arc-runner-org
     timeout-minutes: 15
-    env:
-      NS: adp-agents
     steps:
       - name: Account guard
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "AWS Account: $ACCOUNT_ID"
           [ "$ACCOUNT_ID" = "879318057152" ] || { echo "FATAL: wrong account $ACCOUNT_ID"; exit 1; }
-
       - name: Configure kubectl
         run: aws eks update-kubeconfig --name adp-dev-eks-cluster --region us-east-1
-
-      - name: KEDA + ScaledJob + worker pods
+      - name: All ScaledJobs + TriggerAuth cluster-wide
         run: |
-          echo "===== KEDA operator pods ====="
-          kubectl get pods -n keda -o wide 2>&1 || echo "(no keda ns)"
-          echo
-          echo "===== ScaledJob in $NS ====="
-          kubectl get scaledjob -n "$NS" -o wide 2>&1 || echo "(none)"
-          echo
-          echo "===== ScaledJob describe (events + trigger status) ====="
-          kubectl describe scaledjob -n "$NS" 2>&1 | tail -80 || true
-          echo
-          echo "===== Jobs in $NS ====="
-          kubectl get jobs -n "$NS" 2>&1 | tail -30 || true
-          echo
-          echo "===== Pods in $NS (all states) ====="
-          kubectl get pods -n "$NS" -o wide 2>&1 | tail -40 || true
-          echo
-          echo "===== recent events in $NS ====="
-          kubectl get events -n "$NS" --sort-by=.lastTimestamp 2>&1 | tail -40 || true
-
-      - name: Failed / recent worker pod logs
+          echo "===== ScaledJobs (all ns) ====="
+          kubectl get scaledjob -A -o wide 2>&1 || true
+          echo; echo "===== TriggerAuthentications (all ns) ====="
+          kubectl get triggerauthentication -A 2>&1 || true
+          echo; echo "===== namespaces ====="
+          kubectl get ns 2>&1 | grep -iE "agent|adp" || true
+          echo; echo "===== agent-scaledjob describe (any ns) ====="
+          kubectl describe scaledjob agent-scaledjob -A 2>&1 | tail -60 || echo "(not found by name)"
+      - name: Recent agent Jobs + pods (adp-agents + fallbacks)
         run: |
-          echo "===== last non-running pod logs ====="
-          for p in $(kubectl get pods -n "$NS" --no-headers 2>/dev/null | grep -viE "Running|Completed" | awk '{print $1}' | head -3); do
-            echo "----- describe $p -----"
-            kubectl describe pod "$p" -n "$NS" 2>&1 | tail -40
-            echo "----- logs $p (current + previous) -----"
-            kubectl logs "$p" -n "$NS" --tail=60 2>&1 | tail -60 || true
-            kubectl logs "$p" -n "$NS" --previous --tail=60 2>&1 | tail -60 || true
+          for ns in adp-agents adp-gateway-agents; do
+            echo "===== jobs in $ns ====="; kubectl get jobs -n "$ns" --sort-by=.metadata.creationTimestamp 2>&1 | tail -15 || true
+            echo "===== recent pods in $ns ====="; kubectl get pods -n "$ns" --sort-by=.metadata.creationTimestamp 2>&1 | tail -15 || true
           done
-          echo "===== newest pod overall (any state) logs ====="
-          NEW=$(kubectl get pods -n "$NS" --sort-by=.metadata.creationTimestamp --no-headers 2>/dev/null | tail -1 | awk '{print $1}')
-          echo "newest pod: $NEW"
-          [ -n "$NEW" ] && kubectl logs "$NEW" -n "$NS" --tail=80 2>&1 | tail -80 || true
-
-      - name: KEDA operator logs (scaler errors)
+      - name: KEDA operator log (agent-submit / scaledjob errors)
         run: |
-          kubectl logs -n keda -l app=keda-operator --tail=120 2>&1 \
-            | grep -iE "error|agent-submit|adp-gateway-agents|sqs|fail|panic" | tail -50 \
-            || echo "(no keda operator log matches)"
+          kubectl logs -n keda -l app=keda-operator --tail=300 2>&1 \
+            | grep -iE "agent-submit|agent-scaledjob|adp-agents|error|fail" | tail -40 || echo "(no matches)"
