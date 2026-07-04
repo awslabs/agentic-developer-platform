@@ -1100,6 +1100,48 @@ def _stage_personas_and_skills() -> None:
         f.write("\n.adp-rules/\n.claude/skills/\n")
 
 
+# Path where the Node agent-worker persists SDK result metadata (cost/turns).
+# Mirrors CheckRunStreamer's /tmp/adp-check-run-final.md bridge.
+RESULT_METADATA_PATH = "/tmp/adp-result-metadata.json"
+
+
+def _read_result_metadata() -> dict | None:
+    """Read the SDK result metadata the Node worker wrote, or None if absent.
+
+    The file contains {subtype, total_cost_usd, num_turns}. Fail-soft: any
+    read/parse error returns None (treated as "no signal available").
+    """
+    try:
+        with open(RESULT_METADATA_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _is_zero_token_failure(meta: dict | None) -> bool:
+    """True when the SDK result signature indicates the model call never ran.
+
+    A genuine "no changes needed" verdict costs >0 tokens (the model must read
+    the issue to decide), so a run that burned $0.0000 across a single turn is a
+    reliable discriminator for an infrastructure failure — Bedrock model access
+    / agent registry / sigv4 chain — that the SDK swallowed and returned
+    gracefully (issue #2883). Requires BOTH cost==0 AND turns<=1; if either
+    field is missing we cannot conclude failure and return False (fail open to
+    the existing success path — no regression on partial failures).
+    """
+    if not meta:
+        return False
+    cost = meta.get("total_cost_usd")
+    turns = meta.get("num_turns")
+    if cost is None or turns is None:
+        return False
+    try:
+        return float(cost) == 0.0 and int(turns) <= 1
+    except (TypeError, ValueError):
+        return False
+
+
 def _handle_success(
     repo: str,
     issue: int,
@@ -1147,6 +1189,38 @@ def _handle_success(
             # (the backfill was only wired into the entrypoint-creates-PR block,
             # which this early return never reaches).
             logger.info("No agent changes beyond WIP commit")
+
+            # Distinguish a genuine "no changes needed" verdict from an
+            # infrastructure failure the SDK swallowed (issue #2883). A run that
+            # burned $0.0000 across a single turn never actually reached the
+            # model (Bedrock AccessDenied, sigv4 403, throttling); reporting it
+            # as success masks the real error in pod logs only. Fail the check
+            # run with a diagnostic instead.
+            meta = _read_result_metadata()
+            if _is_zero_token_failure(meta):
+                logger.error(
+                    "Zero-token/single-turn result signature detected "
+                    "(cost=%s turns=%s subtype=%s) — treating as infrastructure "
+                    "failure, not 'no changes needed'",
+                    meta.get("total_cost_usd"),
+                    meta.get("num_turns"),
+                    meta.get("subtype"),
+                )
+                diagnostic = (
+                    f"Agent `{persona}` failed: the model call never succeeded "
+                    "(0 tokens burned). Likely causes: Bedrock model access / "
+                    "agent registry / sigv4 chain. See pod logs for the "
+                    "underlying error."
+                )
+                _post_comment(repo, issue, message_id, "failed", diagnostic, check_run_url)
+                update_invocation_status(
+                    message_id,
+                    arrived_at,
+                    "failed",
+                    summary=f"{persona} — model call never succeeded (0 tokens)",
+                )
+                return 1
+
             self_pr = _find_open_pr(repo, branch)
             if self_pr:
                 _ensure_pr_body_marker(repo, self_pr, branch)

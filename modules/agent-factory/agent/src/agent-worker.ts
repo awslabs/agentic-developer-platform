@@ -1262,6 +1262,26 @@ Now, complete the assigned task.`;
               console.log(msg);
               log('WARN', msg, { phase: 'result', subtype: res.subtype });
             }
+            // Persist result metadata so entrypoint.py can distinguish a genuine
+            // "no changes needed" verdict (>0 tokens burned) from an infra
+            // failure where the model call never succeeded ($0.0000 / 1 turn —
+            // e.g. Bedrock AccessDenied, sigv4 403, throttling). The SDK returns
+            // gracefully in that case, so without this signal the entrypoint
+            // would report a fake success (issue #2883). Best-effort: mirrors
+            // the /tmp/adp-check-run-final.md pattern; never throws.
+            try {
+              fs.writeFileSync(
+                '/tmp/adp-result-metadata.json',
+                JSON.stringify({
+                  subtype: res.subtype ?? null,
+                  total_cost_usd: res.total_cost_usd ?? null,
+                  num_turns: res.num_turns ?? null,
+                }),
+                'utf8',
+              );
+            } catch (err) {
+              log('WARN', `Failed to write result metadata (non-fatal): ${err}`);
+            }
             // Flush final transcript to Check Run before breaking the loop
             if (checkRunStreamer) {
               checkRunStreamer.onResult({

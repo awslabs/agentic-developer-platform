@@ -3044,3 +3044,195 @@ class TestVisibilityHeartbeat:
         # After the transient failure, subsequent successes reset the counter
         assert hb._consecutive_failures == 0
         assert hb._extensions >= 3  # At least 3 successes (calls 1, 3, 4+)
+
+
+class TestZeroTokenFailureDetection:
+    """Issue #2883: a run that burned $0.0000 across a single turn never reached
+    the model (Bedrock AccessDenied / sigv4 403 / throttling). The SDK returns
+    gracefully, so the entrypoint must NOT report it as 'no changes needed' — it
+    must fail the check run with a diagnostic.
+    """
+
+    # --- _read_result_metadata ---
+
+    def test_read_result_metadata_present(self, tmp_path, monkeypatch):
+        import entrypoint
+
+        meta_file = tmp_path / "adp-result-metadata.json"
+        meta_file.write_text(
+            json.dumps({"subtype": "success", "total_cost_usd": 0, "num_turns": 1})
+        )
+        monkeypatch.setattr(entrypoint, "RESULT_METADATA_PATH", str(meta_file))
+        assert entrypoint._read_result_metadata() == {
+            "subtype": "success",
+            "total_cost_usd": 0,
+            "num_turns": 1,
+        }
+
+    def test_read_result_metadata_absent(self, tmp_path, monkeypatch):
+        import entrypoint
+
+        monkeypatch.setattr(
+            entrypoint, "RESULT_METADATA_PATH", str(tmp_path / "does-not-exist.json")
+        )
+        assert entrypoint._read_result_metadata() is None
+
+    def test_read_result_metadata_malformed(self, tmp_path, monkeypatch):
+        import entrypoint
+
+        meta_file = tmp_path / "adp-result-metadata.json"
+        meta_file.write_text("not json{{{")
+        monkeypatch.setattr(entrypoint, "RESULT_METADATA_PATH", str(meta_file))
+        assert entrypoint._read_result_metadata() is None
+
+    # --- _is_zero_token_failure ---
+
+    def test_zero_cost_single_turn_is_failure(self):
+        import entrypoint
+
+        assert entrypoint._is_zero_token_failure(
+            {"total_cost_usd": 0, "num_turns": 1}
+        )
+        assert entrypoint._is_zero_token_failure(
+            {"total_cost_usd": 0.0, "num_turns": 0}
+        )
+
+    def test_nonzero_cost_is_not_failure(self):
+        import entrypoint
+
+        # Genuine "no changes needed" verdict costs >0 tokens.
+        assert not entrypoint._is_zero_token_failure(
+            {"total_cost_usd": 0.0123, "num_turns": 1}
+        )
+
+    def test_zero_cost_multi_turn_is_not_failure(self):
+        import entrypoint
+
+        # Some tokens burned then died mid-run — not the zero-token signature.
+        assert not entrypoint._is_zero_token_failure(
+            {"total_cost_usd": 0, "num_turns": 5}
+        )
+
+    def test_missing_fields_or_none_meta_is_not_failure(self):
+        import entrypoint
+
+        assert not entrypoint._is_zero_token_failure(None)
+        assert not entrypoint._is_zero_token_failure({})
+        assert not entrypoint._is_zero_token_failure({"total_cost_usd": 0})
+        assert not entrypoint._is_zero_token_failure({"num_turns": 1})
+
+    # --- _handle_success integration of the signature ---
+
+    @patch("entrypoint.update_invocation_status")
+    @patch("entrypoint._post_comment")
+    @patch("entrypoint._find_open_pr")
+    @patch("entrypoint.run_cmd")
+    def test_handle_success_zero_token_fails_check(
+        self, mock_run_cmd, mock_find_pr, mock_post, mock_status, tmp_path, monkeypatch
+    ):
+        """cost=0/turns=1/no-diff → failure conclusion + diagnostic comment."""
+        import entrypoint
+
+        # No diff, no unpushed commits → reaches the "no changes" branch.
+        mock_run_cmd.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        meta_file = tmp_path / "meta.json"
+        meta_file.write_text(json.dumps({"total_cost_usd": 0, "num_turns": 1}))
+        monkeypatch.setattr(entrypoint, "RESULT_METADATA_PATH", str(meta_file))
+        monkeypatch.setattr(entrypoint, "WORK_DIR", tmp_path)
+
+        rc = entrypoint._handle_success(
+            "acme/repo", 42, "agent/issue-42", "developer", "msg-1", "2026-07-04T00:00:00Z"
+        )
+
+        assert rc == 1  # nonzero → main() finalizes check run as failure
+        # Diagnostic failure comment posted (not the "no changes needed" success)
+        assert mock_post.call_count == 1
+        args = mock_post.call_args[0]
+        assert args[3] == "failed"
+        assert "0 tokens burned" in args[4]
+        mock_status.assert_called_once()
+        assert mock_status.call_args[0][2] == "failed"
+        # Must NOT try to open/backfill a PR on the failure path
+        mock_find_pr.assert_not_called()
+
+    @patch("entrypoint.update_invocation_status")
+    @patch("entrypoint._post_comment")
+    @patch("entrypoint._find_open_pr", return_value="")
+    @patch("entrypoint.run_cmd")
+    def test_handle_success_nonzero_cost_no_diff_stays_success(
+        self, mock_run_cmd, mock_find_pr, mock_post, mock_status, tmp_path, monkeypatch
+    ):
+        """cost>0/no-diff → genuine 'no changes needed' success preserved."""
+        import entrypoint
+
+        mock_run_cmd.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        meta_file = tmp_path / "meta.json"
+        meta_file.write_text(json.dumps({"total_cost_usd": 0.05, "num_turns": 1}))
+        monkeypatch.setattr(entrypoint, "RESULT_METADATA_PATH", str(meta_file))
+        monkeypatch.setattr(entrypoint, "WORK_DIR", tmp_path)
+
+        rc = entrypoint._handle_success(
+            "acme/repo", 42, "agent/issue-42", "developer", "msg-1", "2026-07-04T00:00:00Z"
+        )
+
+        assert rc == 0
+        args = mock_post.call_args[0]
+        assert args[3] == "completed"
+        assert "no changes needed" in args[4]
+        assert mock_status.call_args[0][2] == "complete"
+
+    @patch("entrypoint.update_invocation_status")
+    @patch("entrypoint._post_comment")
+    @patch("entrypoint._find_open_pr", return_value="")
+    @patch("entrypoint.run_cmd")
+    def test_handle_success_no_metadata_stays_success(
+        self, mock_run_cmd, mock_find_pr, mock_post, mock_status, tmp_path, monkeypatch
+    ):
+        """No metadata file (older Node image / write failed) → fail open to success."""
+        import entrypoint
+
+        mock_run_cmd.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        monkeypatch.setattr(
+            entrypoint, "RESULT_METADATA_PATH", str(tmp_path / "missing.json")
+        )
+        monkeypatch.setattr(entrypoint, "WORK_DIR", tmp_path)
+
+        rc = entrypoint._handle_success(
+            "acme/repo", 42, "agent/issue-42", "developer", "msg-1", "2026-07-04T00:00:00Z"
+        )
+
+        assert rc == 0
+        assert mock_post.call_args[0][3] == "completed"
+
+    @patch("entrypoint.update_invocation_status")
+    @patch("entrypoint._post_comment")
+    @patch("entrypoint._write_outbound_correlation")
+    @patch("entrypoint.run_cmd")
+    def test_handle_success_with_diff_never_checks_metadata(
+        self, mock_run_cmd, mock_write_corr, mock_post, mock_status, tmp_path, monkeypatch
+    ):
+        """A run that produced a diff → success path unchanged (PR created)."""
+        import entrypoint
+
+        # Non-empty diff/status → has_uncommitted True; gh pr list returns no PR.
+        def _run_cmd_side_effect(cmd, *a, **k):
+            if cmd[:2] == ["git", "diff"]:
+                return MagicMock(stdout=" file.py | 2 +-\n", returncode=0)
+            if cmd[:2] == ["git", "status"]:
+                return MagicMock(stdout=" M file.py\n", returncode=0)
+            return MagicMock(stdout="", stderr="", returncode=0)
+
+        mock_run_cmd.side_effect = _run_cmd_side_effect
+        # Even if a zero-token metadata file exists, the diff path must ignore it.
+        meta_file = tmp_path / "meta.json"
+        meta_file.write_text(json.dumps({"total_cost_usd": 0, "num_turns": 1}))
+        monkeypatch.setattr(entrypoint, "RESULT_METADATA_PATH", str(meta_file))
+        monkeypatch.setattr(entrypoint, "WORK_DIR", tmp_path)
+
+        rc = entrypoint._handle_success(
+            "acme/repo", 42, "agent/issue-42", "developer", "msg-1", "2026-07-04T00:00:00Z"
+        )
+
+        assert rc == 0
+        assert mock_post.call_args[0][3] == "completed"
+        assert "PR opened" in mock_post.call_args[0][4]
