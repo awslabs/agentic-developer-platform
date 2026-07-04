@@ -12,10 +12,13 @@ Issue #2406.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
+import respx
 
 from door.browse_backend import (
     _ACTION_ALIASES,
@@ -24,6 +27,8 @@ from door.browse_backend import (
     _read_content,
     browse,
 )
+
+ZOEKT_URL = "http://zoekt:6070"
 
 
 # ---------------------------------------------------------------------------
@@ -497,3 +502,251 @@ class TestURINormalization:
         )
         assert len(results) == 1
         assert "# Vibe Trading Wiki" in results[0].data["content"]
+
+
+# ---------------------------------------------------------------------------
+# Zoekt mock helpers
+# ---------------------------------------------------------------------------
+
+
+def _zoekt_response(file_names: list[str]) -> str:
+    """Build a Zoekt /api/search response body listing the given file names."""
+    return json.dumps(
+        {
+            "Result": {
+                "FileMatches": [
+                    {"Repository": "HKUDS/Vibe-Trading", "FileName": fn} for fn in file_names
+                ]
+            }
+        }
+    )
+
+
+def _zoekt_whole_file_response(repo: str, file_name: str, content: str) -> str:
+    """Build a Zoekt response with whole-file content (Whole=true)."""
+    return json.dumps(
+        {
+            "Result": {
+                "FileMatches": [
+                    {"Repository": repo, "FileName": file_name, "Content": content},
+                ]
+            }
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Repo-scoped browse tests (Issue #2485)
+# ---------------------------------------------------------------------------
+
+
+class TestRepoScopedListing:
+    """Verify repo-scoped URIs list a repo's directory tree via Zoekt.
+
+    The eval dataset browses repo directories (e.g. uri='agent/') with a
+    'project' arg naming the repo — this must route the WHOLE uri as a path
+    inside that repo, not treat 'agent' as a repo name.
+    """
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_repo_scoped_list_returns_dir_entries(self):
+        """browse list uri='agent/' project=HKUDS/Vibe-Trading lists agent/ contents."""
+        respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(
+                200,
+                text=_zoekt_response(
+                    [
+                        "agent/api_server.py",
+                        "agent/backtest/engine.py",
+                        "agent/cli/main.py",
+                        "agent/src/tools/x.py",
+                        "agent/tests/test_x.py",
+                    ]
+                ),
+            )
+        )
+        results = await browse(
+            "list",
+            "agent/",
+            zoekt_url=ZOEKT_URL,
+            repo_scope="HKUDS/Vibe-Trading",
+        )
+        names = {h.data["name"]: h.data["entry_type"] for h in results}
+        assert names.get("api_server.py") == "file"
+        assert names.get("backtest") == "directory"
+        assert names.get("cli") == "directory"
+        assert names.get("src") == "directory"
+        assert names.get("tests") == "directory"
+        assert len(results) >= 5
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_repo_scoped_query_uses_full_uri_as_path(self):
+        """The Zoekt query scopes to the repo AND anchors the full URI as a path."""
+        route = respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(
+                200, text=_zoekt_response(["agent/backtest/engines/base.py"])
+            )
+        )
+        await browse(
+            "list",
+            "agent/backtest/engines/",
+            zoekt_url=ZOEKT_URL,
+            repo_scope="HKUDS/Vibe-Trading",
+        )
+        sent = json.loads(route.calls[0].request.content)
+        # Repo anchored exactly on the full org/repo name, path prefix applied.
+        assert "r:^HKUDS/Vibe\\-Trading$" in sent["q"]
+        assert "f:^agent/backtest/engines/" in sent["q"]
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_repo_scoped_empty_uri_lists_repo_root(self):
+        """Empty URI under a repo scope lists the repo top level."""
+        respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(
+                200,
+                text=_zoekt_response(["agent/x.py", "frontend/y.tsx", "README.md"]),
+            )
+        )
+        results = await browse(
+            "list",
+            "",
+            zoekt_url=ZOEKT_URL,
+            repo_scope="HKUDS/Vibe-Trading",
+        )
+        names = {h.data["name"] for h in results}
+        assert {"agent", "frontend", "README.md"} <= names
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_repo_scoped_content_root_still_routes_to_s3(self, wiki_s3_client):
+        """A content-root URI keeps S3 routing even when repo_scope is set."""
+        results = await browse(
+            "list",
+            "content/wikis",
+            s3_client=wiki_s3_client,
+            bucket="test-bucket",
+            zoekt_url=ZOEKT_URL,
+            repo_scope="HKUDS/Vibe-Trading",
+        )
+        names = [h.data["name"] for h in results]
+        assert "HKUDS-Vibe-Trading-wiki.md" in names
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_repo_scoped_nonexistent_path_returns_empty(self):
+        """A nonexistent path under a repo scope returns empty (edge case)."""
+        respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(200, text=_zoekt_response([]))
+        )
+        results = await browse(
+            "list",
+            "nonexistent/path/",
+            zoekt_url=ZOEKT_URL,
+            repo_scope="HKUDS/Vibe-Trading",
+        )
+        assert results == []
+
+
+class TestRepoScopedRead:
+    """Verify action='read' with a repo scope reads file content via Zoekt."""
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_read_repo_file_returns_content(self):
+        """read uri='agent/backtest/models.py' project=... returns file content."""
+        respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(
+                200,
+                text=_zoekt_whole_file_response(
+                    "HKUDS/Vibe-Trading",
+                    "agent/backtest/models.py",
+                    "class Position:\n    pass\n",
+                ),
+            )
+        )
+        results = await browse(
+            "read",
+            "agent/backtest/models.py",
+            zoekt_url=ZOEKT_URL,
+            repo_scope="HKUDS/Vibe-Trading",
+        )
+        assert len(results) == 1
+        data = results[0].data
+        assert data["name"] == "models.py"
+        assert data["path"] == "agent/backtest/models.py"
+        assert "class Position" in data["content"]
+        assert data["entry_type"] == "file"
+        assert results[0].repo_name == "HKUDS/Vibe-Trading"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_read_repo_file_no_match_returns_empty(self):
+        """read of a file Zoekt doesn't have returns empty."""
+        respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(200, text=_zoekt_response([]))
+        )
+        results = await browse(
+            "read",
+            "agent/does_not_exist.py",
+            zoekt_url=ZOEKT_URL,
+            repo_scope="HKUDS/Vibe-Trading",
+        )
+        assert results == []
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_read_content_root_still_uses_s3(self, wiki_s3_client):
+        """A content-root read path uses S3 even with a repo scope set."""
+        results = await browse(
+            "read",
+            "content/wikis/HKUDS-Vibe-Trading-wiki.md",
+            s3_client=wiki_s3_client,
+            bucket="test-bucket",
+            zoekt_url=ZOEKT_URL,
+            repo_scope="HKUDS/Vibe-Trading",
+        )
+        assert len(results) == 1
+        assert "# Vibe Trading Wiki" in results[0].data["content"]
+
+
+class TestUnscopedOrgRepoListing:
+    """Verify unscoped 'org/repo' URIs list the repo (newest-comment repro)."""
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_org_repo_uri_lists_repo_root(self):
+        """browse ls uri='HKUDS/Vibe-Trading' (no project) lists the repo top level."""
+        route = respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(200, text=_zoekt_response(["agent/x.py", "README.md"]))
+        )
+        results = await browse(
+            "ls",
+            "HKUDS/Vibe-Trading",
+            zoekt_url=ZOEKT_URL,
+        )
+        names = {h.data["name"] for h in results}
+        assert {"agent", "README.md"} <= names
+        # org/repo consumed as the repo name, not split into repo=HKUDS.
+        sent = json.loads(route.calls[0].request.content)
+        assert "r:^HKUDS/Vibe\\-Trading$" in sent["q"]
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_org_repo_uri_with_subpath(self):
+        """browse ls uri='HKUDS/Vibe-Trading/agent' lists the agent/ subdir."""
+        route = respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(200, text=_zoekt_response(["agent/api_server.py"]))
+        )
+        results = await browse(
+            "ls",
+            "HKUDS/Vibe-Trading/agent",
+            zoekt_url=ZOEKT_URL,
+        )
+        names = {h.data["name"] for h in results}
+        assert "api_server.py" in names
+        sent = json.loads(route.calls[0].request.content)
+        assert "r:^HKUDS/Vibe\\-Trading$" in sent["q"]
+        assert "f:^agent/" in sent["q"]

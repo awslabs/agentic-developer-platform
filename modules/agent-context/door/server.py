@@ -817,10 +817,19 @@ async def _handle_browse(
     caller: CallerPrincipal | None,
     project_scope: ProjectScope | None = None,
 ) -> dict[str, Any]:
-    """Handle the browse verb: catalog + S3 + Zoekt file listing."""
+    """Handle the browse verb: catalog + S3 + Zoekt file listing.
+
+    The optional ``project`` argument doubles as a **repo scope**: when present,
+    a non content-root URI is treated as a repo-relative path within that repo
+    (``browse list uri=agent/ project=HKUDS/Vibe-Trading``) and served from
+    Zoekt. This is the repo directory-tree browse contract. The raw ``project``
+    string is used directly as the repo name — the eval dataset passes the
+    "org/repo" repo name in the ``project`` field.
+    """
     action = arguments.get("action", "ls")
     uri = arguments.get("uri", "/")
     depth = arguments.get("depth", 1)
+    repo_scope = arguments.get("project") or None
 
     hits = await browse(
         action,
@@ -831,13 +840,19 @@ async def _handle_browse(
         content_prefix=config.s3_content_prefix,
         depth=depth,
         zoekt_url=config.zoekt_url,
+        repo_scope=repo_scope,
     )
 
     # ACL filter (Step 2: #1721 isolation)
     filtered = _apply_acl(hits, caller)
 
-    # Project filter (Step 3: narrow to project repos)
-    filtered = apply_project_filter(filtered, project_scope)
+    # Project filter (Step 3: narrow to project repos).
+    # When a repo_scope is active the URI is already scoped to that single repo
+    # via Zoekt, so skip the project-set intersection (which requires the
+    # PROJECT_FILTER_ENABLED catalog and would otherwise drop the repo-scoped
+    # hits). The unscoped catalog/content paths keep the intersection.
+    if repo_scope is None:
+        filtered = apply_project_filter(filtered, project_scope)
 
     entries = [hit.data for hit in filtered]
     return {"action": action, "uri": uri, "entries": entries}

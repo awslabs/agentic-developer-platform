@@ -55,6 +55,7 @@ async def browse(
     content_prefix: str = "content",
     depth: int = 1,
     zoekt_url: str = "",
+    repo_scope: str | None = None,
 ) -> list[SearchHit]:
     """Navigate the indexed content filesystem.
 
@@ -80,6 +81,13 @@ async def browse(
         How many levels deep to list (default 1).
     zoekt_url:
         Zoekt webserver URL for file-level browsing.
+    repo_scope:
+        Optional repo name (e.g. "HKUDS/Vibe-Trading"). When set, a non
+        content-root URI is treated as a **repo-relative path** inside that
+        repo and dispatched to Zoekt — this is how agents browse a repo's
+        directory tree (``browse list uri=agent/ project=HKUDS/Vibe-Trading``).
+        Content-root URIs (content/, code-indexes/, sbom/) keep their S3
+        routing regardless of repo_scope.
 
     Returns
     -------
@@ -99,6 +107,7 @@ async def browse(
             content_prefix=content_prefix,
             depth=depth,
             zoekt_url=zoekt_url,
+            repo_scope=repo_scope,
         )
     elif action == "tree":
         return await _list_path(
@@ -109,6 +118,7 @@ async def browse(
             content_prefix=content_prefix,
             depth=min(depth, 3),
             zoekt_url=zoekt_url,
+            repo_scope=repo_scope,
         )
     elif action == "info":
         return await _get_info(
@@ -119,6 +129,10 @@ async def browse(
             content_prefix=content_prefix,
         )
     elif action == "read":
+        # Repo-scoped read: a repo-relative path (e.g. "agent/backtest/models.py")
+        # is not in the S3 content bucket — its content lives in Zoekt.
+        if repo_scope and not _is_content_root(uri):
+            return await _read_zoekt_file(repo_scope, uri, zoekt_url=zoekt_url)
         return await _read_content(
             uri,
             s3_client=s3_client,
@@ -127,6 +141,12 @@ async def browse(
     else:
         log.warning("Unknown browse action: %s", action)
         return []
+
+
+def _is_content_root(uri: str) -> bool:
+    """True if the URI's first path component is a known S3 content root."""
+    parts = [p for p in uri.split("/") if p]
+    return bool(parts) and parts[0] in _CONTENT_ROOTS
 
 
 async def _list_path(
@@ -138,29 +158,33 @@ async def _list_path(
     content_prefix: str,
     depth: int,
     zoekt_url: str = "",
+    repo_scope: str | None = None,
 ) -> list[SearchHit]:
     """List contents at a URI path.
 
-    Two URI schemes are supported:
+    Three URI schemes are supported:
 
     1. **Content-path URIs** (start with a known content root like "content/"):
        Route directly to S3 listing. E.g., "content/wikis" lists all wiki files,
-       "content/code-indexes" lists code-index JSONs.
+       "content/code-indexes" lists code-index JSONs. Takes precedence even when
+       a repo_scope is set.
 
-    2. **Repo-path URIs** (everything else):
+    2. **Repo-scoped URIs** (repo_scope set, non content-root URI):
+       The whole URI is a repo-relative path within ``repo_scope``. E.g.
+       ``uri="agent/"`` with ``repo_scope="HKUDS/Vibe-Trading"`` lists the
+       ``agent/`` directory of that repo via Zoekt. An empty URI lists the
+       repo top level.
+
+    3. **Repo-path URIs** (no repo_scope):
        Root "/" lists repos from catalog; "/repo-name" lists top-level via Zoekt;
        "/repo-name/subdir" lists deeper paths via Zoekt.
     """
     parts = [p for p in uri.split("/") if p]
 
-    # Root level: list all indexed repos from catalog (or S3 fallback)
-    if not parts:
-        return await _list_repos(db_pool, s3_client=s3_client, bucket=bucket)
-
-    # --- Content-path routing ---
+    # --- Content-path routing (highest precedence) ---
     # If the first path component is a known content root (e.g., "content"),
     # route directly to S3 listing rather than treating it as a repo name.
-    if parts[0] in _CONTENT_ROOTS:
+    if parts and parts[0] in _CONTENT_ROOTS:
         s3_prefix = "/".join(parts)
         return await _list_s3_prefix(
             s3_prefix,
@@ -168,24 +192,39 @@ async def _list_path(
             bucket=bucket,
         )
 
+    # --- Repo-scoped routing ---
+    # A project/repo scope was supplied: treat the ENTIRE URI as a path within
+    # that repo (empty URI = repo top level) and list it via Zoekt. This is the
+    # repo directory-tree browse contract the eval dataset exercises.
+    if repo_scope:
+        return await _list_zoekt_files(repo_scope, "/".join(parts), zoekt_url=zoekt_url)
+
+    # Root level: list all indexed repos from catalog (or S3 fallback)
+    if not parts:
+        return await _list_repos(db_pool, s3_client=s3_client, bucket=bucket)
+
     # --- Repo-path routing ---
-    repo_name = parts[0]
-
-    # Repo level with no sub-path: list top-level directories from Zoekt
-    if len(parts) == 1:
-        if zoekt_url:
-            return await _list_zoekt_files(repo_name, "", zoekt_url=zoekt_url)
-        return _list_repo_content_types(repo_name)
-
-    # Deeper paths: use Zoekt to list files at that directory
-    sub_path = "/".join(parts[1:])
+    # Repos are named "org/repo" (matching Zoekt / the catalog), so the first
+    # TWO path components form the repo name — same convention as _get_info.
+    # e.g. uri="HKUDS/Vibe-Trading" → repo, no sub-path;
+    #      uri="HKUDS/Vibe-Trading/agent" → repo + sub-path "agent".
+    if len(parts) >= 2:
+        repo_name = "/".join(parts[:2])
+        sub_path = "/".join(parts[2:])
+    else:
+        repo_name = parts[0]
+        sub_path = ""
 
     if zoekt_url:
         return await _list_zoekt_files(repo_name, sub_path, zoekt_url=zoekt_url)
 
-    # Fall back to S3 content listing if Zoekt unavailable
-    content_type = parts[1]
-    sub_path_s3 = "/".join(parts[2:]) if len(parts) > 2 else ""
+    # Fall back to static content-type listing if Zoekt unavailable.
+    if not sub_path:
+        return _list_repo_content_types(repo_name)
+
+    # Sub-path with no Zoekt: attempt S3 content listing.
+    content_type = parts[2] if len(parts) > 2 else ""
+    sub_path_s3 = "/".join(parts[3:]) if len(parts) > 3 else ""
     return await _list_s3_content(
         repo_name,
         content_type,
@@ -386,12 +425,18 @@ async def _list_zoekt_files(
     if not zoekt_url:
         return []
 
-    # Build Zoekt query to find files in this repo under the path
-    # Use "f:" filter to match file paths, "r:" to scope to repo
-    # Anchor repo name with / prefix and $ suffix to avoid matching substrings
-    # e.g., "skills" should match "github.com/mattpocock/skills" but not "agent-skills"
+    # Build Zoekt query to find files in this repo under the path.
+    # Use "f:" filter to match file paths, "r:" to scope to repo.
     escaped_name = re.escape(repo_name)
-    repo_filter = f"/{escaped_name}$"
+    if "/" in repo_name:
+        # Full "org/repo" name (matches the catalog / Zoekt repository name):
+        # anchor both ends so "HKUDS/Vibe-Trading" matches exactly and does not
+        # also match "HKUDS/Vibe-Trading-fork".
+        repo_filter = f"^{escaped_name}$"
+    else:
+        # Bare repo name: anchor with a "/" prefix so "skills" matches
+        # "github.com/mattpocock/skills" but not "agent-skills".
+        repo_filter = f"/{escaped_name}$"
     if path_prefix:
         query = f"r:{repo_filter} f:^{path_prefix}/"
     else:
@@ -469,6 +514,111 @@ async def _list_zoekt_files(
         )
 
     return results
+
+
+async def _read_zoekt_file(
+    repo_name: str,
+    file_path: str,
+    *,
+    zoekt_url: str,
+) -> list[SearchHit]:
+    """Read a repo-relative file's content via Zoekt.
+
+    Used for ``action="read"`` when a repo scope is active — repo source files
+    are not stored in the S3 content bucket (only wikis / code-indexes / sbom
+    are), so their content is retrieved from Zoekt.
+
+    Queries Zoekt for the exact file (``whole:true`` returns the full file
+    content, not just matching lines) and returns a single-element list with the
+    decoded content, or an empty list if the file is not found.
+    """
+    if not zoekt_url:
+        return []
+
+    file_path = file_path.strip().lstrip("/")
+    if not file_path:
+        return []
+
+    escaped_name = re.escape(repo_name)
+    if "/" in repo_name:
+        repo_filter = f"^{escaped_name}$"
+    else:
+        repo_filter = f"/{escaped_name}$"
+    # Anchor the file path exactly so we fetch the one file, not substrings.
+    escaped_path = re.escape(file_path)
+    query = f"r:{repo_filter} f:^{escaped_path}$"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{zoekt_url}/api/search",
+                json={"q": query, "num": 5, "Whole": True},
+            )
+            if resp.status_code != 200:
+                log.warning(
+                    "Zoekt read returned HTTP %d for %s/%s",
+                    resp.status_code,
+                    repo_name,
+                    file_path,
+                )
+                return []
+            data = resp.json()
+    except Exception:
+        log.warning("Zoekt read failed for %s/%s", repo_name, file_path, exc_info=True)
+        return []
+
+    result_data = data.get("Result") or data.get("result", {})
+    file_matches = result_data.get("FileMatches") or result_data.get("Files") or []
+
+    for file_match in file_matches:
+        matched_name = file_match.get("FileName", "")
+        if matched_name != file_path:
+            continue
+        content = _extract_file_content(file_match)
+        if content is None:
+            continue
+        name = file_path.split("/")[-1]
+        return [
+            SearchHit(
+                repo_name=repo_name,
+                data={
+                    "repo_id": repo_name,
+                    "name": name,
+                    "path": file_path,
+                    "content": content,
+                    "size": len(content),
+                    "entry_type": "file",
+                },
+            )
+        ]
+
+    log.debug("Zoekt read: no exact match for %s/%s", repo_name, file_path)
+    return []
+
+
+def _extract_file_content(file_match: dict[str, Any]) -> str | None:
+    """Extract whole-file text from a Zoekt FileMatch.
+
+    Zoekt's ``whole:true`` search puts the full file in ``Content`` (base64 in
+    the Go JSON encoder). Fall back to concatenating ChunkMatches when the whole
+    file field is absent.
+    """
+    from .search_backend import _decode_line
+
+    whole = file_match.get("Content")
+    if whole:
+        decoded = _decode_line(whole)
+        if decoded:
+            return decoded
+
+    chunk_matches = file_match.get("ChunkMatches") or []
+    if chunk_matches:
+        parts = [_decode_line(cm.get("Content", "")) for cm in chunk_matches]
+        joined = "\n".join(p for p in parts if p)
+        if joined:
+            return joined
+
+    return None
 
 
 async def _list_s3_content(
