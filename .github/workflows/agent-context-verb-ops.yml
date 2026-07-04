@@ -135,6 +135,56 @@ jobs:
             -n "$NS" --command -- python3 - < /tmp/door_verify.py
 
       # -----------------------------------------------------------------
+      # Neptune connectivity diagnostic (#2916): dump the Door's own Neptune
+      # warning (now with exception detail) + probe TCP reachability and the
+      # neo4j driver handshake from an in-cluster pod on the Door's SA.
+      # -----------------------------------------------------------------
+      - name: Neptune connectivity diagnostic
+        if: ${{ inputs.door_verify }}
+        run: |
+          echo "===== context-mcp pod logs: Neptune lines ====="
+          kubectl logs -n "$NS" -l app.kubernetes.io/name=context-mcp --tail=400 2>/dev/null \
+            | grep -iE "neptune|bolt|handshake|routing|defunct|timed out|connection" | tail -40 \
+            || echo "(no matching Door log lines)"
+
+          cat > /tmp/neptune_probe.py <<'PYEOF'
+          import os, socket, traceback
+          ep = os.environ.get("NEPTUNE_ENDPOINT", "")
+          port = int(os.environ.get("NEPTUNE_PORT", "8182"))
+          print(f"endpoint={ep} port={port}")
+
+          # 1. TCP reachability (SG / network)
+          try:
+              s = socket.create_connection((ep, port), timeout=8)
+              s.close()
+              print("TCP connect: OK")
+          except Exception as e:
+              print(f"TCP connect: FAILED — {type(e).__name__}: {e}")
+
+          # 2. neo4j driver handshake (Bolt version negotiation) — prints the
+          #    real exception the Door's neptune_available() used to swallow.
+          try:
+              import neo4j
+              print("neo4j driver version:", neo4j.__version__)
+              from door.neptune_auth import create_neptune_driver
+              drv = create_neptune_driver(endpoint=ep)
+              with drv.session() as sess:
+                  sess.run("RETURN 1").consume()
+              print("Bolt handshake + RETURN 1: OK")
+          except Exception as e:
+              print(f"Bolt handshake: FAILED — {type(e).__name__}: {e}")
+              traceback.print_exc()
+          PYEOF
+          # Run on the CONTEXT-MCP image (has neo4j + door/) using the Door's SA.
+          CTX_IMAGE="879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:latest"
+          kubectl run neptune-probe-$(date +%s) \
+            --image="$CTX_IMAGE" --restart=Never --rm -i \
+            --overrides='{"spec":{"serviceAccountName":"agent-context-sa"}}' \
+            --env="NEPTUNE_ENDPOINT=$NEPTUNE_ENDPOINT" --env="NEPTUNE_PORT=8182" \
+            --env="AWS_REGION=us-east-1" \
+            -n "$NS" --command -- python3 - < /tmp/neptune_probe.py || true
+
+      # -----------------------------------------------------------------
       # Neptune backfill (#2493)
       # -----------------------------------------------------------------
       - name: Neptune backfill
