@@ -21,7 +21,7 @@ resource "aws_lambda_function" "github_webhook" {
   function_name                  = "${local.name_prefix}-github-webhook"
   description                    = "GitHub webhook ingress - validates and queues events"
   role                           = aws_iam_role.lambda_execution.arn
-  reserved_concurrent_executions = 20
+  reserved_concurrent_executions = var.enable_lambda_reserved_concurrency ? 20 : -1
 
   s3_bucket        = local.lambda_artifact_bucket
   s3_key           = "lambda-artifacts/webhook-ingress/github.zip"

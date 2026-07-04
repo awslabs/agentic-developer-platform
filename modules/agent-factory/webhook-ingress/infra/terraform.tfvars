@@ -6,6 +6,13 @@
 environment = "dev"
 aws_region  = "us-east-1"
 
+# Issue #2928: disable reserved concurrency in dev — the SCP-locked sandbox
+# account (979157915401) has its unreserved pool pinned at the 100 floor and
+# reserving even 1 unit triggers PutFunctionConcurrency failure. Same class
+# as #2910 (gateway). The variables.tf default stays true, so prod (and any
+# env with headroom) keeps reserved-concurrency throttle isolation.
+enable_lambda_reserved_concurrency = false
+
 # Issue #1630: enable Claude Agent SDK OTel telemetry → ADOT Collector →
 # CloudWatch (logs + metrics) + X-Ray (traces). Deploys the collector in
 # adp-agents and adds OTEL_* env to the agent-worker ScaledJob. Non-blocking;

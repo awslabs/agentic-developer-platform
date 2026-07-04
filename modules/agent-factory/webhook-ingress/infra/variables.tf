@@ -51,6 +51,16 @@ variable "rate_limit_per_hour" {
 }
 
 # -----------------------------------------------------------------------------
+# Lambda reserved concurrency (Issue #2928)
+# -----------------------------------------------------------------------------
+
+variable "enable_lambda_reserved_concurrency" {
+  type        = bool
+  description = "Enable reserved concurrent executions on the webhook Lambda. Set to false on accounts where the Lambda concurrency quota is too low (sum of reservations must leave >= 100 unreserved). Mirrors the gateway gate from issue #2910."
+  default     = true
+}
+
+# -----------------------------------------------------------------------------
 # Lambda tuning
 # -----------------------------------------------------------------------------
 
