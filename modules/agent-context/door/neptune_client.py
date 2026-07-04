@@ -103,8 +103,15 @@ def neptune_available() -> bool:
         with driver.session() as session:
             session.run("RETURN 1").consume()
         return True
-    except Exception:
-        log.warning("Neptune connection failed — resetting driver and retrying once")
+    except Exception as e:
+        # Log the exception type + message: a Bolt handshake/protocol mismatch
+        # (e.g. driver too new for Neptune's max Bolt 4.0) looks identical to a
+        # network timeout without it, which is what hid #2916 for weeks.
+        log.warning(
+            "Neptune connection failed (%s: %s) — resetting driver and retrying once",
+            type(e).__name__,
+            e,
+        )
         reset_neptune_driver()
 
     # Retry with a fresh driver (new IAM auth token + connection pool)
@@ -116,8 +123,12 @@ def neptune_available() -> bool:
         with driver.session() as session:
             session.run("RETURN 1").consume()
         return True
-    except Exception:
-        log.warning("Neptune unreachable after driver reset — falling back to code-index.json")
+    except Exception as e:
+        log.warning(
+            "Neptune unreachable after driver reset (%s: %s) — falling back to code-index.json",
+            type(e).__name__,
+            e,
+        )
         return False
 
 
