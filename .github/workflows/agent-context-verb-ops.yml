@@ -212,6 +212,16 @@ jobs:
                       "MATCH (s:Symbol {name:$n}) RETURN s.repo AS repo, s.file AS file, s.kind AS kind LIMIT 10",
                       {"n": "Position"}):
                       print("  Symbol 'Position' @", r["repo"], r["file"], r["kind"])
+                  print("  -- sample Symbol names for HKUDS/Vibe-Trading --")
+                  for r in sess.run(
+                      "MATCH (s:Symbol {repo:$repo}) RETURN s.name AS name, s.kind AS kind, s.file AS file LIMIT 25",
+                      {"repo": "HKUDS/Vibe-Trading"}):
+                      print("    name=", repr(r["name"]), "kind=", r["kind"], "file=", r["file"])
+                  # does ANY name contain 'Position'?
+                  for r in sess.run(
+                      "MATCH (s:Symbol {repo:$repo}) WHERE s.name CONTAINS 'Position' RETURN s.name AS name, s.file AS file LIMIT 10",
+                      {"repo": "HKUDS/Vibe-Trading"}):
+                      print("    CONTAINS Position:", repr(r["name"]), r["file"])
           except Exception as e:
               print(f"Door impact path: FAILED — {type(e).__name__}: {e}")
               traceback.print_exc()
