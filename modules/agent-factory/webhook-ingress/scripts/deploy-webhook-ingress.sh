@@ -70,34 +70,10 @@ echo "deploy-webhook-ingress: env=$ENVIRONMENT region=$AWS_REGION account=$ACCOU
 [ "$DRY_RUN" = true ] && warn "DRY RUN — no changes will be made"
 
 # ---------------------------------------------------------------------------
-# Helper: run a CodeBuild project and wait for completion
+# Helper: codebuild-run.sh path (implements source-SHA contract)
 # ---------------------------------------------------------------------------
-run_codebuild() {
-  local project="$1"
-  local build_id
-  build_id=$(aws codebuild start-build --project-name "$project" --region "$AWS_REGION" \
-    --environment-variables-override \
-      "name=AWS_REGION,value=${AWS_REGION}" \
-      "name=ACCOUNT_ID,value=${ACCOUNT_ID}" \
-      "name=REGISTRY,value=${REGISTRY}" \
-      "name=IMAGE_TAG,value=${IMAGE_TAG}" \
-      "name=STATE_BUCKET,value=${STATE_BUCKET}" \
-    --query 'build.id' --output text)
-  echo "  build: $build_id"
-  while true; do
-    local s
-    s=$(aws codebuild batch-get-builds --ids "$build_id" --region "$AWS_REGION" \
-      --query 'builds[0].buildStatus' --output text 2>/dev/null || echo IN_PROGRESS)
-    case "$s" in
-      SUCCEEDED) ok "$project: SUCCEEDED"; return 0 ;;
-      FAILED|FAULT|STOPPED|TIMED_OUT)
-        aws codebuild batch-get-builds --ids "$build_id" --region "$AWS_REGION" \
-          --query 'builds[0].logs.deepLink' --output text 2>/dev/null || true
-        fail "$project: $s" ;;
-      *) sleep 15 ;;
-    esac
-  done
-}
+CODEBUILD_RUN="${REPO_ROOT}/platform/scripts/codebuild-run.sh"
+[ -x "$CODEBUILD_RUN" ] || [ -f "$CODEBUILD_RUN" ] || fail "codebuild-run.sh not found at $CODEBUILD_RUN"
 
 # ---------------------------------------------------------------------------
 # [1/3] Build the agent-worker image (adp-agent-runtime)
@@ -106,15 +82,18 @@ step "[1/3] Build agent-worker image (adp-agent-runtime)"
 if [ "$SKIP_IMAGE" = true ]; then
   warn "Skipping image build (--skip-image)."
 elif [ "$DRY_RUN" = true ]; then
-  echo "  [dry-run] zip-source.sh → s3://${STATE_BUCKET}/codebuild/adp-source.zip"
-  echo "  [dry-run] run_codebuild adp-${ENVIRONMENT}-agent-runtime"
+  echo "  [dry-run] codebuild-run.sh adp-${ENVIRONMENT}-agent-runtime (with source-location-override)"
 else
-  # CodeBuild reads source from s3://<bucket>/codebuild/adp-source.zip — refresh it.
-  bash "${REPO_ROOT}/platform/scripts/zip-source.sh" "$REPO_ROOT" /tmp/adp-source.$$.zip >/dev/null
-  aws s3 cp /tmp/adp-source.$$.zip "s3://${STATE_BUCKET}/codebuild/adp-source.zip" --region "$AWS_REGION" >/dev/null
-  rm -f /tmp/adp-source.$$.zip
-  ok "Source uploaded to s3://${STATE_BUCKET}/codebuild/adp-source.zip"
-  run_codebuild "adp-${ENVIRONMENT}-agent-runtime"
+  # Use codebuild-run.sh which handles the source-SHA contract:
+  # zips source → uploads to unique S3 key → passes --source-location-override + ADP_SOURCE_SHA
+  STATE_BUCKET="$STATE_BUCKET" AWS_REGION="$AWS_REGION" \
+    bash "$CODEBUILD_RUN" "adp-${ENVIRONMENT}-agent-runtime" \
+      "name=AWS_REGION,value=${AWS_REGION},type=PLAINTEXT" \
+      "name=ACCOUNT_ID,value=${ACCOUNT_ID},type=PLAINTEXT" \
+      "name=REGISTRY,value=${REGISTRY},type=PLAINTEXT" \
+      "name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT" \
+      "name=STATE_BUCKET,value=${STATE_BUCKET},type=PLAINTEXT"
+  ok "adp-${ENVIRONMENT}-agent-runtime: SUCCEEDED"
 fi
 
 # ---------------------------------------------------------------------------
