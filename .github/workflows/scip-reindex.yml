@@ -1,0 +1,67 @@
+# =============================================================================
+# SCIP re-index helper (scratch, #2916) — clears scip_structural stage rows so
+# a full re-ingest actually re-runs SCIP with the fixed descriptor parser
+# (PR #2963). FORCE_REINDEX alone skips stages already 'verified' at the same
+# SHA, so the mangled Neptune vertices would never be rewritten without this.
+# Delete after the graph is confirmed clean.
+# =============================================================================
+name: SCIP Reindex Helper
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'count = show scip_structural rows; clear = delete them (forces re-run)'
+        type: choice
+        options: [count, clear]
+        default: count
+
+jobs:
+  scip-reindex:
+    runs-on: arc-runner-org
+    timeout-minutes: 15
+    env:
+      NS: agent-context
+      INGESTION_IMAGE: 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion:latest
+    steps:
+      - name: Account guard
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          [ "$ACCOUNT_ID" = "879318057152" ] || { echo "FATAL: wrong account $ACCOUNT_ID"; exit 1; }
+      - uses: actions/checkout@v4
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --name adp-dev-eks-cluster --region us-east-1
+      - name: Count / clear scip_structural stage rows
+        run: |
+          cat > /tmp/scip_reindex.py <<'PYEOF'
+          import os, sys
+          sys.path.insert(0, "/app")
+          from db import get_connection
+          action = sys.argv[1] if len(sys.argv) > 1 else "count"
+          conn = get_connection()
+          cur = conn.cursor()
+          cur.execute("SELECT repo, status, count(*) FROM index_run_stages WHERE stage='scip_structural' GROUP BY repo, status ORDER BY repo")
+          rows = cur.fetchall()
+          print("=== scip_structural rows by repo/status ===")
+          for r in rows:
+              print(f"  {r[0]:40s} {r[1]:12s} {r[2]}")
+          if action == "clear":
+              cur.execute("DELETE FROM index_run_stages WHERE stage='scip_structural'")
+              print(f"\nDELETED {cur.rowcount} scip_structural rows")
+              conn.commit()
+              print("committed — next full_reindex will re-run SCIP for all repos")
+          else:
+              print("\n(count only — pass action=clear to delete)")
+          cur.close(); conn.close()
+          PYEOF
+          kubectl run scip-reindex-$(date +%s) \
+            --image="$INGESTION_IMAGE" --restart=Never --rm -i \
+            --overrides='{"spec":{"serviceAccountName":"agent-context-sa"}}' \
+            --env="PYTHONPATH=/app" \
+            --env="DB_HOST=bedrockgw-dev-postgres.civhekhiupfe.us-east-1.rds.amazonaws.com" \
+            --env="DB_NAME=agent_context" \
+            --env="DB_PORT=5432" \
+            --env="DB_USER=agent_context_svc" \
+            --env="DB_USE_IAM_AUTH=true" \
+            --env="AWS_REGION=us-east-1" \
+            -n "$NS" --command -- python3 - "${{ inputs.action }}" < /tmp/scip_reindex.py
