@@ -106,14 +106,15 @@ jobs:
           state_bucket: ${{ env.STATE_BUCKET }}
           environment_variables: >-
             "name=AWS_REGION,value=${{ env.AWS_REGION }}"
-            "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}"
-            "name=REGISTRY,value=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+            "name=ACCOUNT_ID,value=${{ env.CUSTOMER_ACCOUNT_ID || env.ACCOUNT_ID }}"
+            "name=REGISTRY,value=${{ env.CUSTOMER_ACCOUNT_ID || env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
             "name=IMAGE_TAG,value=${{ github.sha }}"
 
       - name: Export outputs
         id: build_outputs
         run: |
-          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
+          REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           echo "build_id=${{ steps.build.outputs.build_id }}" >> "$GITHUB_OUTPUT"
           echo "image=${REGISTRY}/adp-agent-runtime:${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
