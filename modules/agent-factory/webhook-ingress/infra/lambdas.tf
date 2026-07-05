@@ -46,10 +46,10 @@ resource "aws_lambda_function" "github_webhook" {
       RATE_LIMIT_PER_WINDOW         = tostring(var.rate_limit_per_window)
       RATE_LIMIT_PER_HOUR           = tostring(var.rate_limit_per_hour)
       WEBHOOK_SECRET_ARN            = aws_secretsmanager_secret.webhook_secret.arn
-      GATEWAY_API_URL               = var.gateway_api_url
+      GATEWAY_API_URL               = local.gateway_api_url
       USER_IDENTITY_INDEX_V2_WRITE  = "false"
       USER_IDENTITY_INDEX_V2_READ   = "true"
-      INTERNAL_API_KEY_ARN          = var.internal_api_key_arn
+      INTERNAL_API_KEY_ARN          = local.internal_api_key_arn
       RESOLVE_CANONICAL_VIA_GATEWAY = "true"
       CORRELATION_POINTERS_TABLE    = aws_dynamodb_table.correlation_pointers.name
     }

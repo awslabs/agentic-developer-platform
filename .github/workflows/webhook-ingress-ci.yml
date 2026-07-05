@@ -110,9 +110,37 @@ jobs:
           echo "Package artifacts:"
           ls -lh dist/*.zip
 
+  terraform-validate:
+    name: Terraform Validate
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Terraform
+        run: |
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          terraform version | head -1
+
+      - name: Terraform fmt check
+        working-directory: modules/agent-factory/webhook-ingress/infra
+        run: terraform fmt -check -recursive
+
+      - name: Terraform validate
+        working-directory: modules/agent-factory/webhook-ingress/infra
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
   plan:
     name: Terraform Plan
     runs-on: arc-runner-org
+    needs: terraform-validate
     permissions:
       contents: read
       pull-requests: write
