@@ -16,6 +16,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useToast } from '@/contexts/ToastContext';
 import { FreeTierBanner } from '@/components/FreeTierBanner';
+import { PostInstallPanel } from '@/components/PostInstallPanel';
 import { useAuth } from '@/hooks/useAuth';
 import { AdminRole } from '@/types';
 import {
@@ -46,6 +47,8 @@ export default function Connections() {
   const [appStatusError, setAppStatusError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isInstalling, setIsInstalling] = useState(false);
+  // Issue #2984: Track post-install success state to show what's-next panel
+  const [showPostInstall, setShowPostInstall] = useState(false);
 
   // -------------------------------------------------------------------------
   // Load connections + app status
@@ -95,6 +98,7 @@ export default function Connections() {
 
     if (success === '1') {
       toast.success('GitHub connected! You can now trigger agents from this org.');
+      setShowPostInstall(true);
       loadConnections();
       setSearchParams({}, { replace: true });
     } else if (githubApp === 'registered') {
@@ -225,6 +229,15 @@ export default function Connections() {
 
       {/* Free tier banner — shown when user is on adp-default */}
       {user?.orgId === ADP_DEFAULT_ORG_ID && <FreeTierBanner />}
+
+      {/* Issue #2984: Post-install what's-next panel */}
+      {showPostInstall && (
+        <div className="mb-6">
+          <PostInstallPanel
+            repoCount={connections.reduce((sum, c) => sum + (c.repository_count || 0), 0) || undefined}
+          />
+        </div>
+      )}
 
       {/* GitHub section */}
       <div className="space-y-6">

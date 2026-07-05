@@ -136,6 +136,26 @@ class TestAdminServiceOrganizations:
             await admin_service.update_organization("org-001", request)
 
     @pytest.mark.asyncio
+    async def test_update_organization_member_approval_policy(self, admin_service: AdminService, sample_organizations: list[Organization]):
+        """Test updating member_approval_policy.
+
+        Issue #2984: Approval policy toggle persists correctly.
+        """
+        # Default is auto_approve_org_members
+        org = await admin_service.get_organization("org-001")
+        assert org.member_approval_policy == "auto_approve_org_members"
+
+        # Toggle to require_admin_approval
+        request = OrganizationUpdateRequest(member_approval_policy="require_admin_approval")
+        result = await admin_service.update_organization("org-001", request)
+        assert result.member_approval_policy == "require_admin_approval"
+
+        # Toggle back to auto_approve_org_members
+        request = OrganizationUpdateRequest(member_approval_policy="auto_approve_org_members")
+        result = await admin_service.update_organization("org-001", request)
+        assert result.member_approval_policy == "auto_approve_org_members"
+
+    @pytest.mark.asyncio
     async def test_delete_organization(self, admin_service: AdminService, sample_organizations: list[Organization]):
         """Test deleting an organization."""
         result = await admin_service.delete_organization("org-001")

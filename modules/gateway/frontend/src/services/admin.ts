@@ -53,6 +53,7 @@ export async function getOrganization(id: string): Promise<Organization> {
     aws_accounts: string[];
     role_mappings: Record<string, string>;
     settings: Record<string, unknown>;
+    member_approval_policy?: string;
     created_at: string;
   }>(`/admin/organizations/${id}`);
   return transformOrganization(response);
@@ -318,6 +319,7 @@ function transformOrganization(data: {
   aws_accounts: string[];
   role_mappings: Record<string, string>;
   settings: Record<string, unknown>;
+  member_approval_policy?: string;
   created_at: string;
 }): Organization {
   return {
@@ -326,6 +328,7 @@ function transformOrganization(data: {
     awsAccounts: data.aws_accounts,
     roleMappings: data.role_mappings,
     settings: data.settings,
+    memberApprovalPolicy: data.member_approval_policy,
     createdAt: data.created_at,
   };
 }

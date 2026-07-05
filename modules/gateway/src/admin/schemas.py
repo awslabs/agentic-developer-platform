@@ -33,6 +33,10 @@ class OrganizationUpdateRequest(BaseModel):
     # Issue #375: Identity fields for tenant-identity Phase A
     github_installation_ids: list[str] | None = Field(None, description="GitHub App installation IDs")
     cognito_client_ids: list[str] | None = Field(None, description="Cognito App Client IDs")
+    # Issue #2984: Org-admin toggle for member approval policy
+    member_approval_policy: Literal["auto_approve_org_members", "require_admin_approval"] | None = Field(
+        None, description="Policy for auto-approving new org members on sign-up"
+    )
 
 
 class OrganizationResponse(BaseModel):
@@ -46,6 +50,8 @@ class OrganizationResponse(BaseModel):
     # Issue #375: Identity fields for tenant-identity Phase A
     github_installation_ids: list[str] = Field(default_factory=list)
     cognito_client_ids: list[str] = Field(default_factory=list)
+    # Issue #2984: Expose approval policy to frontend
+    member_approval_policy: str = Field(default="auto_approve_org_members")
     created_at: datetime
 
     class Config:

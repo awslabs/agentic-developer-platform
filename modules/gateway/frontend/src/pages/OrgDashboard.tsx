@@ -6,10 +6,10 @@ import { DepartmentList } from '@/components/org/DepartmentList';
 import { UserList } from '@/components/org/UserList';
 import { BudgetOverview } from '@/components/org/BudgetOverview';
 import { UsageChart } from '@/components/org/UsageChart';
+import { ApprovalPolicyToggle } from '@/components/org/ApprovalPolicyToggle';
 import { CardSkeleton, TableSkeleton } from '@/components/LoadingScreen';
 import { getOrgDashboard } from '@/services/dashboard';
-import { getDepartments } from '@/services/admin';
-import { getUserRoles } from '@/services/admin';
+import { getDepartments, getUserRoles, getOrganization } from '@/services/admin';
 import { getUsageTimeSeries } from '@/services/budget';
 import { formatCurrency, formatNumber, formatPercent } from '@/utils/format';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -59,6 +59,13 @@ export default function OrgDashboard() {
         granularity: 'day',
       }),
     enabled: !!orgId && canViewUsage(),
+  });
+
+  // Issue #2984: Fetch org detail to get member_approval_policy for the toggle
+  const { data: orgDetail } = useQuery({
+    queryKey: ['organization', orgId],
+    queryFn: () => getOrganization(orgId!),
+    enabled: !!orgId && canManageUsers(),
   });
 
   if (dashboardError) {
@@ -200,6 +207,20 @@ export default function OrgDashboard() {
           </TabPanel>
         )}
       </Tabs>
+
+      {/* Issue #2984: Org settings — approval policy toggle */}
+      {canManageUsers() && orgDetail?.memberApprovalPolicy && (
+        <div className="space-y-3">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+            Organization Settings
+          </h2>
+          <ApprovalPolicyToggle
+            orgId={orgId!}
+            currentPolicy={orgDetail.memberApprovalPolicy as 'auto_approve_org_members' | 'require_admin_approval'}
+            canManage={canManageUsers()}
+          />
+        </div>
+      )}
     </div>
   );
 }

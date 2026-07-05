@@ -172,6 +172,8 @@ export interface Organization {
   awsAccounts: string[];
   roleMappings: Record<string, string>;
   settings: Record<string, unknown>;
+  // Issue #2984: Member approval policy for auto-join toggle
+  memberApprovalPolicy?: string;
   createdAt: string;
 }
 
