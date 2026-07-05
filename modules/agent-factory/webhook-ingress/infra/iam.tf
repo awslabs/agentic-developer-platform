@@ -139,59 +139,59 @@ resource "aws_iam_policy" "lambda_secrets" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "ReadWebhookSecret"
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = aws_secretsmanager_secret.webhook_secret.arn
-      },
-      {
-        Sid    = "ReadPlatformGitHubAppSecrets"
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = [
-          aws_secretsmanager_secret.github_app_id.arn,
-          aws_secretsmanager_secret.github_app_key.arn,
-        ]
-      },
-      {
-        Sid    = "WritePerTenantGitHubAppSecrets"
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:CreateSecret",
-          "secretsmanager:TagResource"
-        ]
-        Resource = "arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:adp/${var.environment}/tenants/*"
-      },
-      {
-        # Issue #2567: The webhook secret, GitHub App ID, and GitHub App key
-        # are encrypted with aws_kms_key.secrets (CMK). Without kms:Decrypt
-        # on this key, GetSecretValue returns AccessDeniedException even though
-        # the secretsmanager:GetSecretValue permission is granted above.
-        Sid    = "SecretsKMSDecrypt"
-        Effect = "Allow"
-        Action = [
-          "kms:Decrypt",
-          "kms:DescribeKey"
-        ]
-        Resource = aws_kms_key.secrets.arn
-      },
-      {
-        # Issue #2949: The internal API key secret is read at runtime to
-        # authenticate against gateway /internal/v1/* endpoints. Always
-        # present now (resolved from SSM/SecretsManager data source or var
-        # override). Uses AWS-managed KMS key — no extra kms:Decrypt needed.
-        Sid      = "ReadInternalApiKey"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = [local.internal_api_key_arn]
-      }
-    ]
+    Statement = concat(
+      [
+        {
+          Sid    = "ReadWebhookSecret"
+          Effect = "Allow"
+          Action = [
+            "secretsmanager:GetSecretValue"
+          ]
+          Resource = aws_secretsmanager_secret.webhook_secret.arn
+        },
+        {
+          Sid    = "ReadPlatformGitHubAppSecrets"
+          Effect = "Allow"
+          Action = [
+            "secretsmanager:GetSecretValue"
+          ]
+          Resource = [
+            aws_secretsmanager_secret.github_app_id.arn,
+            aws_secretsmanager_secret.github_app_key.arn,
+          ]
+        },
+        {
+          Sid    = "WritePerTenantGitHubAppSecrets"
+          Effect = "Allow"
+          Action = [
+            "secretsmanager:CreateSecret",
+            "secretsmanager:TagResource"
+          ]
+          Resource = "arn:aws:secretsmanager:${var.aws_region}:${local.account_id}:secret:adp/${var.environment}/tenants/*"
+        },
+        {
+          # Issue #2567: The webhook secret, GitHub App ID, and GitHub App key
+          # are encrypted with aws_kms_key.secrets (CMK). Without kms:Decrypt
+          # on this key, GetSecretValue returns AccessDeniedException even though
+          # the secretsmanager:GetSecretValue permission is granted above.
+          Sid    = "SecretsKMSDecrypt"
+          Effect = "Allow"
+          Action = [
+            "kms:Decrypt",
+            "kms:DescribeKey"
+          ]
+          Resource = aws_kms_key.secrets.arn
+        }
+      ],
+      var.internal_api_key_arn != "" ? [
+        {
+          Sid      = "ReadInternalApiKey"
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue"]
+          Resource = [var.internal_api_key_arn]
+        }
+      ] : []
+    )
   })
 }
 
