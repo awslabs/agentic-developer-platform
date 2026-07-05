@@ -65,6 +65,12 @@ interface CodexStep {
   line: string;
 }
 
+/** Accumulated token usage from `turn.completed` events. */
+export interface CodexUsageTotals {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -99,6 +105,14 @@ export class CodexEventWatcher {
   private sessionId: string | null = null;
   private sessionEmitted = false;
 
+  /**
+   * Last-seen cumulative usage per Codex session. Codex reports CUMULATIVE
+   * token counts within a session on each `turn.completed` — we track the LAST
+   * value per session (not a running sum across turns) to avoid double-counting.
+   * Sum across sessions gives total Codex spend for the run.
+   */
+  private usagePerSession: Map<string, { inputTokens: number; outputTokens: number }> = new Map();
+
   constructor(cfg: CodexEventWatcherConfig) {
     this.eventsFile = cfg.eventsFile ?? DEFAULT_EVENTS_FILE;
     this.checkRunStreamer = cfg.checkRunStreamer ?? null;
@@ -126,6 +140,25 @@ export class CodexEventWatcher {
       clearInterval(this.timer);
       this.timer = null;
     }
+  }
+
+  /**
+   * Aggregate token usage across all Codex sessions/delegations in this run.
+   * Returns {inputTokens, outputTokens} — both 0 when no usage has been seen.
+   * Safe to call at any time (never throws).
+   */
+  getTotalUsage(): CodexUsageTotals {
+    // Drain any events written since the last 1s poll tick so a turn.completed
+    // that landed just before the caller's read (e.g. the final result flush)
+    // is counted. _poll() is inert when disposed or when there are no new bytes.
+    if (!this.disposed) this._poll();
+    let inputTokens = 0;
+    let outputTokens = 0;
+    for (const usage of this.usagePerSession.values()) {
+      inputTokens += usage.inputTokens;
+      outputTokens += usage.outputTokens;
+    }
+    return { inputTokens, outputTokens };
   }
 
   // -------------------------------------------------------------------------
@@ -220,7 +253,11 @@ export class CodexEventWatcher {
       if (typeof evt.thread_id === 'string') this.sessionId = evt.thread_id;
       return null;
     }
-    if (etype !== 'item.completed') return null; // turn.started/completed etc.
+    if (etype === 'turn.completed') {
+      this._trackUsage(evt);
+      return null;
+    }
+    if (etype !== 'item.completed') return null; // turn.started etc.
 
     const item = evt.item;
     if (!item || typeof item !== 'object') return null;
@@ -263,6 +300,37 @@ export class CodexEventWatcher {
         // Unknown item type → one generic line naming only the type (no payload
         // dump, to avoid forwarding potentially sensitive content).
         return { kind: itype, line: `${PREFIX}${itype}` };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Usage tracking (turn.completed → last-per-session, sum across sessions)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Extract cumulative usage from a `turn.completed` event and store it as
+   * the LAST-SEEN value for the current session. Codex reports cumulative
+   * counts per session — storing last-seen (not summing turns) prevents
+   * double-counting. Never throws.
+   */
+  private _trackUsage(evt: Record<string, unknown>): void {
+    try {
+      const usage = evt.usage;
+      if (!usage || typeof usage !== 'object') return;
+      const u = usage as Record<string, unknown>;
+
+      const inputTokens = (typeof u.input_tokens === 'number' ? u.input_tokens : 0);
+      // reasoning_output_tokens is a breakdown of output_tokens (Codex maps it
+      // from the Responses API's output_tokens_details.reasoning_tokens), so it
+      // must NOT be added on top — the gateway bills output_tokens alone.
+      const outputTokens = (typeof u.output_tokens === 'number' ? u.output_tokens : 0);
+
+      // Key by current session id; fall back to a synthetic key for the
+      // (unlikely) case where turn.completed arrives before thread.started.
+      const key = this.sessionId ?? '__unknown__';
+      this.usagePerSession.set(key, { inputTokens, outputTokens });
+    } catch {
+      // Never-throw: malformed usage → silently ignored.
     }
   }
 

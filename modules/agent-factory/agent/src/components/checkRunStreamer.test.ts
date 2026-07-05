@@ -7,7 +7,7 @@
  *  - Decaying-interval throttle (no lifetime freeze), circuit-breaker, marker
  */
 
-import { CheckRunStreamer, CheckRunStreamerConfig } from './checkRunStreamer';
+import { CheckRunStreamer, CheckRunStreamerConfig, computeCodexCostUsd, CODEX_INPUT_PER_1K, CODEX_OUTPUT_PER_1K } from './checkRunStreamer';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -459,5 +459,125 @@ describe('CheckRunStreamer.destroy', () => {
     expect(() => s.destroy()).not.toThrow();
 
     fs.writeFileSync = origWrite;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Codex cost display (issue #2970)
+// ---------------------------------------------------------------------------
+
+describe('CheckRunStreamer Codex cost display (issue #2970)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    global.fetch = jest.fn().mockResolvedValue({ ok: true } as Response) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('renders Codex cost in header and summary when codexCostUsd > 0', () => {
+    const summaries: string[] = [];
+    global.fetch = jest.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as { output: { summary: string } };
+      summaries.push(body.output.summary);
+      return { ok: true } as Response;
+    }) as unknown as typeof fetch;
+
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    s.onTurn({ turn: 1, content: [{ text: 'plan' }], costUsd: 2.0733, codexCostUsd: 1.45 });
+    const md = s.buildMarkdown('running');
+
+    // Header line includes both costs
+    expect(md).toContain('$2.0733 (Claude) + ~$1.4500 (Codex est.)');
+
+    // Fire the PATCH to check the summary line
+    s.onResult({ costUsd: 2.0733, codexCostUsd: 1.45 });
+    expect(summaries.length).toBeGreaterThan(0);
+    const lastSummary = summaries[summaries.length - 1];
+    expect(lastSummary).toContain('$2.0733 (Claude) + ~$1.4500 (Codex est.)');
+
+    s.destroy();
+  });
+
+  it('renders byte-identical to pre-#2970 output when codexCostUsd is 0', () => {
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    s.onTurn({ turn: 1, content: [{ text: 'plan' }], costUsd: 0.5 });
+    const md = s.buildMarkdown('running');
+
+    // No Codex mention at all
+    expect(md).not.toContain('Codex');
+    expect(md).not.toContain('Claude)');
+    // Plain cost format
+    expect(md).toContain('**Cost:** $0.5000');
+
+    s.destroy();
+  });
+
+  it('renders byte-identical when codexCostUsd is not provided (undefined)', () => {
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    s.onTurn({ turn: 1, content: [{ text: 'plan' }], costUsd: 0.25 });
+    const md = s.buildMarkdown('running');
+
+    expect(md).not.toContain('Codex');
+    expect(md).toContain('**Cost:** $0.2500');
+
+    s.destroy();
+  });
+
+  it('onResult updates codexCostUsd for the final PATCH', () => {
+    const payloads: Array<{ text: string }> = [];
+    global.fetch = jest.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as { output: { text: string } };
+      payloads.push({ text: body.output.text });
+      return { ok: true } as Response;
+    }) as unknown as typeof fetch;
+
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    s.onTurn({ turn: 1, content: [{ text: 'work' }], costUsd: 1.0 });
+    // No Codex cost during the run
+    jest.advanceTimersByTime(5_000);
+    const midRunText = payloads[payloads.length - 1]?.text ?? '';
+    expect(midRunText).not.toContain('Codex');
+
+    // At result time, Codex cost arrives
+    s.onResult({ costUsd: 1.5, codexCostUsd: 3.2 });
+    const finalText = payloads[payloads.length - 1]?.text ?? '';
+    expect(finalText).toContain('$1.5000 (Claude) + ~$3.2000 (Codex est.)');
+
+    s.destroy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeCodexCostUsd pricing utility (issue #2970)
+// ---------------------------------------------------------------------------
+
+describe('computeCodexCostUsd (issue #2970)', () => {
+  it('computes expected cost at pinned GPT-5.5 rates', () => {
+    // 1000 input tokens × $0.0055/1K = $0.0055
+    // 1000 output tokens × $0.033/1K = $0.033
+    const cost = computeCodexCostUsd(1000, 1000);
+    expect(cost).toBeCloseTo(0.0385, 6);
+  });
+
+  it('returns 0 for zero tokens', () => {
+    expect(computeCodexCostUsd(0, 0)).toBe(0);
+  });
+
+  it('matches hand-calculated cost for a realistic Codex run', () => {
+    // Smoke #2956: ~110 openai calls = $17.39
+    // Typical heavy run: ~2M input, ~300K output
+    // 2_000_000 / 1000 * 0.0055 = $11.00
+    // 300_000 / 1000 * 0.033 = $9.90
+    // Total ≈ $20.90
+    const cost = computeCodexCostUsd(2_000_000, 300_000);
+    expect(cost).toBeCloseTo(11.0 + 9.9, 2);
+  });
+
+  it('uses the correct pinned rates from gateway pricing.py', () => {
+    // Verify the constants match what we expect
+    expect(CODEX_INPUT_PER_1K).toBe(0.0055);
+    expect(CODEX_OUTPUT_PER_1K).toBe(0.033);
   });
 });

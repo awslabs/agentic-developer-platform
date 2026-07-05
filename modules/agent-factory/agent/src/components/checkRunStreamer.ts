@@ -89,6 +89,22 @@ const MAX_CODEX_LINES = 200;
 /** Path where the final rendered Markdown is written for entrypoint.py. */
 const FINAL_OUTPUT_PATH = '/tmp/adp-check-run-final.md';
 
+/**
+ * GPT-5.5 pricing per 1K tokens — ESTIMATE for display only.
+ * Canonical source: modules/gateway/src/budget/pricing.py:163
+ * usage_logs (gateway-side) stays the single source of truth for billing.
+ */
+export const CODEX_INPUT_PER_1K = 0.0055;
+export const CODEX_OUTPUT_PER_1K = 0.033;
+
+/**
+ * Compute an estimated Codex cost from token counts. Display-only; the
+ * gateway's usage_logs remains the authoritative billing source.
+ */
+export function computeCodexCostUsd(inputTokens: number, outputTokens: number): number {
+  return (inputTokens / 1000) * CODEX_INPUT_PER_1K + (outputTokens / 1000) * CODEX_OUTPUT_PER_1K;
+}
+
 // ---------------------------------------------------------------------------
 // CheckRunStreamer
 // ---------------------------------------------------------------------------
@@ -102,6 +118,8 @@ export class CheckRunStreamer {
   private planText: string | null = null;
   private reasoningThoughts: string[] = [];
   private totalCostUsd: number = 0;
+  /** Estimated Codex delegation cost (display only; issue #2970). */
+  private codexCostUsd: number = 0;
   /** Compact Codex sub-step lines (issue #2884), rolling, bounded. */
   private codexLines: string[] = [];
 
@@ -130,6 +148,7 @@ export class CheckRunStreamer {
     turn: number;
     content: Array<{ name?: string; input?: Record<string, unknown>; text?: string }>;
     costUsd?: number;
+    codexCostUsd?: number;
   }): void {
     if (this.destroyed) return;
 
@@ -160,6 +179,9 @@ export class CheckRunStreamer {
 
     if (data.costUsd !== undefined) {
       this.totalCostUsd = data.costUsd;
+    }
+    if (data.codexCostUsd !== undefined) {
+      this.codexCostUsd = data.codexCostUsd;
     }
 
     this.turns.push({ turn: data.turn, tools, textPreview });
@@ -205,11 +227,14 @@ export class CheckRunStreamer {
   /**
    * Call when the 'result' message is received (run complete).
    */
-  onResult(data: { costUsd?: number; turns?: number; durationMs?: number }): void {
+  onResult(data: { costUsd?: number; codexCostUsd?: number; turns?: number; durationMs?: number }): void {
     if (this.destroyed) return;
     this._clearMidTurnTimer();
     if (data.costUsd !== undefined) {
       this.totalCostUsd = data.costUsd;
+    }
+    if (data.codexCostUsd !== undefined) {
+      this.codexCostUsd = data.codexCostUsd;
     }
     // Fire a final PATCH immediately to capture the complete transcript.
     // Pass an explicit 'completed' status: this.destroyed is still false here
@@ -249,7 +274,9 @@ export class CheckRunStreamer {
     const turnLabel = status === 'running'
       ? `${this.turns.length} / running`
       : `${this.turns.length} / done`;
-    const costLabel = `$${this.totalCostUsd.toFixed(4)}`;
+    const costLabel = this.codexCostUsd > 0
+      ? `$${this.totalCostUsd.toFixed(4)} (Claude) + ~$${this.codexCostUsd.toFixed(4)} (Codex est.)`
+      : `$${this.totalCostUsd.toFixed(4)}`;
 
     const headerLines = [
       `## Agent: ${this.cfg.persona} · issue #${this.cfg.issueNumber}`,
@@ -495,7 +522,9 @@ export class CheckRunStreamer {
       ? `Agent ${this.cfg.persona} · Turn ${this.turns.length} / running`
       : `Agent ${this.cfg.persona} · ${this.turns.length} turns completed`;
     const elapsedSec = Math.round((Date.now() - this.startTimeMs) / 1000);
-    const summaryLine = `Cost: $${this.totalCostUsd.toFixed(4)} · Elapsed: ${elapsedSec}s`;
+    const summaryLine = this.codexCostUsd > 0
+      ? `Cost: $${this.totalCostUsd.toFixed(4)} (Claude) + ~$${this.codexCostUsd.toFixed(4)} (Codex est.) · Elapsed: ${elapsedSec}s`
+      : `Cost: $${this.totalCostUsd.toFixed(4)} · Elapsed: ${elapsedSec}s`;
 
     this._doPatch(turnLabel, summaryLine, md).catch((err: unknown) => {
       this.warn(`PATCH failed (${this.patchCount}/${MAX_PATCHES}): ${(err as Error).message}`);

@@ -46,7 +46,7 @@ import { writePointer } from './lib/correlationStore';
 import { postProvenance } from './lib/provenanceClient';
 
 // Check Run Streamer — per-turn live streaming to GitHub Check Run output
-import { CheckRunStreamer } from './components/checkRunStreamer';
+import { CheckRunStreamer, computeCodexCostUsd } from './components/checkRunStreamer';
 
 // Codex Event Watcher — stream Codex delegation sub-steps to the live page
 // while a codex-bridge delegation is in flight (issue #2884, EPIC #2702).
@@ -1233,9 +1233,11 @@ Now, complete the assigned task.`;
             lastTurnText = turnText;
             // Stream turn to Check Run (no-op when streamer is null)
             if (checkRunStreamer) {
+              const codexUsage = codexEventWatcher.getTotalUsage();
               checkRunStreamer.onTurn({
                 turn: turnCount,
                 content: assistantMsg.message.content as Array<{ name?: string; input?: Record<string, unknown>; text?: string }>,
+                codexCostUsd: computeCodexCostUsd(codexUsage.inputTokens, codexUsage.outputTokens),
               });
             }
             // Stream tool_use to the live status comment so users watching the
@@ -1284,8 +1286,10 @@ Now, complete the assigned task.`;
             }
             // Flush final transcript to Check Run before breaking the loop
             if (checkRunStreamer) {
+              const codexUsage = codexEventWatcher.getTotalUsage();
               checkRunStreamer.onResult({
                 costUsd: res.total_cost_usd,
+                codexCostUsd: computeCodexCostUsd(codexUsage.inputTokens, codexUsage.outputTokens),
                 turns: res.num_turns,
                 durationMs: res.duration_ms,
               });

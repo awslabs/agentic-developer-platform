@@ -87,6 +87,9 @@ function reasoning(text: string): string {
 function agentMsg(text: string): string {
   return `{"type":"item.completed","item":{"type":"agent_message","text":${JSON.stringify(text)}}}\n`;
 }
+function turnCompleted(input: number, cached: number, output: number, reasoning_output: number): string {
+  return `{"type":"turn.completed","usage":{"input_tokens":${input},"cached_input_tokens":${cached},"output_tokens":${output},"reasoning_output_tokens":${reasoning_output}}}\n`;
+}
 
 // ---------------------------------------------------------------------------
 // Setup / teardown
@@ -336,5 +339,102 @@ describe('file truncation between delegations', () => {
     const flat = streamer.blocks.flat();
     expect(flat.some((l) => l.includes('exec: second-delegation'))).toBe(true);
     expect(flat.some((l) => l.includes('session second'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Usage tracking (issue #2970): turn.completed → getTotalUsage()
+// ---------------------------------------------------------------------------
+
+describe('usage tracking (issue #2970)', () => {
+  it('accumulates last-seen usage per session and sums across two sessions', () => {
+    const { watcher } = makeWatcher();
+    watcher.start();
+
+    // First session: two turn.completed events (cumulative within session).
+    // The second supersedes the first for that session.
+    write(
+      THREAD +
+      turnCompleted(100, 10, 20, 5) +
+      exec('work') +
+      turnCompleted(200, 20, 40, 10),
+    );
+    jest.advanceTimersByTime(1_000);
+
+    // Second delegation (new session via file truncation + new thread.started).
+    write(
+      '{"type":"thread.started","thread_id":"session-2"}\n' +
+      turnCompleted(300, 30, 60, 15),
+    );
+    jest.advanceTimersByTime(1_000);
+    watcher.dispose();
+
+    const usage = watcher.getTotalUsage();
+    // Session 1 last-seen: input=200, output=40 (reasoning is a subset of output, not added)
+    // Session 2 last-seen: input=300, output=60
+    // Total: input=500, output=100
+    expect(usage.inputTokens).toBe(500);
+    expect(usage.outputTokens).toBe(100);
+  });
+
+  it('returns zeros when no turn.completed events have been seen', () => {
+    const { watcher } = makeWatcher();
+    watcher.start();
+    write(THREAD + exec('something'));
+    jest.advanceTimersByTime(1_000);
+    watcher.dispose();
+
+    const usage = watcher.getTotalUsage();
+    expect(usage.inputTokens).toBe(0);
+    expect(usage.outputTokens).toBe(0);
+  });
+
+  it('handles malformed/missing usage gracefully — returns 0, no throw', () => {
+    const { watcher, warns } = makeWatcher();
+    watcher.start();
+
+    // turn.completed with no usage field, usage with wrong types, and null usage
+    write(
+      THREAD +
+      '{"type":"turn.completed"}\n' +
+      '{"type":"turn.completed","usage":null}\n' +
+      '{"type":"turn.completed","usage":{"input_tokens":"not_a_number","output_tokens":true}}\n',
+    );
+    jest.advanceTimersByTime(1_000);
+    watcher.dispose();
+
+    const usage = watcher.getTotalUsage();
+    expect(usage.inputTokens).toBe(0);
+    expect(usage.outputTokens).toBe(0);
+    // Malformed usage is silently handled, not a warning
+    expect(warns).toHaveLength(0);
+  });
+
+  it('tracks usage even when turn.completed arrives before thread.started', () => {
+    const { watcher } = makeWatcher();
+    watcher.start();
+
+    // No thread.started → sessionId is null → falls back to __unknown__ key
+    write(turnCompleted(500, 0, 100, 50));
+    jest.advanceTimersByTime(1_000);
+    watcher.dispose();
+
+    const usage = watcher.getTotalUsage();
+    expect(usage.inputTokens).toBe(500);
+    expect(usage.outputTokens).toBe(100); // reasoning excluded — subset of output_tokens
+  });
+
+  it('drains unpolled events on getTotalUsage (no poll tick needed)', () => {
+    const { watcher } = makeWatcher();
+    watcher.start();
+
+    // Write a turn.completed but do NOT advance timers — the poll loop has
+    // not seen it yet. getTotalUsage must still count it.
+    write(THREAD + turnCompleted(700, 0, 30, 10));
+
+    const usage = watcher.getTotalUsage();
+    expect(usage.inputTokens).toBe(700);
+    expect(usage.outputTokens).toBe(30);
+    watcher.dispose();
   });
 });
