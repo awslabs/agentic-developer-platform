@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     # before proxying; per-tenant access is still enforced via the model allowlist.
     mantle_allowed_models: str = "openai.*"
 
+    # Issue #2918: Gate Base.metadata.create_all behind this flag.
+    # Default False in deployed envs (migrations are the single source of truth).
+    # Set True only for docker-compose / local dev where alembic isn't run on startup.
+    db_auto_create: bool = False
+
     model_config = {"env_prefix": "BG_", "env_file": ".env"}
 
 

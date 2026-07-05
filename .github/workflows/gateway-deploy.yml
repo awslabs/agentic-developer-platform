@@ -435,10 +435,15 @@ jobs:
   run-migrations:
     name: Run Pending Migrations
     needs: [changes, deploy-backend]
+    # Issue #2918: Run migrations when new alembic files detected (push) OR on
+    # workflow_dispatch (fresh-account deploys need migrations to run unconditionally).
     if: |
       always() &&
-      needs.changes.outputs.migrations == 'true' &&
+      (needs.changes.outputs.migrations == 'true' || github.event_name == 'workflow_dispatch') &&
       (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
     uses: ./.github/workflows/run-gateway-migrations.yml
     with:
-      environment: dev
+      environment: ${{ inputs.environment || 'dev' }}
+      customer_account_id: ${{ inputs.customer_account_id || '' }}
+      customer_aws_label: ${{ inputs.customer_aws_label || '' }}
+      customer_user_id: ${{ inputs.customer_user_id || '' }}

@@ -2,6 +2,27 @@ name: Run Gateway Alembic Migrations (one-shot)
 
 on:
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment (default: dev)"
+        required: false
+        type: string
+        default: dev
+      customer_account_id:
+        description: "Customer-linked AWS account (cross-account mode)."
+        required: false
+        type: string
+        default: ''
+      customer_aws_label:
+        description: "Vaulted credential label (when customer_account_id is set)."
+        required: false
+        type: string
+        default: ''
+      customer_user_id:
+        description: "ADP users.id UUID (when customer_account_id is set)."
+        required: false
+        type: string
+        default: ''
   workflow_call:
     inputs:
       environment:
@@ -9,6 +30,21 @@ on:
         required: false
         type: string
         default: dev
+      customer_account_id:
+        description: "Customer-linked AWS account (cross-account mode)."
+        required: false
+        type: string
+        default: ''
+      customer_aws_label:
+        description: "Vaulted credential label (when customer_account_id is set)."
+        required: false
+        type: string
+        default: ''
+      customer_user_id:
+        description: "ADP users.id UUID (when customer_account_id is set)."
+        required: false
+        type: string
+        default: ''
 
 env:
   AWS_REGION: us-east-1
@@ -17,13 +53,24 @@ jobs:
   migrate:
     runs-on: arc-runner-org
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+
       - name: Install kubectl
         run: |
           if ! command -v kubectl >/dev/null; then
             curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
             sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
           fi
-          aws eks update-kubeconfig --name adp-dev-eks-cluster --region "$AWS_REGION" >/dev/null
+          EKS_CLUSTER="adp-${ENVIRONMENT:-dev}-eks-cluster"
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" >/dev/null
 
       - name: Run alembic
         run: |

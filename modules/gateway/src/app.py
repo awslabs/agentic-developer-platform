@@ -49,23 +49,30 @@ UNIT_MODULES = [
 async def lifespan(app: FastAPI):
     logger.info("BedrockGateway starting up", extra={"event": "startup"})
 
-    # Ensure database tables exist
-    try:
-        # Import all models so Base.metadata knows about them
-        import src.admin.models  # noqa: F401
-        import src.shared.models.audit  # noqa: F401  # Issue #446
-        import src.shared.models.budget  # noqa: F401
-        import src.shared.models.organization  # noqa: F401
-        import src.shared.models.usage  # noqa: F401
-        import src.shared.models.vault  # noqa: F401  # Issue #135
-        from src.shared.database import get_engine
-        from src.shared.models.base import Base
+    # Issue #2918: Only run create_all when BG_DB_AUTO_CREATE=true (local dev).
+    # In deployed environments, alembic migrations are the single source of truth.
+    # create_all shadows alembic (no alembic_version row, missing constraints/indexes)
+    # and causes DuplicateTableError on fresh-account deploys.
+    settings = get_settings()
+    if settings.db_auto_create:
+        try:
+            # Import all models so Base.metadata knows about them
+            import src.admin.models  # noqa: F401
+            import src.shared.models.audit  # noqa: F401  # Issue #446
+            import src.shared.models.budget  # noqa: F401
+            import src.shared.models.organization  # noqa: F401
+            import src.shared.models.usage  # noqa: F401
+            import src.shared.models.vault  # noqa: F401  # Issue #135
+            from src.shared.database import get_engine
+            from src.shared.models.base import Base
 
-        async with get_engine().begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database tables verified/created")
-    except Exception as e:
-        logger.warning(f"Could not auto-create tables (may already exist): {e}")
+            async with get_engine().begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database tables verified/created (BG_DB_AUTO_CREATE=true)")
+        except Exception as e:
+            logger.warning(f"Could not auto-create tables (may already exist): {e}")
+    else:
+        logger.info("Skipping create_all (BG_DB_AUTO_CREATE=false); alembic manages schema")
 
     # Initialize proxy service with single-account Bedrock pool
     try:

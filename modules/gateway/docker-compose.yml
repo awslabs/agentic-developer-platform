@@ -8,6 +8,9 @@ services:
       BG_REDIS_URL: redis://redis:6379
       BG_AWS_REGION: us-east-1
       BG_LOG_LEVEL: DEBUG
+      # Issue #2918: Enable create_all for local dev (no alembic on startup).
+      # In deployed envs this defaults to false; migrations manage the schema.
+      BG_DB_AUTO_CREATE: "true"
       # Issue #144: Tracing config (disabled by default for local dev)
       BG_OTEL_ENABLED: "false"
       BG_OTEL_SERVICE_NAME: "bedrock-gateway"
