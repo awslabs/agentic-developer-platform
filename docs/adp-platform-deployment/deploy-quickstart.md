@@ -413,6 +413,16 @@ This discovers the ALB, re-applies gateway-infra with the ALB vars
 forces an API GW stage redeploy so the routes go live. Idempotent. (Note: the
 CloudFront VPC origin it creates can take ~10 min.)
 
+> **KMS grant for webhook secrets (Issue #2907):** On a **fresh account**, the
+> webhook-ingress CMK (`alias/adp-<env>-webhook-secrets`) does not exist yet at
+> Phase 4 time, so gateway ships with `enable_webhook_secrets_kms_grant = false`.
+> After webhook-ingress deploys in Phase 7 (creates the CMK), either re-run this
+> second pass **or** any subsequent `gateway-infra-apply` with the flag set to
+> `true` in the tfvars. On **existing accounts** the CMK already exists, so the
+> flag can stay `true` from the first apply. The grant is required for the UI
+> GitHub-App register flow (#2797/#2824) to write webhook secrets without
+> `AccessDenied`.
+
 Verify:
 ```bash
 aws apigateway get-rest-apis --query "items[?name=='bedrockgw-dev-api'].id" --output text  # API id

@@ -430,6 +430,16 @@ variable "agent_context_ingestion_queue_arn" {
 }
 
 # =============================================================================
+# Webhook Secrets KMS Grant (Issue #2907)
+# =============================================================================
+
+variable "enable_webhook_secrets_kms_grant" {
+  type        = bool
+  description = "Grant the gateway IRSA role KMS read/write on the webhook-ingress CMK (alias/adp-<env>-webhook-secrets). Set to false on first apply (the CMK doesn't exist yet); flip to true after webhook-ingress deploys (Phase 7) or on the gateway second pass."
+  default     = false
+}
+
+# =============================================================================
 # Test Users Configuration (Issue #60)
 # =============================================================================
 

@@ -59,3 +59,10 @@ enable_mantle_passthrough = true
 # any env with headroom) keeps reserved-concurrency throttle isolation via
 # its own tfvars / the default.
 enable_lambda_reserved_concurrency = false
+
+# Issue #2907: grant the gateway IRSA role KMS read/write on the
+# webhook-ingress CMK (alias/adp-dev-webhook-secrets). Set to true only after
+# webhook-ingress has deployed (Phase 7) and created the CMK. On fresh
+# accounts leave false for the initial Phase 4 apply; flip to true on the
+# gateway second pass (Phase 6b) or any subsequent apply after Phase 7.
+enable_webhook_secrets_kms_grant = true

@@ -490,13 +490,21 @@ resource "aws_iam_role_policy" "gateway_vault_secrets" {
 # kms:GenerateDataKey*/kms:Encrypt on the same CMK — read-only KMS access made
 # UI registration fail with AccessDenied once #2394 pinned the secrets to it.
 # Referenced by alias so key rotation doesn't break the policy.
+#
+# Issue #2907: Guarded behind enable_webhook_secrets_kms_grant (default false).
+# The CMK is created by webhook-ingress (Phase 7), AFTER gateway-infra (Phase 4).
+# On a fresh account the alias doesn't exist yet, so an unconditional data source
+# hard-fails at plan time. Set the flag to true after webhook-ingress deploys
+# (the gateway second pass in Phase 6b is also a safe point to flip this).
 data "aws_kms_alias" "webhook_secrets" {
-  name = "alias/adp-${var.environment}-webhook-secrets"
+  count = var.enable_webhook_secrets_kms_grant ? 1 : 0
+  name  = "alias/adp-${var.environment}-webhook-secrets"
 }
 
 resource "aws_iam_role_policy" "gateway_webhook_secrets_kms" {
-  name = "${local.name_prefix}-policy-gateway-webhook-secrets-kms"
-  role = local.gateway_service_irsa_role_name
+  count = var.enable_webhook_secrets_kms_grant ? 1 : 0
+  name  = "${local.name_prefix}-policy-gateway-webhook-secrets-kms"
+  role  = local.gateway_service_irsa_role_name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -510,7 +518,7 @@ resource "aws_iam_role_policy" "gateway_webhook_secrets_kms" {
           "kms:Encrypt",
           "kms:GenerateDataKey*"
         ]
-        Resource = [data.aws_kms_alias.webhook_secrets.target_key_arn]
+        Resource = [data.aws_kms_alias.webhook_secrets[0].target_key_arn]
       }
     ]
   })

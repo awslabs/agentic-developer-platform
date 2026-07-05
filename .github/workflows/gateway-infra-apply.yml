@@ -241,6 +241,22 @@ jobs:
         id: alb_pre
         run: bash platform/scripts/wire-gateway-alb.sh --no-wait
 
+      # Issue #2907: Pre-resolve the webhook-ingress KMS alias. On a fresh
+      # account the CMK doesn't exist yet (webhook-ingress deploys in Phase 7,
+      # after gateway in Phase 4). When absent, override the tfvars flag to false
+      # so the conditional data source is skipped and plan doesn't hard-fail.
+      - name: Pre-resolve webhook-secrets KMS alias
+        id: kms_pre
+        run: |
+          ALIAS_NAME="alias/adp-${TF_VAR_environment}-webhook-secrets"
+          if aws kms describe-key --key-id "$ALIAS_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "Webhook-secrets KMS alias found — enabling grant."
+            echo "KMS_EXISTS=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Webhook-secrets KMS alias not found (fresh account) — disabling grant for this apply."
+            echo "KMS_EXISTS=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Terraform Plan (destroy-safety check)
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -252,6 +268,7 @@ jobs:
           TF_VAR_internal_alb_dns: ${{ steps.alb_pre.outputs.ALB_DNS }}
           TF_VAR_alb_security_group_ids: ${{ steps.alb_pre.outputs.ALB_SG_IDS }}
           TF_VAR_enable_vpc_origin: ${{ steps.alb_pre.outputs.ALB_ARN != '' && 'true' || 'false' }}
+          TF_VAR_enable_webhook_secrets_kms_grant: ${{ steps.kms_pre.outputs.KMS_EXISTS }}
         run: |
           set -e
           set -o pipefail
