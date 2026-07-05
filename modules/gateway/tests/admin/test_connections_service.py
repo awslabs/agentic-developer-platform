@@ -62,7 +62,15 @@ def _configure_github_app(monkeypatch):
         "src.admin.connections.github_app_provider.boto3.client",
         side_effect=RuntimeError("Secrets Manager blocked in unit tests"),
     ):
-        yield
+        # Issue #2950: The install-callback DDB write uses boto3.client("dynamodb")
+        # which would hit real AWS in unit tests. Mock it module-wide as a no-op;
+        # the dedicated TestInstallCallbackWritesDDB class overrides this.
+        with patch(
+            "src.admin.connections.service._write_installation_identity_index",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            yield
     _reset_provider_for_testing(None)
 
 
@@ -680,6 +688,137 @@ class TestSeedTenantGitHubAppSecret:
 
         assert result["success"] is True
         mock_seed.assert_called_once_with("org-test-001", 124731131)
+
+
+# ---------------------------------------------------------------------------
+# DynamoDB identity-index write (Issue #2950)
+# ---------------------------------------------------------------------------
+
+
+class TestInstallCallbackWritesDDB:
+    """Issue #2950: install_callback must write the installation → tenant mapping
+    to the DynamoDB identity-index so the webhook resolver can find it."""
+
+    async def _write_nonce_and_user(
+        self,
+        db: AsyncSession,
+        *,
+        jti: str = "ddb-jti",
+        user_id: str = "user-ddb-test",
+        org_id: str = "org-test-001",
+    ):
+        from src.shared.models.organization import User
+
+        existing = await db.get(User, user_id)
+        if existing is None:
+            db.add(
+                User(
+                    id=user_id,
+                    org_id=org_id,
+                    team_id="team-test-001",
+                    email=f"{user_id}@test.local",
+                    cognito_sub="sub-ddb",
+                )
+            )
+            await db.commit()
+        nonce = MagicLinkNonce(
+            jti=jti,
+            provider=_PROVIDER_GITHUB_INSTALL,
+            provider_user_id="sub-ddb",
+            channel_context=None,
+            target_user_id=user_id,
+            expires_at=datetime.now(UTC) + timedelta(minutes=15),
+            consumed_at=None,
+        )
+        db.add(nonce)
+        await db.commit()
+
+    async def test_install_callback_calls_ddb_write(self, db_session: AsyncSession, org_in_db, monkeypatch):
+        """install_callback invokes _write_installation_identity_index with the
+        correct installation_id and org_id (the autouse fixture mocks this function
+        but we can verify the mock was called with the right args)."""
+        await self._write_nonce_and_user(db_session)
+        gh = _mock_github_client()
+
+        mock_write = AsyncMock(return_value=None)
+
+        with patch(
+            "src.admin.connections.service._write_installation_identity_index",
+            mock_write,
+        ):
+            result = await install_callback(
+                installation_id=124731131,
+                setup_action="install",
+                state="ddb-jti",
+                db=db_session,
+                github_client=gh,
+            )
+
+        assert result["success"] is True
+        mock_write.assert_called_once_with(
+            installation_id=124731131,
+            org_id="org-test-001",
+        )
+
+    async def test_write_function_calls_put_identity_with_correct_args(self, monkeypatch):
+        """_write_installation_identity_index writes the correct DDB row.
+
+        We test the real function by importing it directly and patching only
+        the IdentityIndexClient constructor to inject a mock DDB client.
+        """
+        # Import the real function (not the autouse-patched version)
+        import importlib
+
+        import src.admin.connections.service as svc_mod
+
+        importlib.reload(svc_mod)
+        real_fn = svc_mod._write_installation_identity_index
+
+        mock_ddb_client = MagicMock()
+        mock_ddb_client.put_item = MagicMock()
+
+        with patch(
+            "src.admin.identity_index.boto3.client",
+            return_value=mock_ddb_client,
+        ):
+            await real_fn(
+                installation_id=144415968,
+                org_id="platform-admin",
+            )
+
+        # Verify put_item was called with correct identity_type and identity_value
+        mock_ddb_client.put_item.assert_called_once()
+        call_kwargs = mock_ddb_client.put_item.call_args[1]
+        assert call_kwargs["TableName"] == "adp-dev-identity-index"
+        item = call_kwargs["Item"]
+        assert item["identity_type"] == {"S": "github_installation_id"}
+        assert item["identity_value"] == {"S": "144415968"}
+        assert item["org_id"] == {"S": "platform-admin"}
+
+    async def test_write_function_does_not_raise_on_ddb_failure(self, monkeypatch):
+        """DDB write failures are best-effort — logged but not propagated."""
+        import importlib
+
+        from botocore.exceptions import ClientError
+
+        import src.admin.connections.service as svc_mod
+
+        importlib.reload(svc_mod)
+        real_fn = svc_mod._write_installation_identity_index
+
+        mock_ddb_client = MagicMock()
+        error_response = {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "throttled"}}
+        mock_ddb_client.put_item.side_effect = ClientError(error_response, "PutItem")
+
+        with patch(
+            "src.admin.identity_index.boto3.client",
+            return_value=mock_ddb_client,
+        ):
+            # Should not raise — best-effort write
+            await real_fn(
+                installation_id=144415968,
+                org_id="platform-admin",
+            )
 
 
 # ---------------------------------------------------------------------------

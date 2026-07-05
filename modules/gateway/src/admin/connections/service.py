@@ -331,6 +331,16 @@ async def install_callback(
             db=db,
         )
 
+    # Issue #2950: Write the installation → tenant mapping to DynamoDB
+    # identity-index so the webhook-ingress resolver can find it. Without
+    # this, the webhook rejects all events as unknown_installation because
+    # the DDB lookup misses and Postgres is only consulted as a drift
+    # safety-net AFTER a DDB hit.
+    await _write_installation_identity_index(
+        installation_id=installation_id,
+        org_id=caller_org_id,
+    )
+
     return {
         "success": True,
         "installation_id": installation_id,
@@ -476,6 +486,42 @@ async def _append_installation_id_to_org(
             "Appended installation_id=%d to org %s github_installation_ids",
             installation_id,
             caller_org_id,
+        )
+
+
+async def _write_installation_identity_index(
+    *,
+    installation_id: int,
+    org_id: str,
+) -> None:
+    """Write the installation → tenant mapping to the DynamoDB identity-index.
+
+    Issue #2950: The webhook-ingress identity resolver uses DDB as its primary
+    lookup for installation_id → tenant. Without this row, all webhook events
+    for the installation are rejected as unknown_installation.
+
+    Best-effort write-through with retry (same pattern as identity/organizations_service).
+    Failures are logged but do not propagate — Postgres remains the source of truth.
+    """
+    from src.admin.identity_index import IdentityIndexClient
+
+    client = IdentityIndexClient()
+    success = await client.put_identity(
+        identity_type="github_installation_id",
+        identity_value=str(installation_id),
+        org_id=org_id,
+    )
+    if success:
+        logger.info(
+            "identity-index: wrote github_installation_id=%d → org=%s",
+            installation_id,
+            org_id,
+        )
+    else:
+        logger.warning(
+            "identity-index: failed to write github_installation_id=%d → org=%s (webhook routing will fail until backfilled)",
+            installation_id,
+            org_id,
         )
 
 
