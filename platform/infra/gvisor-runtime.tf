@@ -96,6 +96,8 @@ resource "kubernetes_cluster_role" "agent_runtimeclass_reader" {
     resources  = ["runtimeclasses"]
     verbs      = ["get", "list", "watch"]
   }
+
+  depends_on = [module.eks]
 }
 
 resource "kubernetes_cluster_role_binding" "agent_runtimeclass_reader" {
@@ -119,6 +121,8 @@ resource "kubernetes_cluster_role_binding" "agent_runtimeclass_reader" {
     name      = "agent-scaledjob-sa"
     namespace = "adp-agents"
   }
+
+  depends_on = [module.eks]
 }
 
 # -----------------------------------------------------------------------------
@@ -153,6 +157,8 @@ resource "kubernetes_cluster_role" "runner_runtimeclass_manage" {
     resource_names = ["gvisor"]
     verbs          = ["update", "patch", "delete"]
   }
+
+  depends_on = [module.eks]
 }
 
 resource "kubernetes_cluster_role_binding" "runner_runtimeclass_manage" {
@@ -176,4 +182,6 @@ resource "kubernetes_cluster_role_binding" "runner_runtimeclass_manage" {
     name      = "github-runner-sa"
     namespace = "arc-runners"
   }
+
+  depends_on = [module.eks]
 }

@@ -61,6 +61,13 @@ output "gateway_service_irsa_role_name" {
   value       = aws_iam_role.gateway_service_irsa.name
 }
 
+# Access entry propagation barrier — depend on this from any root-level
+# kubernetes_* resource to avoid "forbidden" races on first apply (#2904).
+output "access_entry_ready" {
+  description = "Completes after EKS access-entry propagation wait; depend on this before creating kubernetes resources"
+  value       = time_sleep.wait_for_access_entry.id
+}
+
 # Service Account Outputs
 output "gateway_service_account_name" {
   description = "Name of the gateway Kubernetes service account"

@@ -117,6 +117,15 @@ resource "aws_eks_access_policy_association" "admins" {
   }
 }
 
+# Propagation barrier: EKS access-entry authorizer takes a few seconds to
+# propagate after the policy association completes. Without this wait, the
+# Kubernetes provider's first requests (namespace/clusterrole creation) hit
+# "forbidden" on a fresh-account first-apply. See issue #2904.
+resource "time_sleep" "wait_for_access_entry" {
+  depends_on      = [aws_eks_access_policy_association.admins]
+  create_duration = "30s"
+}
+
 # Kubernetes Namespace for Gateway Service
 # Note: This namespace is also defined in k8s/namespace.yaml for the deploy workflow.
 # Terraform creates it here to ensure the service account can be created.
@@ -132,7 +141,7 @@ resource "kubernetes_namespace" "bedrockgw" {
 
   depends_on = [
     aws_eks_cluster.main,
-    aws_eks_access_policy_association.admins,
+    time_sleep.wait_for_access_entry,
   ]
 }
 
@@ -380,8 +389,8 @@ resource "aws_iam_role_policy" "gateway_dynamodb" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:Scan", "dynamodb:PutItem", "dynamodb:UpdateItem"]
+        Effect = "Allow"
+        Action = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:Scan", "dynamodb:PutItem", "dynamodb:UpdateItem"]
         Resource = [
           "arn:aws:dynamodb:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/bedrockgw-*",
           "arn:aws:dynamodb:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/bedrockgw-*/*"
