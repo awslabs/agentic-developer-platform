@@ -1,12 +1,25 @@
 # Design Note: GitHub-org → ADP-tenant model (Issue #2951)
 
-> **Status**: Design-review (spike output) — **Revision 3** (validated, session model aligned)
-> **Author**: @agent-architect
-> **Date**: 2026-07-04 (rev 3)
+> **Status**: Design-review (spike output) — **Revision 4** (friction redesign, App visibility/ownership model, delivery phasing)
+> **Author**: @agent-architect (rev 1–3), design session with user 2026-07-05 (rev 4)
+> **Date**: 2026-07-05 (rev 4)
 > **Issue**: #2951 — create org tenant at App registration + auto-join by GitHub membership + multi-tenant users
+> **EPIC**: #2981 (delivery tracking; native sub-issue tree)
 > **Mode**: Per-issue review
 > **Verdict**: ⚠️ Ready with caveats — the three-rule model is sound and reuses the
 > right code. D5 (user-level many:many) is the heavy lift. See §Verdict.
+>
+> **Revision 4 note:** From-scratch friction review with the user. D1–D7 remain
+> LOCKED and unchanged; this revision changes *delivery phasing*, the *onboarding
+> flow*, and adds the *App visibility/ownership model* as new locked decisions
+> **D8–D12** — see **§10**. Headlines: D5 delivery is phased (v1 data / v1.5
+> switcher — "Variant A"); register→install becomes one chained same-tab journey
+> (#2682 is a prerequisite); the manifest's `"public"` field becomes an operator
+> choice (today hardcoded `False`, `service.py:745` — an unstated hard dependency
+> this note previously missed: a private App can only ever be installed on the org
+> that owns it, so multi-org was unreachable); enterprise multi-org = per-org
+> private Apps via a deferred app registry; Rule 3 (#2954) deferred to v2. The 1h
+> switch-token TTL question in §9 is resolved: 15 min + silent refresh (§10.D8).
 >
 > **Revision 3 note:** Validated all design claims against live code; aligned the session
 > model between this note and child issue #2961 — switch-tenant uses **gateway-issued
@@ -436,3 +449,95 @@ pattern is well-proven (used in e.g. Stripe's multi-org model). Gateway-issued s
 tokens are short-lived (1h) so stale-tenant-scoping risk is bounded to the token TTL
 window; the frontend discards old tokens immediately on switch. Accept 1h TTL or shorten
 to 15min for tighter scoping.
+
+---
+
+## 10. Revision 4 — friction redesign, App visibility/ownership model, delivery phasing
+
+> Source: from-scratch friction review, design session 2026-07-05. D1–D7 unchanged.
+> Delivery is tracked in **EPIC #2981** (native sub-issue tree).
+
+### 10.1 New locked decisions (D8–D12)
+
+| # | Decision | Summary |
+|---|----------|---------|
+| **D8** | **D5 phased ("Variant A")** | v1 ships the `tenant_memberships` table, join-all writes at login, backfill, and deterministic first-match active tenant (#2961, reduced scope). v1.5 ships the switch-tenant endpoint, gateway switch-tokens, and the switcher UI (#2982). **TTL resolved: 15 min + silent refresh** — the frontend re-calls switch-tenant for a fresh token while the Cognito session is still valid; full re-auth only when Cognito itself expires. Rationale: membership *data* is cheap and keeps D5/D7 coherent (skipping it forces a lossy retroactive backfill and risks tenant-flipping bugs on matcher-order changes); the switcher UI only serves the multi-org minority and blocks nothing in the single-org E2E story. |
+| **D9** | **Chained onboarding** | `register_app_callback` 302s directly to `github.com/apps/{slug}/installations/new`; `install_callback` lands back on the dashboard success state. One continuous **same-tab** journey (~90 s). **#2682 is a named prerequisite** (same-tab flow, callback-entry logging, orphaned-App recovery). Q1's "tenant shell inert until install" window shrinks to seconds — no matcher change needed; option (a) stands. Register happens once per deployment: subsequent orgs get an install-only entry point ("Connect your organization"). |
+| **D10** | **App visibility is an operator choice** | The manifest's `"public"` field — today hardcoded `False` (`_build_app_manifest`, `service.py:745`) — becomes a registration-time toggle. **Private** = installable only on the App-owner org (GitHub-enforced single-org boundary), org-owned key: the enterprise/security posture. **Public** = unlimited orgs + personal-account installs (solo users), all sharing the deployment's key: the trial/PLG funnel. "Public" ≠ discoverable (no Marketplace listing; install still requires org-owner consent). Asymmetry: private→public is a GitHub settings flip anytime; public→private only while installed on ≤1 account. Public requires an **install-time tenant upsert** for unknown orgs (they never register) — in #2952's scope, including the no-caller-nonce case. |
+| **D11** | **Enterprise multi-org = per-org private Apps (app registry), NOT a shared public App** | A shared public App means one `.pem` whose compromise exposes every installed org — indefensible to banks / security-conscious orgs. Instead each org wanting key isolation registers its **own private App** (owned by that org) via the same chained flow. The **app registry** (0–1 public App + N private org Apps per deployment; per-app webhook-secret resolution via `X-GitHub-Hook-Installation-Target-ID`; per-app token minting; one designated login App for Cognito OIDC) is **designed but deferred** (#2985); its entire v1 schema footprint is a `github_org_id`-adjacent `github_app_id` column + per-app secret naming, seeded in #2952 (~1 day). A hybrid deployment with zero public Apps *is* the pure enterprise mode; orgs installing the public App become **trial tenants** with a graduation path to their own private App (#2986, deferred; v1 answer: platform admin migrates manually). |
+| **D12** | **Registration authz widens; GitHub arbitrates** | `register_app_start` moves from platform-admin-only to authenticated-user (platform admin OR org admin), with an optional deployment toggle to restrict back. Safety is GitHub-side: only an org *owner* can create an org-owned App, so GitHub validates authority over the target org regardless of ADP role. Q3/Option C already handles ownerless tenant shells; D4 gives each org its admins automatically (GitHub-role mirroring). Platform admin remains a multi-holder role for deployment operations — it is not the org-onboarding bottleneck. |
+
+### 10.2 Supporting locks
+
+- **Auto-join defaults ON** (D3 made explicit) with an org-admin toggle
+  (`member_approval_policy`). GitHub org membership is already the trust boundary
+  for code access.
+- **Reflect-GitHub-state, don't snapshot**: repo lists refresh from the
+  `installation_repositories` (and `installation`) webhook events — fixes the live
+  979 stale-count bug (installation 144415968: GitHub has 2 repos, UI shows 1).
+  "Manage repositories" deep-link visible to **all tenant members**; authz is
+  delegated entirely to GitHub (org owners edit directly; members get GitHub's
+  native request-to-add flow). **Disconnect stays org_admin-only.** (#2983)
+- **Guidance states everywhere a user can stall** (#2984): post-install
+  "what's-next" panel; pending-approval status page instead of a 403 dead-end;
+  no-org banner — on private-App deployments "ask your org owner to connect it"
+  + copyable link, on public-App deployments a "Connect your repos" install CTA
+  (the solo funnel).
+- **Personal tenants** (Q4 revised): on private-App deployments they are a
+  *waiting room* (D6 + banner + D7 upgrade path; an org-private App cannot be
+  installed on personal accounts, so no personal installs). On public-App
+  deployments personal installs are **first-class**: they route to the username
+  tenant via the existing `install_callback` caller-tenant path — now deliberate,
+  not incidental.
+- **Rule 3 (#2954) deferred to v2.** Nothing in the first-run journey needs it;
+  the `github_org_id` column from #2952 preserves the merge key.
+
+### 10.3 App / installation / tenant model (reference)
+
+- **App ↔ deployment**: 1:1 today (registry makes it 1:N later). The App is the
+  deployment's GitHub identity — credentials, webhook URL, agent commits.
+- **App ↔ installations**: 1:N — one installation per org (or personal account).
+  GitHub is idempotent per account: re-install edits the repo list, never creates
+  a duplicate (979 evidence: AISuperPlane folded into installation 144415968).
+- **Installation ↔ tenant**: 1:1, keyed by `github_org_id` (Rule 1.d) — what makes
+  webhook routing unambiguous.
+- **Login**: one App serves OAuth login per deployment (Cognito has a single OIDC
+  provider). Under the registry, the first/designated App is the login App;
+  subsequent org Apps are agent/webhook-only. Login identity ("who is this GitHub
+  user") is org-independent, so one login App serving all orgs is correct.
+
+### 10.4 Day-1 (v1) scope and phasing
+
+Critical path **#2952 → #2961(v1) → #2953**, with #2682 in parallel; #2983/#2984
+parallel after #2952. Hard deps unchanged (§7): #2950 + `USER_IDENTITY_INDEX_V2_WRITE=true`.
+
+| Tier | Issue | Scope delta vs. Rev 3 |
+|---|---|---|
+| v1 | #2952 | + chained redirect (D9), + `public` toggle (D10), + install-time tenant upsert for unknown orgs, + `github_app_id` column & per-app secret naming seed |
+| v1 (prereq) | #2682 | same-tab flow, callback-entry logging, orphaned-App recovery |
+| v1 | #2961 | **reduced**: table + partial-unique active index + backfill + join-all writes only |
+| v1 | #2953 | unchanged; deps now #2952 + #2961(v1) |
+| v1 | #2983 (new) | repo-list freshness + Manage-repositories button |
+| v1 | #2984 (new) | guidance states + auto-join default ON |
+| v1.5 | #2982 (new) | switch endpoint, 15-min tokens + silent refresh, switcher UI |
+| v2 | #2985 (new, deferred) | app registry — trigger: first org demanding key isolation on a shared deployment |
+| v2 | #2986 (new, deferred) | trial-org graduation — trigger: first trial org wanting to graduate in place |
+| v2 | #2954 | Rule 3 many:many (deferred) |
+
+**Day-1 UX bar:** admin completes register→install in one ~90 s same-tab journey
+ending in a green check; teammates sign in with GitHub and land directly in the
+shared workspace; `@agent-developer` works. On a public-App deployment, a solo
+user goes sign-in → "Connect your repos" → install → agents on their own repos in
+~2 minutes.
+
+### 10.5 Engineering risk notes (for the deferred registry)
+
+The single-App assumption is smeared across **config**, not code: hardcoded
+secret names (`adp/dev/github-app/adp-agent-platform-{id,key,meta}`), webhook
+Lambda env, worker token minting. The registry refactor therefore needs a
+compatibility window where old secret names still resolve. Per-app webhook
+signature verification fails *silently* if the app→secret lookup is wrong (same
+failure signature as #2950) — ship an unknown-app metric from day one. The
+trial-org cutover (#2986) is a cross-store Postgres+DDB update — the #2950 hazard
+class; use the post-commit best-effort + reconcile-metric pattern
+(`approval.py:280-303`).
