@@ -283,6 +283,37 @@ resource "aws_iam_role_policy" "gateway_logs" {
   })
 }
 
+# SSM Parameter read access for the gateway IRSA role (Issue #2944)
+# register_app_start (modules/gateway/src/admin/connections/service.py) reads two
+# deploy-time SSM parameters at request time:
+#   /adp/<env>/webhook-ingress/endpoint   → webhook URL for the App manifest
+#   /adp/<env>/gateway/apigw-invoke-url   → broker OAuth callback base URL
+# Without ssm:GetParameter the reads raise AccessDeniedException, webhook_url is
+# blanked, and the #2674 fail-fast guard returns HTTP 422 "Webhook endpoint not
+# configured" (surfaced in the UI as "Failed to start registration"). Scoped
+# read-only to this account's /adp/<env>/* prefix, which covers both params and
+# any future deploy params the gateway reads. This is the Terraform owner of the
+# live inline policy adp-<env>-policy-gateway-ssm-read.
+resource "aws_iam_role_policy" "gateway_ssm_read" {
+  name = "${var.name_prefix}-policy-gateway-ssm-read"
+  role = aws_iam_role.gateway_service_irsa.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "GatewayReadDeployParams"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        Resource = "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/adp/${var.environment}/*"
+      }
+    ]
+  })
+}
+
 # RDS IAM Authentication for the gateway IRSA role
 resource "aws_iam_role_policy" "gateway_rds_iam_auth" {
   count = var.enable_rds_iam_auth ? 1 : 0
