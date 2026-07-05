@@ -15,7 +15,7 @@
 > **D8–D12** — see **§10**. Headlines: D5 delivery is phased (v1 data / v1.5
 > switcher — "Variant A"); register→install becomes one chained same-tab journey
 > (#2682 is a prerequisite); the manifest's `"public"` field becomes an operator
-> choice (today hardcoded `False`, `service.py:745` — an unstated hard dependency
+> choice (today hardcoded `False`, `service.py:791` — an unstated hard dependency
 > this note previously missed: a private App can only ever be installed on the org
 > that owns it, so multi-org was unreachable); enterprise multi-org = per-org
 > private Apps via a deferred app registry; Rule 3 (#2954) deferred to v2. The 1h
@@ -37,12 +37,12 @@
 
 On a fresh deploy nothing ever creates a tenant keyed to a GitHub org:
 
-- **Registering** the App (`register_app_callback`, `service.py:943`) only writes
+- **Registering** the App (`register_app_callback`, `service.py:989`) only writes
   Secrets Manager credentials + invalidates caches. It creates **no** `Organization`
   row. It doesn't even *see* `owner_type`/`org` — `register_app_start` stores the
-  nonce with `channel_context=None` (`service.py:920`), so the callback has no memory
+  nonce with `channel_context=None` (`service.py:966`), so the callback has no memory
   of what the admin registered against. (It *can* recover org identity: the GitHub
-  conversions response `data` at `service.py:1024` includes an `owner` object with
+  conversions response `data` at `service.py:1070` includes an `owner` object with
   `login`/`id`/`type`.)
 - **Installing** the App (`install_callback`, `service.py:191`) attaches the
   installation to **the installer's own tenant** — `caller_org_id = user_row.org_id`
@@ -164,8 +164,8 @@ A migration tool is a follow-up child issue.
 **1.a Carry owner identity into the callback.** `register_app_start` must persist
 `owner_type` + `org` (and later the numeric owner id) so the callback knows what was
 registered. Two options: (i) store them in the nonce `channel_context` JSON (currently
-`None`, `service.py:920`), or (ii) read the `owner` object off the conversions response
-(`service.py:1024`) — **prefer (ii)** because GitHub is the source of truth for the
+`None`, `service.py:966`), or (ii) read the `owner` object off the conversions response
+(`service.py:1070`) — **prefer (ii)** because GitHub is the source of truth for the
 numeric org id and login, and it needs no nonce-schema change. Extract
 `data["owner"]["login"]`, `["id"]`, `["type"]`.
 
@@ -261,7 +261,8 @@ CREATE TABLE tenant_memberships (
 
 CREATE UNIQUE INDEX uq_tenant_memberships_active
     ON tenant_memberships (user_id) WHERE is_active = TRUE;
--- Guarantees exactly one active tenant per user at the DB level.
+-- Guarantees AT MOST one active tenant per user at the DB level;
+-- application logic (backfill + atomic switch txn) maintains exactly-one.
 
 CREATE INDEX ix_tenant_memberships_tenant_id ON tenant_memberships (tenant_id);
 CREATE INDEX ix_tenant_memberships_user_id ON tenant_memberships (user_id);
@@ -307,8 +308,12 @@ token_manager.py:63-100`) which already issues gateway JWTs for service accounts
   throttling for frequent switchers)
 - No `AdminUserGlobalSignOut` needed (old Cognito tokens are irrelevant once the frontend
   uses the gateway token)
-- Existing `TokenContextMiddleware` (`middleware.py:512-634`) already validates both
-  Cognito JWTs and gateway JWTs — same `TokenContext` output with `org_id`
+- The effective auth path already accepts gateway JWTs: the FastAPI dependency
+  `get_current_user_context()` chains Cognito → gateway-token validation, and
+  `require_organization_access` uses it. (Precision per review #2993: the ASGI
+  `TokenContextMiddleware` itself only calls `validate_cognito_jwt` — #2982 must
+  verify SSE/WebSocket paths that bypass FastAPI deps, or add the gateway-token
+  branch to the middleware.)
 - No pre-token-generation Lambda change needed
 - `token_manager.py` already handles token generation, storage, and validation
 
@@ -406,8 +411,8 @@ downtime (additive inserts, no column drops).
 
 ## 7. Hard dependencies (unchanged from issue, confirmed OPEN)
 
-- **#2949** (OPEN) — webhook `GATEWAY_API_URL`/`INTERNAL_API_KEY_ARN` empty.
-- **#2950** (OPEN) — install-callback writes Postgres only, not DDB identity-index.
+- **#2949** — webhook `GATEWAY_API_URL`/`INTERNAL_API_KEY_ARN` empty. Code fix merged (PR #2960, later reverted for the #2975 outage; `GATEWAY_API_URL` intentionally stays `""` — the Lambda must never call the internal ALB).
+- **#2950** — install-callback DDB identity-index write: **code fix MERGED** (PR #2972, 2026-07-05). Remaining: live backfill of pre-existing installations (e.g. 144415968 on 979).
 - **`USER_IDENTITY_INDEX_V2_WRITE=true`** — gates the entire onboarding write path
   (`handler.py:498`, `approval.py:169`). Must be flipped on 979.
 
@@ -463,7 +468,7 @@ to 15min for tighter scoping.
 |---|----------|---------|
 | **D8** | **D5 phased ("Variant A")** | v1 ships the `tenant_memberships` table, join-all writes at login, backfill, and deterministic first-match active tenant (#2961, reduced scope). v1.5 ships the switch-tenant endpoint, gateway switch-tokens, and the switcher UI (#2982). **TTL resolved: 15 min + silent refresh** — the frontend re-calls switch-tenant for a fresh token while the Cognito session is still valid; full re-auth only when Cognito itself expires. Rationale: membership *data* is cheap and keeps D5/D7 coherent (skipping it forces a lossy retroactive backfill and risks tenant-flipping bugs on matcher-order changes); the switcher UI only serves the multi-org minority and blocks nothing in the single-org E2E story. |
 | **D9** | **Chained onboarding** | `register_app_callback` 302s directly to `github.com/apps/{slug}/installations/new`; `install_callback` lands back on the dashboard success state. One continuous **same-tab** journey (~90 s). **#2682 is a named prerequisite** (same-tab flow, callback-entry logging, orphaned-App recovery). Q1's "tenant shell inert until install" window shrinks to seconds — no matcher change needed; option (a) stands. Register happens once per deployment: subsequent orgs get an install-only entry point ("Connect your organization"). |
-| **D10** | **App visibility is an operator choice** | The manifest's `"public"` field — today hardcoded `False` (`_build_app_manifest`, `service.py:745`) — becomes a registration-time toggle. **Private** = installable only on the App-owner org (GitHub-enforced single-org boundary), org-owned key: the enterprise/security posture. **Public** = unlimited orgs + personal-account installs (solo users), all sharing the deployment's key: the trial/PLG funnel. "Public" ≠ discoverable (no Marketplace listing; install still requires org-owner consent). Asymmetry: private→public is a GitHub settings flip anytime; public→private only while installed on ≤1 account. Public requires an **install-time tenant upsert** for unknown orgs (they never register) — in #2952's scope, including the no-caller-nonce case. |
+| **D10** | **App visibility is an operator choice** | The manifest's `"public"` field — today hardcoded `False` (`_build_app_manifest`, `service.py:791`) — becomes a registration-time toggle. **Private** = installable only on the App-owner org (GitHub-enforced single-org boundary), org-owned key: the enterprise/security posture. **Public** = unlimited orgs + personal-account installs (solo users), all sharing the deployment's key: the trial/PLG funnel. "Public" ≠ discoverable (no Marketplace listing; install still requires org-owner consent). Asymmetry: private→public is a GitHub settings flip anytime; public→private only while installed on ≤1 account. Public requires an **install-time tenant upsert** for unknown orgs (they never register) — in #2952's scope, including the no-caller-nonce case. |
 | **D11** | **Enterprise multi-org = per-org private Apps (app registry), NOT a shared public App** | A shared public App means one `.pem` whose compromise exposes every installed org — indefensible to banks / security-conscious orgs. Instead each org wanting key isolation registers its **own private App** (owned by that org) via the same chained flow. The **app registry** (0–1 public App + N private org Apps per deployment; per-app webhook-secret resolution via `X-GitHub-Hook-Installation-Target-ID`; per-app token minting; one designated login App for Cognito OIDC) is **designed but deferred** (#2985); its entire v1 schema footprint is a `github_org_id`-adjacent `github_app_id` column + per-app secret naming, seeded in #2952 (~1 day). A hybrid deployment with zero public Apps *is* the pure enterprise mode; orgs installing the public App become **trial tenants** with a graduation path to their own private App (#2986, deferred; v1 answer: platform admin migrates manually). |
 | **D12** | **Registration authz widens; GitHub arbitrates** | `register_app_start` moves from platform-admin-only to authenticated-user (platform admin OR org admin), with an optional deployment toggle to restrict back. Safety is GitHub-side: only an org *owner* can create an org-owned App, so GitHub validates authority over the target org regardless of ADP role. Q3/Option C already handles ownerless tenant shells; D4 gives each org its admins automatically (GitHub-role mirroring). Platform admin remains a multi-holder role for deployment operations — it is not the org-onboarding bottleneck. |
 
@@ -515,7 +520,7 @@ parallel after #2952. Hard deps unchanged (§7): #2950 + `USER_IDENTITY_INDEX_V2
 |---|---|---|
 | v1 | #2952 | + chained redirect (D9), + `public` toggle (D10), + install-time tenant upsert for unknown orgs, + `github_app_id` column & per-app secret naming seed |
 | v1 (prereq) | #2682 | same-tab flow, callback-entry logging, orphaned-App recovery |
-| v1 | #2961 | **reduced**: table + partial-unique active index + backfill + join-all writes only |
+| v1 | #2961 | **reduced**: table + partial-unique active index + backfill + model only (join-all writes live in #2953) |
 | v1 | #2953 | unchanged; deps now #2952 + #2961(v1) |
 | v1 | #2983 (new) | repo-list freshness + Manage-repositories button |
 | v1 | #2984 (new) | guidance states + auto-join default ON |
