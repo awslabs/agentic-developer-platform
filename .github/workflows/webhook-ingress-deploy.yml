@@ -326,9 +326,17 @@ jobs:
           EVENTS_TABLE=$(aws ssm get-parameter \
             --name "/adp/${ENVIRONMENT}/webhook-ingress/webhook-events-table" \
             --query "Parameter.Value" --output text --region "${AWS_REGION}")
+          IDENTITY_TABLE=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/webhook-ingress/identity-index-table" \
+            --query "Parameter.Value" --output text --region "${AWS_REGION}")
+          RATE_LIMITS_TABLE=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/webhook-ingress/rate-limits-table" \
+            --query "Parameter.Value" --output text --region "${AWS_REGION}")
           echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
           echo "queue_url=$QUEUE_URL" >> "$GITHUB_OUTPUT"
           echo "events_table=$EVENTS_TABLE" >> "$GITHUB_OUTPUT"
+          echo "identity_table=$IDENTITY_TABLE" >> "$GITHUB_OUTPUT"
+          echo "rate_limits_table=$RATE_LIMITS_TABLE" >> "$GITHUB_OUTPUT"
           # Mask the secret so it doesn't appear in logs
           echo "::add-mask::$SECRET_VALUE"
           echo "secret=$SECRET_VALUE" >> "$GITHUB_OUTPUT"
@@ -341,6 +349,8 @@ jobs:
           WEBHOOK_SECRET: ${{ steps.ssm.outputs.secret }}
           WEBHOOK_SQS_QUEUE_URL: ${{ steps.ssm.outputs.queue_url }}
           WEBHOOK_EVENTS_TABLE: ${{ steps.ssm.outputs.events_table }}
+          IDENTITY_INDEX_TABLE: ${{ steps.ssm.outputs.identity_table }}
+          RATE_LIMITS_TABLE: ${{ steps.ssm.outputs.rate_limits_table }}
         run: |
           pytest tests/ -m integration -v --tb=short --timeout=120
 

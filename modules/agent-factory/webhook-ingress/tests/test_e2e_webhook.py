@@ -18,6 +18,7 @@ Requires:
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 
@@ -35,6 +36,11 @@ from .helpers import (
 pytestmark = [pytest.mark.integration]
 
 
+def _test_sender_id() -> int:
+    """Return the synthetic sender ID that matches the seeded identity-index fixture."""
+    return int(os.environ.get("WEBHOOK_TEST_SENDER_ID", "100001"))
+
+
 def _issue_labeled_payload(installation_id: str, sender_type: str = "User") -> dict:
     """Build a minimal issues.labeled webhook payload."""
     return {
@@ -43,7 +49,7 @@ def _issue_labeled_payload(installation_id: str, sender_type: str = "User") -> d
             "number": 42,
             "title": "Test issue for E2E webhook",
             "body": "This is an integration test issue.",
-            "user": {"login": "test-user", "type": "User"},
+            "user": {"login": "test-user", "id": _test_sender_id(), "type": "User"},
             "labels": [{"name": "agent-developer"}],
             "html_url": "https://github.com/test-org-e2e/test-repo/issues/42",
         },
@@ -54,7 +60,7 @@ def _issue_labeled_payload(installation_id: str, sender_type: str = "User") -> d
             "owner": {"login": "test-org-e2e"},
         },
         "installation": {"id": int(installation_id)},
-        "sender": {"login": "test-user", "type": sender_type},
+        "sender": {"login": "test-user", "id": _test_sender_id(), "type": sender_type},
     }
 
 
@@ -66,7 +72,7 @@ def _pr_opened_payload(installation_id: str) -> dict:
             "number": 99,
             "title": "feat: add new feature",
             "body": "This PR adds a great feature.",
-            "user": {"login": "test-user", "type": "User"},
+            "user": {"login": "test-user", "id": _test_sender_id(), "type": "User"},
             "html_url": "https://github.com/test-org-e2e/test-repo/pull/99",
             "head": {"ref": "feature/new-thing", "sha": "abc123"},
             "base": {"ref": "main", "sha": "def456"},
@@ -77,7 +83,7 @@ def _pr_opened_payload(installation_id: str) -> dict:
             "owner": {"login": "test-org-e2e"},
         },
         "installation": {"id": int(installation_id)},
-        "sender": {"login": "test-user", "type": "User"},
+        "sender": {"login": "test-user", "id": _test_sender_id(), "type": "User"},
     }
 
 
@@ -89,13 +95,13 @@ def _issue_comment_payload(installation_id: str, body: str = "Hello") -> dict:
             "number": 42,
             "title": "Test issue",
             "body": "Original issue body.",
-            "user": {"login": "test-user", "type": "User"},
+            "user": {"login": "test-user", "id": _test_sender_id(), "type": "User"},
             "labels": [],
             "html_url": "https://github.com/test-org-e2e/test-repo/issues/42",
         },
         "comment": {
             "body": body,
-            "user": {"login": "test-user", "type": "User"},
+            "user": {"login": "test-user", "id": _test_sender_id(), "type": "User"},
             "html_url": "https://github.com/test-org-e2e/test-repo/issues/42#issuecomment-1",
         },
         "repository": {
@@ -104,7 +110,7 @@ def _issue_comment_payload(installation_id: str, body: str = "Hello") -> dict:
             "owner": {"login": "test-org-e2e"},
         },
         "installation": {"id": int(installation_id)},
-        "sender": {"login": "test-user", "type": "User"},
+        "sender": {"login": "test-user", "id": _test_sender_id(), "type": "User"},
     }
 
 
@@ -120,7 +126,7 @@ def _push_payload(installation_id: str) -> dict:
             "owner": {"login": "test-org-e2e"},
         },
         "installation": {"id": int(installation_id)},
-        "sender": {"login": "test-user", "type": "User"},
+        "sender": {"login": "test-user", "id": _test_sender_id(), "type": "User"},
         "pusher": {"name": "test-user"},
     }
 
@@ -271,7 +277,7 @@ class TestWebhookE2E:
                 [m["receipt_handle"] for m in messages],
             )
 
-    def test_unknown_installation_returns_200_no_dispatch(
+    def test_unknown_installation_returns_403_no_dispatch(
         self,
         webhook_endpoint,
         webhook_secret,
@@ -279,8 +285,8 @@ class TestWebhookE2E:
         unique_delivery_id,
         cleanup_ddb_events,
     ):
-        """Fire webhook from unregistered installation -> 200 but no SQS."""
-        # Use an installation_id that doesn't exist in tenant-registry
+        """Fire webhook from unregistered installation -> 403 unknown_identity, no SQS."""
+        # Use an installation_id that doesn't exist in identity-index
         payload = _issue_labeled_payload("11111111")
         cleanup_ddb_events.track(unique_delivery_id)
 
@@ -292,8 +298,11 @@ class TestWebhookE2E:
             delivery_id=unique_delivery_id,
         )
 
-        # Should return 200 (ack the webhook) but not dispatch
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        # Lambda returns 403 with unknown_identity error for unresolvable installations
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+        body = resp.json()
+        assert body.get("error") == "unknown_identity"
+        assert body.get("outcome") == "unknown_installation"
 
         # Verify no SQS message for this delivery
         messages = poll_sqs(
