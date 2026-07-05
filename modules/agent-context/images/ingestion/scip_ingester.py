@@ -95,21 +95,173 @@ class SCIPGraph:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _Descriptor:
+    """A single parsed SCIP descriptor segment."""
+
+    name: str  # The identifier (unquoted if backtick-escaped)
+    suffix: str  # The trailing type suffix: "/", ".", "#", "().", ":", "!"
+
+
+def _tokenize_descriptors(descriptor_str: str) -> list[_Descriptor]:
+    """Tokenize a SCIP descriptor string into individual descriptors.
+
+    SCIP descriptor grammar (from the spec):
+      - `/` = namespace/package
+      - `.` = term/value
+      - `#` = type/class
+      - `().` = method/function
+      - `:` = meta
+      - `!` = macro
+      - `(name)` = method parameter (name between parens)
+      - `[name]` = type parameter (name between brackets)
+      - `` `name` `` = backtick-escaped identifier (may contain special chars)
+
+    Returns a list of _Descriptor objects with their name and suffix type.
+    """
+    result: list[_Descriptor] = []
+    i = 0
+    n = len(descriptor_str)
+
+    while i < n:
+        # Skip leading whitespace (shouldn't occur, but be safe)
+        if descriptor_str[i] == " ":
+            i += 1
+            continue
+
+        # Case 1: backtick-escaped name
+        if descriptor_str[i] == "`":
+            end_tick = descriptor_str.find("`", i + 1)
+            if end_tick == -1:
+                # Malformed — take rest as name
+                result.append(_Descriptor(name=descriptor_str[i + 1 :], suffix=""))
+                break
+            name = descriptor_str[i + 1 : end_tick]
+            i = end_tick + 1
+            # Read suffix after the closing backtick
+            suffix = _read_suffix(descriptor_str, i)
+            i += len(suffix)
+            result.append(_Descriptor(name=name, suffix=suffix))
+            continue
+
+        # Case 2: parameter descriptor `(name)`
+        if descriptor_str[i] == "(":
+            end_paren = descriptor_str.find(")", i + 1)
+            if end_paren == -1:
+                # Malformed — take rest
+                result.append(_Descriptor(name=descriptor_str[i + 1 :], suffix="()"))
+                break
+            name = descriptor_str[i + 1 : end_paren]
+            i = end_paren + 1
+            # Check for trailing `.` (method param: `(name).` is not standard, but handle)
+            suffix = "()"
+            if i < n and descriptor_str[i] == ".":
+                suffix = "()."
+                i += 1
+            result.append(_Descriptor(name=name, suffix=suffix))
+            continue
+
+        # Case 3: type parameter descriptor `[name]`
+        if descriptor_str[i] == "[":
+            end_bracket = descriptor_str.find("]", i + 1)
+            if end_bracket == -1:
+                result.append(_Descriptor(name=descriptor_str[i + 1 :], suffix="[]"))
+                break
+            name = descriptor_str[i + 1 : end_bracket]
+            i = end_bracket + 1
+            result.append(_Descriptor(name=name, suffix="[]"))
+            continue
+
+        # Case 4: regular identifier — read until a suffix character
+        name_start = i
+        while i < n and descriptor_str[i] not in "/\\.#:!`()[]":
+            i += 1
+        name = descriptor_str[name_start:i]
+
+        # Read suffix
+        suffix = _read_suffix(descriptor_str, i)
+        i += len(suffix)
+        if name or suffix:
+            result.append(_Descriptor(name=name, suffix=suffix))
+        else:
+            # Unrecognized character (e.g. bare ], ), \) — skip to avoid infinite loop
+            i += 1
+
+    return result
+
+
+def _read_suffix(s: str, pos: int) -> str:
+    """Read a descriptor suffix starting at pos.
+
+    Recognizes: `().`, `.`, `#`, `/`, `:`, `!`
+    """
+    if pos >= len(s):
+        return ""
+    ch = s[pos]
+    if ch == "(" and pos + 2 <= len(s) and s[pos : pos + 3] == "().":
+        return "()."
+    if ch in ".#/:!":
+        return ch
+    return ""
+
+
 def parse_moniker_name(symbol: str) -> str:
     """Extract the human-readable name from a SCIP moniker.
+
+    Parses the SCIP descriptor grammar to find the terminal named descriptor,
+    returning its clean identifier (unquoted, no suffix punctuation).
 
     Examples:
         "scip-python python Agent-Reach 0.1 src/agent.py/AgentRunner#run()." → "run"
         "scip-python python requests 2.28 api.py/get()." → "get"
+        "scip-ts npm pkg 1.0 src/utils.ts/formatUsd().(value)" → "value"
+        "scip-python python pkg 0.1 models.py/Position#" → "Position"
     """
-    # Strip trailing descriptor characters
-    stripped = symbol.rstrip(".#/()")
-    # Take the last path component
-    parts = stripped.split("/")
-    name = parts[-1] if parts else symbol
-    # Remove any remaining descriptor chars
-    name = name.rstrip("#.()").split("#")[-1]
-    return name or symbol
+    descriptor_str = _extract_descriptor_str(symbol)
+    if not descriptor_str:
+        return symbol
+
+    descriptors = _tokenize_descriptors(descriptor_str)
+    if not descriptors:
+        return symbol
+
+    # Find the last descriptor with a meaningful name
+    # Skip descriptors with empty names or synthetic names (typeLiteral*, digits-only)
+    for desc in reversed(descriptors):
+        name = desc.name
+        if not name:
+            continue
+        # Skip synthetic TypeScript type literal names
+        if name.startswith("typeLiteral") or name.startswith("{"):
+            continue
+        # Clean the name — strip any trailing digits-colon pattern from meta descriptors
+        # e.g. "session_id0" from "session_id0:" — the "0:" is the meta suffix
+        if desc.suffix == ":" and name and name[-1].isdigit():
+            # Strip trailing digits that are part of SCIP meta numbering
+            stripped = name.rstrip("0123456789")
+            if stripped:
+                name = stripped
+        return name
+
+    # Fallback: return the last descriptor's name even if it looks synthetic
+    for desc in reversed(descriptors):
+        if desc.name:
+            return desc.name
+
+    return symbol
+
+
+def _extract_descriptor_str(symbol: str) -> str:
+    """Extract the descriptor portion from a full SCIP symbol string.
+
+    SCIP format: "scheme manager package version descriptors..."
+    The descriptor portion starts after the 4th space-separated token.
+    """
+    parts = symbol.split(" ", 4)
+    if len(parts) >= 5:
+        return parts[4]
+    # Might already be just a descriptor string or a short symbol
+    return symbol
 
 
 def parse_moniker_module(symbol: str) -> str:
@@ -130,25 +282,50 @@ def parse_moniker_module(symbol: str) -> str:
 
 
 def parse_moniker_kind(symbol: str) -> str:
-    """Infer the symbol kind from the SCIP moniker descriptor suffix.
+    """Infer the symbol kind from the SCIP moniker's terminal descriptor suffix.
 
-    SCIP descriptor conventions:
+    Parses the descriptor grammar and reads the suffix of the last named
+    descriptor to determine kind:
       - `().` = method/function
-      - `#` = type/class member
-      - `.` = term (value)
+      - `#` = type/class
+      - `.` = term/variable
       - `/` = package/module
-      - `()` = type parameter
+      - `()` = parameter
+      - `[]` = type-parameter
+      - `:` = meta
+      - `!` = macro
     """
     if not symbol:
         return "unknown"
-    if symbol.endswith("()."):
+
+    descriptor_str = _extract_descriptor_str(symbol)
+    if not descriptor_str:
+        return "symbol"
+
+    descriptors = _tokenize_descriptors(descriptor_str)
+    if not descriptors:
+        return "symbol"
+
+    # Use the last descriptor's suffix to determine kind
+    last = descriptors[-1]
+    suffix = last.suffix
+
+    if suffix == "().":
         return "function"
-    if symbol.endswith("#"):
+    if suffix == "#":
         return "class"
-    if symbol.endswith("/"):
+    if suffix == "/":
         return "module"
-    if symbol.endswith("."):
+    if suffix == ".":
         return "variable"
+    if suffix == "()":
+        return "parameter"
+    if suffix == "[]":
+        return "type-parameter"
+    if suffix == ":":
+        return "meta"
+    if suffix == "!":
+        return "macro"
     return "symbol"
 
 
