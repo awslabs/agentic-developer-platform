@@ -49,7 +49,8 @@ class UserIdentity(Base, TenantMixin):
 
     __tablename__ = "user_identities"
     __table_args__ = (
-        Index("uq_user_identities_provider_provider_user_id", "provider", "provider_user_id", unique=True),
+        # Relaxed in migration 021 (#2961): unique per provider per tenant (was global).
+        Index("uq_user_identities_provider_provider_user_id_org_id", "provider", "provider_user_id", "org_id", unique=True),
         Index("ix_user_identities_org_id_provider", "org_id", "provider"),
         Index("ix_user_identities_org_id_team_id", "org_id", "team_id"),
     )
