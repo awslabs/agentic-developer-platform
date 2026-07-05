@@ -1,6 +1,7 @@
 """Onboarding API handler — access status, request, admin approve/deny.
 
 Issue #538: Self-serve onboarding flow routes.
+Issue #2953: D5 multi-tenant — join ALL matching org tenants on login.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
@@ -17,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.dependencies import get_current_user, require_admin
 from src.shared.database import get_db
-from src.shared.models.onboarding import TenantAccessRequest
+from src.shared.models.onboarding import TenantAccessRequest, TenantMembership
 from src.shared.models.organization import Organization, User
 from src.shared.schemas.auth import TokenContext
 
@@ -36,6 +38,15 @@ from .schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@dataclass(frozen=True)
+class MatchedTenant:
+    """A tenant matched for a user via GitHub org membership verification."""
+
+    org_id: str
+    org_name: str
+    install_id: int
 
 
 def _cognito_user_pool_id() -> str:
@@ -202,34 +213,34 @@ def _extract_github_identity(claims: dict, cognito_sub: str) -> tuple[str, str]:
     return github_login, github_id
 
 
-async def _find_matching_tenant_for_user(
+async def _find_matching_tenants_for_user(
     db: AsyncSession,
     github_login: str,
-) -> str | None:
-    """Find an existing ADP tenant that this GitHub user is a verified member of.
+) -> list[MatchedTenant]:
+    """Find ALL existing ADP tenants this GitHub user is a verified member of.
 
-    Iterates orgs with non-empty github_installation_ids. For each, calls
-    GitHub's org membership API using the App's installation token. Returns
-    the org_id of the first matched tenant, or None.
+    Issue #2953 (D5): Returns a list of MatchedTenant ordered by
+    Organization.created_at (deterministic). Empty list if none match.
 
-    Failure mode: any GitHub API error -> log + skip that org (fail-closed,
-    do not auto-attach when verification fails).
+    Failure mode: any GitHub API error for a specific org -> log + skip that
+    org (fail-closed per org, not per call).
     """
     from src.admin.connections.github_client import GitHubAppClient
     from src.admin.connections.service import _get_github_app_credentials
 
-    # Fetch all orgs and filter in Python — small N, no perf concern
-    stmt = select(Organization)
+    # Fetch all orgs ordered by created_at for deterministic ordering
+    stmt = select(Organization).order_by(Organization.created_at)
     candidates = (await db.execute(stmt)).scalars().all()
     candidates = [o for o in candidates if o.github_installation_ids]
     if not candidates:
-        return None
+        return []
 
     app_id, private_key = _get_github_app_credentials()
     if not app_id or not private_key:
         logger.warning("GitHub App credentials not configured; cannot verify org membership")
-        return None
+        return []
 
+    matched: list[MatchedTenant] = []
     client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
     try:
         for org in candidates:
@@ -241,7 +252,14 @@ async def _find_matching_tenant_for_user(
                         username=github_login,
                     )
                     if is_member:
-                        return org.id
+                        matched.append(
+                            MatchedTenant(
+                                org_id=org.id,
+                                org_name=org.name,
+                                install_id=int(install_id),
+                            )
+                        )
+                        break  # found for this org, move to next org
                 except Exception as exc:
                     logger.warning(
                         "org membership check failed org=%s install=%s user=%s: %s",
@@ -253,7 +271,7 @@ async def _find_matching_tenant_for_user(
                     continue  # try next install / next org
     finally:
         await client.aclose()
-    return None
+    return matched
 
 
 async def _determine_role_for_matched_user(
@@ -445,6 +463,52 @@ async def _pick_tenant_id(db: AsyncSession, base_slug: str, cognito_sub: str) ->
     return base_slug
 
 
+async def _create_memberships_for_matches(
+    db: AsyncSession,
+    user_id: str,
+    matched_tenants: list[MatchedTenant],
+    github_login: str,
+) -> None:
+    """Create TenantMembership rows for each matched tenant (D5 multi-membership).
+
+    Issue #2953: For each matched org, determine the user's role (D4) and create
+    a TenantMembership row. Handles D7 (re-login): skips orgs the user already
+    has a membership for. Sets is_active=true only on the first membership if
+    the user has no existing active membership.
+    """
+    # Fetch existing memberships for this user (D7: don't duplicate)
+    stmt = select(TenantMembership).where(TenantMembership.user_id == user_id)
+    result = await db.execute(stmt)
+    existing = result.scalars().all()
+    existing_tenant_ids = {m.tenant_id for m in existing}
+    has_active = any(m.is_active for m in existing)
+
+    first_new = True
+    for mt in matched_tenants:
+        if mt.org_id in existing_tenant_ids:
+            continue  # D7: already a member, skip
+
+        # D4: determine role from GitHub org membership
+        role = await _determine_role_for_matched_user(github_login, mt.org_name, mt.install_id)
+
+        # Set is_active on the first new membership only if user has no active one
+        is_active = first_new and not has_active
+
+        membership = TenantMembership(
+            user_id=user_id,
+            tenant_id=mt.org_id,
+            role=role,
+            is_active=is_active,
+            joined_via="org_membership",
+            github_org_id=mt.org_name,
+        )
+        db.add(membership)
+        first_new = False
+
+    # Flush to catch constraint violations within the transaction
+    await db.flush()
+
+
 # ---------------------------------------------------------------------------
 # Public routes (authenticated but no tenant required)
 # ---------------------------------------------------------------------------
@@ -521,21 +585,41 @@ async def submit_access_request(
     claims = _decode_jwt_claims(request_in.headers.get("authorization"))
     github_login, github_id = _extract_github_identity(claims, cognito_sub)
 
-    # Issue #719: Before slug derivation, check if this user belongs to an
-    # existing ADP tenant (via verified GitHub org membership).
-    matched_org_id = await _find_matching_tenant_for_user(db, github_login)
-    if matched_org_id is not None:
-        return await _attach_user_to_existing_tenant(
+    # Issue #2953 (D5): Before slug derivation, check if this user belongs to
+    # ANY existing ADP tenants (via verified GitHub org membership).
+    matched_tenants = await _find_matching_tenants_for_user(db, github_login)
+    if matched_tenants:
+        # Attach user to the FIRST matched tenant (home tenant — creates User row)
+        first_match = matched_tenants[0]
+        response = await _attach_user_to_existing_tenant(
             db=db,
-            org_id=matched_org_id,
+            org_id=first_match.org_id,
             cognito_sub=cognito_sub,
             github_login=github_login,
             github_id=github_id,
         )
 
-    # Derive tenant ID from the GitHub login; reject on collision so an
-    # admin can decide whether this user belongs in the existing tenant
-    # (invite flow, not this flow) or needs different routing.
+        # If the user was approved (User row created), create memberships for
+        # ALL matched tenants (including the first one). D7: skips existing.
+        if response.status == "approved":
+            # Look up the just-created User row to get its ID
+            stmt = select(User).where(User.cognito_sub == cognito_sub)
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
+            if user is not None:
+                await _create_memberships_for_matches(
+                    db=db,
+                    user_id=user.id,
+                    matched_tenants=matched_tenants,
+                    github_login=github_login,
+                )
+                await db.commit()
+
+        return response
+
+    # D6 fallback: No org matches — derive tenant ID from the GitHub login.
+    # Reject on collision so an admin can decide whether this user belongs in
+    # the existing tenant (invite flow) or needs different routing.
     base_slug = _slugify_tenant_id(github_login)
     tenant_id = await _pick_tenant_id(db, base_slug, cognito_sub)
     if tenant_id is None:
@@ -573,6 +657,27 @@ async def submit_access_request(
             admin_sub="system:auto-approve",
             identity_writer=writer,
         )
+        # D6: Create username-self membership for username-slug tenant
+        stmt = select(User).where(User.cognito_sub == cognito_sub)
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
+        if user is not None:
+            existing_stmt = select(TenantMembership).where(
+                TenantMembership.user_id == user.id,
+                TenantMembership.tenant_id == approved_tenant_id,
+            )
+            existing_result = await db.execute(existing_stmt)
+            if existing_result.scalar_one_or_none() is None:
+                membership = TenantMembership(
+                    user_id=user.id,
+                    tenant_id=approved_tenant_id,
+                    role=user.role or "member",
+                    is_active=True,
+                    joined_via="username_self",
+                )
+                db.add(membership)
+                await db.commit()
+
         return AccessRequestResponse(
             status="approved",
             tenant_id=approved_tenant_id,
