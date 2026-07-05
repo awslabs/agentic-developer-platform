@@ -132,6 +132,14 @@ data:
   AGENT_REGISTRY_TABLE: "__AGENT_REGISTRY_TABLE__"
 
   # =============================================================================
+  # Org-tenant auto-creation (Rule-1, EPIC #2981).
+  # Read directly via os.environ in connections/service.py (NOT BG_-prefixed).
+  # When "true", registering a GitHub Organization connection automatically
+  # creates an org-tenant shell so members can later auto-join.
+  # =============================================================================
+  ORG_TENANT_AUTO_CREATE: "true"
+
+  # =============================================================================
   # Knowledge Layer registry (E10 #1736 / #2082).
   # Read directly via os.environ in app.py (NOT BG_-prefixed) — they gate +
   # power the agent-context registry routes mounted into the gateway.
