@@ -205,6 +205,11 @@ async def install_callback(
     minutes — so it is the authenticator here. We resolve the caller's user_id
     from the nonce and their org_id from the `users` table.
 
+    Issue #2952: When `state` is empty/missing (public-App install initiated from
+    GitHub by a non-ADP user), bypass nonce validation entirely. Resolve the org
+    exclusively from the installation metadata via GitHub API. Create the tenant
+    shell (upsert only, no user attachment). Return a generic success page.
+
     Returns a dict with keys:
         success          — bool
         installation_id  — int
@@ -212,6 +217,7 @@ async def install_callback(
         account_type     — str
         error_code       — str | None  (set on failure)
         error_message    — str | None
+        no_nonce         — bool  (True when state was empty — public-App path)
 
     Raises:
         ValueError  — nonce validation failure (expired, consumed, not found)
@@ -219,7 +225,17 @@ async def install_callback(
     """
     from sqlalchemy import select, update
 
-    from src.shared.models.organization import User
+    from src.shared.models.organization import Organization, User
+
+    # Issue #2952: No-nonce path for public-App installs initiated from GitHub
+    # by a non-ADP user. Safe because it only creates resources keyed by the
+    # GitHub-verified installation ID and grants no session or access.
+    if not state:
+        return await _handle_no_nonce_install(
+            installation_id=installation_id,
+            db=db,
+            github_client=github_client,
+        )
 
     # 1. Look up nonce
     stmt = select(MagicLinkNonce).where(
@@ -300,16 +316,46 @@ async def install_callback(
         except Exception as exc:
             logger.warning("Could not fetch repositories for installation %d: %s", installation_id, exc)
 
-    # 5. Attach to the caller's tenant. Both Organization and personal (User)
-    #    installs attach to caller_org_id — for a GitHub-login user that org is
-    #    their own per-user tenant (named after their login), created at
-    #    onboarding. (Older code routed personal accounts to a shared adp-default
-    #    org, which required that org to be pre-seeded and otherwise FK-failed.)
+    # 5. Issue #2952: Resolve the target tenant for org installs.
+    #    For account_type == "Organization", look up by github_org_id first;
+    #    if found, route the install to that org's tenant instead of caller's.
+    #    For unknown orgs (public-App installs), upsert the tenant shell.
+    #    Personal installs and pre-existing behavior preserved via caller_org_id.
+    resolved_org_id = caller_org_id
+
+    if account_type == "Organization" and github_org_id is not None:
+        # Try to find existing org by github_org_id
+        org_by_github_id = (await db.execute(select(Organization).where(Organization.github_org_id == str(github_org_id)))).scalar_one_or_none()
+
+        if org_by_github_id is not None:
+            resolved_org_id = org_by_github_id.id
+            logger.info(
+                "install-callback: resolved org by github_org_id=%s → tenant=%s",
+                github_org_id,
+                resolved_org_id,
+            )
+        elif os.environ.get("ORG_TENANT_AUTO_CREATE", "false").lower() == "true":
+            # Issue #2952 (Rev 4 C): Install-time tenant upsert for unknown orgs.
+            # On a public App, orgs install without ever registering.
+            upserted_id = await _upsert_org_tenant_shell(
+                owner_login=account_login,
+                github_org_id=str(github_org_id),
+                github_app_id="",
+                db=db,
+            )
+            if upserted_id:
+                resolved_org_id = upserted_id
+                logger.info(
+                    "install-callback: upserted org-tenant shell for unknown org %s → tenant=%s",
+                    account_login,
+                    resolved_org_id,
+                )
+
     await _attach_org_installation(
         installation_id=installation_id,
         github_org_id=github_org_id,
         github_org_login=account_login,
-        caller_org_id=caller_org_id,
+        caller_org_id=resolved_org_id,
         db=db,
         account_type=account_type,
         repository_selection=repository_selection,
@@ -320,14 +366,14 @@ async def install_callback(
     # resolve_tenant_app_credentials() never hits a missing-secret error.
     from .tenant_secret import seed_tenant_github_app_secret
 
-    await seed_tenant_github_app_secret(caller_org_id, installation_id)
+    await seed_tenant_github_app_secret(resolved_org_id, installation_id)
 
     if account_type == "Organization":
         # Issue #719: Populate organizations.github_installation_ids so that
         # future users from this org are matched to this tenant automatically.
         await _append_installation_id_to_org(
             installation_id=installation_id,
-            caller_org_id=caller_org_id,
+            caller_org_id=resolved_org_id,
             db=db,
         )
 
@@ -336,9 +382,11 @@ async def install_callback(
     # this, the webhook rejects all events as unknown_installation because
     # the DDB lookup misses and Postgres is only consulted as a drift
     # safety-net AFTER a DDB hit.
+    # Issue #2952 (E): MUST use the resolved org tenant, not caller_org_id,
+    # otherwise webhook routing points at the wrong tenant.
     await _write_installation_identity_index(
         installation_id=installation_id,
-        org_id=caller_org_id,
+        org_id=resolved_org_id,
     )
 
     return {
@@ -348,6 +396,121 @@ async def install_callback(
         "account_type": account_type,
         "error_code": None,
         "error_message": None,
+    }
+
+
+async def _handle_no_nonce_install(
+    *,
+    installation_id: int,
+    db: AsyncSession,
+    github_client: GitHubAppClient | None = None,
+) -> dict[str, Any]:
+    """Handle a public-App install with no state/nonce (non-ADP user path).
+
+    Issue #2952 (Rev 4 C): When state is empty or missing on the install
+    callback (public-App install initiated from GitHub by a non-ADP user),
+    bypass nonce validation entirely. Resolve the org exclusively from the
+    installation metadata via GitHub API. Create the tenant shell (upsert
+    only, no user attachment, no caller_org_id). Return a generic success.
+
+    This path is safe because it only creates resources keyed by the
+    GitHub-verified installation ID and grants no session or access to anyone.
+    """
+    from sqlalchemy import select
+
+    from src.shared.models.organization import Organization
+
+    # Fetch installation metadata from GitHub
+    app_id, private_key = _get_github_app_credentials()
+    if github_client is None and app_id and private_key:
+        github_client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
+
+    account_login = "unknown"
+    account_type = "Organization"
+    github_org_id: int | None = None
+    repository_selection = "selected"
+    repositories: list[str] = []
+
+    if github_client is not None:
+        try:
+            meta = await github_client.get_installation(installation_id)
+            account = meta.get("account", {})
+            account_login = account.get("login", "unknown")
+            account_type = account.get("type", "Organization")
+            github_org_id = account.get("id")
+            repository_selection = meta.get("repository_selection", "selected")
+            _cache_set(installation_id, meta)
+        except Exception as exc:
+            logger.warning("no-nonce install: could not fetch metadata: %s", exc)
+        try:
+            repositories = await github_client.list_installation_repository_names(installation_id)
+        except Exception as exc:
+            logger.warning("no-nonce install: could not fetch repos for %d: %s", installation_id, exc)
+
+    # For org installs, resolve or upsert the org tenant
+    resolved_org_id: str | None = None
+
+    if account_type == "Organization" and github_org_id is not None:
+        # Try to find existing org by github_org_id
+        org_by_github_id = (await db.execute(select(Organization).where(Organization.github_org_id == str(github_org_id)))).scalar_one_or_none()
+
+        if org_by_github_id is not None:
+            resolved_org_id = org_by_github_id.id
+        elif os.environ.get("ORG_TENANT_AUTO_CREATE", "false").lower() == "true":
+            # Upsert the tenant shell for this unknown org
+            resolved_org_id = await _upsert_org_tenant_shell(
+                owner_login=account_login,
+                github_org_id=str(github_org_id),
+                github_app_id="",
+                db=db,
+            )
+
+    if resolved_org_id:
+        # Attach the install to the resolved org tenant
+        await _attach_org_installation(
+            installation_id=installation_id,
+            github_org_id=github_org_id,
+            github_org_login=account_login,
+            caller_org_id=resolved_org_id,
+            db=db,
+            account_type=account_type,
+            repository_selection=repository_selection,
+            repositories=repositories,
+        )
+
+        # Seed per-tenant secret
+        from .tenant_secret import seed_tenant_github_app_secret
+
+        await seed_tenant_github_app_secret(resolved_org_id, installation_id)
+
+        if account_type == "Organization":
+            await _append_installation_id_to_org(
+                installation_id=installation_id,
+                caller_org_id=resolved_org_id,
+                db=db,
+            )
+
+        # DDB write uses the resolved org tenant
+        await _write_installation_identity_index(
+            installation_id=installation_id,
+            org_id=resolved_org_id,
+        )
+
+    logger.info(
+        "no-nonce install: installation_id=%d account=%s resolved_org=%s",
+        installation_id,
+        account_login,
+        resolved_org_id or "(none)",
+    )
+
+    return {
+        "success": True,
+        "installation_id": installation_id,
+        "account_login": account_login,
+        "account_type": account_type,
+        "error_code": None,
+        "error_message": None,
+        "no_nonce": True,
     }
 
 
@@ -760,6 +923,7 @@ def _build_app_manifest(
     oauth_callback_url: str = "",
     setup_url: str = "",
     app_name: str = _APP_NAME_BASE,
+    public: bool = False,
 ) -> dict[str, Any]:
     """Build the GitHub App manifest per the GitHub App Manifest spec.
 
@@ -779,6 +943,7 @@ def _build_app_manifest(
             never lands in the Connections UI (#2823).
         app_name: Globally unique GitHub App name. Defaults to the base name
             but should be owner-prefixed for multi-deployment uniqueness (#2677).
+        public: Whether the App is publicly installable. Issue #2952 (D10).
     """
     manifest: dict[str, Any] = {
         "name": app_name,
@@ -788,7 +953,7 @@ def _build_app_manifest(
             "active": True,
         },
         "redirect_url": callback_url,
-        "public": False,
+        "public": public,
         "default_permissions": {
             "contents": "write",
             "issues": "write",
@@ -828,6 +993,7 @@ async def register_app_start(
     owner_type: str,
     org: str | None,
     app_name: str | None = None,
+    visibility: str = "private",
     cognito_sub: str,
     user_id: str,
     db: AsyncSession,
@@ -946,12 +1112,15 @@ async def register_app_start(
         logger.warning("Could not resolve OAuth callback URL from SSM: %s", exc)
 
     # Build the manifest
+    # Issue #2952 (D10): visibility controls the App's public field.
+    is_public = visibility == "public"
     manifest = _build_app_manifest(
         webhook_url=webhook_url,
         callback_url=callback_url,
         oauth_callback_url=oauth_callback_url,
         setup_url=setup_url,
         app_name=resolved_app_name,
+        public=is_public,
     )
 
     # Generate state nonce (reuse magic_link_nonces table)
@@ -1112,11 +1281,27 @@ async def register_app_callback(
         login_enabled,
     )
 
-    # Return frontend redirect URL (relative path — same pattern as
-    # install-callback; avoids routing issues with absolute URLs and
-    # ensures the SPA session is preserved in the same-tab flow).
-    # Issue #2708: surface a partial-success signal so the UI can warn that
-    # login isn't wired instead of showing a plain success toast.
+    # Issue #2952 (Rule 1): If the App was registered against a GitHub org,
+    # upsert an org-tenant shell (Organization + Tenant + Department + Team)
+    # so members can later auto-join it. Feature-flagged by ORG_TENANT_AUTO_CREATE.
+    owner = data.get("owner", {})
+    if owner.get("type") == "Organization" and os.environ.get("ORG_TENANT_AUTO_CREATE", "false").lower() == "true":
+        owner_login = owner.get("login", "")
+        owner_id = str(owner.get("id", ""))
+        if owner_login:
+            await _upsert_org_tenant_shell(
+                owner_login=owner_login,
+                github_org_id=owner_id,
+                github_app_id=app_id,
+                db=db,
+            )
+
+    # Issue #2952 (D9): Chained onboarding redirect — send the admin directly
+    # to GitHub's install page so they can pick repos immediately.
+    if app_slug:
+        return f"https://github.com/apps/{app_slug}/installations/new"
+
+    # Fallback: return to connections page (should not happen with a valid slug).
     if login_enabled:
         return "/settings/connections?github_app=registered"
     return "/settings/connections?github_app=registered&login_enabled=false"
@@ -1160,9 +1345,17 @@ async def _store_app_credentials(
     def _store_sync() -> bool:
         sm = boto3.client("secretsmanager", region_name=region)
 
+        # Legacy singleton paths (backward-compatible — existing reads unchanged)
         id_path = f"adp/{env}/github-app/adp-agent-platform-id"
         key_path = f"adp/{env}/github-app/adp-agent-platform-key"
         meta_path = f"adp/{env}/github-app/adp-agent-platform-meta"
+
+        # Issue #2952 (D11): Per-app naming for new secrets (registry seed).
+        # Existing secret reads use the singleton names above; only NEW writes
+        # additionally go to per-app paths.
+        per_app_id_path = f"adp/{env}/github-app/{app_slug}-id" if app_slug else None
+        per_app_key_path = f"adp/{env}/github-app/{app_slug}-key" if app_slug else None
+        per_app_meta_path = f"adp/{env}/github-app/{app_slug}-meta" if app_slug else None
 
         meta_payload = json.dumps(
             {
@@ -1174,11 +1367,20 @@ async def _store_app_credentials(
             }
         )
 
-        for path, value, desc in [
+        # Write to both legacy singleton and per-app paths
+        paths_to_write = [
             (id_path, app_id, f"GitHub App ID for adp-agent-platform ({env})"),
             (key_path, pem, f"GitHub App private key for adp-agent-platform ({env})"),
             (meta_path, meta_payload, f"GitHub App metadata for adp-agent-platform ({env})"),
-        ]:
+        ]
+        if per_app_id_path:
+            paths_to_write.append((per_app_id_path, app_id, f"GitHub App ID for {app_slug} ({env})"))
+        if per_app_key_path:
+            paths_to_write.append((per_app_key_path, pem, f"GitHub App private key for {app_slug} ({env})"))
+        if per_app_meta_path:
+            paths_to_write.append((per_app_meta_path, meta_payload, f"GitHub App metadata for {app_slug} ({env})"))
+
+        for path, value, desc in paths_to_write:
             try:
                 sm.create_secret(
                     Name=path,
@@ -1265,6 +1467,122 @@ async def _store_app_credentials(
             return False
 
     return await asyncio.to_thread(_store_sync)
+
+
+# ---------------------------------------------------------------------------
+# Org-tenant shell upsert (Issue #2952)
+# ---------------------------------------------------------------------------
+
+
+def _slugify_org_id(login: str) -> str:
+    """Slugify a GitHub login into a safe tenant/org ID.
+
+    Matches the pattern in onboarding/handler.py:_slugify_tenant_id —
+    lowercase, alphanumeric + hyphens, no leading/trailing hyphen, trim to 64.
+    """
+    import re
+
+    s = login.lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = s.strip("-")
+    if len(s) > 64:
+        s = s[:64].rstrip("-")
+    return s
+
+
+async def _upsert_org_tenant_shell(
+    *,
+    owner_login: str,
+    github_org_id: str,
+    github_app_id: str,
+    db: AsyncSession,
+) -> str | None:
+    """Upsert an org-tenant shell: Organization + Tenant + Department + Team.
+
+    Issue #2952 (Rule 1): When a platform admin registers a GitHub App against
+    an org, create the tenant structure so members can later auto-join. Also
+    called from install_callback for public-App installs by unknown orgs.
+
+    Idempotent: if the org already exists (by slug id), updates github_org_id
+    and github_app_id if previously unset and returns the existing id.
+
+    Returns the tenant_id on success, None on failure.
+    """
+    from src.shared.models.base import new_uuid
+    from src.shared.models.onboarding import Tenant
+    from src.shared.models.organization import Department, Organization, Team
+
+    tenant_id = _slugify_org_id(owner_login)
+    if not tenant_id:
+        logger.warning("org-tenant-shell: cannot slugify login=%s", owner_login)
+        return None
+
+    # Check if org already exists (idempotent)
+    existing = await db.get(Organization, tenant_id)
+    if existing is not None:
+        # Update github_org_id/github_app_id if not already set
+        changed = False
+        if not existing.github_org_id and github_org_id:
+            existing.github_org_id = github_org_id
+            changed = True
+        if not existing.github_app_id and github_app_id:
+            existing.github_app_id = github_app_id
+            changed = True
+        if changed:
+            await db.commit()
+        logger.info(
+            "org-tenant-shell: org %s already exists (idempotent), updated=%s",
+            tenant_id,
+            changed,
+        )
+        return tenant_id
+
+    # Create all rows in a single transaction (pattern from approval.py:202-231)
+    dept_id = new_uuid()
+    team_id = new_uuid()
+
+    org = Organization(
+        id=tenant_id,
+        name=owner_login,
+        aws_accounts=[],
+        role_mappings={},
+        settings={},
+        github_installation_ids=[],
+        cognito_client_ids=[],
+        github_org_id=github_org_id,
+        github_app_id=github_app_id,
+    )
+    db.add(org)
+
+    tenant = Tenant(
+        id=tenant_id,
+        display_name=owner_login,
+    )
+    db.add(tenant)
+
+    dept = Department(
+        id=dept_id,
+        org_id=tenant_id,
+        name="Default",
+    )
+    db.add(dept)
+
+    team = Team(
+        id=team_id,
+        org_id=tenant_id,
+        department_id=dept_id,
+        name="Default",
+    )
+    db.add(team)
+
+    await db.commit()
+    logger.info(
+        "org-tenant-shell: created org=%s github_org_id=%s github_app_id=%s",
+        tenant_id,
+        github_org_id,
+        github_app_id,
+    )
+    return tenant_id
 
 
 # ---------------------------------------------------------------------------

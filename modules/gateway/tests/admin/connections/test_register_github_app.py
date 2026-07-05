@@ -686,9 +686,9 @@ class TestRegisterAppCallbackService:
         assert "PRIVATE KEY" not in result
         assert "SECRET" not in result
         assert "secret_value" not in result
-        assert "github_app=registered" in result
-        # Issue #2682: redirect must be a relative path (same-tab flow)
-        assert result == "/settings/connections?github_app=registered"
+        # Issue #2952 (D9): Chained onboarding redirect — goes to GitHub install page
+        assert "github.com/apps/" in result
+        assert "/installations/new" in result
 
 
 class TestManifestStructure:
@@ -1237,7 +1237,10 @@ class TestLoginEnabledSignal:
 
             result = await register_app_callback(code="c", state="s", db=mock_db)
 
-        assert result == "/settings/connections?github_app=registered&login_enabled=false"
+        # Issue #2952 (D9): Chained redirect always goes to GitHub install page
+        # when slug is present (login_enabled signal is no longer in the URL).
+        assert "github.com/apps/" in result
+        assert "/installations/new" in result
 
     @pytest.mark.asyncio
     async def test_callback_redirect_clean_on_success(self):
@@ -1290,8 +1293,8 @@ class TestLoginEnabledSignal:
 
             result = await register_app_callback(code="c", state="s", db=mock_db)
 
-        assert result == "/settings/connections?github_app=registered"
-        assert "login_enabled" not in result
+        # Issue #2952 (D9): Chained redirect to GitHub install page
+        assert "github.com/apps/test-app/installations/new" in result
 
     @pytest.mark.asyncio
     async def test_callback_invalidates_login_enabled_cache(self):
@@ -1498,10 +1501,10 @@ class TestCallbackRedirectRelativePath:
                 db=mock_db,
             )
 
-        # Must be a relative path — no scheme, no host
-        assert result.startswith("/")
-        assert not result.startswith("http")
-        assert result == "/settings/connections?github_app=registered"
+        # Issue #2952 (D9): Chained onboarding redirect — now goes to
+        # GitHub's install page (external URL) instead of the SPA.
+        assert "github.com/apps/" in result
+        assert "/installations/new" in result
 
 
 class TestCallbackEntryLogging:

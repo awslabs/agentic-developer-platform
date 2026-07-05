@@ -85,6 +85,15 @@ class RegisterAppStartRequest(BaseModel):
             "GitHub App names are globally unique across all of GitHub."
         ),
     )
+    visibility: str = Field(
+        default="private",
+        description=(
+            "App visibility: 'private' (only your org can install) or 'public' "
+            "(other orgs + personal accounts can install via the link). "
+            "Private→public is flippable later in GitHub settings; "
+            "public→private only while ≤1 install."
+        ),
+    )
 
 
 class RegisterAppStartResponse(BaseModel):

@@ -160,7 +160,12 @@ class TestInstallCallbackRoute:
         assert "success=1" in resp.headers["location"]
         assert "installation_id=124731131" in resp.headers["location"]
 
-    def test_missing_state_redirects_to_error(self, app, mock_db):
+    def test_missing_state_returns_generic_success_page(self, app, mock_db):
+        """Issue #2952: Missing state triggers the no-nonce public-App install path.
+
+        Returns a generic HTML success page (200) instead of an error redirect,
+        because public-App installs initiated from GitHub have no state nonce.
+        """
         user = _make_user()
         client = _make_client(app, user=user, mock_db=mock_db)
 
@@ -168,8 +173,8 @@ class TestInstallCallbackRoute:
             "/admin/connections/github/install-callback?installation_id=100",
             follow_redirects=False,
         )
-        assert resp.status_code == 302
-        assert "error=missing_state" in resp.headers["location"]
+        assert resp.status_code == 200
+        assert "Installation complete" in resp.text
 
     def test_expired_nonce_redirects_to_error(self, app, mock_db):
         user = _make_user()

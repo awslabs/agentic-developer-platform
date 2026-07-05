@@ -151,16 +151,29 @@ async def github_install_callback(
     resolves the caller's user/org from it. Redirects to the connections page on
     both success and failure.
     """
-    if not state:
-        return _redirect_error("missing_state", "Missing state parameter from GitHub redirect")
-
+    # Issue #2952: Allow empty state for public-App installs initiated from
+    # GitHub by non-ADP users. The service layer handles the no-nonce path.
     try:
-        await install_callback(
+        result = await install_callback(
             installation_id=installation_id,
             setup_action=setup_action,
             state=state,
             db=db,
         )
+        # Issue #2952: No-nonce path returns a generic HTML success page
+        # (no redirect — the user has no ADP session to redirect into).
+        if result.get("no_nonce"):
+            from fastapi.responses import HTMLResponse
+
+            return HTMLResponse(
+                content=(
+                    "<html><body><h1>Installation complete</h1>"
+                    "<p>The GitHub App has been installed successfully. "
+                    "Sign in to ADP to get started.</p></body></html>"
+                ),
+                status_code=200,
+            )
+        # Issue #2952 (D9): Redirect to connections page with install success.
         return _redirect_success(installation_id)
 
     except (NonceNotFoundError, TokenExpiredError) as exc:
@@ -269,6 +282,7 @@ async def github_app_register_start(
             owner_type=body.owner_type,
             org=body.org,
             app_name=body.app_name,
+            visibility=body.visibility,
             cognito_sub=current_user.user_id,
             user_id=current_user.user_id,
             db=db,
