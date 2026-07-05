@@ -27,6 +27,8 @@ export interface GitHubConnectionItem {
   repositories: string[];
   installed_at: string | null;
   configure_url: string;
+  /** Deep-link to GitHub's installation repository management page. Issue #2983. */
+  manage_url: string;
 }
 
 export interface ConnectionsListResponse {

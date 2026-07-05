@@ -41,10 +41,14 @@ class GitHubConnectionItem(BaseModel):
     repository_count: int = Field(default=0)
     repositories: list[str] = Field(
         default_factory=list,
-        description="Accessible repo full names (owner/repo); empty for legacy rows written before names were captured.",
+        description="Accessible repo full names (owner/repo); fetched live from GitHub with 60s cache.",
     )
     installed_at: datetime | None = None
     configure_url: str = Field(..., description="Deep-link to GitHub App settings for this installation")
+    manage_url: str = Field(
+        default="",
+        description="Deep-link to GitHub's installation repository management page. Visible to all members.",
+    )
 
 
 class ConnectionsListResponse(BaseModel):

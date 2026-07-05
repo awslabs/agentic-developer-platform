@@ -100,6 +100,35 @@ def _cache_invalidate(installation_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Issue #2983: Short-TTL cache for live repository lists from GitHub.
+# Separate from the 5-minute metadata cache — repos refresh every 60s so
+# the connections card reflects GitHub's current state without hammering the API.
+# ---------------------------------------------------------------------------
+
+_repo_list_cache: dict[int, tuple[float, list[str]]] = {}
+_REPO_LIST_CACHE_TTL_SECONDS = 60  # 1 minute
+
+
+def _repo_cache_get(installation_id: int) -> list[str] | None:
+    entry = _repo_list_cache.get(installation_id)
+    if entry is None:
+        return None
+    cached_at, data = entry
+    if time.monotonic() - cached_at > _REPO_LIST_CACHE_TTL_SECONDS:
+        del _repo_list_cache[installation_id]
+        return None
+    return data
+
+
+def _repo_cache_set(installation_id: int, data: list[str]) -> None:
+    _repo_list_cache[installation_id] = (time.monotonic(), data)
+
+
+def _repo_cache_invalidate(installation_id: int) -> None:
+    _repo_list_cache.pop(installation_id, None)
+
+
+# ---------------------------------------------------------------------------
 # Settings helpers
 # ---------------------------------------------------------------------------
 
@@ -701,8 +730,9 @@ async def list_connections(
     within adp-default, scopes to only the caller's own installations to prevent
     cross-user data leakage.
 
-    Enrichment data is read from the `metadata` JSON column (written at install time).
-    Legacy rows without metadata are skipped with a warning.
+    Issue #2983: Repository lists are fetched LIVE from GitHub (cached 60s) so
+    the card always reflects the current state. Stored metadata is used only as
+    a fallback when the GitHub API is unavailable.
     """
     from sqlalchemy import select
 
@@ -725,6 +755,12 @@ async def list_connections(
     if is_adp_default(caller_org_id):
         mappings = [m for m in mappings if m.provider_scope_id.endswith(f":{caller_user_id}")]
 
+    # Issue #2983: Build a GitHub client for live repo reads if not injected.
+    if github_client is None:
+        app_id, private_key = _get_github_app_credentials()
+        if app_id and private_key:
+            github_client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
+
     connections: list[GitHubConnectionItem] = []
     for mapping in mappings:
         md = mapping.install_metadata or {}
@@ -741,12 +777,23 @@ async def list_connections(
         account_login = md.get("account_login", "(unknown)")
         account_type = md.get("account_type", "Organization")
         repo_selection = md.get("repository_selection", "selected")
-        repositories = md.get("repositories") or []
-        # Prefer the stored names' length; fall back to the count field for
-        # legacy rows written before names were captured.
+
+        # Issue #2983: Live repo-list read from GitHub with 60s TTL cache.
+        # Falls back to stored metadata on failure.
+        repositories = await _fetch_live_repos(install_id, github_client)
+        if repositories is None:
+            # Graceful degradation — use the stored snapshot.
+            repositories = md.get("repositories") or []
+
         repo_count = len(repositories) if repositories else int(md.get("repository_count") or 0)
 
         configure_url = f"https://github.com/settings/installations/{install_id}"
+
+        # Issue #2983: manage_url deep-links to GitHub's repo management page.
+        if account_type == "Organization":
+            manage_url = f"https://github.com/organizations/{account_login}/settings/installations/{install_id}"
+        else:
+            manage_url = f"https://github.com/settings/installations/{install_id}"
 
         connections.append(
             GitHubConnectionItem(
@@ -759,10 +806,41 @@ async def list_connections(
                 repositories=repositories,
                 installed_at=mapping.created_at,
                 configure_url=configure_url,
+                manage_url=manage_url,
             )
         )
 
     return ConnectionsListResponse(connections=connections)
+
+
+async def _fetch_live_repos(
+    installation_id: int,
+    github_client: GitHubAppClient | None,
+) -> list[str] | None:
+    """Fetch the live repo list for an installation, with 60s TTL cache.
+
+    Issue #2983: Returns the repo list from GitHub on success, or None on failure
+    (caller should fall back to stored snapshot).
+    """
+    # Check cache first
+    cached = _repo_cache_get(installation_id)
+    if cached is not None:
+        return cached
+
+    if github_client is None:
+        return None
+
+    try:
+        repos = await github_client.list_installation_repository_names(installation_id)
+        _repo_cache_set(installation_id, repos)
+        return repos
+    except Exception as exc:
+        logger.warning(
+            "Issue #2983: live repo fetch failed for installation %d, degrading to stored snapshot: %s",
+            installation_id,
+            exc,
+        )
+        return None
 
 
 async def delete_connection(

@@ -5,11 +5,12 @@ Verifies:
 - Metadata-driven enrichment replaces the stub (Bug B)
 - Personal accounts scoped to caller user only (Bug C)
 - Legacy rows without metadata are skipped with warning
+- Issue #2983: live repo-list read from GitHub with 60s cache + graceful degradation
 """
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -270,3 +271,287 @@ async def test_install_callback_persists_metadata(db_session: AsyncSession):
     assert row.install_metadata["installation_id"] == 12345
     assert row.install_metadata["account_login"] == "test-org"
     assert row.install_metadata["account_type"] == "Organization"
+
+
+# ---------------------------------------------------------------------------
+# Issue #2983: Live repo-list read from GitHub + cache + graceful degradation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_connections_returns_live_repos_from_github(db_session: AsyncSession):
+    """Issue #2983: list_connections fetches repos live from GitHub, not just stored snapshot."""
+    from src.admin.connections.service import (
+        _repo_list_cache,
+        list_connections,
+    )
+
+    # Clear any leftover cache
+    _repo_list_cache.clear()
+
+    # Insert a mapping with a STALE stored snapshot (only 1 repo)
+    mapping = ChannelTenantMap(
+        provider="github",
+        provider_scope_id="44444",
+        org_id="tenant-fresh",
+        install_metadata={
+            "installation_id": 88001,
+            "account_login": "fresh-org",
+            "account_type": "Organization",
+            "repository_selection": "selected",
+            "repository_count": 1,
+            "repositories": ["fresh-org/old-repo"],
+        },
+    )
+    db_session.add(mapping)
+    await db_session.commit()
+
+    # Mock GitHub client returns a DIFFERENT, up-to-date repo list
+    mock_client = MagicMock()
+    mock_client.list_installation_repository_names = AsyncMock(return_value=["fresh-org/old-repo", "fresh-org/new-repo"])
+
+    resp = await list_connections(
+        caller_org_id="tenant-fresh",
+        caller_user_id="user-1",
+        db=db_session,
+        github_client=mock_client,
+    )
+
+    assert len(resp.connections) == 1
+    conn = resp.connections[0]
+    # Should have the LIVE list, not the stored snapshot
+    assert conn.repositories == ["fresh-org/old-repo", "fresh-org/new-repo"]
+    assert conn.repository_count == 2
+    # Verify the GitHub client was called
+    mock_client.list_installation_repository_names.assert_called_once_with(88001)
+
+    _repo_list_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_list_connections_caches_live_repos(db_session: AsyncSession):
+    """Issue #2983: live repo list is cached (second call doesn't hit GitHub again)."""
+    from src.admin.connections.service import (
+        _repo_list_cache,
+        list_connections,
+    )
+
+    _repo_list_cache.clear()
+
+    mapping = ChannelTenantMap(
+        provider="github",
+        provider_scope_id="55555",
+        org_id="tenant-cached",
+        install_metadata={
+            "installation_id": 88002,
+            "account_login": "cached-org",
+            "account_type": "Organization",
+            "repository_selection": "selected",
+            "repository_count": 0,
+            "repositories": [],
+        },
+    )
+    db_session.add(mapping)
+    await db_session.commit()
+
+    mock_client = MagicMock()
+    mock_client.list_installation_repository_names = AsyncMock(return_value=["cached-org/repo-a"])
+
+    # First call — should hit GitHub
+    await list_connections(
+        caller_org_id="tenant-cached",
+        caller_user_id="user-1",
+        db=db_session,
+        github_client=mock_client,
+    )
+
+    # Second call — should use cache, NOT call GitHub again
+    resp = await list_connections(
+        caller_org_id="tenant-cached",
+        caller_user_id="user-1",
+        db=db_session,
+        github_client=mock_client,
+    )
+
+    assert resp.connections[0].repositories == ["cached-org/repo-a"]
+    # Only called once — second call served from cache
+    assert mock_client.list_installation_repository_names.call_count == 1
+
+    _repo_list_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_list_connections_degrades_to_snapshot_on_github_failure(db_session: AsyncSession):
+    """Issue #2983: when GitHub API fails, falls back to stored snapshot repos."""
+    from src.admin.connections.service import (
+        _repo_list_cache,
+        list_connections,
+    )
+
+    _repo_list_cache.clear()
+
+    mapping = ChannelTenantMap(
+        provider="github",
+        provider_scope_id="66666",
+        org_id="tenant-fallback",
+        install_metadata={
+            "installation_id": 88003,
+            "account_login": "fallback-org",
+            "account_type": "Organization",
+            "repository_selection": "selected",
+            "repository_count": 1,
+            "repositories": ["fallback-org/stored-repo"],
+        },
+    )
+    db_session.add(mapping)
+    await db_session.commit()
+
+    # Mock GitHub client that raises an exception
+    mock_client = MagicMock()
+    mock_client.list_installation_repository_names = AsyncMock(side_effect=Exception("GitHub API timeout"))
+
+    resp = await list_connections(
+        caller_org_id="tenant-fallback",
+        caller_user_id="user-1",
+        db=db_session,
+        github_client=mock_client,
+    )
+
+    assert len(resp.connections) == 1
+    conn = resp.connections[0]
+    # Should fall back to stored snapshot
+    assert conn.repositories == ["fallback-org/stored-repo"]
+    assert conn.repository_count == 1
+
+    _repo_list_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_list_connections_degrades_when_no_github_client(db_session: AsyncSession):
+    """Issue #2983: when no GitHub client is available, uses stored snapshot."""
+    from src.admin.connections.service import (
+        _repo_list_cache,
+        list_connections,
+    )
+
+    _repo_list_cache.clear()
+
+    mapping = ChannelTenantMap(
+        provider="github",
+        provider_scope_id="77777",
+        org_id="tenant-noclient",
+        install_metadata={
+            "installation_id": 88004,
+            "account_login": "noclient-org",
+            "account_type": "Organization",
+            "repository_selection": "all",
+            "repository_count": 3,
+            "repositories": ["noclient-org/a", "noclient-org/b", "noclient-org/c"],
+        },
+    )
+    db_session.add(mapping)
+    await db_session.commit()
+
+    # Pass no GitHub client and mock credentials to be empty
+    with patch(
+        "src.admin.connections.service._get_github_app_credentials",
+        return_value=("", ""),
+    ):
+        resp = await list_connections(
+            caller_org_id="tenant-noclient",
+            caller_user_id="user-1",
+            db=db_session,
+            github_client=None,
+        )
+
+    assert len(resp.connections) == 1
+    conn = resp.connections[0]
+    # Falls back to stored repos
+    assert conn.repositories == ["noclient-org/a", "noclient-org/b", "noclient-org/c"]
+    assert conn.repository_count == 3
+
+    _repo_list_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_list_connections_includes_manage_url_for_org(db_session: AsyncSession):
+    """Issue #2983: manage_url deep-links to GitHub org installation settings."""
+    from src.admin.connections.service import (
+        _repo_list_cache,
+        list_connections,
+    )
+
+    _repo_list_cache.clear()
+
+    mapping = ChannelTenantMap(
+        provider="github",
+        provider_scope_id="88888",
+        org_id="tenant-url",
+        install_metadata={
+            "installation_id": 88005,
+            "account_login": "url-org",
+            "account_type": "Organization",
+            "repository_selection": "selected",
+            "repository_count": 0,
+            "repositories": [],
+        },
+    )
+    db_session.add(mapping)
+    await db_session.commit()
+
+    mock_client = MagicMock()
+    mock_client.list_installation_repository_names = AsyncMock(return_value=[])
+
+    resp = await list_connections(
+        caller_org_id="tenant-url",
+        caller_user_id="user-1",
+        db=db_session,
+        github_client=mock_client,
+    )
+
+    conn = resp.connections[0]
+    assert conn.manage_url == "https://github.com/organizations/url-org/settings/installations/88005"
+
+    _repo_list_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_list_connections_includes_manage_url_for_user(db_session: AsyncSession):
+    """Issue #2983: manage_url for personal accounts links to user settings."""
+    from src.admin.connections.service import (
+        _repo_list_cache,
+        list_connections,
+    )
+
+    _repo_list_cache.clear()
+
+    mapping = ChannelTenantMap(
+        provider="github",
+        provider_scope_id="99999",
+        org_id="tenant-personal",
+        install_metadata={
+            "installation_id": 88006,
+            "account_login": "alice",
+            "account_type": "User",
+            "repository_selection": "selected",
+            "repository_count": 0,
+            "repositories": [],
+        },
+    )
+    db_session.add(mapping)
+    await db_session.commit()
+
+    mock_client = MagicMock()
+    mock_client.list_installation_repository_names = AsyncMock(return_value=[])
+
+    resp = await list_connections(
+        caller_org_id="tenant-personal",
+        caller_user_id="user-1",
+        db=db_session,
+        github_client=mock_client,
+    )
+
+    conn = resp.connections[0]
+    assert conn.manage_url == "https://github.com/settings/installations/88006"
+
+    _repo_list_cache.clear()

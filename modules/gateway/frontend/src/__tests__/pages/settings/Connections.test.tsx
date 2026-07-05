@@ -253,11 +253,11 @@ describe('Connections Page', () => {
       });
     });
 
-    it('renders Configure on GitHub link pointing to correct URL', async () => {
+    it('renders Manage repositories link pointing to correct URL', async () => {
       renderConnections();
 
       await waitFor(() => {
-        const link = screen.getByText(/Configure on GitHub/);
+        const link = screen.getByText(/Manage repositories/);
         expect(link).toBeInTheDocument();
         expect(link.closest('a')).toHaveAttribute('href', mockConnection.configure_url);
         expect(link.closest('a')).toHaveAttribute('target', '_blank');

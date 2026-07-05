@@ -66,12 +66,12 @@ export function InstallationCard({ connection, onDisconnect }: InstallationCardP
 
       <div className="flex items-center gap-2">
         <a
-          href={connection.configure_url}
+          href={connection.manage_url || connection.configure_url}
           target="_blank"
           rel="noopener noreferrer"
           className="text-sm text-primary-600 hover:underline dark:text-primary-400"
         >
-          Configure on GitHub ↗
+          Manage repositories ↗
         </a>
         <Button
           variant="danger"
