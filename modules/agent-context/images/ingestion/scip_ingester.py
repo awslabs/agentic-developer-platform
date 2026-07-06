@@ -90,6 +90,43 @@ class SCIPGraph:
         return sum(1 for e in self.edges if e.edge_kind == "REFERENCES")
 
 
+def merge_graphs(graphs: list[SCIPGraph]) -> SCIPGraph:
+    """Merge multiple SCIPGraphs into one (union nodes, concatenate edges).
+
+    SCIP symbol_ids are language-namespaced (e.g., 'scip-python ...' vs
+    'scip-typescript ...'), so cross-language collisions do not occur.
+    If duplicate symbol_ids exist within a language (shouldn't happen in
+    practice), the first occurrence wins.
+
+    Args:
+        graphs: List of SCIPGraphs to merge (may be empty).
+
+    Returns:
+        A single merged SCIPGraph. Empty if input is empty.
+    """
+    if not graphs:
+        return SCIPGraph()
+    if len(graphs) == 1:
+        return graphs[0]
+
+    merged = SCIPGraph(repo=graphs[0].repo)
+    for g in graphs:
+        # Union nodes by symbol_id (first occurrence wins)
+        for symbol_id, node in g.nodes.items():
+            if symbol_id not in merged.nodes:
+                merged.nodes[symbol_id] = node
+        # Concatenate edges
+        merged.edges.extend(g.edges)
+
+    log.info(
+        "Merged %d graphs: %d nodes, %d edges",
+        len(graphs),
+        merged.node_count,
+        merged.edge_count,
+    )
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Moniker parsing
 # ---------------------------------------------------------------------------

@@ -554,13 +554,44 @@ INDEXERS: dict[str, callable] = {
 # ---------------------------------------------------------------------------
 
 
+def _consolidate_languages(detected: list[str]) -> list[str]:
+    """Deduplicate language list by indexer family.
+
+    JVM languages (java/kotlin/scala) share a single indexer ("java").
+    TypeScript and JavaScript share a single indexer ("typescript" preferred).
+
+    Returns a deduplicated list preserving order of first occurrence.
+    """
+    seen_indexers: set[str] = set()
+    consolidated: list[str] = []
+    jvm_langs = {"java", "kotlin", "scala"}
+
+    for lang in detected:
+        # Map to canonical indexer language
+        if lang in jvm_langs:
+            canonical = "java"
+        elif lang == "javascript":
+            canonical = "typescript"
+        else:
+            canonical = lang
+
+        if canonical not in seen_indexers and canonical in INDEXERS:
+            seen_indexers.add(canonical)
+            consolidated.append(canonical)
+
+    return consolidated
+
+
 def index_repo(clone_path: str, repo: str, languages: list[str] | None = None) -> IndexingReport:
     """Run SCIP indexing for all detected (or specified) languages in a repo.
 
-    For each language:
+    Indexes ALL supported languages (not just the primary). For each language:
       1. Resolve dependencies (mandatory — monikers degrade without it)
       2. Run the scip-<lang> indexer
       3. Report success/failure
+
+    Fail-soft: a language whose indexer errors or times out is logged and skipped;
+    the repo still gets the languages that succeeded.
 
     Args:
         clone_path: Path to the cloned repository
@@ -584,67 +615,81 @@ def index_repo(clone_path: str, repo: str, languages: list[str] | None = None) -
         log.warning("No supported languages detected in %s", repo)
         return report
 
-    # Index the primary language (highest file count or first specified)
-    # For now, we index one language per repo to produce a single .scip
-    # Future: merge multiple .scip files for multi-language repos
-    primary_lang = report.languages_detected[0]
+    # Consolidate to unique indexer languages (e.g., TS+JS → typescript only)
+    langs_to_index = _consolidate_languages(report.languages_detected)
+    log.info("Languages to index for %s: %s", repo, langs_to_index)
 
-    # Consolidate JVM languages: if java/kotlin/scala present, use java indexer
-    jvm_langs = {"java", "kotlin", "scala"}
-    detected_set = set(report.languages_detected)
-    if detected_set & jvm_langs:
-        primary_lang = "java"
+    # Index each language independently (fail-soft per language)
+    for lang in langs_to_index:
+        # Step 1: Resolve dependencies
+        dep_resolver = DEP_RESOLVERS.get(lang)
+        dep_ok = False
+        dep_detail = "no resolver"
 
-    # Consolidate TS/JS: prefer typescript if both present
-    if "typescript" in detected_set and "javascript" in detected_set:
-        primary_lang = "typescript"
+        if dep_resolver:
+            dep_ok, dep_detail = dep_resolver(clone_path)
+            if dep_ok:
+                log.info("Dep resolution for %s (%s): %s", repo, lang, dep_detail)
+            else:
+                log.warning(
+                    "Dep resolution failed for %s (%s): %s — indexing anyway (degraded monikers)",
+                    repo,
+                    lang,
+                    dep_detail,
+                )
 
-    log.info("Primary indexing language for %s: %s", repo, primary_lang)
-
-    # Step 1: Resolve dependencies
-    dep_resolver = DEP_RESOLVERS.get(primary_lang)
-    dep_ok = False
-    dep_detail = "no resolver"
-
-    if dep_resolver:
-        dep_ok, dep_detail = dep_resolver(clone_path)
-        if dep_ok:
-            log.info("Dep resolution for %s (%s): %s", repo, primary_lang, dep_detail)
-        else:
-            log.warning(
-                "Dep resolution failed for %s (%s): %s — indexing anyway (degraded monikers)",
-                repo,
-                primary_lang,
-                dep_detail,
+        # Step 2: Run indexer
+        indexer = INDEXERS.get(lang)
+        if not indexer:
+            result = IndexResult(
+                language=lang,
+                error=f"No indexer available for {lang}",
+                dep_resolution="ok" if dep_ok else "failed",
             )
+            report.results.append(result)
+            continue
 
-    # Step 2: Run indexer
-    indexer = INDEXERS.get(primary_lang)
-    if not indexer:
+        try:
+            scip_path, error = indexer(clone_path)
+        except Exception as e:
+            log.error(
+                "Indexer crashed for %s (%s): %s — skipping language",
+                repo,
+                lang,
+                e,
+            )
+            result = IndexResult(
+                language=lang,
+                error=f"Indexer exception: {e}",
+                dep_resolution="ok" if dep_ok else "failed",
+            )
+            report.results.append(result)
+            continue
+
+        # Rename index.scip to a per-language path so the next indexer doesn't
+        # overwrite it. All _index_*() functions write to clone_path/index.scip.
+        canonical_scip = os.path.join(clone_path, "index.scip")
+        if scip_path and scip_path == canonical_scip and os.path.isfile(scip_path):
+            unique_path = os.path.join(clone_path, f"index.{lang}.scip")
+            os.rename(scip_path, unique_path)
+            scip_path = unique_path
+
         result = IndexResult(
-            language=primary_lang,
-            error=f"No indexer available for {primary_lang}",
+            language=lang,
+            scip_path=scip_path,
+            success=scip_path is not None,
             dep_resolution="ok" if dep_ok else "failed",
+            error=error,
         )
         report.results.append(result)
-        return report
 
-    scip_path, error = indexer(clone_path)
-
-    result = IndexResult(
-        language=primary_lang,
-        scip_path=scip_path,
-        success=scip_path is not None,
-        dep_resolution="ok" if dep_ok else "failed",
-        error=error,
-    )
-    report.results.append(result)
-
-    if scip_path:
-        report.combined_scip_path = scip_path
-        log.info("SCIP index produced for %s (%s): %s", repo, primary_lang, scip_path)
-    else:
-        log.error("SCIP indexing failed for %s (%s): %s", repo, primary_lang, error)
+        if scip_path:
+            # combined_scip_path holds the first successful .scip (backward compat)
+            if report.combined_scip_path is None:
+                report.combined_scip_path = scip_path
+            log.info("SCIP index produced for %s (%s): %s", repo, lang, scip_path)
+        else:
+            log.error("SCIP indexing failed for %s (%s): %s", repo, lang, error)
 
     return report
 

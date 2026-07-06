@@ -38,7 +38,7 @@ log = get_logger("ingest-repo")
 from config import settings
 from scope import compute_s3_prefix, parse_scope_from_env
 from scip_indexer import index_repo as scip_index_repo, detect_languages, cleanup_indexing_artifacts
-from scip_ingester import ingest_scip
+from scip_ingester import ingest_scip, merge_graphs
 from scip_neptune_csv import (
     generate_csv as scip_generate_csv,
     generate_summary as scip_generate_summary,
@@ -973,18 +973,47 @@ def scip_structural_ingest(
         result["errors"] = errors
         return result
 
-    scip_path = indexing_report.combined_scip_path
-    result["indexed_language"] = indexing_report.successful_languages[0]
-    result["dep_resolution"] = indexing_report.results[0].dep_resolution
+    successful_results = [r for r in indexing_report.results if r.success and r.scip_path]
+    result["indexed_languages"] = [r.language for r in successful_results]
+    # Backward compat: single-language field uses first successful
+    result["indexed_language"] = successful_results[0].language
+    result["dep_resolution"] = successful_results[0].dep_resolution
 
-    # Step 3: Decode .scip and build graph
-    try:
-        graph = ingest_scip(scip_path, org_repo)
-    except FileNotFoundError as e:
-        log.error("SCIP file not found for %s: %s", org_repo, e)
+    # Step 3: Decode each .scip and merge into one graph
+    graphs = []
+    for idx_result in successful_results:
+        try:
+            g = ingest_scip(idx_result.scip_path, org_repo)
+            graphs.append(g)
+            log.info(
+                "SCIP graph for %s (%s): %d nodes, %d edges",
+                org_repo,
+                idx_result.language,
+                g.node_count,
+                g.edge_count,
+            )
+        except FileNotFoundError as e:
+            log.error(
+                "SCIP file not found for %s (%s): %s — skipping language",
+                org_repo,
+                idx_result.language,
+                e,
+            )
+        except Exception as e:
+            log.error(
+                "SCIP decode failed for %s (%s): %s — skipping language",
+                org_repo,
+                idx_result.language,
+                e,
+            )
+
+    if not graphs:
+        log.error("All SCIP decodes failed for %s", org_repo)
         result["status"] = "indexing_failed"
-        result["error"] = str(e)
+        result["error"] = "All .scip decodes failed"
         return result
+
+    graph = merge_graphs(graphs)
 
     # Fail-loud: code-bearing repo with 0 edges → ERROR
     if graph.edge_count == 0:
