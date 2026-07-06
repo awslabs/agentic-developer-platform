@@ -71,7 +71,9 @@ def parse_envelope(raw: str) -> dict:
 
 def run_cmd(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     """Run a shell command, raising on failure."""
-    return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)  # nosemgrep: dangerous-subprocess-use-audit
+    return subprocess.run(
+        args, check=True, capture_output=True, text=True, **kwargs
+    )  # nosemgrep: dangerous-subprocess-use-audit
 
 
 def _receive_one_message(queue_url: str, region: str):
@@ -206,12 +208,19 @@ def _is_already_completed(repo: str, issue: int, token: str) -> bool:
     try:
         result = subprocess.run(
             [
-                "gh", "pr", "list",
-                "--repo", repo,
-                "--head", branch_name,
-                "--state", "merged",
-                "--json", "number",
-                "--jq", ".[0].number // empty",
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                repo,
+                "--head",
+                branch_name,
+                "--state",
+                "merged",
+                "--json",
+                "number",
+                "--jq",
+                ".[0].number // empty",
             ],
             capture_output=True,
             text=True,
@@ -232,10 +241,12 @@ def _is_already_completed(repo: str, issue: int, token: str) -> bool:
 
 def _upload_transcript_to_s3(
     final_text: str, repo: str, issue: int, message_id: str, arrived_at: str, persona: str
-) -> None:
+) -> str | None:
     """Upload the full untruncated transcript to S3 (best-effort).
 
     Object key: {persona}/{org}/{repo_name}/issue-{issue}/{timestamp}-{run_id}.md
+
+    Returns the S3 object key on success, None on skip/failure.
 
     Skips silently if AGENT_RUN_LOGS_BUCKET is unset (backward compat for
     un-applied accounts) or if final_text is empty. Failures are logged but
@@ -243,7 +254,7 @@ def _upload_transcript_to_s3(
     """
     bucket = os.environ.get("AGENT_RUN_LOGS_BUCKET", "")
     if not bucket or not final_text:
-        return
+        return None
 
     try:
         # Build the S3 object key: {org}/{repo}/issue-{N}/{timestamp}-{run_id}.md
@@ -269,8 +280,10 @@ def _upload_transcript_to_s3(
             ContentType="text/markdown",
         )
         logger.info("Transcript uploaded to s3://%s/%s (%d bytes)", bucket, key, len(final_text))
+        return key
     except Exception as exc:
         logger.warning("Failed to upload transcript to S3 (non-fatal): %s", exc)
+        return None
 
 
 def main() -> int:
@@ -969,7 +982,20 @@ def main() -> int:
     # Persist full untruncated transcript to S3 (best-effort, non-fatal).
     # Issue #3057: transcripts exceed the GitHub Check Run 65,535-char limit;
     # S3 gives us a durable, auditable archive.
-    _upload_transcript_to_s3(final_text, repo, issue, message_id, arrived_at, persona)
+    transcript_key = _upload_transcript_to_s3(
+        final_text, repo, issue, message_id, arrived_at, persona
+    )
+
+    # Issue #3069: Write-back the S3 key to the DDB invocation row so the
+    # gateway can serve the transcript from the Agent Activity UI.
+    # Fail-soft: reuses the same update_invocation_status contract (logs, never raises).
+    if transcript_key:
+        update_invocation_status(
+            message_id,
+            arrived_at,
+            "complete" if exit_code == 0 else "failed",
+            transcript_key=transcript_key,
+        )
 
     # Step 13: Delete the SQS message on ANY terminal exit — success or failure.
     #
@@ -1376,8 +1402,17 @@ def _find_open_pr(repo: str, branch: str) -> str:
     try:
         res = run_cmd(
             [
-                "gh", "pr", "list", "--head", branch, "-R", repo,
-                "--json", "number", "--jq", ".[0].number",
+                "gh",
+                "pr",
+                "list",
+                "--head",
+                branch,
+                "-R",
+                repo,
+                "--json",
+                "number",
+                "--jq",
+                ".[0].number",
             ],
             env={**os.environ},
         )

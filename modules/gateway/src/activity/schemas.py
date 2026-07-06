@@ -83,6 +83,12 @@ class InvocationItem(BaseModel):
         description="URL to the agent run log (GitHub check-run link). Null until Tier 2 worker persists it.",
     )
 
+    # Issue #3069: S3 transcript key (set by worker write-back after S3 upload)
+    transcript_key: str | None = Field(
+        default=None,
+        description="S3 object key for the full run transcript. Null for runs before #3061 or if upload failed.",
+    )
+
     # Issue #1616: Per-run cost fields (enriched from Postgres usage_logs)
     total_cost_usd: float | None = Field(
         default=None,
@@ -109,6 +115,9 @@ class InvocationChainItem(BaseModel):
     persona: str | None = None
     parent_invocation_id: str | None = None
     children: list["InvocationChainItem"] = Field(default_factory=list)
+
+    # Issue #3069: S3 transcript key
+    transcript_key: str | None = None
 
     # Issue #1653: Per-node cost (enriched from Postgres usage_logs)
     total_cost_usd: float | None = None

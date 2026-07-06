@@ -2,14 +2,45 @@
  * Tests for InvocationDetail component.
  *
  * Issue #1459: Phase 5 — Row detail + polish.
+ * Issue #3069: Wrapped in QueryClientProvider (TranscriptViewer uses useQuery).
  * Validates: detail renders with all fields, error truncation + show more,
  * sanitized error display, status timeline rendering.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { InvocationDetail } from '@/components/InvocationDetail';
 import type { InvocationItem } from '@/types/activity';
+
+// Mock the activity service transcript functions
+vi.mock('@/services/activity', () => ({
+  getMyTranscript: vi.fn(),
+  getAdminTranscript: vi.fn(),
+}));
+
+import { getMyTranscript } from '@/services/activity';
+
+const mockGetMyTranscript = getMyTranscript as ReturnType<typeof vi.fn>;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: 0 },
+    },
+  });
+}
+
+function renderWithClient(ui: React.ReactElement) {
+  const queryClient = createTestQueryClient();
+  return render(
+    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -44,7 +75,7 @@ function makeItem(overrides: Partial<InvocationItem> = {}): InvocationItem {
 describe('InvocationDetail', () => {
   it('renders correlation_id, run_id, status, and status_updated_at', () => {
     const item = makeItem();
-    render(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+    renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
 
     expect(screen.getByText('corr-abc12345')).toBeInTheDocument();
     expect(screen.getByText('81286554630')).toBeInTheDocument();
@@ -55,7 +86,7 @@ describe('InvocationDetail', () => {
 
   it('renders invocation_id, channel, persona, topic, summary', () => {
     const item = makeItem();
-    render(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+    renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
 
     expect(screen.getByText('inv-001')).toBeInTheDocument();
     expect(screen.getByText('github')).toBeInTheDocument();
@@ -66,7 +97,7 @@ describe('InvocationDetail', () => {
 
   it('renders source link as "repo#issue" with external link', () => {
     const item = makeItem();
-    render(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+    renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
 
     const link = screen.getByRole('link');
     expect(link).toHaveAttribute('href', 'https://github.com/aws-e/adp/issues/1457');
@@ -77,7 +108,7 @@ describe('InvocationDetail', () => {
 
   it('shows "No error details available" for failed item with null error_message', () => {
     const item = makeItem({ status: 'failed', error_message: null });
-    render(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+    renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
 
     expect(screen.getByText('No error details available')).toBeInTheDocument();
   });
@@ -87,7 +118,7 @@ describe('InvocationDetail', () => {
       status: 'failed',
       error_message: 'Agent timed out after 300s.',
     });
-    render(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+    renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
 
     expect(screen.getByText('Agent timed out after 300s.')).toBeInTheDocument();
   });
@@ -96,7 +127,7 @@ describe('InvocationDetail', () => {
     const user = userEvent.setup();
     const longError = 'A'.repeat(250); // Longer than ERROR_TRUNCATE_LENGTH (200)
     const item = makeItem({ status: 'failed', error_message: longError });
-    render(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+    renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
 
     // Should show truncated text (200 chars + ellipsis, not the full 250)
     expect(screen.getByText(/A{10,}/)).toBeInTheDocument();
@@ -112,7 +143,7 @@ describe('InvocationDetail', () => {
 
   it('does not show error section for non-failed status', () => {
     const item = makeItem({ status: 'complete', error_message: null });
-    render(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+    renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
 
     expect(screen.queryByText('Error')).not.toBeInTheDocument();
     expect(screen.queryByText('No error details available')).not.toBeInTheDocument();
@@ -127,7 +158,7 @@ describe('InvocationDetail', () => {
       source_url: null,
       completed_at: null,
     });
-    render(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+    renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
 
     expect(screen.queryByText('Correlation ID')).not.toBeInTheDocument();
     expect(screen.queryByText('Run / Job ID')).not.toBeInTheDocument();
@@ -139,7 +170,7 @@ describe('InvocationDetail', () => {
 
   it('shows "Active — not yet terminal" for in_progress status', () => {
     const item = makeItem({ status: 'in_progress', completed_at: null });
-    render(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+    renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
 
     expect(screen.getByText('In progress')).toBeInTheDocument();
     expect(screen.getByText(/Active — not yet terminal/)).toBeInTheDocument();
@@ -149,7 +180,7 @@ describe('InvocationDetail', () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     const item = makeItem();
-    render(<InvocationDetail item={item} isOpen={true} onClose={onClose} />);
+    renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={onClose} />);
 
     // The Modal component has a close button
     const closeBtn = screen.getByLabelText('Close modal');
@@ -159,9 +190,25 @@ describe('InvocationDetail', () => {
   });
 
   it('renders nothing when item is null', () => {
-    const { container } = render(
+    const { container } = renderWithClient(
       <InvocationDetail item={null} isOpen={true} onClose={() => {}} />,
     );
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('shows "Transcript not available" when transcript fetch returns 404', async () => {
+    const user = userEvent.setup();
+    mockGetMyTranscript.mockRejectedValueOnce(new Error('Transcript not available'));
+    const item = makeItem({ transcript_key: 'runs/inv-001/transcript.md' });
+    renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+    // Click the "View full transcript" button
+    const transcriptBtn = screen.getByRole('button', { name: /view full transcript/i });
+    await user.click(transcriptBtn);
+
+    // Should display the "not available" message
+    await waitFor(() => {
+      expect(screen.getByText('Transcript not available for this invocation.')).toBeInTheDocument();
+    });
   });
 });

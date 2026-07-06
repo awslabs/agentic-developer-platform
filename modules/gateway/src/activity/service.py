@@ -322,6 +322,8 @@ class ActivityService:
             error_message=item.get("error_message"),
             completed_at=completed_at,
             run_log_url=item.get("check_run_url"),
+            # Issue #3069: S3 transcript key
+            transcript_key=item.get("transcript_key"),
             # Phase 6 lineage fields (#1461)
             trigger_kind=_derive_trigger_kind(item),
             triggered_by_invocation_id=item.get("parent_invocation_id"),
@@ -619,6 +621,7 @@ class ActivityService:
                     persona=item.get("persona"),
                     parent_invocation_id=item.get("parent_invocation_id"),
                     children=[],
+                    transcript_key=item.get("transcript_key"),
                 )
             )
 
@@ -723,6 +726,7 @@ def _build_chain_tree(items: list[dict]) -> list[InvocationChainItem]:
             persona=item.get("persona"),
             parent_invocation_id=item.get("parent_invocation_id"),
             children=[],
+            transcript_key=item.get("transcript_key"),
         )
 
     # Build parent→children relationships

@@ -100,6 +100,10 @@ export function generateMockInvocations(count: number = 30): InvocationItem[] {
       error_message: status === 'failed' ? 'Model access error: throttled by Bedrock' : null,
       // Issue #1653: run log link (Tier 2 — null until worker persists check_run_url)
       run_log_url: null,
+      // Issue #3069: S3 transcript key (present for completed runs after #3061)
+      transcript_key: isTerminal && status === 'complete'
+        ? `developer/aws-e/adp/issue-${issueNumber || i + 1}/20260706T150000Z-${String(i + 1).padStart(8, '0')}.md`
+        : null,
     };
   });
 }

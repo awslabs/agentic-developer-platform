@@ -10,6 +10,7 @@
 
 import { useState } from 'react';
 import { Modal } from '@/components/ui';
+import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { formatDateTime, formatRelativeTime } from '@/utils/format';
 import type { InvocationItem, InvocationStatus } from '@/types/activity';
 
@@ -102,9 +103,13 @@ export interface InvocationDetailProps {
   item: InvocationItem | null;
   isOpen: boolean;
   onClose: () => void;
+  /** Use admin transcript endpoint. */
+  isAdmin?: boolean;
 }
 
-export function InvocationDetail({ item, isOpen, onClose }: InvocationDetailProps) {
+export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: InvocationDetailProps) {
+  const [showTranscript, setShowTranscript] = useState(false);
+
   if (!item) return null;
 
   const statusConfig = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.no_op;
@@ -262,6 +267,19 @@ export function InvocationDetail({ item, isOpen, onClose }: InvocationDetailProp
           </DetailRow>
         )}
 
+        {/* Transcript — Issue #3069 */}
+        {item.transcript_key && (
+          <DetailRow label="Transcript">
+            <button
+              type="button"
+              onClick={() => setShowTranscript(true)}
+              className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 hover:underline text-sm"
+            >
+              View full transcript
+            </button>
+          </DetailRow>
+        )}
+
         {/* Lineage — Issue #1653 */}
         {item.triggered_by_invocation_id && (
           <DetailRow label="Triggered by">
@@ -296,6 +314,14 @@ export function InvocationDetail({ item, isOpen, onClose }: InvocationDetailProp
       <p className="mt-4 text-xs text-gray-400 dark:text-gray-500 italic">
         Status shows current state and last transition time. Full transition history is not retained.
       </p>
+
+      {/* Issue #3069: Transcript viewer modal (nested) */}
+      <TranscriptViewer
+        invocationId={showTranscript ? item.invocation_id : null}
+        isOpen={showTranscript}
+        onClose={() => setShowTranscript(false)}
+        isAdmin={isAdmin}
+      />
     </Modal>
   );
 }

@@ -53,6 +53,8 @@ export interface InvocationItem {
   error_message: string | null;
   // Issue #1653: Run log link (Tier 2 — null until worker persists it)
   run_log_url: string | null;
+  // Issue #3069: S3 transcript key (null for pre-#3061 runs or upload failures)
+  transcript_key: string | null;
 }
 
 /** Cursor-paginated response from GET /me/agent-invocations or /admin/agent-invocations. */
@@ -71,6 +73,8 @@ export interface InvocationChainItem {
   persona: string | null;
   parent_invocation_id: string | null;
   children: InvocationChainItem[];
+  // Issue #3069: S3 transcript key
+  transcript_key: string | null;
   // Issue #1653: Per-node cost
   total_cost_usd: number | null;
   total_tokens: number | null;

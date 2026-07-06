@@ -200,3 +200,41 @@ class TestUpdateStatus:
             arrived_at="2026-06-13T22:00:00Z",
             status="complete",
         )
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_update_includes_transcript_key_when_provided(self, mock_get_client):
+        """Issue #3069: transcript_key is included in the update expression when provided."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        invocation_status.update_status(
+            event_id="msg-123",
+            arrived_at="2026-06-13T22:00:00Z",
+            status="complete",
+            transcript_key="developer/org/repo/issue-42/20260706T150000Z-abc12345.md",
+        )
+
+        call_kwargs = mock_client.update_item.call_args[1]
+        expr_values = call_kwargs["ExpressionAttributeValues"]
+        assert ":transcript_key" in expr_values
+        assert expr_values[":transcript_key"] == {"S": "developer/org/repo/issue-42/20260706T150000Z-abc12345.md"}
+        assert "transcript_key" in call_kwargs["UpdateExpression"]
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_update_omits_transcript_key_when_none(self, mock_get_client):
+        """Issue #3069: transcript_key is NOT included when None (back-compat)."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        invocation_status.update_status(
+            event_id="msg-123",
+            arrived_at="2026-06-13T22:00:00Z",
+            status="complete",
+        )
+
+        call_kwargs = mock_client.update_item.call_args[1]
+        expr_values = call_kwargs["ExpressionAttributeValues"]
+        assert ":transcript_key" not in expr_values
+        assert "transcript_key" not in call_kwargs["UpdateExpression"]
