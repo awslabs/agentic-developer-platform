@@ -562,20 +562,27 @@ async def get_access_status(
     user = result.scalar_one_or_none()
     if user is not None:
         # Issue #3017: Sync memberships for org tenants created post-onboarding.
-        # Extract GitHub login from JWT claims (same pattern as submit_access_request).
-        claims = _decode_jwt_claims(request_in.headers.get("authorization"))
-        github_login, _ = _extract_from_claims(claims)
-        if github_login:
-            try:
+        # Extract GitHub login from JWT claims first; fall back to Cognito lookup.
+        # Access tokens don't carry custom:github_username (pre-token-gen Lambda
+        # only injects org/team/dept/role/account_type). Fall back to Cognito
+        # lookup by sub — same fallback _extract_github_identity uses for
+        # submit_access_request. Issue #3027.
+        try:
+            claims = _decode_jwt_claims(request_in.headers.get("authorization"))
+            github_login, _ = _extract_from_claims(claims)
+            if not github_login:
+                github_login, _ = _fetch_github_identity_from_cognito(cognito_sub)
+            if github_login:
                 await sync_memberships_on_login(db, user, github_login)
-            except Exception:
-                # Best-effort: membership sync failure must not break login.
-                logger.warning(
-                    "membership sync failed for user=%s login=%s",
-                    cognito_sub,
-                    github_login,
-                    exc_info=True,
-                )
+        except Exception:
+            # Best-effort: identity resolution or membership sync failure
+            # must not break login. Non-GitHub sessions (email/password admin)
+            # will simply skip the sync.
+            logger.warning(
+                "membership sync failed for user=%s",
+                cognito_sub,
+                exc_info=True,
+            )
         return AccessStatusResponse(status="registered")
 
     # Check if there's a pending request

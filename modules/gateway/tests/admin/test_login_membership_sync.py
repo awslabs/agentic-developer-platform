@@ -764,3 +764,307 @@ async def test_login_no_github_claims_skips_sync(db_engine):
         result = await session.execute(stmt)
         memberships = result.scalars().all()
         assert len(memberships) == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Access-token-shaped claims (no custom:github_username) + Cognito
+#          fallback returns login -> sync IS called (Issue #3027 regression)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
+async def test_login_access_token_cognito_fallback_triggers_sync(db_engine):
+    """Access tokens lack custom:github_username; Cognito fallback provides login -> sync fires."""
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    # Seed org tenant
+    await _seed_org_with_team(factory, "fallback-org", "fallback-org", ["44444"])
+
+    # Seed existing user
+    async with factory() as session:
+        org = Organization(
+            id="user-org-fb",
+            name="user-org-fb",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            github_installation_ids=[],
+        )
+        session.add(org)
+        dept = Department(id=new_uuid(), org_id="user-org-fb", name="Default")
+        session.add(dept)
+        team = Team(id=new_uuid(), org_id="user-org-fb", department_id=dept.id, name="Default")
+        session.add(team)
+        await session.commit()
+
+        user = User(
+            id="user-fb-1",
+            org_id="user-org-fb",
+            team_id=team.id,
+            email="fbuser@github.onboard",
+            name="fbuser",
+            cognito_sub="cognito-sub-fb",
+            role="member",
+        )
+        session.add(user)
+        await session.commit()
+
+    existing_user_context = TokenContext(
+        user_id="cognito-sub-fb",
+        org_id="user-org-fb",
+        team_id="team-1",
+        department_id="dept-1",
+        account_type="human",
+        is_admin=False,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    from httpx import ASGITransport, AsyncClient
+
+    from src.app import create_app
+    from src.auth.dependencies import get_current_user
+    from src.shared.database import get_db
+
+    app = create_app()
+
+    async def override_db():
+        async with factory() as session:
+            yield session
+
+    async def override_auth():
+        return existing_user_context
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_current_user] = override_auth
+
+    # Access-token-shaped claims: has username=github_<id> but NO custom:github_username
+    access_token_claims = {
+        "username": "github_50050",
+        "sub": "cognito-sub-fb",
+        "custom:org_id": "user-org-fb",
+        "custom:team_id": "team-1",
+        "custom:department_id": "dept-1",
+        "custom:role": "member",
+        "custom:account_type": "human",
+    }
+
+    mock_client = _mock_github_client(membership_map={"fallback-org": True}, role="member")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with (
+            patch("src.admin.connections.github_client.GitHubAppClient", return_value=mock_client),
+            patch("src.admin.connections.service._get_github_app_credentials", return_value=("app-id", "fake-pem")),
+            # Mock the Cognito fallback to return our expected github login
+            patch(
+                "src.admin.onboarding.handler._fetch_github_identity_from_cognito",
+                return_value=("fbuser", "50050"),
+            ),
+        ):
+            resp = await client.get(
+                "/access/status",
+                headers={"Authorization": _fake_bearer(access_token_claims)},
+            )
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "registered"
+
+    # Verify TenantMembership row was created via Cognito fallback path
+    async with factory() as session:
+        stmt = select(TenantMembership).where(TenantMembership.user_id == "user-fb-1")
+        result = await session.execute(stmt)
+        memberships = result.scalars().all()
+        assert len(memberships) == 1
+        assert memberships[0].tenant_id == "fallback-org"
+        assert memberships[0].role == "member"
+        assert memberships[0].joined_via == "org_membership"
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Both claims and Cognito fallback empty -> sync NOT called, still 200
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
+async def test_login_claims_and_cognito_both_empty_no_error(db_engine):
+    """Neither claims nor Cognito have github_login -> sync skipped, no exception."""
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    # Seed existing user (non-GitHub, e.g. email/password admin)
+    async with factory() as session:
+        org = Organization(
+            id="admin-org",
+            name="admin-org",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            github_installation_ids=[],
+        )
+        session.add(org)
+        dept = Department(id=new_uuid(), org_id="admin-org", name="Default")
+        session.add(dept)
+        team = Team(id=new_uuid(), org_id="admin-org", department_id=dept.id, name="Default")
+        session.add(team)
+        await session.commit()
+
+        user = User(
+            id="user-nongithub-1",
+            org_id="admin-org",
+            team_id=team.id,
+            email="admin@company.com",
+            name="admin",
+            cognito_sub="cognito-sub-nongithub",
+            role="admin",
+        )
+        session.add(user)
+        await session.commit()
+
+    existing_user_context = TokenContext(
+        user_id="cognito-sub-nongithub",
+        org_id="admin-org",
+        team_id="team-1",
+        department_id="dept-1",
+        account_type="human",
+        is_admin=True,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    from httpx import ASGITransport, AsyncClient
+
+    from src.app import create_app
+    from src.auth.dependencies import get_current_user
+    from src.shared.database import get_db
+
+    app = create_app()
+
+    async def override_db():
+        async with factory() as session:
+            yield session
+
+    async def override_auth():
+        return existing_user_context
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_current_user] = override_auth
+
+    # Claims with no GitHub info at all
+    non_github_claims = {"sub": "cognito-sub-nongithub", "username": "admin@company.com"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with patch(
+            "src.admin.onboarding.handler._fetch_github_identity_from_cognito",
+            return_value=("", ""),
+        ):
+            resp = await client.get(
+                "/access/status",
+                headers={"Authorization": _fake_bearer(non_github_claims)},
+            )
+
+    app.dependency_overrides.clear()
+
+    # Must still return registered without raising
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "registered"
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Cognito fallback raises -> warning logged, response still 200
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
+async def test_login_cognito_fallback_raises_still_succeeds(db_engine):
+    """If _fetch_github_identity_from_cognito raises, sync is skipped gracefully."""
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    # Seed existing user
+    async with factory() as session:
+        org = Organization(
+            id="raise-org",
+            name="raise-org",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            github_installation_ids=[],
+        )
+        session.add(org)
+        dept = Department(id=new_uuid(), org_id="raise-org", name="Default")
+        session.add(dept)
+        team = Team(id=new_uuid(), org_id="raise-org", department_id=dept.id, name="Default")
+        session.add(team)
+        await session.commit()
+
+        user = User(
+            id="user-raise-1",
+            org_id="raise-org",
+            team_id=team.id,
+            email="raiseuser@github.onboard",
+            name="raiseuser",
+            cognito_sub="cognito-sub-raise",
+            role="member",
+        )
+        session.add(user)
+        await session.commit()
+
+    existing_user_context = TokenContext(
+        user_id="cognito-sub-raise",
+        org_id="raise-org",
+        team_id="team-1",
+        department_id="dept-1",
+        account_type="human",
+        is_admin=False,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    from httpx import ASGITransport, AsyncClient
+
+    from src.app import create_app
+    from src.auth.dependencies import get_current_user
+    from src.shared.database import get_db
+
+    app = create_app()
+
+    async def override_db():
+        async with factory() as session:
+            yield session
+
+    async def override_auth():
+        return existing_user_context
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_current_user] = override_auth
+
+    # Access-token-shaped claims (no custom:github_username)
+    access_token_claims = {
+        "username": "github_60060",
+        "sub": "cognito-sub-raise",
+    }
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with patch(
+            "src.admin.onboarding.handler._fetch_github_identity_from_cognito",
+            side_effect=RuntimeError("Cognito unavailable"),
+        ):
+            resp = await client.get(
+                "/access/status",
+                headers={"Authorization": _fake_bearer(access_token_claims)},
+            )
+
+    app.dependency_overrides.clear()
+
+    # Must still return registered — the RuntimeError is caught by the
+    # existing best-effort try/except around sync_memberships_on_login,
+    # BUT the fallback itself raises before reaching sync. The function
+    # _fetch_github_identity_from_cognito catches its own exceptions and
+    # returns ("", "") — so this test verifies that pattern. If we mock
+    # it to raise directly (simulating an unexpected error), the outer
+    # try/except in get_access_status catches it.
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "registered"
