@@ -406,6 +406,17 @@ async def install_callback(
             db=db,
         )
 
+        # Issue #3035: Create a tenant_membership for the installing user.
+        # The nonce IS the authenticator — user_row was resolved from it above.
+        # Only org installs get memberships; personal installs stay on the
+        # personal/adp-default path.
+        await _create_installer_membership(
+            user_row=user_row,
+            tenant_id=resolved_org_id,
+            github_org_login=account_login,
+            db=db,
+        )
+
     # Issue #2950: Write the installation → tenant mapping to DynamoDB
     # identity-index so the webhook-ingress resolver can find it. Without
     # this, the webhook rejects all events as unknown_installation because
@@ -679,6 +690,74 @@ async def _append_installation_id_to_org(
             installation_id,
             caller_org_id,
         )
+
+
+async def _create_installer_membership(
+    *,
+    user_row: Any,
+    tenant_id: str,
+    github_org_login: str,
+    db: AsyncSession,
+) -> None:
+    """Create a tenant_membership for the user who installed the GitHub App.
+
+    Issue #3035: The install event itself is sufficient authorization — only a
+    repo admin (or org owner) can install an app, and the installing user is
+    the authenticated session that initiated the flow.
+
+    Idempotent: skips if a membership for (user, tenant) already exists (D7
+    pattern). Never modifies is_active of existing rows. Sets is_active=True
+    on a NEW membership only if the user has no other memberships at all
+    (first-membership-active rule).
+    """
+    from sqlalchemy import select
+
+    from src.shared.models.onboarding import TenantMembership
+
+    user_id = user_row.id
+
+    # Check for existing membership (idempotent — skip if exists)
+    existing_stmt = select(TenantMembership).where(
+        TenantMembership.user_id == user_id,
+        TenantMembership.tenant_id == tenant_id,
+    )
+    existing = (await db.execute(existing_stmt)).scalar_one_or_none()
+    if existing is not None:
+        logger.info(
+            "install-callback: membership already exists for user=%s tenant=%s (idempotent skip)",
+            user_id,
+            tenant_id,
+        )
+        return
+
+    # Determine is_active: only if user has NO memberships at all
+    any_membership_stmt = (
+        select(TenantMembership.id)
+        .where(
+            TenantMembership.user_id == user_id,
+        )
+        .limit(1)
+    )
+    has_any = (await db.execute(any_membership_stmt)).scalar_one_or_none() is not None
+    is_active = not has_any
+
+    membership = TenantMembership(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        role="member",
+        is_active=is_active,
+        joined_via="app_install",
+        github_org_id=github_org_login,
+    )
+    db.add(membership)
+    await db.flush()
+
+    logger.info(
+        "install-callback: created tenant_membership user=%s tenant=%s role=member is_active=%s joined_via=app_install",
+        user_id,
+        tenant_id,
+        is_active,
+    )
 
 
 async def _write_installation_identity_index(
