@@ -509,6 +509,34 @@ async def _create_memberships_for_matches(
     await db.flush()
 
 
+async def sync_memberships_on_login(
+    db: AsyncSession,
+    user: User,
+    github_login: str,
+) -> None:
+    """Sync org-tenant memberships for an existing user on login.
+
+    Issue #3017: Second call site for the #2953 matcher. Called from
+    get_access_status when user is already registered and has a GitHub
+    identity. Finds any org tenants the user is verified to belong to
+    (via GitHub API org-membership check) and creates TenantMembership
+    rows for ones they don't already have (D7 idempotent — skips existing).
+
+    Does NOT create org tenants, does NOT change active-tenant selection.
+    """
+    matched_tenants = await _find_matching_tenants_for_user(db, github_login)
+    if not matched_tenants:
+        return
+
+    await _create_memberships_for_matches(
+        db=db,
+        user_id=user.id,
+        matched_tenants=matched_tenants,
+        github_login=github_login,
+    )
+    await db.commit()
+
+
 # ---------------------------------------------------------------------------
 # Public routes (authenticated but no tenant required)
 # ---------------------------------------------------------------------------
@@ -516,10 +544,16 @@ async def _create_memberships_for_matches(
 
 @router.get("/access/status", response_model=AccessStatusResponse)
 async def get_access_status(
+    request_in: Request,
     current_user: TokenContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> AccessStatusResponse:
-    """Check if the caller has a user row (registered) or needs to onboard."""
+    """Check if the caller has a user row (registered) or needs to onboard.
+
+    Issue #3017: For registered users, also syncs org-tenant memberships —
+    creates TenantMembership rows for any org tenants the user belongs to
+    (via GitHub org membership) that were created after their initial onboarding.
+    """
     cognito_sub = current_user.user_id
 
     # Check if user already exists
@@ -527,6 +561,21 @@ async def get_access_status(
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
     if user is not None:
+        # Issue #3017: Sync memberships for org tenants created post-onboarding.
+        # Extract GitHub login from JWT claims (same pattern as submit_access_request).
+        claims = _decode_jwt_claims(request_in.headers.get("authorization"))
+        github_login, _ = _extract_from_claims(claims)
+        if github_login:
+            try:
+                await sync_memberships_on_login(db, user, github_login)
+            except Exception:
+                # Best-effort: membership sync failure must not break login.
+                logger.warning(
+                    "membership sync failed for user=%s login=%s",
+                    cognito_sub,
+                    github_login,
+                    exc_info=True,
+                )
         return AccessStatusResponse(status="registered")
 
     # Check if there's a pending request
