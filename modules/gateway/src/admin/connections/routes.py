@@ -97,10 +97,21 @@ def _redirect_error(code: str, message: str) -> RedirectResponse:
     )
 
 
-def _redirect_success(installation_id: int) -> RedirectResponse:
-    params = urllib.parse.urlencode({"success": "1", "installation_id": str(installation_id)})
+def _redirect_success(
+    installation_id: int,
+    *,
+    installed: str | None = None,
+    switched_from: str | None = None,
+) -> RedirectResponse:
+    params: dict[str, str] = {"success": "1", "installation_id": str(installation_id)}
+    # Issue #3072: Pass org name + previous tenant so the frontend can show
+    # the "you're now in <org>" banner with a "Switch back" action.
+    if installed:
+        params["installed"] = installed
+    if switched_from:
+        params["switched_from"] = switched_from
     return RedirectResponse(
-        url=f"{_FRONTEND_CONNECTIONS_PATH}?{params}",
+        url=f"{_FRONTEND_CONNECTIONS_PATH}?{urllib.parse.urlencode(params)}",
         status_code=302,
     )
 
@@ -176,7 +187,12 @@ async def github_install_callback(
                 status_code=200,
             )
         # Issue #2952 (D9): Redirect to connections page with install success.
-        return _redirect_success(installation_id)
+        # Issue #3072: Pass org name + switched_from tenant for the auto-switch banner.
+        return _redirect_success(
+            installation_id,
+            installed=result.get("account_login") if result.get("switched_from") else None,
+            switched_from=result.get("switched_from"),
+        )
 
     except (NonceNotFoundError, TokenExpiredError) as exc:
         logger.warning("install-callback invalid state jti=%s: %s", state, exc)

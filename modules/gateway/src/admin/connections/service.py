@@ -399,6 +399,9 @@ async def install_callback(
 
     await seed_tenant_github_app_secret(resolved_org_id, installation_id)
 
+    # Issue #3072: Track the previously-active tenant for redirect params.
+    switched_from: str | None = None
+
     if account_type == "Organization":
         # Issue #719: Populate organizations.github_installation_ids so that
         # future users from this org are matched to this tenant automatically.
@@ -419,6 +422,18 @@ async def install_callback(
             db=db,
         )
 
+        # Issue #3072: Auto-switch the installer's active tenant to the
+        # newly-installed org so they land IN the workspace. Reuses the
+        # same atomic deactivate-all/activate-one pattern from switch_tenant
+        # endpoint (#3071). Skips silently if the org is already active
+        # (reinstall case). Nonce-path only, org installs only — guards
+        # already enforced by the enclosing if-block + user_row presence.
+        switched_from = await _auto_switch_active_tenant(
+            user_id=user_row.id,
+            target_tenant_id=resolved_org_id,
+            db=db,
+        )
+
     # Issue #2950: Write the installation → tenant mapping to DynamoDB
     # identity-index so the webhook-ingress resolver can find it. Without
     # this, the webhook rejects all events as unknown_installation because
@@ -431,6 +446,9 @@ async def install_callback(
         org_id=resolved_org_id,
     )
 
+    # Issue #3072: Include switch info in the result so the route layer can
+    # pass it to the frontend redirect. switched_from is None when no switch
+    # occurred (personal install, reinstall while already active, etc.).
     return {
         "success": True,
         "installation_id": installation_id,
@@ -438,6 +456,7 @@ async def install_callback(
         "account_type": account_type,
         "error_code": None,
         "error_message": None,
+        "switched_from": switched_from if account_type == "Organization" and user_row else None,
     }
 
 
@@ -768,6 +787,91 @@ async def _create_installer_membership(
         tenant_id,
         is_active,
     )
+
+
+async def _auto_switch_active_tenant(
+    *,
+    user_id: str,
+    target_tenant_id: str,
+    db: AsyncSession,
+) -> str | None:
+    """Switch the installer's active tenant to the target org after install.
+
+    Issue #3072: Reuses the same atomic deactivate-all/activate-one pattern
+    from the switch_tenant endpoint (#3071). Returns the previously-active
+    tenant_id if a switch occurred, or None if the target was already active
+    (reinstall while active) or no active membership existed.
+
+    Guards: caller must already have a membership for target_tenant_id (just
+    written by _create_installer_membership). Asserts this via the same
+    membership check the switch endpoint does.
+    """
+    from sqlalchemy import select, update
+
+    from src.shared.models.onboarding import TenantMembership
+
+    # Verify the target membership exists (assert, not assume — same check
+    # the switch endpoint performs).
+    target_stmt = select(TenantMembership).where(
+        TenantMembership.user_id == user_id,
+        TenantMembership.tenant_id == target_tenant_id,
+    )
+    target_membership = (await db.execute(target_stmt)).scalar_one_or_none()
+    if target_membership is None:
+        logger.warning(
+            "auto-switch: no membership for user=%s tenant=%s — skipping",
+            user_id,
+            target_tenant_id,
+        )
+        return None
+
+    # Already active — no-op (reinstall while this org is already active)
+    if target_membership.is_active:
+        logger.info(
+            "auto-switch: target tenant=%s already active for user=%s — no-op",
+            target_tenant_id,
+            user_id,
+        )
+        return None
+
+    # Find the currently active tenant (the one we're switching FROM)
+    active_stmt = select(TenantMembership.tenant_id).where(
+        TenantMembership.user_id == user_id,
+        TenantMembership.is_active == True,  # noqa: E712
+    )
+    previous_active_id = (await db.execute(active_stmt)).scalar_one_or_none()
+
+    # Atomically switch: deactivate all → activate target. Single transaction.
+    deactivate_stmt = (
+        update(TenantMembership)
+        .where(
+            TenantMembership.user_id == user_id,
+            TenantMembership.is_active == True,  # noqa: E712
+        )
+        .values(is_active=False)
+    )
+    await db.execute(deactivate_stmt)
+
+    activate_stmt = (
+        update(TenantMembership)
+        .where(
+            TenantMembership.user_id == user_id,
+            TenantMembership.tenant_id == target_tenant_id,
+        )
+        .values(is_active=True)
+    )
+    await db.execute(activate_stmt)
+
+    # Explicit commit (#3058 lesson — flush is not enough)
+    await db.commit()
+
+    logger.info(
+        "auto-switch: switched user=%s from tenant=%s to tenant=%s",
+        user_id,
+        previous_active_id,
+        target_tenant_id,
+    )
+    return previous_active_id
 
 
 async def _write_installation_identity_index(

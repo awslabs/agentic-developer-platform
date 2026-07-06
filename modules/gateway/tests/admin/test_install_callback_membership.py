@@ -254,9 +254,10 @@ class TestInstallCallbackMembership:
         memberships = (await db_session.execute(stmt)).scalars().all()
         assert len(memberships) == 1
 
-    async def test_existing_active_membership_untouched(self, db_session: AsyncSession, org_in_db):
-        """User with existing active membership → is_active NOT modified on
-        the existing row."""
+    async def test_existing_active_membership_switched(self, db_session: AsyncSession, org_in_db):
+        """User with existing active membership → auto-switched to the
+        newly-installed org (#3072). The previous membership is deactivated
+        and the new membership is now active."""
         user, _ = await _seed_user_and_nonce(db_session)
 
         # Create a second org for the existing membership
@@ -293,19 +294,19 @@ class TestInstallCallbackMembership:
 
         assert result["success"] is True
 
-        # The new membership should NOT be active (user already has one)
+        # Issue #3072: The new membership IS now active (auto-switch)
         stmt = select(TenantMembership).where(
             TenantMembership.user_id == "user-installer-001",
             TenantMembership.tenant_id == "org-test-001",
         )
         new_membership = (await db_session.execute(stmt)).scalar_one()
-        assert new_membership.is_active is False
+        assert new_membership.is_active is True
         assert new_membership.role == "member"
         assert new_membership.joined_via == "app_install"
 
-        # The existing membership's is_active is UNTOUCHED
+        # The existing membership's is_active is now False (switched away)
         await db_session.refresh(existing_membership)
-        assert existing_membership.is_active is True
+        assert existing_membership.is_active is False
 
     async def test_personal_install_no_membership(self, db_session: AsyncSession, org_in_db):
         """Personal-account install → no membership row created."""
