@@ -240,10 +240,13 @@ aws eks describe-cluster --name adp-dev-eks-cluster --query 'cluster.status'
 kubectl get pods -n adp-gateway
 # Expected: 2/2 Running
 
-# Health endpoint
+# Health endpoint — assert the JSON BODY, not the status code. When the
+# CloudFront VPC origin is missing, /api/* falls through to the S3 SPA
+# fallback which returns HTTP 200 with HTML (masked both 608-deploy
+# incidents, #3085).
 CF_DOMAIN=$(aws ssm get-parameter --name /adp/dev/gateway/cloudfront-domain --query Parameter.Value --output text)
-curl -s "https://${CF_DOMAIN}/api/health"
-# Expected: 200 OK
+curl -s "https://${CF_DOMAIN}/api/health" | grep -q '"status"[[:space:]]*:[[:space:]]*"healthy"' && echo HEALTH-OK || echo HEALTH-FAIL
+# Expected: HEALTH-OK ({"status":"healthy"} body)
 
 # Frontend
 curl -s -o /dev/null -w "%{http_code}" "https://${CF_DOMAIN}/"

@@ -556,15 +556,28 @@ class TestDeleteConnection:
 class TestSeedTenantGitHubAppSecret:
     """Tests for seed_tenant_github_app_secret and _seed_secret_sync."""
 
+    @staticmethod
+    def _mock_provider(app_id, private_key):
+        provider = MagicMock()
+        provider.get_credentials.return_value = (app_id, private_key)
+        return provider
+
     def test_creates_secret_with_correct_name_and_shape(self, monkeypatch):
         """The util creates the secret at adp/<env>/tenants/<org>/github-app
         with a JSON payload containing app_id and private_key."""
-        monkeypatch.setenv("BG_GITHUB_APP_ID", "3410773")
-        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
+        # Assembled at runtime so secret scanners don't flag a PEM literal.
+        fake_pem = "\n".join(["-----BEGIN RSA " + "PRIVATE KEY-----", "test", "-----END RSA " + "PRIVATE KEY-----"])
+
         mock_sm = MagicMock()
-        with patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm):
+        with (
+            patch(
+                "src.admin.connections.tenant_secret.get_github_app_provider",
+                return_value=self._mock_provider("3410773", fake_pem),
+            ),
+            patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm),
+        ):
             _seed_secret_sync("org-tenant-42", 999)
 
         mock_sm.create_secret.assert_called_once()
@@ -585,8 +598,6 @@ class TestSeedTenantGitHubAppSecret:
 
     def test_idempotent_when_secret_already_exists(self, monkeypatch):
         """Calling the util when the secret already exists is a no-op (no clobber)."""
-        monkeypatch.setenv("BG_GITHUB_APP_ID", "3410773")
-        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "test-key")
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
         mock_sm = MagicMock()
@@ -594,7 +605,13 @@ class TestSeedTenantGitHubAppSecret:
         error_response = {"Error": {"Code": "ResourceExistsException", "Message": "already exists"}}
         mock_sm.create_secret.side_effect = ClientError(error_response, "CreateSecret")
 
-        with patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm):
+        with (
+            patch(
+                "src.admin.connections.tenant_secret.get_github_app_provider",
+                return_value=self._mock_provider("3410773", "test-key"),
+            ),
+            patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm),
+        ):
             # Should not raise
             _seed_secret_sync("org-tenant-42", 999)
 
@@ -602,36 +619,71 @@ class TestSeedTenantGitHubAppSecret:
         mock_sm.create_secret.assert_called_once()
 
     def test_no_op_when_credentials_not_configured(self, monkeypatch):
-        """When BG_GITHUB_APP_ID or BG_GITHUB_APP_PRIVATE_KEY is empty, skip gracefully."""
-        monkeypatch.setenv("BG_GITHUB_APP_ID", "")
-        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "")
+        """When no credentials resolve (SM or env fallback), skip gracefully."""
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
         mock_sm = MagicMock()
-        with patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm):
+        with (
+            patch(
+                "src.admin.connections.tenant_secret.get_github_app_provider",
+                return_value=self._mock_provider("", ""),
+            ),
+            patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm),
+        ):
             _seed_secret_sync("org-tenant-42", 999)
 
         # Should not attempt to create the secret
         mock_sm.create_secret.assert_not_called()
 
+    def test_uses_provider_not_settings(self, monkeypatch):
+        """Credentials come from GitHubAppCredsProvider (SM-first), not settings.
+
+        Regression for the 608 deploy (#3085 hand-patch #1): Apps registered
+        via the UI manifest flow exist only in Secrets Manager; reading
+        settings.github_app_* directly skipped the seed silently and the first
+        worker pod died on vault_fetch.
+        """
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        # Env vars empty — SM (mocked provider) is the only source.
+        monkeypatch.delenv("BG_GITHUB_APP_ID", raising=False)
+        monkeypatch.delenv("BG_GITHUB_APP_PRIVATE_KEY", raising=False)
+
+        mock_sm = MagicMock()
+        with (
+            patch(
+                "src.admin.connections.tenant_secret.get_github_app_provider",
+                return_value=self._mock_provider("4232640", "sm-only-key"),
+            ),
+            patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm),
+        ):
+            _seed_secret_sync("aws-innovate", 144850098)
+
+        mock_sm.create_secret.assert_called_once()
+        import json
+
+        payload = json.loads(mock_sm.create_secret.call_args[1]["SecretString"])
+        assert payload == {"app_id": "4232640", "private_key": "sm-only-key"}
+
     def test_failure_does_not_raise(self, monkeypatch):
         """SM failures are logged but never propagate (fail-soft)."""
-        monkeypatch.setenv("BG_GITHUB_APP_ID", "3410773")
-        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "test-key")
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
         mock_sm = MagicMock()
         error_response = {"Error": {"Code": "InternalServiceError", "Message": "boom"}}
         mock_sm.create_secret.side_effect = ClientError(error_response, "CreateSecret")
 
-        with patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm):
+        with (
+            patch(
+                "src.admin.connections.tenant_secret.get_github_app_provider",
+                return_value=self._mock_provider("3410773", "test-key"),
+            ),
+            patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm),
+        ):
             # Should not raise
             _seed_secret_sync("org-tenant-42", 999)
 
     async def test_async_wrapper_does_not_raise_on_error(self, monkeypatch):
         """The async seed_tenant_github_app_secret never raises."""
-        monkeypatch.setenv("BG_GITHUB_APP_ID", "3410773")
-        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "test-key")
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
         with patch(

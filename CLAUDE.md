@@ -145,7 +145,7 @@ Use this when things go wrong. Do not show this to the user — use it to diagno
 - Wait 2-3 minutes for ALB provisioning, then check again.
 
 ### Frontend blank page
-- Wrong VITE_API_URL during build. Rebuild with `VITE_API_URL="/api/gateway" npm run build`
+- Wrong VITE_API_URL during build. Rebuild with `VITE_API_URL="/api" npm run build` — must match `gateway-deploy.yml` (`/api`, NOT `/api/gateway`); the wrong prefix makes every SPA call hit the S3 HTML fallback with HTTP 200 and crash the dashboard.
 - Stale cache: `aws cloudfront create-invalidation --distribution-id <id> --paths "/*"`
 
 ### CodeBuild fails

@@ -396,6 +396,10 @@ Verify:
 CF=$(aws ssm get-parameter --name /adp/dev/gateway/cloudfront-domain --query Parameter.Value --output text)
 curl -s -o /dev/null -w "%{http_code}\n" "https://${CF}/"        # 200
 curl -s "https://${CF}/" | grep -o "<title>[^<]*</title>"       # <title>Agentic Developer Platform</title>
+# API probe: assert the JSON BODY, never the status code alone — without the
+# VPC origin, /api/* falls to the S3 SPA fallback which also returns 200
+# (HTML). Masked both 608-deploy incidents (#3085).
+curl -s "https://${CF}/api/health"                               # {"status":"healthy"}
 ```
 
 ## Phase 6b — Gateway second pass (wire ALB) ✅ verified — REQUIRED
@@ -859,6 +863,9 @@ kubectl get nodes
 kubectl get pods -n adp-gateway                                                # 2/2 Running (gateway scope)
 CF=$(aws ssm get-parameter --name /adp/dev/gateway/cloudfront-domain --query Parameter.Value --output text)
 curl -s -o /dev/null -w "%{http_code}\n" "https://${CF}/"                      # 200
+curl -s "https://${CF}/api/health"   # {"status":"healthy"} — assert the BODY;
+                                     # without the VPC origin, /api/* hits the
+                                     # S3 SPA fallback and still returns 200 (#3085)
 ```
 
 ---

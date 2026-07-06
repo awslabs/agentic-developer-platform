@@ -311,8 +311,28 @@ jobs:
             --name "/adp/${ENVIRONMENT}/gateway/internal-alb-arn" \
             --query Parameter.Value --output text 2>/dev/null || echo "")
           if [ -n "$CACHED" ] && [ "$CACHED" != "pending" ] && [ "$CACHED" != "None" ]; then
-            echo "ALB already wired (${CACHED}). Skipping discovery."
-            echo "newly_wired=false" >> "$GITHUB_OUTPUT"
+            echo "ALB already in SSM (${CACHED}). Skipping discovery."
+            # The SSM cache alone is not proof CloudFront was wired: an inline
+            # apply can write the ALB params without ever flipping
+            # enable_vpc_origin, leaving the distribution with no /api/* origin
+            # (Incident A, 608 deploy #3085). Check the distribution itself;
+            # if it has no VPC origin, still trigger the infra re-apply.
+            DIST_ID=$(aws ssm get-parameter \
+              --name "/adp/${ENVIRONMENT}/gateway/cloudfront-id" \
+              --query Parameter.Value --output text 2>/dev/null || echo "")
+            VPC_ORIGINS="unknown"
+            if [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ]; then
+              VPC_ORIGINS=$(aws cloudfront get-distribution-config --id "$DIST_ID" \
+                --query 'length(DistributionConfig.Origins.Items[?VpcOriginConfig])' \
+                --output text 2>/dev/null || echo "unknown")
+            fi
+            if [ "$VPC_ORIGINS" = "0" ]; then
+              echo "CloudFront ${DIST_ID} has NO VPC origin despite cached ALB — triggering re-apply."
+              echo "newly_wired=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "CloudFront VPC origin check: count=${VPC_ORIGINS}. Nothing to wire."
+              echo "newly_wired=false" >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
           # Run discovery with a short timeout (2 min instead of 10)

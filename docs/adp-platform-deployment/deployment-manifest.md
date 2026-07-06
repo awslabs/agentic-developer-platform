@@ -63,7 +63,7 @@ Deploy: `npm run build` → `aws s3 sync` → CloudFront invalidation
 |----------|-------|-------------------|----------|
 | Static files | S3 | `aws s3 ls s3://<frontend-bucket>/ --summarize \| tail -1` | Total Objects > 0 |
 | CDN | CloudFront | `curl -s -o /dev/null -w "%{http_code}" https://<cloudfront-domain>/` | 200 |
-| API proxy | CloudFront → ALB | `curl -s -o /dev/null -w "%{http_code}" https://<cloudfront-domain>/api/health` | 200 |
+| API proxy | CloudFront → ALB | `curl -s https://<cloudfront-domain>/api/health` | `{"status":"healthy"}` JSON **body** — never assert HTTP 200 alone: when the VPC origin is missing, `/api/*` falls through to the S3 SPA fallback which also returns 200 (HTML). Both 608-deploy incidents (#3085) were masked by status-only probes. |
 
 ## Agent Factory Module
 
