@@ -29,6 +29,8 @@ export interface GitHubConnectionItem {
   configure_url: string;
   /** Deep-link to GitHub's installation repository management page. Issue #2983. */
   manage_url: string;
+  /** Issue #3073: Whether the caller can manage (disconnect) this connection. */
+  can_manage: boolean;
   /** Issue #3018: Tenant ID that owns this connection (multi-tenant mode). */
   tenant_id?: string | null;
   /** Issue #3018: Display name of the owning tenant (multi-tenant mode). */

@@ -275,6 +275,7 @@ describe('Connections Page', () => {
       repository_count: 3,
       installed_at: '2026-05-01T10:00:00Z',
       configure_url: 'https://github.com/organizations/my-org/settings/installations/12345',
+      can_manage: true,
     };
 
     beforeEach(() => {

@@ -216,6 +216,10 @@ class ChannelTenantMap(Base):
         nullable=False,
     )
     install_metadata: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
+    # Issue #3073: The user (users.id) who installed this connection.
+    # NULL for pre-existing rows or no-nonce public installs. Gates who can
+    # disconnect without workspace admin role.
+    installed_by_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     # Relationship

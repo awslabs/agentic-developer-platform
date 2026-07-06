@@ -49,6 +49,13 @@ class GitHubConnectionItem(BaseModel):
         default="",
         description="Deep-link to GitHub's installation repository management page. Visible to all members.",
     )
+    # Issue #3073: Per-connection management authorization
+    can_manage: bool = Field(
+        default=False,
+        description=(
+            "Whether the caller can manage (disconnect) this connection. True if the caller is a workspace admin or the user who installed it."
+        ),
+    )
     # Issue #3018: Multi-tenant visibility fields
     tenant_id: str | None = Field(
         default=None,

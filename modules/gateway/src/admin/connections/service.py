@@ -389,6 +389,8 @@ async def install_callback(
         account_type=account_type,
         repository_selection=repository_selection,
         repositories=repositories,
+        # Issue #3073: Record the installing user so they can manage without admin.
+        installed_by_user_id=user_row.id if user_row else None,
     )
 
     # Issue #2085: Seed per-tenant GitHub App secret so that downstream
@@ -586,6 +588,7 @@ async def _attach_org_installation(
     account_type: str = "Organization",
     repository_selection: str = "selected",
     repositories: list[str] | None = None,
+    installed_by_user_id: str | None = None,
 ) -> None:
     """Attach a GitHub installation (org or personal) to the caller's ADP tenant.
 
@@ -593,6 +596,9 @@ async def _attach_org_installation(
     On conflict, raises PermissionError with a user-actionable message.
     On first install, inserts a ChannelTenantMap row; on re-install, updates the
     metadata. Stores the repo names so the connections UI can list them.
+
+    Issue #3073: installed_by_user_id records who performed the install so they
+    can manage the connection without workspace admin role.
     """
     from sqlalchemy import select
 
@@ -629,6 +635,9 @@ async def _attach_org_installation(
             )
         # Already mapped to this tenant — update metadata (idempotent re-install)
         existing.install_metadata = _meta()
+        # Issue #3073: On re-install, update installed_by to the new verified installer.
+        if installed_by_user_id:
+            existing.installed_by_user_id = installed_by_user_id
         await db.commit()
         logger.info(
             "GitHub %s re-installed installation_id=%d tenant=%s (%d repos)",
@@ -645,6 +654,7 @@ async def _attach_org_installation(
         provider_scope_id=scope_id,
         org_id=caller_org_id,
         install_metadata=_meta(),
+        installed_by_user_id=installed_by_user_id,
     )
     db.add(mapping)
     await db.commit()
@@ -803,6 +813,8 @@ async def list_connections(
     db: AsyncSession,
     github_client: GitHubAppClient | None = None,
     member_tenant_ids: list[str] | None = None,
+    caller_is_admin: bool = False,
+    caller_pg_user_id: str | None = None,
 ) -> ConnectionsListResponse:
     """Return all GitHub installations connected to the caller's ADP tenants.
 
@@ -816,6 +828,8 @@ async def list_connections(
 
     Issue #3018: When member_tenant_ids is provided, queries across ALL member
     tenants and tags each connection with tenant_id, tenant_name, is_active_tenant.
+
+    Issue #3073: Computes can_manage per connection (admin OR installer).
     """
     from sqlalchemy import select
 
@@ -900,6 +914,11 @@ async def list_connections(
         tenant_name = tenant_name_map.get(mapping.org_id) if member_tenant_ids else None
         is_active_tenant = (mapping.org_id == caller_org_id) if member_tenant_ids else None
 
+        # Issue #3073: Compute can_manage — admin OR the installer.
+        can_manage = caller_is_admin or (
+            caller_pg_user_id is not None and mapping.installed_by_user_id is not None and caller_pg_user_id == mapping.installed_by_user_id
+        )
+
         connections.append(
             GitHubConnectionItem(
                 provider="github",
@@ -912,6 +931,7 @@ async def list_connections(
                 installed_at=mapping.created_at,
                 configure_url=configure_url,
                 manage_url=manage_url,
+                can_manage=can_manage,
                 tenant_id=tenant_id,
                 tenant_name=tenant_name,
                 is_active_tenant=is_active_tenant,
@@ -957,16 +977,24 @@ async def delete_connection(
     caller_org_id: str,
     db: AsyncSession,
     github_client: GitHubAppClient | None = None,
+    caller_user_id: str | None = None,
+    caller_is_admin: bool = True,
 ) -> DeleteConnectionResponse:
     """Revoke a GitHub App installation and remove the tenant mapping.
 
     Steps:
     1. Verify the caller's ADP tenant owns this installation (via ChannelTenantMap).
-    2. Call GitHub API DELETE /app/installations/{id}.
-    3. Remove the ChannelTenantMap row.
+    2. Verify the caller is authorized (workspace admin OR the installer).
+    3. Call GitHub API DELETE /app/installations/{id}.
+    4. Remove the ChannelTenantMap row.
+
+    Issue #3073: Non-admin callers are allowed if their Postgres user ID matches
+    the connection's installed_by_user_id. This lets the installer manage their
+    own connection without role elevation.
 
     Raises:
-        PermissionError — installation not owned by caller's tenant
+        PermissionError — installation not owned by caller's tenant, or caller
+                          lacks permission (not admin and not installer)
         ValueError      — installation not found
     """
     from sqlalchemy import delete as sa_delete
@@ -1007,6 +1035,17 @@ async def delete_connection(
 
     if mapping.org_id != caller_org_id:
         raise PermissionError(f"Installation {installation_id} belongs to a different ADP tenant")
+
+    # Issue #3073: Authorization — workspace admin OR the installer who created
+    # this connection. The tenant ownership check above is a hard precondition
+    # (unchanged); this is AND-ed on top.
+    if not caller_is_admin:
+        is_installer = caller_user_id is not None and mapping.installed_by_user_id is not None and caller_user_id == mapping.installed_by_user_id
+        if not is_installer:
+            raise PermissionError(
+                f"You do not have permission to disconnect installation {installation_id}. "
+                "Only workspace admins or the user who installed it can disconnect."
+            )
 
     # 2. Revoke on GitHub
     if github_client is not None:

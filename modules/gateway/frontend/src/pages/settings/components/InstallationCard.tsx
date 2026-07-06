@@ -17,6 +17,9 @@ interface InstallationCardProps {
 }
 
 export function InstallationCard({ connection, onDisconnect, readOnly = false }: InstallationCardProps) {
+  // Issue #3073: Disconnect is visible when the server says the caller can manage
+  // AND the card is not readOnly (non-active tenant connections stay hidden).
+  const showDisconnect = !readOnly && connection.can_manage;
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -75,7 +78,7 @@ export function InstallationCard({ connection, onDisconnect, readOnly = false }:
         >
           Manage repositories ↗
         </a>
-        {!readOnly && (
+        {showDisconnect && (
           <Button
             variant="danger"
             size="sm"

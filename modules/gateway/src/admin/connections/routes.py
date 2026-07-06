@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
 from src.admin.exceptions import AccessDeniedError
-from src.auth.dependencies import get_current_user, require_admin
+from src.auth.dependencies import get_current_user
 from src.auth.magic_link import (
     NonceAlreadyConsumedError,
     NonceNotFoundError,
@@ -222,6 +222,7 @@ async def get_connections(
         # FKs to users.id (a Postgres UUID). We must resolve via cognito_sub.
         # Graceful fallback: if resolution fails, proceed with single-org behavior.
         member_tenant_ids: list[str] | None = None
+        pg_user_id: str | None = None
 
         try:
             user_stmt = select(User.id).where(User.cognito_sub == current_user.user_id)
@@ -243,6 +244,9 @@ async def get_connections(
             caller_user_id=current_user.user_id,
             db=db,
             member_tenant_ids=member_tenant_ids,
+            # Issue #3073: Pass admin status and PG user ID for can_manage computation.
+            caller_is_admin=current_user.is_admin,
+            caller_pg_user_id=pg_user_id,
         )
     except HTTPException:
         raise
@@ -254,19 +258,35 @@ async def get_connections(
 @router.delete("/github/{installation_id}", response_model=DeleteConnectionResponse)
 async def disconnect_github(
     installation_id: int,
-    current_user: TokenContext = Depends(require_admin),
+    current_user: TokenContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> DeleteConnectionResponse:
     """Disconnect a GitHub App installation from the caller's ADP tenant.
 
-    Requires admin role. Revokes the GitHub App installation and removes
-    the local tenant mapping.
+    Issue #3073: No longer requires workspace admin role. Authorization is:
+    tenant ownership (unchanged) AND (workspace admin OR the user who installed
+    the connection). Non-admin installers can manage their own connection.
     """
+    from sqlalchemy import select
+
+    from src.shared.models.organization import User
+
     try:
+        # Resolve the caller's Postgres user ID from their Cognito sub.
+        # Same pattern as get_connections (Issue #3021).
+        pg_user_id: str | None = None
+        try:
+            user_stmt = select(User.id).where(User.cognito_sub == current_user.user_id)
+            pg_user_id = (await db.execute(user_stmt)).scalar_one_or_none()
+        except Exception as exc:
+            logger.debug("disconnect_github: could not resolve PG user_id: %s", exc)
+
         return await delete_connection(
             installation_id=installation_id,
             caller_org_id=current_user.org_id,
             db=db,
+            caller_user_id=pg_user_id,
+            caller_is_admin=current_user.is_admin,
         )
     except HTTPException:
         # Issue #2700: surface deliberate HTTPExceptions instead of masking
