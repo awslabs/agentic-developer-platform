@@ -168,19 +168,99 @@ export function GitHubTile({
               <div className="h-16 rounded-lg bg-gray-100 dark:bg-gray-800" />
             </div>
           ) : connections.length > 0 ? (
-            <div className="mt-4 space-y-3">
-              {connections.map((conn) => (
-                <InstallationCard
-                  key={conn.installation_id}
-                  connection={conn}
-                  onDisconnect={onDisconnect}
-                />
-              ))}
-            </div>
+            <ConnectionsList connections={connections} onDisconnect={onDisconnect} />
           ) : null}
         </>
       )}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ConnectionsList — groups connections by tenant when multi-tenant (Issue #3018)
+// ---------------------------------------------------------------------------
+
+function ConnectionsList({
+  connections,
+  onDisconnect,
+}: {
+  connections: GitHubConnectionItem[];
+  onDisconnect: (installationId: number) => Promise<void>;
+}) {
+  // Check if we have multi-tenant data (tenant_id present on any connection)
+  const isMultiTenant = connections.some((c) => c.tenant_id != null);
+
+  if (!isMultiTenant) {
+    // Single-tenant: flat list (legacy behavior)
+    return (
+      <div className="mt-4 space-y-3">
+        {connections.map((conn) => (
+          <InstallationCard
+            key={conn.installation_id}
+            connection={conn}
+            onDisconnect={onDisconnect}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  // Multi-tenant: group by tenant_id
+  const groups = new Map<string, GitHubConnectionItem[]>();
+  for (const conn of connections) {
+    const key = conn.tenant_id ?? '__unknown__';
+    const list = groups.get(key) ?? [];
+    list.push(conn);
+    groups.set(key, list);
+  }
+
+  // Sort: active tenant first, then alphabetical by tenant_name
+  const sortedEntries = [...groups.entries()].sort(([, aConns], [, bConns]) => {
+    const aActive = aConns[0]?.is_active_tenant ?? false;
+    const bActive = bConns[0]?.is_active_tenant ?? false;
+    if (aActive && !bActive) return -1;
+    if (!aActive && bActive) return 1;
+    const aName = aConns[0]?.tenant_name ?? '';
+    const bName = bConns[0]?.tenant_name ?? '';
+    return aName.localeCompare(bName);
+  });
+
+  return (
+    <div className="mt-4 space-y-4">
+      {sortedEntries.map(([tenantId, tenantConns]) => {
+        const isActive = tenantConns[0]?.is_active_tenant ?? false;
+        const tenantName = tenantConns[0]?.tenant_name ?? tenantId;
+
+        return (
+          <div key={tenantId}>
+            <div className="mb-2 flex items-center gap-2">
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                {tenantName}
+              </span>
+              {isActive ? (
+                <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/30 dark:text-green-300">
+                  Active
+                </span>
+              ) : (
+                <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-400">
+                  Read-only
+                </span>
+              )}
+            </div>
+            <div className="space-y-3">
+              {tenantConns.map((conn) => (
+                <InstallationCard
+                  key={conn.installation_id}
+                  connection={conn}
+                  onDisconnect={onDisconnect}
+                  readOnly={!isActive}
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

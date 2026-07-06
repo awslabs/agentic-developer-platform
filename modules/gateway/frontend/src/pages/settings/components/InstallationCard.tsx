@@ -12,9 +12,11 @@ import { type GitHubConnectionItem } from '@/services/connections';
 interface InstallationCardProps {
   connection: GitHubConnectionItem;
   onDisconnect: (installationId: number) => Promise<void>;
+  /** Issue #3018: Hide Disconnect button for non-active tenant connections. */
+  readOnly?: boolean;
 }
 
-export function InstallationCard({ connection, onDisconnect }: InstallationCardProps) {
+export function InstallationCard({ connection, onDisconnect, readOnly = false }: InstallationCardProps) {
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -73,14 +75,16 @@ export function InstallationCard({ connection, onDisconnect }: InstallationCardP
         >
           Manage repositories ↗
         </a>
-        <Button
-          variant="danger"
-          size="sm"
-          onClick={handleDisconnect}
-          disabled={isDisconnecting}
-        >
-          {isDisconnecting ? 'Disconnecting…' : confirmDelete ? 'Confirm?' : 'Disconnect'}
-        </Button>
+        {!readOnly && (
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={handleDisconnect}
+            disabled={isDisconnecting}
+          >
+            {isDisconnecting ? 'Disconnecting…' : confirmDelete ? 'Confirm?' : 'Disconnect'}
+          </Button>
+        )}
       </div>
     </div>
   );

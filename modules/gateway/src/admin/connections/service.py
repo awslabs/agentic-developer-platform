@@ -723,8 +723,9 @@ async def list_connections(
     caller_user_id: str,
     db: AsyncSession,
     github_client: GitHubAppClient | None = None,
+    member_tenant_ids: list[str] | None = None,
 ) -> ConnectionsListResponse:
-    """Return all GitHub installations connected to the caller's ADP tenant.
+    """Return all GitHub installations connected to the caller's ADP tenants.
 
     Queries ChannelTenantMap for this org's GitHub entries. For personal accounts
     within adp-default, scopes to only the caller's own installations to prevent
@@ -733,16 +734,27 @@ async def list_connections(
     Issue #2983: Repository lists are fetched LIVE from GitHub (cached 60s) so
     the card always reflects the current state. Stored metadata is used only as
     a fallback when the GitHub API is unavailable.
+
+    Issue #3018: When member_tenant_ids is provided, queries across ALL member
+    tenants and tags each connection with tenant_id, tenant_name, is_active_tenant.
     """
     from sqlalchemy import select
 
+    from src.shared.models.organization import Organization
     from src.shared.models.vault import ChannelTenantMap
 
-    from .adp_default import is_adp_default
+    from .adp_default import get_adp_default_org_id
 
+    # Determine which tenant IDs to query
+    if member_tenant_ids:
+        tenant_ids_to_query = member_tenant_ids
+    else:
+        tenant_ids_to_query = [caller_org_id]
+
+    # Query connections across all relevant tenants
     stmt = select(ChannelTenantMap).where(
         ChannelTenantMap.provider == "github",
-        ChannelTenantMap.org_id == caller_org_id,
+        ChannelTenantMap.org_id.in_(tenant_ids_to_query),
     )
     result = await db.execute(stmt)
     mappings = result.scalars().all()
@@ -752,8 +764,17 @@ async def list_connections(
 
     # For personal accounts in adp-default, filter to this user's installs only.
     # provider_scope_id format for personal: "personal:<github_id>:<adp_user_id>"
-    if is_adp_default(caller_org_id):
-        mappings = [m for m in mappings if m.provider_scope_id.endswith(f":{caller_user_id}")]
+    adp_default_id = get_adp_default_org_id()
+    mappings = [m for m in mappings if m.org_id != adp_default_id or m.provider_scope_id.endswith(f":{caller_user_id}")]
+
+    # Issue #3018: Pre-fetch tenant names for multi-tenant tagging
+    tenant_name_map: dict[str, str] = {}
+    if member_tenant_ids:
+        org_stmt = select(Organization.id, Organization.name).where(
+            Organization.id.in_(tenant_ids_to_query),
+        )
+        org_rows = (await db.execute(org_stmt)).all()
+        tenant_name_map = {row[0]: row[1] for row in org_rows}
 
     # Issue #2983: Build a GitHub client for live repo reads if not injected.
     if github_client is None:
@@ -795,6 +816,11 @@ async def list_connections(
         else:
             manage_url = f"https://github.com/settings/installations/{install_id}"
 
+        # Issue #3018: Tag with tenant info when in multi-tenant mode
+        tenant_id = mapping.org_id if member_tenant_ids else None
+        tenant_name = tenant_name_map.get(mapping.org_id) if member_tenant_ids else None
+        is_active_tenant = (mapping.org_id == caller_org_id) if member_tenant_ids else None
+
         connections.append(
             GitHubConnectionItem(
                 provider="github",
@@ -807,6 +833,9 @@ async def list_connections(
                 installed_at=mapping.created_at,
                 configure_url=configure_url,
                 manage_url=manage_url,
+                tenant_id=tenant_id,
+                tenant_name=tenant_name,
+                is_active_tenant=is_active_tenant,
             )
         )
 

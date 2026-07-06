@@ -202,13 +202,47 @@ async def get_connections(
     current_user: TokenContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConnectionsListResponse:
-    """List all GitHub App installations connected to the caller's ADP tenant."""
+    """List all GitHub App installations connected to the caller's ADP tenants.
+
+    Issue #3018: Multi-tenant visibility — returns connections from ALL tenants
+    the user is a member of (via tenant_memberships). Each connection is tagged
+    with tenant_id, tenant_name, and is_active_tenant. Falls back to single-org
+    behavior when no membership rows exist (legacy path).
+    """
+    from sqlalchemy import select
+
+    from src.shared.models.onboarding import TenantMembership
+    from src.shared.models.organization import User
+
     try:
         effective_org_id = await resolve_effective_org_id(current_user, db)
+
+        # Issue #3018: Resolve the Postgres users.id from the Cognito sub.
+        # current_user.user_id is the Cognito 'sub' claim, but TenantMembership.user_id
+        # FKs to users.id (a Postgres UUID). We must resolve via cognito_sub.
+        # Graceful fallback: if resolution fails, proceed with single-org behavior.
+        member_tenant_ids: list[str] | None = None
+
+        try:
+            user_stmt = select(User.id).where(User.cognito_sub == current_user.user_id)
+            pg_user_id = (await db.execute(user_stmt)).scalar_one_or_none()
+
+            if pg_user_id:
+                membership_stmt = select(TenantMembership.tenant_id).where(
+                    TenantMembership.user_id == pg_user_id,
+                )
+                tenant_ids = [row[0] for row in (await db.execute(membership_stmt))]
+                if len(tenant_ids) > 1:
+                    member_tenant_ids = tenant_ids
+        except Exception as exc:
+            # Non-fatal: fall back to single-org behavior if membership lookup fails
+            logger.debug("multi-tenant membership lookup failed (falling back to single-org): %s", exc)
+
         return await list_connections(
             caller_org_id=effective_org_id,
             caller_user_id=current_user.user_id,
             db=db,
+            member_tenant_ids=member_tenant_ids,
         )
     except HTTPException:
         raise

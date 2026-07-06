@@ -49,6 +49,19 @@ class GitHubConnectionItem(BaseModel):
         default="",
         description="Deep-link to GitHub's installation repository management page. Visible to all members.",
     )
+    # Issue #3018: Multi-tenant visibility fields
+    tenant_id: str | None = Field(
+        default=None,
+        description="Tenant (organization) ID that owns this connection.",
+    )
+    tenant_name: str | None = Field(
+        default=None,
+        description="Display name of the tenant that owns this connection.",
+    )
+    is_active_tenant: bool | None = Field(
+        default=None,
+        description="Whether this connection belongs to the caller's currently active tenant.",
+    )
 
 
 class ConnectionsListResponse(BaseModel):
