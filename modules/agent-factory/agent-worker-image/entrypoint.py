@@ -230,6 +230,49 @@ def _is_already_completed(repo: str, issue: int, token: str) -> bool:
     return False
 
 
+def _upload_transcript_to_s3(
+    final_text: str, repo: str, issue: int, message_id: str, arrived_at: str, persona: str
+) -> None:
+    """Upload the full untruncated transcript to S3 (best-effort).
+
+    Object key: {persona}/{org}/{repo_name}/issue-{issue}/{timestamp}-{run_id}.md
+
+    Skips silently if AGENT_RUN_LOGS_BUCKET is unset (backward compat for
+    un-applied accounts) or if final_text is empty. Failures are logged but
+    NEVER affect pod exit code — same contract as check-run finalize.
+    """
+    bucket = os.environ.get("AGENT_RUN_LOGS_BUCKET", "")
+    if not bucket or not final_text:
+        return
+
+    try:
+        # Build the S3 object key: {org}/{repo}/issue-{N}/{timestamp}-{run_id}.md
+        # arrived_at is ISO format (e.g. "2026-07-06T15:35:57Z"); convert to
+        # compact UTC form for key prefix. Fall back to "unknown" on error.
+        timestamp = arrived_at.replace("-", "").replace(":", "").replace(".", "")
+        # Truncate to YYYYMMDDTHHMMSSz form (strip sub-seconds if present)
+        if "T" in timestamp:
+            timestamp = timestamp.split("Z")[0] + "Z"
+        else:
+            timestamp = "unknown"
+
+        # run_id: use first 8 chars of message_id for disambiguation
+        run_id = (message_id or "norunid")[:8]
+
+        key = f"{persona}/{repo}/issue-{issue}/{timestamp}-{run_id}.md"
+
+        s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=final_text.encode("utf-8"),
+            ContentType="text/markdown",
+        )
+        logger.info("Transcript uploaded to s3://%s/%s (%d bytes)", bucket, key, len(final_text))
+    except Exception as exc:
+        logger.warning("Failed to upload transcript to S3 (non-fatal): %s", exc)
+
+
 def main() -> int:
     queue_url = os.environ.get("QUEUE_URL")
     if not queue_url:
@@ -864,6 +907,18 @@ def main() -> int:
             repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url
         )
 
+    # Read the final rendered Markdown written by CheckRunStreamer (if any).
+    # This preserves the full per-turn transcript across the process boundary.
+    # Read outside the check-run block so S3 upload can use it independently.
+    final_text: str = ""
+    cr_final_path = "/tmp/adp-check-run-final.md"
+    try:
+        if os.path.exists(cr_final_path):
+            with open(cr_final_path, "r", encoding="utf-8") as fh:
+                final_text = fh.read()
+    except Exception:
+        pass
+
     # Finalize the Check Run (best-effort — must NOT affect pod exit code)
     if check_run_id is not None:
         try:
@@ -890,17 +945,6 @@ def main() -> int:
             except Exception:
                 pass  # PR may not exist yet; non-fatal
 
-            # Read the final rendered Markdown written by CheckRunStreamer (if any).
-            # This preserves the full per-turn transcript across the process boundary.
-            final_text: str = ""
-            cr_final_path = "/tmp/adp-check-run-final.md"
-            try:
-                if os.path.exists(cr_final_path):
-                    with open(cr_final_path, "r", encoding="utf-8") as fh:
-                        final_text = fh.read()
-            except Exception:
-                pass
-
             cr_output: dict = {"title": cr_title, "summary": cr_summary}
             if final_text:
                 # GitHub hard limit for output.text is 65,535 chars
@@ -921,6 +965,11 @@ def main() -> int:
             update_check_run(**update_kwargs)
         except Exception as exc:
             logger.warning("Failed to finalize check run (non-fatal): %s", exc)
+
+    # Persist full untruncated transcript to S3 (best-effort, non-fatal).
+    # Issue #3057: transcripts exceed the GitHub Check Run 65,535-char limit;
+    # S3 gives us a durable, auditable archive.
+    _upload_transcript_to_s3(final_text, repo, issue, message_id, arrived_at, persona)
 
     # Step 13: Delete the SQS message on ANY terminal exit — success or failure.
     #
