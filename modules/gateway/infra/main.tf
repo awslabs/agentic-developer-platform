@@ -310,6 +310,27 @@ resource "aws_iam_role_policy" "gateway_chat_logs_s3" {
   depends_on = [module.s3_chat_logs]
 }
 
+# Agent run-logs transcripts — read-only (Issue #3069 / #3105)
+# The transcript viewer endpoint fetches markdown transcripts from the
+# agent-run-logs bucket. GetObject only — no List, no Put. Scoped to
+# this account's bucket by convention (adp-<env>-agent-run-logs-<account>).
+resource "aws_iam_role_policy" "gateway_run_logs_read" {
+  name = "${local.name_prefix}-policy-gateway-run-logs-read"
+  role = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "AgentRunLogsRead"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::adp-${var.environment}-agent-run-logs-${data.aws_caller_identity.current.account_id}/*"
+      }
+    ]
+  })
+}
+
 # Comprehend PII detection permissions
 resource "aws_iam_role_policy" "gateway_comprehend_pii" {
   count = var.enable_chat_logging && var.chat_logging_scrub_level == "standard" ? 1 : 0

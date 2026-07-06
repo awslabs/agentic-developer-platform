@@ -222,6 +222,7 @@ jobs:
               -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
               -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
               -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
+              -e "s|__AGENT_RUN_LOGS_BUCKET__|adp-${ENVIRONMENT}-agent-run-logs-${EFFECTIVE_ACCOUNT}|g" \
               modules/gateway/k8s/configmap.yaml | kubectl apply -f -
 
           # --- Create K8s Secret from Secrets Manager (Section 2) ---

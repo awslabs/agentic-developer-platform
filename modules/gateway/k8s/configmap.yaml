@@ -153,6 +153,15 @@ data:
   BG_AGENT_CONTEXT_DBNAME: "agent_context"
 
   # =============================================================================
+  # Agent Run-Logs Transcripts (Issue #3069 / #3105)
+  # =============================================================================
+  # S3 bucket where agent-worker writes run transcripts. Read by the
+  # transcript viewer endpoint (activity/routes.py _get_run_logs_bucket).
+  # NOT BG_-prefixed — read directly via os.environ.get("AGENT_RUN_LOGS_BUCKET").
+  # =============================================================================
+  AGENT_RUN_LOGS_BUCKET: "__AGENT_RUN_LOGS_BUCKET__"
+
+  # =============================================================================
   # bedrock-mantle passthrough (Issue #2709, EPIC #2702)
   # =============================================================================
   # Routes OpenAI Responses-API traffic (POST /openai/v1/responses) through the
