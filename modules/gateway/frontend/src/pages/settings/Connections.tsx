@@ -32,7 +32,7 @@ import {
 } from '@/services/connections';
 import { GitHubTile } from './components/GitHubTile';
 
-/** Well-known org ID for the adp-default free-tier tenant. */
+/** Well-known org ID for the adp-default free-tier workspace. */
 const ADP_DEFAULT_ORG_ID = '00000000-0000-4000-a000-000000000001';
 
 export default function Connections() {

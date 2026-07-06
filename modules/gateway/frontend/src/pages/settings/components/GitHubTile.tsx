@@ -177,7 +177,22 @@ export function GitHubTile({
 }
 
 // ---------------------------------------------------------------------------
-// ConnectionsList — groups connections by tenant when multi-tenant (Issue #3018)
+// deriveGroupDisplayName — use the GitHub org login (account_login) from the
+// first connection in the group rather than the internal tenant_name slug.
+// Falls back to tenant_name (internal slug) only if no connections have an
+// account_login (shouldn't happen in practice).
+// ---------------------------------------------------------------------------
+
+function deriveGroupDisplayName(conns: GitHubConnectionItem[]): string {
+  // Prefer the GitHub org display name (account_login) from the first connection
+  const firstLogin = conns.find((c) => c.account_login)?.account_login;
+  if (firstLogin) return firstLogin;
+  // Fallback to the API-provided tenant_name (internal slug)
+  return conns[0]?.tenant_name ?? 'Unknown';
+}
+
+// ---------------------------------------------------------------------------
+// ConnectionsList — groups connections by workspace when multi-workspace (Issue #3018)
 // ---------------------------------------------------------------------------
 
 function ConnectionsList({
@@ -187,11 +202,11 @@ function ConnectionsList({
   connections: GitHubConnectionItem[];
   onDisconnect: (installationId: number) => Promise<void>;
 }) {
-  // Check if we have multi-tenant data (tenant_id present on any connection)
-  const isMultiTenant = connections.some((c) => c.tenant_id != null);
+  // Check if we have multi-workspace data (tenant_id present on any connection)
+  const isMultiWorkspace = connections.some((c) => c.tenant_id != null);
 
-  if (!isMultiTenant) {
-    // Single-tenant: flat list (legacy behavior)
+  if (!isMultiWorkspace) {
+    // Single workspace: flat list (legacy behavior)
     return (
       <div className="mt-4 space-y-3">
         {connections.map((conn) => (
@@ -205,7 +220,7 @@ function ConnectionsList({
     );
   }
 
-  // Multi-tenant: group by tenant_id
+  // Multi-workspace: group by tenant_id (internal key)
   const groups = new Map<string, GitHubConnectionItem[]>();
   for (const conn of connections) {
     const key = conn.tenant_id ?? '__unknown__';
@@ -214,28 +229,28 @@ function ConnectionsList({
     groups.set(key, list);
   }
 
-  // Sort: active tenant first, then alphabetical by tenant_name
+  // Sort: active workspace first, then alphabetical by display name
   const sortedEntries = [...groups.entries()].sort(([, aConns], [, bConns]) => {
     const aActive = aConns[0]?.is_active_tenant ?? false;
     const bActive = bConns[0]?.is_active_tenant ?? false;
     if (aActive && !bActive) return -1;
     if (!aActive && bActive) return 1;
-    const aName = aConns[0]?.tenant_name ?? '';
-    const bName = bConns[0]?.tenant_name ?? '';
+    const aName = deriveGroupDisplayName(aConns);
+    const bName = deriveGroupDisplayName(bConns);
     return aName.localeCompare(bName);
   });
 
   return (
     <div className="mt-4 space-y-4">
-      {sortedEntries.map(([tenantId, tenantConns]) => {
-        const isActive = tenantConns[0]?.is_active_tenant ?? false;
-        const tenantName = tenantConns[0]?.tenant_name ?? tenantId;
+      {sortedEntries.map(([groupId, groupConns]) => {
+        const isActive = groupConns[0]?.is_active_tenant ?? false;
+        const displayName = deriveGroupDisplayName(groupConns);
 
         return (
-          <div key={tenantId}>
+          <div key={groupId}>
             <div className="mb-2 flex items-center gap-2">
               <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                {tenantName}
+                {displayName}
               </span>
               {isActive ? (
                 <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/30 dark:text-green-300">
@@ -243,12 +258,12 @@ function ConnectionsList({
                 </span>
               ) : (
                 <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-400">
-                  Read-only
+                  Viewing
                 </span>
               )}
             </div>
             <div className="space-y-3">
-              {tenantConns.map((conn) => (
+              {groupConns.map((conn) => (
                 <InstallationCard
                   key={conn.installation_id}
                   connection={conn}

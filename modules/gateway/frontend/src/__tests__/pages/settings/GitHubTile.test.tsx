@@ -397,4 +397,82 @@ describe('GitHubTile', () => {
       ).toBeInTheDocument();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Issue #3070: Multi-workspace grouping display
+  // -------------------------------------------------------------------------
+
+  describe('multi-workspace grouping (Issue #3070)', () => {
+    const multiTenantConnections: GitHubConnectionItem[] = [
+      {
+        provider: 'github',
+        installation_id: 1001,
+        account_login: 'aws-innovate',
+        account_type: 'Organization',
+        repository_selection: 'all',
+        repository_count: 10,
+        repositories: [],
+        installed_at: '2026-06-01T00:00:00Z',
+        configure_url: 'https://github.com/organizations/aws-innovate/settings/installations/1001',
+        manage_url: 'https://github.com/organizations/aws-innovate/settings/installations/1001',
+        tenant_id: 'tenant-1',
+        tenant_name: 'platform-admin',
+        is_active_tenant: true,
+      },
+      {
+        provider: 'github',
+        installation_id: 1002,
+        account_login: 'other-org',
+        account_type: 'Organization',
+        repository_selection: 'selected',
+        repository_count: 3,
+        repositories: ['repo-x'],
+        installed_at: '2026-06-10T00:00:00Z',
+        configure_url: 'https://github.com/organizations/other-org/settings/installations/1002',
+        manage_url: 'https://github.com/organizations/other-org/settings/installations/1002',
+        tenant_id: 'tenant-2',
+        tenant_name: 'secondary-workspace',
+        is_active_tenant: false,
+      },
+    ];
+
+    const props = {
+      ...defaultProps,
+      isPlatformAdmin: false,
+      appStatus: registeredStatus,
+      connections: multiTenantConnections,
+    };
+
+    it('uses GitHub org display name (account_login) as group header, not internal slug', () => {
+      render(<GitHubTile {...props} />);
+
+      // Should show account_login "aws-innovate" as a group header, NOT internal tenant_name "platform-admin"
+      // account_login appears both in group header AND InstallationCard, so use getAllByText
+      const awsInnovateElements = screen.getAllByText('aws-innovate');
+      expect(awsInnovateElements.length).toBeGreaterThanOrEqual(1);
+      // The internal slug "platform-admin" should never appear as user-visible text
+      expect(screen.queryByText('platform-admin')).not.toBeInTheDocument();
+    });
+
+    it('shows "Viewing" badge for non-active workspace groups (not "Read-only")', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText('Viewing')).toBeInTheDocument();
+      expect(screen.queryByText('Read-only')).not.toBeInTheDocument();
+    });
+
+    it('shows "Active" badge for the active workspace group', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText('Active')).toBeInTheDocument();
+    });
+
+    it('does not display the word "tenant" in any user-visible text', () => {
+      const { container } = render(<GitHubTile {...props} />);
+
+      // Get all user-visible text content (excludes HTML attributes, data-*, etc.)
+      const textContent = container.textContent ?? '';
+      expect(textContent.toLowerCase()).not.toContain('tenant');
+    });
+  });
 });
