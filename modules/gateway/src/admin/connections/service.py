@@ -750,7 +750,7 @@ async def _create_installer_membership(
         github_org_id=github_org_login,
     )
     db.add(membership)
-    await db.flush()
+    await db.commit()
 
     logger.info(
         "install-callback: created tenant_membership user=%s tenant=%s role=member is_active=%s joined_via=app_install",
