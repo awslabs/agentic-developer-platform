@@ -226,7 +226,7 @@ jobs:
               echo "Importing existing scaledjob-worker DynamoDB item into state..."
               terraform import -var-file="../../../${{ env.VAR_FILE }}" \
                 "$RESOURCE_ADDR" \
-                "${TABLE_NAME}/agent_id/scaledjob-worker" || echo "Import failed — continuing (will retry on next apply)"
+                "${TABLE_NAME},scaledjob-worker" || echo "Import failed — continuing (will retry on next apply)"
             else
               echo "scaledjob-worker item not in DynamoDB — will be created by apply."
             fi
