@@ -212,7 +212,29 @@ jobs:
             echo "Cognito user pool not in state yet — skipping domain import."
           fi
 
-          # --- Fix 2: Delete stale RDS bootstrap K8s job if stuck ---
+          # --- Fix 2: Import hand-seeded scaledjob-worker DynamoDB item (Issue #3119) ---
+          # On accounts where the scaledjob-worker entry was hand-seeded before
+          # PR #3116 added it to IaC, terraform create fails with
+          # ConditionalCheckFailedException. Import it into state instead.
+          TABLE_NAME="bedrockgw-${TF_VAR_environment:-dev}-agent-registry"
+          RESOURCE_ADDR='module.lambda_authorizer[0].aws_dynamodb_table_item.scaledjob_worker'
+          if ! terraform state show "$RESOURCE_ADDR" >/dev/null 2>&1; then
+            # Item exists in DynamoDB but not in state — check and import
+            if aws dynamodb get-item --table-name "$TABLE_NAME" \
+                --key '{"agent_id":{"S":"scaledjob-worker"}}' \
+                --region "$AWS_REGION" --query 'Item.agent_id.S' --output text 2>/dev/null | grep -q 'scaledjob-worker'; then
+              echo "Importing existing scaledjob-worker DynamoDB item into state..."
+              terraform import -var-file="../../../${{ env.VAR_FILE }}" \
+                "$RESOURCE_ADDR" \
+                "${TABLE_NAME}/agent_id/scaledjob-worker" || echo "Import failed — continuing (will retry on next apply)"
+            else
+              echo "scaledjob-worker item not in DynamoDB — will be created by apply."
+            fi
+          else
+            echo "scaledjob-worker item already in state."
+          fi
+
+          # --- Fix 3: Delete stale RDS bootstrap K8s job if stuck ---
           # Install kubectl if needed
           if ! command -v kubectl >/dev/null 2>&1; then
             curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
