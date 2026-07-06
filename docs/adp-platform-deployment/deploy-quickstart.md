@@ -43,7 +43,7 @@ export AWS_PROFILE=<profile> AWS_REGION=us-east-1   # the account everything key
 ./modules/gateway/scripts/bootstrap-admin.sh --env dev   # Phase 6d (seed first admin)
 # Agent path (optional):
 ./modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev   # Phase 7
-./modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev  # Phase 8
+./modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev  # Phase 9 (or use the UI — see Phase 9 below)
 ```
 
 `deploy-all.sh` chains Phases 1–6 (incl. the ALB pass) but **not** the webhook
@@ -109,10 +109,10 @@ If you just want to see the platform work with the least setup,
 > **No upfront GitHub setup.** Older docs had a "Phase 0" that ran `setup-org.sh`
 > + `create-github-apps.sh` first. That was the legacy **ARC** track (3 org-owned
 > apps, repo push). It's removed here: the webhook agent path wires GitHub at the
-> **end** (Phase 8, `register-github-app.sh`), after the infra it points at
-> exists. The only thing you need before Phase 1 is the right **AWS profile**
-> (above) — `config/deployment.yml` is optional (account resolves from the
-> profile if absent).
+> **end** (Phase 9 — UI flow or `register-github-app.sh` CLI fallback), after the
+> infra it points at exists. The only thing you need before Phase 1 is the right
+> **AWS profile** (above) — `config/deployment.yml` is optional (account resolves
+> from the profile if absent).
 
 ---
 
@@ -276,6 +276,29 @@ pipeline. RDS provisioning dominates (~10 min).
   are both true — **fixed on `main` (PR #1218)**. (Was: a `count` keyed off the
   broker Lambda's apply-time-computed ARN.)
 
+### ⚠️ Fresh-account Lambda concurrency quota (Issue #2910)
+
+Gateway lambdas reserve 97 total concurrent executions (authorizer 50, pre-token
+20, pre-signup 10, broker 10, usage-tracker 5, pricing-refresh 2). AWS requires
+the account's **unreserved** pool to stay ≥ 100 after all reservations, so
+`UnreservedConcurrentExecutions` must be ≥ 197 at apply time. Fresh accounts
+default to a 1000 total quota (`L-B99A9384`) with the full pool unreserved
+(fine), but two situations pin the unreserved pool low even at a 1000 total quota:
+- new/restricted accounts with a lower `L-B99A9384` quota; and
+- **SCP-locked or shared-pool accounts** where another reserved lambda consumes
+  most of the total quota (e.g. Workshop-Studio sandbox accounts run a
+  `WSConcurrencyCurtailer` function that reserves ~890, pinning unreserved at the
+  100 floor). Here a Service Quotas increase is often SCP-denied, so Option B is
+  the only path.
+
+`preflight-check.sh` now reads `UnreservedConcurrentExecutions` (not the total
+quota) and warns if that pool is too low. If it warns:
+- **Option A**: request a Service Quotas increase for `L-B99A9384` (only helps if
+  the *total* quota is the constraint; SCP-locked accounts will get AccessDenied).
+- **Option B** (always works): set `enable_lambda_reserved_concurrency = false` in
+  `environments/dev/modules/gateway.tfvars`. Lambdas will run unreserved
+  (no throttle protection) until the pool frees up; then flip back to `true`.
+
 Verify:
 ```bash
 aws rds describe-db-instances --query 'DBInstances[?starts_with(DBInstanceIdentifier,`bedrockgw`)].DBInstanceStatus' --output text   # available
@@ -373,6 +396,10 @@ Verify:
 CF=$(aws ssm get-parameter --name /adp/dev/gateway/cloudfront-domain --query Parameter.Value --output text)
 curl -s -o /dev/null -w "%{http_code}\n" "https://${CF}/"        # 200
 curl -s "https://${CF}/" | grep -o "<title>[^<]*</title>"       # <title>Agentic Developer Platform</title>
+# API probe: assert the JSON BODY, never the status code alone — without the
+# VPC origin, /api/* falls to the S3 SPA fallback which also returns 200
+# (HTML). Masked both 608-deploy incidents (#3085).
+curl -s "https://${CF}/api/health"                               # {"status":"healthy"}
 ```
 
 ## Phase 6b — Gateway second pass (wire ALB) ✅ verified — REQUIRED
@@ -389,6 +416,16 @@ This discovers the ALB, re-applies gateway-infra with the ALB vars
 (`internal_alb_arn/dns`, `alb_security_group_ids`, `enable_vpc_origin=true`), and
 forces an API GW stage redeploy so the routes go live. Idempotent. (Note: the
 CloudFront VPC origin it creates can take ~10 min.)
+
+> **KMS grant for webhook secrets (Issue #2907):** On a **fresh account**, the
+> webhook-ingress CMK (`alias/adp-<env>-webhook-secrets`) does not exist yet at
+> Phase 4 time, so gateway ships with `enable_webhook_secrets_kms_grant = false`.
+> After webhook-ingress deploys in Phase 7 (creates the CMK), either re-run this
+> second pass **or** any subsequent `gateway-infra-apply` with the flag set to
+> `true` in the tfvars. On **existing accounts** the CMK already exists, so the
+> flag can stay `true` from the first apply. The grant is required for the UI
+> GitHub-App register flow (#2797/#2824) to write webhook secrets without
+> `AccessDenied`.
 
 Verify:
 ```bash
@@ -451,7 +488,26 @@ Verify:
 ```bash
 # Log in as the admin (email/password), then:
 curl -s -H "Authorization: Bearer <admin-jwt>" https://<apigw>/dev/admin/access/status   # {"status":"registered"}
+
+# CRITICAL: verify Cognito attributes are set (the script does this automatically,
+# but confirm manually if you ran an older version or suspect a partial run):
+POOL_ID=$(aws ssm get-parameter --name /adp/dev/cognito/user-pool-id --query Parameter.Value --output text)
+ADMIN_EMAIL="<admin-email>"  # from adp/dev/gateway/test-admin-credentials or your SSO admin
+aws cognito-idp admin-get-user --user-pool-id "$POOL_ID" --username "$ADMIN_EMAIL" \
+  --query 'UserAttributes[?Name==`custom:role` || Name==`custom:org_id`]'
+# Expected: custom:role=platform_admin, custom:org_id=platform-admin (or your --org value)
+# If MISSING: the admin will log in but the UI will NOT show platform-admin views
+# (e.g. GitHub App "Set up" CTA hidden). Re-run bootstrap-admin.sh to fix.
 ```
+
+> **⚠️ Pipeline gap:** The ADP-managed pipeline (`gateway-deploy.yml`) does **NOT**
+> run `bootstrap-admin.sh`. On a pipeline-driven deploy, an operator must run this
+> script manually after Phase 6c (gateway backend is healthy). If this step is
+> skipped or partially completes, the first admin will have DB access but the
+> frontend will not recognize them as `platform_admin` — the pre-token Lambda reads
+> Cognito attributes, not the DB. The script now verifies attributes on completion
+> and fails loudly if they're missing; older versions do not — use the manual check
+> above.
 
 ## Agent Factory — Webhook-Ingress stack (ARC-free agent path) ✅ verified
 
@@ -541,11 +597,12 @@ diagnosing the symptom.)
 2. **Bedrock model access / wrong inference-profile prefix.** The agent invokes
    `us.anthropic.claude-opus-4-6-v1` (#1304; older images used
    `global.anthropic.claude-opus-4-6-v1`). On a fresh account:
-   - **Model access must be enabled** for Claude Opus 4.6 in the **Bedrock console
-     → Model access** (this performs the AWS Marketplace `Subscribe` the API error
-     names; it **cannot** be done purely via CLI). Until then, `InvokeModel`
-     returns `AccessDeniedException: ... aws-marketplace:Subscribe ...`. Takes
-     ~2 min to propagate after enabling.
+   - **Model access must be enabled** for Claude Opus 4.6 — run
+     `platform/scripts/enable-bedrock-models.sh` (CLI-only; accepts the
+     marketplace agreement the API error names — the old "console-only" note
+     is outdated, and both deploy tracks now run this automatically). Until
+     then, `InvokeModel` returns `AccessDeniedException: ...
+     aws-marketplace:Subscribe ...`. Takes ~2 min to propagate after enabling.
    - **Use the `us.` profile, not `global.`** — the `global.` cross-region profile
      is not enabled on every account (919 returns `ValidationException: invalid
      model identifier`); `us.anthropic.claude-opus-4-6-v1` works on every account
@@ -591,17 +648,35 @@ kubectl get daemonset agent-image-prepull -n adp-agents        # READY = node co
 # (confirmed live on 919: 168ms cached vs 31s cold).
 ```
 
-### Then wire GitHub — `register-github-app.sh` (operator runbook)
+### Then wire GitHub — UI flow (primary) or `register-github-app.sh` (fallback)
 
-After the stack is up, run `register-github-app.sh` to make GitHub integration
-live. It creates the GitHub App (`adp-agent-platform`) people install on their
-repos, points its webhook at this deployment's API Gateway, and stores the App's
-credentials in **this deployment's** Secrets Manager. **One App per deployment.**
+After the webhook-ingress stack is up, wire GitHub so agent mentions trigger
+webhook events. This creates the GitHub App (`adp-agent-platform`) people install
+on their repos, points its webhook at this deployment's API Gateway, and stores
+the App's credentials in **this deployment's** Secrets Manager. **One App per
+deployment.**
 
-This is an **interactive, per-operator** step (it opens a browser to create the
-App) — the only two things you substitute are **your AWS account** and **your
-GitHub org**; everything else (webhook URL, permissions, secret paths) is
-auto-derived.
+#### Primary path: UI flow (recommended)
+
+The **Phase-6d bootstrap `platform_admin`** performs this step:
+
+1. Log in as the `platform_admin` (the admin seeded in Phase 6d).
+2. Navigate to **Settings → Connections → "Set up GitHub App"**.
+3. Click through the GitHub manifest flow — GitHub prompts you to name the app
+   and select the org/account to own it.
+4. On success the UI stores App ID + private key + webhook secret in Secrets
+   Manager and wires them into the platform automatically.
+5. Install the App on the target repo(s) when prompted.
+
+> **Org-owner vs user-owned App.** If the `platform_admin` is an org owner on
+> GitHub, the manifest flow creates an **org-owned** App (visible at
+> `github.com/organizations/<org>/settings/apps`). Non-owners get a user-owned
+> App. Both work; org-owned is preferred for production / shared deployments.
+
+#### Fallback: CLI (`register-github-app.sh`)
+
+For headless / CI environments where no browser session is available, use the
+script directly:
 
 ```bash
 # 1. Credentials for the account you deployed INTO (cross-account: assume the
@@ -619,10 +694,10 @@ gh auth status
 #    ./...register-github-app.sh <your-org> --env dev --owner-type user --repo <your-org>/<repo>
 ```
 
-> **Org-owner vs user-owned App.** Creating an **org-owned** App (the default)
-> requires **org-owner** rights on `<your-org>` — many people don't have that.
-> If you don't, pass **`--owner-type user`** to create the App under your own
-> account instead (any user can; install it on repos you admin). For a shared
+> **Org-owner vs user-owned App (CLI path).** Creating an **org-owned** App (the
+> default) requires **org-owner** rights on `<your-org>` — many people don't have
+> that. If you don't, pass **`--owner-type user`** to create the App under your
+> own account instead (any user can; install it on repos you admin). For a shared
 > team deployment, have an org owner run it with the default `--owner-type org`.
 > Use `--repo <owner/name>` to set the install-target repo in the printed URL
 > (defaults to `<your-org>/adp`).
@@ -638,9 +713,11 @@ The script will:
   / `--client-secret` as flags to skip the prompts), then store them in Secrets
   Manager + wire the gateway.
 
-Then **install the App** on the repo(s) you'll trigger agents from:
-`https://github.com/apps/<app-slug>/installations/new` (repo-admin only) — or via
-the gateway UI "Link GitHub" flow.
+#### After wiring (either path)
+
+Install the App on the repo(s) you'll trigger agents from (the UI flow prompts
+for this; for CLI use `https://github.com/apps/<app-slug>/installations/new` —
+repo-admin only).
 
 **Verify:** comment `@agent-developer say hello` on an issue in an installed repo
 → a worker pod spawns (`kubectl get pods -n adp-agents`) and the agent replies.
@@ -652,20 +729,132 @@ The complete stage-by-stage path, each step backed by a re-runnable script:
 3. `modules/gateway/scripts/deploy-broker.sh --env dev` — broker Lambda code (Phase 6c)
 4. `modules/gateway/scripts/bootstrap-admin.sh --env dev` — first-admin DB rows (Phase 6d; REQUIRED for login)
 5. `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev` — webhook stack
-6. `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev [--client-secret <s>]` — create + wire the GitHub App
-7. Install the App on a target repo (UI "Link GitHub" or `github.com/apps/<slug>/installations/new`)
-8. **Bedrock console → Model access → enable Claude Opus 4.6** (one-time, manual,
-   per account; CLI can't do the Marketplace subscribe). Without it the agent
-   hangs silently after "Session initialized" — see the gotcha above.
+6. **GitHub App** — UI (primary): log in as `platform_admin` → Settings → Connections → "Set up GitHub App" → manifest flow. CLI fallback: `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev [--client-secret <s>]`
+7. Install the App on the target repo(s) when prompted (or `github.com/apps/<slug>/installations/new`)
+8. `platform/scripts/enable-bedrock-models.sh` — Bedrock marketplace agreements
+   (one-time per account, CLI-only, idempotent; also runs automatically inside
+   deploy-all.sh and platform-infra-apply.yml). Without it the agent hangs
+   silently after "Session initialized" or ends "no changes needed" with
+   $0.0000 / 1 turn — see the gotcha above.
 9. `@agent-developer <task>` in an issue/PR comment → webhook → SQS → KEDA → agent-worker pod
 
-## Phases 7–9 (full ARC path) — `deploy-all.sh` ⚠️ unverified here
+## Phase 7 — Webhook ingress + warm pool
 
-`deploy-all.sh` runs bootstrap → preflight → platform infra → gateway infra →
-backend image build (CodeBuild) → k8s deploy → frontend → agent factory → agent
-gateway, including a two-pass gateway apply for the ALB. It does NOT deploy the
-webhook-ingress stack or build the agent-runtime/broker artifacts — use the
-stage-by-stage scripts above for the webhook agent path.
+`webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev` builds the
+agent-runtime image, packages the webhook Lambda zip, and terraform-applies the
+stack (incl. `warm-pool.tf` balloon Deployment + image-prepull DaemonSet for
+~10-15s agent starts). **Verify**: webhook API GW deployed; SQS FIFO
+`adp-dev-agent-submit.fifo`; KEDA pods Running; ScaledJob `agent-scaledjob` in
+`adp-agents`; `agent-warm-pool` + `agent-image-prepull` READY. Smoke: unsigned
+`POST /dev/github` → 401 (HMAC reject = path live).
+
+## Phase 8 — Bedrock model access ✅ automated (CLI-only)
+
+The agent model must be invokable in the target account. This is now a
+scripted step — `platform/scripts/enable-bedrock-models.sh` discovers every
+ACTIVE Anthropic model from the Bedrock API and accepts its marketplace
+agreement via CLI (the programmatic equivalent of the console *Subscribe*).
+It runs **automatically** in both deploy tracks (`deploy-all.sh` after
+preflight; `platform-infra-apply.yml` before terraform). Idempotent — safe
+to run standalone at any time:
+
+```bash
+./platform/scripts/enable-bedrock-models.sh   # all ACTIVE Anthropic models
+```
+
+Only the models the platform invokes at runtime (Opus 4.6, Sonnet 4.6 — the
+`REQUIRED_MODELS` list in the script) are deploy-blocking; newer releases are
+enabled best-effort so an org restriction on a brand-new model never blocks
+an infra deploy.
+
+**Verify** (source of truth is `invoke`, not agreement status):
+```bash
+aws bedrock-runtime invoke-model --model-id us.anthropic.claude-sonnet-4-6 \
+  --body '{"anthropic_version":"bedrock-2023-05-31","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}' \
+  --cli-binary-format raw-in-base64-out /dev/stdout
+```
+A real JSON message = access is live. The entitlement can take a few minutes
+to propagate after the agreement activates; re-test until it succeeds.
+
+**Blocked cases that DO need a human:**
+- `AccessDeniedException: ... private marketplace eligibility` → the model is not
+  on the account's **AWS Private Marketplace** allow-list. A Private Marketplace
+  admin (org/management account) must add it first; then step 2 works.
+- If the agreement shows `AVAILABLE` but invoke still 403s well past ~20 min, the
+  runtime entitlement is stuck → AWS support case.
+
+Until the model is invokable, the agent hangs silently after "Session
+initialized" (gateway returns an empty 200 `text/event-stream`).
+
+## Phase 9 — GitHub App ⚠️ HUMAN browser step
+
+The GitHub App connects the platform to your GitHub org so agent mentions
+trigger webhook events. The **Phase-6d bootstrap `platform_admin`** is the actor
+for this step (they have the `platform_admin` role required by Settings →
+Connections).
+
+### Primary path: UI flow (recommended)
+
+1. Log in as the `platform_admin` (the admin seeded in Phase 6d).
+2. Navigate to **Settings → Connections → "Set up GitHub App"**.
+3. Click through the GitHub manifest flow — GitHub prompts you to name the app
+   and select the org/account to own it.
+4. On success the UI stores App ID + private key + webhook secret in Secrets
+   Manager and wires them into the platform automatically.
+5. Install the App on the target repo(s) when prompted (or later via
+   `https://github.com/apps/<app-slug>/installations/new`).
+
+> **Org-owner vs. user-owned:** If the `platform_admin` is not an org owner on
+> GitHub, the manifest flow creates a *user-owned* app. Org owners get an
+> org-owned app (visible at `github.com/organizations/<org>/settings/apps`).
+> Both work; org-owned is preferred for production.
+
+### Fallback: CLI (`register-github-app.sh`)
+
+For headless / CI environments where no browser session is available:
+
+```bash
+modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev [--client-secret <s>]
+```
+
+The script creates the App, stores creds in Secrets Manager, and calls
+`wire-github-app.sh`. Pass `--client-secret` to also wire GitHub login in the
+same run. See the script's `--help` for all non-interactive flags (`--app-id`,
+`--pem-path`, `--visibility`).
+
+### Verify
+
+After either path, confirm the App is wired:
+```bash
+aws secretsmanager get-secret-value --secret-id adp/gh-app-id --query SecretString --output text   # non-empty App ID
+# Then: install the App on a repo and post @agent-developer in an issue → webhook fires
+```
+
+## Phase 10 — End-to-end smoke test
+
+Run the frontend/backend/Cognito probes below, then confirm an
+`@agent-developer <task>` comment on the linked repo spawns an agent-worker pod
+and opens a PR (proves webhook → SQS → KEDA → worker → gateway → Bedrock).
+
+> **Agent Context (Code Intelligence Layer) is a separate, optional follow-on** —
+> not part of the phases above. Deploy it after the platform is up with
+> `deploy-all.sh --agent-context-only` (or the `agent-context-*` workflows on the
+> ADP-managed track). It provisions context-mcp, ingestion, Neptune/GraphRAG,
+> and the MCP verbs (search/understand/impact/browse/secure/…). It has its own
+> post-deploy activation steps (image build, migrations, vuln-scan cron, Neptune
+> wiring) — see the agent-context module docs.
+
+> **ADP-managed (pipeline) equivalent.** The same Phases 1–10 can be run as
+> GitHub Actions workflows (`platform-infra-apply.yml`, `gateway-infra-apply.yml`,
+> `gateway-deploy.yml`, `github-auth-broker-deploy.yml`, `webhook-ingress-deploy.yml`)
+> instead of the local scripts above — that's the per-deploy-instance runbook
+> (e.g. issue #1320). Same phase sequence, different execution mechanism; pick one
+> track per deploy, don't interleave.
+
+**`deploy-all.sh` shortcut (⚠️ unverified here):** chains bootstrap → preflight →
+platform infra → gateway infra → backend build → k8s deploy → frontend (incl. the
+two-pass ALB apply), i.e. Phases 1–6b. It does NOT do 6c/6d/7 or the human steps
+8/9 — run those stage-by-stage as above.
 
 **Verify when done:**
 ```bash
@@ -674,6 +863,9 @@ kubectl get nodes
 kubectl get pods -n adp-gateway                                                # 2/2 Running (gateway scope)
 CF=$(aws ssm get-parameter --name /adp/dev/gateway/cloudfront-domain --query Parameter.Value --output text)
 curl -s -o /dev/null -w "%{http_code}\n" "https://${CF}/"                      # 200
+curl -s "https://${CF}/api/health"   # {"status":"healthy"} — assert the BODY;
+                                     # without the VPC origin, /api/* hits the
+                                     # S3 SPA fallback and still returns 200 (#3085)
 ```
 
 ---
@@ -701,10 +893,39 @@ Items marked *(fixed on `main`)* only bite on older checkouts.
 
 ## Teardown
 
+### Primary: `undeploy.sh` (self-managed) / `undeploy.yml` (ADP-managed)
+
 ```bash
-./platform/scripts/deploy-all.sh --destroy      # reverse order: agent-context → agent-factory → gateway → platform
+# Self-managed — interactive, typed-account-ID gate
+./platform/scripts/undeploy.sh
+
+# Dry-run first (recommended) — shows what exists, what would be destroyed
+./platform/scripts/undeploy.sh --dry-run
+
+# Include state backend destruction
+./platform/scripts/undeploy.sh --bootstrap
+```
+
+For ADP-managed environments, dispatch `.github/workflows/undeploy.yml` via the
+Actions UI (requires typed 12-digit account ID input).
+
+Both paths destroy in reverse dependency order: agent-context → webhook-ingress →
+agent-factory → gateway → platform. Both support `--dry-run` / `dry_run`, phase
+skipping, and optional state-backend destruction.
+
+### Legacy path (retained)
+
+```bash
+./platform/scripts/deploy-all.sh --destroy      # LEGACY — lacks account-ID gate, dry-run, resume
 ./platform/scripts/bootstrap-destroy.sh         # state backend, separate, typed confirmation
 ```
 
-Survives by design: state backend (until `bootstrap-destroy.sh`), GitHub App
-secrets, the GitHub Apps themselves (delete manually in org settings).
+> `deploy-all.sh --destroy` is retained for backward compatibility but is no
+> longer recommended. Use `undeploy.sh` or `undeploy.yml` instead.
+
+### Resources that survive by design
+
+- Terraform state backend (until `--bootstrap` / `include_bootstrap`)
+- GitHub App secrets (`adp/gh-app-*`, `adp/*/github-app/*` in Secrets Manager)
+- GitHub Apps themselves (delete manually in org settings)
+- AWS-managed RDS secrets (`rds!*`)

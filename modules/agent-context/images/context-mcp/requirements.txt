@@ -7,7 +7,12 @@ botocore>=1.34.0
 psycopg2-binary>=2.9.0
 pydantic>=2.0
 python-ulid>=2.0.0
-neo4j==6.2.0
+# Neptune's Bolt endpoint negotiates at most Bolt protocol 4.0 (see AWS docs:
+# "the server selects the highest appropriate Bolt version (1, 2, 3, or 4.0)").
+# neo4j driver 6.x speaks only Bolt >= 5.0, so its handshake with Neptune fails
+# and every Door graph query silently falls back to code-index (#2916). 5.x
+# still negotiates Bolt 4.0 and keeps the SigV4 Auth-token API this code uses.
+neo4j>=5.15,<6.0
 mcp>=1.28.0,<2.0.0
 
 # OpenTelemetry — Door query tracing (Issue #1754)

@@ -154,6 +154,20 @@ MODEL_PRICING: dict[str, dict[str, Decimal]] = {
         "input": Decimal("0.0125"),
         "output": Decimal("0.0125"),
     },
+    # OpenAI models served via bedrock-mantle Responses API (Issue #2792, route #2709).
+    # Source: AWS Bedrock pricing page (https://aws.amazon.com/bedrock/pricing/),
+    # OpenAI section, retrieved 2026-07-03. Published per-1M-token rates converted
+    # to per-1000-token (÷1000) to match this table's unit.
+    #   GPT-5.5 (US East, in-region parity):  $5.50/1M in, $33.00/1M out
+    #   gpt-oss-120b (Standard tier):          $0.1545/1M in, $0.6180/1M out
+    "openai.gpt-5.5": {
+        "input": Decimal("0.0055"),
+        "output": Decimal("0.033"),
+    },
+    "openai.gpt-oss-120b": {
+        "input": Decimal("0.0001545"),
+        "output": Decimal("0.000618"),
+    },
     # Default fallback pricing (conservative estimate)
     "default": {
         "input": Decimal("0.003"),

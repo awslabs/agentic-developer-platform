@@ -97,7 +97,7 @@ resource "aws_iam_role_policy" "pre_token_generation_dynamodb" {
 resource "aws_lambda_function" "pre_token_generation" {
   function_name                  = "${var.name_prefix}-pre-token-generation"
   description                    = "Cognito Pre Token Generation trigger to inject custom claims"
-  reserved_concurrent_executions = 20
+  reserved_concurrent_executions = var.enable_reserved_concurrency ? 20 : -1
 
   filename         = data.archive_file.pre_token_generation.output_path
   source_code_hash = data.archive_file.pre_token_generation.output_base64sha256

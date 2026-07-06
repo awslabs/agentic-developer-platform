@@ -15,6 +15,7 @@ State key: `dev/platform/terraform.tfstate`
 | ECR repos | ECR | `aws ecr describe-repositories --query 'repositories[?starts_with(repositoryName,\`adp-\`)].repositoryName'` | adp-gateway, adp-agent-runtime |
 | IAM roles | IAM | `aws iam list-roles --query 'Roles[?starts_with(RoleName,\`adp-dev\`)].RoleName'` | cluster role, node role |
 | OIDC provider | IAM | `aws iam list-open-id-connect-providers` | EKS OIDC listed |
+| Bedrock model agreements | Bedrock | `aws bedrock get-foundation-model-availability --model-id anthropic.claude-opus-4-6-v1 --query 'agreementAvailability.status'` | AVAILABLE (set by `platform/scripts/enable-bedrock-models.sh`, run automatically by deploy-all.sh / platform-infra-apply.yml) |
 
 ## Gateway Module
 
@@ -62,7 +63,7 @@ Deploy: `npm run build` → `aws s3 sync` → CloudFront invalidation
 |----------|-------|-------------------|----------|
 | Static files | S3 | `aws s3 ls s3://<frontend-bucket>/ --summarize \| tail -1` | Total Objects > 0 |
 | CDN | CloudFront | `curl -s -o /dev/null -w "%{http_code}" https://<cloudfront-domain>/` | 200 |
-| API proxy | CloudFront → ALB | `curl -s -o /dev/null -w "%{http_code}" https://<cloudfront-domain>/api/health` | 200 |
+| API proxy | CloudFront → ALB | `curl -s https://<cloudfront-domain>/api/health` | `{"status":"healthy"}` JSON **body** — never assert HTTP 200 alone: when the VPC origin is missing, `/api/*` falls through to the S3 SPA fallback which also returns 200 (HTML). Both 608-deploy incidents (#3085) were masked by status-only probes. |
 
 ## Agent Factory Module
 

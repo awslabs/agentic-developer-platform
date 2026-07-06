@@ -394,6 +394,111 @@ class TestQueryDirSymbols:
 
 
 # ---------------------------------------------------------------------------
+# Driver staleness recovery tests
+# ---------------------------------------------------------------------------
+
+
+class TestDriverStalenessRecovery:
+    """Tests for the Neptune driver staleness recovery path.
+
+    Validates that neptune_available() resets the cached driver on connection
+    failure and retries once with a fresh driver (handling IAM SigV4 token
+    expiry and dead connection pools).
+    """
+
+    def test_stale_driver_reset_and_fresh_succeeds(self, monkeypatch):
+        """Stale driver fails → reset → fresh driver succeeds → returns True."""
+        monkeypatch.setenv("NEPTUNE_ENABLED", "true")
+        import door.neptune_client
+
+        stale_driver = MagicMock()
+        stale_session = MagicMock()
+        stale_session.run.side_effect = ConnectionError("token expired")
+        stale_driver.session.return_value.__enter__ = lambda s: stale_session
+        stale_driver.session.return_value.__exit__ = lambda s, *a: None
+
+        fresh_driver = MagicMock()
+        fresh_session = MagicMock()
+        fresh_result = MagicMock()
+        fresh_session.run.return_value = fresh_result
+        fresh_driver.session.return_value.__enter__ = lambda s: fresh_session
+        fresh_driver.session.return_value.__exit__ = lambda s, *a: None
+
+        # First call returns stale driver, after reset returns fresh driver
+        call_count = {"n": 0}
+
+        def mock_get_driver():
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return stale_driver
+            return fresh_driver
+
+        with patch("door.neptune_client.get_neptune_driver", side_effect=mock_get_driver):
+            with patch("door.neptune_client.reset_neptune_driver") as mock_reset:
+                result = door.neptune_client.neptune_available()
+
+        assert result is True
+        mock_reset.assert_called_once()
+        # Verify stale driver was attempted (session was opened)
+        assert stale_driver.session.called
+        # Verify fresh driver's session ran the health check
+        fresh_session.run.assert_called_once_with("RETURN 1")
+
+    def test_both_attempts_fail_returns_false(self, monkeypatch):
+        """Both stale and fresh driver fail → returns False."""
+        monkeypatch.setenv("NEPTUNE_ENABLED", "true")
+        import door.neptune_client
+
+        failing_driver = MagicMock()
+        failing_session = MagicMock()
+        failing_session.run.side_effect = ConnectionError("still dead")
+        failing_driver.session.return_value.__enter__ = lambda s: failing_session
+        failing_driver.session.return_value.__exit__ = lambda s, *a: None
+
+        with patch("door.neptune_client.get_neptune_driver", return_value=failing_driver):
+            with patch("door.neptune_client.reset_neptune_driver"):
+                result = door.neptune_client.neptune_available()
+
+        assert result is False
+
+    def test_reset_neptune_driver_clears_cache(self, monkeypatch):
+        """reset_neptune_driver() closes driver and sets _driver to None."""
+        import door.neptune_client
+
+        mock_driver = MagicMock()
+        door.neptune_client._driver = mock_driver
+
+        door.neptune_client.reset_neptune_driver()
+
+        mock_driver.close.assert_called_once()
+        assert door.neptune_client._driver is None
+
+    def test_reset_neptune_driver_tolerates_close_error(self, monkeypatch):
+        """reset_neptune_driver() doesn't raise if close() throws."""
+        import door.neptune_client
+
+        mock_driver = MagicMock()
+        mock_driver.close.side_effect = RuntimeError("close failed")
+        door.neptune_client._driver = mock_driver
+
+        # Should not raise
+        door.neptune_client.reset_neptune_driver()
+
+        assert door.neptune_client._driver is None
+
+    def test_reset_neptune_driver_safe_when_no_driver(self, monkeypatch):
+        """reset_neptune_driver() is a no-op when _driver is None."""
+        import door.neptune_client
+
+        door.neptune_client._driver = None
+
+        # Should not raise
+        door.neptune_client.reset_neptune_driver()
+
+        assert door.neptune_client._driver is None
+
+
+# ---------------------------------------------------------------------------
 # get_neptune_driver tests
 # ---------------------------------------------------------------------------
 

@@ -4,8 +4,9 @@ Issue #2154: Resolves service accounts (EventBridge rules, CI pipelines, CloudWa
 alarms) to tenant + org via the identity-index DynamoDB table.
 
 Service identity rows use:
-  PK: identity_type = "service_account"  # nosemgrep: detected-google-gcm-service-account
-  SK: identity_value = "<service_identity>" (e.g. "eventbridge:adp-dev-high-error-rate")
+  PK: identity_type = "service_account"
+  SK: identity_value = "<service_identity>"
+      (e.g. "eventbridge:adp-dev-high-error-rate")
 
 Each row contains:
   - tenant_id: the ADP tenant this service is authorized for
@@ -67,7 +68,7 @@ def resolve_service_identity(
         table = _get_table()
         resp = table.get_item(
             Key={
-                "identity_type": "service_account",  # nosemgrep: detected-google-gcm-service-account
+                "identity_type": "service_account",  # nosemgrep: detected-google-gcm-service-account  # noqa: E501
                 "identity_value": service_identity,
             }
         )

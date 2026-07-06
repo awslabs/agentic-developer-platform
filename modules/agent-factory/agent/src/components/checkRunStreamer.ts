@@ -6,7 +6,10 @@
  * users watching the check page see turn-by-turn activity in near real time.
  *
  * Design constraints:
- *  - Min 2s between PATCH calls, max 30 PATCHes per run
+ *  - Minimum interval between PATCH calls decays with elapsed run time
+ *    (see _currentMinIntervalMs) so a long run keeps updating for its whole
+ *    lifetime instead of freezing after a fixed patch budget. MAX_PATCHES is a
+ *    generous circuit-breaker only, never a normal-operation cap.
  *  - output.text must stay ≤ 65,535 chars (GitHub hard limit); we target 60 KB
  *  - If text would exceed 60 KB, keep first plan turn + last N turns + a hidden-count marker
  *  - Writes final Markdown to /tmp/adp-check-run-final.md so entrypoint.py can
@@ -54,12 +57,53 @@ interface TurnRecord {
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_PATCHES = 30;
-const MIN_PATCH_INTERVAL_MS = 2_000;
+/**
+ * Circuit-breaker only. A logic bug that tries to PATCH in a tight loop is
+ * capped here so it can't hammer the GitHub API into a secondary rate limit.
+ * This is NOT a normal-operation budget: the decaying interval (see
+ * _currentMinIntervalMs) keeps a healthy 60-min run well under this number.
+ */
+const MAX_PATCHES = 150;
+
+/**
+ * Elapsed-time breakpoints for the minimum interval between PATCHes. Early in a
+ * run we update often; as the run gets long we back off so a multi-hour run
+ * stays under the circuit-breaker while still always eventually updating.
+ * Worst-case count on a 60-min run ≈ 24 + 52 + 60 ≈ 136 (< MAX_PATCHES).
+ */
+const INTERVAL_SCHEDULE: Array<{ afterMs: number; intervalMs: number }> = [
+  { afterMs: 15 * 60_000, intervalMs: 45_000 }, // > 15 min elapsed → 45s
+  { afterMs: 2 * 60_000, intervalMs: 15_000 }, //  2–15 min elapsed → 15s
+  { afterMs: 0, intervalMs: 5_000 }, //           0–2 min elapsed → 5s
+];
+/** Throttle marker is shown in the header once the interval reaches this. */
+const THROTTLE_MARKER_MIN_INTERVAL_MS = 15_000;
 /** Target ceiling on output.text; GitHub hard limit is 65,535. */
 const MAX_OUTPUT_BYTES = 60 * 1024; // 60 KB
+/**
+ * Rolling cap on retained Codex sub-step lines (issue #2884). Keeps the Codex
+ * section from dominating the 60 KB budget on a long delegation; the full
+ * history stays in the archival JSONL (#2753).
+ */
+const MAX_CODEX_LINES = 200;
 /** Path where the final rendered Markdown is written for entrypoint.py. */
 const FINAL_OUTPUT_PATH = '/tmp/adp-check-run-final.md';
+
+/**
+ * GPT-5.5 pricing per 1K tokens — ESTIMATE for display only.
+ * Canonical source: modules/gateway/src/budget/pricing.py:163
+ * usage_logs (gateway-side) stays the single source of truth for billing.
+ */
+export const CODEX_INPUT_PER_1K = 0.0055;
+export const CODEX_OUTPUT_PER_1K = 0.033;
+
+/**
+ * Compute an estimated Codex cost from token counts. Display-only; the
+ * gateway's usage_logs remains the authoritative billing source.
+ */
+export function computeCodexCostUsd(inputTokens: number, outputTokens: number): number {
+  return (inputTokens / 1000) * CODEX_INPUT_PER_1K + (outputTokens / 1000) * CODEX_OUTPUT_PER_1K;
+}
 
 // ---------------------------------------------------------------------------
 // CheckRunStreamer
@@ -74,12 +118,17 @@ export class CheckRunStreamer {
   private planText: string | null = null;
   private reasoningThoughts: string[] = [];
   private totalCostUsd: number = 0;
+  /** Estimated Codex delegation cost (display only; issue #2970). */
+  private codexCostUsd: number = 0;
+  /** Compact Codex sub-step lines (issue #2884), rolling, bounded. */
+  private codexLines: string[] = [];
 
   private patchCount: number = 0;
   private lastPatchMs: number = 0;
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
-  private midTurnTimer: ReturnType<typeof setInterval> | null = null;
+  private midTurnTimer: ReturnType<typeof setTimeout> | null = null;
   private destroyed: boolean = false;
+  private breakerWarned: boolean = false;
 
   constructor(cfg: CheckRunStreamerConfig) {
     this.cfg = cfg;
@@ -99,6 +148,7 @@ export class CheckRunStreamer {
     turn: number;
     content: Array<{ name?: string; input?: Record<string, unknown>; text?: string }>;
     costUsd?: number;
+    codexCostUsd?: number;
   }): void {
     if (this.destroyed) return;
 
@@ -130,8 +180,38 @@ export class CheckRunStreamer {
     if (data.costUsd !== undefined) {
       this.totalCostUsd = data.costUsd;
     }
+    if (data.codexCostUsd !== undefined) {
+      this.codexCostUsd = data.codexCostUsd;
+    }
 
     this.turns.push({ turn: data.turn, tools, textPreview });
+    this._schedulePatch();
+  }
+
+  /**
+   * Stream compact Codex sub-step lines to the live page (issue #2884).
+   *
+   * Called by CodexEventWatcher while a codex-bridge delegation is in flight —
+   * the delegation is ONE Bash tool call from the SDK's point of view, so
+   * without this the page goes dark for its whole duration. The lines are
+   * accumulated and rendered under a bounded "### Codex" section, then flushed
+   * via the SAME decaying-throttle/PATCH-budget path as onTurn (`_schedulePatch`)
+   * — this deliberately adds NO second PATCH path, so the #2801 circuit-breaker
+   * and cadence still govern the whole page.
+   */
+  onCodexActivity(lines: string[]): void {
+    if (this.destroyed) return;
+    if (!lines || lines.length === 0) return;
+    for (const line of lines) {
+      if (typeof line === 'string' && line.length > 0) {
+        this.codexLines.push(line);
+      }
+    }
+    // Keep the section bounded so a very long delegation can't dominate the
+    // 60 KB budget; the archival JSONL (#2753) retains the full history.
+    if (this.codexLines.length > MAX_CODEX_LINES) {
+      this.codexLines = this.codexLines.slice(-MAX_CODEX_LINES);
+    }
     this._schedulePatch();
   }
 
@@ -147,14 +227,20 @@ export class CheckRunStreamer {
   /**
    * Call when the 'result' message is received (run complete).
    */
-  onResult(data: { costUsd?: number; turns?: number; durationMs?: number }): void {
+  onResult(data: { costUsd?: number; codexCostUsd?: number; turns?: number; durationMs?: number }): void {
     if (this.destroyed) return;
     this._clearMidTurnTimer();
     if (data.costUsd !== undefined) {
       this.totalCostUsd = data.costUsd;
     }
-    // Fire a final PATCH immediately to capture the complete transcript
-    this._firePatch(true /* immediate */);
+    if (data.codexCostUsd !== undefined) {
+      this.codexCostUsd = data.codexCostUsd;
+    }
+    // Fire a final PATCH immediately to capture the complete transcript.
+    // Pass an explicit 'completed' status: this.destroyed is still false here
+    // (destroy() runs later), so deriving the status from it would render the
+    // final page as "running".
+    this._firePatch(true /* immediate */, 'completed');
   }
 
   /** Clean up timers. Call when the message loop exits. */
@@ -188,15 +274,31 @@ export class CheckRunStreamer {
     const turnLabel = status === 'running'
       ? `${this.turns.length} / running`
       : `${this.turns.length} / done`;
-    const costLabel = `$${this.totalCostUsd.toFixed(4)}`;
+    const costLabel = this.codexCostUsd > 0
+      ? `$${this.totalCostUsd.toFixed(4)} (Claude) + ~$${this.codexCostUsd.toFixed(4)} (Codex est.)`
+      : `$${this.totalCostUsd.toFixed(4)}`;
 
-    const header = [
+    const headerLines = [
       `## Agent: ${this.cfg.persona} · issue #${this.cfg.issueNumber}`,
       ``,
       `**Model:** ${this.cfg.model}`,
       `**Cost:** ${costLabel} · **Turn:** ${turnLabel}`,
       `**Elapsed:** ${elapsedSec}s`,
-    ].join('\n');
+    ];
+
+    // While the run is live and updates have decayed to a slow cadence, tell the
+    // reader the page is intentionally throttled (not stuck) and where to look
+    // for finer detail.
+    if (status === 'running') {
+      const intervalMs = this._currentMinIntervalMs();
+      if (intervalMs >= THROTTLE_MARKER_MIN_INTERVAL_MS) {
+        headerLines.push(
+          `_Live updates throttled to every ${Math.round(intervalMs / 1000)}s — full detail in the issue's progress comment._`,
+        );
+      }
+    }
+
+    const header = headerLines.join('\n');
 
     const planSection = this.planText
       ? `\n\n### Plan\n> ${this.planText.split('\n').join('\n> ')}`
@@ -204,11 +306,13 @@ export class CheckRunStreamer {
 
     const reasoningSection = this._renderReasoningSection(this.reasoningThoughts);
 
+    const codexSection = this._renderCodexSection();
+
     const activitySection = this.turns.length > 0
       ? `\n\n### Activity\n${this._renderActivity()}`
       : '';
 
-    const full = header + planSection + reasoningSection + activitySection;
+    const full = header + planSection + reasoningSection + codexSection + activitySection;
     if (Buffer.byteLength(full, 'utf8') <= MAX_OUTPUT_BYTES) {
       return full;
     }
@@ -298,9 +402,25 @@ export class CheckRunStreamer {
     return `\n\n### Reasoning\n${bullets}`;
   }
 
+  /**
+   * Render the live Codex delegation sub-steps (issue #2884) as a fenced block
+   * so the nested "codex ▸ …" one-liners read as a distinct, monospaced stream
+   * interleaved into the run page. Empty (and thus invisible) when no Codex
+   * delegation has streamed anything — the inert default.
+   */
+  private _renderCodexSection(): string {
+    if (this.codexLines.length === 0) return '';
+    return `\n\n### Codex\n\`\`\`\n${this.codexLines.join('\n')}\n\`\`\``;
+  }
+
   private _truncated(header: string, planSection: string): string {
     const reasoningSection = this._renderReasoningSection(this.reasoningThoughts.slice(-20));
-    const base = header + planSection + reasoningSection;
+    // Keep a bounded tail of Codex lines in the truncated view so a live
+    // delegation stays visible even when the transcript overflows 60 KB.
+    const codexSection = this.codexLines.length > 0
+      ? `\n\n### Codex\n\`\`\`\n${this.codexLines.slice(-40).join('\n')}\n\`\`\``
+      : '';
+    const base = header + planSection + reasoningSection + codexSection;
     const baseBytes = Buffer.byteLength(base, 'utf8');
     const budget = MAX_OUTPUT_BYTES - baseBytes - 200; // reserve for hidden-count marker
 
@@ -335,12 +455,38 @@ export class CheckRunStreamer {
   // Patch scheduling and debounce
   // ---------------------------------------------------------------------------
 
+  /**
+   * Minimum interval (ms) allowed between PATCHes right now, decaying with
+   * elapsed run time. There is no lifetime cap on the number of PATCHes — a
+   * PATCH is always eventually allowed — so the live page keeps updating for
+   * the whole run instead of freezing after a fixed budget.
+   */
+  private _currentMinIntervalMs(): number {
+    const elapsedMs = Date.now() - this.startTimeMs;
+    for (const step of INTERVAL_SCHEDULE) {
+      if (elapsedMs >= step.afterMs) return step.intervalMs;
+    }
+    // INTERVAL_SCHEDULE always ends with afterMs: 0, so this is unreachable;
+    // fall back to the slowest cadence defensively.
+    return INTERVAL_SCHEDULE[0].intervalMs;
+  }
+
+  /** True once the circuit-breaker is tripped; logs a WARN on the first trip. */
+  private _breakerTripped(): boolean {
+    if (this.patchCount < MAX_PATCHES) return false;
+    if (!this.breakerWarned) {
+      this.breakerWarned = true;
+      this.warn(`circuit-breaker tripped: reached MAX_PATCHES=${MAX_PATCHES}; suppressing further live PATCHes`);
+    }
+    return true;
+  }
+
   private _schedulePatch(): void {
-    if (this.destroyed || this.patchCount >= MAX_PATCHES) return;
+    if (this.destroyed || this._breakerTripped()) return;
     if (this.pendingTimer) return; // already scheduled
 
     const msSinceLast = Date.now() - this.lastPatchMs;
-    const delay = Math.max(0, MIN_PATCH_INTERVAL_MS - msSinceLast);
+    const delay = Math.max(0, this._currentMinIntervalMs() - msSinceLast);
 
     this.pendingTimer = setTimeout(() => {
       this.pendingTimer = null;
@@ -348,11 +494,11 @@ export class CheckRunStreamer {
     }, delay);
   }
 
-  private _firePatch(immediate: boolean): void {
-    if (this.destroyed || this.patchCount >= MAX_PATCHES) return;
+  private _firePatch(immediate: boolean, statusOverride?: 'running' | 'completed'): void {
+    if (this.destroyed || this._breakerTripped()) return;
 
     const msSinceLast = Date.now() - this.lastPatchMs;
-    if (!immediate && msSinceLast < MIN_PATCH_INTERVAL_MS) {
+    if (!immediate && msSinceLast < this._currentMinIntervalMs()) {
       this._schedulePatch();
       return;
     }
@@ -360,7 +506,7 @@ export class CheckRunStreamer {
     this.patchCount++;
     this.lastPatchMs = Date.now();
 
-    const status = this.destroyed ? 'completed' : 'running';
+    const status = statusOverride ?? 'running';
     const md = this.buildMarkdown(status);
 
     // Write final output file for entrypoint.py to pick up
@@ -376,7 +522,9 @@ export class CheckRunStreamer {
       ? `Agent ${this.cfg.persona} · Turn ${this.turns.length} / running`
       : `Agent ${this.cfg.persona} · ${this.turns.length} turns completed`;
     const elapsedSec = Math.round((Date.now() - this.startTimeMs) / 1000);
-    const summaryLine = `Cost: $${this.totalCostUsd.toFixed(4)} · Elapsed: ${elapsedSec}s`;
+    const summaryLine = this.codexCostUsd > 0
+      ? `Cost: $${this.totalCostUsd.toFixed(4)} (Claude) + ~$${this.codexCostUsd.toFixed(4)} (Codex est.) · Elapsed: ${elapsedSec}s`
+      : `Cost: $${this.totalCostUsd.toFixed(4)} · Elapsed: ${elapsedSec}s`;
 
     this._doPatch(turnLabel, summaryLine, md).catch((err: unknown) => {
       this.warn(`PATCH failed (${this.patchCount}/${MAX_PATCHES}): ${(err as Error).message}`);
@@ -409,19 +557,27 @@ export class CheckRunStreamer {
     }
   }
 
-  /** Start a setInterval that fires a PATCH every MIN_PATCH_INTERVAL_MS during a long tool call. */
+  /**
+   * Keep the display live during a long-running tool call by firing a PATCH at
+   * the current decayed interval. Self-reschedules (rather than a fixed
+   * setInterval) so the cadence tracks _currentMinIntervalMs as the run ages.
+   */
   private _ensureMidTurnPolling(): void {
     if (this.midTurnTimer) return;
-    this.midTurnTimer = setInterval(() => {
-      if (this.patchCount < MAX_PATCHES && !this.destroyed) {
-        this._firePatch(false);
+    const tick = (): void => {
+      if (this.destroyed || this._breakerTripped()) {
+        this._clearMidTurnTimer();
+        return;
       }
-    }, MIN_PATCH_INTERVAL_MS);
+      this._firePatch(false);
+      this.midTurnTimer = setTimeout(tick, this._currentMinIntervalMs());
+    };
+    this.midTurnTimer = setTimeout(tick, this._currentMinIntervalMs());
   }
 
   private _clearMidTurnTimer(): void {
     if (this.midTurnTimer) {
-      clearInterval(this.midTurnTimer);
+      clearTimeout(this.midTurnTimer);
       this.midTurnTimer = null;
     }
   }

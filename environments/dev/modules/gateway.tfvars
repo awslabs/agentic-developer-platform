@@ -40,3 +40,29 @@ enable_chat_logging = true
 # adp-dev-eks-cluster). Owned by modules/agent-context (sqs-ingestion module).
 enable_agent_context_sqs          = true
 agent_context_ingestion_queue_arn = "arn:aws:sqs:us-east-1:879318057152:adp-dev-eks-cluster-context-ingestion"
+
+# Issue #2709 (EPIC #2702): grant the gateway IRSA role bedrock:InvokeModel*
+# so the mantle passthrough route (POST /openai/v1/responses) can SigV4-sign
+# requests to bedrock-mantle with its own pod credentials. Pairs with
+# BG_MANTLE_ENABLED in k8s/configmap.yaml — both must be on for the route
+# to serve; flipping either off disables it.
+enable_mantle_passthrough = true
+
+# Issue #2910: Lambda reserved concurrency. The gateway reserves 97 total
+# across 6 lambdas; unreserved must stay >= 100 (L-B99A9384). Disabled here
+# because dev is where fresh/sandbox accounts get deployed — including
+# SCP-locked / shared-pool accounts (e.g. #2899 on 979157915401) where the
+# unreserved pool is pinned at the 100 floor and a quota increase is
+# SCP-denied, so any reservation makes the apply's PutFunctionConcurrency
+# fail. The var-file value overrides TF_VAR_ env, so this must be set here to
+# be effective per-deploy. The variables.tf default stays true, so prod (and
+# any env with headroom) keeps reserved-concurrency throttle isolation via
+# its own tfvars / the default.
+enable_lambda_reserved_concurrency = false
+
+# Issue #2907: grant the gateway IRSA role KMS read/write on the
+# webhook-ingress CMK (alias/adp-dev-webhook-secrets). Set to true only after
+# webhook-ingress has deployed (Phase 7) and created the CMK. On fresh
+# accounts leave false for the initial Phase 4 apply; flip to true on the
+# gateway second pass (Phase 6b) or any subsequent apply after Phase 7.
+enable_webhook_secrets_kms_grant = true

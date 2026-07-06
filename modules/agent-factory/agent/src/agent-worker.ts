@@ -46,7 +46,11 @@ import { writePointer } from './lib/correlationStore';
 import { postProvenance } from './lib/provenanceClient';
 
 // Check Run Streamer — per-turn live streaming to GitHub Check Run output
-import { CheckRunStreamer } from './components/checkRunStreamer';
+import { CheckRunStreamer, computeCodexCostUsd } from './components/checkRunStreamer';
+
+// Codex Event Watcher — stream Codex delegation sub-steps to the live page
+// while a codex-bridge delegation is in flight (issue #2884, EPIC #2702).
+import { CodexEventWatcher } from './components/codexEventWatcher';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
 import {
@@ -1112,6 +1116,22 @@ Now, complete the assigned task.`;
   }
   // ─────────────────────────────────────────────────────────────────────────
 
+  // ── Codex Event Watcher ───────────────────────────────────────────────────
+  // Tail the stable Codex events file (written by run-codex.sh, #2884) and
+  // stream compact per-step summaries to BOTH live sinks while a codex-bridge
+  // delegation runs. Inert by default (no file → zero PATCHes/noise); never
+  // throws into the worker loop; owned by the worker lifecycle (start now,
+  // dispose in finally). Runs in every worker — only Codex-delegating runs
+  // produce an events file for it to see.
+  const codexEventWatcher = new CodexEventWatcher({
+    eventsFile: process.env.CODEX_EVENTS_FILE,
+    checkRunStreamer,
+    liveComment: activeLiveComment,
+    log: (msg) => log('WARN', msg),
+  });
+  codexEventWatcher.start();
+  // ─────────────────────────────────────────────────────────────────────────
+
   log('INFO', 'Starting agent execution...');
   console.log('\n' + '═'.repeat(60));
   console.log(`Starting @agent-${AGENT_TYPE} Query`);
@@ -1213,9 +1233,11 @@ Now, complete the assigned task.`;
             lastTurnText = turnText;
             // Stream turn to Check Run (no-op when streamer is null)
             if (checkRunStreamer) {
+              const codexUsage = codexEventWatcher.getTotalUsage();
               checkRunStreamer.onTurn({
                 turn: turnCount,
                 content: assistantMsg.message.content as Array<{ name?: string; input?: Record<string, unknown>; text?: string }>,
+                codexCostUsd: computeCodexCostUsd(codexUsage.inputTokens, codexUsage.outputTokens),
               });
             }
             // Stream tool_use to the live status comment so users watching the
@@ -1242,10 +1264,32 @@ Now, complete the assigned task.`;
               console.log(msg);
               log('WARN', msg, { phase: 'result', subtype: res.subtype });
             }
+            // Persist result metadata so entrypoint.py can distinguish a genuine
+            // "no changes needed" verdict (>0 tokens burned) from an infra
+            // failure where the model call never succeeded ($0.0000 / 1 turn —
+            // e.g. Bedrock AccessDenied, sigv4 403, throttling). The SDK returns
+            // gracefully in that case, so without this signal the entrypoint
+            // would report a fake success (issue #2883). Best-effort: mirrors
+            // the /tmp/adp-check-run-final.md pattern; never throws.
+            try {
+              fs.writeFileSync(
+                '/tmp/adp-result-metadata.json',
+                JSON.stringify({
+                  subtype: res.subtype ?? null,
+                  total_cost_usd: res.total_cost_usd ?? null,
+                  num_turns: res.num_turns ?? null,
+                }),
+                'utf8',
+              );
+            } catch (err) {
+              log('WARN', `Failed to write result metadata (non-fatal): ${err}`);
+            }
             // Flush final transcript to Check Run before breaking the loop
             if (checkRunStreamer) {
+              const codexUsage = codexEventWatcher.getTotalUsage();
               checkRunStreamer.onResult({
                 costUsd: res.total_cost_usd,
+                codexCostUsd: computeCodexCostUsd(codexUsage.inputTokens, codexUsage.outputTokens),
                 turns: res.num_turns,
                 durationMs: res.duration_ms,
               });
@@ -1284,6 +1328,9 @@ Now, complete the assigned task.`;
       }
     } finally {
       clearInterval(heartbeat);
+      // Stop the Codex event watcher before the streamer so no late poll can
+      // forward into a destroyed streamer (issue #2884).
+      codexEventWatcher.dispose();
       // Clean up the Check Run streamer timers
       if (checkRunStreamer) {
         checkRunStreamer.destroy();

@@ -22,7 +22,7 @@ variable "common_tags" {
 variable "image_tag_mutability" {
   type        = string
   description = "ECR image tag mutability"
-  default     = "IMMUTABLE"
+  default     = "MUTABLE"
   validation {
     condition     = contains(["MUTABLE", "IMMUTABLE"], var.image_tag_mutability)
     error_message = "ECR image tag mutability must be MUTABLE or IMMUTABLE."

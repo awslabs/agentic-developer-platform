@@ -170,6 +170,11 @@ class GitHubAppClient:
 
         Uses an installation token for `installation_id`. Per GitHub docs:
         GET /orgs/{org}/members/{username} returns 204 for members, 404 for non-members.
+
+        Issue #3035: Logs a diagnostic WARNING on 302/403 responses. These indicate
+        the App lacks the ``Organization members: read`` permission — expected for
+        the current permission set. The warning aids debugging for the future
+        teammate-auto-join path without failing silently.
         """
         token = await self.get_installation_token(installation_id)
         resp = await self._http_client.get(
@@ -179,6 +184,16 @@ class GitHubAppClient:
                 "Accept": "application/vnd.github+json",
             },
         )
+        if resp.status_code in (302, 403):
+            logger.warning(
+                "check_org_membership: %d for %s in %s (installation %d) — "
+                "app likely lacks 'Organization members: read' permission. "
+                "Membership verification will return False.",
+                resp.status_code,
+                username,
+                org_login,
+                installation_id,
+            )
         return resp.status_code == 204
 
     async def aclose(self) -> None:  # pragma: no cover

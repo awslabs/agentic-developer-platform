@@ -17,12 +17,34 @@ on:
       - 'modules/agent-factory/agent/**'
       - 'modules/agent-factory/agent-worker-image/**'
       - 'modules/agent-factory/rules/personas/**'
+      - 'modules/agent-factory/skills/**'
       - 'modules/domain-apps/*/agent/**'
       - 'codebuild/bs-agent-runtime.yml'
       - '.github/workflows/agent-worker-image.yml'
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      account_id:
+        description: 'Target AWS account (12 digits). Empty = use platform IRSA / config file.'
+        required: false
+        default: ''
+      customer_account_id:
+        description: 'Customer-linked AWS account to build into (cross-account mode).'
+        required: false
+        default: ''
+      customer_aws_label:
+        description: 'Vaulted credential label.'
+        required: false
+        default: ''
+      customer_user_id:
+        description: 'ADP users.id UUID.'
+        required: false
+        default: ''
+      environment:
+        description: 'Deployment environment.'
+        required: false
+        default: 'dev'
 
 env:
   AWS_REGION: us-east-1
@@ -41,6 +63,12 @@ jobs:
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
+        with:
+          account_id: ${{ inputs.account_id }}
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
 
       - name: Install zip + AWS CLI (bootstrap)
         run: |
@@ -78,14 +106,15 @@ jobs:
           state_bucket: ${{ env.STATE_BUCKET }}
           environment_variables: >-
             "name=AWS_REGION,value=${{ env.AWS_REGION }}"
-            "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}"
-            "name=REGISTRY,value=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+            "name=ACCOUNT_ID,value=${{ env.CUSTOMER_ACCOUNT_ID || env.ACCOUNT_ID }}"
+            "name=REGISTRY,value=${{ env.CUSTOMER_ACCOUNT_ID || env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
             "name=IMAGE_TAG,value=${{ github.sha }}"
 
       - name: Export outputs
         id: build_outputs
         run: |
-          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
+          REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           echo "build_id=${{ steps.build.outputs.build_id }}" >> "$GITHUB_OUTPUT"
           echo "image=${REGISTRY}/adp-agent-runtime:${{ github.sha }}" >> "$GITHUB_OUTPUT"
 

@@ -164,6 +164,31 @@ async def get_current_user(token_context=Depends(get_current_user_context)) -> d
     }
 
 
+@router.get(
+    "/login-options",
+    summary="Public login-page configuration",
+    description="""
+    Public, unauthenticated read of login-page configuration for the SPA.
+
+    Returns whether "Sign in with GitHub" is actually wired on this deployment
+    (Issue #2746). On a fresh deploy the broker OAuth secret holds a placeholder
+    client_id, so the login page uses this to disable the GitHub button until an
+    administrator registers the deployment's GitHub App.
+
+    Returns ONLY a boolean — never secret material, ARNs, or error detail. Check
+    failures resolve to ``false`` (never a 5xx) so the login page always renders.
+    """,
+    responses={
+        200: {"description": "Login options returned (github_login_enabled boolean)"},
+    },
+)
+async def login_options() -> dict:
+    """Return public login-page configuration (Issue #2746)."""
+    from src.admin.connections.service import is_github_login_enabled
+
+    return {"github_login_enabled": await is_github_login_enabled()}
+
+
 @router.post(
     "/logout",
     summary="Logout current user",

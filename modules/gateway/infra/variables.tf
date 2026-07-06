@@ -339,6 +339,16 @@ variable "enable_xray_tracing" {
   default     = false
 }
 
+# Issue #2709: bedrock-mantle passthrough for OpenAI Responses-API traffic.
+# When enabled, grants the gateway pod's IRSA role direct bedrock:InvokeModel*
+# so it can SigV4-sign requests to the mantle/OpenAI endpoint with its own
+# credentials (the Claude proxy path uses cross-account assume-role instead).
+variable "enable_mantle_passthrough" {
+  type        = bool
+  description = "Enable bedrock:InvokeModel* IAM permissions for the bedrock-mantle OpenAI passthrough (Issue #2709)."
+  default     = false
+}
+
 # =============================================================================
 # CloudFront Access Logging
 # =============================================================================
@@ -394,6 +404,16 @@ variable "api_gateway_log_retention_days" {
 }
 
 # =============================================================================
+# Lambda Reserved Concurrency (Issue #2910)
+# =============================================================================
+
+variable "enable_lambda_reserved_concurrency" {
+  type        = bool
+  description = "Enable reserved concurrent executions on gateway Lambda functions. Set to false on fresh accounts where the Lambda concurrency quota is too low (sum of reservations must leave >= 100 unreserved)."
+  default     = true
+}
+
+# =============================================================================
 # Agent Context Ingestion (Issue #1797)
 # =============================================================================
 
@@ -407,6 +427,16 @@ variable "agent_context_ingestion_queue_arn" {
   type        = string
   description = "ARN of the agent-context SQS ingestion queue. Required when enable_agent_context_sqs = true."
   default     = ""
+}
+
+# =============================================================================
+# Webhook Secrets KMS Grant (Issue #2907)
+# =============================================================================
+
+variable "enable_webhook_secrets_kms_grant" {
+  type        = bool
+  description = "Grant the gateway IRSA role KMS read/write on the webhook-ingress CMK (alias/adp-<env>-webhook-secrets). Set to false on first apply (the CMK doesn't exist yet); flip to true after webhook-ingress deploys (Phase 7) or on the gateway second pass."
+  default     = false
 }
 
 # =============================================================================

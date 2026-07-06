@@ -94,6 +94,14 @@ jobs:
           aws --version
           terraform version | head -1
 
+      # Accept Bedrock marketplace agreements for the Claude models the
+      # platform invokes. Fresh customer accounts have none; without them
+      # every model call fails with AccessDeniedException and the
+      # agent-worker misreports it as "no changes needed" (812447483903
+      # smoke-test incident, 2026-07-04). Idempotent — skips enabled models.
+      - name: Enable Bedrock model access
+        run: bash platform/scripts/enable-bedrock-models.sh
+
       # Auto-detect operator's public IP for EKS API endpoint restriction.
       # Matches the pattern used by deploy-all.sh (3-URL fallback + empty guard).
       - name: Set EKS public access CIDRs

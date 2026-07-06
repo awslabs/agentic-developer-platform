@@ -78,6 +78,12 @@ variable "cloudwatch_kms_key_arn" {
   default     = ""
 }
 
+variable "enable_reserved_concurrency" {
+  description = "Enable reserved concurrent executions. Set to false on fresh accounts where Lambda quota is too low (Issue #2910)."
+  type        = bool
+  default     = true
+}
+
 # --- API Gateway variables (Issue #525, removed in Issue #1011) ---
 # The route is now defined in the api-gateway module's OpenAPI body.
 # The broker module only needs to expose its invoke_arn as an output.

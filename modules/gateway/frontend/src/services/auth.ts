@@ -184,6 +184,26 @@ export async function buildGitHubLoginUrl(): Promise<string> {
 }
 
 /**
+ * Fetch public login-page options from the gateway (Issue #2746).
+ *
+ * Reads whether "Sign in with GitHub" is actually wired on this deployment from
+ * the unauthenticated GET /auth/login-options endpoint. FAIL-OPEN: on any error
+ * (network, non-2xx, timeout) return { github_login_enabled: true } so the
+ * GitHub button keeps today's behavior and federated users are never locked out
+ * by a transient backend hiccup.
+ */
+export async function fetchLoginOptions(): Promise<{ github_login_enabled: boolean }> {
+  try {
+    const response = await apiClient.get<{ github_login_enabled: boolean }>(
+      '/auth/login-options'
+    );
+    return { github_login_enabled: response.github_login_enabled !== false };
+  } catch {
+    return { github_login_enabled: true };
+  }
+}
+
+/**
  * Build the Cognito logout URL
  */
 export function buildLogoutUrl(): string {

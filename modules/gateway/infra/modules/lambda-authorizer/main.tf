@@ -221,6 +221,76 @@ resource "aws_dynamodb_table_item" "deploy_runner" {
   }
 }
 
+# Issue #3085 (hand-patch #2): Seed the scaledjob-worker entry so hosted agent
+# worker pods (webhook + chat ScaledJob) can authenticate to /internal/v1/*
+# via IRSA/SigV4 on a fresh pipeline deploy. The same seed exists in
+# modules/agent-factory/infra/agent-registry-seed.tf, but that root never
+# applies in the pipeline deploy path (platform → gateway-infra → gateway →
+# webhook-ingress), so fresh deploys got 403 agent_not_registered until the
+# item was hand-seeded. Gateway infra owns this table and always applies, so
+# the seed lives here. The referenced IAM role is created later by
+# webhook-ingress infra — the item stores the ARN as a plain string, so
+# ordering doesn't matter.
+resource "aws_dynamodb_table_item" "scaledjob_worker" {
+  table_name = aws_dynamodb_table.agent_registry.name
+  hash_key   = aws_dynamodb_table.agent_registry.hash_key
+
+  item = jsonencode({
+    agent_id = {
+      S = "scaledjob-worker"
+    }
+    role_arn = {
+      S = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/adp-${var.environment}-agent-scaledjob-role"
+    }
+    agent_name = {
+      S = "scaledjob-worker"
+    }
+    org_id = {
+      S = "__platform__"
+    }
+    team_id = {
+      S = "__agents__"
+    }
+    owner = {
+      S = "platform"
+    }
+    scope = {
+      S = "internal"
+    }
+    budget_config_id = {
+      S = ""
+    }
+    allowed_models = {
+      SS = ["*"]
+    }
+    status = {
+      S = "active"
+    }
+    description = {
+      S = "Hosted agent worker pods (webhook + chat ScaledJob). Authenticates via IRSA to /internal/v1/* endpoints."
+    }
+    image_uri = {
+      S = ""
+    }
+    code_repo = {
+      S = ""
+    }
+    workflow_name = {
+      S = ""
+    }
+    created_at = {
+      S = timestamp()
+    }
+    updated_at = {
+      S = timestamp()
+    }
+  })
+
+  lifecycle {
+    ignore_changes = [item]
+  }
+}
+
 # =============================================================================
 # Lambda Layer for PyJWT (S3-sourced — Issue #408)
 # =============================================================================
@@ -268,7 +338,7 @@ data "archive_file" "authorizer" {
 resource "aws_lambda_function" "authorizer" {
   function_name                  = "${var.name_prefix}-api-authorizer"
   description                    = "API Gateway Lambda Authorizer for JWT and IAM auth (Issue #239)"
-  reserved_concurrent_executions = 50
+  reserved_concurrent_executions = var.enable_reserved_concurrency ? 50 : -1
 
   filename         = data.archive_file.authorizer.output_path
   source_code_hash = data.archive_file.authorizer.output_base64sha256

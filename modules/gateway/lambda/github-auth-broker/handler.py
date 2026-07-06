@@ -8,11 +8,15 @@ Endpoints:
   GET /callback — handles GitHub callback, provisions Cognito user, returns tokens
 
 Environment variables:
-  GITHUB_CLIENT_ID        — GitHub OAuth App client ID
+  GITHUB_CLIENT_ID        — GitHub OAuth App client ID (fallback; the OAuth
+                            secret is the authoritative source — see #2708)
   GITHUB_CLIENT_SECRET_ARN — Secrets Manager ARN for OAuth credentials
+                            (JSON with both client_id and client_secret)
   COGNITO_USER_POOL_ID    — Cognito User Pool ID
   COGNITO_CLIENT_ID       — Cognito App Client ID (public, ADMIN_USER_PASSWORD_AUTH enabled)
-  CALLBACK_URL            — Full URL of this Lambda's /callback endpoint
+  CALLBACK_URL            — Full URL of this Lambda's /callback endpoint. Optional:
+                            when unset it is derived from the request context
+                            (domainName + stage) at runtime (#2708).
   FRONTEND_URL            — Frontend origin (e.g., https://d1g6cal2ts4iis.cloudfront.net)
   ALLOWLIST_MODE          — "open", "org", or "explicit"
   ALLOWED_ORGS            — Comma-separated list of allowed GitHub orgs
@@ -53,16 +57,26 @@ GITHUB_TOKEN_SECRET_ARN = os.environ.get("GITHUB_TOKEN_SECRET_ARN", "")
 # State signing key (derived from client secret for HMAC)
 STATE_TTL_SECONDS = 600  # 10 minutes
 
+# Terraform seeds the OAuth secret with this literal before real credentials
+# are wired (gateway-infra-apply.yml). It must never be treated as a real value.
+_PLACEHOLDER = "PLACEHOLDER"
+
 # Cached secrets
-_github_client_secret: str | None = None
+_github_oauth_creds: dict[str, str] | None = None
 _github_org_token: str | None = None
 
 
-def _get_github_client_secret() -> str:
-    """Retrieve GitHub OAuth client secret from Secrets Manager (cached)."""
-    global _github_client_secret
-    if _github_client_secret is not None:
-        return _github_client_secret
+def _get_github_oauth_creds() -> dict[str, str]:
+    """Retrieve the GitHub OAuth credentials dict from Secrets Manager (cached).
+
+    The secret at adp/<env>/cognito/github-oauth-credentials is a JSON blob with
+    both ``client_id`` and ``client_secret``. Issue #2708 makes this secret the
+    single source of truth for the OAuth identity so login works immediately
+    after App registration (which writes both keys) without mutating Lambda env.
+    """
+    global _github_oauth_creds
+    if _github_oauth_creds is not None:
+        return _github_oauth_creds
 
     if not GITHUB_CLIENT_SECRET_ARN:
         raise ValueError("GITHUB_CLIENT_SECRET_ARN not configured")
@@ -70,8 +84,34 @@ def _get_github_client_secret() -> str:
     client = boto3.client("secretsmanager")
     response = client.get_secret_value(SecretId=GITHUB_CLIENT_SECRET_ARN)
     secret_data = json.loads(response["SecretString"])
-    _github_client_secret = secret_data.get("client_secret", "")
-    return _github_client_secret
+    _github_oauth_creds = {
+        "client_id": secret_data.get("client_id", ""),
+        "client_secret": secret_data.get("client_secret", ""),
+    }
+    return _github_oauth_creds
+
+
+def _get_github_client_secret() -> str:
+    """Retrieve GitHub OAuth client secret from Secrets Manager (cached)."""
+    return _get_github_oauth_creds().get("client_secret", "")
+
+
+def _get_github_client_id() -> str:
+    """Resolve the GitHub OAuth client_id.
+
+    Issue #2708: prefer the value stored in the OAuth secret (written by the
+    register flow), falling back to the ``GITHUB_CLIENT_ID`` env var. The env
+    fallback keeps env-var-configured deployments (embark1) working unchanged.
+    """
+    try:
+        secret_client_id = _get_github_oauth_creds().get("client_id", "")
+    except Exception as exc:  # noqa: BLE001 — fall back to env on any read error
+        logger.warning("Could not read client_id from OAuth secret: %s", exc)
+        secret_client_id = ""
+
+    if secret_client_id and secret_client_id != _PLACEHOLDER:
+        return secret_client_id
+    return GITHUB_CLIENT_ID
 
 
 def _get_github_org_token() -> str:
@@ -137,6 +177,33 @@ def _verify_state(state: str) -> bool:
         return False
 
 
+def _derive_callback_url(event: dict) -> str:
+    """Resolve the OAuth callback URL for the GitHub authorize redirect.
+
+    Issue #2708: Derive the callback URL at runtime from the incoming request's
+    ``requestContext`` (``domainName`` + ``stage``) so Terraform no longer needs
+    to set CALLBACK_URL statically (broker ↔ api-gateway modules would cycle) and
+    the register flow no longer needs to mutate Lambda env. The ``CALLBACK_URL``
+    env var, when set, always wins (keeps env-var-configured deployments working).
+
+    Returns "" when neither the env var nor the request context can supply one;
+    the caller lets GitHub reject the request rather than build a broken redirect.
+    """
+    if CALLBACK_URL:
+        return CALLBACK_URL
+
+    request_context = event.get("requestContext") or {}
+    domain_name = request_context.get("domainName", "")
+    stage = request_context.get("stage", "")
+    if not domain_name:
+        return ""
+
+    # API Gateway's "$default" stage is not part of the invoke path.
+    if stage and stage != "$default":
+        return f"https://{domain_name}/{stage}/auth/github/callback"
+    return f"https://{domain_name}/auth/github/callback"
+
+
 def handler(event: dict, context) -> dict:
     """
     Lambda handler — routes to /start or /callback based on path.
@@ -166,8 +233,8 @@ def _handle_start(event: dict) -> dict:
 
     params = urllib.parse.urlencode(
         {
-            "client_id": GITHUB_CLIENT_ID,
-            "redirect_uri": CALLBACK_URL,
+            "client_id": _get_github_client_id(),
+            "redirect_uri": _derive_callback_url(event),
             "scope": "user:email read:org",
             "state": state,
         }
@@ -230,7 +297,7 @@ def _handle_callback(event: dict) -> dict:
     try:
         # Exchange code for GitHub access token
         client_secret = _get_github_client_secret()
-        github_token = exchange_code_for_token(code, GITHUB_CLIENT_ID, client_secret)
+        github_token = exchange_code_for_token(code, _get_github_client_id(), client_secret)
 
         # Fetch GitHub user info
         github_user = get_github_user(github_token)

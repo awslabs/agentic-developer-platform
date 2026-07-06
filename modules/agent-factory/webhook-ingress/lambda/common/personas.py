@@ -27,6 +27,11 @@ MENTION_TO_PERSONA: dict[str, str] = {
     "@agent-product": "product",
     "@agent-malware-analysis-agent": "malware-analysis-agent",
     "@agent-superpower": "pt-superpower",
+    # Issue #2706: codex supervisor persona. Mention-triggered only (the
+    # platform standard); intentionally NOT in LABEL_TO_PERSONA. Placed last so
+    # it cannot shadow an earlier persona under the first-match dict-order
+    # routing in _extract_mention_persona().
+    "@agent-codex": "codex",
 }
 
 # The canonical set of all valid personas — union of all mapping targets.

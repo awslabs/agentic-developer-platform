@@ -44,14 +44,14 @@ class TestToolsListing:
         resp = await client.get("/tools")
         assert resp.status_code == 200
         tools = resp.json()
-        assert len(tools) == 6
+        assert len(tools) == 7
 
     @pytest.mark.asyncio
     async def test_tools_names(self, client):
         resp = await client.get("/tools")
         tools = resp.json()
         names = {t["name"] for t in tools}
-        expected = {"search", "understand", "impact", "browse", "remember", "experience"}
+        expected = {"search", "understand", "impact", "browse", "remember", "experience", "secure"}
         assert names == expected
 
     @pytest.mark.asyncio
@@ -443,11 +443,11 @@ class TestToolsConstant:
     """Verify the TOOLS constant matches the expected contract shape."""
 
     def test_tools_count(self):
-        assert len(TOOLS) == 6
+        assert len(TOOLS) == 7
 
     def test_tools_names(self):
         names = {t["name"] for t in TOOLS}
-        assert names == {"search", "understand", "impact", "browse", "remember", "experience"}
+        assert names == {"search", "understand", "impact", "browse", "remember", "experience", "secure"}
 
     def test_each_tool_has_required_fields(self):
         for tool in TOOLS:

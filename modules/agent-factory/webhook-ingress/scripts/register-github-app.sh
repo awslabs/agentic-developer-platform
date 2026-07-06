@@ -4,6 +4,11 @@ set -euo pipefail
 # =============================================================================
 # ADP — Register GitHub App (ADP Agent Platform) + wire it into the platform
 # =============================================================================
+# CLI FALLBACK for GitHub App registration. The PRIMARY path is the UI:
+#   Settings → Connections → "Set up GitHub App" (manifest flow)
+# performed by the Phase-6d bootstrap platform_admin. Use this script for
+# headless / CI environments where no browser session is available.
+#
 # Creates (or verifies) the GitHub App customers install, stores its App ID +
 # private key in Secrets Manager, then calls wire-github-app.sh to point the
 # running platform (gateway UI install flow + GitHub login) at it.
@@ -227,9 +232,9 @@ if [ -z "$WEBHOOK_URL" ]; then
   info "Detecting webhook URL from Terraform state..."
   WEBHOOK_URL=$(cd "$(dirname "$0")/../infra" && terraform output -raw webhook_url 2>/dev/null || echo "")
   if [ -z "$WEBHOOK_URL" ]; then
-    # Fallback: try SSM parameter
+    # Fallback: try SSM parameter (matches Terraform-created param in outputs.tf)
     WEBHOOK_URL=$(aws ssm get-parameter \
-      --name "/adp/${ENVIRONMENT}/webhook-ingress/webhook-url" \
+      --name "/adp/${ENVIRONMENT}/webhook-ingress/endpoint" \
       --query "Parameter.Value" --output text \
       --region "$AWS_REGION" 2>/dev/null || echo "")
   fi

@@ -14,7 +14,7 @@
 #   - Execute API: invoke internal gateway endpoints via SigV4
 #   - DynamoDB: write correlation pointers
 #   - CloudWatch Logs: agent execution logging
-#   - S3: beads state + url-analysis evidence
+#   - S3: beads state + url-analysis evidence + agent-run-logs
 #   - Preflight: read-only checks (multiple services)
 #
 # Issue: #346, #1204
@@ -185,6 +185,7 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
         ]
         Resource = [
           "arn:aws:s3:::adp-*-agent-beads-state-*/*",
+          "arn:aws:s3:::adp-*-agent-run-logs-*/*",
           "arn:aws:s3:::adp-*-url-analysis-evidence-v2-*/*"
         ]
       },

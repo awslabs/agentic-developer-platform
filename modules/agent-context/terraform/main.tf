@@ -10,9 +10,12 @@ provider "aws" {
 
   default_tags {
     tags = merge(var.tags, {
-      Project     = "agent-context-platform"
+      Project     = "adp"
       Environment = var.environment
+      Module      = "agent-context"
       ManagedBy   = "terraform"
+      Owner       = "agent-team"
+      CostCenter  = "engineering"
     })
   }
 }
@@ -347,6 +350,43 @@ resource "aws_ssm_parameter" "ingestion_queue_url" {
   value = module.sqs_ingestion.queue_url
 
   description = "SQS ingestion queue URL for Knowledge Layer pipeline (producer + consumer)"
+
+  tags = merge(var.tags, {
+    ManagedBy = "terraform"
+    Module    = "agent-context"
+  })
+}
+
+# =============================================================================
+# SSM Parameters: Neptune Endpoint + Port (Issue #2433)
+# =============================================================================
+# Publishes the Neptune cluster endpoint and port to SSM so the deploy workflow
+# can inject them into the ConfigMap without requiring local Terraform state
+# access. Same pattern as ingestion_queue_url (Issue #2213).
+
+resource "aws_ssm_parameter" "neptune_endpoint" {
+  count = var.neptune_enabled ? 1 : 0
+
+  name  = "/adp/${var.environment}/agent-context/neptune-endpoint"
+  type  = "String"
+  value = module.neptune_serverless[0].cluster_endpoint
+
+  description = "Neptune Serverless endpoint for agent-context graph queries"
+
+  tags = merge(var.tags, {
+    ManagedBy = "terraform"
+    Module    = "agent-context"
+  })
+}
+
+resource "aws_ssm_parameter" "neptune_port" {
+  count = var.neptune_enabled ? 1 : 0
+
+  name  = "/adp/${var.environment}/agent-context/neptune-port"
+  type  = "String"
+  value = tostring(module.neptune_serverless[0].cluster_port)
+
+  description = "Neptune Serverless port for agent-context graph queries"
 
   tags = merge(var.tags, {
     ManagedBy = "terraform"

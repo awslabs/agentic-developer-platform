@@ -17,15 +17,36 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      account_id:
+        description: 'Target AWS account (12 digits). Empty = use platform IRSA / config file.'
+        required: false
+        default: ''
+      customer_account_id:
+        description: 'Customer-linked AWS account to deploy into (cross-account mode). Triggers gateway-call assume.'
+        required: false
+        default: ''
+      customer_aws_label:
+        description: 'Vaulted credential label (when customer_account_id is set).'
+        required: false
+        default: ''
+      customer_user_id:
+        description: 'ADP users.id UUID (when customer_account_id is set).'
+        required: false
+        default: ''
+      environment:
+        description: 'Deployment environment (dev/staging/prod).'
+        required: false
+        default: 'dev'
 
 concurrency:
-  group: github-auth-broker-deploy
+  group: github-auth-broker-deploy-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
   cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-1
-  ENVIRONMENT: dev
-  FUNCTION_NAME: bedrockgw-dev-github-auth-broker
+  ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+  FUNCTION_NAME: bedrockgw-${{ inputs.environment || 'dev' }}-github-auth-broker
   LAMBDA_SRC_DIR: modules/gateway/lambda/github-auth-broker
 
 jobs:
@@ -39,6 +60,12 @@ jobs:
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
+        with:
+          account_id: ${{ inputs.account_id }}
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
 
       - name: Setup Python
         uses: actions/setup-python@v5

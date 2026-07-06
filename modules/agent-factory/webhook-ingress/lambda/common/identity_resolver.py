@@ -119,6 +119,28 @@ def _emit_bot_action_metric(bot_kind: str, org_id: str) -> None:
         logger.warning("Failed to emit BotActionTriggered metric: %s", e)
 
 
+def _emit_installation_tenant_drift_metric() -> None:
+    """Emit CloudWatch metric when DDB and Postgres disagree on a tenant.
+
+    Issue #2769: fired when the installation → tenant mapping resolved from the
+    identity-index disagrees with Postgres (the source of truth).
+    """
+    try:
+        cw = _get_cloudwatch()
+        cw.put_metric_data(
+            Namespace="ADP/IdentityResolver",
+            MetricData=[
+                {
+                    "MetricName": "InstallationTenantDrift",
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:
+        logger.warning("Failed to emit InstallationTenantDrift metric: %s", e)
+
+
 def _emit_identity_index_drift_metric() -> None:
     """Emit CloudWatch metric when v2 DDB and Postgres disagree on user_id."""
     try:
@@ -169,6 +191,39 @@ def _resolve_user_from_old_table(sender_id: int) -> dict | None:
     return resp.get("Item")
 
 
+def _backfill_installation_identity(installation_id: int, org_id: str, table) -> None:
+    """Backfill a missing DDB identity-index row for an installation.
+
+    Issue #2950: When the Postgres fallback resolves a tenant that DDB missed,
+    write the row back so subsequent webhook deliveries resolve from DDB
+    directly (O(1) instead of a gateway HTTP call).
+
+    Best-effort — failures are logged but do not affect the current resolution.
+    """
+    import time
+
+    try:
+        table.put_item(
+            Item={
+                "identity_type": "github_installation_id",
+                "identity_value": str(installation_id),
+                "org_id": org_id,
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+        )
+        logger.info(
+            "Backfilled identity-index: github_installation_id=%d → org=%s",
+            installation_id,
+            org_id,
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to backfill identity-index for installation_id=%d: %s",
+            installation_id,
+            e,
+        )
+
+
 def resolve(
     installation_id: int, sender_id: int
 ) -> tuple[ResolvedIdentity | None, str]:
@@ -199,14 +254,67 @@ def resolve(
         )
         tenant_item = tenant_resp.get("Item")
         if not tenant_item:
-            logger.info(
-                "Unknown installation_id=%d — no identity-index entry",
-                installation_id,
-            )
-            return None, "unknown_installation"
+            # Issue #2950: DDB miss — fall through to Postgres via the gateway
+            # internal API when the flag is enabled. This covers installations
+            # written to Postgres (via install-callback) before the DDB dual-write
+            # was added, or where the DDB write failed. On a Postgres hit we
+            # backfill the DDB row so subsequent lookups are fast again.
+            if _resolve_canonical_via_gateway_enabled():
+                from common.gateway_client import resolve_installation_by_id
 
-        org_id = tenant_item["org_id"]
-        user_provisioning_mode = tenant_item.get("user_provisioning_mode", "strict")
+                pg_install = resolve_installation_by_id(str(installation_id))
+                if pg_install and pg_install.get("tenant_id"):
+                    pg_tenant = pg_install["tenant_id"]
+                    logger.info(
+                        "installation_id=%d resolved via Postgres fallback "
+                        "(tenant=%s) — backfilling DDB",
+                        installation_id,
+                        pg_tenant,
+                    )
+                    # Backfill DDB so future lookups don't need the gateway call
+                    _backfill_installation_identity(installation_id, pg_tenant, table)
+                    org_id = pg_tenant
+                    user_provisioning_mode = "strict"
+                else:
+                    logger.info(
+                        "Unknown installation_id=%d — no identity-index entry "
+                        "and Postgres fallback returned no match",
+                        installation_id,
+                    )
+                    return None, "unknown_installation"
+            else:
+                logger.info(
+                    "Unknown installation_id=%d — no identity-index entry",
+                    installation_id,
+                )
+                return None, "unknown_installation"
+        else:
+            org_id = tenant_item["org_id"]
+            user_provisioning_mode = tenant_item.get("user_provisioning_mode", "strict")
+
+        # Step 1b: Installation-tenant drift safety-net (Issue #2769).
+        # Cross-check the DDB installation → tenant mapping against Postgres
+        # (the source of truth) via POST /internal/v1/resolve-installation.
+        # On disagreement: trust Postgres, emit InstallationTenantDrift, log
+        # both tenants. On gateway miss/error: keep the DDB answer (fail-open —
+        # no hard RDS dependency on the webhook path). Flag-gated by the same
+        # RESOLVE_CANONICAL_VIA_GATEWAY switch as the user safety-net (#702).
+        if _resolve_canonical_via_gateway_enabled():
+            from common.gateway_client import resolve_installation_by_id
+
+            pg_install = resolve_installation_by_id(str(installation_id))
+            if pg_install and pg_install.get("tenant_id"):
+                pg_tenant = pg_install["tenant_id"]
+                if pg_tenant != org_id:
+                    logger.warning(
+                        "InstallationTenantDrift: installation_id=%d DDB tenant=%s, "
+                        "Postgres tenant=%s — trusting Postgres",
+                        installation_id,
+                        org_id,
+                        pg_tenant,
+                    )
+                    _emit_installation_tenant_drift_metric()
+                    org_id = pg_tenant
 
         # Step 2: Resolve sender (feature-flag-gated, Issue #537)
         user_item = None

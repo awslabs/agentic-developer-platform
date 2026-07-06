@@ -76,6 +76,20 @@ else
   echo "  ebs-gp3 StorageClass already exists"
 fi
 
+# Ensure the S3 Vectors bucket exists (semantic search + personal-context memory).
+# The Terraform aws_s3vectors_vector_bucket resource is commented out pending
+# AWS provider >= 5.101, so the bucket is provisioned via the AWS CLI here.
+# Idempotent — safe to run repeatedly. Non-fatal: memory/search features degrade
+# but the rest of the stack still deploys if this fails.
+if [ "${S3_VECTORS_ENABLED:-true}" = "true" ] && [ -f "${SCRIPT_DIR}/scripts/ensure-vector-bucket.sh" ]; then
+  echo ""
+  echo "Ensuring S3 Vectors bucket..."
+  bash "${SCRIPT_DIR}/scripts/ensure-vector-bucket.sh" || {
+    echo "WARNING: S3 Vectors bucket provisioning failed. remember/experience and"
+    echo "         semantic search will not work until the bucket exists."
+  }
+fi
+
 # Deploy S3 Files storage (S3-backed persistent volumes via EFS CSI driver)
 # Creates S3 bucket, EFS file system, mount targets, and K8s PV/PVC.
 # Idempotent — safe to run repeatedly. Requires Terraform + AWS credentials.
@@ -112,6 +126,17 @@ if [ -f "${SCRIPT_DIR}/kubernetes/serviceaccount.yaml" ]; then
   else
     echo "  WARNING: IRSA_ROLE_ARN not set. Service account has no IRSA annotation."
   fi
+fi
+
+# Issue #2433: If NEPTUNE_ENDPOINT is still empty after config.env, try SSM
+# (endpoint may have been published by a prior infra-apply).
+if [ -z "${NEPTUNE_ENDPOINT:-}" ]; then
+  NEPTUNE_ENDPOINT=$(aws ssm get-parameter \
+    --name "/adp/${ENVIRONMENT:-dev}/agent-context/neptune-endpoint" \
+    --query "Parameter.Value" --output text 2>/dev/null || echo "")
+  NEPTUNE_PORT=$(aws ssm get-parameter \
+    --name "/adp/${ENVIRONMENT:-dev}/agent-context/neptune-port" \
+    --query "Parameter.Value" --output text 2>/dev/null || echo "${NEPTUNE_PORT:-8182}")
 fi
 
 # Deploy centralized ConfigMap (single source of truth for all non-secret config)
@@ -336,6 +361,26 @@ else
   echo "Skipping Personal Context Synthesis CronJob (SYNTHESIS_ENABLED=false)"
 fi
 
+# Deploy Vulnerability Scan CronJob (daily 7am UTC — after refresh produces SBOMs)
+if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
+  echo "Skipping Vulnerability Scan CronJob (--personal-context-only mode)"
+elif [ "${VULN_SCAN_ENABLED:-true}" = "true" ]; then
+  echo ""
+  echo "Deploying Vulnerability Scan CronJob..."
+
+  # Ensure _common.sh is sourced for template_file
+  [[ "$(type -t template_file)" == "function" ]] || source "${SCRIPT_DIR}/scripts/_common.sh"
+
+  export NAMESPACE SERVICE_ACCOUNT INGESTION_IMAGE VULN_SCAN_SCHEDULE
+  template_file "${SCRIPT_DIR}/manifests/vuln-scan-cronjob.yaml" | kubectl apply -f -
+
+  echo "  CronJob deployed: schedule='${VULN_SCAN_SCHEDULE}'"
+  echo "  Manual trigger: kubectl create job --from=cronjob/vuln-scan manual-vuln-scan -n ${NAMESPACE}"
+else
+  echo ""
+  echo "Skipping Vulnerability Scan CronJob (VULN_SCAN_ENABLED=false)"
+fi
+
 # Validate
 if [ "${SKIP_VALIDATE:-false}" != "true" ]; then
   echo ""
@@ -375,6 +420,9 @@ else
   fi
   if [ "${INGESTION_REFRESH_ENABLED:-true}" = "true" ]; then
     echo "  Ingestion:     CronJob ingestion-refresh (${INGESTION_REFRESH_SCHEDULE})"
+  fi
+  if [ "${VULN_SCAN_ENABLED:-true}" = "true" ]; then
+    echo "  Vuln Scan:     CronJob vuln-scan (${VULN_SCAN_SCHEDULE})"
   fi
   if [ "${SYNTHESIS_ENABLED:-true}" = "true" ]; then
     echo "  Synthesis:     CronJob personal-context-synthesis (${SYNTHESIS_SCHEDULE:-0 3 * * *})"

@@ -45,8 +45,17 @@ def _sync_cognito_role_claims(*, cognito_sub: str, org_id: str, role: str, team_
     Setting the attributes here makes a fresh login mint a correct token.
 
     Best-effort + idempotent: logs + emits a metric on failure rather than
-    rolling back the (already-committed) approval. The user pool accepts
-    admin-update by the user's `sub` as Username.
+    rolling back the (already-committed) approval.
+
+    Username handling: AdminUpdateUserAttributes takes a *Username*, which is
+    only equal to the user's `sub` for email-signup users (Cognito assigns them
+    a UUID username that happens to match). GitHub-broker-provisioned users get
+    username `GitHub_<github_id>` (see lambda/github-auth-broker/
+    cognito_provisioner.py), so an update keyed on the sub throws
+    UserNotFoundException. We therefore try the sub first (correct + zero extra
+    calls for email-signup users) and, on UserNotFoundException, resolve the
+    real username by an exact `sub` filter (Cognito enforces sub uniqueness, so
+    this cannot alias another user) and retry once.
     """
     pool_id = _cognito_user_pool_id()
     if not pool_id:
@@ -64,15 +73,62 @@ def _sync_cognito_role_claims(*, cognito_sub: str, org_id: str, role: str, team_
         import boto3
 
         client = boto3.client("cognito-idp", region_name=os.environ.get("AWS_REGION", "us-east-1"))
-        client.admin_update_user_attributes(
-            UserPoolId=pool_id,
-            Username=cognito_sub,
-            UserAttributes=attrs,
-        )
-        logger.info("Synced Cognito role claims for sub=%s (role=%s org=%s)", cognito_sub, role, org_id)
+        try:
+            client.admin_update_user_attributes(
+                UserPoolId=pool_id,
+                Username=cognito_sub,
+                UserAttributes=attrs,
+            )
+            logger.info("Synced Cognito role claims for sub=%s (role=%s org=%s)", cognito_sub, role, org_id)
+            return
+        except Exception as e:
+            error_code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
+            if error_code != "UserNotFoundException":
+                raise
+            # sub != username (e.g. GitHub-federated user `GitHub_<id>`): resolve
+            # the real username by an exact sub filter and retry once.
+            username = _resolve_username_by_sub(client, pool_id, cognito_sub)
+            if not username:
+                logger.error(
+                    "Failed to sync Cognito role claims: no Cognito user found for sub=%s "
+                    "(AdminUpdateUserAttributes by sub raised UserNotFoundException and "
+                    "ListUsers sub-filter returned no match)",
+                    cognito_sub,
+                )
+                _emit_metric("ADP/Onboarding", "OnboardingApproval.CognitoClaimSyncFailure")
+                return
+            client.admin_update_user_attributes(
+                UserPoolId=pool_id,
+                Username=username,
+                UserAttributes=attrs,
+            )
+            logger.info(
+                "Synced Cognito role claims for sub=%s via resolved username=%s (role=%s org=%s)",
+                cognito_sub,
+                username,
+                role,
+                org_id,
+            )
     except Exception:
         logger.exception("Failed to sync Cognito role claims for sub=%s", cognito_sub)
         _emit_metric("ADP/Onboarding", "OnboardingApproval.CognitoClaimSyncFailure")
+
+
+def _resolve_username_by_sub(client, pool_id: str, cognito_sub: str) -> str:
+    """Resolve a Cognito user's username from its `sub` via an exact-match filter.
+
+    Returns the username, or "" if no user matches. Cognito enforces sub
+    uniqueness, so the exact `sub = "<sub>"` filter cannot alias another user.
+    """
+    resp = client.list_users(
+        UserPoolId=pool_id,
+        Filter=f'sub = "{cognito_sub}"',
+        Limit=1,
+    )
+    users = resp.get("Users", [])
+    if not users:
+        return ""
+    return users[0].get("Username", "")
 
 
 def _emit_metric(namespace: str, metric_name: str, value: float = 1.0) -> None:

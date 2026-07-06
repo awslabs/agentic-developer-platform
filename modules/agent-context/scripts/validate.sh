@@ -380,6 +380,40 @@ fi
 echo ""
 echo "--- Check 11: GraphRAG Infrastructure ---"
 
+# Neptune IRSA inline policy check — runs when NEPTUNE_ENDPOINT is set
+# (Neptune can be enabled independently of full GraphRAG via neptune_enabled=true)
+if [ -n "${NEPTUNE_ENDPOINT:-}" ]; then
+  IRSA_ROLE_NAME="adp-${ENVIRONMENT:-dev}-agent-context-irsa"
+  NEPTUNE_POLICY_NAME="adp-${ENVIRONMENT:-dev}-agent-context-neptune"
+
+  # Verify the TF-managed inline policy exists on the IRSA role
+  NEPTUNE_POLICY=$(aws iam get-role-policy \
+    --role-name "${IRSA_ROLE_NAME}" \
+    --policy-name "${NEPTUNE_POLICY_NAME}" \
+    --query 'PolicyDocument' \
+    --output json 2>/dev/null || echo "")
+  if [ -n "${NEPTUNE_POLICY}" ] && echo "${NEPTUNE_POLICY}" | grep -q "neptune-db:"; then
+    check_pass "Neptune IRSA inline policy: ${NEPTUNE_POLICY_NAME} attached with neptune-db permissions"
+  else
+    check_fail "Neptune IRSA inline policy: ${NEPTUNE_POLICY_NAME} not found on ${IRSA_ROLE_NAME} (run infra-apply with neptune_enabled=true)"
+  fi
+
+  # Warn if out-of-band managed policy is still attached (drift)
+  OOB_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
+  if [ -n "${OOB_ACCOUNT_ID}" ]; then
+    OOB_POLICY_ARN="arn:aws:iam::${OOB_ACCOUNT_ID}:policy/adp-${ENVIRONMENT:-dev}-eks-cluster-neptune-access"
+    OOB_ATTACHED=$(aws iam list-attached-role-policies \
+      --role-name "${IRSA_ROLE_NAME}" \
+      --query "AttachedPolicies[?PolicyArn=='${OOB_POLICY_ARN}'].PolicyName" \
+      --output text 2>/dev/null || echo "")
+    if [ -n "${OOB_ATTACHED}" ]; then
+      check_warn "Neptune IRSA: out-of-band managed policy still attached (drift — run validate-neptune-irsa.sh --cleanup)"
+    else
+      check_pass "Neptune IRSA: no out-of-band managed policy (clean state)"
+    fi
+  fi
+fi
+
 if [ "${GRAPHRAG_ENABLED:-false}" = "true" ]; then
   # Check Neptune connectivity
   if [ -n "${NEPTUNE_ENDPOINT:-}" ]; then

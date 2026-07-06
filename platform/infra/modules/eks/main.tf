@@ -117,6 +117,15 @@ resource "aws_eks_access_policy_association" "admins" {
   }
 }
 
+# Propagation barrier: EKS access-entry authorizer takes a few seconds to
+# propagate after the policy association completes. Without this wait, the
+# Kubernetes provider's first requests (namespace/clusterrole creation) hit
+# "forbidden" on a fresh-account first-apply. See issue #2904.
+resource "time_sleep" "wait_for_access_entry" {
+  depends_on      = [aws_eks_access_policy_association.admins]
+  create_duration = "30s"
+}
+
 # Kubernetes Namespace for Gateway Service
 # Note: This namespace is also defined in k8s/namespace.yaml for the deploy workflow.
 # Terraform creates it here to ensure the service account can be created.
@@ -132,7 +141,7 @@ resource "kubernetes_namespace" "bedrockgw" {
 
   depends_on = [
     aws_eks_cluster.main,
-    aws_eks_access_policy_association.admins,
+    time_sleep.wait_for_access_entry,
   ]
 }
 
@@ -283,6 +292,37 @@ resource "aws_iam_role_policy" "gateway_logs" {
   })
 }
 
+# SSM Parameter read access for the gateway IRSA role (Issue #2944)
+# register_app_start (modules/gateway/src/admin/connections/service.py) reads two
+# deploy-time SSM parameters at request time:
+#   /adp/<env>/webhook-ingress/endpoint   → webhook URL for the App manifest
+#   /adp/<env>/gateway/apigw-invoke-url   → broker OAuth callback base URL
+# Without ssm:GetParameter the reads raise AccessDeniedException, webhook_url is
+# blanked, and the #2674 fail-fast guard returns HTTP 422 "Webhook endpoint not
+# configured" (surfaced in the UI as "Failed to start registration"). Scoped
+# read-only to this account's /adp/<env>/* prefix, which covers both params and
+# any future deploy params the gateway reads. This is the Terraform owner of the
+# live inline policy adp-<env>-policy-gateway-ssm-read.
+resource "aws_iam_role_policy" "gateway_ssm_read" {
+  name = "${var.name_prefix}-policy-gateway-ssm-read"
+  role = aws_iam_role.gateway_service_irsa.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "GatewayReadDeployParams"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        Resource = "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/adp/${var.environment}/*"
+      }
+    ]
+  })
+}
+
 # RDS IAM Authentication for the gateway IRSA role
 resource "aws_iam_role_policy" "gateway_rds_iam_auth" {
   count = var.enable_rds_iam_auth ? 1 : 0
@@ -349,8 +389,8 @@ resource "aws_iam_role_policy" "gateway_dynamodb" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:Scan", "dynamodb:PutItem", "dynamodb:UpdateItem"]
+        Effect = "Allow"
+        Action = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:Scan", "dynamodb:PutItem", "dynamodb:UpdateItem"]
         Resource = [
           "arn:aws:dynamodb:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/bedrockgw-*",
           "arn:aws:dynamodb:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/bedrockgw-*/*"

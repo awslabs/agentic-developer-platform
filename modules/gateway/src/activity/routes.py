@@ -5,12 +5,18 @@ Endpoints:
 - GET /admin/agent-invocations — org/tenant-scoped (tenant-index GSI, admin only)
 - GET /me/agent-invocations/chain/{correlation_id} — chain view for a correlation
 - GET /admin/agent-invocations/chain/{correlation_id} — admin chain view
+- GET /me/agent-invocations/{invocation_id}/transcript — user transcript (Issue #3069)
+- GET /admin/agent-invocations/{invocation_id}/transcript — admin transcript (Issue #3069)
 """
 
 import logging
+import os
 from typing import Annotated, Literal
 
+import boto3
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.activity.cost_service import get_cost_by_run_ids
@@ -474,3 +480,111 @@ async def get_admin_invocation_detail(
         )
 
     return item
+
+
+# ---------------------------------------------------------------------------
+# GET /me/agent-invocations/{invocation_id}/transcript — user transcript
+# Issue #3069: Serve the S3-stored run transcript, scoped by ownership.
+# ---------------------------------------------------------------------------
+
+# Cap transcript response at 5 MB (transcripts are 10–500 KB; cap is a guard).
+_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _get_s3_client():
+    """Get a boto3 S3 client (lazily cached by boto3 internally)."""
+    return boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+
+
+def _get_run_logs_bucket() -> str:
+    """Resolve the agent run-logs bucket name from env."""
+    return os.environ.get("AGENT_RUN_LOGS_BUCKET", "")
+
+
+async def _fetch_transcript(transcript_key: str) -> str:
+    """Fetch transcript markdown from S3.
+
+    Raises HTTPException(404) if the object is missing or bucket is unconfigured.
+    Raises HTTPException(502) on unexpected S3 errors.
+    """
+    bucket = _get_run_logs_bucket()
+    if not bucket:
+        raise HTTPException(status_code=404, detail="Transcript storage not configured")
+
+    try:
+        response = _get_s3_client().get_object(
+            Bucket=bucket,
+            Key=transcript_key,
+        )
+        body = response["Body"].read(_TRANSCRIPT_MAX_BYTES)
+        return body.decode("utf-8", errors="replace")
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        if error_code in ("NoSuchKey", "NoSuchBucket", "AccessDenied"):
+            raise HTTPException(status_code=404, detail="Transcript not found") from exc
+        logger.warning(
+            "S3 error fetching transcript",
+            extra={"key": transcript_key, "error": str(exc)},
+        )
+        raise HTTPException(status_code=502, detail="Failed to retrieve transcript") from exc
+
+
+@router.get("/me/agent-invocations/{invocation_id}/transcript")
+async def get_my_invocation_transcript(
+    invocation_id: Annotated[str, Path(description="The invocation ID to fetch transcript for")],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    service: Annotated[ActivityService, Depends(get_activity_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> PlainTextResponse:
+    """Get the full run transcript for a user's own invocation.
+
+    Issue #3069: Resolves the transcript_key from the invocation row (never from
+    the client), then proxies the S3 object. Returns text/markdown.
+    """
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    item = service.get_invocation(invocation_id, user_id=canonical_user_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Invocation not found")
+
+    if not item.transcript_key:
+        raise HTTPException(status_code=404, detail="Transcript not available for this invocation")
+
+    content = await _fetch_transcript(item.transcript_key)
+    return PlainTextResponse(content=content, media_type="text/markdown")
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/agent-invocations/{invocation_id}/transcript — admin transcript
+# Issue #3069: Admin variant, same AuthZ as admin detail.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/admin/agent-invocations/{invocation_id}/transcript")
+async def get_admin_invocation_transcript(
+    invocation_id: Annotated[str, Path(description="The invocation ID to fetch transcript for")],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    service: Annotated[ActivityService, Depends(get_activity_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    tenant_id: Annotated[str | None, Query()] = None,
+) -> PlainTextResponse:
+    """Get the full run transcript for an invocation (admin).
+
+    Issue #3069: Admin variant scoped by tenant_id. Same AuthZ as admin detail.
+    """
+    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
+
+    if current_user.is_admin and tenant_id:
+        effective_tenant_id = tenant_id
+    else:
+        effective_tenant_id = current_user.org_id
+
+    item = service.get_invocation(invocation_id, tenant_id=effective_tenant_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Invocation not found")
+
+    if not item.transcript_key:
+        raise HTTPException(status_code=404, detail="Transcript not available for this invocation")
+
+    content = await _fetch_transcript(item.transcript_key)
+    return PlainTextResponse(content=content, media_type="text/markdown")

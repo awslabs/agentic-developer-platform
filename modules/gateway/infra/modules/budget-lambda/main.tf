@@ -135,7 +135,7 @@ resource "aws_lambda_layer_version" "psycopg2" {
 resource "aws_lambda_function" "usage_tracker" {
   function_name                  = "${var.name_prefix}-budget-usage-tracker"
   description                    = "Tracks budget usage from S3 chat logs (Issue #234)"
-  reserved_concurrent_executions = 5
+  reserved_concurrent_executions = var.enable_reserved_concurrency ? 5 : -1
 
   filename         = data.archive_file.usage_tracker.output_path
   source_code_hash = data.archive_file.usage_tracker.output_base64sha256
@@ -220,7 +220,7 @@ resource "aws_s3_bucket_notification" "chat_logs" {
 resource "aws_lambda_function" "pricing_refresh" {
   function_name                  = "${var.name_prefix}-pricing-refresh"
   description                    = "Refreshes model pricing from AWS Pricing API (Issue #234)"
-  reserved_concurrent_executions = 2
+  reserved_concurrent_executions = var.enable_reserved_concurrency ? 2 : -1
 
   filename         = data.archive_file.pricing_refresh.output_path
   source_code_hash = data.archive_file.pricing_refresh.output_base64sha256

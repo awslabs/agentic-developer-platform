@@ -173,7 +173,7 @@ Three core services run as peers on the cluster: **Gateway** (governed Bedrock a
 
 > **The authoritative, verified procedure is [`docs/adp-platform-deployment/deploy-quickstart.md`](docs/adp-platform-deployment/deploy-quickstart.md)** — maintained against real end-to-end runs. Follow it for the exact phase sequence, commands, verification, and gotchas. The summary below is orientation only; don't deploy from it.
 
-**There is no upfront GitHub setup.** Everything keys off the AWS account your active profile resolves to. For the agent path, GitHub is wired at the **end** (`register-github-app.sh`); gateway-only needs no GitHub at all.
+**There is no upfront GitHub setup.** Everything keys off the AWS account your active profile resolves to. For the agent path, GitHub is wired at the **end** (UI flow: Settings → Connections → "Set up GitHub App"; or CLI fallback `register-github-app.sh`); gateway-only needs no GitHub at all.
 
 The phases at a glance (each step idempotent and re-runnable):
 
@@ -188,10 +188,14 @@ The phases at a glance (each step idempotent and re-runnable):
 | 6b | Gateway second pass — wire ALB (MOCK API GW → real routes) | `wire-gateway-alb.sh --apply` | Gateway |
 | 6c | Broker Lambda code (real GitHub-login handler) | `modules/gateway/scripts/deploy-broker.sh` | Login |
 | 6d | Seed the first admin (org/user/role) | `modules/gateway/scripts/bootstrap-admin.sh` | Login |
-| 7 | Webhook agent stack + agent-runtime image | `webhook-ingress/scripts/deploy-webhook-ingress.sh` | Agents |
-| 8 | Create + wire the GitHub App | `webhook-ingress/scripts/register-github-app.sh <org>` | Agents |
+| 7 | Webhook agent stack + agent-runtime image (warm pool + image-prepull) | `webhook-ingress/scripts/deploy-webhook-ingress.sh` | Agents |
+| 8 | Bedrock model access (⚠️ human — console *Subscribe*, no CLI) | *(AWS console)* | Agents |
+| 9 | Create + wire the GitHub App (⚠️ human browser step) | **UI:** Settings → Connections → "Set up GitHub App" (as `platform_admin`). **CLI fallback:** `register-github-app.sh <org>` | Agents |
+| 10 | End-to-end smoke test | *(curl + `@agent-developer` task)* | Verify |
 
-**`deploy-all.sh` chains Phases 1–6 (incl. the 6b ALB pass) but NOT 6c, 6d, 7, 8.** Why: Terraform ships *placeholders* for things a push-triggered CI workflow normally publishes (the MOCK API Gateway body, a 503 broker Lambda stub, `:latest` image refs, the webhook Lambda zip). A fresh manual deploy fires none of those, so `deploy-all.sh` alone leaves you without working login, a first admin, or the agent path — run the 6c/6d/7/8 scripts (deploy-quickstart.md sequences them; don't skip them).
+Phase numbering matches the canonical sequence in [`deploy-quickstart.md`](docs/adp-platform-deployment/deploy-quickstart.md). The **ADP-managed** (pipeline) equivalent of these same phases — run as GitHub Actions workflows (`platform-infra-apply.yml`, `gateway-deploy.yml`, `webhook-ingress-deploy.yml`, …) instead of local scripts — is captured in the per-deploy-instance runbook (e.g. issue #1320). Same phases, two execution mechanisms; don't mix them in one run.
+
+**`deploy-all.sh` chains Phases 1–6 (incl. the 6b ALB pass) but NOT 6c, 6d, 7, 8, 9.** Why: Terraform ships *placeholders* for things a push-triggered CI workflow normally publishes (the MOCK API Gateway body, a 503 broker Lambda stub, `:latest` image refs, the webhook Lambda zip). A fresh manual deploy fires none of those, so `deploy-all.sh` alone leaves you without working login, a first admin, or the agent path — run the 6c/6d/7/9 scripts and enable Bedrock access (Phase 8) manually (deploy-quickstart.md sequences them; don't skip them).
 
 `deploy-all.sh` flags:
 

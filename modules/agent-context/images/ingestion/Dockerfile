@@ -84,6 +84,15 @@ ARG SYFT_VERSION=1.11.1
 RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
     | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}"
 
+# Install OSV-Scanner + Trivy for vulnerability scanning (#2536)
+ARG OSV_SCANNER_VERSION=2.3.8
+ARG TRIVY_VERSION=0.71.0
+RUN curl -sSfL "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
+        -o /usr/local/bin/osv-scanner && \
+    chmod +x /usr/local/bin/osv-scanner && \
+    curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+        | tar xz -C /usr/local/bin trivy
+
 # Python deps
 RUN pip install --no-cache-dir \
     codegraphcontext \
@@ -124,14 +133,27 @@ RUN crawl4ai-setup || echo "crawl4ai-setup not available or optional — continu
 # Copy pipeline scripts (config.py must be first — all scripts import it)
 # scope.py + status_callback.py are imported by sqs-worker.py / ingest-repo.py /
 # publish-ingestion.py — without them the ScaledJob worker dies at import (#2213).
-COPY config.py telemetry.py tracing.py metrics.py s3_store.py wiki_store.py sbom_parser.py db.py stage_tracker.py github_auth.py scope.py status_callback.py /app/
+# registry_reader.py is imported by publish-ingestion.py's --from-registry path
+# (publish_from_registry, #2172); without it the daily refresh crashes at Step 1
+# with ModuleNotFoundError (#2800).
+COPY config.py telemetry.py tracing.py metrics.py s3_store.py wiki_store.py code_embedder.py sbom_parser.py db.py stage_tracker.py github_auth.py scope.py status_callback.py registry_reader.py /app/
 COPY scip_ingester.py scip_indexer.py scip_neptune_csv.py scip_neptune_loader.py /app/
 COPY iac_terraform_parser.py iac_neptune_csv.py /app/
 COPY scip_proto/ /app/scip_proto/
 COPY ingest-repo.py ingest-url.py ingest-doc.py refresh-repos.py \
      discover-infra.py sqs-worker.py publish-ingestion.py \
      correlate.py lint-wiki.py generate-indexes.py \
-     generate-learning-artifacts.py generate-curricula.py /app/
+     generate-learning-artifacts.py generate-curricula.py \
+     scan-vulns.py /app/
+
+# Build-time import smoke check: fail the image build (not at 06:00 UTC in prod)
+# if a top-level /app module is missing from the COPY list. registry_reader was
+# shipped in source but never copied, silently breaking the daily refresh (#2800).
+# Only pure-import modules (no env/DB needed at import time) are listed here.
+RUN cd /app && python -c "import registry_reader, scope, status_callback"
+
+# Vulnerability scanner pipeline package (used by scan-vulns.py, #2536)
+COPY pipeline/ /app/pipeline/
 
 # GitHub App token minting script (from scripts/github-app-token.py)
 COPY github-app-token.py /app/github-app-token.py

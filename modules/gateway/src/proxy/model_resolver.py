@@ -90,6 +90,12 @@ DEFAULT_ALLOWED_PATTERNS: list[str] = [
     "global.anthropic.claude-*",
     "us.anthropic.claude-*",
     "eu.anthropic.claude-*",
+    # OpenAI models via the bedrock-mantle passthrough (#2709). Codex routes
+    # openai.gpt-5.5 through /openai/v1/responses; without an openai.* pattern
+    # here check_model_access would 403 every Codex run (#2713 C1). Governance
+    # for this path is the route-level gate (mantle_allowed_models) plus the
+    # Step-2 IAM Deny — this default only unblocks the metered gateway path.
+    "openai.*",
 ]
 
 

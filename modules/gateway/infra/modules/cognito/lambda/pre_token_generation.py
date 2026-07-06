@@ -62,15 +62,20 @@ def handler(event: dict, context) -> dict:
     trigger_source = event.get("triggerSource", "")
 
     try:
-        if trigger_source == "TokenGeneration_Authentication":
+        if trigger_source in (
+            "TokenGeneration_Authentication",
+            # Managed login (newer Hosted UI) sends HostedAuth instead of
+            # Authentication — without it, Hosted-UI access tokens get NO
+            # custom claims and org-scoped lists return empty (Issue #2697).
+            "TokenGeneration_HostedAuth",
+            "TokenGeneration_RefreshTokens",
+            "TokenGeneration_NewPasswordChallenge",
+        ):
             # Human user authentication - copy custom attributes to access token
             return handle_user_token_generation(event)
         elif trigger_source == "TokenGeneration_ClientCredentials":
             # M2M client credentials - look up agent metadata
             return handle_client_credentials_token_generation(event)
-        elif trigger_source == "TokenGeneration_RefreshTokens":
-            # Token refresh - same as authentication
-            return handle_user_token_generation(event)
         else:
             logger.warning(f"Unknown trigger source: {trigger_source}")
             return event

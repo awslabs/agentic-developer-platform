@@ -108,8 +108,8 @@ class TestMCPLifespanComposed:
         assert "result" in body, f"Expected JSON-RPC result, got: {body}"
         assert body["result"]["protocolVersion"] == "2025-03-26"
 
-    async def test_mcp_tools_list_returns_six_tools(self, live_client):
-        """tools/list via MCP returns all 6 verbs under live lifespan.
+    async def test_mcp_tools_list_returns_all_tools(self, live_client):
+        """tools/list via MCP returns all 7 verbs under live lifespan.
 
         With stateless_http=True, each request creates its own session —
         tools/list works directly without a prior initialize handshake.
@@ -129,7 +129,7 @@ class TestMCPLifespanComposed:
         body = _parse_sse_json(resp.text)
         assert "result" in body, f"Expected JSON-RPC result, got: {body}"
         tools = body["result"]["tools"]
-        assert len(tools) == 6, f"Expected 6 tools, got {len(tools)}: {[t['name'] for t in tools]}"
+        assert len(tools) == 7, f"Expected 7 tools, got {len(tools)}: {[t['name'] for t in tools]}"
         tool_names = {t["name"] for t in tools}
         assert tool_names == {
             "search",
@@ -138,6 +138,7 @@ class TestMCPLifespanComposed:
             "browse",
             "remember",
             "experience",
+            "secure",
         }
 
 
@@ -199,7 +200,7 @@ class TestLegacyRESTUnderLiveLifespan:
         resp = await live_client.get("/tools")
         assert resp.status_code == 200
         tools = resp.json()
-        assert len(tools) == 6
+        assert len(tools) == 7
 
     async def test_post_call_endpoint(self, live_client):
         """POST /call still routes correctly (REST path unaffected)."""

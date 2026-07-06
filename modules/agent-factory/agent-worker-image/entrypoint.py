@@ -71,7 +71,9 @@ def parse_envelope(raw: str) -> dict:
 
 def run_cmd(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     """Run a shell command, raising on failure."""
-    return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)  # nosemgrep: dangerous-subprocess-use-audit
+    return subprocess.run(
+        args, check=True, capture_output=True, text=True, **kwargs
+    )  # nosemgrep: dangerous-subprocess-use-audit
 
 
 def _receive_one_message(queue_url: str, region: str):
@@ -206,12 +208,19 @@ def _is_already_completed(repo: str, issue: int, token: str) -> bool:
     try:
         result = subprocess.run(
             [
-                "gh", "pr", "list",
-                "--repo", repo,
-                "--head", branch_name,
-                "--state", "merged",
-                "--json", "number",
-                "--jq", ".[0].number // empty",
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                repo,
+                "--head",
+                branch_name,
+                "--state",
+                "merged",
+                "--json",
+                "number",
+                "--jq",
+                ".[0].number // empty",
             ],
             capture_output=True,
             text=True,
@@ -228,6 +237,53 @@ def _is_already_completed(repo: str, issue: int, token: str) -> bool:
     except Exception as exc:
         logger.warning("Idempotency check failed (proceeding with run): %s", exc)
     return False
+
+
+def _upload_transcript_to_s3(
+    final_text: str, repo: str, issue: int, message_id: str, arrived_at: str, persona: str
+) -> str | None:
+    """Upload the full untruncated transcript to S3 (best-effort).
+
+    Object key: {persona}/{org}/{repo_name}/issue-{issue}/{timestamp}-{run_id}.md
+
+    Returns the S3 object key on success, None on skip/failure.
+
+    Skips silently if AGENT_RUN_LOGS_BUCKET is unset (backward compat for
+    un-applied accounts) or if final_text is empty. Failures are logged but
+    NEVER affect pod exit code — same contract as check-run finalize.
+    """
+    bucket = os.environ.get("AGENT_RUN_LOGS_BUCKET", "")
+    if not bucket or not final_text:
+        return None
+
+    try:
+        # Build the S3 object key: {org}/{repo}/issue-{N}/{timestamp}-{run_id}.md
+        # arrived_at is ISO format (e.g. "2026-07-06T15:35:57Z"); convert to
+        # compact UTC form for key prefix. Fall back to "unknown" on error.
+        timestamp = arrived_at.replace("-", "").replace(":", "").replace(".", "")
+        # Truncate to YYYYMMDDTHHMMSSz form (strip sub-seconds if present)
+        if "T" in timestamp:
+            timestamp = timestamp.split("Z")[0] + "Z"
+        else:
+            timestamp = "unknown"
+
+        # run_id: use first 8 chars of message_id for disambiguation
+        run_id = (message_id or "norunid")[:8]
+
+        key = f"{persona}/{repo}/issue-{issue}/{timestamp}-{run_id}.md"
+
+        s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=final_text.encode("utf-8"),
+            ContentType="text/markdown",
+        )
+        logger.info("Transcript uploaded to s3://%s/%s (%d bytes)", bucket, key, len(final_text))
+        return key
+    except Exception as exc:
+        logger.warning("Failed to upload transcript to S3 (non-fatal): %s", exc)
+        return None
 
 
 def main() -> int:
@@ -864,6 +920,18 @@ def main() -> int:
             repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url
         )
 
+    # Read the final rendered Markdown written by CheckRunStreamer (if any).
+    # This preserves the full per-turn transcript across the process boundary.
+    # Read outside the check-run block so S3 upload can use it independently.
+    final_text: str = ""
+    cr_final_path = "/tmp/adp-check-run-final.md"
+    try:
+        if os.path.exists(cr_final_path):
+            with open(cr_final_path, "r", encoding="utf-8") as fh:
+                final_text = fh.read()
+    except Exception:
+        pass
+
     # Finalize the Check Run (best-effort — must NOT affect pod exit code)
     if check_run_id is not None:
         try:
@@ -890,17 +958,6 @@ def main() -> int:
             except Exception:
                 pass  # PR may not exist yet; non-fatal
 
-            # Read the final rendered Markdown written by CheckRunStreamer (if any).
-            # This preserves the full per-turn transcript across the process boundary.
-            final_text: str = ""
-            cr_final_path = "/tmp/adp-check-run-final.md"
-            try:
-                if os.path.exists(cr_final_path):
-                    with open(cr_final_path, "r", encoding="utf-8") as fh:
-                        final_text = fh.read()
-            except Exception:
-                pass
-
             cr_output: dict = {"title": cr_title, "summary": cr_summary}
             if final_text:
                 # GitHub hard limit for output.text is 65,535 chars
@@ -921,6 +978,24 @@ def main() -> int:
             update_check_run(**update_kwargs)
         except Exception as exc:
             logger.warning("Failed to finalize check run (non-fatal): %s", exc)
+
+    # Persist full untruncated transcript to S3 (best-effort, non-fatal).
+    # Issue #3057: transcripts exceed the GitHub Check Run 65,535-char limit;
+    # S3 gives us a durable, auditable archive.
+    transcript_key = _upload_transcript_to_s3(
+        final_text, repo, issue, message_id, arrived_at, persona
+    )
+
+    # Issue #3069: Write-back the S3 key to the DDB invocation row so the
+    # gateway can serve the transcript from the Agent Activity UI.
+    # Fail-soft: reuses the same update_invocation_status contract (logs, never raises).
+    if transcript_key:
+        update_invocation_status(
+            message_id,
+            arrived_at,
+            "complete" if exit_code == 0 else "failed",
+            transcript_key=transcript_key,
+        )
 
     # Step 13: Delete the SQS message on ANY terminal exit — success or failure.
     #
@@ -1100,6 +1175,48 @@ def _stage_personas_and_skills() -> None:
         f.write("\n.adp-rules/\n.claude/skills/\n")
 
 
+# Path where the Node agent-worker persists SDK result metadata (cost/turns).
+# Mirrors CheckRunStreamer's /tmp/adp-check-run-final.md bridge.
+RESULT_METADATA_PATH = "/tmp/adp-result-metadata.json"
+
+
+def _read_result_metadata() -> dict | None:
+    """Read the SDK result metadata the Node worker wrote, or None if absent.
+
+    The file contains {subtype, total_cost_usd, num_turns}. Fail-soft: any
+    read/parse error returns None (treated as "no signal available").
+    """
+    try:
+        with open(RESULT_METADATA_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _is_zero_token_failure(meta: dict | None) -> bool:
+    """True when the SDK result signature indicates the model call never ran.
+
+    A genuine "no changes needed" verdict costs >0 tokens (the model must read
+    the issue to decide), so a run that burned $0.0000 across a single turn is a
+    reliable discriminator for an infrastructure failure — Bedrock model access
+    / agent registry / sigv4 chain — that the SDK swallowed and returned
+    gracefully (issue #2883). Requires BOTH cost==0 AND turns<=1; if either
+    field is missing we cannot conclude failure and return False (fail open to
+    the existing success path — no regression on partial failures).
+    """
+    if not meta:
+        return False
+    cost = meta.get("total_cost_usd")
+    turns = meta.get("num_turns")
+    if cost is None or turns is None:
+        return False
+    try:
+        return float(cost) == 0.0 and int(turns) <= 1
+    except (TypeError, ValueError):
+        return False
+
+
 def _handle_success(
     repo: str,
     issue: int,
@@ -1147,6 +1264,38 @@ def _handle_success(
             # (the backfill was only wired into the entrypoint-creates-PR block,
             # which this early return never reaches).
             logger.info("No agent changes beyond WIP commit")
+
+            # Distinguish a genuine "no changes needed" verdict from an
+            # infrastructure failure the SDK swallowed (issue #2883). A run that
+            # burned $0.0000 across a single turn never actually reached the
+            # model (Bedrock AccessDenied, sigv4 403, throttling); reporting it
+            # as success masks the real error in pod logs only. Fail the check
+            # run with a diagnostic instead.
+            meta = _read_result_metadata()
+            if _is_zero_token_failure(meta):
+                logger.error(
+                    "Zero-token/single-turn result signature detected "
+                    "(cost=%s turns=%s subtype=%s) — treating as infrastructure "
+                    "failure, not 'no changes needed'",
+                    meta.get("total_cost_usd"),
+                    meta.get("num_turns"),
+                    meta.get("subtype"),
+                )
+                diagnostic = (
+                    f"Agent `{persona}` failed: the model call never succeeded "
+                    "(0 tokens burned). Likely causes: Bedrock model access / "
+                    "agent registry / sigv4 chain. See pod logs for the "
+                    "underlying error."
+                )
+                _post_comment(repo, issue, message_id, "failed", diagnostic, check_run_url)
+                update_invocation_status(
+                    message_id,
+                    arrived_at,
+                    "failed",
+                    summary=f"{persona} — model call never succeeded (0 tokens)",
+                )
+                return 1
+
             self_pr = _find_open_pr(repo, branch)
             if self_pr:
                 _ensure_pr_body_marker(repo, self_pr, branch)
@@ -1253,8 +1402,17 @@ def _find_open_pr(repo: str, branch: str) -> str:
     try:
         res = run_cmd(
             [
-                "gh", "pr", "list", "--head", branch, "-R", repo,
-                "--json", "number", "--jq", ".[0].number",
+                "gh",
+                "pr",
+                "list",
+                "--head",
+                branch,
+                "-R",
+                repo,
+                "--json",
+                "number",
+                "--jq",
+                ".[0].number",
             ],
             env={**os.environ},
         )

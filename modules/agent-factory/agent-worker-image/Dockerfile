@@ -37,6 +37,7 @@ RUN chmod +x /stage/stage-personas.sh
 
 # Copy persona and skill source trees
 COPY modules/agent-factory/rules/personas/ /source/agent-factory/personas/
+COPY modules/agent-factory/skills/ /source/agent-factory/skills/
 COPY modules/domain-apps/ /source/domain-apps/
 
 # Run the staging script to assemble /stage/personas and /stage/skills
@@ -114,6 +115,13 @@ RUN corepack enable && \
     corepack prepare pnpm@latest --activate && \
     corepack prepare yarn@stable --activate
 
+# Install the OpenAI Codex CLI (issue #2704, EPIC #2702). Pinned so the image
+# is reproducible and doesn't inherit a surprise "latest". Invoked headlessly
+# as `codex exec` against Bedrock (openai.gpt-5.5); config baked in below.
+ARG CODEX_VERSION=0.142.5
+RUN npm install -g "@openai/codex@${CODEX_VERSION}" && \
+    codex --version
+
 # Install GitHub CLI from official tarball (not apt) to avoid inheriting
 # Debian's Go 1.19 toolchain CVEs (7 critical Go stdlib CVEs cleared).
 ARG GH_VERSION=2.92.0
@@ -149,8 +157,9 @@ RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/te
     rm /tmp/terraform.zip && \
     terraform version
 
-# Install pip-based Python tools (uv, poetry). The slim image has pip built-in.
-RUN pip3 install --no-cache-dir --break-system-packages uv poetry
+# Install pip-based Python tools (uv, poetry, ruff — the pre-submit table in
+# agent-worker.ts tells agents to run `ruff check`; it must exist in the image).
+RUN pip3 install --no-cache-dir --break-system-packages uv poetry ruff
 
 # Python runtime deps for entrypoint.py + lib/ and bundled skills.
 #   boto3             — Secrets Manager, STS, DynamoDB clients (vault_client, sts_assume)
@@ -194,6 +203,11 @@ COPY --from=builder --chown=agent:agent /build/prod_modules/ /app/node_modules/
 COPY --from=stager --chown=agent:agent /stage/personas/ /app/personas/
 COPY --from=stager --chown=agent:agent /stage/skills/ /app/skills/
 
+# Codex CLI config (issue #2704). Codex reads $HOME/.codex/config.toml; the
+# runtime HOME is /home/agent (non-root `agent` user), so it lands there —
+# NOT /root/.codex. Auth is the pod IRSA credential chain (zero secrets).
+COPY --chown=agent:agent modules/agent-factory/agent-worker-image/codex-config.toml /home/agent/.codex/config.toml
+
 # Copy entrypoint and its lib/ support modules (vault_client, github_token, sts_assume)
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/entrypoint.py /app/entrypoint.py
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/lib/ /app/lib/
@@ -221,6 +235,14 @@ ENV NODE_ENV=production
 ENV HOME=/home/agent
 ENV PATH="/app/node_modules/.bin:${PATH}"
 ENV PYTHONPATH="/app:${PYTHONPATH}"
+
+# Codex v2 gateway cutover (#2713): the custom `adp-gateway` provider in
+# codex-config.toml declares env_key=ADP_GATEWAY_PLACEHOLDER_KEY. Codex 0.142.5
+# requires this env var to EXIST (a missing var is a hard startup error) but
+# never validates its value — the sigv4-proxy sidecar strips the Bearer header
+# and re-signs with pod IRSA. This is a placeholder, NOT a secret: no tenant API
+# key is minted (SigV4-only invariant). Do not source it from Secrets Manager.
+ENV ADP_GATEWAY_PLACEHOLDER_KEY="unused-sidecar-restrips-and-resigns"
 
 # Healthcheck: verify node and python are available
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

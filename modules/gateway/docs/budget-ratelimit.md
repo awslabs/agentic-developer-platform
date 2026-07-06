@@ -279,8 +279,77 @@ src/
 │       ├── in_memory.py
 │       └── redis.py
 └── shared/
+    ├── enforced_paths.py  # Single source of truth for ENFORCED_PATHS
     └── headers.py  # Response header utilities
 ```
+
+### Enforced Paths (single source)
+
+Both the budget and rate-limit ASGI middlewares gate the **same** set of proxy
+paths. That list lives in one place — `src/shared/enforced_paths.py`
+(`ENFORCED_PATHS`) — and is imported by both
+`src/budget/enforcement_middleware.py` and
+`src/ratelimit/enforcement_middleware.py`. A request path is enforced when it
+`startswith` any entry.
+
+> **Why one source?** The two lists used to be duplicated, which let the OpenAI
+> Responses passthrough (`/openai/v1/responses`) ship metered-but-unenforced
+> (Issue #2792). Registering a new proxy route for enforcement now happens in
+> exactly one place.
+
+Currently enforced: `/v1/chat/completions`, `/v1/messages`, `/bedrock/invoke`,
+`/bedrock/invoke-with-response-stream`, `/model/`, and `/openai/v1/responses`.
+
+### OpenAI Responses passthrough (bedrock-mantle)
+
+`/openai/v1/responses` forwards Codex / OpenAI-model traffic to bedrock-mantle
+byte-for-byte (Issue #2709). Two governance notes specific to this route:
+
+- **Pre-request gating is path-based only.** The budget middleware uses a fixed
+  cost estimate (`_DEFAULT_ESTIMATE_USD`) and never reads the request body, so
+  enforcement does not disturb the byte-for-byte passthrough.
+- **Real cost is computed post-response.** `MantlePassthroughService._log_usage`
+  extracts the Responses-API `usage` block and computes `cost_usd` via
+  `pricing_service.calculate_cost(model, input_tokens, output_tokens)` — the same
+  pricing table the Bedrock proxy uses. OpenAI model rates
+  (`openai.gpt-5.5`, `openai.gpt-oss-120b`) live in `src/budget/pricing.py`.
+
+### Per-user cost attribution (agent runs)
+
+Usage rows written for agent-initiated traffic carry an `agent_run_id`
+(`usage_logs.agent_run_id`, added in migration 018). For the mantle route, the
+sigv4-proxy sidecar injects the `x-agent-runid` header, `routes.py`
+`set_agent_run_id_from_header` reads it, and `MantlePassthroughService` persists
+it — identically to the Bedrock proxy path. **No schema change is needed for
+OpenAI-model traffic; mantle rows attribute exactly like Bedrock rows.**
+
+Roll-up to the triggering human is the same query for both paths and is
+**model-agnostic** — it keys only on `agent_run_id`, never on `model`:
+
+```
+usage_logs.agent_run_id
+  → (DDB correlation chain: run → correlation_id → root human)
+  → adp-root-human
+```
+
+The cost aggregation lives in `src/activity/cost_service.py`
+(`get_cost_by_correlation_id`), which sums `cost_usd` over the set of
+`agent_run_id`s belonging to a correlation chain. Because the aggregation filters
+on `agent_run_id` and not `model`, a mantle/OpenAI row and a Bedrock/Claude row
+sharing the same run roll up to the same human with no special-casing.
+
+**Smoke check (post-deploy):**
+
+```sql
+SELECT model, cost_usd, agent_run_id
+FROM usage_logs
+WHERE model LIKE 'openai%'
+ORDER BY created_at DESC
+LIMIT 1;
+```
+
+Confirm `cost_usd > 0` and `agent_run_id` is populated, then verify the run id
+resolves to the triggering human via the correlation chain.
 
 ## Security Considerations
 

@@ -77,6 +77,8 @@ function buildChainResponse(correlationId: string, items: InvocationItem[]): Inv
       persona: item.persona,
       parent_invocation_id: item.triggered_by_invocation_id,
       children: [],
+      // Issue #3069: transcript key
+      transcript_key: item.transcript_key,
       // Issue #1653: per-node cost carried from the source item
       total_cost_usd: item.total_cost_usd,
       total_tokens: item.total_tokens,

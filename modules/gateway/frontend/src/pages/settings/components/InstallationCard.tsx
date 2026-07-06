@@ -12,9 +12,14 @@ import { type GitHubConnectionItem } from '@/services/connections';
 interface InstallationCardProps {
   connection: GitHubConnectionItem;
   onDisconnect: (installationId: number) => Promise<void>;
+  /** Issue #3018: Hide Disconnect button for non-active tenant connections. */
+  readOnly?: boolean;
 }
 
-export function InstallationCard({ connection, onDisconnect }: InstallationCardProps) {
+export function InstallationCard({ connection, onDisconnect, readOnly = false }: InstallationCardProps) {
+  // Issue #3073: Disconnect is visible when the server says the caller can manage
+  // AND the card is not readOnly (non-active tenant connections stay hidden).
+  const showDisconnect = !readOnly && connection.can_manage;
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -66,21 +71,30 @@ export function InstallationCard({ connection, onDisconnect }: InstallationCardP
 
       <div className="flex items-center gap-2">
         <a
-          href={connection.configure_url}
+          href={connection.manage_url || connection.configure_url}
           target="_blank"
           rel="noopener noreferrer"
           className="text-sm text-primary-600 hover:underline dark:text-primary-400"
         >
-          Configure on GitHub ↗
+          Manage repositories ↗
         </a>
-        <Button
-          variant="danger"
-          size="sm"
-          onClick={handleDisconnect}
-          disabled={isDisconnecting}
-        >
-          {isDisconnecting ? 'Disconnecting…' : confirmDelete ? 'Confirm?' : 'Disconnect'}
-        </Button>
+        {showDisconnect ? (
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={handleDisconnect}
+            disabled={isDisconnecting}
+          >
+            {isDisconnecting ? 'Disconnecting…' : confirmDelete ? 'Confirm?' : 'Disconnect'}
+          </Button>
+        ) : readOnly ? (
+          <span
+            className="text-xs text-gray-400 dark:text-gray-500"
+            title="Switch to this workspace to manage connections"
+          >
+            Disconnect unavailable
+          </span>
+        ) : null}
       </div>
     </div>
   );

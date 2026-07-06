@@ -140,6 +140,17 @@ jobs:
             --query "Parameter.Value" --output text 2>/dev/null || echo "")
           echo "SQS_QUEUE_URL=${SQS_QUEUE_URL:-(not set)}"
 
+          # Issue #2433: Read Neptune endpoint from SSM (published by agent-context
+          # infra-apply). Overrides the empty default from config.env.
+          NEPTUNE_ENDPOINT=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/agent-context/neptune-endpoint" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          NEPTUNE_PORT=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/agent-context/neptune-port" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "8182")
+          echo "NEPTUNE_ENDPOINT=${NEPTUNE_ENDPOINT:-(not set)}"
+          echo "NEPTUNE_PORT=${NEPTUNE_PORT}"
+
           # Issue #2049/#2213: in-cluster gateway URL for the worker status
           # callback (worker indexing/complete/failed -> knowledge_assets row).
           # Without this the registry status is stuck at "queued" in the UI.
@@ -352,6 +363,10 @@ jobs:
 
           template_file manifests/litellm-config.yaml | kubectl apply -f -
           template_file manifests/litellm-proxy.yaml | kubectl apply -f -
+          # The image is pinned to the mutable ":latest" tag, so `kubectl apply`
+          # sees no manifest diff on a rebuild and would leave the old pod
+          # running. Force a rollout so the new image is actually pulled.
+          kubectl rollout restart deploy/litellm-proxy -n ${NAMESPACE} || true
           echo "LiteLLM proxy deployed"
 
       - name: Deploy DeepWiki ConfigMap
@@ -406,6 +421,10 @@ jobs:
 
           export NAMESPACE SERVICE_ACCOUNT CONTEXT_MCP_IMAGE
           template_file manifests/context-mcp.yaml | kubectl apply -f -
+          # The image is pinned to the mutable ":latest" tag, so `kubectl apply`
+          # sees no manifest diff on a rebuild and would leave the old pod
+          # running. Force a rollout so the new image is actually pulled.
+          kubectl rollout restart deploy/context-mcp -n ${NAMESPACE} || true
           echo "Context MCP Server deployed"
 
       - name: Deploy Ingestion CronJob + KEDA ScaledJob

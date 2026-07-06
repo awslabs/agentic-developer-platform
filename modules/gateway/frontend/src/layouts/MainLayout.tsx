@@ -1,10 +1,15 @@
 import { Outlet } from 'react-router-dom';
 import { Navigation } from '@/components/Navigation';
 import { MobileNav } from '@/components/MobileNav';
+import { NoOrgBanner } from '@/components/NoOrgBanner';
 import { useAuth } from '@/hooks/useAuth';
+
+/** Well-known org ID for the adp-default free-tier tenant. */
+const ADP_DEFAULT_ORG_ID = '00000000-0000-4000-a000-000000000001';
 
 export function MainLayout() {
   const { user, logout } = useAuth();
+  const isNoOrg = user?.orgId === ADP_DEFAULT_ORG_ID;
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
@@ -72,6 +77,8 @@ export function MainLayout() {
 
           {/* Main content */}
           <main id="main-content" className="flex-1 min-w-0">
+            {/* Issue #2984: No-org banner for personal/free-tier tenant users */}
+            {isNoOrg && <NoOrgBanner />}
             <Outlet />
           </main>
         </div>

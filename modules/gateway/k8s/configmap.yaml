@@ -132,6 +132,14 @@ data:
   AGENT_REGISTRY_TABLE: "__AGENT_REGISTRY_TABLE__"
 
   # =============================================================================
+  # Org-tenant auto-creation (Rule-1, EPIC #2981).
+  # Read directly via os.environ in connections/service.py (NOT BG_-prefixed).
+  # When "true", registering a GitHub Organization connection automatically
+  # creates an org-tenant shell so members can later auto-join.
+  # =============================================================================
+  ORG_TENANT_AUTO_CREATE: "true"
+
+  # =============================================================================
   # Knowledge Layer registry (E10 #1736 / #2082).
   # Read directly via os.environ in app.py (NOT BG_-prefixed) — they gate +
   # power the agent-context registry routes mounted into the gateway.
@@ -143,3 +151,23 @@ data:
   AGENT_CONTEXT_ENABLED: "true"
   INGESTION_QUEUE_URL: "__INGESTION_QUEUE_URL__"
   BG_AGENT_CONTEXT_DBNAME: "agent_context"
+
+  # =============================================================================
+  # Agent Run-Logs Transcripts (Issue #3069 / #3105)
+  # =============================================================================
+  # S3 bucket where agent-worker writes run transcripts. Read by the
+  # transcript viewer endpoint (activity/routes.py _get_run_logs_bucket).
+  # NOT BG_-prefixed — read directly via os.environ.get("AGENT_RUN_LOGS_BUCKET").
+  # =============================================================================
+  AGENT_RUN_LOGS_BUCKET: "__AGENT_RUN_LOGS_BUCKET__"
+
+  # =============================================================================
+  # bedrock-mantle passthrough (Issue #2709, EPIC #2702)
+  # =============================================================================
+  # Routes OpenAI Responses-API traffic (POST /openai/v1/responses) through the
+  # gateway to bedrock-mantle so Codex gets per-tenant metering + allowlist
+  # governance. Upstream auth is SigV4 ONLY via the pod's IRSA chain — the IAM
+  # grant is gated by enable_mantle_passthrough in gateway.tfvars (Terraform).
+  # Kill switch: set BG_MANTLE_ENABLED "false" and redeploy; route returns 503.
+  BG_MANTLE_ENABLED: "true"
+  BG_MANTLE_REGION: "us-east-1"

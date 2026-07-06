@@ -63,7 +63,7 @@ variable "enable_public_cfn_bucket" {
 }
 
 variable "seed_agent_registry" {
-  description = "Whether to seed the agent_registry DDB table with the scaledjob-worker entry. Set false if the item already exists (e.g. from a prior partial apply) and hasn't been imported into state."
+  description = "Whether to seed the agent_registry DDB table with the scaledjob-worker entry. Defaults true so a fresh deploy registers the worker role automatically (without it, every agent call 500s with UnregisteredServiceAccountError). The resource's lifecycle { ignore_changes = [item] } tolerates drift after creation, so re-applies are safe even where the item already exists outside state."
   type        = bool
-  default     = false
+  default     = true
 }

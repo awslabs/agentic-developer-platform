@@ -82,6 +82,16 @@ resource "aws_codebuild_project" "main" {
       name  = "SECURITY_SCANS_BUCKET"
       value = var.security_scans_bucket_name
     }
+
+    environment_variable {
+      name  = "ACCOUNT_ID"
+      value = var.account_id
+    }
+
+    environment_variable {
+      name  = "REGISTRY"
+      value = var.ecr_registry
+    }
   }
 
   logs_config {

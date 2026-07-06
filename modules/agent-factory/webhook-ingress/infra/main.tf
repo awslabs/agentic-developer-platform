@@ -20,9 +20,12 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project     = "adp-webhook-ingress"
+      Project     = "adp"
       Environment = var.environment
+      Module      = "webhook-ingress"
       ManagedBy   = "terraform"
+      Owner       = "agent-team"
+      CostCenter  = "engineering"
     }
   }
 }

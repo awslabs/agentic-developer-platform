@@ -13,10 +13,11 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project     = "BedrockGateway"
+      Project     = "adp"
       Environment = var.environment
+      Module      = "gateway"
       ManagedBy   = "terraform"
-      Owner       = "platform-team"
+      Owner       = "gateway-team"
       CostCenter  = var.cost_center
     }
   }
@@ -47,10 +48,11 @@ locals {
 
   # Common tags to merge with provider default tags
   common_tags = {
-    Project     = "BedrockGateway"
+    Project     = "adp"
     Environment = var.environment
+    Module      = "gateway"
     ManagedBy   = "terraform"
-    Owner       = "platform-team"
+    Owner       = "gateway-team"
     CostCenter  = var.cost_center
   }
 
@@ -308,6 +310,27 @@ resource "aws_iam_role_policy" "gateway_chat_logs_s3" {
   depends_on = [module.s3_chat_logs]
 }
 
+# Agent run-logs transcripts — read-only (Issue #3069 / #3105)
+# The transcript viewer endpoint fetches markdown transcripts from the
+# agent-run-logs bucket. GetObject only — no List, no Put. Scoped to
+# this account's bucket by convention (adp-<env>-agent-run-logs-<account>).
+resource "aws_iam_role_policy" "gateway_run_logs_read" {
+  name = "${local.name_prefix}-policy-gateway-run-logs-read"
+  role = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "AgentRunLogsRead"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::adp-${var.environment}-agent-run-logs-${data.aws_caller_identity.current.account_id}/*"
+      }
+    ]
+  })
+}
+
 # Comprehend PII detection permissions
 resource "aws_iam_role_policy" "gateway_comprehend_pii" {
   count = var.enable_chat_logging && var.chat_logging_scrub_level == "standard" ? 1 : 0
@@ -322,6 +345,48 @@ resource "aws_iam_role_policy" "gateway_comprehend_pii" {
         Effect   = "Allow"
         Action   = ["comprehend:DetectPiiEntities"]
         Resource = "*"
+      }
+    ]
+  })
+}
+
+# Bedrock InvokeModel permissions for the bedrock-mantle / OpenAI passthrough
+# (Issue #2709). The mantle passthrough route (POST /openai/v1/responses) signs
+# upstream requests with SigV4 using the gateway pod's OWN IRSA credentials —
+# unlike the Claude proxy path, which assumes a cross-account pool role.
+#
+# bedrock-mantle is its OWN service (prefix "bedrock-mantle:"), not part of the
+# "bedrock:" service. The upstream inference call authorizes against
+# bedrock-mantle:CreateInference on the mantle project resource — NOT
+# bedrock:InvokeModel*. Spike #2703 missed this because it tested from a role
+# with AdministratorAccess attached, which masked the real required action;
+# the gateway pod's own role got 401 access_denied until this grant was added
+# (Issue #2817). The bedrock:InvokeModel* statement below is kept because the
+# mantle docs are ambiguous about whether some model paths still check it.
+resource "aws_iam_role_policy" "gateway_mantle_bedrock_invoke" {
+  count = var.enable_mantle_passthrough ? 1 : 0
+  name  = "${local.name_prefix}-policy-gateway-mantle-bedrock-invoke"
+  role  = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "MantleBedrockInvoke"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "MantleCreateInference"
+        Effect = "Allow"
+        Action = [
+          "bedrock-mantle:CreateInference"
+        ]
+        Resource = "arn:aws:bedrock-mantle:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:project/default"
       }
     ]
   })
@@ -409,7 +474,18 @@ resource "aws_iam_role_policy" "gateway_vault_secrets" {
           "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/users/*",
           "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/teams/*",
           "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/orgs/*",
-          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/domain-apps/*"
+          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/domain-apps/*",
+          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/github-app/*",
+          # Issue #2708: the register flow writes the broker's OAuth client_id/
+          # secret here so "Sign in with GitHub" works right after registration,
+          # and get_app_status reads it to report login_enabled. Narrow to this
+          # exact secret family — NOT adp/*/cognito/*.
+          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/cognito/github-oauth-credentials*",
+          # Issue #2824: the register flow writes the manifest-conversion
+          # webhook_secret here so webhooks from a UI-registered App pass HMAC
+          # validation in the webhook-ingress Lambda. Terraform seeds this secret
+          # with a placeholder and never updates it. Narrow to this exact secret.
+          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/webhook-ingress/github-webhook-secret*"
         ]
       },
       {
@@ -420,6 +496,50 @@ resource "aws_iam_role_policy" "gateway_vault_secrets" {
         Effect   = "Allow"
         Action   = ["secretsmanager:ListSecrets"]
         Resource = "*"
+      }
+    ]
+  })
+}
+
+# Issue #2652: The github-app secrets (adp/<env>/github-app/*) are encrypted
+# with the webhook-ingress CMK (alias/adp-<env>-webhook-secrets). Without
+# kms:Decrypt on this key, secretsmanager:GetSecretValue returns
+# AccessDeniedException even though the SecretsManager permission is granted
+# above — same bug class as #2567 (webhook Lambda KMS gap).
+# Issue #2797: the register-app flow also WRITES these secrets
+# (PutSecretValue/CreateSecret in _store_app_credentials), which needs
+# kms:GenerateDataKey*/kms:Encrypt on the same CMK — read-only KMS access made
+# UI registration fail with AccessDenied once #2394 pinned the secrets to it.
+# Referenced by alias so key rotation doesn't break the policy.
+#
+# Issue #2907: Guarded behind enable_webhook_secrets_kms_grant (default false).
+# The CMK is created by webhook-ingress (Phase 7), AFTER gateway-infra (Phase 4).
+# On a fresh account the alias doesn't exist yet, so an unconditional data source
+# hard-fails at plan time. Set the flag to true after webhook-ingress deploys
+# (the gateway second pass in Phase 6b is also a safe point to flip this).
+data "aws_kms_alias" "webhook_secrets" {
+  count = var.enable_webhook_secrets_kms_grant ? 1 : 0
+  name  = "alias/adp-${var.environment}-webhook-secrets"
+}
+
+resource "aws_iam_role_policy" "gateway_webhook_secrets_kms" {
+  count = var.enable_webhook_secrets_kms_grant ? 1 : 0
+  name  = "${local.name_prefix}-policy-gateway-webhook-secrets-kms"
+  role  = local.gateway_service_irsa_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "WebhookSecretsKMSReadWrite"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey",
+          "kms:Encrypt",
+          "kms:GenerateDataKey*"
+        ]
+        Resource = [data.aws_kms_alias.webhook_secrets[0].target_key_arn]
       }
     ]
   })
@@ -548,6 +668,9 @@ module "cognito" {
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 
+  # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
+  enable_reserved_concurrency = var.enable_lambda_reserved_concurrency
+
   # Issue #769: removed `depends_on = [module.cloudfront]`. The implicit
   # dependency through callback_urls/logout_urls (which reference
   # module.cloudfront.distribution_domain_name) already enforces ordering.
@@ -640,40 +763,9 @@ module "cloudwatch_dashboard" {
   pod_deployment_name        = "bedrockgateway"
 }
 
-# =============================================================================
-# Security Group Rules for EKS Auto Mode Cluster SG
-# =============================================================================
-# EKS Auto Mode creates its own cluster security group that is used by managed
-# node pools and pods. These rules allow pods to reach RDS and Redis.
-# =============================================================================
-
-# Allow EKS cluster SG to access RDS on port 5432
-resource "aws_security_group_rule" "eks_cluster_to_rds" {
-  description              = "Allow EKS Auto Mode pods to access RDS PostgreSQL"
-  type                     = "ingress"
-  from_port                = 5432
-  to_port                  = 5432
-  protocol                 = "tcp"
-  security_group_id        = local.rds_security_group_id
-  source_security_group_id = local.cluster_security_group_id
-
-  depends_on = [module.rds]
-}
-
-# Allow EKS cluster SG to access Redis on port 6379
-resource "aws_security_group_rule" "eks_cluster_to_redis" {
-  count = var.enable_redis ? 1 : 0
-
-  description              = "Allow EKS Auto Mode pods to access ElastiCache Redis"
-  type                     = "ingress"
-  from_port                = 6379
-  to_port                  = 6379
-  protocol                 = "tcp"
-  security_group_id        = local.redis_security_group_id
-  source_security_group_id = local.cluster_security_group_id
-
-  depends_on = [module.redis]
-}
+# NOTE: EKS→RDS (5432) and EKS→Redis (6379) security group rules are owned by
+# platform infra (platform/infra/main.tf) — do NOT duplicate them here.
+# See: https://github.com/aws-e/adp/issues/2590
 
 # =============================================================================
 # RDS Bootstrap Module (Issue #60)
@@ -703,7 +795,6 @@ module "rds_bootstrap" {
 
   depends_on = [
     module.rds,
-    aws_security_group_rule.eks_cluster_to_rds,
   ]
 }
 
@@ -745,6 +836,9 @@ module "budget_lambda" {
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
+
+  # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
+  enable_reserved_concurrency = var.enable_lambda_reserved_concurrency
 
   # Ensure the psycopg2 layer zip is built+uploaded before this module's
   # aws_s3_object data source reads it.
@@ -846,6 +940,9 @@ module "lambda_authorizer" {
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
+
+  # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
+  enable_reserved_concurrency = var.enable_lambda_reserved_concurrency
 
   # Ensure the pyjwt layer zip is built+uploaded before this module's
   # aws_s3_object data source reads it.
@@ -1151,6 +1248,9 @@ module "github_auth_broker" {
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
+
+  # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
+  enable_reserved_concurrency = var.enable_lambda_reserved_concurrency
 
   # Issue #1011: API Gateway route is now defined in the api-gateway module's
   # OpenAPI body. The broker module only creates the Lambda + IAM.

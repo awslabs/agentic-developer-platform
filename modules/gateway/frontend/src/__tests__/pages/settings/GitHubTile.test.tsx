@@ -1,0 +1,478 @@
+/**
+ * GitHubTile component tests.
+ *
+ * Issue #2596: GitHub App registration + lifecycle states (platform_admin gated).
+ *
+ * Tests cover the four tile states:
+ * - platform_admin + unregistered → "Set up GitHub App" with owner radio
+ * - platform_admin + registered → Rotate/Disconnect + Connect UI
+ * - non-platform_admin + unregistered → "ask a platform admin" message
+ * - any admin + registered → Connect flow unchanged
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { GitHubTile } from '@/pages/settings/components/GitHubTile';
+import type { AppStatusResponse, GitHubConnectionItem } from '@/services/connections';
+
+// Default props for a minimal render
+const defaultProps = {
+  connections: [] as GitHubConnectionItem[],
+  isLoading: false,
+  onInstall: vi.fn(),
+  onDisconnect: vi.fn().mockResolvedValue(undefined),
+  isInstalling: false,
+  isPlatformAdmin: false,
+  appStatus: null as AppStatusResponse | null,
+  onRegister: vi.fn().mockResolvedValue(undefined),
+  onRotateKey: vi.fn().mockResolvedValue(undefined),
+  onDisconnectApp: vi.fn().mockResolvedValue(undefined),
+};
+
+const registeredStatus: AppStatusResponse = {
+  registered: true,
+  app_slug: 'adp-agent-dev',
+  app_id: '12345',
+  owner_type: 'Organization',
+  created_at: '2026-06-15T10:00:00Z',
+};
+
+const unregisteredStatus: AppStatusResponse = {
+  registered: false,
+  app_slug: null,
+  app_id: null,
+  owner_type: null,
+  created_at: null,
+};
+
+const mockConnection: GitHubConnectionItem = {
+  provider: 'github',
+  installation_id: 99999,
+  account_login: 'test-org',
+  account_type: 'Organization',
+  repository_selection: 'selected',
+  repository_count: 3,
+  repositories: ['repo-a', 'repo-b', 'repo-c'],
+  installed_at: '2026-06-20T10:00:00Z',
+  configure_url: 'https://github.com/organizations/test-org/settings/installations/99999',
+};
+
+describe('GitHubTile', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // -------------------------------------------------------------------------
+  // State 1: platform_admin + unregistered
+  // -------------------------------------------------------------------------
+
+  describe('platform_admin + unregistered', () => {
+    const props = {
+      ...defaultProps,
+      isPlatformAdmin: true,
+      appStatus: unregisteredStatus,
+    };
+
+    it('shows "Set up GitHub App" info box', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText('Set up GitHub App')).toBeInTheDocument();
+    });
+
+    it('shows owner type radio with user-owned default', () => {
+      render(<GitHubTile {...props} />);
+
+      const userRadio = screen.getByLabelText(/Personal account/i);
+      const orgRadio = screen.getByLabelText(/Organization/i);
+
+      expect(userRadio).toBeChecked();
+      expect(orgRadio).not.toBeChecked();
+    });
+
+    it('does NOT show org name input when user-owned is selected', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.queryByLabelText(/Organization name/i)).not.toBeInTheDocument();
+    });
+
+    it('shows org name input when Organization radio is selected', async () => {
+      const user = userEvent.setup();
+      render(<GitHubTile {...props} />);
+
+      await user.click(screen.getByLabelText(/Organization/i));
+
+      expect(screen.getByLabelText(/Organization name/i)).toBeInTheDocument();
+    });
+
+    it('calls onRegister with owner_type=user when Create button is clicked', async () => {
+      const user = userEvent.setup();
+      render(<GitHubTile {...props} />);
+
+      await user.click(screen.getByRole('button', { name: /Create on GitHub/i }));
+
+      await waitFor(() => {
+        expect(props.onRegister).toHaveBeenCalledWith('user', undefined);
+      });
+    });
+
+    it('calls onRegister with owner_type=org and org name when org is chosen', async () => {
+      const user = userEvent.setup();
+      render(<GitHubTile {...props} />);
+
+      await user.click(screen.getByLabelText(/Organization/i));
+      await user.type(screen.getByLabelText(/Organization name/i), 'my-github-org');
+      await user.click(screen.getByRole('button', { name: /Create on GitHub/i }));
+
+      await waitFor(() => {
+        expect(props.onRegister).toHaveBeenCalledWith('org', 'my-github-org');
+      });
+    });
+
+    it('disables Create button when org is selected but name is empty', async () => {
+      const user = userEvent.setup();
+      render(<GitHubTile {...props} />);
+
+      await user.click(screen.getByLabelText(/Organization/i));
+
+      expect(screen.getByRole('button', { name: /Create on GitHub/i })).toBeDisabled();
+    });
+
+    it('does NOT show Install on GitHub button when unregistered', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.queryByText('Install on GitHub')).not.toBeInTheDocument();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // State 2: platform_admin + registered
+  // -------------------------------------------------------------------------
+
+  describe('platform_admin + registered', () => {
+    const props = {
+      ...defaultProps,
+      isPlatformAdmin: true,
+      appStatus: registeredStatus,
+    };
+
+    it('shows app slug and ID', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText('adp-agent-dev')).toBeInTheDocument();
+      expect(screen.getByText(/ID: 12345/)).toBeInTheDocument();
+    });
+
+    it('shows owner type in app info', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText(/Organization/)).toBeInTheDocument();
+    });
+
+    it('shows Rotate key button', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByRole('button', { name: /Rotate key/i })).toBeInTheDocument();
+    });
+
+    it('shows Disconnect app button', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByRole('button', { name: /Disconnect app/i })).toBeInTheDocument();
+    });
+
+    it('calls onRotateKey when Rotate key is clicked', async () => {
+      const user = userEvent.setup();
+      render(<GitHubTile {...props} />);
+
+      await user.click(screen.getByRole('button', { name: /Rotate key/i }));
+
+      await waitFor(() => {
+        expect(props.onRotateKey).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('requires confirmation for Disconnect app', async () => {
+      const user = userEvent.setup();
+      render(<GitHubTile {...props} />);
+
+      // First click — changes to confirm
+      await user.click(screen.getByRole('button', { name: /Disconnect app/i }));
+      expect(screen.getByRole('button', { name: /Confirm disconnect/i })).toBeInTheDocument();
+      expect(props.onDisconnectApp).not.toHaveBeenCalled();
+
+      // Second click — calls the handler
+      await user.click(screen.getByRole('button', { name: /Confirm disconnect/i }));
+
+      await waitFor(() => {
+        expect(props.onDisconnectApp).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('shows Install on GitHub button', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText('Install on GitHub')).toBeInTheDocument();
+    });
+
+    it('shows existing connections when present', () => {
+      render(<GitHubTile {...props} connections={[mockConnection]} />);
+
+      expect(screen.getByText('test-org')).toBeInTheDocument();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #2708: registered but login not wired
+  // -------------------------------------------------------------------------
+
+  describe('platform_admin + registered + login not wired', () => {
+    const props = {
+      ...defaultProps,
+      isPlatformAdmin: true,
+      appStatus: { ...registeredStatus, login_enabled: false },
+    };
+
+    it('shows the "GitHub sign-in not wired" warning', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText('GitHub sign-in not wired')).toBeInTheDocument();
+    });
+
+    it('still shows the app info panel (App is registered)', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText('adp-agent-dev')).toBeInTheDocument();
+    });
+
+    it('does NOT show the warning when login_enabled is true', () => {
+      render(
+        <GitHubTile
+          {...props}
+          appStatus={{ ...registeredStatus, login_enabled: true }}
+        />,
+      );
+
+      expect(screen.queryByText('GitHub sign-in not wired')).not.toBeInTheDocument();
+    });
+
+    it('does NOT show the warning for non-platform-admins', () => {
+      render(<GitHubTile {...props} isPlatformAdmin={false} />);
+
+      expect(screen.queryByText('GitHub sign-in not wired')).not.toBeInTheDocument();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // State 3: non-platform_admin + unregistered
+  // -------------------------------------------------------------------------
+
+  describe('non-platform_admin + unregistered', () => {
+    const props = {
+      ...defaultProps,
+      isPlatformAdmin: false,
+      appStatus: unregisteredStatus,
+    };
+
+    it('shows "ask a platform admin" message', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(
+        screen.getByText(/ask a platform admin/i),
+      ).toBeInTheDocument();
+    });
+
+    it('does NOT show registration form', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.queryByText('Set up GitHub App')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Create on GitHub/i })).not.toBeInTheDocument();
+    });
+
+    it('does NOT show Install on GitHub button', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.queryByText('Install on GitHub')).not.toBeInTheDocument();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // State 4: non-platform_admin + registered (existing Connect flow)
+  // -------------------------------------------------------------------------
+
+  describe('non-platform_admin + registered', () => {
+    const props = {
+      ...defaultProps,
+      isPlatformAdmin: false,
+      appStatus: registeredStatus,
+    };
+
+    it('shows Install on GitHub button', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText('Install on GitHub')).toBeInTheDocument();
+    });
+
+    it('does NOT show app info panel (admin-only)', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.queryByText('adp-agent-dev')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Rotate key/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Disconnect app/i })).not.toBeInTheDocument();
+    });
+
+    it('calls onInstall when Install on GitHub is clicked', async () => {
+      const user = userEvent.setup();
+      render(<GitHubTile {...props} />);
+
+      await user.click(screen.getByText('Install on GitHub'));
+
+      expect(props.onInstall).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows existing connections', () => {
+      render(<GitHubTile {...props} connections={[mockConnection]} />);
+
+      expect(screen.getByText('test-org')).toBeInTheDocument();
+    });
+
+    it('shows "+ Add another connection" when connections exist', () => {
+      render(<GitHubTile {...props} connections={[mockConnection]} />);
+
+      expect(screen.getByText('+ Add another connection')).toBeInTheDocument();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Loading state
+  // -------------------------------------------------------------------------
+
+  describe('loading state', () => {
+    it('shows skeleton when loading and no status available', () => {
+      render(<GitHubTile {...defaultProps} isLoading={true} appStatus={null} />);
+
+      // The skeleton is a pulsing div — no text content to query.
+      // We verify the registration form and message are NOT shown.
+      expect(screen.queryByText('Set up GitHub App')).not.toBeInTheDocument();
+      expect(screen.queryByText(/ask a platform admin/i)).not.toBeInTheDocument();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // State 5: platform_admin + status fetch failed (Issue #2619)
+  // -------------------------------------------------------------------------
+
+  describe('platform_admin + status fetch error', () => {
+    const props = {
+      ...defaultProps,
+      isPlatformAdmin: true,
+      appStatus: null,
+      appStatusError: true,
+    };
+
+    it('shows error state instead of registration CTA when status fetch fails', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText('Unable to check GitHub App status')).toBeInTheDocument();
+    });
+
+    it('does NOT show "Set up GitHub App" CTA when status is unavailable', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.queryByText('Set up GitHub App')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Create on GitHub/i })).not.toBeInTheDocument();
+    });
+
+    it('does NOT show Install on GitHub button when status is unavailable', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.queryByText('Install on GitHub')).not.toBeInTheDocument();
+    });
+
+    it('shows guidance about possible IAM issue', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(
+        screen.getByText(/do not re-register without confirming/i),
+      ).toBeInTheDocument();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #3070: Multi-workspace grouping display
+  // -------------------------------------------------------------------------
+
+  describe('multi-workspace grouping (Issue #3070)', () => {
+    const multiTenantConnections: GitHubConnectionItem[] = [
+      {
+        provider: 'github',
+        installation_id: 1001,
+        account_login: 'aws-innovate',
+        account_type: 'Organization',
+        repository_selection: 'all',
+        repository_count: 10,
+        repositories: [],
+        installed_at: '2026-06-01T00:00:00Z',
+        configure_url: 'https://github.com/organizations/aws-innovate/settings/installations/1001',
+        manage_url: 'https://github.com/organizations/aws-innovate/settings/installations/1001',
+        tenant_id: 'tenant-1',
+        tenant_name: 'platform-admin',
+        is_active_tenant: true,
+      },
+      {
+        provider: 'github',
+        installation_id: 1002,
+        account_login: 'other-org',
+        account_type: 'Organization',
+        repository_selection: 'selected',
+        repository_count: 3,
+        repositories: ['repo-x'],
+        installed_at: '2026-06-10T00:00:00Z',
+        configure_url: 'https://github.com/organizations/other-org/settings/installations/1002',
+        manage_url: 'https://github.com/organizations/other-org/settings/installations/1002',
+        tenant_id: 'tenant-2',
+        tenant_name: 'secondary-workspace',
+        is_active_tenant: false,
+      },
+    ];
+
+    const props = {
+      ...defaultProps,
+      isPlatformAdmin: false,
+      appStatus: registeredStatus,
+      connections: multiTenantConnections,
+    };
+
+    it('uses GitHub org display name (account_login) as group header, not internal slug', () => {
+      render(<GitHubTile {...props} />);
+
+      // Should show account_login "aws-innovate" as a group header, NOT internal tenant_name "platform-admin"
+      // account_login appears both in group header AND InstallationCard, so use getAllByText
+      const awsInnovateElements = screen.getAllByText('aws-innovate');
+      expect(awsInnovateElements.length).toBeGreaterThanOrEqual(1);
+      // The internal slug "platform-admin" should never appear as user-visible text
+      expect(screen.queryByText('platform-admin')).not.toBeInTheDocument();
+    });
+
+    it('shows "Viewing" badge for non-active workspace groups (not "Read-only")', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText(/Viewing/)).toBeInTheDocument();
+      expect(screen.queryByText('Read-only')).not.toBeInTheDocument();
+    });
+
+    it('shows "Active" badge for the active workspace group', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText('Active')).toBeInTheDocument();
+    });
+
+    it('does not display the word "tenant" in any user-visible text', () => {
+      const { container } = render(<GitHubTile {...props} />);
+
+      // Get all user-visible text content (excludes HTML attributes, data-*, etc.)
+      const textContent = container.textContent ?? '';
+      expect(textContent.toLowerCase()).not.toContain('tenant');
+    });
+  });
+});

@@ -380,3 +380,272 @@ class TestPostgres404TreatedAsNoMatch:
         assert reason == "ok"
         assert result is not None
         assert result.user_id == CANONICAL_USER_ID
+
+
+class TestInstallationPostgresFallback:
+    """Issue #2950: When DDB misses the installation, fall through to Postgres
+    via the gateway and backfill the DDB row."""
+
+    def test_resolves_via_postgres_when_ddb_misses(self, monkeypatch):
+        """DDB has no installation row, Postgres returns tenant → resolve succeeds."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        # DDB has NO installation row, but has the user
+        ddb_items = {
+            "adp-dev-identity-index": {},
+            "adp-dev-user-identity-index": {
+                f"github|{SENDER_ID}": V2_USER_ITEM,
+            },
+        }
+        mock_ddb = _mock_ddb_get_item(ddb_items)
+
+        # Track put_item calls to verify backfill
+        backfill_calls = []
+        original_table = mock_ddb.Table
+
+        def make_tracked_table(table_name):
+            table = original_table(table_name)
+
+            def tracked_put_item(Item=None):  # noqa: N803
+                backfill_calls.append(Item)
+
+            table.put_item = tracked_put_item
+            return table
+
+        mock_ddb.Table = make_tracked_table
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"tenant_id": "pranavsharma1000"},
+            ):
+                with patch(
+                    "common.gateway_client.resolve_user_by_identity",
+                    return_value=PG_RESULT_CANONICAL,
+                ):
+                    result, reason = identity_resolver.resolve(
+                        INSTALLATION_ID, SENDER_ID
+                    )
+
+        assert reason == "ok"
+        assert result is not None
+        assert result.tenant_id == "pranavsharma1000"
+        assert result.org_id == "pranavsharma1000"
+        assert result.user_id == CANONICAL_USER_ID
+
+        # Verify DDB backfill was attempted
+        assert len(backfill_calls) == 1
+        assert backfill_calls[0]["identity_type"] == "github_installation_id"
+        assert backfill_calls[0]["identity_value"] == str(INSTALLATION_ID)
+        assert backfill_calls[0]["org_id"] == "pranavsharma1000"
+
+    def test_returns_unknown_when_both_ddb_and_postgres_miss(self, monkeypatch):
+        """DDB miss + Postgres miss → unknown_installation."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        ddb_items = {
+            "adp-dev-identity-index": {},
+            "adp-dev-user-identity-index": {
+                f"github|{SENDER_ID}": V2_USER_ITEM,
+            },
+        }
+        mock_ddb = _mock_ddb_get_item(ddb_items)
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value=None,  # Postgres also misses
+            ):
+                result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        assert result is None
+        assert reason == "unknown_installation"
+
+    def test_falls_back_only_when_gateway_flag_enabled(self, monkeypatch):
+        """With RESOLVE_CANONICAL_VIA_GATEWAY=false, DDB miss → unknown immediately."""
+        monkeypatch.setenv("RESOLVE_CANONICAL_VIA_GATEWAY", "false")
+        mods = [k for k in sys.modules if k.startswith("common.identity_resolver")]
+        for m in mods:
+            del sys.modules[m]
+
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        ddb_items = {
+            "adp-dev-identity-index": {},
+            "adp-dev-user-identity-index": {
+                f"github|{SENDER_ID}": V2_USER_ITEM,
+            },
+        }
+        mock_ddb = _mock_ddb_get_item(ddb_items)
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+            ) as mock_resolve:
+                result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        assert result is None
+        assert reason == "unknown_installation"
+        mock_resolve.assert_not_called()
+
+    def test_backfill_failure_does_not_block_resolution(self, monkeypatch):
+        """If DDB backfill fails, resolution still proceeds with the Postgres tenant."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        # DDB has NO installation row but has the user
+        ddb_items = {
+            "adp-dev-identity-index": {},
+            "adp-dev-user-identity-index": {
+                f"github|{SENDER_ID}": V2_USER_ITEM,
+            },
+        }
+        mock_ddb = _mock_ddb_get_item(ddb_items)
+
+        # Make put_item raise an exception
+        original_table = mock_ddb.Table
+
+        def make_failing_table(table_name):
+            table = original_table(table_name)
+
+            def failing_put_item(Item=None):  # noqa: N803
+                raise Exception("DDB write error")
+
+            table.put_item = failing_put_item
+            return table
+
+        mock_ddb.Table = make_failing_table
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"tenant_id": "pranavsharma1000"},
+            ):
+                with patch(
+                    "common.gateway_client.resolve_user_by_identity",
+                    return_value=PG_RESULT_CANONICAL,
+                ):
+                    result, reason = identity_resolver.resolve(
+                        INSTALLATION_ID, SENDER_ID
+                    )
+
+        # Resolution still succeeds despite backfill failure
+        assert reason == "ok"
+        assert result is not None
+        assert result.tenant_id == "pranavsharma1000"
+
+
+class TestInstallationTenantDriftSafetyNet:
+    """Issue #2769: read-time installation → tenant drift check against Postgres."""
+
+    def test_trusts_postgres_and_emits_metric_on_installation_drift(self, monkeypatch):
+        """DDB tenant A, Postgres tenant B → resolve to B + emit drift metric."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        # DDB tenant row points at the phantom tenant
+        phantom_tenant_item = {
+            "identity_type": "github_installation_id",
+            "identity_value": str(INSTALLATION_ID),
+            "org_id": "aws-innovate",
+            "user_provisioning_mode": "strict",
+        }
+        # user row is in the phantom org so cross-tenant path stays quiet
+        user_item = {
+            "provider": "github",
+            "provider_user_id": str(SENDER_ID),
+            "user_id": CANONICAL_USER_ID,
+            "org_id": "pranavsharma1000",
+        }
+        ddb_items = {
+            "adp-dev-identity-index": {
+                f"github_installation_id|{INSTALLATION_ID}": phantom_tenant_item,
+            },
+            "adp-dev-user-identity-index": {
+                f"github|{SENDER_ID}": user_item,
+            },
+        }
+        mock_ddb = _mock_ddb_get_item(ddb_items)
+        mock_cw = MagicMock()
+
+        def _resolve_installation(installation_id):
+            return {"tenant_id": "pranavsharma1000"}
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch("boto3.client", return_value=mock_cw):
+                with patch(
+                    "common.gateway_client.resolve_installation_by_id",
+                    side_effect=_resolve_installation,
+                ):
+                    with patch(
+                        "common.gateway_client.resolve_user_by_identity",
+                        return_value={
+                            "user_id": CANONICAL_USER_ID,
+                            "org_id": "pranavsharma1000",
+                            "team_id": "",
+                            "is_shadow": False,
+                        },
+                    ):
+                        identity_resolver._cloudwatch = None
+                        result, reason = identity_resolver.resolve(
+                            INSTALLATION_ID, SENDER_ID
+                        )
+
+        assert reason == "ok"
+        assert result is not None
+        assert result.tenant_id == "pranavsharma1000"  # Postgres wins
+        assert result.org_id == "pranavsharma1000"
+        # InstallationTenantDrift metric emitted
+        metric_names = [
+            c[1]["MetricData"][0]["MetricName"]
+            for c in mock_cw.put_metric_data.call_args_list
+        ]
+        assert "InstallationTenantDrift" in metric_names
+
+    def test_fail_open_keeps_ddb_answer_on_gateway_error(self, monkeypatch):
+        """Gateway miss/error → keep the DDB tenant (no hard RDS dependency)."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        ddb_items = {
+            "adp-dev-identity-index": {
+                f"github_installation_id|{INSTALLATION_ID}": TENANT_ITEM,
+            },
+            "adp-dev-user-identity-index": {
+                f"github|{SENDER_ID}": V2_USER_ITEM,
+            },
+        }
+        mock_ddb = _mock_ddb_get_item(ddb_items)
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value=None,  # gateway miss/error
+            ):
+                with patch(
+                    "common.gateway_client.resolve_user_by_identity",
+                    return_value=PG_RESULT_CANONICAL,
+                ):
+                    result, reason = identity_resolver.resolve(
+                        INSTALLATION_ID, SENDER_ID
+                    )
+
+        assert reason == "ok"
+        assert result is not None
+        # DDB tenant retained
+        assert result.tenant_id == "pranavsharma1000"

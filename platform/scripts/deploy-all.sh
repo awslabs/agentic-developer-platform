@@ -98,6 +98,15 @@ fi
 ok "AWS Account: $ACCOUNT_ID | Region: $AWS_REGION | Env: $ENVIRONMENT"
 
 # ---------------------------------------------------------------------------
+# Accept Bedrock marketplace agreements for the Claude models the platform
+# invokes. Fresh accounts have none; without them every model call fails with
+# AccessDeniedException and the agent-worker misreports it as "no changes
+# needed". Idempotent — skips models already enabled.
+# ---------------------------------------------------------------------------
+step "Bedrock model access"
+bash "$SCRIPT_DIR/enable-bedrock-models.sh" || fail "Bedrock model agreements could not be enabled. Agents cannot invoke Claude without them."
+
+# ---------------------------------------------------------------------------
 # Detect operator's public IP and lock EKS public API to /32 (portable)
 # ---------------------------------------------------------------------------
 # Anyone cloning this repo can run the script without editing tfvars. The
@@ -184,7 +193,7 @@ run_codebuild() {
 #   - empty-s3-buckets.sh         (non-empty buckets block terraform destroy)
 #   - force-delete-secrets.sh     (avoid 7-day collision on re-deploy)
 #
-# Order: agent-context → agent-factory → gateway → platform
+# Order: agent-context → webhook-ingress → agent-factory → gateway → platform
 # State backend (S3 + DynamoDB) is NOT destroyed — use bootstrap-destroy.sh.
 # GitHub App secrets (adp/gh-app-*) are NOT touched — survive by design.
 # =============================================================================
@@ -192,7 +201,7 @@ if [ "$DESTROY" = true ]; then
   step "Destroying all infrastructure"
   echo "This will destroy ALL ADP infrastructure in $ENVIRONMENT."
   echo ""
-  echo "Destroy order: agent-context → agent-factory → gateway → platform"
+  echo "Destroy order: agent-context → webhook-ingress → agent-factory → gateway → platform"
   echo "State backend and GitHub App secrets will NOT be deleted."
   echo ""
   echo "Type 'yes' to proceed:"
@@ -207,9 +216,18 @@ if [ "$DESTROY" = true ]; then
   # -------------------------------------------------------------------------
   # 1. Agent Context
   # -------------------------------------------------------------------------
-  step "Destroy 1/4: Agent Context"
+  step "Destroy 1/5: Agent Context"
   if [ -d "$ROOT_DIR/modules/agent-context/terraform" ]; then
     kubectl delete namespace agent-context --wait=true --timeout=120s 2>/dev/null || true
+
+    # Empty S3 buckets (versioned — terraform cannot delete non-empty)
+    AC_BUCKETS=""
+    for pattern in "agent-context-platform-data-"; do
+      FOUND=$(aws s3api list-buckets --query "Buckets[?starts_with(Name,'${pattern}')].Name" --output text 2>/dev/null || echo "")
+      [ -n "$FOUND" ] && [ "$FOUND" != "None" ] && AC_BUCKETS="$AC_BUCKETS $FOUND"
+    done
+    [ -n "$AC_BUCKETS" ] && bash "$SCRIPT_DIR/empty-s3-buckets.sh" $AC_BUCKETS
+
     cd "$ROOT_DIR/modules/agent-context/terraform"
     terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/agent-context-backend.tfvars" -input=false 2>/dev/null || true
     terraform destroy -var-file="../../../environments/$ENVIRONMENT/modules/agent-context.tfvars" -auto-approve || true
@@ -219,9 +237,29 @@ if [ "$DESTROY" = true ]; then
   fi
 
   # -------------------------------------------------------------------------
-  # 2. Agent Factory
+  # 2. Webhook Ingress (KEDA + Lambda + SQS + API GW + DynamoDB + WAFv2 + KMS)
   # -------------------------------------------------------------------------
-  step "Destroy 2/4: Agent Factory"
+  step "Destroy 2/5: Webhook Ingress"
+  if [ -f "$ROOT_DIR/modules/agent-factory/webhook-ingress/infra/terraform.tfvars" ]; then
+    # Clean up K8s KEDA resources before TF destroy
+    kubectl delete scaledjobs --all -n adp-agents 2>/dev/null || true
+    kubectl delete namespace adp-agents --wait=true --timeout=120s 2>/dev/null || true
+
+    # Clean up Lambda artifacts from S3
+    aws s3 rm "s3://${STATE_BUCKET}/lambda-artifacts/webhook-ingress/" --recursive 2>/dev/null || true
+
+    cd "$ROOT_DIR/modules/agent-factory/webhook-ingress/infra"
+    terraform init -backend-config="../../../../environments/$ENVIRONMENT/modules/webhook-ingress-backend.tfvars" -input=false 2>/dev/null || true
+    terraform destroy -var-file=terraform.tfvars -auto-approve || true
+    ok "Webhook Ingress destroyed"
+  else
+    ok "Webhook Ingress: not configured, skipping"
+  fi
+
+  # -------------------------------------------------------------------------
+  # 3. Agent Factory
+  # -------------------------------------------------------------------------
+  step "Destroy 3/5: Agent Factory"
   if [ -f "$ROOT_DIR/modules/agent-factory/infra/terraform.tfvars" ]; then
     # Clean up K8s resources
     kubectl delete scaledjobs --all -n adp-gateway-agents 2>/dev/null || true
@@ -245,18 +283,18 @@ if [ "$DESTROY" = true ]; then
   fi
 
   # -------------------------------------------------------------------------
-  # 3. Gateway (most complex — ALB, S3, Secrets, CloudFront cleanup first)
+  # 4. Gateway (most complex — ALB, S3, Secrets, CloudFront cleanup first)
   # -------------------------------------------------------------------------
-  step "Destroy 3/4: Gateway"
+  step "Destroy 4/5: Gateway"
 
-  # 3a. Delete Ingress and wait for ALB to be removed by the controller
+  # 4a. Delete Ingress and wait for ALB to be removed by the controller
   echo "Cleaning up Ingress resources and ALBs..."
   bash "$SCRIPT_DIR/delete-ingress-and-wait.sh" || true
 
-  # 3b. Delete remaining K8s gateway resources
+  # 4b. Delete remaining K8s gateway resources
   kubectl delete namespace adp-gateway --wait=true --timeout=120s 2>/dev/null || true
 
-  # 3c. Empty S3 buckets (frontend, etc.)
+  # 4c. Empty S3 buckets (frontend, etc.)
   GW_BUCKETS=""
   FRONTEND_BUCKET=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/frontend-bucket" \
     --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
@@ -267,12 +305,12 @@ if [ "$DESTROY" = true ]; then
   done
   [ -n "$GW_BUCKETS" ] && bash "$SCRIPT_DIR/empty-s3-buckets.sh" $GW_BUCKETS
 
-  # 3d. Force-delete Secrets Manager secrets (avoid 7-day collision)
+  # 4d. Force-delete Secrets Manager secrets (avoid 7-day collision)
   bash "$SCRIPT_DIR/force-delete-secrets.sh" \
     "bedrockgw-${ENVIRONMENT}-" \
     "adp/${ENVIRONMENT}/gateway/test-" || true
 
-  # 3e. Disable CloudFront distribution (two-phase delete)
+  # 4e. Disable CloudFront distribution (two-phase delete)
   DIST_ID=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-id" \
     --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
   if [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ]; then
@@ -303,12 +341,12 @@ print(json.dumps(config))
     fi
   fi
 
-  # 3f. Terraform destroy
+  # 4f. Terraform destroy
   cd "$ROOT_DIR/modules/gateway/infra"
   terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false 2>/dev/null || true
   terraform destroy -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" -auto-approve || true
 
-  # 3g. Clean up SSM parameters
+  # 4g. Clean up SSM parameters
   for param in "/adp/$ENVIRONMENT/gateway/frontend-bucket" \
                "/adp/$ENVIRONMENT/gateway/cloudfront-id" \
                "/adp/$ENVIRONMENT/gateway/cloudfront-domain" \
@@ -320,9 +358,9 @@ print(json.dumps(config))
   ok "Gateway destroyed"
 
   # -------------------------------------------------------------------------
-  # 4. Platform (last — EKS, VPC, ECR, IAM)
+  # 5. Platform (last — EKS, VPC, ECR, IAM)
   # -------------------------------------------------------------------------
-  step "Destroy 4/4: Platform"
+  step "Destroy 5/5: Platform"
 
   # Clean up K8s system namespaces before cluster destroy
   kubectl delete namespace arc-systems --wait=true --timeout=120s 2>/dev/null || true

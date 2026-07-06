@@ -297,3 +297,69 @@ class TestResolveUser:
         assert "magic_link_url" in detail
         # URL must have the correct shape
         assert "token=" in detail["magic_link_url"]
+
+
+# ---------------------------------------------------------------------------
+# POST /internal/v1/resolve-installation  (Issue #2769)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveInstallation:
+    """Postgres-authoritative installation → tenant resolution."""
+
+    @patch("src.internal.routes.get_settings")
+    def test_known_installation_returns_tenant(self, mock_settings, db: AsyncSession):
+        from unittest.mock import MagicMock
+
+        settings = MagicMock()
+        settings.internal_api_key = _VALID_KEY
+        mock_settings.return_value = settings
+
+        # org-acme owns installation 144082554
+        async def _seed():
+            org = await db.get(Organization, "org-acme")
+            org.github_installation_ids = ["144082554"]
+            await db.commit()
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+
+        client = _make_app(db)
+        resp = client.post(
+            "/internal/v1/resolve-installation",
+            json={"installation_id": "144082554"},
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["tenant_id"] == "org-acme"
+
+    @patch("src.internal.routes.get_settings")
+    def test_unknown_installation_returns_404(self, mock_settings, db: AsyncSession):
+        from unittest.mock import MagicMock
+
+        settings = MagicMock()
+        settings.internal_api_key = _VALID_KEY
+        mock_settings.return_value = settings
+
+        client = _make_app(db)
+        resp = client.post(
+            "/internal/v1/resolve-installation",
+            json={"installation_id": "999999999"},
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "not_found"
+
+    @patch("src.internal.routes.get_settings")
+    def test_missing_api_key_returns_403(self, mock_settings, db: AsyncSession):
+        from unittest.mock import MagicMock
+
+        settings = MagicMock()
+        settings.internal_api_key = _VALID_KEY
+        mock_settings.return_value = settings
+
+        client = _make_app(db)
+        resp = client.post(
+            "/internal/v1/resolve-installation",
+            json={"installation_id": "144082554"},
+        )
+        assert resp.status_code == 403

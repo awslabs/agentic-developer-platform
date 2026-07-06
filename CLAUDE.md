@@ -85,13 +85,18 @@ behaviors that still apply on top of that doc:
    `aws sts get-caller-identity` resolves to (via the active `AWS_PROFILE`).
    Show the account + ARN and get the user's confirmation before Phase 1. There
    is **no upfront GitHub setup** — for the webhook agent path GitHub is wired at
-   the END (`register-github-app.sh`), and gateway-only needs no GitHub at all.
+   the END (UI flow: Settings → Connections → "Set up GitHub App"; or CLI
+   fallback `register-github-app.sh`), and gateway-only needs no GitHub at all.
 2. **Maintain `.adp-deploy-state.json`** (see Deployment State above): update it
    after each phase; on startup, resume from the first non-complete phase.
    Note: a committed copy from a fresh clone is NOT a record of your deploy —
    verify against real AWS state, don't trust its statuses.
 3. **Keep the user informed** between phases with brief status; only stop for
-   genuine input (AWS account choice, the GitHub App browser steps in Phase 8).
+   genuine input (AWS account choice and the GitHub App setup — UI flow
+   preferred, CLI fallback for headless; see the phase numbering in
+   deploy-quickstart.md). Bedrock model access is NOT a stop: it's automated
+   via `platform/scripts/enable-bedrock-models.sh` (CLI-only; runs inside
+   deploy-all.sh and platform-infra-apply.yml).
 4. **The "placeholder artifact" rule:** Terraform ships placeholders for things a
    separate push-triggered CI workflow normally publishes (broker Lambda code,
    agent-runtime image, webhook Lambda zip, the ALB-gated API GW body). A fresh
@@ -140,7 +145,7 @@ Use this when things go wrong. Do not show this to the user — use it to diagno
 - Wait 2-3 minutes for ALB provisioning, then check again.
 
 ### Frontend blank page
-- Wrong VITE_API_URL during build. Rebuild with `VITE_API_URL="/api/gateway" npm run build`
+- Wrong VITE_API_URL during build. Rebuild with `VITE_API_URL="/api" npm run build` — must match `gateway-deploy.yml` (`/api`, NOT `/api/gateway`); the wrong prefix makes every SPA call hit the S3 HTML fallback with HTTP 200 and crash the dashboard.
 - Stale cache: `aws cloudfront create-invalidation --distribution-id <id> --paths "/*"`
 
 ### CodeBuild fails
@@ -152,9 +157,55 @@ Use this when things go wrong. Do not show this to the user — use it to diagno
 
 ## Destroy / Teardown
 
+### Full teardown (primary)
+
+Two tracks depending on your environment:
+
+| Track | Entry point | When to use |
+|-------|-------------|-------------|
+| Self-managed | `./platform/scripts/undeploy.sh` | Running from your terminal against your own AWS account |
+| ADP-managed | `.github/workflows/undeploy.yml` (workflow_dispatch) | Tearing down via GitHub Actions (CI/CD or operator portal) |
+
+Both destroy modules in reverse dependency order (agent-context → webhook-ingress → agent-factory → gateway → platform), require a **typed 12-digit account ID** as a destruction guard, and support dry-run and phase skipping.
+
+#### Self-managed (`undeploy.sh`)
+
+```bash
+./platform/scripts/undeploy.sh                      # Interactive teardown (typed-account-ID gate)
+./platform/scripts/undeploy.sh --dry-run            # Show what would be destroyed
+./platform/scripts/undeploy.sh --from gateway       # Resume from a specific phase
+./platform/scripts/undeploy.sh --skip agent_context # Skip a phase
+./platform/scripts/undeploy.sh --bootstrap          # Also destroy state backend
+```
+
+Maintains `.adp-undeploy-state.json` for resume. Retries failed phases up to 2×. Pass `--bootstrap` to include the Terraform state backend (prompts separately).
+
+#### ADP-managed (`undeploy.yml`)
+
+Dispatch via GitHub Actions UI or `gh workflow run undeploy.yml`. Inputs:
+- `account_id` (required) — typed 12-digit account ID
+- `dry_run` — plan-only, no destruction
+- `skip_phases` — comma-separated phases to skip
+- `include_bootstrap` — also destroy state backend (irreversible)
+
+### Legacy path (retained)
+
+```bash
+./platform/scripts/deploy-all.sh --destroy          # LEGACY — use undeploy.sh instead
+```
+
+> **Note:** `deploy-all.sh --destroy` is retained for backward compatibility but is no longer the recommended path. It lacks the typed-account-ID gate, dry-run, resume, and the webhook-ingress phase. Prefer `undeploy.sh` or `undeploy.yml` for all new teardowns.
+
+### Resources that survive by design
+
+- **Terraform state backend** (S3 + DynamoDB) — only destroyed with `--bootstrap` / `include_bootstrap`
+- **GitHub App secrets** (`adp/gh-app-*`, `adp/*/gh-app-*` in Secrets Manager) — manual browser step to delete apps
+- **Webhook-ingress GitHub App secrets** (`adp/*/github-app/*` in Secrets Manager) — manual deletion
+- **AWS-managed RDS secrets** (`rds!*`) — AWS handles their lifecycle
+
 ### Per-module destroy workflows
 
-Each module has a destroy workflow mirroring its apply workflow. All require a typed `confirm` input matching the module name:
+Individual module destroy workflows remain available for targeted teardowns:
 
 | Workflow | Destroys | Confirm input |
 |----------|----------|---------------|
@@ -163,42 +214,22 @@ Each module has a destroy workflow mirroring its apply workflow. All require a t
 | `.github/workflows/gateway-infra-destroy.yml` | `modules/gateway/infra/` + pre-cleanup (Ingress/ALB, S3, Secrets, CloudFront) | `gateway` |
 | `.github/workflows/platform-infra-destroy.yml` | `platform/infra/` (run last, after all modules) | `platform` |
 
-### Full teardown
-
-```bash
-./platform/scripts/deploy-all.sh --destroy
-```
-
-Runs the per-module destroys in reverse deploy order: agent-context, agent-factory, gateway, platform. Prompts for `yes` confirmation. Uses the shared cleanup scripts for non-Terraform resources.
-
-### Bootstrap destroy (separate step)
-
-```bash
-./platform/scripts/bootstrap-destroy.sh
-```
-
-Deletes the Terraform state backend (S3 bucket + DynamoDB lock table). Requires typing the AWS account ID to confirm. **Not called by the orchestrator** — only run after all module destroys have succeeded and you've verified everything is gone.
-
-### Resources that survive by design
-
-- **GitHub App secrets** (`adp/gh-app-*` in Secrets Manager) — manual browser step to delete apps
-- **Terraform state backend** — only `bootstrap-destroy.sh` can delete it
-- **AWS-managed RDS secrets** (`rds!*`) — AWS handles their lifecycle
-
 ### Shared cleanup scripts
 
 | Script | Purpose |
 |--------|---------|
 | `platform/scripts/empty-s3-buckets.sh` | Empties S3 buckets (versioned + non-versioned). Idempotent. |
 | `platform/scripts/delete-ingress-and-wait.sh` | Deletes K8s Ingress, waits for ALB removal. Run before gateway destroy. |
-| `platform/scripts/force-delete-secrets.sh` | Force-deletes secrets by prefix. Protects gh-app-* and terraform-state-*. |
+| `platform/scripts/force-delete-secrets.sh` | Force-deletes secrets by prefix. Protects gh-app-*, github-app/*, and terraform-state-*. |
 | `platform/scripts/bootstrap-destroy.sh` | Destroys Terraform state backend. Prompts for account ID. |
 
 ## Key Files Reference
 
 | File | Purpose |
 |------|---------|
-| `platform/scripts/deploy-all.sh` | Automated deploy script (alternative to agent-driven deploy) |
+| `platform/scripts/undeploy.sh` | Primary teardown entry point (typed-account-ID gate, dry-run, resume) |
+| `.github/workflows/undeploy.yml` | ADP-managed teardown workflow (workflow_dispatch) |
+| `platform/scripts/deploy-all.sh` | Automated deploy script (alternative to agent-driven deploy); `--destroy` flag is legacy |
 | `platform/scripts/preflight-check.sh` | Environment validation |
 | `platform/scripts/setup-org.sh` | Configure repo for your GitHub org |
 | `platform/scripts/create-github-apps.sh` | Create GitHub Apps + store creds + install on repos |
@@ -211,7 +242,7 @@ Deletes the Terraform state backend (S3 bucket + DynamoDB lock table). Requires 
 | `platform/scripts/wire-gateway-alb.sh` | Discover internal ALB → SSM; `--apply` re-applies gateway-infra with ALB vars + redeploys API GW stage (gateway second pass — switches API GW from MOCK to real `/{proxy+}` + `/auth/github` routes) |
 | `modules/gateway/scripts/deploy-broker.sh` | Publish the real github-auth-broker Lambda code (terraform ships a 503 placeholder); required for GitHub login |
 | `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh` | Deploy the ARC-free webhook agent path: build agent-runtime image + package/upload webhook Lambda zip + terraform apply (NOT covered by deploy-all.sh) |
-| `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh` | Create + wire the GitHub App (calls wire-github-app.sh); non-interactive flags; private-by-default visibility |
+| `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh` | CLI fallback for GitHub App registration (the primary path is the UI: Settings → Connections → "Set up GitHub App"); calls wire-github-app.sh; non-interactive flags; private-by-default visibility |
 | `platform/infra/main.tf` | Shared platform Terraform |
 | `platform/infra/modules/codebuild/` | CodeBuild projects (4 docker builds only) |
 | `modules/gateway/README.md` | Gateway detailed documentation |

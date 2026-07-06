@@ -234,4 +234,49 @@ describe('agent-worker message loop', () => {
       expect(forceExitCalled).toBe(false);
     });
   });
+
+  describe('result metadata persistence (issue #2883)', () => {
+    // Replicates the /tmp/adp-result-metadata.json write from the 'result'
+    // handler in agent-worker.ts. entrypoint.py reads this file to tell a
+    // genuine "no changes needed" verdict (>0 tokens) apart from an infra
+    // failure the SDK swallowed ($0.0000 / 1 turn).
+    function persist(res: {
+      subtype?: string;
+      total_cost_usd?: number;
+      num_turns?: number;
+    }): string {
+      return JSON.stringify({
+        subtype: res.subtype ?? null,
+        total_cost_usd: res.total_cost_usd ?? null,
+        num_turns: res.num_turns ?? null,
+      });
+    }
+
+    it('captures the zero-token/single-turn failure signature', () => {
+      const payload = JSON.parse(
+        persist({ subtype: 'success', total_cost_usd: 0, num_turns: 1 }),
+      );
+      expect(payload).toEqual({
+        subtype: 'success',
+        total_cost_usd: 0,
+        num_turns: 1,
+      });
+    });
+
+    it('captures a genuine no-op verdict (cost > 0)', () => {
+      const payload = JSON.parse(
+        persist({ subtype: 'success', total_cost_usd: 0.0123, num_turns: 1 }),
+      );
+      expect(payload.total_cost_usd).toBeGreaterThan(0);
+    });
+
+    it('normalizes missing metrics to null (never undefined)', () => {
+      const raw = persist({ subtype: 'error_max_turns' });
+      // Must be valid JSON with explicit nulls so json.load in Python succeeds.
+      expect(raw).not.toContain('undefined');
+      const payload = JSON.parse(raw);
+      expect(payload.total_cost_usd).toBeNull();
+      expect(payload.num_turns).toBeNull();
+    });
+  });
 });

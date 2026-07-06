@@ -20,6 +20,7 @@ from scip_ingester import (
     Edge,
     SCIPGraph,
     SymbolNode,
+    _tokenize_descriptors,
     build_graph,
     classify_edge_kind,
     is_local_symbol,
@@ -93,6 +94,170 @@ class TestMonikerParsing:
     def test_parse_kind_variable(self):
         """Descriptor ending in `.` (but not `().`) → variable."""
         assert parse_moniker_kind("pkg python foo 0.1 bar/x.") == "variable"
+
+    def test_parse_kind_parameter(self):
+        """Parameter descriptor `(name)` → parameter."""
+        assert (
+            parse_moniker_kind("scip-ts npm pkg 1.0 src/utils.ts/formatUsd().(value)")
+            == "parameter"
+        )
+
+    def test_parse_kind_type_parameter(self):
+        """Type parameter descriptor `[name]` → type-parameter."""
+        assert (
+            parse_moniker_kind("scip-ts npm pkg 1.0 src/utils.ts/Container#[T]") == "type-parameter"
+        )
+
+    def test_parse_kind_meta(self):
+        """Meta descriptor `:` → meta."""
+        assert (
+            parse_moniker_kind("scip-ts npm pkg 1.0 src/session.ts/Manager#session_id0:") == "meta"
+        )
+
+
+class TestSCIPDescriptorParser:
+    """Test the SCIP descriptor tokenizer and real-world mangled monikers.
+
+    These test cases come from the Neptune graph dump showing mangled names
+    that the naive parser produced (issue #2916).
+    """
+
+    def test_tokenize_simple_method(self):
+        """Simple method descriptor tokenizes correctly."""
+        tokens = _tokenize_descriptors("mod/Class#run().")
+        names = [(t.name, t.suffix) for t in tokens]
+        assert ("mod", "/") in names
+        assert ("Class", "#") in names
+        assert ("run", "().") in names
+
+    def test_tokenize_nested_param(self):
+        """Method + parameter descriptor: `formatUsd().(value)`."""
+        tokens = _tokenize_descriptors("formatUsd().(value)")
+        assert tokens[-1].name == "value"
+        assert tokens[-1].suffix == "()"
+        # formatUsd is the method
+        assert tokens[0].name == "formatUsd"
+        assert tokens[0].suffix == "()."
+
+    def test_tokenize_backtick_escaped(self):
+        """Backtick-escaped name with special chars is unquoted."""
+        tokens = _tokenize_descriptors("`special-name`.")
+        assert tokens[0].name == "special-name"
+        assert tokens[0].suffix == "."
+
+    def test_tokenize_type_parameter(self):
+        """Type parameter `[T]` is parsed."""
+        tokens = _tokenize_descriptors("Container#[T]")
+        assert tokens[-1].name == "T"
+        assert tokens[-1].suffix == "[]"
+
+    def test_parse_name_mangled_formatusd(self):
+        """Issue #2916: `formatUsd().(value)` → `value` (the parameter)."""
+        symbol = "scip-ts npm vibe-trading 1.0 src/utils.ts/formatUsd().(value)"
+        name = parse_moniker_name(symbol)
+        assert name == "value"
+        # No garbage chars in name
+        assert "(" not in name
+        assert ")" not in name
+
+    def test_parse_name_mangled_profile_tile(self):
+        """Issue #2916: ProfileTile + typeLiteral → clean identifier."""
+        symbol = (
+            "scip-ts npm vibe-trading 1.0 "
+            "src/components.tsx/ProfileTile().("
+            "`{  profile,  active,  busy }`"
+            ")typeLiteral29:profile."
+        )
+        name = parse_moniker_name(symbol)
+        # Should be 'profile' — the last meaningful non-synthetic descriptor
+        assert name == "profile"
+        # Must NOT contain any of the garbage
+        assert "typeLiteral" not in name
+        assert "`" not in name
+        assert "{" not in name
+
+    def test_parse_name_mangled_session_id(self):
+        """Issue #2916: `session_id0:` → `session_id` (strip meta numbering)."""
+        symbol = "scip-ts npm vibe-trading 1.0 src/session.ts/SessionManager#session_id0:"
+        name = parse_moniker_name(symbol)
+        assert name == "session_id"
+        # No trailing digits or colons
+        assert "0" not in name
+        assert ":" not in name
+
+    def test_parse_name_python_class(self):
+        """Issue #2916: Python `Position#` → `Position`, kind `class`."""
+        symbol = "scip-python python vibe-trading 0.1 src/models.py/Position#"
+        name = parse_moniker_name(symbol)
+        kind = parse_moniker_kind(symbol)
+        assert name == "Position"
+        assert kind == "class"
+
+    def test_parse_name_python_function(self):
+        """Issue #2916: `truncate_for_display().` → `truncate_for_display`, kind `function`."""
+        symbol = "scip-python python pkg 0.1 src/_tool_result.py/truncate_for_display()."
+        name = parse_moniker_name(symbol)
+        kind = parse_moniker_kind(symbol)
+        assert name == "truncate_for_display"
+        assert kind == "function"
+
+    def test_parse_name_simple_cases_regression(self):
+        """Regression: existing simple cases still work after parser rewrite."""
+        # Simple function
+        assert (
+            parse_moniker_name("scip-python python Agent-Reach 0.1 src/agent.py/AgentRunner#run().")
+            == "run"
+        )
+        # Simple class
+        assert (
+            parse_moniker_name("scip-python python Agent-Reach 0.1 src/agent.py/AgentRunner#")
+            == "AgentRunner"
+        )
+        # Simple get
+        assert parse_moniker_name("scip-python python requests 2.28 api.py/get().") == "get"
+        # Plain symbol
+        assert parse_moniker_name("foo") == "foo"
+
+    def test_parse_name_mandate_proposal_card(self):
+        """Issue #2916: simple identifier that survived the old parser."""
+        symbol = "scip-ts npm vibe-trading 1.0 src/card.tsx/MandateProposalCard#"
+        name = parse_moniker_name(symbol)
+        assert name == "MandateProposalCard"
+
+    def test_parse_name_typescript_method_with_class(self):
+        """TypeScript class method: `ChatAgent#sendMessage().`."""
+        symbol = "scip-ts npm pkg 1.0 src/chat.ts/ChatAgent#sendMessage()."
+        name = parse_moniker_name(symbol)
+        kind = parse_moniker_kind(symbol)
+        assert name == "sendMessage"
+        assert kind == "function"
+
+    def test_parse_name_backtick_escaped_identifier(self):
+        """Backtick-escaped name (TS computed property) → clean name."""
+        symbol = "scip-ts npm pkg 1.0 src/index.ts/`my-component`."
+        name = parse_moniker_name(symbol)
+        assert name == "my-component"
+        assert "`" not in name
+
+    def test_parse_name_deeply_nested_descriptor(self):
+        """Deeply nested: module/file/class/method/param."""
+        symbol = "scip-ts npm pkg 1.0 src/api/routes.ts/Router#handleRequest().(req)"
+        name = parse_moniker_name(symbol)
+        assert name == "req"
+
+    def test_parse_name_module_path(self):
+        """Module-only descriptor returns the module name."""
+        symbol = "scip-python python pkg 0.1 src/utils/"
+        name = parse_moniker_name(symbol)
+        assert name == "utils"
+
+    def test_symbol_id_not_changed_by_name_parsing(self):
+        """Critical guardrail: parse_moniker_name does NOT modify symbol_id."""
+        symbol = "scip-ts npm vibe-trading 1.0 src/utils.ts/formatUsd().(value)"
+        # parse_moniker_name returns a derived name; the original string is unchanged
+        _ = parse_moniker_name(symbol)
+        # The symbol string itself must not be mutated (it's the edge key)
+        assert symbol == "scip-ts npm vibe-trading 1.0 src/utils.ts/formatUsd().(value)"
 
 
 # ---------------------------------------------------------------------------

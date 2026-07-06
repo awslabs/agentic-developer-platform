@@ -92,6 +92,11 @@ output "ingestion_queue_url_ssm_parameter" {
   value       = aws_ssm_parameter.ingestion_queue_url.name
 }
 
+output "neptune_endpoint_ssm_parameter" {
+  description = "SSM parameter name storing the Neptune endpoint"
+  value       = var.neptune_enabled ? aws_ssm_parameter.neptune_endpoint[0].name : ""
+}
+
 # --- SQS + DynamoDB ---
 
 output "ingestion_queue_url" {

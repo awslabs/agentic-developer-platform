@@ -25,10 +25,12 @@ func TestTaggingStrategyDefaultTags(t *testing.T) {
 	assert.Contains(t, content, "default_tags",
 		"Main terraform config should have default_tags in AWS provider")
 
-	// Verify all required tags are present in default_tags
+	// Verify all required tags are present in default_tags (unified ADP schema,
+	// docs/tagging-and-observability.md §2.1/§2.4)
 	requiredTags := []string{
 		"Project",
 		"Environment",
+		"Module",
 		"ManagedBy",
 		"Owner",
 		"CostCenter",
@@ -39,13 +41,16 @@ func TestTaggingStrategyDefaultTags(t *testing.T) {
 			"default_tags should include %s tag as per tagging strategy", tag)
 	}
 
-	// Verify tag values
-	assert.Contains(t, content, "Project     = \"BedrockGateway\"",
-		"Project tag should be BedrockGateway")
+	// Verify tag values (#888: Project unified to "adp", Module added,
+	// Owner is the module-specific gateway-team)
+	assert.Contains(t, content, "Project     = \"adp\"",
+		"Project tag should be adp (unified across all modules)")
+	assert.Contains(t, content, "Module      = \"gateway\"",
+		"Module tag should be gateway")
 	assert.Contains(t, content, "ManagedBy   = \"terraform\"",
 		"ManagedBy tag should be terraform")
-	assert.Contains(t, content, "Owner       = \"platform-team\"",
-		"Owner tag should be platform-team")
+	assert.Contains(t, content, "Owner       = \"gateway-team\"",
+		"Owner tag should be gateway-team")
 }
 
 // TestTaggingStrategyCommonTagsVariable verifies common_tags is passed to modules

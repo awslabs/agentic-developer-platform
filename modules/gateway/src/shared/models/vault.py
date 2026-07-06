@@ -49,7 +49,8 @@ class UserIdentity(Base, TenantMixin):
 
     __tablename__ = "user_identities"
     __table_args__ = (
-        Index("uq_user_identities_provider_provider_user_id", "provider", "provider_user_id", unique=True),
+        # Relaxed in migration 021 (#2961): unique per provider per tenant (was global).
+        Index("uq_user_identities_provider_provider_user_id_org_id", "provider", "provider_user_id", "org_id", unique=True),
         Index("ix_user_identities_org_id_provider", "org_id", "provider"),
         Index("ix_user_identities_org_id_team_id", "org_id", "team_id"),
     )
@@ -215,6 +216,10 @@ class ChannelTenantMap(Base):
         nullable=False,
     )
     install_metadata: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
+    # Issue #3073: The user (users.id) who installed this connection.
+    # NULL for pre-existing rows or no-nonce public installs. Gates who can
+    # disconnect without workspace admin role.
+    installed_by_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     # Relationship

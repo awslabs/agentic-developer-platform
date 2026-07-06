@@ -8,6 +8,13 @@
 #
 # One entry per IRSA role — all workers using adp-<env>-agent-scaledjob-role
 # (chat, webhook, future) share this single entry.
+#
+# NOTE (#3085): the canonical seed now lives in gateway infra
+# (modules/gateway/infra/modules/lambda-authorizer/main.tf,
+# aws_dynamodb_table_item.scaledjob_worker) because this root never applies in
+# the pipeline deploy path. This copy stays gated behind seed_agent_registry
+# (default false) for self-managed deploys that only run agent-factory infra;
+# both write the same item and ignore_changes=[item] keeps them from fighting.
 # =============================================================================
 
 # Table name is published to SSM by modules/gateway/infra/ rather than

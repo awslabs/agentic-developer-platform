@@ -17,23 +17,29 @@ vi.mock('@/services/connections', () => ({
   startGitHubInstall: vi.fn(),
   listConnections: vi.fn(),
   deleteGitHubConnection: vi.fn(),
+  getGitHubAppStatus: vi.fn(),
+  startGitHubAppRegistration: vi.fn(),
+  rotateGitHubAppKey: vi.fn(),
+  disconnectGitHubApp: vi.fn(),
 }));
 
-// Connections calls useAuth() to read the current user (free-tier banner gating).
-// Mock the hook so the page can render without a full AuthProvider + auth bootstrap.
+// Connections calls useAuth() to read the current user (free-tier banner gating)
+// and hasRole for platform_admin check. Mock both.
 vi.mock('@/hooks/useAuth', () => ({
-  useAuth: () => ({ user: { orgId: 'org-test' } }),
+  useAuth: () => ({ user: { orgId: 'org-test' }, hasRole: () => false }),
 }));
 
 import {
   startGitHubInstall,
   listConnections,
   deleteGitHubConnection,
+  getGitHubAppStatus,
 } from '@/services/connections';
 
 const mockStartGitHubInstall = startGitHubInstall as ReturnType<typeof vi.fn>;
 const mockListConnections = listConnections as ReturnType<typeof vi.fn>;
 const mockDeleteGitHubConnection = deleteGitHubConnection as ReturnType<typeof vi.fn>;
+const mockGetGitHubAppStatus = getGitHubAppStatus as ReturnType<typeof vi.fn>;
 
 function renderConnections(initialEntries: string[] = ['/settings/connections']) {
   return render(
@@ -49,6 +55,14 @@ describe('Connections Page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockListConnections.mockResolvedValue({ connections: [] });
+    // Default: app is registered so Install button is visible (existing test expectations)
+    mockGetGitHubAppStatus.mockResolvedValue({
+      registered: true,
+      app_slug: 'adp-agent',
+      app_id: '123',
+      owner_type: 'Organization',
+      created_at: '2026-06-01T00:00:00Z',
+    });
   });
 
   describe('Empty state rendering', () => {
@@ -154,6 +168,26 @@ describe('Connections Page', () => {
     });
   });
 
+  describe('App registered callback (query param ?github_app=registered)', () => {
+    it('shows success toast when login is wired', async () => {
+      renderConnections(['/settings/connections?github_app=registered']);
+
+      await waitFor(() => {
+        expect(screen.getByText('GitHub App registered successfully!')).toBeInTheDocument();
+      });
+    });
+
+    it('shows a warning toast when login_enabled=false (Issue #2708)', async () => {
+      renderConnections(['/settings/connections?github_app=registered&login_enabled=false']);
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/"Sign in with GitHub" is not wired yet/i),
+        ).toBeInTheDocument();
+      });
+    });
+  });
+
   describe('Error callback (query params ?error=...&message=...)', () => {
     it('shows error toast with message from query param', async () => {
       renderConnections(['/settings/connections?error=expired_nonce&message=Token+expired']);
@@ -219,11 +253,11 @@ describe('Connections Page', () => {
       });
     });
 
-    it('renders Configure on GitHub link pointing to correct URL', async () => {
+    it('renders Manage repositories link pointing to correct URL', async () => {
       renderConnections();
 
       await waitFor(() => {
-        const link = screen.getByText(/Configure on GitHub/);
+        const link = screen.getByText(/Manage repositories/);
         expect(link).toBeInTheDocument();
         expect(link.closest('a')).toHaveAttribute('href', mockConnection.configure_url);
         expect(link.closest('a')).toHaveAttribute('target', '_blank');
@@ -241,6 +275,7 @@ describe('Connections Page', () => {
       repository_count: 3,
       installed_at: '2026-05-01T10:00:00Z',
       configure_url: 'https://github.com/organizations/my-org/settings/installations/12345',
+      can_manage: true,
     };
 
     beforeEach(() => {

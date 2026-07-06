@@ -125,6 +125,35 @@ echo "Setting Cognito custom:role + custom:org_id (read by the pre-token Lambda)
 run "$ATTR_CMD"
 ok "Cognito attributes set: custom:role=${ROLE} custom:org_id=${EFFECTIVE_ORG}"
 
+# -----------------------------------------------------------------------------
+# 5. Verify the Cognito attributes were actually written.
+#    A partial run (DB only) must NOT pass silently — fail loudly if the
+#    attributes are missing so operators know the admin UI will be broken.
+# -----------------------------------------------------------------------------
+echo ""
+echo "Verifying Cognito attributes (read-back)..."
+if [ "$DRY_RUN" = true ]; then
+  echo -e "${BLUE}[dry-run]${NC} skipping attribute verification"
+else
+  ACTUAL_ROLE=$(aws cognito-idp admin-get-user \
+    --user-pool-id "$POOL_ID" --username "$EMAIL" --region "$AWS_REGION" \
+    --query 'UserAttributes[?Name==`custom:role`].Value' --output text 2>/dev/null || echo "")
+  ACTUAL_ORG=$(aws cognito-idp admin-get-user \
+    --user-pool-id "$POOL_ID" --username "$EMAIL" --region "$AWS_REGION" \
+    --query 'UserAttributes[?Name==`custom:org_id`].Value' --output text 2>/dev/null || echo "")
+
+  if [ -z "$ACTUAL_ROLE" ] || [ "$ACTUAL_ROLE" = "None" ]; then
+    fail "VERIFICATION FAILED: custom:role is NOT set on Cognito user $EMAIL. The admin UI will not recognize this user as an admin. Run bootstrap-admin again or manually set the attribute with: aws cognito-idp admin-update-user-attributes --user-pool-id '$POOL_ID' --username '$EMAIL' --region '$AWS_REGION' --user-attributes Name=custom:role,Value='$ROLE'"
+  fi
+  if [ "$ACTUAL_ROLE" != "$ROLE" ]; then
+    fail "VERIFICATION FAILED: custom:role is '$ACTUAL_ROLE' but expected '$ROLE'. Fix with: aws cognito-idp admin-update-user-attributes --user-pool-id '$POOL_ID' --username '$EMAIL' --region '$AWS_REGION' --user-attributes Name=custom:role,Value='$ROLE'"
+  fi
+  if [ -z "$ACTUAL_ORG" ] || [ "$ACTUAL_ORG" = "None" ]; then
+    fail "VERIFICATION FAILED: custom:org_id is NOT set on Cognito user $EMAIL. The admin UI will show an empty org. Run bootstrap-admin again or manually set the attribute with: aws cognito-idp admin-update-user-attributes --user-pool-id '$POOL_ID' --username '$EMAIL' --region '$AWS_REGION' --user-attributes Name=custom:org_id,Value='$EFFECTIVE_ORG'"
+  fi
+  ok "Verified: custom:role=$ACTUAL_ROLE custom:org_id=$ACTUAL_ORG"
+fi
+
 echo ""
 ok "Bootstrap complete (idempotent — 'already-bootstrapped' is success)."
 echo "  Verify: log out + back in as $EMAIL (email/password) so a fresh token picks"

@@ -7,9 +7,25 @@ on:
         description: 'Type "agent-context" to confirm destruction'
         required: true
         type: string
+      customer_account_id:
+        description: 'Customer-linked AWS account to destroy in (cross-account mode).'
+        required: false
+        default: ''
+      customer_aws_label:
+        description: 'Vaulted credential label (when customer_account_id is set).'
+        required: false
+        default: ''
+      customer_user_id:
+        description: 'ADP users.id UUID (when customer_account_id is set).'
+        required: false
+        default: ''
+      environment:
+        description: 'Deployment environment (dev/staging/prod).'
+        required: false
+        default: 'dev'
 
 concurrency:
-  group: tf-apply-agent-context
+  group: tf-apply-agent-context-${{ inputs.customer_account_id || 'default' }}
   cancel-in-progress: false
 
 env:
@@ -40,6 +56,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+
       - name: Install required CLI tools
         run: |
           set -e
@@ -63,6 +87,30 @@ jobs:
           aws --version
           terraform version | head -1
 
+      - name: Assert AWS account
+        run: |
+          set -e
+          ACTUAL_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          # In cross-account mode (#2669) load-deploy-config assumes into the
+          # customer account, so the caller identity is the customer's — the
+          # intended destroy target. Prefer that; else the platform account
+          # from the vars.AWS_ACCOUNT_ID repository variable.
+          EXPECTED_ACCOUNT="${{ inputs.customer_account_id }}"
+          if [ -z "$EXPECTED_ACCOUNT" ]; then
+            EXPECTED_ACCOUNT="${{ vars.AWS_ACCOUNT_ID }}"
+          fi
+          if [ -z "$EXPECTED_ACCOUNT" ]; then
+            echo "WARNING: No target account to verify against (neither customer_account_id input nor vars.AWS_ACCOUNT_ID set). Skipping account guard."
+            echo "Consider setting vars.AWS_ACCOUNT_ID to enable cross-account protection."
+            exit 0
+          fi
+          if [ "$ACTUAL_ACCOUNT" != "$EXPECTED_ACCOUNT" ]; then
+            echo "::error::Account mismatch! Expected $EXPECTED_ACCOUNT but got $ACTUAL_ACCOUNT."
+            echo "::error::Refusing to destroy. Check runner IAM / credential configuration."
+            exit 1
+          fi
+          echo "Account verified: $ACTUAL_ACCOUNT"
+
       - name: Configure kubectl
         run: |
           set -e
@@ -75,6 +123,21 @@ jobs:
         run: |
           set -e
           kubectl delete namespace agent-context --wait=true --timeout=120s 2>/dev/null || true
+
+      - name: Empty S3 buckets
+        run: |
+          set -e
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          AC_BUCKETS=""
+          for pattern in "agent-context-platform-data-"; do
+            FOUND=$(aws s3api list-buckets --query "Buckets[?starts_with(Name,'${pattern}')].Name" --output text 2>/dev/null || echo "")
+            [ -n "$FOUND" ] && [ "$FOUND" != "None" ] && AC_BUCKETS="$AC_BUCKETS $FOUND"
+          done
+          if [ -n "$AC_BUCKETS" ]; then
+            bash platform/scripts/empty-s3-buckets.sh $AC_BUCKETS
+          else
+            echo "No agent-context S3 buckets found to empty."
+          fi
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}

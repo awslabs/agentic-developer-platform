@@ -49,6 +49,11 @@ phases:
           cp -r "${MODULE_ROOT}/personal_context" "${BUILD_DIR}/personal_context"
           echo "Staged ${MODULE_ROOT}/personal_context → ${BUILD_DIR}/personal_context"
         fi
+        if [ -d "${MODULE_ROOT}/pipeline" ] && [ -d "${BUILD_DIR}" ]; then
+          rm -rf "${BUILD_DIR}/pipeline"
+          cp -r "${MODULE_ROOT}/pipeline" "${BUILD_DIR}/pipeline"
+          echo "Staged ${MODULE_ROOT}/pipeline → ${BUILD_DIR}/pipeline"
+        fi
       # Post-stage integrity assertion: fail loudly if staged source is stale.
       # Catches workspace-reuse bugs before they silently ship a broken image.
       - |

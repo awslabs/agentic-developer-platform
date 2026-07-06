@@ -52,6 +52,52 @@ ASSET_TYPE_REGISTRY: dict[str, dict[str, Any]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Repo source_ref normalization (Issue #2864)
+# ---------------------------------------------------------------------------
+# GitHub org/repo slug: one path segment for org, one for repo. Word chars,
+# dots and dashes only (matches GitHub's allowed name characters). No extra
+# path segments, no scheme, no whitespace.
+_GITHUB_PREFIXES = ("https://github.com/", "git@github.com:")
+_SLUG_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
+
+
+def normalize_repo_source_ref(source_ref: str) -> str | None:
+    """Normalize a repo source_ref to the canonical GitHub URL form.
+
+    Accepts a full GitHub URL (``https://github.com/<org>/<repo>`` or
+    ``git@github.com:<org>/<repo>``, with optional trailing ``/`` or ``.git``)
+    OR a bare ``<org>/<repo>`` slug, and returns the canonical
+    ``https://github.com/<org>/<repo>``.
+
+    Repeatedly strips known GitHub prefixes so an accidentally double-prefixed
+    value (e.g. ``https://github.com/https://github.com/octocat/Hello-World``,
+    the corruption in Issue #2864) collapses back to a clean slug.
+
+    Returns ``None`` if the input does not reduce to a valid ``org/repo`` slug,
+    so the caller can reject it (HTTP 422).
+    """
+    candidate = source_ref.strip()
+
+    # Collapse any stack of GitHub prefixes (handles the double-prefix corruption).
+    stripped = True
+    while stripped:
+        stripped = False
+        for prefix in _GITHUB_PREFIXES:
+            if candidate.startswith(prefix):
+                candidate = candidate[len(prefix) :]
+                stripped = True
+
+    if candidate.endswith(".git"):
+        candidate = candidate[:-4]
+    candidate = candidate.rstrip("/")
+
+    if not _SLUG_RE.match(candidate):
+        return None
+
+    return f"https://github.com/{candidate}"
+
+
 def get_type_config(asset_type: str) -> dict[str, Any] | None:
     """Look up the config for an asset type. Returns None if unknown."""
     return ASSET_TYPE_REGISTRY.get(asset_type)

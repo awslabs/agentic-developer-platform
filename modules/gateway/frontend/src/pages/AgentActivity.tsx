@@ -22,6 +22,7 @@ import { Alert, Button, Input, Select } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
 import InvocationChain from '@/components/InvocationChain';
 import { InvocationDetail } from '@/components/InvocationDetail';
+import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { usePermissions } from '@/hooks/usePermissions';
 import { getMyInvocations, getMyChains, getAllInvocations } from '@/services/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
@@ -161,9 +162,10 @@ interface ChainRowProps {
   onToggle: () => void;
   onDetailClick: (item: InvocationItem) => void;
   onNodeClick: (invocationId: string) => void;
+  onTranscriptClick: (invocationId: string) => void;
 }
 
-function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick }: ChainRowProps) {
+function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onTranscriptClick }: ChainRowProps) {
   const { root } = chain;
   const statusConfig = STATUS_CONFIG[root.status as InvocationStatus] ?? STATUS_CONFIG.no_op;
   const isSingleton = chain.descendant_count === 0;
@@ -233,6 +235,21 @@ function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick }: C
           <ChainCostBadge cost={chain.chain_total_cost_usd} />
         </div>
 
+        {/* Transcript link (Issue #3069) */}
+        {root.transcript_key && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onTranscriptClick(root.invocation_id);
+            }}
+            className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex-shrink-0"
+            title="View full run transcript"
+          >
+            Transcript
+          </button>
+        )}
+
         {/* Time */}
         <span
           className="text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap flex-shrink-0"
@@ -266,6 +283,21 @@ function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick }: C
                 {desc.total_cost_usd != null && (
                   <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">
                     ${desc.total_cost_usd < 0.01 ? desc.total_cost_usd.toFixed(4) : desc.total_cost_usd.toFixed(2)}
+                  </span>
+                )}
+                {desc.transcript_key && (
+                  <span
+                    role="link"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onTranscriptClick(desc.invocation_id);
+                    }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onTranscriptClick(desc.invocation_id); } }}
+                    className="text-xs text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                    title="View full run transcript"
+                  >
+                    Transcript
                   </span>
                 )}
                 {desc.persona && (
@@ -367,6 +399,9 @@ export default function AgentActivity() {
 
   // Detail modal state (#1653): the selected run to show in the detail panel
   const [detailItem, setDetailItem] = useState<InvocationItem | null>(null);
+
+  // Issue #3069: Transcript viewer state
+  const [transcriptInvocationId, setTranscriptInvocationId] = useState<string | null>(null);
 
   // Filters
   const [statusFilter, setStatusFilter] = useState('');
@@ -721,6 +756,15 @@ export default function AgentActivity() {
         item={detailItem}
         isOpen={detailItem !== null}
         onClose={() => setDetailItem(null)}
+        isAdmin={viewMode === 'all' && isAdmin}
+      />
+
+      {/* Issue #3069: Transcript viewer — opened from table row transcript links */}
+      <TranscriptViewer
+        invocationId={transcriptInvocationId}
+        isOpen={transcriptInvocationId !== null}
+        onClose={() => setTranscriptInvocationId(null)}
+        isAdmin={viewMode === 'all' && isAdmin}
       />
 
       {/* Error state */}
@@ -771,6 +815,7 @@ export default function AgentActivity() {
                         }
                       }
                     }}
+                    onTranscriptClick={(invocationId) => setTranscriptInvocationId(invocationId)}
                   />
                 ))}
               </div>
@@ -831,6 +876,9 @@ export default function AgentActivity() {
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Link
                       </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Transcript
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
@@ -874,6 +922,23 @@ export default function AgentActivity() {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <SourceLink item={item} />
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          {item.transcript_key ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setTranscriptInvocationId(item.invocation_id);
+                              }}
+                              className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-sm hover:underline"
+                              title="View full run transcript"
+                            >
+                              Transcript
+                            </button>
+                          ) : (
+                            <span className="text-gray-300 dark:text-gray-600 text-sm">—</span>
+                          )}
                         </td>
                       </tr>
                     ))}

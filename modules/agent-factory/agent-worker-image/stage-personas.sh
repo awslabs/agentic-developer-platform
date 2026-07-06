@@ -6,12 +6,16 @@
 #
 # Source layout expected:
 #   <source_root>/agent-factory/personas/*.md
+#   <source_root>/agent-factory/skills/<skill>/SKILL.md          — core platform-wide skills
 #   <source_root>/domain-apps/<domain>/agent/personas/*.md
 #   <source_root>/domain-apps/<domain>/agent/skills/<skill>/SKILL.md
 #
 # Output:
 #   <stage_root>/personas/*.md        — all persona files (flat)
 #   <stage_root>/skills/<name>/...    — all skill directories
+#
+# Precedence: core skills are staged first, then domain skills — so a domain
+# skill with the same name overrides the core one (mirrors persona precedence).
 
 set -euo pipefail
 
@@ -21,10 +25,32 @@ STAGE_ROOT="${2:?Usage: stage-personas.sh <source_root> <stage_root>}"
 mkdir -p "${STAGE_ROOT}/personas" "${STAGE_ROOT}/skills"
 
 # --- Stage core agent-factory personas ---
+# Copy the top-level persona *.md files AND any persona subdirectories (e.g.
+# `codex-distilled/`, issue #2891) recursively, so nested persona filesets reach
+# the staged tree — a flat `*.md` glob would silently drop them.
 CORE_PERSONAS="${SOURCE_ROOT}/agent-factory/personas"
 if [ -d "${CORE_PERSONAS}" ]; then
     cp -f "${CORE_PERSONAS}"/*.md "${STAGE_ROOT}/personas/" 2>/dev/null || true
+    for sub in "${CORE_PERSONAS}"/*/; do
+        [ -d "${sub}" ] || continue
+        cp -rf "${sub}" "${STAGE_ROOT}/personas/$(basename "${sub}")"
+    done
     echo "[stage] Copied core personas from ${CORE_PERSONAS}"
+fi
+
+# --- Stage core agent-factory skills (platform-wide, available to every persona) ---
+# Placed BEFORE the domain loop so a domain skill of the same name wins.
+CORE_SKILLS="${SOURCE_ROOT}/agent-factory/skills"
+if [ -d "${CORE_SKILLS}" ]; then
+    for skill_dir in "${CORE_SKILLS}"/*/; do
+        [ -d "${skill_dir}" ] || continue
+        skill_name=$(basename "${skill_dir}")
+        # Replace any existing target so a later domain skill of the same name
+        # cleanly overrides (plain `cp -rf` into an existing dir would nest).
+        rm -rf "${STAGE_ROOT}/skills/${skill_name}"
+        cp -rf "${skill_dir}" "${STAGE_ROOT}/skills/${skill_name}"
+        echo "[stage] Copied core skill: ${skill_name}"
+    done
 fi
 
 # --- Stage domain-app personas and skills ---
@@ -45,6 +71,9 @@ if [ -d "${SOURCE_ROOT}/domain-apps" ]; then
             for skill_dir in "${domain_skills}"/*/; do
                 [ -d "${skill_dir}" ] || continue
                 skill_name=$(basename "${skill_dir}")
+                # Replace any existing target (e.g. a core skill of the same
+                # name) so domain skills win — matches persona precedence.
+                rm -rf "${STAGE_ROOT}/skills/${skill_name}"
                 cp -rf "${skill_dir}" "${STAGE_ROOT}/skills/${skill_name}"
                 echo "[stage] Copied skill: ${domain}/${skill_name}"
             done

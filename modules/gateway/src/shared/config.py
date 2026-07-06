@@ -109,6 +109,30 @@ class Settings(BaseSettings):
     github_app_id: str = ""  # numeric GitHub App ID
     github_app_private_key: str = ""  # PEM-encoded RSA private key
 
+    # Issue #2709: bedrock-mantle passthrough for OpenAI Responses-API traffic.
+    # Lets Codex (and future OpenAI-model clients) route through the gateway so
+    # OpenAI tokens get the same per-tenant metering + model-allowlist governance
+    # that Claude traffic gets today. Route: POST /openai/v1/responses.
+    mantle_enabled: bool = False  # Master switch; route returns 503 until enabled.
+    # Base URL of the mantle endpoint WITHOUT the trailing path. The route appends
+    # the GPT-5.5 quirk path itself ("/openai/v1/responses"). {region} is substituted
+    # from mantle_region if the literal "{region}" appears in the value.
+    mantle_base_url: str = "https://bedrock-mantle.{region}.api.aws"
+    mantle_region: str = "us-east-1"
+    # Upstream auth is SigV4 ONLY (operator decision 2026-07-03; spike #2703 §4-5
+    # verified mantle accepts SigV4 with signing name "bedrock"). The gateway pod
+    # signs with its ambient IRSA credential chain — no API keys, no Secrets
+    # Manager entry. There is no selectable auth mode.
+    # Comma-separated glob patterns of OpenAI model IDs the route will serve
+    # (e.g. "openai.gpt-5.5,openai.*"). Used to validate the requested model
+    # before proxying; per-tenant access is still enforced via the model allowlist.
+    mantle_allowed_models: str = "openai.*"
+
+    # Issue #2918: Gate Base.metadata.create_all behind this flag.
+    # Default False in deployed envs (migrations are the single source of truth).
+    # Set True only for docker-compose / local dev where alembic isn't run on startup.
+    db_auto_create: bool = False
+
     model_config = {"env_prefix": "BG_", "env_file": ".env"}
 
 

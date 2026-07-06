@@ -21,15 +21,14 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     """Create unique partial index on users.cognito_sub for non-NULL values."""
-    # Use CONCURRENTLY to avoid locking the users table during index creation.
-    # Note: CONCURRENTLY requires the migration to NOT run inside a transaction.
-    op.execute(
-        "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "
-        "uq_users_cognito_sub ON users (cognito_sub) "
-        "WHERE cognito_sub IS NOT NULL"
-    )
+    # CONCURRENTLY requires the migration to NOT run inside a transaction.
+    # Issue #2567: use op.execute() with COMMIT + autocommit execution_options
+    # so Alembic doesn't wrap this in a transaction block.
+    with op.get_context().autocommit_block():
+        op.execute("CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_users_cognito_sub ON users (cognito_sub) WHERE cognito_sub IS NOT NULL")
 
 
 def downgrade() -> None:
     """Drop the unique partial index on users.cognito_sub."""
-    op.execute("DROP INDEX IF EXISTS uq_users_cognito_sub")
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS uq_users_cognito_sub")

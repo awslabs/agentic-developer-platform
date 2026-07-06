@@ -7,10 +7,11 @@ GitHub App via Settings > Connections, so that downstream
 The secret path is:  adp/<env>/tenants/<org_id>/github-app
 The payload shape:   {"app_id": "...", "private_key": "..."}
 
-This mirrors the webhook-ingress Lambda's `_auto_provision_tenant_github_app_secret`
-but reads the App credentials from the gateway's own settings (BG_GITHUB_APP_ID /
-BG_GITHUB_APP_PRIVATE_KEY) rather than from platform Secrets Manager entries — the
-gateway already holds these in memory.
+This mirrors the webhook-ingress Lambda's `_auto_provision_tenant_github_app_secret`.
+Credentials resolve through GitHubAppCredsProvider (Secrets Manager first, BG_ env
+vars as fallback — #2594): Apps registered via the UI manifest flow exist only in
+Secrets Manager, so reading settings directly would silently skip the seed and the
+first worker pod would die on vault_fetch (608 deploy #3085, hand-patch #1).
 
 Idempotent: catches ResourceExistsException (create-or-no-op; never clobbers).
 Fail-soft: logs errors and returns; never blocks the install flow.
@@ -26,7 +27,7 @@ import os
 import boto3
 from botocore.exceptions import ClientError
 
-from src.shared.config import get_settings
+from .github_app_provider import get_github_app_provider
 
 logger = logging.getLogger(__name__)
 
@@ -38,13 +39,14 @@ def _get_environment() -> str:
 
 def _seed_secret_sync(org_id: str, installation_id: int) -> None:
     """Synchronous implementation — called via asyncio.to_thread."""
-    settings = get_settings()
-    app_id: str = settings.github_app_id or ""
-    private_key: str = settings.github_app_private_key or ""
+    # Resolve via the provider (SM-first, env fallback — #2594) so Apps
+    # registered through the UI manifest flow are found. settings.github_app_*
+    # is empty on UI-registered accounts, which used to skip the seed silently.
+    app_id, private_key = get_github_app_provider().get_credentials()
 
     if not app_id or not private_key:
         logger.warning(
-            "Cannot seed tenant GitHub App secret: BG_GITHUB_APP_ID or BG_GITHUB_APP_PRIVATE_KEY not configured (org_id=%s)",
+            "Cannot seed tenant GitHub App secret: no App credentials in Secrets Manager or BG_GITHUB_APP_* env (org_id=%s)",
             org_id,
         )
         return

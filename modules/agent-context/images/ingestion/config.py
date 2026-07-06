@@ -114,11 +114,27 @@ class Settings(BaseSettings):
     zoekt_shards_s3_prefix: str = "zoekt-shards"  # S3 key prefix for .zoekt shard files
     zoekt_index_timeout: int = 600  # seconds for zoekt-git-index CLI execution
 
+    # --- embed_vectors (source-code semantic search, #2297) ---------------------
+    # Source-code-level embedding into S3 Vectors (distinct from wiki embedding,
+    # which lives in the deepwiki stage). Fail-open flag mirroring deepwiki_enabled:
+    # defaults True but gated at runtime so a missing/unconfigured S3 Vectors
+    # bucket (provisioned by #2486) produces a clean stage skip, not a crash.
+    embed_vectors_enabled: bool = True
+    # LiteLLM proxy model id for embeddings — must match the Door's read-side
+    # query model (door/server.py) so write/read vectors are comparable. The
+    # proxy registers Bedrock models under a "bedrock/" prefix (see
+    # manifests/litellm-config.yaml); the bare id 400s.
+    embed_model: str = "bedrock/amazon.titan-embed-text-v2:0"
+
     # --- SBOM generation (dual-rail, #1358) ------------------------------------
     sbom_enabled: bool = True
     sbom_s3_prefix: str = "sbom"  # S3 key prefix within platform-data bucket
     syft_timeout: int = 120  # seconds for syft CLI execution
     sbom_db_enabled: bool = True  # Write dependency rows to Postgres (best-effort)
+
+    # --- Vulnerability scanning (#2536) ----------------------------------------
+    vuln_scan_enabled: bool = True
+    vuln_scan_schedule: str = "0 7 * * *"  # Daily at 7am UTC (1h after repo refresh)
 
     # --- Registry reader (Issue #2182) -----------------------------------------
     # knowledge_assets lives in agent_context (this DB). No cross-DB config needed.
@@ -139,7 +155,13 @@ class Settings(BaseSettings):
     min_learnings_threshold: int = 5
     max_unsynthesized_age_days: int = 7
 
-    @field_validator("deepwiki_enabled", "graphrag_enabled", "zoekt_index_enabled", mode="before")
+    @field_validator(
+        "deepwiki_enabled",
+        "graphrag_enabled",
+        "zoekt_index_enabled",
+        "embed_vectors_enabled",
+        mode="before",
+    )
     @classmethod
     def _parse_bool_string(cls, v: object) -> object:
         """Accept 'true'/'false' strings from env vars."""

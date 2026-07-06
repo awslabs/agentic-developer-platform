@@ -24,6 +24,7 @@ from decimal import Decimal
 from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from src.shared.enforced_paths import ENFORCED_PATHS
 from src.shared.logging import get_logger
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.budget import EnforcementResult
@@ -32,15 +33,6 @@ from src.shared.timing import get_timings
 from .enforcement_service import BudgetEnforcementService, budget_enforcement_service
 
 logger = get_logger(__name__)
-
-# Paths that require budget enforcement
-ENFORCED_PATHS = [
-    "/v1/chat/completions",
-    "/v1/messages",
-    "/bedrock/invoke",
-    "/bedrock/invoke-with-response-stream",
-    "/model/",
-]
 
 # Conservative cost estimate for pre-request budget check (USD).
 _DEFAULT_ESTIMATE_USD = Decimal("0.05")

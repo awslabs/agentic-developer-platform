@@ -103,35 +103,84 @@ jobs:
               --description "GitHub OAuth credentials stub (replace with real values when wiring github_auth_broker)"
           fi
 
-      - name: Ensure PyJWT Lambda layer artifact exists in state bucket
-        working-directory: modules/gateway/lambda/layers/pyjwt
+      - name: Ensure Lambda layer CodeBuild projects exist
         run: |
           set -e
-          ARTIFACT_KEY="lambda-layers/pyjwt-py313.zip"
-          if aws s3api head-object --bucket "$STATE_BUCKET" --key "$ARTIFACT_KEY" --region "$AWS_REGION" >/dev/null 2>&1; then
-            echo "PyJWT layer already in s3://$STATE_BUCKET/$ARTIFACT_KEY — skipping build."
+          CB_ROLE_NAME="adp-${TF_VAR_environment:-dev}-codebuild-role"
+          SERVICE_ROLE_ARN=$(aws iam get-role --role-name "$CB_ROLE_NAME" --query 'Role.Arn' --output text 2>/dev/null || echo "")
+          if [ -z "$SERVICE_ROLE_ARN" ]; then
+            echo "::error::${CB_ROLE_NAME} not found — platform-infra must be applied first."
+            exit 1
+          fi
+          for PROJECT in "adp-${TF_VAR_environment:-dev}-pyjwt-layer:codebuild/bs-pyjwt-layer.yml" \
+                         "adp-${TF_VAR_environment:-dev}-psycopg2-layer:codebuild/bs-psycopg2-layer.yml"; do
+            NAME="${PROJECT%%:*}"
+            BUILDSPEC="${PROJECT##*:}"
+            # Use a dummy source location — codebuild-run overrides it per-build
+            SOURCE_LOC="${STATE_BUCKET}/codebuild/adp-source.zip"
+            EXISTS=$(aws codebuild batch-get-projects --names "$NAME" --region "$AWS_REGION" \
+              --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
+            CMD="create-project"
+            [ "$EXISTS" -gt 0 ] && CMD="update-project"
+            aws codebuild $CMD --region "$AWS_REGION" \
+              --name "$NAME" \
+              --source "{\"type\":\"S3\",\"location\":\"$SOURCE_LOC\",\"buildspec\":\"$BUILDSPEC\"}" \
+              --artifacts '{"type":"NO_ARTIFACTS"}' \
+              --environment '{
+                "type":"LINUX_CONTAINER",
+                "image":"aws/codebuild/amazonlinux2-x86_64-standard:5.0",
+                "computeType":"BUILD_GENERAL1_MEDIUM",
+                "privilegedMode":true
+              }' \
+              --service-role "$SERVICE_ROLE_ARN" > /dev/null
+            echo "CodeBuild project $NAME: $CMD done."
+          done
+
+      - name: Check if PyJWT layer already in S3
+        id: pyjwt_check
+        run: |
+          if aws s3api head-object --bucket "$STATE_BUCKET" --key "lambda-layers/pyjwt-py313.zip" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "PyJWT layer already in s3://$STATE_BUCKET/lambda-layers/pyjwt-py313.zip — skipping build."
           else
-            echo "PyJWT layer missing — building inline."
-            chmod +x build.sh
-            ./build.sh
-            aws s3 cp pyjwt-py313.zip "s3://$STATE_BUCKET/$ARTIFACT_KEY" --region "$AWS_REGION"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "PyJWT layer missing — will build via CodeBuild."
           fi
 
-      - name: Ensure psycopg2 Lambda layer artifact exists in state bucket
-        working-directory: modules/gateway/lambda/layers/psycopg2
+      - name: Build PyJWT layer via CodeBuild
+        if: steps.pyjwt_check.outputs.exists == 'false'
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: adp-${{ env.TF_VAR_environment || 'dev' }}-pyjwt-layer
+          region: ${{ env.AWS_REGION }}
+          state_bucket: ${{ env.STATE_BUCKET }}
+          environment_variables: >-
+            "name=AWS_REGION,value=${{ env.AWS_REGION }}"
+            "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}"
+            "name=STATE_BUCKET,value=${{ env.STATE_BUCKET }}"
+
+      - name: Check if psycopg2 layer already in S3
+        id: psycopg2_check
         run: |
-          set -e
-          ARTIFACT_KEY="lambda-layers/psycopg2-py312.zip"
-          if aws s3api head-object --bucket "$STATE_BUCKET" --key "$ARTIFACT_KEY" --region "$AWS_REGION" >/dev/null 2>&1; then
-            echo "psycopg2 layer already in s3://$STATE_BUCKET/$ARTIFACT_KEY — skipping build."
+          if aws s3api head-object --bucket "$STATE_BUCKET" --key "lambda-layers/psycopg2-py312.zip" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "psycopg2 layer already in s3://$STATE_BUCKET/lambda-layers/psycopg2-py312.zip — skipping build."
           else
-            echo "psycopg2 layer missing — building inline via CodeBuild."
-            gh workflow run psycopg2-layer-build.yml --ref "${{ github.ref_name }}"
-            sleep 5
-            RUN=$(gh run list --workflow=psycopg2-layer-build.yml --limit=1 --json databaseId --jq '.[0].databaseId')
-            echo "Waiting for psycopg2-layer-build run $RUN..."
-            gh run watch "$RUN" --exit-status
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "psycopg2 layer missing — will build via CodeBuild."
           fi
+
+      - name: Build psycopg2 layer via CodeBuild
+        if: steps.psycopg2_check.outputs.exists == 'false'
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: adp-${{ env.TF_VAR_environment || 'dev' }}-psycopg2-layer
+          region: ${{ env.AWS_REGION }}
+          state_bucket: ${{ env.STATE_BUCKET }}
+          environment_variables: >-
+            "name=AWS_REGION,value=${{ env.AWS_REGION }}"
+            "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}"
+            "name=STATE_BUCKET,value=${{ env.STATE_BUCKET }}"
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -163,7 +212,29 @@ jobs:
             echo "Cognito user pool not in state yet — skipping domain import."
           fi
 
-          # --- Fix 2: Delete stale RDS bootstrap K8s job if stuck ---
+          # --- Fix 2: Import hand-seeded scaledjob-worker DynamoDB item (Issue #3119) ---
+          # On accounts where the scaledjob-worker entry was hand-seeded before
+          # PR #3116 added it to IaC, terraform create fails with
+          # ConditionalCheckFailedException. Import it into state instead.
+          TABLE_NAME="bedrockgw-${TF_VAR_environment:-dev}-agent-registry"
+          RESOURCE_ADDR='module.lambda_authorizer[0].aws_dynamodb_table_item.scaledjob_worker'
+          if ! terraform state show "$RESOURCE_ADDR" >/dev/null 2>&1; then
+            # Item exists in DynamoDB but not in state — check and import
+            if aws dynamodb get-item --table-name "$TABLE_NAME" \
+                --key '{"agent_id":{"S":"scaledjob-worker"}}' \
+                --region "$AWS_REGION" --query 'Item.agent_id.S' --output text 2>/dev/null | grep -q 'scaledjob-worker'; then
+              echo "Importing existing scaledjob-worker DynamoDB item into state..."
+              terraform import -var-file="../../../${{ env.VAR_FILE }}" \
+                "$RESOURCE_ADDR" \
+                "${TABLE_NAME}/agent_id/scaledjob-worker" || echo "Import failed — continuing (will retry on next apply)"
+            else
+              echo "scaledjob-worker item not in DynamoDB — will be created by apply."
+            fi
+          else
+            echo "scaledjob-worker item already in state."
+          fi
+
+          # --- Fix 3: Delete stale RDS bootstrap K8s job if stuck ---
           # Install kubectl if needed
           if ! command -v kubectl >/dev/null 2>&1; then
             curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
@@ -192,6 +263,22 @@ jobs:
         id: alb_pre
         run: bash platform/scripts/wire-gateway-alb.sh --no-wait
 
+      # Issue #2907: Pre-resolve the webhook-ingress KMS alias. On a fresh
+      # account the CMK doesn't exist yet (webhook-ingress deploys in Phase 7,
+      # after gateway in Phase 4). When absent, override the tfvars flag to false
+      # so the conditional data source is skipped and plan doesn't hard-fail.
+      - name: Pre-resolve webhook-secrets KMS alias
+        id: kms_pre
+        run: |
+          ALIAS_NAME="alias/adp-${TF_VAR_environment}-webhook-secrets"
+          if aws kms describe-key --key-id "$ALIAS_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "Webhook-secrets KMS alias found — enabling grant."
+            echo "KMS_EXISTS=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Webhook-secrets KMS alias not found (fresh account) — disabling grant for this apply."
+            echo "KMS_EXISTS=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Terraform Plan (destroy-safety check)
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -203,6 +290,7 @@ jobs:
           TF_VAR_internal_alb_dns: ${{ steps.alb_pre.outputs.ALB_DNS }}
           TF_VAR_alb_security_group_ids: ${{ steps.alb_pre.outputs.ALB_SG_IDS }}
           TF_VAR_enable_vpc_origin: ${{ steps.alb_pre.outputs.ALB_ARN != '' && 'true' || 'false' }}
+          TF_VAR_enable_webhook_secrets_kms_grant: ${{ steps.kms_pre.outputs.KMS_EXISTS }}
         run: |
           set -e
           set -o pipefail
@@ -291,7 +379,9 @@ jobs:
         # changed and trigger an edge cache invalidation. Without invalidation, /api/*
         # changes (e.g. enabling the VPC origin behavior) sit behind hours-old cached
         # SPA HTML responses at the edge POPs — see deploy-instance #1062.
-        run: terraform apply tfplan 2>&1 | tee /tmp/tf-apply-output.txt
+        run: |
+          set -euo pipefail
+          terraform apply tfplan 2>&1 | tee /tmp/tf-apply-output.txt
 
       - name: Invalidate CloudFront /api/* on distribution change
         if: steps.apply.outcome == 'success'

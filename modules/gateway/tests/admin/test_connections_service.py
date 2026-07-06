@@ -14,13 +14,19 @@ from botocore.exceptions import ClientError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from src.admin.connections.github_app_provider import _reset_provider_for_testing
 from src.admin.connections.github_client import GitHubAppClient
 from src.admin.connections.service import (
+    _PLACEHOLDER_SENTINEL,
     _PROVIDER_GITHUB_INSTALL,
+    _is_placeholder,
     delete_connection,
+    disconnect_app,
+    get_app_status,
     install_callback,
     install_start,
     list_connections,
+    rotate_app_key,
 )
 from src.admin.connections.tenant_secret import (
     _seed_secret_sync,
@@ -44,8 +50,28 @@ def _configure_github_app(monkeypatch):
     get_settings() reads BG_GITHUB_APP_SLUG from the environment fresh on each
     call, so setting the env var here makes install_start() resolve a real slug.
     Tests that assert the unconfigured 503 path override this explicitly.
+
+    Issue #2700: the provider resolves Secrets Manager BEFORE env vars and
+    caches in a process-wide singleton. On CI runners with live AWS creds it
+    would read the platform account's real App slug and shadow the env var —
+    so block SM for the whole module and reset the singleton around each test.
     """
     monkeypatch.setenv("BG_GITHUB_APP_SLUG", "test-adp-agent")
+    _reset_provider_for_testing(None)
+    with patch(
+        "src.admin.connections.github_app_provider.boto3.client",
+        side_effect=RuntimeError("Secrets Manager blocked in unit tests"),
+    ):
+        # Issue #2950: The install-callback DDB write uses boto3.client("dynamodb")
+        # which would hit real AWS in unit tests. Mock it module-wide as a no-op;
+        # the dedicated TestInstallCallbackWritesDDB class overrides this.
+        with patch(
+            "src.admin.connections.service._write_installation_identity_index",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            yield
+    _reset_provider_for_testing(None)
 
 
 @pytest.fixture
@@ -179,6 +205,8 @@ class TestInstallStart:
 
         monkeypatch.delenv("BG_GITHUB_APP_SLUG", raising=False)
         monkeypatch.setenv("BG_GITHUB_APP_SLUG", "")
+        # SM is blocked module-wide by the autouse fixture, so the provider
+        # falls back to the (blank) env var — the genuine unconfigured case.
         with pytest.raises(HTTPException) as exc_info:
             await install_start(cognito_sub="sub-abc", user_id="user-001", db=db_session)
         assert exc_info.value.status_code == 503
@@ -528,15 +556,28 @@ class TestDeleteConnection:
 class TestSeedTenantGitHubAppSecret:
     """Tests for seed_tenant_github_app_secret and _seed_secret_sync."""
 
+    @staticmethod
+    def _mock_provider(app_id, private_key):
+        provider = MagicMock()
+        provider.get_credentials.return_value = (app_id, private_key)
+        return provider
+
     def test_creates_secret_with_correct_name_and_shape(self, monkeypatch):
         """The util creates the secret at adp/<env>/tenants/<org>/github-app
         with a JSON payload containing app_id and private_key."""
-        monkeypatch.setenv("BG_GITHUB_APP_ID", "3410773")
-        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
+        # Assembled at runtime so secret scanners don't flag a PEM literal.
+        fake_pem = "\n".join(["-----BEGIN RSA " + "PRIVATE KEY-----", "test", "-----END RSA " + "PRIVATE KEY-----"])
+
         mock_sm = MagicMock()
-        with patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm):
+        with (
+            patch(
+                "src.admin.connections.tenant_secret.get_github_app_provider",
+                return_value=self._mock_provider("3410773", fake_pem),
+            ),
+            patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm),
+        ):
             _seed_secret_sync("org-tenant-42", 999)
 
         mock_sm.create_secret.assert_called_once()
@@ -557,8 +598,6 @@ class TestSeedTenantGitHubAppSecret:
 
     def test_idempotent_when_secret_already_exists(self, monkeypatch):
         """Calling the util when the secret already exists is a no-op (no clobber)."""
-        monkeypatch.setenv("BG_GITHUB_APP_ID", "3410773")
-        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "test-key")
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
         mock_sm = MagicMock()
@@ -566,7 +605,13 @@ class TestSeedTenantGitHubAppSecret:
         error_response = {"Error": {"Code": "ResourceExistsException", "Message": "already exists"}}
         mock_sm.create_secret.side_effect = ClientError(error_response, "CreateSecret")
 
-        with patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm):
+        with (
+            patch(
+                "src.admin.connections.tenant_secret.get_github_app_provider",
+                return_value=self._mock_provider("3410773", "test-key"),
+            ),
+            patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm),
+        ):
             # Should not raise
             _seed_secret_sync("org-tenant-42", 999)
 
@@ -574,36 +619,71 @@ class TestSeedTenantGitHubAppSecret:
         mock_sm.create_secret.assert_called_once()
 
     def test_no_op_when_credentials_not_configured(self, monkeypatch):
-        """When BG_GITHUB_APP_ID or BG_GITHUB_APP_PRIVATE_KEY is empty, skip gracefully."""
-        monkeypatch.setenv("BG_GITHUB_APP_ID", "")
-        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "")
+        """When no credentials resolve (SM or env fallback), skip gracefully."""
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
         mock_sm = MagicMock()
-        with patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm):
+        with (
+            patch(
+                "src.admin.connections.tenant_secret.get_github_app_provider",
+                return_value=self._mock_provider("", ""),
+            ),
+            patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm),
+        ):
             _seed_secret_sync("org-tenant-42", 999)
 
         # Should not attempt to create the secret
         mock_sm.create_secret.assert_not_called()
 
+    def test_uses_provider_not_settings(self, monkeypatch):
+        """Credentials come from GitHubAppCredsProvider (SM-first), not settings.
+
+        Regression for the 608 deploy (#3085 hand-patch #1): Apps registered
+        via the UI manifest flow exist only in Secrets Manager; reading
+        settings.github_app_* directly skipped the seed silently and the first
+        worker pod died on vault_fetch.
+        """
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        # Env vars empty — SM (mocked provider) is the only source.
+        monkeypatch.delenv("BG_GITHUB_APP_ID", raising=False)
+        monkeypatch.delenv("BG_GITHUB_APP_PRIVATE_KEY", raising=False)
+
+        mock_sm = MagicMock()
+        with (
+            patch(
+                "src.admin.connections.tenant_secret.get_github_app_provider",
+                return_value=self._mock_provider("4232640", "sm-only-key"),
+            ),
+            patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm),
+        ):
+            _seed_secret_sync("aws-innovate", 144850098)
+
+        mock_sm.create_secret.assert_called_once()
+        import json
+
+        payload = json.loads(mock_sm.create_secret.call_args[1]["SecretString"])
+        assert payload == {"app_id": "4232640", "private_key": "sm-only-key"}
+
     def test_failure_does_not_raise(self, monkeypatch):
         """SM failures are logged but never propagate (fail-soft)."""
-        monkeypatch.setenv("BG_GITHUB_APP_ID", "3410773")
-        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "test-key")
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
         mock_sm = MagicMock()
         error_response = {"Error": {"Code": "InternalServiceError", "Message": "boom"}}
         mock_sm.create_secret.side_effect = ClientError(error_response, "CreateSecret")
 
-        with patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm):
+        with (
+            patch(
+                "src.admin.connections.tenant_secret.get_github_app_provider",
+                return_value=self._mock_provider("3410773", "test-key"),
+            ),
+            patch("src.admin.connections.tenant_secret.boto3.client", return_value=mock_sm),
+        ):
             # Should not raise
             _seed_secret_sync("org-tenant-42", 999)
 
     async def test_async_wrapper_does_not_raise_on_error(self, monkeypatch):
         """The async seed_tenant_github_app_secret never raises."""
-        monkeypatch.setenv("BG_GITHUB_APP_ID", "3410773")
-        monkeypatch.setenv("BG_GITHUB_APP_PRIVATE_KEY", "test-key")
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
         with patch(
@@ -660,3 +740,287 @@ class TestSeedTenantGitHubAppSecret:
 
         assert result["success"] is True
         mock_seed.assert_called_once_with("org-test-001", 124731131)
+
+
+# ---------------------------------------------------------------------------
+# DynamoDB identity-index write (Issue #2950)
+# ---------------------------------------------------------------------------
+
+
+class TestInstallCallbackWritesDDB:
+    """Issue #2950: install_callback must write the installation → tenant mapping
+    to the DynamoDB identity-index so the webhook resolver can find it."""
+
+    async def _write_nonce_and_user(
+        self,
+        db: AsyncSession,
+        *,
+        jti: str = "ddb-jti",
+        user_id: str = "user-ddb-test",
+        org_id: str = "org-test-001",
+    ):
+        from src.shared.models.organization import User
+
+        existing = await db.get(User, user_id)
+        if existing is None:
+            db.add(
+                User(
+                    id=user_id,
+                    org_id=org_id,
+                    team_id="team-test-001",
+                    email=f"{user_id}@test.local",
+                    cognito_sub="sub-ddb",
+                )
+            )
+            await db.commit()
+        nonce = MagicLinkNonce(
+            jti=jti,
+            provider=_PROVIDER_GITHUB_INSTALL,
+            provider_user_id="sub-ddb",
+            channel_context=None,
+            target_user_id=user_id,
+            expires_at=datetime.now(UTC) + timedelta(minutes=15),
+            consumed_at=None,
+        )
+        db.add(nonce)
+        await db.commit()
+
+    async def test_install_callback_calls_ddb_write(self, db_session: AsyncSession, org_in_db, monkeypatch):
+        """install_callback invokes _write_installation_identity_index with the
+        correct installation_id and org_id (the autouse fixture mocks this function
+        but we can verify the mock was called with the right args)."""
+        await self._write_nonce_and_user(db_session)
+        gh = _mock_github_client()
+
+        mock_write = AsyncMock(return_value=None)
+
+        with patch(
+            "src.admin.connections.service._write_installation_identity_index",
+            mock_write,
+        ):
+            result = await install_callback(
+                installation_id=124731131,
+                setup_action="install",
+                state="ddb-jti",
+                db=db_session,
+                github_client=gh,
+            )
+
+        assert result["success"] is True
+        mock_write.assert_called_once_with(
+            installation_id=124731131,
+            org_id="org-test-001",
+        )
+
+    async def test_write_function_calls_put_identity_with_correct_args(self, monkeypatch):
+        """_write_installation_identity_index writes the correct DDB row.
+
+        We test the real function by importing it directly and patching only
+        the IdentityIndexClient constructor to inject a mock DDB client.
+        """
+        # Import the real function (not the autouse-patched version)
+        import importlib
+
+        import src.admin.connections.service as svc_mod
+
+        importlib.reload(svc_mod)
+        real_fn = svc_mod._write_installation_identity_index
+
+        mock_ddb_client = MagicMock()
+        mock_ddb_client.put_item = MagicMock()
+
+        with patch(
+            "src.admin.identity_index.boto3.client",
+            return_value=mock_ddb_client,
+        ):
+            await real_fn(
+                installation_id=144415968,
+                org_id="platform-admin",
+            )
+
+        # Verify put_item was called with correct identity_type and identity_value
+        mock_ddb_client.put_item.assert_called_once()
+        call_kwargs = mock_ddb_client.put_item.call_args[1]
+        assert call_kwargs["TableName"] == "adp-dev-identity-index"
+        item = call_kwargs["Item"]
+        assert item["identity_type"] == {"S": "github_installation_id"}
+        assert item["identity_value"] == {"S": "144415968"}
+        assert item["org_id"] == {"S": "platform-admin"}
+
+    async def test_write_function_does_not_raise_on_ddb_failure(self, monkeypatch):
+        """DDB write failures are best-effort — logged but not propagated."""
+        import importlib
+
+        from botocore.exceptions import ClientError
+
+        import src.admin.connections.service as svc_mod
+
+        importlib.reload(svc_mod)
+        real_fn = svc_mod._write_installation_identity_index
+
+        mock_ddb_client = MagicMock()
+        error_response = {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "throttled"}}
+        mock_ddb_client.put_item.side_effect = ClientError(error_response, "PutItem")
+
+        with patch(
+            "src.admin.identity_index.boto3.client",
+            return_value=mock_ddb_client,
+        ):
+            # Should not raise — best-effort write
+            await real_fn(
+                installation_id=144415968,
+                org_id="platform-admin",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Placeholder sentinel handling (Issue #2659)
+# ---------------------------------------------------------------------------
+
+
+class TestPlaceholderSentinel:
+    """The deploy-time placeholder must never be treated as a real credential."""
+
+    def test_is_placeholder_exact_match(self):
+        assert _is_placeholder("PLACEHOLDER_SET_BY_REGISTER_SCRIPT") is True
+
+    def test_is_placeholder_with_whitespace(self):
+        assert _is_placeholder("  PLACEHOLDER_SET_BY_REGISTER_SCRIPT  ") is True
+
+    def test_is_placeholder_real_app_id(self):
+        assert _is_placeholder("12345678") is False
+
+    def test_is_placeholder_empty_string(self):
+        assert _is_placeholder("") is False
+
+    def test_sentinel_constant_matches_terraform(self):
+        # The constant must match the exact value from secrets.tf:39,54
+        assert _PLACEHOLDER_SENTINEL == "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"
+
+
+class TestGetAppStatusPlaceholder:
+    """get_app_status must return registered=False for placeholder secrets."""
+
+    async def test_returns_not_registered_when_app_id_is_placeholder(self, monkeypatch):
+        """The main bug fix: placeholder app_id → registered=False."""
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {"SecretString": "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"}
+
+        with patch("boto3.client", return_value=mock_sm):
+            result = await get_app_status()
+
+        assert result.registered is False
+        assert result.app_id is None
+
+    async def test_returns_registered_for_real_app_id(self, monkeypatch):
+        """A real app_id still yields registered=True."""
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_sm = MagicMock()
+
+        def _get_secret_value(SecretId):  # noqa: N803
+            if SecretId.endswith("-id"):
+                return {"SecretString": "12345678"}
+            if SecretId.endswith("-meta"):
+                return {"SecretString": '{"app_slug": "my-app"}'}
+            return {"SecretString": ""}
+
+        mock_sm.get_secret_value.side_effect = _get_secret_value
+        mock_sm.describe_secret.return_value = {}
+
+        with patch("boto3.client", return_value=mock_sm):
+            result = await get_app_status()
+
+        assert result.registered is True
+        assert result.app_id == "12345678"
+
+    async def test_returns_not_registered_when_app_id_empty(self, monkeypatch):
+        """Empty app_id still yields registered=False (pre-existing behavior)."""
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {"SecretString": ""}
+
+        with patch("boto3.client", return_value=mock_sm):
+            result = await get_app_status()
+
+        assert result.registered is False
+
+
+class TestRotateAppKeyPlaceholder:
+    """rotate_app_key must reject the placeholder as not-registered."""
+
+    async def test_rejects_placeholder_app_id(self, monkeypatch):
+        """Rotating a placeholder secret should 404, not try to use it as a key."""
+        from fastapi import HTTPException
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {"SecretString": "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"}
+
+        with patch("boto3.client", return_value=mock_sm):
+            with pytest.raises(HTTPException) as exc_info:
+                await rotate_app_key()
+            assert exc_info.value.status_code == 404
+            assert "No GitHub App registered" in str(exc_info.value.detail)
+
+
+class TestDisconnectAppPlaceholder:
+    """disconnect_app must reject the placeholder as not-registered."""
+
+    async def test_rejects_placeholder_app_id(self, monkeypatch):
+        """Disconnecting a placeholder secret should 404."""
+        from fastapi import HTTPException
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {"SecretString": "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"}
+
+        with patch("boto3.client", return_value=mock_sm):
+            with pytest.raises(HTTPException) as exc_info:
+                await disconnect_app()
+            assert exc_info.value.status_code == 404
+            assert "No GitHub App registered" in str(exc_info.value.detail)
+
+
+class TestCheckExistingAppSecretPlaceholder:
+    """_check_existing_app_secret must return None for placeholder values."""
+
+    def test_placeholder_returns_none(self, monkeypatch):
+        from src.admin.connections.service import _check_existing_app_secret
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {"SecretString": "PLACEHOLDER_SET_BY_REGISTER_SCRIPT"}
+
+        with patch("boto3.client", return_value=mock_sm):
+            result = _check_existing_app_secret()
+
+        assert result is None
+
+    def test_real_app_id_returns_tuple(self, monkeypatch):
+        from src.admin.connections.service import _check_existing_app_secret
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("BG_GITHUB_APP_SLUG", "my-app")
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret_value.return_value = {"SecretString": "12345678"}
+
+        with patch("boto3.client", return_value=mock_sm):
+            result = _check_existing_app_secret()
+
+        assert result is not None
+        assert result[0] == "12345678"

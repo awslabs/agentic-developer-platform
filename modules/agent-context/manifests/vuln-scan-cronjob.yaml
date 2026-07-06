@@ -1,0 +1,69 @@
+# Vulnerability Scan CronJob
+# Runs daily: downloads stored SBOMs from S3, scans with OSV-Scanner + Trivy,
+# upserts findings into the vulnerabilities table.
+#
+# This is THE UNLOCK for the `secure` verb — without it, vulnerabilities = 0 rows.
+#
+# Manual trigger:
+#   kubectl create job --from=cronjob/vuln-scan manual-vuln-scan -n ${NAMESPACE}
+#
+# Variables substituted at deploy time: ${NAMESPACE}, ${SERVICE_ACCOUNT},
+# ${INGESTION_IMAGE}, ${VULN_SCAN_SCHEDULE}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vuln-scan
+  namespace: ${NAMESPACE}
+  labels:
+    app: vuln-scan
+    app.kubernetes.io/part-of: agent-context-platform
+    app.kubernetes.io/component: security
+spec:
+  schedule: "${VULN_SCAN_SCHEDULE}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 7200  # 2 hours max
+      ttlSecondsAfterFinished: 259200  # Clean up after 3 days
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: vuln-scan
+        spec:
+          serviceAccountName: ${SERVICE_ACCOUNT}
+          containers:
+          - name: vuln-scan
+            image: ${INGESTION_IMAGE}
+            command: ["python3", "/app/scan-vulns.py"]
+            envFrom:
+            - configMapRef:
+                name: agent-context-config
+            - secretRef:
+                name: agent-context-secrets
+                optional: true
+            env:
+            - name: OPENVIKING_ROOT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-context-secrets
+                  key: openviking-root-key
+                  optional: true
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "1Gi"
+              limits:
+                cpu: "2"
+                memory: "4Gi"
+            volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+          restartPolicy: OnFailure
+          volumes:
+          - name: config
+            configMap:
+              name: ingestion-content-config

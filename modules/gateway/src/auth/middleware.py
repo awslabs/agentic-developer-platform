@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.config import Settings, get_settings
 from src.shared.database import get_db
+from src.shared.enforced_paths import ENFORCED_PATHS
 from src.shared.schemas.auth import TokenContext
 
 from .auth_service import AuthService
@@ -273,15 +274,6 @@ async def auth_middleware(request: Request, call_next):
 
     return response
 
-
-# Proxy paths that need token_context for budget/rate-limit enforcement
-_PROXY_PATHS = (
-    "/v1/chat/completions",
-    "/v1/messages",
-    "/bedrock/invoke",
-    "/bedrock/invoke-with-response-stream",
-    "/model/",
-)
 
 # Issue #260: Agent path prefix for AWS_IAM authenticated requests
 # Requests to /agent/* come through API Gateway with AWS_IAM auth
@@ -554,7 +546,7 @@ class TokenContextMiddleware:
             return
 
         path = scope.get("path", "")
-        if not any(path.startswith(p) for p in _PROXY_PATHS):
+        if not any(path.startswith(p) for p in ENFORCED_PATHS):
             await self.app(scope, receive, send)
             return
 

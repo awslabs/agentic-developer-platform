@@ -26,9 +26,12 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project     = "adp-platform-deploy-mgmt"
+      Project     = "adp"
       Environment = var.environment
+      Module      = "platform-deploy-mgmt"
       ManagedBy   = "terraform"
+      Owner       = "platform-team"
+      CostCenter  = "engineering"
     }
   }
 }

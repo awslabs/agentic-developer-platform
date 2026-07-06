@@ -28,10 +28,24 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.9"
+    }
   }
 }
 
 data "aws_caller_identity" "current" {}
+
+# Issue #2563: Check whether the CI runner role exists before referencing it in
+# EKS access entries. On a fresh-account first deploy, this role is created by
+# agent-factory/runner-iam (a later phase) and doesn't exist yet. The data
+# source returns an empty arns list (no error) when no matching role is found,
+# letting us conditionally exclude it from cluster_admin_principal_arns.
+data "aws_iam_roles" "ci_runner" {
+  name_regex  = "^${local.name_prefix}-agent-runner-role$"
+  path_prefix = "/"
+}
 
 locals {
   name_prefix  = coalesce(var.name_prefix, "adp-${var.environment}")
@@ -39,7 +53,10 @@ locals {
   common_tags = {
     Project     = "adp"
     Environment = var.environment
+    Module      = "platform"
     ManagedBy   = "terraform"
+    Owner       = "platform-team"
+    CostCenter  = "engineering"
   }
 
   # Deployer principal that should get EKS cluster-admin.
@@ -63,11 +80,16 @@ locals {
   # would drop the human Admin entry and a human apply (as Admin) would drop
   # the runner entry — a flip-flop that tripped the destroy-safety gate every
   # apply. The other human operator role(s) go in extra_cluster_admin_principal_arns.
+  #
+  # Issue #2563: On a fresh-account first deploy, this role doesn't exist yet
+  # (created later by agent-factory/runner-iam). We conditionally include it
+  # using a data lookup so that aws_eks_access_entry doesn't fail with
+  # InvalidParameterException when the principal doesn't exist.
   ci_runner_role_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-runner-role"
 
   cluster_admin_principal_arns = distinct(concat(
     [local.deployer_role_arn],
-    [local.ci_runner_role_arn],
+    length(data.aws_iam_roles.ci_runner.arns) > 0 ? [local.ci_runner_role_arn] : [],
     var.extra_cluster_admin_principal_arns,
   ))
 }
@@ -230,6 +252,8 @@ module "codebuild" {
   common_tags                = local.common_tags
   security_scans_bucket_arn  = module.security_scans.bucket_arn
   security_scans_bucket_name = module.security_scans.bucket_name
+  account_id                 = data.aws_caller_identity.current.account_id
+  ecr_registry               = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
 }
 
 # -----------------------------------------------------------------------------

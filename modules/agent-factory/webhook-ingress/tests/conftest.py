@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import uuid
@@ -9,6 +10,8 @@ import uuid
 import boto3
 import pytest
 from moto import mock_aws
+
+logger = logging.getLogger(__name__)
 
 # Add lambda source to path for imports
 LAMBDA_DIR = os.path.join(os.path.dirname(__file__), "..", "lambda")
@@ -192,6 +195,182 @@ def ddb_client():
     ddb = boto3.resource("dynamodb", region_name=region)
     events_table = ddb.Table(table_name)
     return {"events_table": events_table}
+
+
+# =============================================================================
+# Identity-index seeding fixtures (Issue #2932)
+#
+# On a fresh account the identity-index DynamoDB table has no rows until a
+# GitHub App is installed (Phase 9). The integration tests assume a seeded
+# installation→tenant and sender→user mapping exist so the dispatch path can
+# be exercised in Phase 7. These session-scoped fixtures seed the required
+# rows before the test run and tear them down after.
+# =============================================================================
+
+_SEED_MARKER = "e2e-test-fixture"
+"""Value written to `fixture_source` attribute so cleanup can identify seeded rows."""
+
+
+@pytest.fixture(scope="session", autouse=True)
+def seed_identity_index():
+    """Seed identity-index DDB with test tenant + user mappings for integration tests.
+
+    Creates:
+      - github_installation_id row for test_tenant (installation→tenant)
+      - github_user row for the synthetic test sender (sender→user)
+      - github_installation_id row for rate_limited_tenant
+      - github_user row for rate_limited_tenant sender
+
+    The fixture is session-scoped and autouse so it runs once before any
+    integration test. Rows are tagged with fixture_source=e2e-test-fixture
+    and cleaned up after the session. If the table name env var is unset,
+    the fixture is a no-op (unit tests don't need it).
+    """
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    table_name = os.environ.get("IDENTITY_INDEX_TABLE", "")
+
+    # No-op when not running integration tests (env vars unset)
+    if not table_name or not os.environ.get("WEBHOOK_ENDPOINT"):
+        yield
+        return
+
+    ddb = boto3.resource("dynamodb", region_name=region)
+    table = ddb.Table(table_name)
+
+    # Resolve tenant config from env (same defaults as test_tenant/rate_limited_tenant fixtures)
+    test_installation_id = os.environ.get("WEBHOOK_TEST_INSTALLATION_ID", "12345678")
+    test_tenant_id = os.environ.get("WEBHOOK_TEST_TENANT_ID", "test-tenant-e2e")
+    rate_limited_installation_id = os.environ.get(
+        "WEBHOOK_RATE_LIMITED_INSTALLATION_ID", "99999999"
+    )
+    rate_limited_tenant_id = os.environ.get(
+        "WEBHOOK_RATE_LIMITED_TENANT_ID", "rate-limited-tenant-e2e"
+    )
+
+    # Synthetic sender identifiers used in test payloads
+    test_sender_id = os.environ.get("WEBHOOK_TEST_SENDER_ID", "100001")
+    test_user_id = os.environ.get("WEBHOOK_TEST_USER_ID", "e2e-test-user-0001")
+
+    # Rows to seed (and later clean up)
+    seed_rows = [
+        # Test tenant: installation → tenant mapping
+        {
+            "identity_type": "github_installation_id",
+            "identity_value": test_installation_id,
+            "org_id": test_tenant_id,
+            "user_provisioning_mode": "auto_provision",
+            "fixture_source": _SEED_MARKER,
+        },
+        # Test tenant: sender → user mapping
+        {
+            "identity_type": "github_user",
+            "identity_value": test_sender_id,
+            "user_id": test_user_id,
+            "org_id": test_tenant_id,
+            "user_kind": "human",
+            "fixture_source": _SEED_MARKER,
+        },
+        # Rate-limited tenant: installation → tenant mapping
+        {
+            "identity_type": "github_installation_id",
+            "identity_value": rate_limited_installation_id,
+            "org_id": rate_limited_tenant_id,
+            "user_provisioning_mode": "strict",
+            "fixture_source": _SEED_MARKER,
+        },
+        # Rate-limited tenant: sender → user mapping (reuse same sender_id
+        # for simplicity; the Lambda resolves sender against the
+        # installation's org, so cross-tenant is fine for test purposes)
+        {
+            "identity_type": "github_user",
+            "identity_value": f"{test_sender_id}-rl",
+            "user_id": f"{test_user_id}-rl",
+            "org_id": rate_limited_tenant_id,
+            "user_kind": "human",
+            "fixture_source": _SEED_MARKER,
+        },
+    ]
+
+    # Seed rows (idempotent put)
+    for row in seed_rows:
+        try:
+            table.put_item(Item=row)
+        except Exception as e:
+            logger.warning("Failed to seed identity-index row %s: %s", row, e)
+
+    yield
+
+    # Teardown: remove seeded rows
+    for row in seed_rows:
+        try:
+            table.delete_item(
+                Key={
+                    "identity_type": row["identity_type"],
+                    "identity_value": row["identity_value"],
+                },
+                ConditionExpression="fixture_source = :fs",
+                ExpressionAttributeValues={":fs": _SEED_MARKER},
+            )
+        except Exception:
+            pass  # Best-effort cleanup
+
+
+@pytest.fixture(scope="session", autouse=True)
+def seed_rate_limit_counters():
+    """Pre-exhaust rate-limit counters for the rate-limited tenant.
+
+    The rate-limit test expects 429 for the rate_limited_tenant. On a fresh
+    account the rate-limits table is empty (no counters), so the tenant would
+    pass. This fixture fills the current 5-min window to the configured limit.
+    """
+    from datetime import UTC, datetime
+
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    table_name = os.environ.get("RATE_LIMITS_TABLE", "")
+
+    if not table_name or not os.environ.get("WEBHOOK_ENDPOINT"):
+        yield
+        return
+
+    ddb = boto3.resource("dynamodb", region_name=region)
+    table = ddb.Table(table_name)
+
+    rate_limited_tenant_id = os.environ.get(
+        "WEBHOOK_RATE_LIMITED_TENANT_ID", "rate-limited-tenant-e2e"
+    )
+
+    # Determine the current 5-min window key (same logic as rate_limit.py)
+    now = datetime.now(UTC)
+    window_key = now.strftime("%Y-%m-%dT%H:") + f"{(now.minute // 5) * 5:02d}"
+
+    # Set counter above the limit (default limit is 50 per window)
+    limit = int(os.environ.get("RATE_LIMIT_PER_WINDOW", "50"))
+    counter_value = limit + 10  # Safely above threshold
+
+    try:
+        table.put_item(
+            Item={
+                "tenant_id": rate_limited_tenant_id,
+                "window": window_key,
+                "count": counter_value,
+                "fixture_source": _SEED_MARKER,
+            }
+        )
+    except Exception as e:
+        logger.warning("Failed to seed rate-limit counter: %s", e)
+
+    yield
+
+    # Teardown
+    try:
+        table.delete_item(
+            Key={
+                "tenant_id": rate_limited_tenant_id,
+                "window": window_key,
+            }
+        )
+    except Exception:
+        pass
 
 
 class _DdbEventCleanup:

@@ -1,12 +1,13 @@
 """Context MCP Server — the verb surface for the Knowledge layer.
 
-Exposes 6 tools at :5100:
+Exposes 7 tools at :5100:
   - search: exact code search (Zoekt) + optional semantic + memory
   - understand: structural backend (code-index.json)
   - impact: call-graph analysis (code-index.json + cross-repo Zoekt)
   - browse: catalog + S3 content listing
   - remember: session memory persistence
   - experience: personal context (save/recall/list_syntheses)
+  - secure: vulnerability identification, remediation planning, verification
 
 Every verb result routes through door/acl.py (fail-closed).
 Verb logic lives in importable functions for later gateway re-route.
@@ -80,7 +81,12 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "browse",
-        "description": "Navigate the indexed content filesystem",
+        "description": (
+            "Navigate the indexed content filesystem. "
+            "Start with browse(action='ls', uri='/') to discover all indexed repos "
+            "and their capabilities (code_search, call_graph, wiki, sbom, vectors "
+            "with metrics). Use the capability manifest to plan which verbs to call."
+        ),
         "parameters": {
             "action": {"type": "string", "required": True},
             "uri": {"type": "string", "required": True},
@@ -120,6 +126,31 @@ TOOLS: list[dict[str, Any]] = [
             "visibility": {"type": "string", "enum": ["private", "shared"], "required": False},
             "limit": {"type": "integer", "required": False},
             "cross_persona": {"type": "boolean", "required": False},
+        },
+    },
+    {
+        "name": "secure",
+        "description": (
+            "Identify, locate, and plan remediation for vulnerabilities. "
+            "Given a CVE, repo, or package, returns reachability-scored findings "
+            "with remediation guidance. The security entry point."
+        ),
+        "parameters": {
+            "cve": {"type": "string", "required": False},
+            "repo": {"type": "string", "required": False},
+            "package": {"type": "string", "required": False},
+            "action": {
+                "type": "string",
+                "enum": ["identify", "plan", "verify"],
+                "required": False,
+            },
+            "severity_min": {
+                "type": "string",
+                "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                "required": False,
+            },
+            "reachable_only": {"type": "boolean", "required": False},
+            "project": {"type": "string", "required": False},
         },
     },
 ]
@@ -205,7 +236,7 @@ async def lifespan(app: FastAPI):
         try:
             import httpx
 
-            from ..personal_context.backends.s3_vectors_backend import S3VectorsCodeStore
+            from personal_context.backends.s3_vectors_backend import S3VectorsCodeStore
 
             state.semantic_code_store = S3VectorsCodeStore(
                 bucket_name=config.s3_vectors_bucket,
@@ -240,13 +271,13 @@ async def lifespan(app: FastAPI):
 def _init_experience_tool() -> None:
     """Initialize the experience tool with appropriate backends."""
     try:
-        from ..personal_context.embeddings import LiteLLMEmbeddingClient
-        from ..personal_context.experience_tool import ExperienceTool
-        from ..personal_context.storage import PersonalContextStore
+        from personal_context.embeddings import LiteLLMEmbeddingClient
+        from personal_context.experience_tool import ExperienceTool
+        from personal_context.storage import PersonalContextStore
 
         # Use S3 AGFS backend if bucket is configured
         if config.s3_bucket:
-            from ..personal_context.backends.s3_backend import S3AGFSBackend
+            from personal_context.backends.s3_backend import S3AGFSBackend
 
             backend = S3AGFSBackend(bucket_name=config.s3_bucket, region_name=config.s3_region)
         else:
@@ -254,12 +285,12 @@ def _init_experience_tool() -> None:
             backend = _NoOpBackend()
 
         store = PersonalContextStore(backend)
-        embedding_client = LiteLLMEmbeddingClient(base_url=config.litellm_url)
+        embedding_client = LiteLLMEmbeddingClient(proxy_url=config.litellm_url)
 
         # S3 Vectors embedding store (if configured)
         embedding_store = None
         if config.s3_vectors_bucket:
-            from ..personal_context.backends.s3_vectors_backend import S3VectorsEmbeddingStore
+            from personal_context.backends.s3_vectors_backend import S3VectorsEmbeddingStore
 
             embedding_store = S3VectorsEmbeddingStore(
                 bucket_name=config.s3_vectors_bucket,
@@ -445,6 +476,8 @@ async def _dispatch_tool(
         return await _handle_remember(arguments, headers)
     elif name == "experience":
         return await _handle_experience(arguments, headers)
+    elif name == "secure":
+        return await _handle_secure(arguments, caller, project_scope, headers=headers)
     else:
         return {"error": f"Unknown tool: {name}"}
 
@@ -584,7 +617,7 @@ async def _handle_semantic_search(
         # Generate query embedding via LiteLLM (async — does not block event loop)
         embed_response = await state.semantic_http_client.post(
             f"{config.litellm_url}/embeddings",
-            json={"input": query, "model": "amazon.titan-embed-text-v2:0"},
+            json={"input": query, "model": "bedrock/amazon.titan-embed-text-v2:0"},
         )
         embed_response.raise_for_status()
         query_vector = embed_response.json()["data"][0]["embedding"]
@@ -784,10 +817,19 @@ async def _handle_browse(
     caller: CallerPrincipal | None,
     project_scope: ProjectScope | None = None,
 ) -> dict[str, Any]:
-    """Handle the browse verb: catalog + S3 + Zoekt file listing."""
+    """Handle the browse verb: catalog + S3 + Zoekt file listing.
+
+    The optional ``project`` argument doubles as a **repo scope**: when present,
+    a non content-root URI is treated as a repo-relative path within that repo
+    (``browse list uri=agent/ project=HKUDS/Vibe-Trading``) and served from
+    Zoekt. This is the repo directory-tree browse contract. The raw ``project``
+    string is used directly as the repo name — the eval dataset passes the
+    "org/repo" repo name in the ``project`` field.
+    """
     action = arguments.get("action", "ls")
     uri = arguments.get("uri", "/")
     depth = arguments.get("depth", 1)
+    repo_scope = arguments.get("project") or None
 
     hits = await browse(
         action,
@@ -798,13 +840,19 @@ async def _handle_browse(
         content_prefix=config.s3_content_prefix,
         depth=depth,
         zoekt_url=config.zoekt_url,
+        repo_scope=repo_scope,
     )
 
     # ACL filter (Step 2: #1721 isolation)
     filtered = _apply_acl(hits, caller)
 
-    # Project filter (Step 3: narrow to project repos)
-    filtered = apply_project_filter(filtered, project_scope)
+    # Project filter (Step 3: narrow to project repos).
+    # When a repo_scope is active the URI is already scoped to that single repo
+    # via Zoekt, so skip the project-set intersection (which requires the
+    # PROJECT_FILTER_ENABLED catalog and would otherwise drop the repo-scoped
+    # hits). The unscoped catalog/content paths keep the intersection.
+    if repo_scope is None:
+        filtered = apply_project_filter(filtered, project_scope)
 
     entries = [hit.data for hit in filtered]
     return {"action": action, "uri": uri, "entries": entries}
@@ -840,6 +888,112 @@ async def _handle_experience(arguments: dict[str, Any], headers: dict[str, str])
         return state.experience_tool.handle(arguments, headers)
     except Exception as e:
         return {"error": str(e)}
+
+
+async def _handle_secure(
+    arguments: dict[str, Any],
+    caller: CallerPrincipal | None,
+    project_scope: ProjectScope | None = None,
+    *,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Handle the secure verb: vulnerability identification, planning, verification.
+
+    Input validation (fail-fast):
+    - At least one of cve, repo, package required
+    - action=plan requires both cve AND repo
+    - action=verify requires cve
+    - Unknown action returns validation error
+
+    ACL: fail-closed — unauthenticated caller returns empty findings.
+    """
+    cve = arguments.get("cve", "")
+    repo = arguments.get("repo", "")
+    package = arguments.get("package", "")
+    action = arguments.get("action", "identify")
+    severity_min = arguments.get("severity_min", "")
+    reachable_only = arguments.get("reachable_only", False)
+
+    # Input validation: at least one filter required
+    if not cve and not repo and not package:
+        return {
+            "error": "At least one of 'cve', 'repo', or 'package' is required",
+            "code": "validation_error",
+        }
+
+    # Validate action value
+    valid_actions = ("identify", "plan", "verify")
+    if action not in valid_actions:
+        return {
+            "error": f"Unknown action '{action}'. Must be one of: {', '.join(valid_actions)}",
+            "code": "validation_error",
+        }
+
+    # Action-specific validation
+    if action == "plan" and (not cve or not repo):
+        return {
+            "error": "action='plan' requires both 'cve' and 'repo'",
+            "code": "validation_error",
+        }
+
+    if action == "verify" and not cve:
+        return {
+            "error": "action='verify' requires 'cve'",
+            "code": "validation_error",
+        }
+
+    # ACL fail-closed: no identity → empty results
+    if caller is None or not caller.is_resolved:
+        return {
+            "action": action,
+            "findings": [],
+            "findings_count": 0,
+            "error": "unauthorized",
+        }
+
+    # Resolve tenant_id for Neptune scope filtering
+    tenant_id = caller.tenant_id if caller else None
+
+    # Dispatch to backend
+    from .secure_backend import handle_identify, handle_plan, handle_verify
+
+    if action == "identify":
+        return await handle_identify(
+            cve=cve,
+            repo=repo,
+            package=package,
+            severity_min=severity_min,
+            reachable_only=reachable_only,
+            db_pool=state.db_pool,
+            acl_store=state.acl_store,
+            caller=caller,
+            zoekt_backend=state.zoekt,
+            neptune_driver=state.neptune_driver,
+            s3_client=state.s3_client,
+            s3_bucket=config.s3_bucket or "",
+            tenant_id=tenant_id,
+        )
+    elif action == "plan":
+        return await handle_plan(
+            cve=cve,
+            repo=repo,
+            db_pool=state.db_pool,
+            acl_store=state.acl_store,
+            caller=caller,
+            zoekt_backend=state.zoekt,
+            neptune_driver=state.neptune_driver,
+            s3_client=state.s3_client,
+            s3_bucket=config.s3_bucket or "",
+            tenant_id=tenant_id,
+        )
+    elif action == "verify":
+        return await handle_verify(
+            cve=cve,
+            repo=repo or "",
+            db_pool=state.db_pool,
+        )
+
+    return {"error": f"Unhandled action: {action}", "code": "internal_error"}
 
 
 # ---------------------------------------------------------------------------

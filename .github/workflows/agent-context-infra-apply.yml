@@ -5,7 +5,9 @@ on:
   # reviews the plan comment on the merged PR, then triggers this workflow
   # explicitly via Actions → Agent Context Infra Apply → Run workflow. See
   # platform-infra-apply.yml for the full rationale. Extra caution here:
-  # applying with `graphrag_enabled=true` adds ~$800/mo idle cost.
+  # `graphrag_enabled=true` adds OpenSearch Serverless idle cost, and
+  # `neptune_enabled=true` adds Neptune Serverless idle cost (see the cost
+  # guard step below for the gate).
   workflow_dispatch:
     inputs:
       terraform_target:

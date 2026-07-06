@@ -195,6 +195,106 @@ class TestResolveUserByIdentity:
         mock_urlopen.assert_not_called()
 
 
+class TestResolveInstallationById:
+    """Tests for resolve_installation_by_id() — /internal/v1/resolve-installation."""
+
+    def test_returns_tenant_on_200(self):
+        from common import gateway_client
+
+        gateway_client._internal_api_key = None
+
+        response_body = json.dumps({"tenant_id": "pranavsharma1000"}).encode("utf-8")
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = response_body
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = gateway_client.resolve_installation_by_id("144082554")
+
+        assert result == {"tenant_id": "pranavsharma1000"}
+
+    def test_returns_none_on_404(self):
+        import urllib.error
+
+        from common import gateway_client
+
+        gateway_client._internal_api_key = None
+
+        http_error = urllib.error.HTTPError(
+            url="http://gateway.internal:8080/internal/v1/resolve-installation",
+            code=404,
+            msg="Not Found",
+            hdrs={},
+            fp=None,
+        )
+        with patch("urllib.request.urlopen", side_effect=http_error):
+            result = gateway_client.resolve_installation_by_id("999999")
+
+        assert result is None
+
+    def test_returns_none_on_network_error(self):
+        from common import gateway_client
+
+        gateway_client._internal_api_key = None
+
+        with patch("urllib.request.urlopen", side_effect=ConnectionError("timeout")):
+            result = gateway_client.resolve_installation_by_id("144082554")
+
+        assert result is None
+
+    def test_returns_none_on_empty_tenant(self):
+        """A 200 with an empty tenant_id is treated as a miss."""
+        from common import gateway_client
+
+        gateway_client._internal_api_key = None
+
+        response_body = json.dumps({"tenant_id": ""}).encode("utf-8")
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = response_body
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = gateway_client.resolve_installation_by_id("144082554")
+
+        assert result is None
+
+    def test_sends_correct_headers_and_body(self):
+        from common import gateway_client
+
+        gateway_client._internal_api_key = None
+
+        response_body = json.dumps({"tenant_id": "org1"}).encode("utf-8")
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = response_body
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        captured_req = {}
+
+        def mock_urlopen(req, **kwargs):
+            captured_req["url"] = req.full_url
+            captured_req["method"] = req.method
+            captured_req["headers"] = dict(req.headers)
+            captured_req["body"] = json.loads(req.data.decode("utf-8"))
+            return mock_resp
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            gateway_client.resolve_installation_by_id("144082554")
+
+        assert (
+            captured_req["url"]
+            == "http://gateway.internal:8080/internal/v1/resolve-installation"
+        )
+        assert captured_req["method"] == "POST"
+        assert captured_req["headers"]["X-internal-api-key"] == "test-internal-key"
+        assert captured_req["body"] == {"installation_id": "144082554"}
+
+
 class TestPostProvenance:
     """Tests for post_provenance() — POST /internal/v1/provenance."""
 

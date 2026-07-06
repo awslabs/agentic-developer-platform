@@ -428,7 +428,12 @@ resource "kubernetes_config_map" "agent_gateway_config" {
     # not enabled on all accounts (e.g. test account 919157478356 returns
     # "invalid model identifier" for global.* and AccessDenied until the
     # Marketplace subscription lands). `us.` works on both 919 and embark1.
-    ANTHROPIC_MODEL = "us.anthropic.claude-opus-4-6-v1"
+    # Default is Sonnet 4.6 (cheaper/faster than Opus, no Marketplace agreement
+    # required — the `us.` profile is invokable out-of-the-box on tested accounts
+    # incl. 261421447505). Override to an Opus profile (e.g.
+    # us.anthropic.claude-opus-4-6-v1) via TF_VAR / this env for capability-heavy
+    # workloads that need it.
+    ANTHROPIC_MODEL = "us.anthropic.claude-sonnet-4-6"
     # Phase 3 gateway routing (issue #748)
     ADP_BEDROCK_VIA            = "gateway"
     SIGV4_PROXY_TARGET         = var.gateway_deployed ? "${data.aws_ssm_parameter.gateway_apigw_invoke_url[0].value}/agent" : ""

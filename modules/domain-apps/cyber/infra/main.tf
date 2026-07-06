@@ -34,7 +34,10 @@ locals {
   common_tags = {
     Project     = "adp"
     Environment = var.environment
+    Module      = "domain-apps/cyber"
     ManagedBy   = "terraform"
+    Owner       = "agent-team"
+    CostCenter  = "engineering"
     Component   = "cyber-sandbox"
     Isolation   = "required"
   }

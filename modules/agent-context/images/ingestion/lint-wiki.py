@@ -297,10 +297,7 @@ def check_graph_contradictions(all_repos: list[str]) -> list[str]:
             continue
         try:
             with open(ci_path) as f:
-                ci = json.load(f)
-            ext_deps = ci.get("dependencies", {}).get("external", [])
-            # We'd check Neptune for the same repo's depends_on edges
-            # For now, just verify code-index exists for repos in the graph
+                json.load(f)  # verify code-index parses for repos in the graph
         except (json.JSONDecodeError, OSError):
             continue
 
@@ -315,7 +312,6 @@ def check_missing_graph_data(all_repos: list[str], repo_state: dict[str, Any]) -
 
     # Count repos that have code-index but no graph data
     # (Approximate — check if graph has nodes for this repo)
-    missing = []
     for repo in all_repos:
         ci_path = os.path.join(CODE_INDEX_DIR, f"{repo.replace('/', '-')}.json")
         if os.path.isfile(ci_path):
@@ -369,7 +365,6 @@ def check_stale_quiz_questions(all_repos: list[str]) -> list[str]:
                 ci = json.load(f)
 
             questions = quiz.get("questions", quiz) if isinstance(quiz, dict) else quiz
-            symbols = {s.get("name", "") for s in ci.get("symbols", [])}
             files = {s.get("file", "") for s in ci.get("symbols", [])}
 
             for q in questions:

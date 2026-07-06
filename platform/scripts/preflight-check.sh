@@ -217,6 +217,21 @@ else
   warn "Bedrock: cannot list models (gateway needs bedrock:InvokeModel at runtime)"
 fi
 
+# Bedrock marketplace agreements — fresh accounts have none, and without them
+# every Claude invoke fails with AccessDeniedException (the agent-worker then
+# misreports the failure as "no changes needed"). deploy-all.sh and
+# platform-infra-apply.yml accept them via enable-bedrock-models.sh.
+for model in anthropic.claude-opus-4-6-v1 anthropic.claude-sonnet-4-6; do
+  AGREEMENT=$(aws bedrock get-foundation-model-availability --model-id "$model" \
+    --region "${AWS_REGION:-us-east-1}" \
+    --query 'agreementAvailability.status' --output text 2>/dev/null || echo "UNKNOWN")
+  if [ "$AGREEMENT" = "AVAILABLE" ]; then
+    pass "Bedrock agreement: $model active"
+  else
+    warn "Bedrock agreement: $model is $AGREEMENT — deploy will accept it via enable-bedrock-models.sh"
+  fi
+done
+
 # Secrets Manager
 if aws secretsmanager list-secrets --region "${AWS_REGION:-us-east-1}" --max-results 1 &>/dev/null; then
   pass "Secrets Manager: ListSecrets OK"
@@ -229,6 +244,31 @@ if aws cognito-idp list-user-pools --max-results 1 --region "${AWS_REGION:-us-ea
   pass "Cognito: ListUserPools OK"
 else
   warn "Cognito: limited access (gateway needs cognito-idp:* for auth)"
+fi
+
+# Lambda concurrency quota (Issue #2910)
+# Gateway lambdas reserve 97 total (50+20+10+10+5+2). AWS requires the account's
+# UNRESERVED pool to stay >= 100 after all reservations, so
+# UnreservedConcurrentExecutions must be >= 197 at apply time.
+#
+# Read UnreservedConcurrentExecutions (the pool actually available for new
+# reservations), NOT ConcurrentExecutions (the total account quota). On SCP-locked
+# or shared accounts another reserved lambda can consume most of the total quota
+# and pin the unreserved pool at the 100 floor while the total quota still reads
+# 1000 — the total-quota reading would report a false PASS there (Issue #2910
+# escalation, account 979157915401 with WSConcurrencyCurtailer reserving ~890).
+LAMBDA_UNRESERVED=$(aws lambda get-account-settings --region "${AWS_REGION:-us-east-1}" --query 'AccountLimit.UnreservedConcurrentExecutions' --output text 2>/dev/null || echo "")
+if [ -n "$LAMBDA_UNRESERVED" ] && [ "$LAMBDA_UNRESERVED" != "None" ]; then
+  # Gateway lambdas reserve 97 total; unreserved pool must stay >= 100 afterward.
+  REQUIRED_UNRESERVED=197  # 97 (reserved) + 100 (AWS minimum unreserved)
+  if [ "$LAMBDA_UNRESERVED" -ge "$REQUIRED_UNRESERVED" ]; then
+    pass "Lambda unreserved concurrency: $LAMBDA_UNRESERVED (>= $REQUIRED_UNRESERVED needed for gateway reserved concurrency)"
+  else
+    warn "Lambda unreserved concurrency: $LAMBDA_UNRESERVED (< $REQUIRED_UNRESERVED). Gateway reserved concurrency will fail (PutFunctionConcurrency below the 100-unreserved minimum)."
+    warn "  Either request a Service Quotas increase for L-B99A9384 (if the total quota is low), free reserved concurrency held by other functions, or set enable_lambda_reserved_concurrency=false in gateway.tfvars."
+  fi
+else
+  warn "Lambda: could not read account concurrency settings"
 fi
 
 # =============================================================================

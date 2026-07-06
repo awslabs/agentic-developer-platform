@@ -111,7 +111,8 @@ class TestMigrationUpgrade:
 
     @pytest.mark.asyncio
     async def test_user_identities_unique_provider(self, schema_info):
-        assert {"provider", "provider_user_id"} in schema_info["user_identities_unique"]
+        # Relaxed in migration 021 (#2961): unique per provider per tenant (includes org_id)
+        assert {"provider", "provider_user_id", "org_id"} in schema_info["user_identities_unique"]
 
     @pytest.mark.asyncio
     async def test_user_credentials_unique_user_service_label(self, schema_info):

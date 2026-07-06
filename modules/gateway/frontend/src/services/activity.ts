@@ -152,3 +152,48 @@ export async function getAdminInvocationDetail(
     `/admin/agent-invocations/${encodeURIComponent(invocationId)}${query}`,
   );
 }
+
+/**
+ * Fetch the transcript markdown for a user's own invocation.
+ * Issue #3069: Returns raw markdown text (text/markdown content type).
+ * Uses raw fetch because apiClient.get() expects JSON responses.
+ */
+export async function getMyTranscript(invocationId: string): Promise<string> {
+  const { getAccessToken } = await import('./auth');
+  const baseUrl = import.meta.env.VITE_API_URL || '/api';
+  const token = getAccessToken();
+  const response = await fetch(
+    `${baseUrl}/me/agent-invocations/${encodeURIComponent(invocationId)}/transcript`,
+    {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    },
+  );
+  if (!response.ok) {
+    throw new Error(response.status === 404 ? 'Transcript not available' : `Failed to load transcript (${response.status})`);
+  }
+  return response.text();
+}
+
+/**
+ * Fetch the transcript markdown for an invocation (admin view).
+ * Issue #3069: Admin variant with tenant scoping.
+ */
+export async function getAdminTranscript(
+  invocationId: string,
+  tenantId?: string,
+): Promise<string> {
+  const { getAccessToken } = await import('./auth');
+  const baseUrl = import.meta.env.VITE_API_URL || '/api';
+  const token = getAccessToken();
+  const query = tenantId ? buildQueryString({ tenant_id: tenantId }) : '';
+  const response = await fetch(
+    `${baseUrl}/admin/agent-invocations/${encodeURIComponent(invocationId)}/transcript${query}`,
+    {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    },
+  );
+  if (!response.ok) {
+    throw new Error(response.status === 404 ? 'Transcript not available' : `Failed to load transcript (${response.status})`);
+  }
+  return response.text();
+}

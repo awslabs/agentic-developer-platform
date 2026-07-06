@@ -8,9 +8,9 @@ graphrag_enabled = false
 
 # Neptune Serverless (~$105/mo) — the code call-graph store (EPIC #1512).
 # Decoupled from graphrag_enabled so Neptune can run WITHOUT OpenSearch.
-# Left false here; flip to true (or TF_VAR_neptune_enabled=true) + set repo var
-# CONFIRM_GRAPHRAG_COST=yes to provision via agent-context-infra-apply.yml.
-neptune_enabled = false
+# ENABLED: cluster imported into TF state (issue #2489/#2527); 0-destroy verified.
+# CONFIRM_GRAPHRAG_COST=yes repo var required for CI apply.
+neptune_enabled = true
 
 # RDS Bootstrap: requires gateway module deployed first.
 # Gateway was skipped in this environment — disable until gateway is deployed.

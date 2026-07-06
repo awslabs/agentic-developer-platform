@@ -247,6 +247,144 @@ class TestRegisterAsset:
         assert data["detail"]["quota"]["repo"]["limit"] == 20
 
     @pytest.mark.anyio
+    async def test_register_full_url_normalizes_to_canonical(self, make_client, fake_user):
+        """A full GitHub URL is persisted canonically (Issue #2864)."""
+        captured: dict[str, object] = {}
+
+        class CapturingSession(FakeAsyncSession):
+            async def execute(self, stmt, params=None):
+                # The INSERT is the 3rd execute; capture its source_ref param.
+                if params and "asset_type" in params and "source_ref" in params:
+                    captured["source_ref"] = params["source_ref"]
+                return await super().execute(stmt, params)
+
+        db = CapturingSession()
+        db.execute_results = [
+            FakeResult(scalar_val=0),  # quota
+            FakeResult(rows=[]),  # no dup
+            FakeResult(),  # insert
+            FakeResult(rows=[FakeRow()]),  # fetch created
+        ]
+
+        async with make_client(db, fake_user) as client:
+            resp = await client.post(
+                "/api/agent-context/assets",
+                json={
+                    "asset_type": "repo",
+                    "source_ref": "https://github.com/octocat/Hello-World.git",
+                    "scope": "personal",
+                },
+            )
+
+        assert resp.status_code == 201
+        assert captured["source_ref"] == "https://github.com/octocat/Hello-World"
+
+    @pytest.mark.anyio
+    async def test_register_bare_slug_normalizes(self, make_client, fake_user):
+        """A bare org/repo slug is accepted and stored as the canonical URL."""
+        captured: dict[str, object] = {}
+
+        class CapturingSession(FakeAsyncSession):
+            async def execute(self, stmt, params=None):
+                if params and "asset_type" in params and "source_ref" in params:
+                    captured["source_ref"] = params["source_ref"]
+                return await super().execute(stmt, params)
+
+        db = CapturingSession()
+        db.execute_results = [
+            FakeResult(scalar_val=0),
+            FakeResult(rows=[]),
+            FakeResult(),
+            FakeResult(rows=[FakeRow()]),
+        ]
+
+        async with make_client(db, fake_user) as client:
+            resp = await client.post(
+                "/api/agent-context/assets",
+                json={
+                    "asset_type": "repo",
+                    "source_ref": "octocat/Hello-World",
+                    "scope": "personal",
+                },
+            )
+
+        assert resp.status_code == 201
+        assert captured["source_ref"] == "https://github.com/octocat/Hello-World"
+
+    @pytest.mark.anyio
+    async def test_register_double_prefixed_url_normalizes(self, make_client, fake_user):
+        """The corrupt double-prefixed URL collapses to canonical (Issue #2864)."""
+        captured: dict[str, object] = {}
+
+        class CapturingSession(FakeAsyncSession):
+            async def execute(self, stmt, params=None):
+                if params and "asset_type" in params and "source_ref" in params:
+                    captured["source_ref"] = params["source_ref"]
+                return await super().execute(stmt, params)
+
+        db = CapturingSession()
+        db.execute_results = [
+            FakeResult(scalar_val=0),
+            FakeResult(rows=[]),
+            FakeResult(),
+            FakeResult(rows=[FakeRow()]),
+        ]
+
+        async with make_client(db, fake_user) as client:
+            resp = await client.post(
+                "/api/agent-context/assets",
+                json={
+                    "asset_type": "repo",
+                    "source_ref": "https://github.com/https://github.com/octocat/Hello-World",
+                    "scope": "personal",
+                },
+            )
+
+        assert resp.status_code == 201
+        assert captured["source_ref"] == "https://github.com/octocat/Hello-World"
+
+    @pytest.mark.anyio
+    async def test_register_invalid_slug_returns_422(self, make_client, fake_user):
+        """A source_ref that doesn't reduce to org/repo is rejected with 422."""
+        db = FakeAsyncSession()
+        async with make_client(db, fake_user) as client:
+            resp = await client.post(
+                "/api/agent-context/assets",
+                json={
+                    "asset_type": "repo",
+                    "source_ref": "https://github.com/octocat/Hello-World/tree/main",
+                    "scope": "personal",
+                },
+            )
+
+        assert resp.status_code == 422
+        assert "org" in resp.json()["detail"].lower()
+
+    @pytest.mark.anyio
+    async def test_register_duplicate_after_normalization_returns_409(self, make_client, fake_user):
+        """Registering a URL whose canonical form already exists is idempotent (409)."""
+        existing_id = uuid.uuid4()
+        db = FakeAsyncSession()
+        db.execute_results = [
+            FakeResult(scalar_val=5),  # under quota
+            FakeResult(rows=[FakeRow(id=existing_id)]),  # canonical form already registered
+        ]
+
+        async with make_client(db, fake_user) as client:
+            resp = await client.post(
+                "/api/agent-context/assets",
+                json={
+                    # bare slug — normalizes to the same canonical URL as an existing row
+                    "asset_type": "repo",
+                    "source_ref": "octocat/Hello-World",
+                    "scope": "personal",
+                },
+            )
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["existing_id"] == str(existing_id)
+
+    @pytest.mark.anyio
     async def test_register_duplicate_returns_409(self, make_client, fake_user):
         """Duplicate source_ref in same scope returns 409."""
         existing_id = uuid.uuid4()

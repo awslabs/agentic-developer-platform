@@ -11,6 +11,7 @@ on:
       - 'modules/gateway/frontend/package*.json'
       - 'modules/gateway/frontend/tests/**'
       - 'libs/python/adp-common/**'
+      - '.github/workflows/gateway-ci.yml'
     branches:
       - main
   push:
@@ -116,6 +117,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker image
-        working-directory: modules/gateway
-        run: docker build -t adp-gateway:${{ github.sha }} .
+      # ARC runner pods have no Docker daemon (docker-ce-cli only, no DinD
+      # sidecar) — `docker build` has failed on every run since the
+      # ubuntu-latest → arc-runner-org migration (#367). Kaniko also can't
+      # run here (needs root FS ownership; runner is non-root). Platform
+      # convention: docker builds run in CodeBuild (privileged). This job
+      # triggers the gateway-build project with a build-only buildspec
+      # override — same trigger/poll pattern as security-scan.yml Grype.
+      - name: Refresh CodeBuild source zip
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
+          ./platform/scripts/zip-source.sh . /tmp/adp-source.zip
+          aws s3 cp /tmp/adp-source.zip "s3://${STATE_BUCKET}/codebuild/adp-source.zip"
+
+      - name: Smoke-build image (CodeBuild, no push)
+        run: |
+          BUILD_ID=$(aws codebuild start-build \
+            --project-name adp-dev-gateway-build \
+            --buildspec-override codebuild/bs-gateway-smoke.yml \
+            --query 'build.id' --output text)
+          echo "Started CodeBuild: ${BUILD_ID}"
+          while true; do
+            STATUS=$(aws codebuild batch-get-builds --ids "${BUILD_ID}" \
+              --query 'builds[0].buildStatus' --output text)
+            echo "$(date +%H:%M:%S) status=${STATUS}"
+            case "$STATUS" in
+              SUCCEEDED) exit 0 ;;
+              FAILED|FAULT|TIMED_OUT|STOPPED)
+                aws codebuild batch-get-builds --ids "${BUILD_ID}" \
+                  --query 'builds[0].logs.deepLink' --output text
+                exit 1 ;;
+            esac
+            sleep 20
+          done

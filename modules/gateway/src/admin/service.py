@@ -133,6 +133,7 @@ class AdminService:
             settings=org.settings or {},
             github_installation_ids=org.github_installation_ids or [],
             cognito_client_ids=org.cognito_client_ids or [],
+            member_approval_policy=org.member_approval_policy,
             created_at=org.created_at,
         )
 
@@ -163,6 +164,7 @@ class AdminService:
             settings=org.settings or {},
             github_installation_ids=org.github_installation_ids or [],
             cognito_client_ids=org.cognito_client_ids or [],
+            member_approval_policy=org.member_approval_policy,
             created_at=org.created_at,
         )
 
@@ -270,6 +272,10 @@ class AdminService:
         if request.cognito_client_ids is not None:
             org.cognito_client_ids = request.cognito_client_ids
 
+        # Issue #2984: Update member approval policy if provided
+        if request.member_approval_policy is not None:
+            org.member_approval_policy = request.member_approval_policy
+
         await self.db.commit()
         await self.db.refresh(org)
 
@@ -294,6 +300,7 @@ class AdminService:
             settings=org.settings or {},
             github_installation_ids=org.github_installation_ids or [],
             cognito_client_ids=org.cognito_client_ids or [],
+            member_approval_policy=org.member_approval_policy,
             created_at=org.created_at,
         )
 
