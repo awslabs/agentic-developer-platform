@@ -35,6 +35,8 @@ interface GitHubTileProps {
   onRotateKey: () => Promise<void>;
   /** Called to disconnect (unregister) the App entirely. */
   onDisconnectApp: () => Promise<void>;
+  /** Issue #3071: Called to switch the active workspace (tenant). */
+  onSwitchTenant?: (tenantId: string) => Promise<void>;
 }
 
 export function GitHubTile({
@@ -49,6 +51,7 @@ export function GitHubTile({
   onRegister,
   onRotateKey,
   onDisconnectApp,
+  onSwitchTenant,
 }: GitHubTileProps) {
   // For non-platform-admins, appStatus is null (they can't call the status endpoint).
   // In that case, assume registered so the existing install UI is shown.
@@ -168,7 +171,7 @@ export function GitHubTile({
               <div className="h-16 rounded-lg bg-gray-100 dark:bg-gray-800" />
             </div>
           ) : connections.length > 0 ? (
-            <ConnectionsList connections={connections} onDisconnect={onDisconnect} />
+            <ConnectionsList connections={connections} onDisconnect={onDisconnect} onSwitchTenant={onSwitchTenant} />
           ) : null}
         </>
       )}
@@ -198,10 +201,13 @@ function deriveGroupDisplayName(conns: GitHubConnectionItem[]): string {
 function ConnectionsList({
   connections,
   onDisconnect,
+  onSwitchTenant,
 }: {
   connections: GitHubConnectionItem[];
   onDisconnect: (installationId: number) => Promise<void>;
+  onSwitchTenant?: (tenantId: string) => Promise<void>;
 }) {
+  const [switchingTenantId, setSwitchingTenantId] = useState<string | null>(null);
   // Check if we have multi-workspace data (tenant_id present on any connection)
   const isMultiWorkspace = connections.some((c) => c.tenant_id != null);
 
@@ -240,6 +246,21 @@ function ConnectionsList({
     return aName.localeCompare(bName);
   });
 
+  // Find the active tenant name for the "Viewing" chip context
+  const activeTenantName = sortedEntries.find(
+    ([, conns]) => conns[0]?.is_active_tenant,
+  )?.[1]?.[0]?.tenant_name ?? 'another workspace';
+
+  const handleSwitch = async (tenantId: string) => {
+    if (!onSwitchTenant) return;
+    setSwitchingTenantId(tenantId);
+    try {
+      await onSwitchTenant(tenantId);
+    } finally {
+      setSwitchingTenantId(null);
+    }
+  };
+
   return (
     <div className="mt-4 space-y-4">
       {sortedEntries.map(([groupId, groupConns]) => {
@@ -257,9 +278,19 @@ function ConnectionsList({
                   Active
                 </span>
               ) : (
-                <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-400">
-                  Viewing
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                  Viewing — you&apos;re working in {activeTenantName}
                 </span>
+              )}
+              {!isActive && onSwitchTenant && (
+                <button
+                  type="button"
+                  onClick={() => handleSwitch(groupId)}
+                  disabled={switchingTenantId === groupId}
+                  className="inline-flex items-center rounded-md bg-primary-50 px-2 py-0.5 text-xs font-medium text-primary-700 hover:bg-primary-100 disabled:opacity-50 dark:bg-primary-900/30 dark:text-primary-300 dark:hover:bg-primary-900/50"
+                >
+                  {switchingTenantId === groupId ? 'Switching…' : 'Switch to this workspace'}
+                </button>
               )}
             </div>
             <div className="space-y-3">

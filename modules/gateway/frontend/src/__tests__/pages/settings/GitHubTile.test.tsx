@@ -457,7 +457,7 @@ describe('GitHubTile', () => {
     it('shows "Viewing" badge for non-active workspace groups (not "Read-only")', () => {
       render(<GitHubTile {...props} />);
 
-      expect(screen.getByText('Viewing')).toBeInTheDocument();
+      expect(screen.getByText(/Viewing/)).toBeInTheDocument();
       expect(screen.queryByText('Read-only')).not.toBeInTheDocument();
     });
 

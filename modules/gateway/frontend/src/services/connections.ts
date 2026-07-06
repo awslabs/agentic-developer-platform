@@ -124,6 +124,25 @@ export async function deleteGitHubConnection(
 }
 
 // ---------------------------------------------------------------------------
+// Switch tenant (Issue #3071: one-click workspace switching)
+// ---------------------------------------------------------------------------
+
+export interface SwitchTenantResponse {
+  active_tenant_id: string;
+}
+
+/**
+ * Switch the caller's active tenant (workspace).
+ * After switching, refetch connections to reflect the new active state.
+ */
+export async function switchTenant(tenantId: string): Promise<SwitchTenantResponse> {
+  return apiClient.post<SwitchTenantResponse>(
+    '/admin/connections/switch-tenant',
+    { tenant_id: tenantId },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // GitHub App registration + lifecycle (Issue #2596, platform_admin only)
 // ---------------------------------------------------------------------------
 

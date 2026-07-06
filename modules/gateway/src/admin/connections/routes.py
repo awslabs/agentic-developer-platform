@@ -47,6 +47,8 @@ from .schemas import (
     RegisterAppStartRequest,
     RegisterAppStartResponse,
     RotateKeyResponse,
+    SwitchTenantRequest,
+    SwitchTenantResponse,
 )
 from .service import (
     delete_connection,
@@ -229,12 +231,24 @@ async def get_connections(
             pg_user_id = (await db.execute(user_stmt)).scalar_one_or_none()
 
             if pg_user_id:
-                membership_stmt = select(TenantMembership.tenant_id).where(
+                membership_stmt = select(
+                    TenantMembership.tenant_id,
+                    TenantMembership.is_active,
+                ).where(
                     TenantMembership.user_id == pg_user_id,
                 )
-                tenant_ids = [row[0] for row in (await db.execute(membership_stmt))]
+                rows = (await db.execute(membership_stmt)).all()
+                tenant_ids = [row[0] for row in rows]
                 if len(tenant_ids) > 1:
                     member_tenant_ids = tenant_ids
+
+                # Issue #3071: Prefer the DB is_active row over the token claim
+                # for determining the caller's active tenant. After a switch-tenant
+                # call, the token still holds the old org_id until refresh — but the
+                # DB is the source of truth for which workspace is active.
+                active_rows = [row for row in rows if row[1]]
+                if active_rows:
+                    effective_org_id = active_rows[0][0]
         except Exception as exc:
             # Non-fatal: fall back to single-org behavior if membership lookup fails
             logger.debug("multi-tenant membership lookup failed (falling back to single-org): %s", exc)
@@ -253,6 +267,95 @@ async def get_connections(
     except Exception as exc:
         logger.error("list-connections failed for org=%s: %s", current_user.org_id, exc)
         raise HTTPException(status_code=500, detail="Failed to list connections") from exc
+
+
+@router.post("/switch-tenant", response_model=SwitchTenantResponse)
+async def switch_tenant(
+    body: SwitchTenantRequest,
+    current_user: TokenContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> SwitchTenantResponse:
+    """Switch the caller's active tenant (workspace).
+
+    Issue #3071: One-click workspace switching from the Connections page.
+    Atomically flips is_active on TenantMembership rows — deactivates the
+    current active row and activates the target. Verifies the caller has a
+    membership row for the target tenant before switching.
+
+    After the switch, get_connections prefers the DB is_active row over the
+    token claim, so a page refresh reflects the new active tenant without
+    requiring re-login.
+    """
+    from sqlalchemy import select, update
+
+    from src.shared.models.onboarding import TenantMembership
+    from src.shared.models.organization import User
+
+    try:
+        # Resolve Postgres user ID from Cognito sub (same pattern as get_connections)
+        user_stmt = select(User.id).where(User.cognito_sub == current_user.user_id)
+        pg_user_id = (await db.execute(user_stmt)).scalar_one_or_none()
+
+        if not pg_user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="User not found — cannot switch tenant.",
+            )
+
+        # Verify caller has a membership row for the target tenant
+        target_membership_stmt = select(TenantMembership).where(
+            TenantMembership.user_id == pg_user_id,
+            TenantMembership.tenant_id == body.tenant_id,
+        )
+        target_membership = (await db.execute(target_membership_stmt)).scalar_one_or_none()
+
+        if not target_membership:
+            raise HTTPException(
+                status_code=403,
+                detail="No membership for the target tenant.",
+            )
+
+        # If already active, no-op
+        if target_membership.is_active:
+            return SwitchTenantResponse(active_tenant_id=body.tenant_id)
+
+        # Atomically switch: deactivate all caller's active memberships,
+        # then activate the target. Single transaction, explicit commit.
+        deactivate_stmt = (
+            update(TenantMembership)
+            .where(
+                TenantMembership.user_id == pg_user_id,
+                TenantMembership.is_active == True,  # noqa: E712
+            )
+            .values(is_active=False)
+        )
+        await db.execute(deactivate_stmt)
+
+        activate_stmt = (
+            update(TenantMembership)
+            .where(
+                TenantMembership.user_id == pg_user_id,
+                TenantMembership.tenant_id == body.tenant_id,
+            )
+            .values(is_active=True)
+        )
+        await db.execute(activate_stmt)
+
+        # Explicit commit — not just flush (#3058 lesson)
+        await db.commit()
+
+        return SwitchTenantResponse(active_tenant_id=body.tenant_id)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "switch-tenant failed for user=%s target=%s: %s",
+            current_user.user_id,
+            body.tenant_id,
+            exc,
+        )
+        raise HTTPException(status_code=500, detail="Failed to switch tenant") from exc
 
 
 @router.delete("/github/{installation_id}", response_model=DeleteConnectionResponse)

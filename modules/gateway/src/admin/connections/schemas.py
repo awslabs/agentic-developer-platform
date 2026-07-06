@@ -76,6 +76,23 @@ class ConnectionsListResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# switch-tenant (Issue #3071: one-click workspace switching)
+# ---------------------------------------------------------------------------
+
+
+class SwitchTenantRequest(BaseModel):
+    """Request body for POST /admin/connections/switch-tenant."""
+
+    tenant_id: str = Field(..., description="Target tenant (organization) ID to switch to")
+
+
+class SwitchTenantResponse(BaseModel):
+    """Response from POST /admin/connections/switch-tenant."""
+
+    active_tenant_id: str = Field(..., description="The newly active tenant ID after the switch")
+
+
+# ---------------------------------------------------------------------------
 # delete
 # ---------------------------------------------------------------------------
 

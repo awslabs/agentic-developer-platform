@@ -27,6 +27,7 @@ import {
   rotateGitHubAppKey,
   startGitHubAppRegistration,
   startGitHubInstall,
+  switchTenant,
   type AppStatusResponse,
   type GitHubConnectionItem,
 } from '@/services/connections';
@@ -214,6 +215,22 @@ export default function Connections() {
   };
 
   // -------------------------------------------------------------------------
+  // Switch tenant handler (Issue #3071)
+  // -------------------------------------------------------------------------
+
+  const handleSwitchTenant = async (tenantId: string) => {
+    try {
+      await switchTenant(tenantId);
+      toast.success('Switched workspace. Refreshing connections…');
+      await loadConnections();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to switch workspace';
+      toast.error(message);
+      throw err;
+    }
+  };
+
+  // -------------------------------------------------------------------------
   // Render
   // -------------------------------------------------------------------------
 
@@ -253,6 +270,7 @@ export default function Connections() {
           onRegister={handleRegister}
           onRotateKey={handleRotateKey}
           onDisconnectApp={handleDisconnectApp}
+          onSwitchTenant={handleSwitchTenant}
         />
 
         {/* Future integrations — placeholder tiles */}

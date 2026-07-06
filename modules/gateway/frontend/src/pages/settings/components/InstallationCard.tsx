@@ -78,7 +78,7 @@ export function InstallationCard({ connection, onDisconnect, readOnly = false }:
         >
           Manage repositories ↗
         </a>
-        {showDisconnect && (
+        {showDisconnect ? (
           <Button
             variant="danger"
             size="sm"
@@ -87,7 +87,14 @@ export function InstallationCard({ connection, onDisconnect, readOnly = false }:
           >
             {isDisconnecting ? 'Disconnecting…' : confirmDelete ? 'Confirm?' : 'Disconnect'}
           </Button>
-        )}
+        ) : readOnly ? (
+          <span
+            className="text-xs text-gray-400 dark:text-gray-500"
+            title="Switch to this workspace to manage connections"
+          >
+            Disconnect unavailable
+          </span>
+        ) : null}
       </div>
     </div>
   );
