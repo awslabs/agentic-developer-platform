@@ -303,6 +303,45 @@ else
 fi
 
 echo ""
+echo "=== Phase 5.5: Patch scope docs with gate behavior ==="
+
+# Inject mandatory gate behavior into any installed AIDLC scope docs.
+# This ensures the agent sees the gate rule even if reading only the scope file.
+GATE_MARKER="<!-- aidlc-gate-behavior-injected -->"
+GATE_PATCH="
+## Gate behavior (injected by install-aidlc.sh)
+
+Every active stage in this scope gates before advancing. There is no auto-advance
+mode. The agent MUST:
+1. Execute ONE stage per run
+2. Commit aidlc/ state to the work branch
+3. Post a gate comment (with \`<!-- aidlc-gate:<stage> -->\` marker)
+4. END the run — do not call \`aidlc-state.ts advance\` in the same session
+
+Scope (poc/auto/workshop) controls which stages are active — not whether they
+require human approval before advancing.
+"
+
+# Patch all .claude/scopes/*.md files that don't already have the marker
+if [ -d "$TARGET_REPO/.claude/scopes" ]; then
+  for scope_file in "$TARGET_REPO/.claude/scopes"/*.md; do
+    [ -f "$scope_file" ] || continue
+    if ! grep -q "$GATE_MARKER" "$scope_file"; then
+      echo "  Patching gate behavior into: $(basename "$scope_file")"
+      {
+        echo ""
+        echo "$GATE_MARKER"
+        echo "$GATE_PATCH"
+      } >> "$scope_file"
+    else
+      echo "  Gate behavior already present in: $(basename "$scope_file") — skipping."
+    fi
+  done
+else
+  echo "  No .claude/scopes/ directory found — skipping scope patch."
+fi
+
+echo ""
 echo "=== Phase 6: Write version file ==="
 mkdir -p "$TARGET_REPO/aidlc"
 echo "$TAG" > "$TARGET_REPO/aidlc/.aidlc-version"
