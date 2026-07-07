@@ -407,6 +407,13 @@ def _index_python(clone_path: str) -> tuple[str | None, str | None]:
         proc_env["PATH"] = venv_bin + ":" + proc_env.get("PATH", "")
         proc_env["VIRTUAL_ENV"] = venv_path
 
+    # Raise Node.js heap limit for scip-python: the default ~2 GB max-old-space-size
+    # causes OOM on large repos (e.g. 1,202-file Vibe-Trading dies at 1,989 MB during
+    # "Parse and emit SCIP"). 4096 MB is comfortably above the observed death point
+    # and below the worker pod memory limit. Use setdefault so operators can override
+    # via pod env. (#3149)
+    proc_env.setdefault("NODE_OPTIONS", "--max-old-space-size=4096")
+
     cmd = ["scip-python", "index", "--project-name", os.path.basename(clone_path)]
     cmd.extend(["--output", scip_output, clone_path])
 
@@ -414,7 +421,7 @@ def _index_python(clone_path: str) -> tuple[str | None, str | None]:
         result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
             cmd,
             capture_output=True,
-            timeout=600,
+            timeout=1800,
             cwd=clone_path,
             env=proc_env,
         )
@@ -425,7 +432,7 @@ def _index_python(clone_path: str) -> tuple[str | None, str | None]:
     except FileNotFoundError:
         return None, "scip-python not found in PATH"
     except subprocess.TimeoutExpired:
-        return None, "scip-python timed out (600s)"
+        return None, "scip-python timed out (1800s)"
 
 
 def _index_typescript(clone_path: str) -> tuple[str | None, str | None]:

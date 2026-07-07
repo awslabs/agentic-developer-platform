@@ -568,6 +568,100 @@ class TestIndexPythonEnvHandling:
             )
 
 
+class TestIndexPythonHeapAndTimeout:
+    """Tests for #3149: NODE_OPTIONS max-old-space-size and raised timeout.
+
+    scip-python OOMs at Node's default ~2 GB heap on large repos. The fix sets
+    NODE_OPTIONS=--max-old-space-size=4096 in the subprocess env and raises the
+    timeout from 600s to 1800s.
+    """
+
+    def test_node_options_set_in_subprocess_env(self):
+        """NODE_OPTIONS with --max-old-space-size must be present in proc env."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            captured_env = {}
+
+            def mock_run(cmd, **kwargs):
+                captured_env.update(kwargs.get("env", {}))
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_result.stderr = b"mock failure"
+                return mock_result
+
+            with patch("subprocess.run", side_effect=mock_run):
+                _index_python(tmpdir)
+
+            assert "NODE_OPTIONS" in captured_env, "NODE_OPTIONS must be set in subprocess env"
+            assert "--max-old-space-size" in captured_env["NODE_OPTIONS"], (
+                f"NODE_OPTIONS should contain --max-old-space-size, got: {captured_env['NODE_OPTIONS']}"
+            )
+
+    def test_node_options_heap_size_4096(self):
+        """NODE_OPTIONS should set max-old-space-size=4096."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            captured_env = {}
+
+            def mock_run(cmd, **kwargs):
+                captured_env.update(kwargs.get("env", {}))
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_result.stderr = b"mock failure"
+                return mock_result
+
+            with patch("subprocess.run", side_effect=mock_run):
+                _index_python(tmpdir)
+
+            assert captured_env.get("NODE_OPTIONS") == "--max-old-space-size=4096"
+
+    def test_node_options_respects_existing_override(self):
+        """If NODE_OPTIONS is already set in env, _index_python preserves it (setdefault)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            captured_env = {}
+
+            def mock_run(cmd, **kwargs):
+                captured_env.update(kwargs.get("env", {}))
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_result.stderr = b"mock failure"
+                return mock_result
+
+            with patch.dict(os.environ, {"NODE_OPTIONS": "--max-old-space-size=8192"}):
+                with patch("subprocess.run", side_effect=mock_run):
+                    _index_python(tmpdir)
+
+            # Should preserve the operator's override, not overwrite with 4096
+            assert captured_env.get("NODE_OPTIONS") == "--max-old-space-size=8192"
+
+    def test_subprocess_timeout_is_1800(self):
+        """scip-python subprocess timeout must be 1800s (raised from 600s for #3149)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            captured_kwargs = {}
+
+            def mock_run(cmd, **kwargs):
+                captured_kwargs.update(kwargs)
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_result.stderr = b"mock failure"
+                return mock_result
+
+            with patch("subprocess.run", side_effect=mock_run):
+                _index_python(tmpdir)
+
+            assert captured_kwargs.get("timeout") == 1800, (
+                f"Python indexer timeout should be 1800s, got: {captured_kwargs.get('timeout')}"
+            )
+
+    def test_timeout_error_message_reflects_1800s(self):
+        """TimeoutExpired error message should say 1800s, not 600s."""
+        import subprocess as sp
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("subprocess.run", side_effect=sp.TimeoutExpired("scip-python", 1800)):
+                _, error = _index_python(tmpdir)
+
+            assert "1800s" in error, f"Timeout error should mention 1800s, got: {error}"
+
+
 class TestEnsurePyrightSection:
     """Tests for _ensure_pyright_section() — auto-injection of [tool.pyright].
 
