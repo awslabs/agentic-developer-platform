@@ -3,7 +3,7 @@
 **Issue**: #3159 (spike for EPIC #3158)
 **Author**: @agent-architect
 **Date**: 2026-07-07
-**Status**: Proposed
+**Status**: Proposed — **amended 2026-07-07 with the Inception-Only scope revision (§ Scope Revision, below), which supersedes the full-lifecycle scope assumed in Decisions 3, 5, 6 and the original child breakdown**
 
 ---
 
@@ -13,6 +13,63 @@ This design note settles how AIDLC v2 (`github.com/awslabs/aidlc-workflows` bran
 the `dist/claude/` distribution) runs on ADP's headless, ephemeral, comment-triggered
 hosted agents. It answers 8 design questions with decided recommendations and rejected
 alternatives, and concludes with an ordered child-issue breakdown for EPIC #3158.
+
+---
+
+## Scope Revision (2026-07-07): Inception-Only — AIDLC as ADP's Requirements Layer
+
+**Decision (EPIC owner)**: ADP runs AIDLC's **Ideation + Inception phases only** —
+intent capture → requirements analysis → user stories → application design → units
+generation → delivery planning. AIDLC's **Construction and Operation phases are out of
+scope**: ADP's existing orchestration-issue loop already owns build/deploy, and running
+AIDLC bolts alongside it would create two competing code-production systems on one repo.
+
+**Product framing**: ambiguous idea in → executable, test-gated GitHub backlog out.
+The user opens an issue from an AIDLC issue template (or tags `@agent-aidlc`), answers
+4–6 gated interview rounds as issue comments, and receives — instead of a document —
+one EPIC + ordered child stories in the repo's mandatory five-section format, linked as
+native GitHub sub-issues, ready for the existing autonomous developer loop.
+
+**The handoff adapter (new component, replaces AIDLC Construction)**: after delivery
+planning is approved, a final ADP-owned stage emits GitHub issues from the AIDLC
+artifacts:
+
+| AIDLC artifact | Lands in the emitted issues as |
+|---|---|
+| Requirements + user stories | Child `## Description` + `## Impact analysis` |
+| Application design (per-unit slice) | Child `## Design` (files, API contracts, reuse table) |
+| Delivery planning (dependency order) | Sub-issue ordering + `## Dependencies` |
+| Quality-agent test strategy (per unit) | Child `## Validation` as **deterministic gates**: named test files, coverage thresholds, required CI checks — no judgment-call "verify it works" language |
+| Full `aidlc/` audit trail | Committed on the branch; linked from the EPIC as the decision record |
+
+**Effect on the decisions below**:
+- **Decisions 1, 2, 4, 7** (bun, conditional `Task`, settings-strip, install script)
+  stand unchanged — they are phase-agnostic runtime plumbing.
+- **Decision 3** (gate model A) stands, but applies to ~4–6 document gates per intent,
+  not 32 stages; document-producing stages fit the pod deadline far more comfortably,
+  and the per-bolt draft-PR gate machinery is dropped.
+- **Decision 5** (persona mapping): only the Ideation/Inception agents run as `Task`
+  subagents (product, design, delivery, architect, aws-platform, compliance, devsecops
+  in support, product-lead + architecture-reviewer as reviewers). developer, quality
+  (except test-strategy input to the adapter), pipeline-deploy, operations subagents
+  are **not dispatched** — their lifecycle phases don't run on ADP.
+- **Decision 6** (cost): inception-only workflows are document-producing; the `poc`/
+  `workshop` scope allowlist still applies, but expected spend per intent drops well
+  below the original full-lifecycle estimates.
+- **Decision 8** (child breakdown): superseded by the revised breakdown maintained on
+  EPIC #3158 (engine track + UX/adapter track). The original table below is retained
+  for reference but items 3/4 shrink (fewer gates), and the draft-PR/bolt items do not
+  apply.
+- **Trigger/UX additions** (from EPIC-owner review, not in the original 8 questions):
+  new `@agent-aidlc` persona in `MENTION_TO_PERSONA` (mind dict-order routing); an
+  `issues.opened` handler in webhook-ingress gated on the AIDLC issue-template label
+  (today only `issue_comment.created`, `issues.labeled`, and PR events dispatch);
+  gate comments carry reply-to-answer instructions and, where multi-field input is
+  needed, a prefilled issue-form deep-link. Checkbox-tick and emoji-reaction gates are
+  ruled out (no usable webhook). Check-run action buttons are a fast-follow, not v1.
+- **v1 gate enforcement is prompt-driven** (the persona prompt instructs commit-state →
+  post gate comment → end run); the hook-enforced gate (original children 3/4) hardens
+  this after the E2E proves session-resume from committed state works headless.
 
 ---
 
