@@ -100,6 +100,11 @@ const BEADS_S3_BUCKET = process.env.BEADS_S3_BUCKET || 'adp-agent-state';
 const BEADS_S3_REGION = process.env.BEADS_S3_REGION || AWS_REGION;
 const BEADS_S3_PATH = process.env.BEADS_S3_PATH || `beads/${REPO_NAME}`;
 
+// AIDLC detection — enable Task tool only when workspace carries an AIDLC install
+// (Issue #3167, EPIC #3158 Decision 2). The `aidlc/` directory is the canonical
+// install marker (contains `spaces/default/memory/`).
+const AIDLC_ENABLED = fs.existsSync(path.join(CWD, 'aidlc'));
+
 // ============================================================================
 // CloudWatch Logging
 // ============================================================================
@@ -1133,6 +1138,9 @@ Now, complete the assigned task.`;
   // ─────────────────────────────────────────────────────────────────────────
 
   log('INFO', 'Starting agent execution...');
+  if (AIDLC_ENABLED) {
+    log('INFO', 'AIDLC install detected — Task tool enabled');
+  }
   console.log('\n' + '═'.repeat(60));
   console.log(`Starting @agent-${AGENT_TYPE} Query`);
   console.log('═'.repeat(60) + '\n');
@@ -1188,6 +1196,7 @@ Now, complete the assigned task.`;
             allowedTools: [
               'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill',
               ...(KNOWLEDGE_LAYER_ENABLED ? KNOWLEDGE_LAYER_TOOLS : []),
+              ...(AIDLC_ENABLED ? ['Task'] : []),
             ],
             ...(KNOWLEDGE_LAYER_ENABLED ? {
               mcpServers: { [KNOWLEDGE_LAYER_SERVER_NAME]: getKnowledgeLayerMcpConfig() },
