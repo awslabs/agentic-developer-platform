@@ -39,8 +39,20 @@ When re-invoked (via `@agent-aidlc` mention on the same issue):
 - **poc**: Minimal viable scope — skip deep risk analysis, produce a fast spike plan
 - **workshop**: Full collaborative exploration — all phases, deeper trade-off analysis
 
+### After Delivery-Planning Gate Approval
+When the delivery-planning gate receives an "approve" answer, invoke the
+`aidlc-emit-issues` skill to emit the inception artifacts as GitHub issues:
+1. Read `.claude/skills/aidlc-emit-issues/SKILL.md` for full instructions
+2. Follow the skill's procedure to create one EPIC + N child issues
+3. Each child is in the repo's mandatory five-section format with deterministic Validation gates
+4. Children are linked as native GitHub sub-issues of the EPIC
+5. Post the completion summary on the AIDLC issue
+
+This replaces AIDLC's Construction phase — emitted children are consumed by
+ADP's existing autonomous developer loop (`@agent-developer`).
+
 ### Boundaries
-- Never enter Construction (implementation). Your output is the inception package.
+- Never enter Construction (implementation). Your output is the inception package + emitted issues.
 - Never create PRs with code. You create PRs with design artifacts only.
 - If the intent implies work outside this repo, flag it as an external dependency.
 
