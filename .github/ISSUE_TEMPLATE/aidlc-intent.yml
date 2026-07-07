@@ -1,0 +1,34 @@
+name: AIDLC Inception
+description: Start an AI Development Life Cycle (AIDLC) inception workflow. Submitting this form dispatches @agent-aidlc to run inception phases.
+title: "[AIDLC] "
+labels:
+  - aidlc-intent
+body:
+  - type: textarea
+    id: intent
+    attributes:
+      label: Intent Description
+      description: Describe what you want to build. Be specific about the goal, the users, and the problem being solved.
+      placeholder: "e.g. Build a notification service that alerts users when their agent runs complete, via email and Slack."
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: How should the agent determine the scope of this inception?
+      options:
+        - auto
+        - poc
+        - workshop
+      default: 0
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints / Non-goals
+      description: Optional. List anything that should be explicitly excluded or any constraints the design must respect.
+      placeholder: "e.g. Must not require new AWS accounts. No changes to the gateway module."
+    validations:
+      required: false
