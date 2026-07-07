@@ -22,6 +22,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.internal.auth_deps import verify_internal_or_irsa
+from src.internal.credential_binding import resolve_credential_binding
 from src.internal.sts_assume_service import STSAssumeError, assume_role
 from src.shared.config import get_settings
 from src.shared.database import get_db
@@ -58,6 +59,7 @@ class AssumeRoleRequestBody(BaseModel):
     service: str = "aws"
     label: str | None = None
     purpose: str | None = None
+    invocation_id: str | None = None
 
 
 class AssumeRoleResponse(BaseModel):
@@ -160,7 +162,17 @@ async def credential_assume_role(
     provenance_id = str(uuid.uuid4())
     settings = get_settings()
 
-    user = await _get_user(body.user_id, db)
+    # Issue #3175: Credential-authorization binding (S2).
+    # Resolve the effective user from the webhook-events registry.
+    binding = await asyncio.to_thread(
+        resolve_credential_binding,
+        invocation_id=body.invocation_id,
+        body_user_id=body.user_id,
+        settings=settings,
+    )
+    effective_user_id = binding.resolved_user_id
+
+    user = await _get_user(effective_user_id, db)
     # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,
@@ -211,6 +223,7 @@ async def credential_assume_role(
     label_for_profile = body.label or cred.label or "default"
 
     # Perform the STS AssumeRole call (blocking — run in thread).
+    # Issue #3175 §Q6: session tags use authorized_user_id (from registry), not body.
     try:
         result = await asyncio.to_thread(
             assume_role,
@@ -218,7 +231,7 @@ async def credential_assume_role(
             external_id=external_id,
             session_duration_seconds=session_duration,
             default_region=default_region,
-            user_id=body.user_id,
+            user_id=effective_user_id,
             agent_id=body.agent_id,
             task_id=body.task_id,
             label=label_for_profile,
@@ -234,12 +247,16 @@ async def credential_assume_role(
             details={
                 "provenance_id": provenance_id,
                 "user_id": body.user_id,
+                "authorized_user_id": effective_user_id,
                 "agent_id": body.agent_id,
                 "task_id": body.task_id,
                 "service": body.service,
                 "label": body.label,
                 "credential_id": cred.id,
                 "purpose": body.purpose,
+                "invocation_id": body.invocation_id,
+                "binding_from_registry": binding.from_registry,
+                "binding_drift_detected": binding.drift_detected,
                 "success": False,
                 "error_code": exc.code,
             },
@@ -267,12 +284,16 @@ async def credential_assume_role(
         details={
             "provenance_id": provenance_id,
             "user_id": body.user_id,
+            "authorized_user_id": effective_user_id,
             "agent_id": body.agent_id,
             "task_id": body.task_id,
             "service": body.service,
             "label": body.label,
             "credential_id": cred.id,
             "purpose": body.purpose,
+            "invocation_id": body.invocation_id,
+            "binding_from_registry": binding.from_registry,
+            "binding_drift_detected": binding.drift_detected,
             "success": True,
             # NOTE: role_arn intentionally logged in audit (server-side only, not returned to agent).
             "role_arn": role_arn,

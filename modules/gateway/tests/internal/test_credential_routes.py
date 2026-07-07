@@ -128,6 +128,9 @@ def _settings_mock() -> MagicMock:
     s.aws_region = "us-east-1"
     s.vault_raw_read_enabled = True
     s.vault_materialization_bucket = "test-bucket"
+    # Issue #3175: credential binding defaults to shadow mode (off).
+    s.enforce_credential_binding = False
+    s.webhook_events_table = "adp-test-webhook-events"
     return s
 
 

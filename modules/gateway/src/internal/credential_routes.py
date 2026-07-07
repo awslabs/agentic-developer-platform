@@ -38,6 +38,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.internal.auth_deps import verify_internal_or_irsa
+from src.internal.credential_binding import resolve_credential_binding
 from src.internal.credential_injector import FILE_CREDENTIAL_TYPES, inject_credential
 from src.shared.config import Settings, get_settings
 from src.shared.database import get_db
@@ -137,6 +138,7 @@ class RawReadBody(BaseModel):
     service: str
     label: str | None = None
     purpose: str | None = None
+    invocation_id: str | None = None
 
 
 class RawReadResponse(BaseModel):
@@ -672,7 +674,17 @@ async def credential_raw_read(
     # Scope gate.
     _check_agent_scope(x_agent_scopes, "credential:raw-read")
 
-    user = await _get_user_context(body.user_id, db, calling_endpoint="credential-raw-read")
+    # Issue #3175: Credential-authorization binding (S2).
+    # Resolve the effective user from the webhook-events registry.
+    binding = await asyncio.to_thread(
+        resolve_credential_binding,
+        invocation_id=body.invocation_id,
+        body_user_id=body.user_id,
+        settings=settings,
+    )
+    effective_user_id = binding.resolved_user_id
+
+    user = await _get_user_context(effective_user_id, db, calling_endpoint="credential-raw-read")
     # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,
@@ -694,6 +706,7 @@ async def credential_raw_read(
         details={
             "provenance_id": provenance_id,
             "user_id": body.user_id,
+            "authorized_user_id": effective_user_id,
             "agent_id": body.agent_id,
             "task_id": body.task_id,
             "service": body.service,
@@ -701,15 +714,19 @@ async def credential_raw_read(
             "credential_id": cred.id,
             "credential_type": cred.credential_type,
             "purpose": body.purpose,
+            "invocation_id": body.invocation_id,
+            "binding_from_registry": binding.from_registry,
+            "binding_drift_detected": binding.drift_detected,
         },
     )
     await db.commit()
 
     logger.info(
-        "Raw credential read provenance_id=%s service=%s agent=%s",
+        "Raw credential read provenance_id=%s service=%s agent=%s binding_from_registry=%s",
         provenance_id,
         body.service,
         body.agent_id,
+        binding.from_registry,
     )
     return RawReadResponse(
         value=secret_value,

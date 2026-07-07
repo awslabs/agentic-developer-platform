@@ -175,6 +175,9 @@ def _settings_mock(
     s.aws_region = "us-east-1"
     s.vault_proxy_host_allowlist = proxy_host_allowlist
     s.vault_proxy_require_https = proxy_require_https
+    # Issue #3175: credential binding defaults to shadow mode (off).
+    s.enforce_credential_binding = False
+    s.webhook_events_table = "adp-test-webhook-events"
     return s
 
 
