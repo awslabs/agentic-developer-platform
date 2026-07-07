@@ -1,0 +1,43 @@
+{
+  "model": "us.anthropic.claude-sonnet-4-20250514",
+  "provider": "bedrock",
+  "region": "us-west-2",
+  "baseUrl": "https://bedrock-runtime.us-west-2.amazonaws.com",
+  "apiKey": "sk-ant-fake-key-12345",
+  "env": {
+    "AWS_REGION": "us-west-2",
+    "AWS_DEFAULT_REGION": "us-west-2",
+    "ANTHROPIC_API_KEY": "sk-ant-fake-key-12345",
+    "ANTHROPIC_MODEL": "claude-sonnet-4-20250514",
+    "AIDLC_VERSION": "2.2.3",
+    "NODE_ENV": "production"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hook": "aidlc/hooks/pre-bash.sh"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hook": "aidlc/hooks/post-write.sh"
+      }
+    ]
+  },
+  "tools": {
+    "allowed": ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
+  },
+  "skills": [
+    "aidlc/skills/inception",
+    "aidlc/skills/construction"
+  ],
+  "agents": {
+    "product": "aidlc/agents/product.md",
+    "architect": "aidlc/agents/architect.md"
+  },
+  "permissions": {
+    "allow": ["Bash(*)", "Read(*)", "Write(*)"]
+  }
+}
