@@ -372,10 +372,14 @@ def query_impact(
     *,
     tenant_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Query Neptune for transitive callers of a symbol (impact analysis).
+    """Query Neptune for transitive callers/referencers of a symbol (impact analysis).
 
-    Uses bounded variable-length path [:CALLS*1..4], capped at 100 results,
-    ordered by distance (closest callers first).
+    Uses bounded variable-length path [:CALLS|REFERENCES*1..4], capped at 100
+    results, ordered by distance (closest callers/referencers first).
+
+    The label union covers both function-call edges (CALLS) and class/type/constant
+    usage edges (REFERENCES). scip-python models class usage as REFERENCES, so a
+    CALLS-only traversal would miss all class impact.
 
     When file is empty, matches by repo+name only (allows bare symbol queries).
 
@@ -409,7 +413,7 @@ def query_impact(
             MATCH (target:Symbol {{repo: $repo, file: $file, name: $symbol_name}})
             WHERE true{scope}
             WITH target
-            MATCH path = (caller:Symbol)-[:CALLS*1..4]->(target)
+            MATCH path = (caller:Symbol)-[:CALLS|REFERENCES*1..4]->(target)
             WHERE caller <> target
             RETURN caller.repo AS caller_repo, caller.file AS caller_file,
                    caller.name AS caller_name, caller.kind AS caller_kind,
@@ -424,7 +428,7 @@ def query_impact(
             MATCH (target:Symbol {{repo: $repo, name: $symbol_name}})
             WHERE true{scope}
             WITH target
-            MATCH path = (caller:Symbol)-[:CALLS*1..4]->(target)
+            MATCH path = (caller:Symbol)-[:CALLS|REFERENCES*1..4]->(target)
             WHERE caller <> target
             RETURN caller.repo AS caller_repo, caller.file AS caller_file,
                    caller.name AS caller_name, caller.kind AS caller_kind,
