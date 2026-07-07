@@ -201,6 +201,10 @@ jobs:
           # is safe — registry routes still mount; dispatch returns 503 until set.
           INGESTION_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/agent-context/ingestion-queue-url" "")
 
+          # #3182: Credential binding enforcement flag. Default "false" (shadow mode).
+          # Flipped to "true" ONLY by credential-binding-flip.yml after gate assertions pass.
+          ENFORCE_CREDENTIAL_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/enforce-credential-binding" "false")
+
           sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
               -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
               -e "s|__DB_HOST__|${DB_HOST}|g" \
@@ -223,6 +227,7 @@ jobs:
               -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
               -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
               -e "s|__AGENT_RUN_LOGS_BUCKET__|adp-${ENVIRONMENT}-agent-run-logs-${EFFECTIVE_ACCOUNT}|g" \
+              -e "s|__ENFORCE_CREDENTIAL_BINDING__|${ENFORCE_CREDENTIAL_BINDING}|g" \
               modules/gateway/k8s/configmap.yaml | kubectl apply -f -
 
           # --- Create K8s Secret from Secrets Manager (Section 2) ---

@@ -171,3 +171,15 @@ data:
   # Kill switch: set BG_MANTLE_ENABLED "false" and redeploy; route returns 503.
   BG_MANTLE_ENABLED: "true"
   BG_MANTLE_REGION: "us-east-1"
+
+  # =============================================================================
+  # Credential-authorization binding (EPIC #3172, S9 #3182).
+  # =============================================================================
+  # When "true", credential endpoints ENFORCE registry-based user resolution:
+  # missing invocation_id or empty authorized_user_id → 403.
+  # When "false" (default), shadow mode: resolve from registry, compare to body,
+  # emit drift/fallback metrics, but never block.
+  # Flipped via credential-binding-flip.yml (gated workflow_dispatch) — NOT
+  # editable manually. Reads from SSM: /adp/{env}/gateway/enforce-credential-binding
+  # =============================================================================
+  BG_ENFORCE_CREDENTIAL_BINDING: "__ENFORCE_CREDENTIAL_BINDING__"
