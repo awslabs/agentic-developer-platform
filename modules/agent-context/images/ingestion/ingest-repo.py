@@ -979,6 +979,19 @@ def scip_structural_ingest(
     result["indexed_language"] = successful_results[0].language
     result["dep_resolution"] = successful_results[0].dep_resolution
 
+    # Surface per-language failures so they're visible in stage metrics (#3132)
+    failed_results = [r for r in indexing_report.results if not r.success]
+    if failed_results:
+        result["failed_languages"] = [r.language for r in failed_results]
+        result["failed_language_errors"] = {r.language: r.error for r in failed_results}
+        for r in failed_results:
+            log.error(
+                "Language indexing failed for %s (%s): %s — graph will be partial",
+                org_repo,
+                r.language,
+                r.error,
+            )
+
     # Step 3: Decode each .scip and merge into one graph
     graphs = []
     for idx_result in successful_results:
@@ -1920,13 +1933,19 @@ def ingest_repo(
                             with tracker.stage("scip_structural") as ctx:
                                 edge_count = scip_result.get("edges", 0)
                                 node_count = scip_result.get("nodes", 0)
+                                metrics = {
+                                    "nodes": node_count,
+                                    "edges": edge_count,
+                                }
+                                # Include per-language failure info in metrics (#3132)
+                                failed_langs = scip_result.get("failed_languages")
+                                if failed_langs:
+                                    metrics["failed_languages"] = failed_langs
+                                    metrics["indexed_languages"] = scip_result.get(
+                                        "indexed_languages", []
+                                    )
                                 ctx.set_artifact(f"neptune:{org_repo}:edges={edge_count}")
-                                ctx.set_metrics(
-                                    {
-                                        "nodes": node_count,
-                                        "edges": edge_count,
-                                    }
-                                )
+                                ctx.set_metrics(metrics)
                                 ctx.verify(lambda: edge_count > 0)
                         elif scip_status == "no_languages":
                             tracker.mark_skipped("scip_structural", "no SCIP-supported languages")

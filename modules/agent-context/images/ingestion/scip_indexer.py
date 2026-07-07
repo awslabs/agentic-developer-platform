@@ -22,7 +22,6 @@ Design points:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
@@ -358,39 +357,57 @@ DEP_RESOLVERS: dict[str, callable] = {
 # ---------------------------------------------------------------------------
 
 
+def _ensure_pyright_section(clone_path: str) -> None:
+    """Ensure pyproject.toml has a [tool.pyright] section if it exists.
+
+    scip-python (some versions) hard-fails when pyproject.toml is present but
+    lacks [tool.pyright]. We append an empty section to the cloned copy (which
+    is disposable — cleanup_indexing_artifacts handles the clone).
+    """
+    pyproject_path = os.path.join(clone_path, "pyproject.toml")
+    if not os.path.isfile(pyproject_path):
+        return
+
+    try:
+        with open(pyproject_path, "r") as f:
+            content = f.read()
+    except OSError:
+        return
+
+    # Check if [tool.pyright] already exists (case-sensitive, per TOML spec)
+    if "[tool.pyright]" in content:
+        return
+
+    # Append an empty pyright section
+    with open(pyproject_path, "a") as f:
+        f.write("\n[tool.pyright]\n")
+    log.info("Appended empty [tool.pyright] section to %s", pyproject_path)
+
+
 def _index_python(clone_path: str) -> tuple[str | None, str | None]:
     """Run scip-python on a Python repo.
 
     Note: scip-python is an npm package (@sourcegraph/scip-python), NOT pip.
-    The --environment flag takes a JSON file path, NOT a venv directory.
+    Instead of passing --environment (which expects a JSON array of package
+    entries that's coupled to scip-python internals), we put the venv's bin/
+    on PATH so scip-python discovers packages via its own default flow.
     """
     scip_output = os.path.join(clone_path, "index.scip")
 
-    # Build environment JSON pointing to the venv (if it exists)
-    venv_path = os.path.join(clone_path, ".scip-venv")
-    env_args = []
-    if os.path.isdir(venv_path):
-        # scip-python --environment takes a JSON file with python path info
-        env_json = {
-            "pythonPath": os.path.join(venv_path, "bin", "python3"),
-            "sitePackagesPath": "",  # Auto-detected from pythonPath
-        }
-        # Find site-packages
-        lib_path = os.path.join(venv_path, "lib")
-        if os.path.isdir(lib_path):
-            for d in os.listdir(lib_path):
-                sp = os.path.join(lib_path, d, "site-packages")
-                if os.path.isdir(sp):
-                    env_json["sitePackagesPath"] = sp
-                    break
+    # Ensure pyproject.toml has [tool.pyright] if it exists (scip-python needs it)
+    _ensure_pyright_section(clone_path)
 
-        env_file = os.path.join(clone_path, ".scip-environment.json")
-        with open(env_file, "w") as f:
-            json.dump(env_json, f)
-        env_args = ["--environment", env_file]
+    # Build subprocess environment: put venv bin on PATH if venv exists,
+    # letting scip-python discover packages via its default discovery flow.
+    # This avoids the --environment JSON shape coupling that caused #3132.
+    venv_path = os.path.join(clone_path, ".scip-venv")
+    proc_env = os.environ.copy()
+    if os.path.isdir(venv_path):
+        venv_bin = os.path.join(venv_path, "bin")
+        proc_env["PATH"] = venv_bin + ":" + proc_env.get("PATH", "")
+        proc_env["VIRTUAL_ENV"] = venv_path
 
     cmd = ["scip-python", "index", "--project-name", os.path.basename(clone_path)]
-    cmd.extend(env_args)
     cmd.extend(["--output", scip_output, clone_path])
 
     try:
@@ -399,6 +416,7 @@ def _index_python(clone_path: str) -> tuple[str | None, str | None]:
             capture_output=True,
             timeout=600,
             cwd=clone_path,
+            env=proc_env,
         )
         if result.returncode == 0 and os.path.isfile(scip_output):
             return scip_output, None
