@@ -33,6 +33,9 @@ REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 _dynamodb = None
 _cloudwatch = None
+# Exposed for callers that need the tenant_item after resolve() completes
+# (e.g. handler's _check_min_author_association). Set during resolve().
+last_tenant_item: dict | None = None
 
 
 @dataclass
@@ -95,6 +98,24 @@ def _emit_cross_tenant_metric() -> None:
         )
     except Exception as e:
         logger.warning("Failed to emit CrossTenantMismatch metric: %s", e)
+
+
+def _emit_cross_tenant_denied_metric() -> None:
+    """Emit CloudWatch metric when cross-tenant trigger is denied by policy."""
+    try:
+        cw = _get_cloudwatch()
+        cw.put_metric_data(
+            Namespace="ADP/IdentityResolver",
+            MetricData=[
+                {
+                    "MetricName": "CrossTenantDenied",
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:
+        logger.warning("Failed to emit CrossTenantDenied metric: %s", e)
 
 
 def _emit_bot_action_metric(bot_kind: str, org_id: str) -> None:
@@ -236,10 +257,13 @@ def resolve(
     Returns:
         Tuple of (ResolvedIdentity or None, outcome_reason).
         outcome_reason is one of: "ok", "unknown_installation", "unknown_user",
-        "cross_tenant_identity".
+        "cross_tenant_identity", "cross_tenant_denied".
     """
+    global last_tenant_item
+
     if not IDENTITY_INDEX_TABLE:
         logger.error("IDENTITY_INDEX_TABLE env var is not set")
+        last_tenant_item = None
         return None, "unknown_installation"
 
     try:
@@ -253,6 +277,7 @@ def resolve(
             }
         )
         tenant_item = tenant_resp.get("Item")
+        last_tenant_item = tenant_item
         if not tenant_item:
             # Issue #2950: DDB miss — fall through to Postgres via the gateway
             # internal API when the flag is enabled. This covers installations
@@ -347,8 +372,9 @@ def resolve(
                         sender_id,
                     )
                     _emit_identity_index_drift_metric()
-                    # Trust Postgres — overwrite user_item
-                    user_item = pg_result
+                    # Trust Postgres for canonical fields but preserve DDB-only
+                    # attrs (member_org_ids, user_kind) that PG doesn't carry.
+                    user_item = {**user_item, **pg_result}
             elif pg_result and not user_item:
                 # v2/legacy missed but Postgres has it (write-through lag)
                 logger.info(
@@ -365,30 +391,63 @@ def resolve(
             logger.info("Unknown sender_id=%d — no identity-index entry", sender_id)
             return None, "unknown_user"
 
-        # Step 3: Cross-tenant membership
-        # A user's `user_identities` row pins them to ONE home tenant (the one
-        # where admin approval happened). But GitHub users can legitimately
-        # belong to many orgs — a sophos employee has a personal GitHub too.
-        # When they comment on a repo in another ADP tenant, we route the
-        # event to the REPO's tenant (installation.org_id), not the sender's
-        # home tenant. The commenter just has to be a known ADP user.
+        # Step 3: Cross-tenant membership enforcement (Issue #3134)
+        # A user's identity row pins them to ONE home tenant. When they comment
+        # on a repo in another ADP tenant, we check the tenant's trigger_policy:
         #
-        # Trade-off (accepted): billing/quota attaches to the repo's tenant,
-        # not the commenter's. Suits hackathon/dev; if production tenants
-        # later need stricter membership, we'd add an opt-in flag on the
-        # installation row (e.g. "only members of home tenant can trigger").
+        # - "any_adp_user" (default, absent attr): allow any known ADP user to
+        #   trigger (today's behavior). Log + emit CrossTenantMismatch metric.
+        # - "home_tenant_only": allow only if the repo's org_id is in the
+        #   user's member_org_ids list. Fail-closed: missing member_org_ids
+        #   is treated as [user's home org_id] only.
         #
-        # The mismatch is still logged + metric-emitted for audit trails.
+        # HARD CONSTRAINT: no new gateway calls — membership data comes from
+        # the DDB rows already fetched (tenant_item + user_item).
         if user_item["org_id"] != org_id:
-            logger.info(
-                "Cross-tenant ok: sender_id=%d (home org=%s) triggering in "
-                "installation_id=%d org=%s — routing to repo tenant",
-                sender_id,
-                user_item["org_id"],
-                installation_id,
-                org_id,
+            trigger_policy = (
+                tenant_item.get("trigger_policy", "any_adp_user")
+                if tenant_item
+                else "any_adp_user"
             )
-            _emit_cross_tenant_metric()
+
+            if trigger_policy == "home_tenant_only":
+                # Check membership: user must have org_id in their member_org_ids
+                member_org_ids = user_item.get("member_org_ids", [user_item["org_id"]])
+                if org_id not in member_org_ids:
+                    logger.info(
+                        "Cross-tenant DENIED: sender_id=%d (home org=%s) blocked "
+                        "from triggering in installation_id=%d org=%s — "
+                        "policy=home_tenant_only, member_org_ids=%s",
+                        sender_id,
+                        user_item["org_id"],
+                        installation_id,
+                        org_id,
+                        member_org_ids,
+                    )
+                    _emit_cross_tenant_denied_metric()
+                    return None, "cross_tenant_denied"
+
+                # User is a member of the target org — allow
+                logger.info(
+                    "Cross-tenant allowed (membership): sender_id=%d (home org=%s) "
+                    "triggering in installation_id=%d org=%s — org in member_org_ids",
+                    sender_id,
+                    user_item["org_id"],
+                    installation_id,
+                    org_id,
+                )
+                _emit_cross_tenant_metric()
+            else:
+                # Default policy: any_adp_user — allow with audit log
+                logger.info(
+                    "Cross-tenant ok: sender_id=%d (home org=%s) triggering in "
+                    "installation_id=%d org=%s — routing to repo tenant",
+                    sender_id,
+                    user_item["org_id"],
+                    installation_id,
+                    org_id,
+                )
+                _emit_cross_tenant_metric()
 
         user_kind = user_item.get("user_kind", "human")
 

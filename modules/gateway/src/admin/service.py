@@ -292,6 +292,29 @@ class AdminService:
             except Exception:
                 logger.exception("identity-index write-through failed for org %s (update)", org.id)
 
+        # Issue #3134: When settings change includes trigger_policy or
+        # min_author_association, re-sync all installation rows with the new attrs.
+        if request.settings is not None:
+            settings = org.settings or {}
+            trigger_policy = settings.get("trigger_policy")
+            min_author_association = settings.get("min_author_association")
+            if trigger_policy or min_author_association:
+                try:
+                    from src.admin.connections.service import _write_installation_identity_index
+
+                    for iid in org.github_installation_ids or []:
+                        await _write_installation_identity_index(
+                            installation_id=int(iid),
+                            org_id=org.id,
+                            trigger_policy=trigger_policy,
+                            min_author_association=min_author_association,
+                        )
+                except Exception:
+                    logger.exception(
+                        "identity-index: failed to re-sync trigger_policy for org %s installations",
+                        org.id,
+                    )
+
         return OrganizationResponse(
             id=org.id,
             name=org.name,

@@ -838,14 +838,15 @@ class TestInstallCallbackWritesDDB:
                 org_id="platform-admin",
             )
 
-        # Verify put_item was called with correct identity_type and identity_value
-        mock_ddb_client.put_item.assert_called_once()
-        call_kwargs = mock_ddb_client.put_item.call_args[1]
+        # Issue #3134 fix: installation rows now use UpdateItem (SET semantics)
+        # so trigger_policy/min_author_association set elsewhere are preserved.
+        mock_ddb_client.update_item.assert_called_once()
+        call_kwargs = mock_ddb_client.update_item.call_args[1]
         assert call_kwargs["TableName"] == "adp-dev-identity-index"
-        item = call_kwargs["Item"]
-        assert item["identity_type"] == {"S": "github_installation_id"}
-        assert item["identity_value"] == {"S": "144415968"}
-        assert item["org_id"] == {"S": "platform-admin"}
+        key = call_kwargs["Key"]
+        assert key["identity_type"] == {"S": "github_installation_id"}
+        assert key["identity_value"] == {"S": "144415968"}
+        assert call_kwargs["ExpressionAttributeValues"][":org"] == {"S": "platform-admin"}
 
     async def test_write_function_does_not_raise_on_ddb_failure(self, monkeypatch):
         """DDB write failures are best-effort — logged but not propagated."""
@@ -860,7 +861,7 @@ class TestInstallCallbackWritesDDB:
 
         mock_ddb_client = MagicMock()
         error_response = {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "throttled"}}
-        mock_ddb_client.put_item.side_effect = ClientError(error_response, "PutItem")
+        mock_ddb_client.update_item.side_effect = ClientError(error_response, "UpdateItem")
 
         with patch(
             "src.admin.identity_index.boto3.client",

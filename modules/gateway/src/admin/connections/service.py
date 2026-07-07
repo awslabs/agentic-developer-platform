@@ -788,6 +788,41 @@ async def _create_installer_membership(
         is_active,
     )
 
+    # Issue #3134: Write-through member_org_ids to DDB identity rows.
+    # After creating the membership, update the user's DDB rows so the
+    # webhook Lambda can enforce trigger_policy without a gateway call.
+    try:
+        from sqlalchemy import select as sa_select
+
+        from src.admin.identity.identity_index_writer import IdentityIndexWriter
+        from src.shared.models.vault import UserIdentity
+
+        # Collect all org_ids the user has memberships for
+        all_memberships_stmt = sa_select(TenantMembership.tenant_id).where(
+            TenantMembership.user_id == user_id,
+        )
+        all_memberships = (await db.execute(all_memberships_stmt)).scalars().all()
+        member_org_ids = list(all_memberships)
+
+        # Find the user's GitHub provider_user_id for the DDB update
+        identity_stmt = sa_select(UserIdentity).where(
+            UserIdentity.user_id == user_id,
+            UserIdentity.provider == "github",
+        )
+        github_identity = (await db.execute(identity_stmt)).scalar_one_or_none()
+        if github_identity and github_identity.provider_user_id:
+            writer = IdentityIndexWriter()
+            await writer.update_user_membership_orgs(
+                provider_user_id=github_identity.provider_user_id,
+                member_org_ids=member_org_ids,
+                provider="github",
+            )
+    except Exception:
+        logger.exception(
+            "install-callback: failed to update member_org_ids for user=%s (non-fatal)",
+            user_id,
+        )
+
 
 async def _auto_switch_active_tenant(
     *,
@@ -878,6 +913,8 @@ async def _write_installation_identity_index(
     *,
     installation_id: int,
     org_id: str,
+    trigger_policy: str | None = None,
+    min_author_association: str | None = None,
 ) -> None:
     """Write the installation → tenant mapping to the DynamoDB identity-index.
 
@@ -885,22 +922,31 @@ async def _write_installation_identity_index(
     lookup for installation_id → tenant. Without this row, all webhook events
     for the installation are rejected as unknown_installation.
 
+    Issue #3134: Also writes trigger_policy and min_author_association when
+    provided. These are read by the Lambda at trigger time (zero extra reads).
+
+    Issue #3134 fix: Uses UpdateItem (SET semantics) so that trigger_policy and
+    min_author_association attrs set by a prior admin action are NOT wiped when
+    this function is called without those params (e.g. from install_callback).
+
     Best-effort write-through with retry (same pattern as identity/organizations_service).
     Failures are logged but do not propagate — Postgres remains the source of truth.
     """
     from src.admin.identity_index import IdentityIndexClient
 
     client = IdentityIndexClient()
-    success = await client.put_identity(
-        identity_type="github_installation_id",
+    success = await client.update_installation_identity(
         identity_value=str(installation_id),
         org_id=org_id,
+        trigger_policy=trigger_policy,
+        min_author_association=min_author_association,
     )
     if success:
         logger.info(
-            "identity-index: wrote github_installation_id=%d → org=%s",
+            "identity-index: wrote github_installation_id=%d → org=%s (trigger_policy=%s)",
             installation_id,
             org_id,
+            trigger_policy or "default",
         )
     else:
         logger.warning(

@@ -63,12 +63,15 @@ class IdentityIndexClient:
         org_id: str,
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
         extra_attrs: dict[str, str | None] | None = None,
+        member_org_ids: list[str] | None = None,
     ) -> bool:
         """Write an identity mapping to DynamoDB with retry.
 
         Args:
             extra_attrs: Optional dict of additional string attributes to store
                          (e.g. user_id, provider_username). None values are skipped.
+            member_org_ids: Optional list of org_ids where the user has membership
+                         (Issue #3134). Stored as a DDB List of Strings (SS).
 
         Returns True if write succeeded, False if all retries exhausted.
         """
@@ -86,6 +89,10 @@ class IdentityIndexClient:
             for key, value in extra_attrs.items():
                 if value is not None:
                     item[key] = {"S": value}
+
+        # Issue #3134: member_org_ids as a DDB List attribute
+        if member_org_ids is not None:
+            item["member_org_ids"] = {"L": [{"S": oid} for oid in member_org_ids]}
 
         for attempt in range(MAX_RETRIES):
             try:
@@ -112,6 +119,191 @@ class IdentityIndexClient:
             identity_type,
             identity_value,
             org_id,
+        )
+        return False
+
+    async def update_installation_identity(
+        self,
+        identity_value: str,
+        org_id: str,
+        trigger_policy: str | None = None,
+        min_author_association: str | None = None,
+    ) -> bool:
+        """Update an installation identity row using SET semantics (UpdateItem).
+
+        Issue #3134 fix: Unlike put_identity (PutItem = full overwrite), this
+        uses UpdateItem so that attrs not mentioned in the update expression
+        (e.g. trigger_policy, min_author_association set by a prior admin action)
+        are preserved. Callers that don't own the policy attrs should use this
+        method instead of put_identity to avoid silently wiping policy.
+
+        Always sets: org_id, updated_at.
+        Conditionally sets: trigger_policy, min_author_association (only when provided).
+
+        Returns True if update succeeded, False if all retries exhausted.
+        """
+        key = {
+            "identity_type": {"S": "github_installation_id"},
+            "identity_value": {"S": identity_value},
+        }
+
+        # Build dynamic update expression
+        set_parts = ["org_id = :org", "updated_at = :now"]
+        expression_values: dict = {
+            ":org": {"S": org_id},
+            ":now": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+        }
+
+        if trigger_policy is not None:
+            set_parts.append("trigger_policy = :tp")
+            expression_values[":tp"] = {"S": trigger_policy}
+        if min_author_association is not None:
+            set_parts.append("min_author_association = :ma")
+            expression_values[":ma"] = {"S": min_author_association}
+
+        update_expression = "SET " + ", ".join(set_parts)
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                await asyncio.to_thread(
+                    self._client.update_item,
+                    TableName=self._table_name,
+                    Key=key,
+                    UpdateExpression=update_expression,
+                    ExpressionAttributeValues=expression_values,
+                )
+                return True
+            except ClientError as e:
+                wait = BASE_BACKOFF_SECONDS * (2**attempt)
+                logger.warning(
+                    "identity-index update_installation_identity failed (attempt %d/%d): %s. Retrying in %.1fs",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    e.response["Error"]["Message"],
+                    wait,
+                )
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(wait)
+
+        logger.error(
+            "identity-index update_installation_identity exhausted retries: value=%s org=%s",
+            identity_value,
+            org_id,
+        )
+        return False
+
+    async def update_membership_orgs(
+        self,
+        identity_type: "IdentityType | str",
+        identity_value: str,
+        member_org_ids: list[str],
+    ) -> bool:
+        """Update only the member_org_ids attribute on an existing identity row.
+
+        Issue #3134: Targeted attribute update — uses UpdateItem to set
+        member_org_ids without needing to know other attributes.
+
+        Returns True if update succeeded, False if all retries exhausted.
+        """
+        key = {
+            "identity_type": {"S": identity_type},
+            "identity_value": {"S": identity_value},
+        }
+        expression_values = {
+            ":orgs": {"L": [{"S": oid} for oid in member_org_ids]},
+            ":now": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+        }
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                await asyncio.to_thread(
+                    self._client.update_item,
+                    TableName=self._table_name,
+                    Key=key,
+                    UpdateExpression="SET member_org_ids = :orgs, updated_at = :now",
+                    ExpressionAttributeValues=expression_values,
+                )
+                return True
+            except ClientError as e:
+                wait = BASE_BACKOFF_SECONDS * (2**attempt)
+                logger.warning(
+                    "identity-index update_membership_orgs failed (attempt %d/%d): %s. Retrying in %.1fs",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    e.response["Error"]["Message"],
+                    wait,
+                )
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(wait)
+
+        logger.error(
+            "identity-index update_membership_orgs exhausted retries: type=%s value=%s",
+            identity_type,
+            identity_value,
+        )
+        return False
+
+    async def update_user_identity_core(
+        self,
+        identity_value: str,
+        user_id: str,
+        org_id: str,
+        provider_username: str | None = None,
+    ) -> bool:
+        """Update a github_user identity row using SET semantics (UpdateItem).
+
+        Issue #3134 fix: Uses UpdateItem so that member_org_ids (set by
+        membership write-through) is preserved when an unrelated identity
+        operation re-writes the user row.
+
+        Always sets: user_id, org_id, updated_at.
+        Conditionally sets: provider_username (only when not None).
+
+        Returns True if update succeeded, False if all retries exhausted.
+        """
+        key = {
+            "identity_type": {"S": "github_user"},
+            "identity_value": {"S": identity_value},
+        }
+
+        set_parts = ["user_id = :uid", "org_id = :org", "updated_at = :now"]
+        expression_values: dict = {
+            ":uid": {"S": user_id},
+            ":org": {"S": org_id},
+            ":now": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+        }
+
+        if provider_username is not None:
+            set_parts.append("provider_username = :pun")
+            expression_values[":pun"] = {"S": provider_username}
+
+        update_expression = "SET " + ", ".join(set_parts)
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                await asyncio.to_thread(
+                    self._client.update_item,
+                    TableName=self._table_name,
+                    Key=key,
+                    UpdateExpression=update_expression,
+                    ExpressionAttributeValues=expression_values,
+                )
+                return True
+            except ClientError as e:
+                wait = BASE_BACKOFF_SECONDS * (2**attempt)
+                logger.warning(
+                    "identity-index update_user_identity_core failed (attempt %d/%d): %s. Retrying in %.1fs",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    e.response["Error"]["Message"],
+                    wait,
+                )
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(wait)
+
+        logger.error(
+            "identity-index update_user_identity_core exhausted retries: value=%s",
+            identity_value,
         )
         return False
 
@@ -168,6 +360,11 @@ class IdentityIndexClient:
 
         Used by create (old lists empty) and update (diff against old lists).
         Best-effort — failures are logged but don't propagate.
+
+        Issue #3134 fix: Uses update_installation_identity (UpdateItem) for
+        github_installation_id rows so that trigger_policy/min_author_association
+        attrs set by a prior admin action are NOT wiped by this sync.
+        Cognito client IDs still use put_identity (no policy attrs on those rows).
         """
         old_github = set(old_github_installation_ids or [])
         old_cognito = set(old_cognito_client_ids or [])
@@ -176,11 +373,11 @@ class IdentityIndexClient:
 
         tasks = []
 
-        # Upsert new/changed GitHub installation IDs
+        # Upsert new/changed GitHub installation IDs — UpdateItem preserves policy attrs
         for iid in new_github:
-            tasks.append(self.put_identity("github_installation_id", iid, org_id))
+            tasks.append(self.update_installation_identity(identity_value=iid, org_id=org_id))
 
-        # Upsert new/changed Cognito client IDs
+        # Upsert new/changed Cognito client IDs (no policy attrs to preserve)
         for cid in new_cognito:
             tasks.append(self.put_identity("cognito_client_id", cid, org_id))
 

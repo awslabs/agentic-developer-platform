@@ -277,7 +277,28 @@ async def approve_request(
     await db.commit()
 
     # Post-commit: DDB write-through (best-effort)
+    # Issue #3134: Seed member_org_ids with the FULL list of tenant memberships
+    # so the webhook Lambda can enforce trigger_policy immediately.
+    # Issue #3134 fix: Query all memberships (not just [tenant_id]) to avoid
+    # shrinking a multi-org user's membership list on re-approval.
     if identity_writer:
+        try:
+            from sqlalchemy import select as sa_select
+
+            from src.shared.models.onboarding import TenantMembership
+
+            all_memberships_stmt = sa_select(TenantMembership.tenant_id).where(
+                TenantMembership.user_id == user_id,
+            )
+            all_org_ids = list((await db.execute(all_memberships_stmt)).scalars().all())
+            # Ensure the current tenant is included (may not have a TenantMembership yet
+            # if approval creates the user but membership is created separately)
+            if tenant_id not in all_org_ids:
+                all_org_ids.append(tenant_id)
+        except Exception:
+            logger.exception("Failed to query memberships for approval DDB write (falling back to [tenant_id])")
+            all_org_ids = [tenant_id]
+
         try:
             await identity_writer.put_user_identity(
                 provider_user_id=request.cognito_sub,
@@ -285,6 +306,7 @@ async def approve_request(
                 org_id=tenant_id,
                 provider="cognito",
                 provider_username=request.target_login,
+                member_org_ids=all_org_ids,
             )
         except Exception:
             logger.exception("DDB write-through failed for cognito identity (onboarding approval)")
@@ -297,6 +319,7 @@ async def approve_request(
                 org_id=tenant_id,
                 provider="github",
                 provider_username=request.target_login,
+                member_org_ids=all_org_ids,
             )
         except Exception:
             logger.exception("DDB write-through failed for github identity (onboarding approval)")
