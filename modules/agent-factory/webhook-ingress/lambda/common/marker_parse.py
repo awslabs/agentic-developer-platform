@@ -29,6 +29,9 @@ _FIELD_PATTERNS: dict[str, re.Pattern] = {
     # Issue #2149: Explicit dispatch marker — distinguishes deliberate bot→bot
     # dispatch from incidental @agent-X prose in status comments.
     "dispatch_persona": re.compile(r"adp-dispatch:([^\s]+)"),
+    # Issue #3178 (cred-binding S4): HMAC-SHA256 signature over marker fields.
+    # Verified by S5 (issue #3179) before trusting marker-borne authority.
+    "signature": re.compile(r"adp-sig:([^\s]+)"),
 }
 
 
@@ -46,6 +49,8 @@ def parse_marker(text: str) -> dict[str, Any] | None:
         - chain_depth: int | None
         - dispatch_persona: str | None  (issue #2149: target persona for
           deliberate bot→bot dispatch; None when the comment is prose)
+        - signature: str | None  (issue #3178/S4: base64url HMAC-SHA256;
+          verified by S5 before trusting marker authority in Rule 4)
 
     Returns None if no marker is present or if required fields
     (correlation_id) are missing.

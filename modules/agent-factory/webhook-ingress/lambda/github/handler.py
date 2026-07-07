@@ -709,18 +709,57 @@ def determine_correlation(
         }
 
     if marker:
-        # Marker only — cross-channel first hop
-        marker_depth = marker.get("chain_depth")
-        inherited_depth = marker_depth if marker_depth is not None else 0
-        return {
-            "correlation_id": marker["correlation_id"],
-            "root_human_id": marker.get("root_human_id", resolved_identity.user_id),
-            "triggered_by": resolved_identity.user_id,
-            "is_human_rooted": marker.get("is_human_rooted", False),
-            "is_new_chain": False,
-            "parent_invocation_id": marker.get("invocation_id"),
-            "chain_depth": inherited_depth + 1,
-        }
+        # Marker only — cross-channel first hop (Rule 4).
+        # Issue #3179 (cred-binding S5): verify marker signature before trusting
+        # marker-borne root_human_id/is_human_rooted. Unsigned or forged markers
+        # in Rule-4 position confer no root-human authority → new chain.
+        from common.marker_verify import verify_marker as _verify_marker
+
+        sig_result = _verify_marker(marker)
+
+        if sig_result is False:
+            # Forged signature — do NOT trust marker authority. Log and fall
+            # through to new-chain branch (fail-closed).
+            logger.warning(
+                "Rule-4 marker signature verification FAILED (forged): "
+                "correlation_id=%s, sender=%s",
+                marker.get("correlation_id"),
+                resolved_identity.user_id,
+            )
+        elif sig_result is None and marker.get("is_human_rooted", False):
+            # Unsigned marker claiming human-rooted authority in Rule-4 position.
+            # Fail-closed: strip is_human_rooted (cannot be trusted without sig).
+            logger.warning(
+                "Rule-4 unsigned marker claims is_human_rooted=true — "
+                "stripping authority (fail-closed): correlation_id=%s, sender=%s",
+                marker.get("correlation_id"),
+                resolved_identity.user_id,
+            )
+            marker_depth = marker.get("chain_depth")
+            inherited_depth = marker_depth if marker_depth is not None else 0
+            return {
+                "correlation_id": marker["correlation_id"],
+                "root_human_id": marker.get("root_human_id", resolved_identity.user_id),
+                "triggered_by": resolved_identity.user_id,
+                "is_human_rooted": False,  # Stripped — unsigned, fail-closed
+                "is_new_chain": False,
+                "parent_invocation_id": marker.get("invocation_id"),
+                "chain_depth": inherited_depth + 1,
+            }
+        else:
+            # sig_result is True (verified) or None with is_human_rooted=False
+            # (no escalation concern) — trust the marker.
+            marker_depth = marker.get("chain_depth")
+            inherited_depth = marker_depth if marker_depth is not None else 0
+            return {
+                "correlation_id": marker["correlation_id"],
+                "root_human_id": marker.get("root_human_id", resolved_identity.user_id),
+                "triggered_by": resolved_identity.user_id,
+                "is_human_rooted": marker.get("is_human_rooted", False),
+                "is_new_chain": False,
+                "parent_invocation_id": marker.get("invocation_id"),
+                "chain_depth": inherited_depth + 1,
+            }
 
     # No pointer, no marker — bot-initiated chain (e.g. cron-like, CI-triggered)
     return {
