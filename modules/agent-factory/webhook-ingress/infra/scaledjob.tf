@@ -193,6 +193,10 @@ locals {
                   # PutItem on this table (scaledjob-iam.tf).
                   - name: CORRELATION_POINTERS_TABLE
                     value: ${aws_dynamodb_table.correlation_pointers.name}
+                  # Issue #3178: correlation marker HMAC signing key (cred-binding S4).
+                  # Worker reads this secret from SM to sign outbound markers.
+                  - name: ADP_MARKER_SIGNING_KEY_SECRET
+                    value: adp/${var.environment}/webhook-ingress/marker-signing-key
                   # Issue #2153: adp-trigger CLI needs the webhook-ingress API
                   # endpoint to POST /agent/trigger (SigV4-signed).
                   - name: ADP_TRIGGER_ENDPOINT

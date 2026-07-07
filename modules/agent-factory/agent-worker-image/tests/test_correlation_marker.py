@@ -240,3 +240,64 @@ class TestPrependCorrelationMarker:
         assert "adp-dispatch:reviewer" in marker_line
         # Body on next line
         assert lines[1] == "@agent-reviewer review"
+
+    # --- Issue #3178: adp-sig (HMAC signing, cred-binding S4) ---
+
+    @patch("lib.correlation_marker.compute_signature")
+    def test_includes_signature_when_signing_key_available(self, mock_sign):
+        """Marker includes adp-sig field when signing succeeds."""
+        mock_sign.return_value = "dGVzdC1zaWduYXR1cmU"  # fake base64url sig
+        env = {
+            "ADP_CORRELATION_ID": "corr-sig",
+            "ADP_ROOT_HUMAN_ID": "user-sig",
+            "ADP_IS_HUMAN_ROOTED": "true",
+            "ADP_MESSAGE_ID": "msg-sig",
+            "ADP_CHAIN_DEPTH": "2",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = prepend_correlation_marker("Body")
+        assert "adp-sig:dGVzdC1zaWduYXR1cmU" in result
+        # Verify signing was called with correct args
+        mock_sign.assert_called_once_with(
+            correlation_id="corr-sig",
+            root_human_id="user-sig",
+            is_human_rooted="true",
+            invocation_id="msg-sig",
+            chain_depth="2",
+        )
+
+    @patch("lib.correlation_marker.compute_signature")
+    def test_no_signature_when_key_unavailable(self, mock_sign):
+        """No adp-sig field when compute_signature returns None (graceful degradation)."""
+        mock_sign.return_value = None
+        env = {
+            "ADP_CORRELATION_ID": "corr-nosig",
+            "ADP_ROOT_HUMAN_ID": "user-nosig",
+            "ADP_IS_HUMAN_ROOTED": "false",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = prepend_correlation_marker("Body")
+        assert "adp-sig" not in result
+        # Marker is still written (unsigned)
+        assert "adp-correlation:corr-nosig" in result
+
+    @patch("lib.correlation_marker.compute_signature")
+    def test_signature_is_last_field_before_closing_comment(self, mock_sign):
+        """adp-sig is appended after all other fields (including dispatch)."""
+        mock_sign.return_value = "c2lnbmF0dXJl"
+        env = {
+            "ADP_CORRELATION_ID": "corr-order",
+            "ADP_ROOT_HUMAN_ID": "user-order",
+            "ADP_IS_HUMAN_ROOTED": "true",
+            "ADP_MESSAGE_ID": "msg-order",
+            "ADP_CHAIN_DEPTH": "1",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            result = prepend_correlation_marker("X", dispatch_persona="ops")
+        marker_line = result.split("\n")[0]
+        # sig should come after dispatch
+        dispatch_pos = marker_line.index("adp-dispatch:ops")
+        sig_pos = marker_line.index("adp-sig:c2lnbmF0dXJl")
+        assert sig_pos > dispatch_pos
+        # sig should be the last field before -->
+        assert marker_line.endswith("adp-sig:c2lnbmF0dXJl -->")
