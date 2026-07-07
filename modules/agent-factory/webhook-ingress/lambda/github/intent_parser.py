@@ -86,14 +86,36 @@ def extract_intent(
     sender = payload.get("sender", {})
     action = payload.get("action", "")
 
-    # Non-comment, non-PR events: keep binary bot guard (no behavior change)
+    # Non-comment, non-PR events: binary bot guard with narrowed exception.
+    # Issue #3245: issues.opened with aidlc-intent label is an explicit trigger
+    # signal that should dispatch regardless of sender (the label is the
+    # authorization). All other bot-generated non-comment/non-PR events remain
+    # blocked to prevent self-triggering loops (issue #1696).
     if event_type not in ("issue_comment", "pull_request") and _is_bot_sender(sender):
-        logger.info(
-            "Ignoring bot-generated %s event from %s",
-            event_type,
-            sender.get("login", "unknown"),
-        )
-        return None
+        if event_type == "issues" and action == "opened":
+            label_names = [
+                lbl.get("name", "") for lbl in payload.get("issue", {}).get("labels", [])
+            ]
+            if "aidlc-intent" in label_names:
+                logger.info(
+                    "Bot-generated issues.opened with aidlc-intent label from %s "
+                    "— allowing dispatch (issue #3245)",
+                    sender.get("login", "unknown"),
+                )
+            else:
+                logger.info(
+                    "Ignoring bot-generated %s event from %s",
+                    event_type,
+                    sender.get("login", "unknown"),
+                )
+                return None
+        else:
+            logger.info(
+                "Ignoring bot-generated %s event from %s",
+                event_type,
+                sender.get("login", "unknown"),
+            )
+            return None
 
     # Bot pull_request events: allowed through to _handle_pr_event, which gates
     # on the agent/issue-* branch filter + the synchronize dedup (issue #1716).
@@ -207,8 +229,10 @@ def _handle_issue_opened(payload: dict) -> Intent | None:
     (applied automatically by the AIDLC issue template). All other issues.opened
     events return None — this prevents a dispatch storm from every new issue.
 
-    The bot sender check is already handled by the top-level guard in
-    extract_intent() (bots are blocked for all non-comment/non-PR events).
+    Issue #3245: Bot senders are now allowed through the top-level guard when
+    the issue carries the `aidlc-intent` label. The label IS the authorization
+    signal — blocking bot-created issues with this label prevented valid
+    orchestration scenarios (automated testing, CI-driven inception).
     """
     labels = payload.get("issue", {}).get("labels", [])
     label_names = {lbl.get("name", "") for lbl in labels}

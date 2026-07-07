@@ -146,8 +146,12 @@ class TestIssueOpenedEvents:
         result = extract_intent("issues", payload)
         assert result is None
 
-    def test_opened_by_bot_blocked(self):
-        """issues.opened by bot sender → blocked by top-level bot guard."""
+    def test_bot_created_issue_with_aidlc_intent_dispatches(self):
+        """Issue #3245: Bot sender + issues.opened + aidlc-intent label → dispatches.
+
+        The aidlc-intent label is the authorization signal; bot-created issues
+        with this label should dispatch (enables automated orchestration flows).
+        """
         payload = {
             "action": "opened",
             "issue": {
@@ -155,11 +159,69 @@ class TestIssueOpenedEvents:
                 "labels": [{"name": "aidlc-intent"}],
             },
             "repository": {"full_name": "org/repo"},
+            "sender": {"login": "aws-e-adp[bot]", "id": 777, "type": "Bot"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issues", payload)
+        assert result is not None
+        assert result.persona == "aidlc"
+        assert result.trigger == "issue_opened"
+        assert result.label == "aidlc-intent"
+
+    def test_bot_created_issue_without_aidlc_intent_still_blocked(self):
+        """Issue #3245: Bot sender + issues.opened + NO aidlc-intent label → blocked.
+
+        Only the aidlc-intent label grants the exception; bot-created issues
+        without it remain blocked by the bot guard.
+        """
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 104,
+                "labels": [{"name": "bug"}, {"name": "enhancement"}],
+            },
+            "repository": {"full_name": "org/repo"},
             "sender": {"login": "github-actions[bot]", "id": 777, "type": "Bot"},
             "installation": {"id": 123},
         }
         result = extract_intent("issues", payload)
         assert result is None
+
+    def test_bot_created_issue_no_labels_still_blocked(self):
+        """Issue #3245: Bot sender + issues.opened + empty labels → blocked."""
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 105,
+                "labels": [],
+            },
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "github-actions[bot]", "id": 777, "type": "Bot"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issues", payload)
+        assert result is None
+
+    def test_bot_created_issue_with_aidlc_intent_among_others_dispatches(self):
+        """Issue #3245: Bot sender + aidlc-intent among multiple labels → dispatches."""
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 106,
+                "labels": [
+                    {"name": "enhancement"},
+                    {"name": "aidlc-intent"},
+                    {"name": "priority-high"},
+                ],
+            },
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "aws-e-adp[bot]", "id": 777, "type": "Bot"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issues", payload)
+        assert result is not None
+        assert result.persona == "aidlc"
+        assert result.trigger == "issue_opened"
 
     def test_opened_with_multiple_labels_including_aidlc_intent(self):
         """issues.opened with aidlc-intent among other labels → dispatches."""
@@ -754,6 +816,21 @@ class TestChainAwareBotLogic:
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
+        assert result is None
+
+    # Issue #3245 REGRESSION: Bot comment events use dispatch-marker gate, not the
+    # issues.opened exception. Verifies issue #3245 doesn't inadvertently relax comments.
+    def test_bot_comment_events_unchanged_by_issue_3245(self):
+        """Issue #3245 regression: bot comment without dispatch marker → still blocked."""
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-developer implement this"},
+            "issue": {"number": 55},
+            "sender": self._bot_sender(),
+            "installation": {"id": 123},
+        }
+        # No correlation ctx, no dispatch marker → blocked (safe default)
+        result = extract_intent("issue_comment", payload)
         assert result is None
 
     # 8. REGRESSION GUARD: Bot applies label → still blocked (top-level guard preserved)
