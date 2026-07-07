@@ -78,7 +78,7 @@ def load_to_neptune(
     csv_output: CSVOutput,
     neptune_endpoint: str,
     region: str,
-    batch_size: int = 50,
+    batch_size: int = 400,
     clear_existing: bool = True,
 ) -> dict:
     """Load CSV files into Neptune via openCypher UNWIND batch.

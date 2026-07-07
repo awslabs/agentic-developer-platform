@@ -46,7 +46,7 @@ DYNAMO_TABLE = settings.dynamo_table
 
 # Timeouts per content type (seconds)
 TIMEOUTS = {
-    "repo": 900,  # 15 min
+    "repo": 3600,  # 60 min — large Python repos need ~10-20 min for Neptune load (#3160)
     "url": 600,  # 10 min
     "doc": 300,  # 5 min
     "infra": 300,  # 5 min
@@ -352,7 +352,7 @@ def receive_sqs_message() -> tuple[dict[str, Any], str] | None:
             QueueUrl=SQS_QUEUE_URL,
             MaxNumberOfMessages=1,
             WaitTimeSeconds=20,
-            VisibilityTimeout=900,
+            VisibilityTimeout=3600,
             MessageAttributeNames=["All"],
         )
         messages = resp.get("Messages", [])
