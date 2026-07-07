@@ -278,6 +278,48 @@ class TestCmdAssumeExec:
         assert exec_path == "custom-tool"
 
 
+# ---------------------------------------------------------------------------
+# Invocation ID tests (Issue #3176)
+# ---------------------------------------------------------------------------
+
+
+class TestAssumeInvocationId:
+    """Test that invocation_id from ADP_MESSAGE_ID is included in assume-role payload."""
+
+    def test_assume_includes_invocation_id(self, tmp_path, monkeypatch):
+        """When ADP_MESSAGE_ID is set, assume payload includes invocation_id."""
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path / p.lstrip("~/")))
+        monkeypatch.setenv("ADP_MESSAGE_ID", "msg-assume-001")
+
+        with patch("adp_cred.assume._do_request", return_value=MOCK_RESPONSE) as mock_req:
+            cmd_assume(["--service", "aws", "--label", "prod"])
+
+        call_body = mock_req.call_args[0][4]  # body is 5th positional arg
+        assert call_body["invocation_id"] == "msg-assume-001"
+
+    def test_assume_omits_invocation_id_when_unset(self, tmp_path, monkeypatch):
+        """When ADP_MESSAGE_ID is not set, invocation_id absent from payload."""
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path / p.lstrip("~/")))
+        monkeypatch.delenv("ADP_MESSAGE_ID", raising=False)
+
+        with patch("adp_cred.assume._do_request", return_value=MOCK_RESPONSE) as mock_req:
+            cmd_assume(["--service", "aws", "--label", "prod"])
+
+        call_body = mock_req.call_args[0][4]  # body is 5th positional arg
+        assert "invocation_id" not in call_body
+
+    def test_assume_omits_invocation_id_when_empty(self, tmp_path, monkeypatch):
+        """When ADP_MESSAGE_ID is empty string, invocation_id absent from payload."""
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path / p.lstrip("~/")))
+        monkeypatch.setenv("ADP_MESSAGE_ID", "")
+
+        with patch("adp_cred.assume._do_request", return_value=MOCK_RESPONSE) as mock_req:
+            cmd_assume(["--service", "aws", "--label", "prod"])
+
+        call_body = mock_req.call_args[0][4]  # body is 5th positional arg
+        assert "invocation_id" not in call_body
+
+
 class TestGetConfigUnpack:
     """Regression guard for the 6-tuple unpack fix (bug #7 from EPIC #579)."""
 

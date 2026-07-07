@@ -196,6 +196,125 @@ class TestSigV4Mode:
 
 
 # ---------------------------------------------------------------------------
+# Invocation ID tests (Issue #3176)
+# ---------------------------------------------------------------------------
+
+
+class TestInvocationId:
+    """Test invocation_id from ADP_MESSAGE_ID is included in request bodies."""
+
+    @patch("lib.gateway_credential_client.urlopen")
+    def test_assume_role_includes_invocation_id(self, mock_urlopen, monkeypatch):
+        """When ADP_MESSAGE_ID is set, assume_role payload includes invocation_id."""
+        monkeypatch.setenv("VAULT_GATEWAY_URL", "http://gateway:8080")
+        monkeypatch.setenv("VAULT_INTERNAL_API_KEY", "key")
+        monkeypatch.setenv("ADP_MESSAGE_ID", "msg-run-001")
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(
+            {"access_key_id": "AK", "secret_access_key": "SK", "session_token": "ST"}
+        ).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        client = GatewayCredentialClient()
+        client.assume_role(user_id="u", agent_id="a", task_id="t")
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data.decode())
+        assert body["invocation_id"] == "msg-run-001"
+
+    @patch("lib.gateway_credential_client.urlopen")
+    def test_assume_role_omits_invocation_id_when_unset(self, mock_urlopen, monkeypatch):
+        """When ADP_MESSAGE_ID is not set, invocation_id absent from payload."""
+        monkeypatch.setenv("VAULT_GATEWAY_URL", "http://gateway:8080")
+        monkeypatch.setenv("VAULT_INTERNAL_API_KEY", "key")
+        monkeypatch.delenv("ADP_MESSAGE_ID", raising=False)
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(
+            {"access_key_id": "AK", "secret_access_key": "SK", "session_token": "ST"}
+        ).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        client = GatewayCredentialClient()
+        client.assume_role(user_id="u", agent_id="a", task_id="t")
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data.decode())
+        assert "invocation_id" not in body
+
+    @patch("lib.gateway_credential_client.urlopen")
+    def test_raw_read_includes_invocation_id(self, mock_urlopen, monkeypatch):
+        """When ADP_MESSAGE_ID is set, raw_read payload includes invocation_id."""
+        monkeypatch.setenv("VAULT_GATEWAY_URL", "http://gateway:8080")
+        monkeypatch.setenv("VAULT_INTERNAL_API_KEY", "key")
+        monkeypatch.setenv("ADP_MESSAGE_ID", "msg-raw-002")
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"value": "cred-val"}'
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        client = GatewayCredentialClient()
+        client.raw_read(user_id="u", agent_id="a", task_id="t", service="aws")
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data.decode())
+        assert body["invocation_id"] == "msg-raw-002"
+
+    @patch("lib.gateway_credential_client.urlopen")
+    def test_raw_read_omits_invocation_id_when_empty(self, mock_urlopen, monkeypatch):
+        """When ADP_MESSAGE_ID is empty, invocation_id absent from payload."""
+        monkeypatch.setenv("VAULT_GATEWAY_URL", "http://gateway:8080")
+        monkeypatch.setenv("VAULT_INTERNAL_API_KEY", "key")
+        monkeypatch.setenv("ADP_MESSAGE_ID", "")
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"value": "cred-val"}'
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        client = GatewayCredentialClient()
+        client.raw_read(user_id="u", agent_id="a", task_id="t", service="aws")
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data.decode())
+        assert "invocation_id" not in body
+
+    @patch("lib.gateway_credential_client.urlopen")
+    @patch("lib.gateway_credential_client._sigv4_sign_request")
+    def test_sigv4_mode_includes_invocation_id(
+        self, mock_sign, mock_urlopen, monkeypatch
+    ):
+        """SigV4 mode also sends invocation_id when ADP_MESSAGE_ID is set."""
+        monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://api-gw.example.com")
+        monkeypatch.setenv("ADP_MESSAGE_ID", "msg-sigv4-003")
+
+        mock_sign.return_value = {"Content-Type": "application/json"}
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(
+            {"access_key_id": "AK", "secret_access_key": "SK", "session_token": "ST"}
+        ).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        client = GatewayCredentialClient()
+        client.assume_role(user_id="u", agent_id="a", task_id="t")
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data.decode())
+        assert body["invocation_id"] == "msg-sigv4-003"
+
+
+# ---------------------------------------------------------------------------
 # Error handling tests
 # ---------------------------------------------------------------------------
 

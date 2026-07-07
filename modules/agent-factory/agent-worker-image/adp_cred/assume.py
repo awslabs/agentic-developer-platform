@@ -84,6 +84,9 @@ def cmd_assume(args: list[str]) -> None:
         "label": label,
         "purpose": purpose,
     }
+    invocation_id = os.environ.get("ADP_MESSAGE_ID")
+    if invocation_id:
+        payload["invocation_id"] = invocation_id
     endpoint = f"{base_url}/internal/v1/credential-assume-role"
     result = _do_request("POST", endpoint, api_key, use_sigv4, payload)
 

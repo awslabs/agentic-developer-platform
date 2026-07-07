@@ -191,6 +191,9 @@ def proxy_http(
         "headers": headers,
         "body": body,
     }
+    invocation_id = os.environ.get("ADP_MESSAGE_ID")
+    if invocation_id:
+        payload["invocation_id"] = invocation_id
     endpoint = f"{base_url}/internal/v1/proxy-request"
     return _do_request("POST", endpoint, api_key, use_sigv4, payload)  # type: ignore[return-value]
 
@@ -206,6 +209,9 @@ def materialize(service: str, label: str | None = None) -> dict:
         "service": service,
         "label": label,
     }
+    invocation_id = os.environ.get("ADP_MESSAGE_ID")
+    if invocation_id:
+        payload["invocation_id"] = invocation_id
     endpoint = f"{base_url}/internal/v1/credential-materialize"
     return _do_request("POST", endpoint, api_key, use_sigv4, payload)  # type: ignore[return-value]
 
@@ -222,5 +228,8 @@ def raw_read(service: str, label: str | None = None, purpose: str | None = None)
         "label": label,
         "purpose": purpose,
     }
+    invocation_id = os.environ.get("ADP_MESSAGE_ID")
+    if invocation_id:
+        payload["invocation_id"] = invocation_id
     endpoint = f"{base_url}/internal/v1/credential-raw-read"
     return _do_request("POST", endpoint, api_key, use_sigv4, payload)  # type: ignore[return-value]
