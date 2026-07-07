@@ -16,6 +16,8 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import random
+import time
 import urllib.parse
 import urllib.request
 
@@ -27,6 +29,21 @@ from botocore.session import Session as BotocoreSession
 from scip_neptune_csv import CSVOutput
 
 log = logging.getLogger("scip_neptune_loader")
+
+# Retry configuration for transient Neptune errors (#3173)
+MAX_RETRIES = 5
+BASE_BACKOFF_SECONDS = 1.0
+
+# Errors that indicate a transient failure (DB restart, throttle, OOM)
+_RETRYABLE_ERROR_PATTERNS = (
+    "Connection refused",
+    "timed out",
+    "Remote end closed",
+    "MemoryLimitExceededException",
+    "ConcurrentModificationException",
+    "ThrottlingException",
+)
+_RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
 
 
 def _neptune_query(
@@ -59,6 +76,53 @@ def _neptune_query(
         return {"error": str(ex), "code": 0}
 
 
+def _is_retryable(result: dict) -> bool:
+    """Determine if a Neptune query result represents a retryable error."""
+    if "error" not in result:
+        return False
+    error_str = str(result.get("error", ""))
+    code = result.get("code", 0)
+    # HTTP status codes that are retryable
+    if code in _RETRYABLE_HTTP_CODES:
+        return True
+    # Error message patterns that are retryable
+    for pattern in _RETRYABLE_ERROR_PATTERNS:
+        if pattern in error_str:
+            return True
+    return False
+
+
+def _neptune_query_with_retry(
+    neptune_url: str, region: str, cypher: str, parameters: dict | None = None
+) -> dict:
+    """Execute a Neptune query with bounded retry and exponential backoff+jitter.
+
+    Retries up to MAX_RETRIES times for transient errors (connection refused,
+    timeouts, 5xx, 429, MemoryLimitExceededException). Non-retryable errors
+    (4xx query errors) return immediately.
+    """
+    for attempt in range(MAX_RETRIES + 1):
+        result = _neptune_query(neptune_url, region, cypher, parameters)
+        if "error" not in result:
+            return result
+        if not _is_retryable(result):
+            return result
+        if attempt == MAX_RETRIES:
+            # Exhausted retries — return the last error
+            return result
+        # Exponential backoff with jitter: base * 2^attempt + random jitter
+        backoff = BASE_BACKOFF_SECONDS * (2**attempt) + random.uniform(0, 1)
+        log.warning(
+            "Retryable Neptune error (attempt %d/%d), backoff %.1fs: %s",
+            attempt + 1,
+            MAX_RETRIES,
+            backoff,
+            str(result["error"])[:100],
+        )
+        time.sleep(backoff)
+    return result  # Should not reach here, but satisfies type checker
+
+
 def clear_repo_graph(neptune_url: str, region: str, repo: str) -> bool:
     """Delete all existing nodes/edges for a repo before re-indexing.
 
@@ -78,7 +142,7 @@ def load_to_neptune(
     csv_output: CSVOutput,
     neptune_endpoint: str,
     region: str,
-    batch_size: int = 400,
+    batch_size: int = 200,
     clear_existing: bool = True,
 ) -> dict:
     """Load CSV files into Neptune via openCypher UNWIND batch.
@@ -87,11 +151,12 @@ def load_to_neptune(
         csv_output: Output from scip_neptune_csv.generate_csv()
         neptune_endpoint: Neptune cluster endpoint (host:port)
         region: AWS region
-        batch_size: Nodes/edges per UNWIND batch
+        batch_size: Nodes/edges per UNWIND batch (default 200 — reduced from 400 to
+            lower per-query memory on serverless Neptune, #3173)
         clear_existing: Whether to delete existing repo graph first
 
     Returns:
-        Dict with load results: vertices_loaded, edges_loaded, errors
+        Dict with load results: vertices_loaded, edges_loaded, errors, error_rate
     """
     neptune_url = f"https://{neptune_endpoint}/opencypher"
 
@@ -122,10 +187,13 @@ def load_to_neptune(
     edges_loaded, e_errors = _load_edges(neptune_url, region, csv_output.edges_path, batch_size)
 
     total_errors = v_errors + e_errors
+    total_attempted = (vertices_loaded + v_errors) + (edges_loaded + e_errors)
+    error_rate = total_errors / total_attempted if total_attempted > 0 else 0.0
     result = {
         "vertices_loaded": vertices_loaded,
         "edges_loaded": edges_loaded,
         "total_errors": total_errors,
+        "error_rate": error_rate,
         "success": total_errors == 0,
     }
 
@@ -189,7 +257,7 @@ def _load_vertices(
             n.tenant_id = node.tenant_id, n.owner_sub = node.owner_sub
         RETURN count(n) AS cnt
         """
-        result = _neptune_query(neptune_url, region, cypher, {"nodes": params})
+        result = _neptune_query_with_retry(neptune_url, region, cypher, {"nodes": params})
         if "error" in result:
             errors += len(batch)
             log.warning("Vertex batch error: %s", str(result["error"])[:150])
@@ -242,7 +310,7 @@ def _load_edges(neptune_url: str, region: str, edges_path: str, batch_size: int)
             SET r.file = edge.file, r.line = edge.line, r.repo = edge.repo
             RETURN count(r) AS cnt
             """
-            result = _neptune_query(neptune_url, region, cypher, {"edges": params})
+            result = _neptune_query_with_retry(neptune_url, region, cypher, {"edges": params})
             if "error" in result:
                 errors += len(batch)
                 log.warning("Edge batch error (%s): %s", label, str(result["error"])[:150])

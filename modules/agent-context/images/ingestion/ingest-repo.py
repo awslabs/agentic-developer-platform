@@ -1071,12 +1071,35 @@ def scip_structural_ingest(
             result["neptune_load"] = load_result
             if load_result.get("success"):
                 result["status"] = "complete"
+            elif load_result.get("error_rate", 0) > 0.05:
+                # >5% error rate: fail the stage so the SHA is NOT recorded
+                # as success — next publish will retry (#3173)
+                result["status"] = "failed"
+                result["error"] = (
+                    f"Neptune load error_rate={load_result['error_rate']:.1%} exceeds 5% threshold. "
+                    f"Loaded: {load_result.get('vertices_loaded', 0)} vertices + "
+                    f"{load_result.get('edges_loaded', 0)} edges. "
+                    f"Expected: {graph.node_count} vertices + {graph.edge_count} edges. "
+                    f"Errors: {load_result.get('total_errors', 0)}"
+                )
+                log.error(
+                    "Neptune load FAILED for %s: error_rate=%.1f%% (threshold 5%%). "
+                    "Loaded %d/%d vertices, %d/%d edges, %d errors",
+                    org_repo,
+                    load_result.get("error_rate", 0) * 100,
+                    load_result.get("vertices_loaded", 0),
+                    graph.node_count,
+                    load_result.get("edges_loaded", 0),
+                    graph.edge_count,
+                    load_result.get("total_errors", 0),
+                )
             else:
                 result["status"] = "load_partial"
                 log.warning(
-                    "Neptune load had errors for %s: %s",
+                    "Neptune load had errors for %s: %s (error_rate=%.1f%%, within threshold)",
                     org_repo,
                     load_result.get("total_errors", 0),
+                    load_result.get("error_rate", 0) * 100,
                 )
         else:
             # No Neptune endpoint — CSV + S3 only

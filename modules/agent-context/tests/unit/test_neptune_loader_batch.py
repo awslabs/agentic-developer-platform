@@ -1,9 +1,12 @@
-"""Unit tests for Neptune loader batch_size and sqs-worker timeout fixes (#3160).
+"""Unit tests for Neptune loader batch_size, retry, and sqs-worker timeout fixes (#3160, #3173).
 
 Validates:
-  1. load_to_neptune() default batch_size=400 propagates to _load_vertices/_load_edges
+  1. load_to_neptune() default batch_size=200 propagates to _load_vertices/_load_edges
   2. sqs-worker TIMEOUTS["repo"] == 3600
   3. sqs-worker receive_message called with VisibilityTimeout=3600
+  4. Bounded retry with exponential backoff for retryable errors (#3173)
+  5. Non-retryable errors skip retry (#3173)
+  6. error_rate in load_to_neptune result (#3173)
 """
 
 from __future__ import annotations
@@ -23,15 +26,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "images" / "ingesti
 
 
 class TestNeptuneLoaderBatchSize:
-    """Assert default batch_size=400 propagates to vertex/edge loading."""
+    """Assert default batch_size=200 propagates to vertex/edge loading (#3173)."""
 
-    def test_default_batch_size_is_400(self):
-        """load_to_neptune() signature default for batch_size must be 400."""
+    def test_default_batch_size_is_200(self):
+        """load_to_neptune() signature default for batch_size must be 200 (#3173)."""
         from scip_neptune_loader import load_to_neptune
 
         sig = inspect.signature(load_to_neptune)
         default = sig.parameters["batch_size"].default
-        assert default == 400, f"Expected batch_size default 400, got {default}"
+        assert default == 200, f"Expected batch_size default 200, got {default}"
 
     def test_batch_size_propagates_to_load_vertices(self):
         """_load_vertices receives the batch_size from load_to_neptune()."""
@@ -73,7 +76,7 @@ class TestNeptuneLoaderBatchSize:
         ):
             load_to_neptune(csv_output, "endpoint:8182", "us-east-1")
 
-        assert captured_batch_size == [400], f"Expected [400], got {captured_batch_size}"
+        assert captured_batch_size == [200], f"Expected [200], got {captured_batch_size}"
 
     def test_batch_size_propagates_to_load_edges(self):
         """_load_edges receives the batch_size from load_to_neptune()."""
@@ -114,7 +117,7 @@ class TestNeptuneLoaderBatchSize:
         ):
             load_to_neptune(csv_output, "endpoint:8182", "us-east-1")
 
-        assert captured_batch_size == [400], f"Expected [400], got {captured_batch_size}"
+        assert captured_batch_size == [200], f"Expected [200], got {captured_batch_size}"
 
     def test_custom_batch_size_overrides_default(self):
         """Explicit batch_size parameter overrides the default."""
@@ -324,3 +327,264 @@ class TestSqsWorkerTimeouts:
             assert call_kwargs[1]["VisibilityTimeout"] == 3600, (
                 f"Expected VisibilityTimeout=3600, got {call_kwargs[1].get('VisibilityTimeout')}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Neptune retry tests (#3173)
+# ---------------------------------------------------------------------------
+
+
+class TestNeptuneRetry:
+    """Assert bounded retry with exponential backoff for transient errors (#3173)."""
+
+    def test_retryable_error_is_retried_and_succeeds(self):
+        """A retryable error (Connection refused) is retried and succeeds on attempt 2."""
+        from scip_neptune_loader import _neptune_query_with_retry
+
+        call_count = []
+
+        def mock_query(neptune_url, region, cypher, parameters=None):
+            call_count.append(1)
+            if len(call_count) < 3:
+                return {"error": "[Errno 111] Connection refused", "code": 0}
+            return {"results": [{"cnt": 5}]}
+
+        with (
+            patch("scip_neptune_loader._neptune_query", side_effect=mock_query),
+            patch("scip_neptune_loader.time.sleep"),  # Don't actually sleep in tests
+        ):
+            result = _neptune_query_with_retry("http://test:8182", "us-east-1", "RETURN 1")
+
+        assert "error" not in result
+        assert result == {"results": [{"cnt": 5}]}
+        assert len(call_count) == 3, f"Expected 3 attempts, got {len(call_count)}"
+
+    def test_non_retryable_error_no_retry(self):
+        """A non-retryable error (4xx query error) is NOT retried."""
+        from scip_neptune_loader import _neptune_query_with_retry
+
+        call_count = []
+
+        def mock_query(neptune_url, region, cypher, parameters=None):
+            call_count.append(1)
+            return {"error": "Syntax error in query", "code": 400}
+
+        with (
+            patch("scip_neptune_loader._neptune_query", side_effect=mock_query),
+            patch("scip_neptune_loader.time.sleep"),
+        ):
+            result = _neptune_query_with_retry("http://test:8182", "us-east-1", "BAD QUERY")
+
+        assert "error" in result
+        assert len(call_count) == 1, f"Expected 1 attempt (no retry), got {len(call_count)}"
+
+    def test_retries_exhausted_returns_last_error(self):
+        """If all 5 retries fail, the last error is returned."""
+        from scip_neptune_loader import MAX_RETRIES, _neptune_query_with_retry
+
+        call_count = []
+
+        def mock_query(neptune_url, region, cypher, parameters=None):
+            call_count.append(1)
+            return {"error": "The read operation timed out", "code": 0}
+
+        with (
+            patch("scip_neptune_loader._neptune_query", side_effect=mock_query),
+            patch("scip_neptune_loader.time.sleep"),
+        ):
+            result = _neptune_query_with_retry("http://test:8182", "us-east-1", "RETURN 1")
+
+        assert "error" in result
+        assert "timed out" in result["error"]
+        # Initial attempt + MAX_RETRIES retries
+        assert len(call_count) == MAX_RETRIES + 1
+
+    def test_http_5xx_is_retryable(self):
+        """HTTP 500/502/503/504 status codes trigger retry."""
+        from scip_neptune_loader import _is_retryable
+
+        assert _is_retryable({"error": "Internal error", "code": 500})
+        assert _is_retryable({"error": "Bad gateway", "code": 502})
+        assert _is_retryable({"error": "Service unavailable", "code": 503})
+        assert _is_retryable({"error": "Gateway timeout", "code": 504})
+
+    def test_http_429_is_retryable(self):
+        """HTTP 429 (throttling) triggers retry."""
+        from scip_neptune_loader import _is_retryable
+
+        assert _is_retryable({"error": "Too many requests", "code": 429})
+
+    def test_memory_limit_exceeded_is_retryable(self):
+        """MemoryLimitExceededException triggers retry."""
+        from scip_neptune_loader import _is_retryable
+
+        assert _is_retryable({"error": "MemoryLimitExceededException: ...", "code": 0})
+
+    def test_http_400_is_not_retryable(self):
+        """HTTP 400 (client error) does NOT trigger retry."""
+        from scip_neptune_loader import _is_retryable
+
+        assert not _is_retryable({"error": "MalformedQueryException", "code": 400})
+
+    def test_no_error_is_not_retryable(self):
+        """A successful result is not retryable."""
+        from scip_neptune_loader import _is_retryable
+
+        assert not _is_retryable({"results": [{"cnt": 5}]})
+
+
+# ---------------------------------------------------------------------------
+# error_rate and ingest-repo failure threshold tests (#3173)
+# ---------------------------------------------------------------------------
+
+
+class TestErrorRateSignal:
+    """Assert error_rate is present in load_to_neptune result (#3173)."""
+
+    def test_error_rate_zero_on_success(self):
+        """error_rate == 0.0 when all batches succeed."""
+        from scip_neptune_loader import load_to_neptune
+
+        import csv
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as vf:
+            writer = csv.DictWriter(
+                vf,
+                fieldnames=[
+                    "~id",
+                    "symbol_id:String",
+                    "name:String",
+                    "module:String",
+                    "file:String",
+                    "line:Int",
+                    "kind:String",
+                    "repo:String",
+                ],
+            )
+            writer.writeheader()
+            writer.writerow(
+                {
+                    "~id": "v1",
+                    "symbol_id:String": "s1",
+                    "name:String": "Foo",
+                    "module:String": "mod",
+                    "file:String": "a.py",
+                    "line:Int": "1",
+                    "kind:String": "class",
+                    "repo:String": "org/repo",
+                }
+            )
+            vertices_path = vf.name
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as ef:
+            writer = csv.DictWriter(
+                ef,
+                fieldnames=[
+                    "~id",
+                    "~from",
+                    "~to",
+                    "~label",
+                    "file:String",
+                    "line:Int",
+                    "repo:String",
+                ],
+            )
+            writer.writeheader()
+            edges_path = ef.name
+
+        csv_output = MagicMock()
+        csv_output.vertices_path = vertices_path
+        csv_output.edges_path = edges_path
+
+        with (
+            patch(
+                "scip_neptune_loader._neptune_query",
+                return_value={"results": [{"alive": 1}]},
+            ),
+            patch("scip_neptune_loader.clear_repo_graph", return_value=True),
+            patch(
+                "scip_neptune_loader._neptune_query_with_retry",
+                return_value={"results": [{"cnt": 1}]},
+            ),
+        ):
+            result = load_to_neptune(csv_output, "endpoint:8182", "us-east-1")
+
+        assert "error_rate" in result
+        assert result["error_rate"] == 0.0
+        assert result["success"] is True
+
+    def test_error_rate_present_on_partial_failure(self):
+        """error_rate > 0 when some batches fail."""
+        from scip_neptune_loader import load_to_neptune
+
+        import csv
+        import tempfile
+
+        # Create 2 vertices so that one batch loads (the mock will fail it)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as vf:
+            writer = csv.DictWriter(
+                vf,
+                fieldnames=[
+                    "~id",
+                    "symbol_id:String",
+                    "name:String",
+                    "module:String",
+                    "file:String",
+                    "line:Int",
+                    "kind:String",
+                    "repo:String",
+                ],
+            )
+            writer.writeheader()
+            writer.writerow(
+                {
+                    "~id": "v1",
+                    "symbol_id:String": "s1",
+                    "name:String": "Foo",
+                    "module:String": "mod",
+                    "file:String": "a.py",
+                    "line:Int": "1",
+                    "kind:String": "class",
+                    "repo:String": "org/repo",
+                }
+            )
+            vertices_path = vf.name
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as ef:
+            writer = csv.DictWriter(
+                ef,
+                fieldnames=[
+                    "~id",
+                    "~from",
+                    "~to",
+                    "~label",
+                    "file:String",
+                    "line:Int",
+                    "repo:String",
+                ],
+            )
+            writer.writeheader()
+            edges_path = ef.name
+
+        csv_output = MagicMock()
+        csv_output.vertices_path = vertices_path
+        csv_output.edges_path = edges_path
+
+        # Simulate vertex batch failure (non-retryable so it fails immediately)
+        with (
+            patch(
+                "scip_neptune_loader._neptune_query",
+                return_value={"results": [{"alive": 1}]},
+            ),
+            patch("scip_neptune_loader.clear_repo_graph", return_value=True),
+            patch(
+                "scip_neptune_loader._neptune_query_with_retry",
+                return_value={"error": "Something broke", "code": 400},
+            ),
+        ):
+            result = load_to_neptune(csv_output, "endpoint:8182", "us-east-1")
+
+        assert "error_rate" in result
+        assert result["error_rate"] == 1.0  # All vertices failed
+        assert result["success"] is False
