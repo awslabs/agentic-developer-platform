@@ -111,6 +111,10 @@ def extract_intent(
     #     resolved in determine_correlation. Marker ABSENCE no longer blocks.
     # Non-ADP bots (dependabot, etc.) never reach here — they 403 upstream.
 
+    # issues + opened → AIDLC inception (gated on aidlc-intent label)
+    if event_type == "issues" and action == "opened":
+        return _handle_issue_opened(payload)
+
     # issues + labeled → map label to persona
     if event_type == "issues" and action == "labeled":
         return _handle_issue_labeled(payload)
@@ -194,6 +198,29 @@ def _extract_all_mention_personas(body: str) -> list[str]:
         if mention in body:
             personas.append(persona)
     return personas
+
+
+def _handle_issue_opened(payload: dict) -> Intent | None:
+    """Handle issues.opened event — dispatch AIDLC persona if template label present.
+
+    Issue #3169: Only dispatches when the issue carries the `aidlc-intent` label
+    (applied automatically by the AIDLC issue template). All other issues.opened
+    events return None — this prevents a dispatch storm from every new issue.
+
+    The bot sender check is already handled by the top-level guard in
+    extract_intent() (bots are blocked for all non-comment/non-PR events).
+    """
+    labels = payload.get("issue", {}).get("labels", [])
+    label_names = {lbl.get("name", "") for lbl in labels}
+
+    if "aidlc-intent" not in label_names:
+        logger.debug(
+            "issues.opened without aidlc-intent label — no-op (issue #%s)",
+            payload.get("issue", {}).get("number", "?"),
+        )
+        return None
+
+    return Intent(persona="aidlc", trigger="issue_opened", label="aidlc-intent")
 
 
 def _handle_issue_labeled(payload: dict) -> Intent | None:
