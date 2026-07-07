@@ -307,6 +307,37 @@ else
 fi
 echo ""
 
+# --- Test 11: aidlc-emit-issues skill exists in repo --------------------------
+echo "--- Test 11: aidlc-emit-issues skill present in .claude/skills/ ---"
+
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+SKILL_FILE="$REPO_ROOT/modules/agent-factory/skills/aidlc-emit-issues/SKILL.md"
+if [ -f "$SKILL_FILE" ]; then
+  pass "aidlc-emit-issues/SKILL.md exists"
+else
+  fail "aidlc-emit-issues/SKILL.md not found at $SKILL_FILE"
+fi
+
+# Verify the skill contains required sections
+if grep -q "deterministic" "$SKILL_FILE" 2>/dev/null; then
+  pass "SKILL.md mentions deterministic gates"
+else
+  fail "SKILL.md missing deterministic gates guidance"
+fi
+
+if grep -q "five-section" "$SKILL_FILE" 2>/dev/null || grep -q "five section" "$SKILL_FILE" 2>/dev/null; then
+  pass "SKILL.md references five-section format"
+else
+  fail "SKILL.md missing five-section format reference"
+fi
+
+if grep -q "sub-issue\|sub_issue\|subIssue" "$SKILL_FILE" 2>/dev/null; then
+  pass "SKILL.md references sub-issue linking"
+else
+  fail "SKILL.md missing sub-issue linking instructions"
+fi
+echo ""
+
 # =============================================================================
 echo "=== Results ==="
 echo "Passed: $PASSES"

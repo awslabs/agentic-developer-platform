@@ -288,13 +288,28 @@ else
 fi
 
 echo ""
-echo "=== Phase 5: Write version file ==="
+echo "=== Phase 5: Copy ADP-owned skills ==="
+
+# The aidlc-emit-issues skill is ADP-owned (not part of upstream AIDLC dist).
+# It ships from the tracked source at modules/agent-factory/skills/.
+ADP_SKILLS_DIR="$SCRIPT_DIR/../../modules/agent-factory/skills"
+
+if [ -d "$ADP_SKILLS_DIR/aidlc-emit-issues" ]; then
+  mkdir -p "$TARGET_REPO/.claude/skills/aidlc-emit-issues"
+  cp -rf "$ADP_SKILLS_DIR/aidlc-emit-issues/SKILL.md" "$TARGET_REPO/.claude/skills/aidlc-emit-issues/"
+  echo "  Copied aidlc-emit-issues skill to .claude/skills/"
+else
+  echo "  WARNING: aidlc-emit-issues skill not found at $ADP_SKILLS_DIR/aidlc-emit-issues"
+fi
+
+echo ""
+echo "=== Phase 6: Write version file ==="
 mkdir -p "$TARGET_REPO/aidlc"
 echo "$TAG" > "$TARGET_REPO/aidlc/.aidlc-version"
 echo "  Wrote aidlc/.aidlc-version: $TAG"
 
 echo ""
-echo "=== Phase 6: Commit ==="
+echo "=== Phase 7: Commit ==="
 cd "$TARGET_REPO"
 git add .claude/ aidlc/
 if [ -f "$TARGET_REPO/CLAUDE.md" ]; then
