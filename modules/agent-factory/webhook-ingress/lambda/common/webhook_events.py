@@ -87,6 +87,7 @@ class WebhookEventLogger:
         chain_depth: int | None = None,
         root_human_id: str | None = None,
         is_human_rooted: bool | None = None,
+        authorized_user_id: str = "",
     ) -> dict[str, Any]:
         """Record a webhook event in DynamoDB.
 
@@ -119,6 +120,9 @@ class WebhookEventLogger:
                 the Activity chain view. Computed by determine_correlation but
                 previously never persisted to the row (issue #1750).
             chain_depth: This run's depth in the chain (#1696).
+            authorized_user_id: Canonical user whose credentials this run
+                may access (#3174). Set at spawn from chain policy; empty
+                string means no vault access. Written but unread until S2.
 
         Returns:
             The DDB item that was written.
@@ -181,6 +185,10 @@ class WebhookEventLogger:
             item["root_human_id"] = root_human_id
         if is_human_rooted is not None:
             item["is_human_rooted"] = is_human_rooted
+        # Issue #3174: credential-authorization binding — write the canonical
+        # user whose credentials this run may access (ships dark until S2).
+        if authorized_user_id:
+            item["authorized_user_id"] = authorized_user_id
 
         try:
             self._table.put_item(Item=item)

@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 # Maximum chain depth before blocking bot-to-bot triggers (issue #1696).
 MAX_CHAIN_DEPTH = int(os.environ.get("MAX_CHAIN_DEPTH", "8"))
 
+# Issue #3174: Default max credential chain depth (tenant-configurable).
+DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH = 3
+
 # Issue #2149: Cross-persona loop threshold.
 CROSS_PERSONA_LOOP_THRESHOLD = int(os.environ.get("CROSS_PERSONA_LOOP_THRESHOLD", "4"))
 
@@ -161,6 +164,8 @@ def spawn_persona(
     )
 
     # --- Step 8: Capture invocation event to DDB BEFORE SQS ---
+    # Issue #3174: read tenant credential chain depth policy (fail-soft).
+    max_cred_depth = _get_max_credential_chain_depth(installation_id)
     _capture_invocation_event(
         envelope=envelope,
         tenant_id=tenant_id,
@@ -173,6 +178,7 @@ def spawn_persona(
         persona=persona,
         payload=payload,
         correlation_ctx=correlation_ctx,
+        max_credential_chain_depth=max_cred_depth,
     )
 
     # --- Step 9: Publish to SQS ---
@@ -409,6 +415,93 @@ def _build_envelope(
     return envelope
 
 
+def _get_max_credential_chain_depth(installation_id: int | str) -> int:
+    """Read max_credential_chain_depth from tenant-registry DDB (fail-soft).
+
+    Issue #3174: Tenant-configurable depth limit for credential chain
+    propagation. Defaults to DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH (3) if:
+      - TENANT_REGISTRY_TABLE env var not set
+      - DDB read fails
+      - Attribute absent on tenant row
+
+    Args:
+        installation_id: GitHub App installation ID (PK of tenant-registry).
+
+    Returns:
+        The configured max depth, or the default.
+    """
+    table_name = os.environ.get("TENANT_REGISTRY_TABLE", "")
+    if not table_name:
+        return DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH
+
+    try:
+        import boto3
+
+        region = os.environ.get(
+            "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        )
+        dynamodb = boto3.resource("dynamodb", region_name=region)
+        table = dynamodb.Table(table_name)
+        resp = table.get_item(
+            Key={"installation_id": str(installation_id)},
+            ProjectionExpression="max_credential_chain_depth",
+        )
+        item = resp.get("Item")
+        if item and "max_credential_chain_depth" in item:
+            return int(item["max_credential_chain_depth"])
+    except Exception as e:
+        logger.warning(
+            "spawn_persona: failed to read max_credential_chain_depth "
+            "for installation_id=%s (defaulting to %d): %s",
+            installation_id,
+            DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH,
+            e,
+        )
+
+    return DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH
+
+
+def _compute_authorized_user_id(
+    *,
+    correlation_ctx: dict,
+    cognito_sub: str,
+    max_credential_chain_depth: int,
+) -> str:
+    """Compute authorized_user_id per §Q3 chain policy (#3174).
+
+    Policy table:
+      - Human-initiated (depth 0, human sender) → cognito_sub
+      - Human-rooted chain under depth limit → root_human_id
+      - Human-rooted chain at/over depth, OR bot-rooted → "" (no vault)
+
+    Args:
+        correlation_ctx: Chain context with is_human_rooted, root_human_id,
+            chain_depth.
+        cognito_sub: The cognito_sub for this spawn (non-empty only for
+            human senders).
+        max_credential_chain_depth: Tenant-configurable depth limit.
+
+    Returns:
+        The authorized_user_id string ("" means no vault access).
+    """
+    is_human_rooted = correlation_ctx.get("is_human_rooted", False)
+    if not is_human_rooted:
+        return ""
+
+    chain_depth = correlation_ctx.get("chain_depth", 0)
+    if chain_depth >= max_credential_chain_depth:
+        return ""
+
+    # Human-initiated (cognito_sub set) takes precedence over root_human_id
+    # for the root of the chain (depth 0).
+    if cognito_sub:
+        return cognito_sub
+
+    # Chain path: inherit from root human
+    root_human_id = correlation_ctx.get("root_human_id", "")
+    return root_human_id
+
+
 def _capture_invocation_event(
     *,
     envelope: dict,
@@ -422,11 +515,13 @@ def _capture_invocation_event(
     persona: str,
     payload: dict,
     correlation_ctx: dict,
+    max_credential_chain_depth: int = 3,
 ) -> None:
     """Write enriched invocation row to DynamoDB (best-effort).
 
     Issue #2042: attribute the run to the chain's HUMAN ROOT for human-rooted
     chains so it appears in the originating human's Activity view.
+    Issue #3174: compute and persist authorized_user_id per chain policy.
     """
     try:
         from common.webhook_events import WebhookEventLogger
@@ -443,6 +538,14 @@ def _capture_invocation_event(
         is_human_rooted = correlation_ctx.get("is_human_rooted")
         effective_user_id = (
             root_human if (is_human_rooted and root_human) else actor_user_id
+        )
+
+        # Issue #3174: compute authorized_user_id per chain policy (§Q3).
+        cognito_sub = envelope.get("cognito_sub", "")
+        authorized_user_id = _compute_authorized_user_id(
+            correlation_ctx=correlation_ctx,
+            cognito_sub=cognito_sub,
+            max_credential_chain_depth=max_credential_chain_depth,
         )
 
         # Derive topic from issue/PR title
@@ -481,6 +584,7 @@ def _capture_invocation_event(
             chain_depth=correlation_ctx.get("chain_depth"),
             root_human_id=root_human,
             is_human_rooted=is_human_rooted,
+            authorized_user_id=authorized_user_id,
         )
     except Exception as e:
         logger.warning("spawn_persona: capture_invocation_event failed: %s", e)
