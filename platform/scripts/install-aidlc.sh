@@ -318,6 +318,12 @@ mode. The agent MUST:
 3. Post a gate comment (with \`<!-- aidlc-gate:<stage> -->\` marker)
 4. END the run — do not call \`aidlc-state.ts advance\` in the same session
 
+Reply options in gate comments MUST be shown mention-prefixed:
+\`@agent-aidlc approve\` / \`@agent-aidlc feedback: [notes]\` / \`@agent-aidlc skip\`
+
+Replies without the \`@agent-aidlc\` mention are not seen by the webhook
+(mention-routed dispatch). The gate comment must state this explicitly.
+
 Scope (poc/auto/workshop) controls which stages are active — not whether they
 require human approval before advancing.
 "

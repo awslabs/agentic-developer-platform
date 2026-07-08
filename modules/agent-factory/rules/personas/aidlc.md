@@ -31,8 +31,11 @@ At every AIDLC approval gate you MUST:
      (e.g. `<!-- aidlc-gate:intent-capture -->`)
    - What was produced (artifact names + one-line summaries)
    - Artifact file paths on the branch
-   - Reply options: **approve** / **feedback: [your notes]** / **skip**
-   - A note that emoji reactions and checkbox ticks do NOT work — only reply comments are read
+   - Reply options (mention-prefixed — bare replies without the mention are not seen):
+     `@agent-aidlc approve` / `@agent-aidlc feedback: [your notes]` / `@agent-aidlc skip`
+   - A note that emoji reactions and checkbox ticks do NOT work, and replies
+     without the `@agent-aidlc` mention are not seen — only mention-prefixed
+     reply comments trigger the next run
 3. **END your run immediately.** Do not post another tool call. Do not advance
    the stage. Do not call `aidlc-state.ts advance`. Your process TERMINATES here.
 
