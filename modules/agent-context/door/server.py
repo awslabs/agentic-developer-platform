@@ -590,8 +590,17 @@ async def _handle_search(
             seen_files.add(file_key)
             deduped.append(hit.data)
 
-    # Re-rank: boost files whose path matches the query (filename relevance)
-    deduped.sort(key=lambda d: -_file_relevance_score(d.get("file", ""), query))
+    # Definition-aware boost: when the query looks like a symbol identifier,
+    # resolve its definition file(s) via Neptune and pin them to the top.
+    # Reuses the same resolve_symbol() that the understand verb uses (#3303).
+    definition_files: set[str] = set()
+    if _is_identifier_query(query):
+        definition_files = _resolve_definition_files(query, project_scope)
+
+    # Re-rank: boost definition files (score 200), then filename relevance
+    deduped.sort(
+        key=lambda d: -_definition_boosted_score(d.get("file", ""), query, definition_files)
+    )
 
     return {"results": deduped[:limit], "total": min(len(deduped), limit), "query": query}
 
@@ -1037,8 +1046,103 @@ def _apply_acl(hits: list[SearchHit], caller: CallerPrincipal | None) -> list[Se
 
 
 # ---------------------------------------------------------------------------
-# Search ranking helper
+# Search ranking helpers
 # ---------------------------------------------------------------------------
+
+# Pattern for identifier-shaped queries: CamelCase, PascalCase, snake_case,
+# or a single word that looks like a type/class name (starts uppercase, >2 chars).
+# Excludes multi-word free-text phrases (e.g., "quick start installation").
+_CAMEL_CASE_RE = re.compile(r"^[A-Z][a-zA-Z0-9]+$")
+_SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)+$")
+
+
+def _is_identifier_query(query: str) -> bool:
+    """Detect whether a query looks like a code identifier (symbol name).
+
+    Returns True for:
+      - CamelCase / PascalCase: "DataLayerInterface", "BytesScanner", "PsList"
+      - snake_case: "create_layer", "get_config"
+      - Mixed with numbers: "Layer3D", "sha256_hash"
+
+    Returns False for:
+      - Multi-word free-text: "backtest engine base class", "quick start"
+      - Very short strings (≤2 chars): too ambiguous
+      - Queries that are clearly natural language phrases
+
+    The heuristic: if the query is a single token (no spaces) and matches
+    CamelCase or snake_case patterns, it's an identifier. Multi-token queries
+    are identifiers only if ALL tokens together form a CamelCase word (no spaces
+    in the actual query).
+    """
+    stripped = query.strip()
+    if not stripped or len(stripped) <= 2:
+        return False
+
+    # Single token (no spaces) — check patterns
+    if " " not in stripped:
+        if _CAMEL_CASE_RE.match(stripped):
+            return True
+        if _SNAKE_CASE_RE.match(stripped):
+            return True
+        # Also match identifiers with dots/colons (e.g., "module.ClassName")
+        # but not pure paths (those are handled by filename relevance)
+        if "::" in stripped:
+            return True
+        return False
+
+    # Multi-word: NOT an identifier (it's a natural-language phrase)
+    return False
+
+
+def _resolve_definition_files(query: str, project_scope: "ProjectScope | None") -> set[str]:
+    """Resolve the definition file(s) for a symbol query via Neptune.
+
+    Uses the same resolve_symbol() that the understand verb uses. Best-effort:
+    returns an empty set if Neptune is unavailable or the symbol is not found.
+    This ensures no regression — search falls through to filename-relevance ranking.
+    """
+    from . import neptune_client
+
+    if not neptune_client.neptune_enabled():
+        return set()
+
+    if not neptune_client.neptune_available():
+        return set()
+
+    # Determine repo scope from project filter (if available)
+    repos_to_check: list[str] = []
+    if project_scope and project_scope.repo_names:
+        repos_to_check = list(project_scope.repo_names)
+    else:
+        # No project scope — cannot resolve without a repo context
+        # (resolve_symbol requires a repo parameter)
+        return set()
+
+    definition_files: set[str] = set()
+    for repo in repos_to_check:
+        resolved_repo = neptune_client.resolve_repo_name(repo)
+        try:
+            symbols = neptune_client.resolve_symbol(resolved_repo, query)
+            for sym in symbols:
+                file_path = sym.get("file", "")
+                if file_path:
+                    definition_files.add(file_path)
+        except Exception:
+            log.debug("Definition file resolution failed for %s in %s", query, repo)
+
+    return definition_files
+
+
+def _definition_boosted_score(file_path: str, query: str, definition_files: set[str]) -> int:
+    """Score a file combining definition-boost with filename relevance.
+
+    If the file is a known definition file for the queried symbol, it gets
+    score 200 (above all filename-relevance tiers). Otherwise, delegates to
+    _file_relevance_score().
+    """
+    if definition_files and file_path in definition_files:
+        return 200
+    return _file_relevance_score(file_path, query)
 
 
 def _file_relevance_score(file_path: str, query: str) -> int:
