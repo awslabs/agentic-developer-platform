@@ -61,6 +61,7 @@ NEPTUNE_CA_BUNDLE = (
 GRAPHRAG_ENABLED = settings.graphrag_enabled
 NEPTUNE_ENDPOINT = settings.neptune_endpoint
 NEPTUNE_PORT = settings.neptune_port
+NEPTUNE_BULK_LOAD_ROLE_ARN = settings.neptune_bulk_load_role_arn
 OPENSEARCH_ENDPOINT = settings.opensearch_endpoint
 LLM_MODEL = settings.model_wiki
 LLM_BASE_URL = settings.llm_base_url
@@ -1064,10 +1065,25 @@ def scip_structural_ingest(
 
         # Step 6: Load into Neptune (if endpoint configured)
         if NEPTUNE_ENDPOINT:
-            from scip_neptune_loader import load_to_neptune
-
             neptune_ep = f"{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}"
-            load_result = load_to_neptune(csv_output, neptune_ep, AWS_REGION)
+
+            # Use Bulk Loader when IAM role is set and S3 upload succeeded (#3233)
+            if NEPTUNE_BULK_LOAD_ROLE_ARN and result.get("s3_upload"):
+                from scip_neptune_loader import load_via_bulk_loader
+
+                load_result = load_via_bulk_loader(
+                    s3_prefix=result["s3_upload"],
+                    neptune_endpoint=neptune_ep,
+                    region=AWS_REGION,
+                    iam_role_arn=NEPTUNE_BULK_LOAD_ROLE_ARN,
+                    repo=org_repo,
+                )
+            else:
+                # Fallback: openCypher UNWIND batch (no Bulk Loader IAM or S3 upload failed)
+                from scip_neptune_loader import load_to_neptune
+
+                load_result = load_to_neptune(csv_output, neptune_ep, AWS_REGION)
+
             result["neptune_load"] = load_result
             if load_result.get("success"):
                 result["status"] = "complete"

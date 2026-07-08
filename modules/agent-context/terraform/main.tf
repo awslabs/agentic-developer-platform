@@ -189,6 +189,7 @@ module "neptune_serverless" {
   subnet_ids             = local.neptune_subnet_ids
   node_security_group_id = local.node_security_group_id
   oidc_provider_url      = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
+  bucket_name            = local.bucket_name
   min_capacity           = var.neptune_min_capacity
   max_capacity           = var.neptune_max_capacity
   tags                   = var.tags
@@ -387,6 +388,21 @@ resource "aws_ssm_parameter" "neptune_port" {
   value = tostring(module.neptune_serverless[0].cluster_port)
 
   description = "Neptune Serverless port for agent-context graph queries"
+
+  tags = merge(var.tags, {
+    ManagedBy = "terraform"
+    Module    = "agent-context"
+  })
+}
+
+resource "aws_ssm_parameter" "neptune_bulk_load_role_arn" {
+  count = var.neptune_enabled ? 1 : 0
+
+  name  = "/adp/${var.environment}/agent-context/neptune-bulk-load-role-arn"
+  type  = "String"
+  value = module.neptune_serverless[0].bulk_load_role_arn
+
+  description = "IAM role ARN for Neptune Bulk Loader (S3 read access)"
 
   tags = merge(var.tags, {
     ManagedBy = "terraform"

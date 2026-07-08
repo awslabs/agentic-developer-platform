@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     graphrag_enabled: bool = False
     neptune_endpoint: str = ""
     neptune_port: int = 8182
+    neptune_bulk_load_role_arn: str = ""  # When set, use Neptune Bulk Loader instead of UNWIND
     opensearch_endpoint: str = ""
 
     # --- GitHub App -----------------------------------------------------------
