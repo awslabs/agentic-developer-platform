@@ -461,11 +461,102 @@ class TestReviewDiffMode:
         assert "LOCAL-CHANGE" in prompt
         assert "Do not modify any files." in prompt
 
-    def test_extra_args_exit_2_with_usage(self, tmp_path):
+    def test_remote_only_head_ref_is_fetched_before_diffing(self, tmp_path):
+        """Issue #3301: review-diff must fetch a remote-only HEAD ref.
+
+        Simulates the dominant failure mode: the worker pod sits on `main` while
+        the PR's changes live on a remote-only `agent/issue-*` branch. The
+        wrapper should fetch and resolve the head ref so the three-dot diff
+        contains the PR's changes.
+        """
+        # Create an "upstream" bare repo.
+        upstream = tmp_path / "upstream.git"
+        subprocess.run(["git", "init", "--bare", str(upstream)], check=True, capture_output=True)
+
+        # Clone it to get a working repo with 'origin' set.
+        repo = tmp_path / "repo"
+        subprocess.run(
+            ["git", "clone", str(upstream), str(repo)],
+            check=True,
+            capture_output=True,
+            env={**os.environ, **_GIT_ENV},
+        )
+
+        # Create an initial commit and push as main (the base).
+        (repo / "app.py").write_text("def a():\n    return 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "initial")
+        _git(repo, "push", "origin", "HEAD:main")
+
+        # Create a feature branch with a change, push it, then switch back to main.
+        _git(repo, "checkout", "-b", "agent/pr-branch")
+        (repo / "app.py").write_text("def a():\n    return 2  # PR-HEAD-CHANGE\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "pr feature change")
+        _git(repo, "push", "origin", "agent/pr-branch")
+        _git(repo, "checkout", "main")
+
+        # Remove all local knowledge of the PR branch so it's remote-only.
+        _git(repo, "branch", "-D", "agent/pr-branch")
+        subprocess.run(
+            ["git", "update-ref", "-d", "refs/remotes/origin/agent/pr-branch"],
+            cwd=repo,
+            capture_output=True,
+        )
+
+        # Verify the head ref doesn't resolve locally (pre-condition).
+        check = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", "agent/pr-branch^{commit}"],
+            cwd=repo,
+            capture_output=True,
+        )
+        assert check.returncode != 0, "pre-condition: head ref should NOT resolve locally"
+
+        stub = _make_stub_codex(tmp_path, _ARGV_ECHO)
+        result = _run(
+            ["review-diff", "main", "agent/pr-branch"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+            cwd=str(repo),
+        )
+        # The wrapper fetches the head ref and produces a successful review-diff.
+        assert result.returncode == 0, f"review-diff failed: {result.stderr}"
+        prompt = _parse_argv(result.stdout)[-1]
+        assert "PR-HEAD-CHANGE" in prompt
+        assert "Do not modify any files." in prompt
+
+    def test_bad_head_ref_exits_2_before_codex(self, tmp_path):
+        """Issue #3301: unknown head ref exits 2 (same pattern as base)."""
         repo = _init_git_repo_with_change(tmp_path)
         stub = _make_stub_codex(tmp_path, "echo SHOULD_NOT_RUN\n")
         result = _run(
-            ["review-diff", "base", "extra"],
+            ["review-diff", "base", "no-such-head-ref"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+            cwd=str(repo),
+        )
+        assert result.returncode == 2
+        assert "head ref not found" in result.stderr
+        assert "SHOULD_NOT_RUN" not in result.stdout
+
+    def test_two_positionals_valid_base_and_head(self, tmp_path):
+        """Issue #3301: review-diff <base> <head> is now a valid 2-positional call."""
+        repo = _init_git_repo_with_change(tmp_path)
+        stub = _make_stub_codex(tmp_path, _ARGV_ECHO)
+        result = _run(
+            ["review-diff", "base", "HEAD"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+            cwd=str(repo),
+        )
+        assert result.returncode == 0, result.stderr
+        prompt = _parse_argv(result.stdout)[-1]
+        assert "CHANGED-LINE" in prompt
+        assert "Do not modify any files." in prompt
+
+    def test_extra_args_exit_2_with_usage(self, tmp_path):
+        """Three positional args (base + head + extra) exits 2."""
+        repo = _init_git_repo_with_change(tmp_path)
+        stub = _make_stub_codex(tmp_path, "echo SHOULD_NOT_RUN\n")
+        result = _run(
+            ["review-diff", "base", "HEAD", "extra"],
             env_extra={"CODEX_BIN": str(stub)},
             cwd=str(repo),
         )

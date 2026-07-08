@@ -23,3 +23,9 @@ When posting a review verdict comment, include an `**Engine**:` attribution line
 indicating which engine produced the review:
 - Codex CLI ran successfully → `**Engine**: Codex CLI <version>`
 - Codex CLI failed, Claude finished → `**Engine**: Claude (Codex CLI failed: <reason>)`
+
+## Remote branch review (issue #3301)
+When reviewing a PR whose branch isn't checked out locally (the common case on a
+worker pod sitting on `main`), pass the branch name as the head ref:
+`review-diff <base-ref> <head-ref>` (e.g. `review-diff main agent/issue-1234`).
+The wrapper fetches remote-only refs automatically — no manual checkout needed.

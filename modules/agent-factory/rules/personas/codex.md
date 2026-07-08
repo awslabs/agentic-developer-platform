@@ -101,9 +101,12 @@ Follow this loop for the issue:
    codex-bridge skill (write mode) with a single, precise instruction. Give
    Codex enough context to succeed but keep the scope tight. For a *review*
    ask, pick the right read-only mode: `review <file>` for one file, or
-   `review-diff [<base-ref>]` when you want Codex to second-opinion the whole
-   PR-level diff (`git diff <base>...`, base defaults to `origin/main`) with
-   cross-file context instead of looping files one at a time. Both review modes
+   `review-diff [<base-ref>] [<head-ref>]` when you want Codex to second-opinion
+   the whole PR-level diff (`git diff <base>...<head>`, base defaults to
+   `origin/main`, head defaults to `HEAD`) with cross-file context instead of
+   looping files one at a time. When reviewing a PR whose branch isn't checked
+   out locally, pass the branch name as the head ref so the wrapper can fetch
+   and resolve it (e.g. `review-diff main agent/issue-1234`). Both review modes
    are persona-calibrated by the distilled pack you select below.
 
 4. **Review every Codex diff before accepting.** After each delegation, run
