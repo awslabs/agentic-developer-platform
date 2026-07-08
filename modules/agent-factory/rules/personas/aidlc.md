@@ -56,6 +56,73 @@ Sequence for a single run:
 Do NOT proceed to step 6. There is no step 6. The next stage happens in a
 separate invocation, triggered by a human reply.
 
+### Live Tracker (issue-body progress display)
+
+At **run start** and **before ending** (gate or completion), rewrite ONLY the region
+between the sentinel markers in the intent issue body. This gives users an
+at-a-glance mission-control view without reading comment trails.
+
+#### Sentinel markers
+
+```
+<!-- aidlc-tracker:start -->
+…tracker content…
+<!-- aidlc-tracker:end -->
+```
+
+- On the **first run**: append the sentinel region to the end of the issue body.
+- On **subsequent runs**: replace the content between the existing sentinels.
+- **NEVER touch text outside the sentinels.** The user's original intent text must
+  remain byte-for-byte identical.
+
+#### Tracker content (render in this order)
+
+1. **Scope line**: `**Scope**: <poc|auto|workshop> · **Depth**: <complexity>`
+2. **Progress bar**: Unicode block characters showing stage N of M.
+   Example: `▓▓▓▓▓▓░░░░ 3/5 stages`
+3. **Stage table**:
+
+   | Phase | Stage | Status | Artifact | Cost |
+   |-------|-------|--------|----------|------|
+   | Inception | intent-capture | ✅ done | [`problem-frame.md`](link) | — |
+   | Inception | requirements-analysis | 🚦 gate | — | — |
+   | Inception | delivery-planning | ⏳ pending | — | — |
+
+   Status values: `✅ done` / `🚦 gate` / `⏳ pending` / `⏭️ skipped`
+   Artifact column: branch-relative path as a link (if committed), or `—`.
+   Cost column: per-stage token/cost figure from completion data if available, else `—`.
+
+4. **Gate callout** (only when a gate is open):
+   ```
+   > **⏸️ Awaiting gate**: `<stage-name>`
+   > Reply with: **approve** · **feedback: [notes]** · **skip**
+   ```
+
+5. **Timestamp line**: `_Updated: <ISO timestamp> · Run: <run-id>_`
+
+#### Data source
+
+Read all tracker data from the committed `aidlc-state.md` (or `aidlc-state.json`)
+in the work branch. Rendering is mechanical — no LLM judgment needed for the
+table; just map state fields to the table rows.
+
+#### Execution
+
+Use `gh issue edit <number> --body "<updated body>"` (via body-file for safety).
+To update the body:
+1. Fetch current body: `gh issue view <number> --json body --jq '.body'`
+2. If sentinels exist: replace content between them with freshly rendered tracker.
+3. If sentinels don't exist: append `\n\n<!-- aidlc-tracker:start -->\n...\n<!-- aidlc-tracker:end -->` to the end.
+4. Write updated body to a temp file and pass via `--body-file`.
+
+#### No-loop safety
+
+Issue-body edits by the agent do NOT re-trigger any dispatch. The intent parser
+handles only `issues.opened` (with `aidlc-intent` label), `issues.labeled`, and
+`issue_comment.created` events — NOT `issues.edited`. This is by design and
+means the tracker update cannot create a feedback loop. State this explicitly
+here for future editors: **editing the issue body is safe and loop-free.**
+
 ### Resume (re-invocation after gate)
 When re-invoked (via `@agent-aidlc` mention on the same issue):
 1. Read the latest human reply as the gate answer
