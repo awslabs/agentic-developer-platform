@@ -23,7 +23,7 @@ curl -fsSL https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/scr
 # -----------------------------------------------------------------------------
 # Install GitLab CE
 # -----------------------------------------------------------------------------
-EXTERNAL_URL="${gitlab_external_url}" apt-get install -y gitlab-ce
+EXTERNAL_URL="${gitlab_external_url}" apt-get install -y gitlab-ce=17.7.*
 
 # -----------------------------------------------------------------------------
 # Configure GitLab — ALB terminates TLS, GitLab listens on HTTP:80
@@ -57,4 +57,4 @@ gitlab-ctl reconfigure
 # -----------------------------------------------------------------------------
 # Signal completion
 # -----------------------------------------------------------------------------
-echo "GitLab CE installation complete" > /var/log/gitlab-install.log
+echo "GitLab CE $(dpkg -l gitlab-ce | awk '/gitlab-ce/{print $3}') installed" > /var/log/gitlab-install.log
