@@ -12,7 +12,7 @@
 
 resource "aws_security_group" "alb" {
   name        = "${local.name_prefix}-alb-sg"
-  description = "Security group for GitLab internal ALB — VPC ingress only"
+  description = "Security group for GitLab internal ALB - VPC ingress only"
   vpc_id      = local.vpc_id
 
   tags = merge(local.common_tags, {
@@ -57,7 +57,7 @@ resource "aws_security_group_rule" "alb_egress_to_instance" {
 
 resource "aws_security_group" "instance" {
   name        = "${local.name_prefix}-instance-sg"
-  description = "Security group for GitLab CE instance — ALB ingress only"
+  description = "Security group for GitLab CE instance - ALB ingress only"
   vpc_id      = local.vpc_id
 
   tags = merge(local.common_tags, {

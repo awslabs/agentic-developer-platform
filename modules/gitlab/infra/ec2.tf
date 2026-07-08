@@ -11,7 +11,7 @@ resource "aws_instance" "gitlab" {
   key_name               = var.key_name != "" ? var.key_name : null
 
   user_data = templatefile("${path.module}/user_data.sh", {
-    gitlab_external_url = "https://${var.gitlab_domain}"
+    gitlab_external_url = "http://${var.gitlab_domain}"
   })
 
   root_block_device {
