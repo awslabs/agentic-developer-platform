@@ -243,6 +243,16 @@ variable "eventbridge_alarm_target_repo" {
   default     = ""
 }
 
+# -----------------------------------------------------------------------------
+# GitLab Webhook (Issue #3324)
+# -----------------------------------------------------------------------------
+
+variable "gitlab_webhook_enabled" {
+  description = "Enable the GitLab webhook Lambda and API Gateway route. When false, no GitLab resources are created."
+  type        = bool
+  default     = false
+}
+
 # Issue #575: the gateway's API Gateway invoke URL is resolved at apply time
 # from SSM (published by modules/gateway/infra/) rather than passed in as a
 # tfvar. Keeps new environments repeatable — no per-env hardcoding.

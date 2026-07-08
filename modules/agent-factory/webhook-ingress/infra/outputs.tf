@@ -82,6 +82,25 @@ output "marker_signing_key_secret_arn" {
   value       = aws_secretsmanager_secret.marker_signing_key.arn
 }
 
+# -----------------------------------------------------------------------------
+# GitLab Webhook (Issue #3324)
+# -----------------------------------------------------------------------------
+
+output "gitlab_webhook_url" {
+  description = "Full GitLab webhook URL (POST to this from GitLab, empty when disabled)"
+  value       = var.gitlab_webhook_enabled ? "${aws_api_gateway_stage.dev.invoke_url}/gitlab" : ""
+}
+
+output "gitlab_lambda_function_name" {
+  description = "GitLab webhook Lambda function name (empty when disabled)"
+  value       = var.gitlab_webhook_enabled ? aws_lambda_function.gitlab_webhook[0].function_name : ""
+}
+
+output "gitlab_webhook_secret_arn" {
+  description = "Secrets Manager ARN for the GitLab webhook token (empty when disabled)"
+  value       = var.gitlab_webhook_enabled ? aws_secretsmanager_secret.gitlab_webhook_secret[0].arn : ""
+}
+
 # =============================================================================
 # SSM Parameters — consumed by CI integration tests
 # =============================================================================

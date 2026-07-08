@@ -190,6 +190,15 @@ resource "aws_iam_policy" "lambda_secrets" {
           Action   = ["secretsmanager:GetSecretValue"]
           Resource = [var.internal_api_key_arn]
         }
+      ] : [],
+      # Issue #3324: GitLab webhook secret read permission
+      var.gitlab_webhook_enabled ? [
+        {
+          Sid      = "ReadGitLabWebhookSecret"
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue"]
+          Resource = [aws_secretsmanager_secret.gitlab_webhook_secret[0].arn]
+        }
       ] : []
     )
   })

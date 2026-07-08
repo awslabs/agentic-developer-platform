@@ -50,17 +50,25 @@ resource "aws_api_gateway_deployment" "webhook" {
   # Force redeployment when routes/integrations change
   # Issue #2152 review point I4: /agent/trigger IDs included so route is
   # deployed automatically on apply (not silently 403/404).
+  # Issue #3324: /gitlab route IDs included for GitLab webhook.
   triggers = {
-    redeployment = sha1(jsonencode([
-      aws_api_gateway_resource.github.id,
-      aws_api_gateway_method.post_github.id,
-      aws_api_gateway_integration.github_webhook.id,
-      aws_api_gateway_resource.agent.id,
-      aws_api_gateway_resource.agent_trigger.id,
-      aws_api_gateway_method.post_agent_trigger.id,
-      aws_api_gateway_integration.agent_trigger.id,
-      aws_api_gateway_rest_api_policy.webhook.policy,
-    ]))
+    redeployment = sha1(jsonencode(concat(
+      [
+        aws_api_gateway_resource.github.id,
+        aws_api_gateway_method.post_github.id,
+        aws_api_gateway_integration.github_webhook.id,
+        aws_api_gateway_resource.agent.id,
+        aws_api_gateway_resource.agent_trigger.id,
+        aws_api_gateway_method.post_agent_trigger.id,
+        aws_api_gateway_integration.agent_trigger.id,
+        aws_api_gateway_rest_api_policy.webhook.policy,
+      ],
+      var.gitlab_webhook_enabled ? [
+        aws_api_gateway_resource.gitlab[0].id,
+        aws_api_gateway_method.post_gitlab[0].id,
+        aws_api_gateway_integration.gitlab_webhook[0].id,
+      ] : [],
+    )))
   }
 
   lifecycle {
@@ -73,6 +81,10 @@ resource "aws_api_gateway_deployment" "webhook" {
     aws_api_gateway_method.post_agent_trigger,
     aws_api_gateway_integration.agent_trigger,
   ]
+
+  # Note: GitLab resources (Issue #3324) are conditionally created and
+  # referenced via the triggers hash above. depends_on cannot contain
+  # conditional references, but the triggers hash ensures correct ordering.
 }
 
 resource "aws_api_gateway_stage" "dev" {

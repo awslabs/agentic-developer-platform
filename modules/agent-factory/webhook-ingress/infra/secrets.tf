@@ -92,3 +92,27 @@ resource "aws_secretsmanager_secret_version" "marker_signing_key" {
 # configured when the rotation Lambda is provisioned. Until then, manual
 # rotation via: aws secretsmanager put-secret-value --secret-id <arn> \
 #   --secret-string "$(openssl rand -base64 32)"
+
+# =============================================================================
+# Secrets Manager — GitLab Webhook Secret (Issue #3324)
+# =============================================================================
+# Shared secret token for X-Gitlab-Token validation. The actual value is set
+# out-of-band (during GitLab webhook configuration in Admin → Group → Webhooks).
+# =============================================================================
+
+resource "aws_secretsmanager_secret" "gitlab_webhook_secret" {
+  count       = var.gitlab_webhook_enabled ? 1 : 0
+  name        = "adp/${var.environment}/gitlab-webhook-secret"
+  description = "GitLab webhook secret token for X-Gitlab-Token header validation"
+  kms_key_id  = aws_kms_key.secrets.arn
+}
+
+resource "aws_secretsmanager_secret_version" "gitlab_webhook_secret" {
+  count         = var.gitlab_webhook_enabled ? 1 : 0
+  secret_id     = aws_secretsmanager_secret.gitlab_webhook_secret[0].id
+  secret_string = "PLACEHOLDER_REPLACE_WITH_ACTUAL_SECRET"
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}
