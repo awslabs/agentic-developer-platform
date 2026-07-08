@@ -1,0 +1,127 @@
+name: GitLab Infra Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "gitlab" to confirm destruction'
+        required: true
+        type: string
+      customer_account_id:
+        description: 'Customer-linked AWS account to destroy in (cross-account mode).'
+        required: false
+        default: ''
+      customer_aws_label:
+        description: 'Vaulted credential label (when customer_account_id is set).'
+        required: false
+        default: ''
+      customer_user_id:
+        description: 'ADP users.id UUID (when customer_account_id is set).'
+        required: false
+        default: ''
+      environment:
+        description: 'Deployment environment (dev/staging/prod).'
+        required: false
+        default: 'dev'
+
+concurrency:
+  group: tf-apply-gitlab-${{ inputs.customer_account_id || 'default' }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  TF_VAR_environment: dev
+  ENVIRONMENT: dev
+  MODULE_NAME: gitlab
+  TF_WORKING_DIR: modules/source-control/gitlab/infra
+  BACKEND_CONFIG: environments/dev/modules/gitlab-backend.tfvars
+  VAR_FILE: environments/dev/modules/gitlab.tfvars
+
+jobs:
+  destroy:
+    name: Destroy GitLab Infrastructure
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+
+    steps:
+      - name: Confirm module name
+        run: |
+          if [ "${{ inputs.confirm }}" != "gitlab" ]; then
+            echo "::error::Input did not match 'gitlab'. Aborting to prevent accidental destroy."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+
+      - name: Install required CLI tools
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
+      - name: Assert AWS account
+        run: |
+          set -e
+          ACTUAL_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          # In cross-account mode load-deploy-config assumes into the customer
+          # account, so the caller identity is the customer's — the intended
+          # destroy target. Prefer that; else the platform account from
+          # vars.AWS_ACCOUNT_ID.
+          EXPECTED_ACCOUNT="${{ inputs.customer_account_id }}"
+          if [ -z "$EXPECTED_ACCOUNT" ]; then
+            EXPECTED_ACCOUNT="${{ vars.AWS_ACCOUNT_ID }}"
+          fi
+          if [ -z "$EXPECTED_ACCOUNT" ]; then
+            echo "WARNING: No target account to verify against (neither customer_account_id input nor vars.AWS_ACCOUNT_ID set). Skipping account guard."
+            echo "Consider setting vars.AWS_ACCOUNT_ID to enable cross-account protection."
+            exit 0
+          fi
+          if [ "$ACTUAL_ACCOUNT" != "$EXPECTED_ACCOUNT" ]; then
+            echo "::error::Account mismatch! Expected $EXPECTED_ACCOUNT but got $ACTUAL_ACCOUNT."
+            echo "::error::Refusing to destroy. Check runner IAM / credential configuration."
+            exit 1
+          fi
+          echo "Account verified: $ACTUAL_ACCOUNT"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend-config="../../../../${{ env.BACKEND_CONFIG }}" -input=false
+
+      - name: Terraform Destroy
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform destroy -var-file="../../../../${{ env.VAR_FILE }}" -auto-approve
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Terraform Destroy -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Action**: destroy" >> "$GITHUB_STEP_SUMMARY"
