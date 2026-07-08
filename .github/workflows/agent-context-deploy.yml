@@ -151,6 +151,14 @@ jobs:
           echo "NEPTUNE_ENDPOINT=${NEPTUNE_ENDPOINT:-(not set)}"
           echo "NEPTUNE_PORT=${NEPTUNE_PORT}"
 
+          # Issue #3233: Read Neptune Bulk Loader role ARN from SSM (published by
+          # agent-context infra-apply). When set, ingestion uses the Bulk Loader
+          # API instead of openCypher UNWIND; empty → UNWIND fallback.
+          NEPTUNE_BULK_LOAD_ROLE_ARN=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/agent-context/neptune-bulk-load-role-arn" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          echo "NEPTUNE_BULK_LOAD_ROLE_ARN=${NEPTUNE_BULK_LOAD_ROLE_ARN:-(not set)}"
+
           # Issue #2049/#2213: in-cluster gateway URL for the worker status
           # callback (worker indexing/complete/failed -> knowledge_assets row).
           # Without this the registry status is stuck at "queued" in the UI.
@@ -176,7 +184,7 @@ jobs:
 
           # Export all variables needed for template substitution
           export NAMESPACE AWS_REGION SQS_QUEUE_URL DYNAMO_TABLE DEEPWIKI_ENABLED
-          export GRAPHRAG_ENABLED NEPTUNE_ENDPOINT NEPTUNE_PORT OPENSEARCH_ENDPOINT
+          export GRAPHRAG_ENABLED NEPTUNE_ENDPOINT NEPTUNE_PORT NEPTUNE_BULK_LOAD_ROLE_ARN OPENSEARCH_ENDPOINT
           export WIKI_LLM_MODEL GITHUB_APP_ID_SECRET GITHUB_APP_KEY_SECRET GITHUB_APP_OWNER
           export S3_VECTORS_BUCKET_NAME S3_VECTORS_REGION S3_FILES_BUCKET S3_CONTENT_PREFIX ZOEKT_URL
           export GATEWAY_CALLBACK_URL
