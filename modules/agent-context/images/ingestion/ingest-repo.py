@@ -36,6 +36,8 @@ log = get_logger("ingest-repo")
 # ---------------------------------------------------------------------------
 
 from config import settings
+from lang_go import extract_go_func_name as _extract_go_func_name
+from lang_go import extract_go_type as _extract_go_type
 from scope import compute_s3_prefix, parse_scope_from_env
 from scip_indexer import index_repo as scip_index_repo, detect_languages, cleanup_indexing_artifacts
 from scip_ingester import ingest_scip, merge_graphs
@@ -403,17 +405,28 @@ def _build_basic_code_index(clone_path: str, org_repo: str) -> dict[str, Any]:
                                 }
                             )
 
-                # Go imports
+                # Go imports, types, and functions
                 elif lang == "go":
                     if stripped.startswith("import "):
                         file_imports.append(stripped)
                     if stripped.startswith("func "):
-                        name = stripped[5:].split("(")[0].strip()
+                        name = _extract_go_func_name(stripped)
                         if name:
                             symbols.append(
                                 {
                                     "name": name,
                                     "type": "function",
+                                    "file": rel,
+                                    "line": i + 1,
+                                }
+                            )
+                    elif stripped.startswith("type "):
+                        name, kind = _extract_go_type(stripped)
+                        if name:
+                            symbols.append(
+                                {
+                                    "name": name,
+                                    "type": kind,
                                     "file": rel,
                                     "line": i + 1,
                                 }
