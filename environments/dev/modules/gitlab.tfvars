@@ -11,5 +11,8 @@ gitlab_domain      = "gitlab.dev.adp.internal"
 route53_zone_name  = "dev.adp.internal"
 certificate_arn    = ""
 
-# Backup (created in Story 5; leave empty until then)
+# Backup
+backup_enabled        = true
+backup_retention_days = 90
+backup_schedule       = "cron(0 2 * * ? *)"
 backup_s3_bucket_name = ""

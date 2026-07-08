@@ -66,11 +66,11 @@ resource "aws_iam_role_policy_attachment" "cloudwatch" {
 }
 
 # -----------------------------------------------------------------------------
-# S3 Backup Write Policy
+# S3 Backup Write Policy (external bucket — legacy)
 # -----------------------------------------------------------------------------
 
 resource "aws_iam_role_policy" "s3_backup" {
-  count = var.backup_s3_bucket_name != "" ? 1 : 0
+  count = var.backup_s3_bucket_name != "" && !var.backup_enabled ? 1 : 0
 
   name = "${local.name_prefix}-s3-backup"
   role = aws_iam_role.gitlab.id
@@ -90,6 +90,37 @@ resource "aws_iam_role_policy" "s3_backup" {
         Resource = [
           "arn:aws:s3:::${var.backup_s3_bucket_name}",
           "arn:aws:s3:::${var.backup_s3_bucket_name}/*"
+        ]
+      }
+    ]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# S3 Backup Write Policy (module-managed bucket)
+# -----------------------------------------------------------------------------
+
+resource "aws_iam_role_policy" "s3_backup_managed" {
+  count = var.backup_enabled ? 1 : 0
+
+  name = "${local.name_prefix}-s3-backup"
+  role = aws_iam_role.gitlab.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "GitLabBackupWrite"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:ListBucket",
+          "s3:DeleteObject"
+        ]
+        Resource = [
+          aws_s3_bucket.backup[0].arn,
+          "${aws_s3_bucket.backup[0].arn}/*"
         ]
       }
     ]

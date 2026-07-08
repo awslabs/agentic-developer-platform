@@ -55,6 +55,21 @@ GITLAB_CONFIG
 gitlab-ctl reconfigure
 
 # -----------------------------------------------------------------------------
+# Install backup script (if backup bucket is configured)
+# -----------------------------------------------------------------------------
+%{ if backup_bucket_name != "" ~}
+mkdir -p /opt/gitlab-backup
+cat > /opt/gitlab-backup/backup.sh <<'BACKUP_SCRIPT'
+${backup_script}
+BACKUP_SCRIPT
+chmod +x /opt/gitlab-backup/backup.sh
+
+# Schedule daily backup at 02:00 UTC via cron
+echo "0 2 * * * root /opt/gitlab-backup/backup.sh >> /var/log/gitlab-backup.log 2>&1" > /etc/cron.d/gitlab-backup
+chmod 644 /etc/cron.d/gitlab-backup
+%{ endif ~}
+
+# -----------------------------------------------------------------------------
 # Signal completion
 # -----------------------------------------------------------------------------
 echo "GitLab CE $(dpkg -l gitlab-ce | awk '/gitlab-ce/{print $3}') installed" > /var/log/gitlab-install.log

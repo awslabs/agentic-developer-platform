@@ -12,6 +12,10 @@ resource "aws_instance" "gitlab" {
 
   user_data = templatefile("${path.module}/user_data.sh", {
     gitlab_external_url = "http://${var.gitlab_domain}"
+    backup_bucket_name  = var.backup_enabled ? aws_s3_bucket.backup[0].id : ""
+    backup_script = var.backup_enabled ? templatefile("${path.module}/templates/backup_script.sh.tpl", {
+      bucket_name = aws_s3_bucket.backup[0].id
+    }) : ""
   })
 
   root_block_device {

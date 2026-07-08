@@ -70,8 +70,26 @@ variable "certificate_arn" {
 # Backup
 # -----------------------------------------------------------------------------
 
+variable "backup_enabled" {
+  type        = bool
+  description = "Enable automated daily GitLab backups to S3"
+  default     = false
+}
+
 variable "backup_s3_bucket_name" {
   type        = string
-  description = "S3 bucket name for GitLab backups (created externally, referenced here)"
+  description = "S3 bucket name for GitLab backups (created externally, referenced here). Unused when backup_enabled=true (bucket is created by this module)."
   default     = ""
+}
+
+variable "backup_retention_days" {
+  type        = number
+  description = "Number of days to retain backups in S3 before deletion"
+  default     = 90
+}
+
+variable "backup_schedule" {
+  type        = string
+  description = "Cron expression for the SSM maintenance window (default: daily at 02:00 UTC)"
+  default     = "cron(0 2 * * ? *)"
 }

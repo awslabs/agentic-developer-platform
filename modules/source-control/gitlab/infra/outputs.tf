@@ -46,3 +46,17 @@ output "iam_instance_profile_name" {
   description = "Name of the GitLab instance profile"
   value       = aws_iam_instance_profile.gitlab.name
 }
+
+# -----------------------------------------------------------------------------
+# Backup
+# -----------------------------------------------------------------------------
+
+output "backup_bucket_name" {
+  description = "Name of the S3 bucket used for GitLab backups"
+  value       = var.backup_enabled ? aws_s3_bucket.backup[0].id : ""
+}
+
+output "backup_bucket_arn" {
+  description = "ARN of the S3 bucket used for GitLab backups"
+  value       = var.backup_enabled ? aws_s3_bucket.backup[0].arn : ""
+}
