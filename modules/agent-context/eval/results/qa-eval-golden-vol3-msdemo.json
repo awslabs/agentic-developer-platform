@@ -1,0 +1,558 @@
+{
+  "generated_at": "2026-07-08T07:22:43.799572+00:00",
+  "endpoint": "http://context-mcp.agent-context.svc.cluster.local:5100/call",
+  "target_repos": [
+    "volatilityfoundation/volatility3",
+    "GoogleCloudPlatform/microservices-demo"
+  ],
+  "verbs_evaluated": [
+    "search",
+    "understand",
+    "impact",
+    "browse"
+  ],
+  "summary": {
+    "total_cases": 42,
+    "passed": 31,
+    "failed": 11,
+    "overall_hit_rate": 0.7380952380952381
+  },
+  "per_verb": {
+    "search": {
+      "total": 12,
+      "passed": 7,
+      "failed": 5
+    },
+    "understand": {
+      "total": 13,
+      "passed": 10,
+      "failed": 3
+    },
+    "impact": {
+      "total": 10,
+      "passed": 9,
+      "failed": 1
+    },
+    "browse": {
+      "total": 7,
+      "passed": 5,
+      "failed": 2
+    }
+  },
+  "per_repo_per_verb": {
+    "volatility3": {
+      "search": {
+        "total": 8,
+        "passed": 4,
+        "hit_rate": 0.5
+      },
+      "understand": {
+        "total": 8,
+        "passed": 8,
+        "hit_rate": 1.0
+      },
+      "impact": {
+        "total": 8,
+        "passed": 7,
+        "hit_rate": 0.875
+      },
+      "browse": {
+        "total": 4,
+        "passed": 3,
+        "hit_rate": 0.75
+      }
+    },
+    "microservices-demo": {
+      "search": {
+        "total": 4,
+        "passed": 3,
+        "hit_rate": 0.75
+      },
+      "understand": {
+        "total": 5,
+        "passed": 2,
+        "hit_rate": 0.4
+      },
+      "impact": {
+        "total": 2,
+        "passed": 2,
+        "hit_rate": 1.0
+      },
+      "browse": {
+        "total": 3,
+        "passed": 2,
+        "hit_rate": 0.6666666666666666
+      }
+    }
+  },
+  "results": [
+    {
+      "case_id": "vol3-search-001",
+      "verb": "search",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": false,
+      "score": 0.0,
+      "details": "0/1 must_contain found; missing: ['volatility3/framework/interfaces/layers.py']",
+      "elapsed_ms": 65.4,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-search-002",
+      "verb": "search",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": false,
+      "score": 0.0,
+      "details": "0/1 must_contain found; missing: ['volatility3/framework/interfaces/plugins.py']",
+      "elapsed_ms": 40.8,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-search-003",
+      "verb": "search",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": false,
+      "score": 0.0,
+      "details": "0/1 must_contain found; missing: ['volatility3/framework/interfaces/layers.py']",
+      "elapsed_ms": 32.0,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-search-004",
+      "verb": "search",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 60.7,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-search-005",
+      "verb": "search",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 32.5,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-search-006",
+      "verb": "search",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": false,
+      "score": 0.0,
+      "details": "0/1 must_contain found; missing: ['volatility3/framework/layers/scanners/__init__.py']",
+      "elapsed_ms": 29.6,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-search-007",
+      "verb": "search",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 30.5,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-search-008",
+      "verb": "search",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 29.7,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-search-001",
+      "verb": "search",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 33.4,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-search-002",
+      "verb": "search",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 30.7,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-search-003",
+      "verb": "search",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 35.2,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-search-004",
+      "verb": "search",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": false,
+      "score": 0.0,
+      "details": "0/1 must_contain found; missing: ['src/shippingservice/quote.go']",
+      "elapsed_ms": 53.2,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-understand-001",
+      "verb": "understand",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 1153.9,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-understand-002",
+      "verb": "understand",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 200.2,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-understand-003",
+      "verb": "understand",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 140.7,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-understand-004",
+      "verb": "understand",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 151.4,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-understand-005",
+      "verb": "understand",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 175.0,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-understand-006",
+      "verb": "understand",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 139.8,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-understand-007",
+      "verb": "understand",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 187.8,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-understand-008",
+      "verb": "understand",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 132.1,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-understand-001",
+      "verb": "understand",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": false,
+      "score": 0.0,
+      "details": "0/1 must_contain found; missing: ['src/frontend/main.go::frontendServer']",
+      "elapsed_ms": 2184.9,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-understand-002",
+      "verb": "understand",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": false,
+      "score": 0.0,
+      "details": "0/1 must_contain found; missing: ['src/checkoutservice/main.go::checkoutService']",
+      "elapsed_ms": 265.4,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-understand-003",
+      "verb": "understand",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": false,
+      "score": 0.0,
+      "details": "0/1 must_contain found; missing: ['src/shippingservice/quote.go::Quote']",
+      "elapsed_ms": 177.3,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-understand-004",
+      "verb": "understand",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 141.5,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-understand-005",
+      "verb": "understand",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain found",
+      "elapsed_ms": 98.7,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-impact-001",
+      "verb": "impact",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": false,
+      "score": 0.0,
+      "details": "Got 0 affected, need >= 3",
+      "elapsed_ms": 10432.5,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-impact-002",
+      "verb": "impact",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "3/3 must_contain_callers found",
+      "elapsed_ms": 6213.9,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-impact-003",
+      "verb": "impact",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "2/2 must_contain_callers found",
+      "elapsed_ms": 6056.1,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-impact-004",
+      "verb": "impact",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "2/2 must_contain_callers found",
+      "elapsed_ms": 5690.5,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-impact-005",
+      "verb": "impact",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "2/2 must_contain_callers found (retry after transient connection refused)",
+      "elapsed_ms": 6500.0,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-impact-006",
+      "verb": "impact",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "2/2 must_contain_callers found",
+      "elapsed_ms": 6564.6,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-impact-007",
+      "verb": "impact",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain_callers found",
+      "elapsed_ms": 8209.4,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-impact-008",
+      "verb": "impact",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "2/2 must_contain_callers found",
+      "elapsed_ms": 6899.8,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-impact-001",
+      "verb": "impact",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain_callers found",
+      "elapsed_ms": 1138.0,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-impact-002",
+      "verb": "impact",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "1/1 must_contain_callers found",
+      "elapsed_ms": 296.7,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-browse-001",
+      "verb": "browse",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "5/5 entries found",
+      "elapsed_ms": 18.4,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-browse-002",
+      "verb": "browse",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "5/5 entries found",
+      "elapsed_ms": 18.6,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-browse-003",
+      "verb": "browse",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "happy_path",
+      "passed": false,
+      "score": 0.0,
+      "details": "0/3 content strings found; missing: ['class BytesScanner', 'class RegExScanner', 'class MultiStringScanner']",
+      "elapsed_ms": 17.8,
+      "error": ""
+    },
+    {
+      "case_id": "vol3-browse-004",
+      "verb": "browse",
+      "repo": "volatilityfoundation/volatility3",
+      "case_type": "edge",
+      "passed": true,
+      "score": 1.0,
+      "details": "Correctly returned empty (edge case)",
+      "elapsed_ms": 17.5,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-browse-001",
+      "verb": "browse",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "4/4 entries found",
+      "elapsed_ms": 17.5,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-browse-002",
+      "verb": "browse",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": true,
+      "score": 1.0,
+      "details": "3/3 entries found",
+      "elapsed_ms": 17.6,
+      "error": ""
+    },
+    {
+      "case_id": "msdemo-browse-003",
+      "verb": "browse",
+      "repo": "GoogleCloudPlatform/microservices-demo",
+      "case_type": "happy_path",
+      "passed": false,
+      "score": 0.0,
+      "details": "0/3 content strings found; missing: ['type Quote struct', 'func CreateQuoteFromCount', 'func CreateQuoteFromFloat']",
+      "elapsed_ms": 17.1,
+      "error": ""
+    }
+  ],
+  "notes": [
+    "vol3-impact-005 initially failed with transient Connection Refused; retry succeeded (PASS)",
+    "Semantic search is OFF (SEMANTIC_SEARCH_ENABLED unset) \u2014 search cases exercise symbol/keyword paths only",
+    "understand verb uses code-index-fallback (Neptune #2433 not active for understand queries)",
+    "browse action=read returns raw content without symbol-level parsing"
+  ]
+}
