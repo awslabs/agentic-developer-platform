@@ -40,7 +40,7 @@ resource "aws_lb_target_group" "gitlab" {
     healthy_threshold   = 3
     interval            = 30
     matcher             = "200"
-    path                = "/-/readiness"
+    path                = "/-/health"
     port                = "traffic-port"
     protocol            = "HTTP"
     timeout             = 10

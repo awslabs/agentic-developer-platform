@@ -42,6 +42,11 @@ nginx['proxy_set_headers'] = {
 
 # Health check endpoint (used by ALB target group)
 gitlab_rails['monitoring_whitelist'] = ['0.0.0.0/0']
+
+# Custom nginx health endpoint for ALB health checks.
+# Returns 200 directly from nginx regardless of Host header,
+# avoiding Rails 404 when ALB probes via private IP.
+nginx['custom_gitlab_server_config'] = "location /-/health {\n  access_log off;\n  return 200 'OK';\n}\n"
 GITLAB_CONFIG
 
 # -----------------------------------------------------------------------------
