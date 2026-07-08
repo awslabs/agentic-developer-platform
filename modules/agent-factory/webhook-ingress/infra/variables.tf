@@ -176,6 +176,23 @@ variable "agent_image_prepull_enabled" {
 }
 
 # -----------------------------------------------------------------------------
+# Knowledge Layer (Issue #3286)
+# -----------------------------------------------------------------------------
+
+variable "knowledge_layer_enabled" {
+  description = <<-DESC
+    Enable Knowledge Layer access from agent-worker pods. When true, adds
+    KNOWLEDGE_LAYER_ENABLED and CONTEXT_MCP_SERVER_URL env vars to the
+    ScaledJob agent-worker container, connecting hosted agents to the
+    agent-context MCP server for code intelligence tools (search, understand,
+    impact, browse, remember, experience, secure). Default true — the
+    agent-context service must be deployed for tools to resolve.
+  DESC
+  type        = bool
+  default     = true
+}
+
+# -----------------------------------------------------------------------------
 # OpenTelemetry / Observability (Issue #1630)
 # -----------------------------------------------------------------------------
 
