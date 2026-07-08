@@ -80,6 +80,10 @@ import {
 import { saveExperienceLearnings } from './experience-save-hook';
 import { buildPersonalContextIdentity, getPersonalContextHeaders } from './complex-task-chat/personal-context-headers';
 
+// AIDLC Gate Enforcer — deterministic enforcement of commit + gate comment protocol
+// (Issue #3231, EPIC #3158 hardening wave). Only invoked when AIDLC_ENABLED.
+import { enforceAidlcGate } from './aidlc-gate-enforcer';
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -1692,6 +1696,31 @@ Working on this task...`);
         log('INFO', `Beads task ${beadsTaskId} marked complete`);
       } catch (err) {
         log('WARN', `Could not complete Beads task: ${(err as Error).message}`);
+      }
+    }
+
+    // AIDLC Gate Enforcement (Issue #3231) — deterministic commit + gate comment.
+    // Runs only on AIDLC-flagged workspaces. Best-effort: never blocks finalization.
+    if (AIDLC_ENABLED) {
+      try {
+        const enforceResult = await enforceAidlcGate({
+          cwd: CWD,
+          issueNumber: ISSUE_NUMBER,
+          repoOwner: REPO_OWNER,
+          repoName: REPO_NAME,
+          log,
+          execCommand,
+          postComment,
+        });
+        if (enforceResult.committed || enforceResult.gateCommentPosted) {
+          log('INFO', 'AIDLC gate enforcement acted', {
+            committed: enforceResult.committed,
+            gateCommentPosted: enforceResult.gateCommentPosted,
+            stage: enforceResult.stage,
+          });
+        }
+      } catch (enforceErr) {
+        log('WARN', `AIDLC gate enforcement failed (non-blocking): ${(enforceErr as Error).message}`);
       }
     }
 
