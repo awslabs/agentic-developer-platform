@@ -87,10 +87,11 @@ _prepend_distilled() {
     fi
 }
 
-# --- Ref resolution helper (issue #3301) ------------------------------------
+# --- Ref resolution helper (issue #3301, #3302) -----------------------------
 # Fetches a remote-only ref and resolves it locally. Extracted from the #3273
 # inline block so both base and head refs share the same logic. Prints the
-# resolved ref name to stdout. Returns non-zero if the ref cannot be resolved.
+# resolved ref name (or SHA) to stdout. Returns non-zero if the ref cannot be
+# resolved.
 _resolve_ref() {
     local ref="$1"
     local label="$2"  # "base" or "head" — used in error messages only
@@ -98,16 +99,27 @@ _resolve_ref() {
         printf '%s' "${ref}"
         return 0
     fi
+    # Strip a leading "origin/" before fetching — callers naturally pass
+    # remote-tracking names like "origin/main" but the remote's ref is just
+    # "main" (issue #3302).
+    local fetch_name="${ref#origin/}"
     # Not local — attempt fetch from origin (best-effort).
-    git fetch origin "${ref}" >/dev/null 2>&1 || true
+    git fetch origin "${fetch_name}" >/dev/null 2>&1 || true
+    # After fetch, try the original ref (now a tracking ref may exist) …
     if git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null 2>&1; then
         printf '%s' "${ref}"
         return 0
     fi
+    # … or the stripped name (fetch may have created a local tracking ref).
+    if [ "${fetch_name}" != "${ref}" ] && git rev-parse --verify --quiet "${fetch_name}^{commit}" >/dev/null 2>&1; then
+        printf '%s' "${fetch_name}"
+        return 0
+    fi
     # After fetch, try FETCH_HEAD as a fallback (bare branch name that exists on
-    # remote but not as a local tracking ref).
+    # remote but not as a local tracking ref). Resolve to SHA so a subsequent
+    # fetch (for the other ref) cannot clobber this resolution (issue #3302).
     if git rev-parse --verify --quiet "FETCH_HEAD^{commit}" >/dev/null 2>&1; then
-        printf '%s' "FETCH_HEAD"
+        printf '%s' "$(git rev-parse FETCH_HEAD)"
         return 0
     fi
     echo "run-codex.sh: review-diff ${label} ref not found: ${ref}" >&2
