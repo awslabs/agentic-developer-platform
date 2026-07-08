@@ -136,7 +136,7 @@ RUN crawl4ai-setup || echo "crawl4ai-setup not available or optional — continu
 # registry_reader.py is imported by publish-ingestion.py's --from-registry path
 # (publish_from_registry, #2172); without it the daily refresh crashes at Step 1
 # with ModuleNotFoundError (#2800).
-COPY config.py telemetry.py tracing.py metrics.py s3_store.py wiki_store.py code_embedder.py sbom_parser.py db.py stage_tracker.py github_auth.py scope.py status_callback.py registry_reader.py /app/
+COPY config.py telemetry.py tracing.py metrics.py s3_store.py wiki_store.py code_embedder.py sbom_parser.py db.py stage_tracker.py github_auth.py scope.py status_callback.py registry_reader.py lang_go.py /app/
 COPY scip_ingester.py scip_indexer.py scip_neptune_csv.py scip_neptune_loader.py /app/
 COPY iac_terraform_parser.py iac_neptune_csv.py /app/
 COPY scip_proto/ /app/scip_proto/
@@ -150,7 +150,7 @@ COPY ingest-repo.py ingest-url.py ingest-doc.py refresh-repos.py \
 # if a top-level /app module is missing from the COPY list. registry_reader was
 # shipped in source but never copied, silently breaking the daily refresh (#2800).
 # Only pure-import modules (no env/DB needed at import time) are listed here.
-RUN cd /app && python -c "import registry_reader, scope, status_callback"
+RUN cd /app && python -c "import registry_reader, scope, status_callback, lang_go"
 
 # Vulnerability scanner pipeline package (used by scan-vulns.py, #2536)
 COPY pipeline/ /app/pipeline/
