@@ -93,7 +93,7 @@ Claude Agent SDK with:
 - `permissionMode: 'bypassPermissions'`
 - `allowedTools: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill', ...]`
 - `maxTurns: 10000`
-- Pod lifetime: `activeDeadlineSeconds: 900` (15 min)
+- Pod lifetime: `activeDeadlineSeconds: 21600` (6 hours; decoupled from SQS visibility timeout by #2324)
 
 Each pod processes ONE SQS message, then exits. AGENT_TYPE (persona) is determined by the
 webhook intent parser from comment mentions or labels.
@@ -369,11 +369,11 @@ that might read model config from settings. The strip rule eliminates this at so
 | aidlc-composer-agent | `Task` subagent inside host run | Dispatched on `/aidlc compose` |
 
 **Pod timeout implication**: A single stage (one agent delegation + reviewer pass + gate)
-must complete within the pod's 15-minute `activeDeadlineSeconds`. If a stage is complex
-(e.g., code-generation on a large unit), the 15-min limit may be tight. Recommendation:
-increase `activeDeadlineSeconds` for AIDLC-flagged runs to 30 minutes (configurable via
-the ScaledJob's environment or a sidecar annotation). This is addressed in child issue
-scope.
+must complete within the pod's `activeDeadlineSeconds` (21600s / 6 hours since #2324).
+Measured S12 data (#3171) shows the longest AIDLC stage (`application-design`) takes ~17
+minutes — 4.7% of the deadline. No per-persona deadline override is needed; AIDLC runs
+have >95% headroom on the current global limit. The original 30-minute recommendation
+(from when the deadline was 900s) is obsolete.
 
 **Rejected alternatives**:
 - **Map AIDLC agents to ADP personas (1:1)**: AIDLC has 11 domain agents; ADP has 6
@@ -407,24 +407,56 @@ scope.
    commit-and-exit. Recommended: N = 3 (a walking skeleton + 2 autonomous Bolts before
    requiring a check-in).
 
-4. **Pod timeout**: `activeDeadlineSeconds` enforces hard wall-clock. Current: 900s (15 min).
-   For AIDLC runs: 1800s (30 min). This is the backstop — if a stage hangs or loops, the
-   pod is killed and the state on disk reflects the last committed checkpoint.
+4. **Pod timeout**: `activeDeadlineSeconds` enforces hard wall-clock. Current: **21600s
+   (6 hours)** — shared across all personas (raised from 900s by #2324; decoupled from
+   SQS visibility timeout via worker heartbeat). This is the backstop — if a stage hangs
+   or loops, the pod is killed and the state on disk reflects the last committed checkpoint.
+   No AIDLC-specific override is needed (see Measured Data below).
 
 5. **Token budget tracking**: The AIDLC `session-cost` skill already tracks token spend
    and can report via the audit trail. On pod exit, the agent posts a cost summary in
    the completion comment. No hard token cap enforced in v1 (the scope allowlist + stage
    cap + pod timeout provide sufficient bounding).
 
-**Cost estimates** (based on AIDLC's stated architecture):
+**Cost estimates — Measured (S12, #3171)**
 
-| Scope | Stages | Estimated agents spawned | Approximate tokens (input+output) |
+The following table replaces the original unsourced estimates. Data source: quality-gate
+sweep 2 on `aws-e/test-aidlc-scratch#15` (feature-scope inception, 13 gated stages,
+2026-07-08).
+
+| Stage | Pod active time | % of 21600s deadline | Notes |
 |---|---|---|---|
-| poc (8 stages) | 8 | ~12 (including reviewers) | ~500K-1M |
-| workshop (25 stages) | 25 | ~40 (including reviewers) | ~2M-4M |
-| feature (32 stages) | 32 | ~55 | ~4M-8M |
+| intent-capture (initial) | ~6 min | 1.7% | Clean first stage |
+| intent-capture (revision) | ~5 min | 1.4% | Feedback incorporation cycle |
+| scope-definition | ~10 min | 2.8% | ADRs + boundaries |
+| feasibility | ~10 min | 2.8% | GO/NO-GO assessment |
+| approval-handoff | ~8 min | 2.2% | Phase transition |
+| practices-discovery | ~8 min | 2.2% | Codebase analysis |
+| requirements-analysis | ~15 min | 4.2% | Functional + NFR extraction |
+| user-stories | ~14 min | 3.9% | Persona stories + assessment |
+| refined-mockups | ~16 min | 4.4% | UI mockup generation |
+| **application-design** | **~17 min** | **4.7%** | Component spec + ADRs (longest) |
+| units-generation | ~14 min | 3.9% | DAG + story mapping |
+| delivery-planning | ~13 min | 3.6% | Bolt sequencing |
+| emit-issues | ~14 min | 3.9% | 5 issues + EPIC emission |
+| **Full inception total** | **~150 min** | **41.7%** | Sum of all per-stage pod-active time |
 
-These are per-workflow totals across ALL resumes (not per-run).
+Developer downstream build (child #26): ~21 min pod active, 51 tests, zero clarification.
+
+**Deadline decision (2026-07-08)**: No deadline change required. The longest stage
+(application-design, ~17 min) uses 4.7% of the 21600s limit — massive headroom. The
+original concern about stages hitting >80% of the deadline was based on the stale 900s
+value. Against the real 21600s limit, no stage comes close.
+
+**Per-scope cost estimates (revised)**:
+
+| Scope | Stages | Measured pod-active time (total) | Approx. per-stage avg |
+|---|---|---|---|
+| poc (8 stages) | 8 | ~80 min (estimated from avg) | ~10 min/stage |
+| feature (13 stages, measured) | 13 | ~150 min | ~11.5 min/stage |
+
+These are per-workflow totals across ALL resumes (not per-run). Each gated stage is one
+pod; the total reflects the sum of per-pod active time.
 
 **Rejected alternatives**:
 - **Hard token budget per run**: Difficult to enforce across subagents; the SDK doesn't
@@ -527,7 +559,7 @@ clear acceptance criteria, single PR output).
 
 | # | Title | Files | Depends On | Persona |
 |---|---|---|---|---|
-| 8 | Increase activeDeadlineSeconds for AIDLC runs | `modules/agent-factory/webhook-ingress/infra/scaledjob.tf` | #2 | developer |
+| 8 | ~~Increase activeDeadlineSeconds for AIDLC runs~~ — **RESOLVED: no change needed** (S12 measured longest stage at 4.7% of 21600s; see Decision 6) | `modules/agent-factory/webhook-ingress/infra/scaledjob.tf` | #2 | developer |
 | 9 | Per-subagent maxTurns injection | Modify `agent-worker.ts` SDK query options for AIDLC context | #2 | developer |
 
 #### Phase 5: Validation
