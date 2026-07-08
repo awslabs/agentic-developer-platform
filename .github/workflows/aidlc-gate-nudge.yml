@@ -1,0 +1,183 @@
+name: AIDLC Gate Nudge
+
+on:
+  schedule:
+    - cron: '0 7 * * *' # Daily at 07:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Log actions without posting comments or applying labels'
+        type: boolean
+        default: true
+
+jobs:
+  nudge:
+    name: Nudge stale AIDLC gates
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const DRY_RUN = context.eventName === 'workflow_dispatch'
+              && '${{ inputs.dry_run }}' === 'true';
+            const GATE_AGE_DAYS = 3;
+            const MAX_NUDGES = 2;
+            const GATE_MARKER_RE = /<!-- aidlc-gate:([a-z0-9-]+) -->/;
+            const NUDGE_MARKER = '<!-- aidlc-nudge -->';
+            const LABEL_WAITING = 'aidlc-gate-waiting';
+            const LABEL_STALLED = 'aidlc-stalled';
+
+            // Ensure labels exist (idempotent)
+            async function ensureLabel(name, color, description) {
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name,
+                });
+              } catch (e) {
+                if (e.status === 404) {
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name,
+                    color,
+                    description,
+                  });
+                  core.info(`Created label: ${name}`);
+                }
+              }
+            }
+
+            await ensureLabel(LABEL_WAITING, 'fbca04', 'AIDLC gate awaiting human response');
+            await ensureLabel(LABEL_STALLED, 'e11d48', 'AIDLC gate stalled after repeated nudges');
+
+            // Find open issues with aidlc-intent label
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'aidlc-intent',
+              state: 'open',
+              per_page: 100,
+            });
+
+            core.info(`Found ${issues.length} open aidlc-intent issues`);
+
+            for (const issue of issues) {
+              // Skip issues already stalled
+              const issueLabels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
+              if (issueLabels.includes(LABEL_STALLED)) {
+                core.info(`#${issue.number}: already stalled, skipping`);
+                continue;
+              }
+
+              // Fetch all comments
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                per_page: 100,
+              });
+
+              // Find the most recent gate marker comment
+              let latestGateComment = null;
+              let latestGateIndex = -1;
+              let gateStage = null;
+
+              for (let i = comments.length - 1; i >= 0; i--) {
+                const match = comments[i].body.match(GATE_MARKER_RE);
+                if (match) {
+                  latestGateComment = comments[i];
+                  latestGateIndex = i;
+                  gateStage = match[1];
+                  break;
+                }
+              }
+
+              if (!latestGateComment) {
+                core.info(`#${issue.number}: no gate marker found, skipping`);
+                continue;
+              }
+
+              // Check age of the gate marker comment
+              const gateDate = new Date(latestGateComment.created_at);
+              const now = new Date();
+              const ageDays = (now.getTime() - gateDate.getTime()) / (1000 * 60 * 60 * 24);
+
+              if (ageDays < GATE_AGE_DAYS) {
+                core.info(`#${issue.number}: gate "${gateStage}" is ${ageDays.toFixed(1)}d old (< ${GATE_AGE_DAYS}d), skipping`);
+                continue;
+              }
+
+              // Check for human comments AFTER the gate marker
+              const commentsAfterGate = comments.slice(latestGateIndex + 1);
+              const hasHumanResponse = commentsAfterGate.some(c => {
+                const login = c.user?.login || '';
+                // Bot accounts end with [bot] or have specific bot logins
+                const isBot = login.endsWith('[bot]') || login === 'github-actions[bot]';
+                // Also skip nudge-marker comments (our own prior nudges)
+                const isNudge = c.body.includes(NUDGE_MARKER);
+                return !isBot && !isNudge;
+              });
+
+              if (hasHumanResponse) {
+                core.info(`#${issue.number}: human responded after gate "${gateStage}", skipping`);
+                continue;
+              }
+
+              // Count existing nudge comments for this gate
+              const nudgeCount = commentsAfterGate.filter(c =>
+                c.body.includes(NUDGE_MARKER)
+              ).length;
+
+              if (nudgeCount >= MAX_NUDGES) {
+                // Apply stalled label and stop
+                core.info(`#${issue.number}: ${nudgeCount} nudges sent, marking stalled`);
+                if (!DRY_RUN) {
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    labels: [LABEL_STALLED],
+                  });
+                }
+                continue;
+              }
+
+              // Post nudge comment
+              const sinceDate = gateDate.toISOString().split('T')[0];
+              const nudgeBody = [
+                NUDGE_MARKER,
+                '',
+                `**Reminder:** Gate \`${gateStage}\` has been waiting since ${sinceDate}.`,
+                'Reply **approve** / **feedback: [your notes]** / **skip** to continue the workflow.',
+                '',
+                `_Nudge ${nudgeCount + 1} of ${MAX_NUDGES}. If unanswered, this issue will be marked stalled._`,
+              ].join('\n');
+
+              core.info(`#${issue.number}: posting nudge ${nudgeCount + 1}/${MAX_NUDGES} for gate "${gateStage}"`);
+
+              if (!DRY_RUN) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: nudgeBody,
+                });
+
+                // Apply waiting label on first nudge
+                if (!issueLabels.includes(LABEL_WAITING)) {
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issue.number,
+                    labels: [LABEL_WAITING],
+                  });
+                }
+              }
+            }
+
+            core.info(DRY_RUN ? 'Dry run complete — no changes made' : 'Nudge sweep complete');
