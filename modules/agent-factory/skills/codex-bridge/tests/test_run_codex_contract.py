@@ -399,6 +399,68 @@ class TestReviewDiffMode:
         assert "[diff truncated at 512 bytes]" in prompt
         assert "truncated at 512 bytes" in prompt  # prompt note too
 
+    def test_remote_only_ref_is_fetched_before_diffing(self, tmp_path):
+        """Issue #3269: review-diff must fetch a remote-only ref instead of failing.
+
+        Simulates the real failure mode: the base ref (e.g. origin/main on a
+        stale clone, or a branch name that only exists on the remote) isn't
+        resolvable locally. The wrapper should `git fetch origin <ref>` so the
+        three-dot diff resolves. We set up a bare upstream, push a "base-branch"
+        there, delete all local knowledge of it, then call review-diff with that
+        branch name — the wrapper fetches it and diffs HEAD against it.
+        """
+        # Create an "upstream" bare repo.
+        upstream = tmp_path / "upstream.git"
+        subprocess.run(["git", "init", "--bare", str(upstream)], check=True, capture_output=True)
+
+        # Clone it to get a working repo with 'origin' set.
+        repo = tmp_path / "repo"
+        subprocess.run(
+            ["git", "clone", str(upstream), str(repo)],
+            check=True,
+            capture_output=True,
+            env={**os.environ, **_GIT_ENV},
+        )
+
+        # Create an initial commit and push as both main and "old-base".
+        (repo / "app.py").write_text("def a():\n    return 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "initial")
+        _git(repo, "push", "origin", "HEAD:main")
+        _git(repo, "push", "origin", "HEAD:old-base")
+
+        # Make a change on the local branch (HEAD now has the change to review).
+        (repo / "app.py").write_text("def a():\n    return 2  # LOCAL-CHANGE\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "local feature change")
+
+        # Remove all local knowledge of old-base so it's only on the remote.
+        subprocess.run(
+            ["git", "update-ref", "-d", "refs/remotes/origin/old-base"],
+            cwd=repo,
+            capture_output=True,
+        )
+
+        # Verify the ref doesn't resolve locally (pre-condition for the test).
+        check = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", "old-base^{commit}"],
+            cwd=repo,
+            capture_output=True,
+        )
+        assert check.returncode != 0, "pre-condition: ref should NOT resolve locally"
+
+        stub = _make_stub_codex(tmp_path, _ARGV_ECHO)
+        result = _run(
+            ["review-diff", "old-base"],
+            env_extra={"CODEX_BIN": str(stub), "CODEX_RUNS_DIR": str(tmp_path / "runs")},
+            cwd=str(repo),
+        )
+        # The wrapper fetches the ref and produces a successful review-diff.
+        assert result.returncode == 0, f"review-diff failed: {result.stderr}"
+        prompt = _parse_argv(result.stdout)[-1]
+        assert "LOCAL-CHANGE" in prompt
+        assert "Do not modify any files." in prompt
+
     def test_extra_args_exit_2_with_usage(self, tmp_path):
         repo = _init_git_repo_with_change(tmp_path)
         stub = _make_stub_codex(tmp_path, "echo SHOULD_NOT_RUN\n")

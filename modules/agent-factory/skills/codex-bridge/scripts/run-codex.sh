@@ -116,9 +116,27 @@ case "$MODE" in
             echo "run-codex.sh: review-diff must run inside a git repository" >&2
             exit 2
         fi
+        # --- Branch resolution fix (issue #3269) --------------------------------
+        # When the PR branch under review isn't checked out locally (remote-only),
+        # `rev-parse --verify` fails and the entire review-diff mode aborts. The
+        # supervisor then silently falls back to Claude. Fix: attempt to fetch the
+        # ref from origin before verifying. If the ref is already local this is a
+        # no-op; if remote-only, it brings the commit local so the three-dot diff
+        # resolves. The fetch is best-effort (non-fatal) — if it fails (no remote,
+        # offline) we still fall through to the existing error path.
         if ! git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null 2>&1; then
-            echo "run-codex.sh: review-diff base ref not found: ${BASE_REF}" >&2
-            exit 2
+            git fetch origin "${BASE_REF}" >/dev/null 2>&1 || true
+            # After fetch, try resolving via FETCH_HEAD as a fallback when the
+            # ref name itself still doesn't resolve (e.g. bare branch name that
+            # exists on remote but not as a local tracking ref).
+            if ! git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null 2>&1; then
+                if git rev-parse --verify --quiet "FETCH_HEAD^{commit}" >/dev/null 2>&1; then
+                    BASE_REF="FETCH_HEAD"
+                else
+                    echo "run-codex.sh: review-diff base ref not found: ${BASE_REF}" >&2
+                    exit 2
+                fi
+            fi
         fi
         CODEX_DIFF_MAX_BYTES="${CODEX_DIFF_MAX_BYTES:-262144}"
         DIFF_FILE="$(mktemp "${TMPDIR:-/tmp}/codex-review-diff.XXXXXX")"

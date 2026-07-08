@@ -124,6 +124,18 @@ Follow this loop for the issue:
    back to finishing the task yourself. **Never abandon the issue because Codex
    failed** — the whole issue must still be completed and the PR opened.
 
+   **Engine attribution is mandatory (issue #3269).** Every review verdict
+   comment you post MUST carry an explicit `**Engine**:` attribution line so
+   operators can distinguish a real Codex review from a Claude fallback:
+   - When Codex ran successfully: `**Engine**: Codex CLI <version>`
+     (e.g. `**Engine**: Codex CLI 0.142.5`).
+   - When Codex failed and you finished the review yourself:
+     `**Engine**: Claude (Codex CLI failed: <one-line reason>)`
+     (e.g. `**Engine**: Claude (Codex CLI failed: branch not fetchable, exit 2)`).
+   Never omit this line and never post a Claude-written review without the
+   fallback attribution. A review labeled "codex reviewed this" that was
+   actually Claude is a trust violation.
+
 7. **Finalize normally.** Once all tasks are implemented and reviewed, run the
    module's tests/linters, then complete the run through the normal finalize
    flow. Commit and push happen in the entrypoint — you do not need to manage

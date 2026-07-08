@@ -17,3 +17,9 @@ Apply these standards when reviewing code.
 - When something is wrong, explain what is wrong and suggest a concrete fix.
 - Judge changes against the conventions already established in the surrounding
   codebase, not personal preference.
+
+## Engine attribution (mandatory)
+When posting a review verdict comment, include an `**Engine**:` attribution line
+indicating which engine produced the review:
+- Codex CLI ran successfully → `**Engine**: Codex CLI <version>`
+- Codex CLI failed, Claude finished → `**Engine**: Claude (Codex CLI failed: <reason>)`
