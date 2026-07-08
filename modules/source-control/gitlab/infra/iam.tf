@@ -66,6 +66,30 @@ resource "aws_iam_role_policy_attachment" "cloudwatch" {
 }
 
 # -----------------------------------------------------------------------------
+# SSM Parameter Access for OIDC Secrets
+# -----------------------------------------------------------------------------
+
+resource "aws_iam_role_policy" "ssm_oidc" {
+  name = "${local.name_prefix}-ssm-oidc"
+  role = aws_iam_role.gitlab.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "GitLabOIDCSSMRead"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/adp/${var.environment}/gitlab/oidc-*"
+      }
+    ]
+  })
+}
+
+# -----------------------------------------------------------------------------
 # S3 Backup Write Policy (external bucket — legacy)
 # -----------------------------------------------------------------------------
 

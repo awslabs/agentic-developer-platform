@@ -16,6 +16,9 @@ resource "aws_instance" "gitlab" {
     backup_script = var.backup_enabled ? templatefile("${path.module}/templates/backup_script.sh.tpl", {
       bucket_name = aws_s3_bucket.backup[0].id
     }) : ""
+    gitlab_domain = var.gitlab_domain
+    environment   = var.environment
+    aws_region    = var.aws_region
   })
 
   root_block_device {

@@ -67,6 +67,20 @@ variable "certificate_arn" {
 }
 
 # -----------------------------------------------------------------------------
+# Cognito OIDC
+# -----------------------------------------------------------------------------
+
+variable "cognito_user_pool_id" {
+  type        = string
+  description = "Cognito User Pool ID for OIDC authentication (from gateway module)"
+}
+
+variable "cognito_domain" {
+  type        = string
+  description = "Cognito hosted-UI domain prefix (e.g., adp-dev)"
+}
+
+# -----------------------------------------------------------------------------
 # Backup
 # -----------------------------------------------------------------------------
 

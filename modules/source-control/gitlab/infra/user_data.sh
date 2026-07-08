@@ -50,7 +50,61 @@ nginx['custom_gitlab_server_config'] = "location /-/health {\n  access_log off;\
 GITLAB_CONFIG
 
 # -----------------------------------------------------------------------------
-# Reconfigure GitLab with updated settings
+# OIDC Configuration — Fetch credentials from SSM and configure OmniAuth
+# -----------------------------------------------------------------------------
+
+# Install AWS CLI for SSM parameter retrieval
+apt-get install -y awscli
+
+OIDC_CLIENT_ID=$$(aws ssm get-parameter \
+  --name "/adp/${environment}/gitlab/oidc-client-id" \
+  --region "${aws_region}" \
+  --query "Parameter.Value" --output text)
+
+OIDC_CLIENT_SECRET=$$(aws ssm get-parameter \
+  --name "/adp/${environment}/gitlab/oidc-client-secret" \
+  --region "${aws_region}" \
+  --with-decryption \
+  --query "Parameter.Value" --output text)
+
+OIDC_ISSUER=$$(aws ssm get-parameter \
+  --name "/adp/${environment}/gitlab/oidc-issuer" \
+  --region "${aws_region}" \
+  --query "Parameter.Value" --output text)
+
+cat >> /etc/gitlab/gitlab.rb <<OIDC_CONFIG
+
+# =============================================================================
+# OmniAuth OIDC — Cognito Integration (Issue #3323)
+# =============================================================================
+gitlab_rails['omniauth_enabled'] = true
+gitlab_rails['omniauth_allow_single_sign_on'] = ['openid_connect']
+gitlab_rails['omniauth_auto_sign_in_with_provider'] = :openid_connect
+gitlab_rails['omniauth_block_auto_created_users'] = false
+gitlab_rails['omniauth_providers'] = [
+  {
+    name: "openid_connect",
+    label: "ADP (Cognito)",
+    args: {
+      name: "openid_connect",
+      scope: ["openid", "email", "profile"],
+      response_type: "code",
+      issuer: "$$OIDC_ISSUER",
+      discovery: true,
+      client_auth_method: "basic",
+      uid_field: "sub",
+      client_options: {
+        identifier: "$$OIDC_CLIENT_ID",
+        secret: "$$OIDC_CLIENT_SECRET",
+        redirect_uri: "https://${gitlab_domain}/users/auth/openid_connect/callback"
+      }
+    }
+  }
+]
+OIDC_CONFIG
+
+# -----------------------------------------------------------------------------
+# Reconfigure GitLab with updated settings (includes OIDC)
 # -----------------------------------------------------------------------------
 gitlab-ctl reconfigure
 
@@ -72,4 +126,4 @@ chmod 644 /etc/cron.d/gitlab-backup
 # -----------------------------------------------------------------------------
 # Signal completion
 # -----------------------------------------------------------------------------
-echo "GitLab CE $(dpkg -l gitlab-ce | awk '/gitlab-ce/{print $3}') installed" > /var/log/gitlab-install.log
+echo "GitLab CE $(dpkg -l gitlab-ce | awk '/gitlab-ce/{print $3}') installed with OIDC" > /var/log/gitlab-install.log
