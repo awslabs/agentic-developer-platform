@@ -84,6 +84,11 @@ import { buildPersonalContextIdentity, getPersonalContextHeaders } from './compl
 // (Issue #3231, EPIC #3158 hardening wave). Only invoked when AIDLC_ENABLED.
 import { enforceAidlcGate } from './aidlc-gate-enforcer';
 
+// AIDLC Presence — synthetic HUMAN_TURN on gate resume (Issue #3232, EPIC #3158).
+// Writes a synthetic audit event proving a real human answered the gate, satisfying
+// mint-presence.ts's anti-fabrication check in headless mode.
+import { mintSyntheticPresence, extractGateAnswerComment, findPendingGateStage as findPresenceGateStage } from './aidlc-presence';
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -1618,6 +1623,36 @@ async function main(): Promise<void> {
       ? existingComments.map((c, i) => `### Comment ${i + 1} (by ${c.author} at ${c.createdAt}):\n${c.body}`).join('\n\n---\n\n')
       : '';
     log('INFO', `Found ${existingComments.length} existing comments to include in context`);
+
+    // AIDLC Presence — synthetic HUMAN_TURN on gate resume (Issue #3232).
+    // Must run BEFORE the SDK query starts so that mint-presence.ts sees the
+    // event when /aidlc is invoked. Best-effort: never blocks startup.
+    if (AIDLC_ENABLED && existingComments.length > 0) {
+      try {
+        const pendingStage = findPresenceGateStage(CWD);
+        if (pendingStage) {
+          const triggerComment = extractGateAnswerComment(
+            existingComments,
+            pendingStage,
+            REPO_OWNER,
+            REPO_NAME,
+            ISSUE_NUMBER,
+          );
+          const presenceResult = mintSyntheticPresence(
+            { cwd: CWD, log },
+            triggerComment,
+          );
+          if (presenceResult.written) {
+            log('INFO', 'AIDLC presence: synthetic HUMAN_TURN written', {
+              stage: presenceResult.stage,
+              author: triggerComment?.author,
+            });
+          }
+        }
+      } catch (presenceErr) {
+        log('WARN', `AIDLC presence failed (non-blocking): ${(presenceErr as Error).message}`);
+      }
+    }
 
     // Find the main/parent issue
     const mainIssueNumber = findMainIssue(issue.body);
