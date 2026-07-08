@@ -348,6 +348,24 @@ else
 fi
 
 echo ""
+echo "=== Phase 5.8: Copy AIDLC intent issue template ==="
+
+# The aidlc-intent.yml issue template provides the structured form for starting
+# AIDLC inception. Without it, users must hand-apply the aidlc-intent label.
+TEMPLATE_SOURCE="$SCRIPT_DIR/../../.github/ISSUE_TEMPLATE/aidlc-intent.yml"
+TEMPLATE_DEST="$TARGET_REPO/.github/ISSUE_TEMPLATE/aidlc-intent.yml"
+
+if [ ! -f "$TEMPLATE_SOURCE" ]; then
+  echo "  WARNING: Source template not found at $TEMPLATE_SOURCE — skipping."
+elif [ -f "$TEMPLATE_DEST" ]; then
+  echo "  aidlc-intent.yml already exists in target repo — skipping (no clobber)."
+else
+  mkdir -p "$TARGET_REPO/.github/ISSUE_TEMPLATE"
+  cp -f "$TEMPLATE_SOURCE" "$TEMPLATE_DEST"
+  echo "  Copied aidlc-intent.yml issue template to .github/ISSUE_TEMPLATE/"
+fi
+
+echo ""
 echo "=== Phase 6: Write version file ==="
 mkdir -p "$TARGET_REPO/aidlc"
 echo "$TAG" > "$TARGET_REPO/aidlc/.aidlc-version"
@@ -359,6 +377,9 @@ cd "$TARGET_REPO"
 git add .claude/ aidlc/
 if [ -f "$TARGET_REPO/CLAUDE.md" ]; then
   git add CLAUDE.md
+fi
+if [ -d "$TARGET_REPO/.github/ISSUE_TEMPLATE" ]; then
+  git add .github/ISSUE_TEMPLATE/
 fi
 git commit -m "chore: install AIDLC $TAG (ADP-hosted distribution)" || {
   echo "WARNING: Nothing to commit (files may already be up to date)."
