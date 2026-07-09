@@ -747,6 +747,18 @@ else
   done
   kubectl set image deployment/bedrockgateway bedrockgateway="${REGISTRY}/adp-gateway:latest" -n adp-gateway 2>/dev/null || true
   kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || warn "Rollout not complete"
+
+  # Run database migrations (alembic upgrade head) — required for fresh deploys
+  # where Terraform creates the RDS instance but doesn't populate the schema.
+  # Idempotent on re-deploys (alembic tracks applied versions).
+  echo "Running database migrations..."
+  _GW_POD=$(kubectl get pods -n adp-gateway -l app=bedrockgateway --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+  if [ -n "$_GW_POD" ]; then
+    kubectl exec -n adp-gateway "$_GW_POD" -- env PYTHONPATH=/app alembic upgrade head 2>&1 | tail -5
+    ok "Database migrations applied"
+  else
+    warn "No running gateway pod found — skipping migrations (will retry at Step 8)"
+  fi
 fi
 ok "Gateway deployed"
 
