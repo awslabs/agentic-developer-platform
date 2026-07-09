@@ -154,6 +154,23 @@ EKS_CLUSTER="adp-${ENVIRONMENT}-eks-cluster"
 CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
 
 # =============================================================================
+# Helper: check if the webhook-secrets KMS alias exists
+# =============================================================================
+# Issue #3419: The enable_webhook_secrets_kms_grant flag in gateway.tfvars
+# references a KMS alias created by webhook-ingress (Step 10). On a fresh
+# account Step 3 runs BEFORE Step 10, so the alias doesn't exist yet and the
+# data source hard-fails at plan time. This helper returns "true" (re-deploy)
+# or "false" (fresh deploy) so we can override the tfvars value safely.
+webhook_kms_grant_value() {
+  if aws kms describe-key --key-id "alias/adp-${ENVIRONMENT}-webhook-secrets" \
+       --region "$AWS_REGION" &>/dev/null; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
+# =============================================================================
 # Helper: ensure CodeBuild IAM role exists
 # =============================================================================
 # The role and the 4 docker-build projects are Terraform-managed in
@@ -589,8 +606,14 @@ else
   # Gateway infra runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/gateway/infra"
   terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false
-  terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" -auto-approve
-  ok "Gateway infrastructure deployed"
+  # Issue #3419: override enable_webhook_secrets_kms_grant based on whether the
+  # KMS alias actually exists. On fresh deploys it won't (webhook-ingress is
+  # Step 10); on re-deploys it will.
+  KMS_GRANT=$(webhook_kms_grant_value)
+  terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+    -var "enable_webhook_secrets_kms_grant=$KMS_GRANT" \
+    -auto-approve
+  ok "Gateway infrastructure deployed (enable_webhook_secrets_kms_grant=$KMS_GRANT)"
 fi
 
 # =============================================================================
@@ -714,14 +737,17 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
   if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ] && [ -n "$ALB_DNS" ]; then
     echo "Re-applying gateway Terraform with ALB details to wire API Gateway VPC Link v2 and CloudFront..."
     cd "$ROOT_DIR/modules/gateway/infra"
+    # Issue #3419: re-check KMS alias existence for the second pass too.
+    KMS_GRANT=$(webhook_kms_grant_value)
     terraform apply \
       -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
       -var "internal_alb_arn=$ALB_ARN" \
       -var "internal_alb_dns=$ALB_DNS" \
       -var "alb_security_group_ids=$ALB_SG_IDS" \
       -var "enable_vpc_origin=true" \
+      -var "enable_webhook_secrets_kms_grant=$KMS_GRANT" \
       -auto-approve
-    ok "API Gateway VPC Link and CloudFront VPC Origin wired to ALB"
+    ok "API Gateway VPC Link and CloudFront VPC Origin wired to ALB (enable_webhook_secrets_kms_grant=$KMS_GRANT)"
   fi
 fi
 
