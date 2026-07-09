@@ -24,6 +24,7 @@ export interface ProxyRequestInput {
   url: string;
   headers?: Record<string, string>;
   body?: unknown;
+  invocation_id?: string;
 }
 
 export interface ProxyResponse {
@@ -39,6 +40,7 @@ export interface MaterializeInput {
   task_id: string;
   service: string;
   label?: string;
+  invocation_id?: string;
 }
 
 export interface MaterializeResponse {
@@ -54,6 +56,7 @@ export interface RawReadInput {
   service: string;
   label?: string;
   purpose?: string;
+  invocation_id?: string;
 }
 
 export interface RawReadResponse {
@@ -69,6 +72,7 @@ export interface AssumeRoleInput {
   service: string;
   label?: string;
   purpose?: string;
+  invocation_id?: string;
 }
 
 export interface AssumeRoleResponse {
@@ -120,8 +124,11 @@ export class VaultGatewayClient {
     return resp as AssumeRoleResponse;
   }
 
-  async listCredentials(userId: string): Promise<CredentialMetadata[]> {
-    const url = `${this.baseUrl}/internal/v1/user-credentials?user_id=${encodeURIComponent(userId)}`;
+  async listCredentials(userId: string, invocationId?: string): Promise<CredentialMetadata[]> {
+    let url = `${this.baseUrl}/internal/v1/user-credentials?user_id=${encodeURIComponent(userId)}`;
+    if (invocationId) {
+      url += `&invocation_id=${encodeURIComponent(invocationId)}`;
+    }
     const resp = await fetch(url, {
       method: 'GET',
       headers: {

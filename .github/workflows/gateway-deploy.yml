@@ -201,9 +201,10 @@ jobs:
           # is safe — registry routes still mount; dispatch returns 503 until set.
           INGESTION_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/agent-context/ingestion-queue-url" "")
 
-          # #3182: Credential binding enforcement flag. Default "false" (shadow mode).
-          # Flipped to "true" ONLY by credential-binding-flip.yml after gate assertions pass.
-          ENFORCE_CREDENTIAL_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/enforce-credential-binding" "false")
+          # #3182/#3477: Credential binding enforcement flag. Default "true" (safe-by-default
+          # for fresh clones). Existing deployments pin via SSM param; dev stays in shadow
+          # mode via /adp/dev/gateway/enforce-credential-binding=false.
+          ENFORCE_CREDENTIAL_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/enforce-credential-binding" "true")
 
           sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
               -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \

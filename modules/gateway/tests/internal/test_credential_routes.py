@@ -147,6 +147,7 @@ class TestCredentialListCanonicalResolution:
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+            patch("src.internal.credential_routes.get_settings", return_value=_settings_mock()),
         ):
             client = _make_app(db)
             resp = client.get(
@@ -168,6 +169,7 @@ class TestCredentialListCanonicalResolution:
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+            patch("src.internal.credential_routes.get_settings", return_value=_settings_mock()),
         ):
             client = _make_app(db)
             resp = client.get(
@@ -186,6 +188,7 @@ class TestCredentialListCanonicalResolution:
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+            patch("src.internal.credential_routes.get_settings", return_value=_settings_mock()),
         ):
             client = _make_app(db)
             resp = client.get(

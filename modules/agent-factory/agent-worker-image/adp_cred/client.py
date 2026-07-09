@@ -166,6 +166,9 @@ def list_credentials() -> list:
     _check_enabled()
     base_url, api_key, user_id, _, _, use_sigv4 = _get_config()
     url = f"{base_url}/internal/v1/user-credentials?user_id={user_id}"
+    invocation_id = os.environ.get("ADP_MESSAGE_ID")
+    if invocation_id:
+        url += f"&invocation_id={invocation_id}"
     return _do_request("GET", url, api_key, use_sigv4)  # type: ignore[return-value]
 
 
