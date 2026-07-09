@@ -36,6 +36,13 @@ variable "gateway_deployed" {
 variable "github_app_dev_installation_id" {
   description = "GitHub App installation ID for the `dev` persona on the target org. The ARC runner scale set uses this to authenticate runner registration. Find it via: gh api /orgs/<org>/installations --jq '.installations[] | select(.app_slug==\"<org>-adp-agent-dev\") | .id'"
   type        = string
+  default     = ""
+}
+
+variable "enable_github_apps" {
+  description = "Whether GitHub Apps have been created and their secrets stored. When false, the secrets data-source lookups and ARC runner module are skipped (fresh deploy without GitHub Apps)."
+  type        = bool
+  default     = false
 }
 
 variable "runner_image" {

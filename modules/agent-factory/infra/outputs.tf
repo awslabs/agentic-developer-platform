@@ -15,7 +15,7 @@ output "beads_s3_bucket" {
 
 output "secrets_prefix" {
   description = "Secrets Manager prefix for GitHub App credentials"
-  value       = module.secrets.secrets_prefix
+  value       = var.enable_github_apps ? module.secrets[0].secrets_prefix : "adp/${var.github_org}/gh-app-"
 }
 
 output "gateway_agent_role_arn" {

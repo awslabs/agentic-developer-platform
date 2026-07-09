@@ -20,7 +20,7 @@ set -euo pipefail
 #   ./platform/scripts/deploy-all.sh --ci                       # CI mode: validate outputs exist without re-applying
 #   ./platform/scripts/deploy-all.sh --skip-broker              # Skip broker Lambda deploy (step 7)
 #   ./platform/scripts/deploy-all.sh --skip-admin-bootstrap     # Skip first-admin DB seeding (step 8)
-#   ./platform/scripts/deploy-all.sh --skip-webhook-ingress     # Skip webhook-ingress stack (step 10)
+#   ./platform/scripts/deploy-all.sh --skip-webhook-ingress     # Skip webhook-ingress stack (step 9)
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,7 +75,7 @@ for arg in "$@"; do
       echo "  --skip-frontend          Skip frontend build and deploy (step 6)"
       echo "  --skip-broker            Skip broker Lambda deploy (step 7). Use when enable_github_auth_broker=false"
       echo "  --skip-admin-bootstrap   Skip first-admin DB seeding (step 8). Use on re-deploys where the admin already exists"
-      echo "  --skip-webhook-ingress   Skip webhook-ingress stack (step 10). Use when only gateway is needed but agent-factory infra is wanted"
+      echo "  --skip-webhook-ingress   Skip webhook-ingress stack (step 9). Use when only gateway is needed but agent-factory infra is wanted"
       echo ""
       echo "Mode flags:"
       echo "  --local                  Use local Docker daemon for image builds (instead of CodeBuild)"
@@ -191,8 +191,8 @@ refresh_credentials() {
 # Helper: check if the webhook-secrets KMS alias exists
 # =============================================================================
 # Issue #3419: The enable_webhook_secrets_kms_grant flag in gateway.tfvars
-# references a KMS alias created by webhook-ingress (Step 10). On a fresh
-# account Step 3 runs BEFORE Step 10, so the alias doesn't exist yet and the
+# references a KMS alias created by webhook-ingress (Step 9). On a fresh
+# account Step 3 runs BEFORE Step 9, so the alias doesn't exist yet and the
 # data source hard-fails at plan time. This helper returns "true" (re-deploy)
 # or "false" (fresh deploy) so we can override the tfvars value safely.
 webhook_kms_grant_value() {
@@ -645,7 +645,7 @@ else
   terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false
   # Issue #3419: override enable_webhook_secrets_kms_grant based on whether the
   # KMS alias actually exists. On fresh deploys it won't (webhook-ingress is
-  # Step 10); on re-deploys it will.
+  # Step 9); on re-deploys it will.
   KMS_GRANT=$(webhook_kms_grant_value)
   terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
     -var "enable_webhook_secrets_kms_grant=$KMS_GRANT" \
@@ -896,10 +896,33 @@ fi
 
 refresh_credentials
 # =============================================================================
-# Step 9/11: Agent Factory
+# Step 9/11: Webhook-ingress stack (KEDA + agent-runtime)
 # =============================================================================
+# deploy-webhook-ingress.sh builds the agent-runtime image, packages the webhook
+# Lambda zip, and terraform-applies the webhook-ingress stack (API GW → Lambda →
+# SQS → KEDA → agent-worker). Runs BEFORE agent-factory because agent-factory's
+# gateway-main.tf references the KEDA CRD and keda-operator-role that this step
+# creates (Issue #1052).
+if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_WEBHOOK_INGRESS" = false ]; then
+  step "Step 9/11: Deploy webhook-ingress stack"
+  bash "$ROOT_DIR/modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh" \
+    --env "$ENVIRONMENT" --region "$AWS_REGION"
+  ok "Webhook-ingress deployed"
+elif [ "$SKIP_WEBHOOK_INGRESS" = true ]; then
+  step "Step 9/11: Skipping webhook-ingress (--skip-webhook-ingress)"
+else
+  step "Step 9/11: Skipping webhook-ingress (scope exclusion)"
+fi
+
+refresh_credentials
+# =============================================================================
+# Step 10/11: Agent Factory
+# =============================================================================
+# Runs after webhook-ingress which installs KEDA (CRD + operator role).
+# GitHub App secrets (ARC runner) are optional — enable_github_apps=false on
+# fresh deploys where Apps haven't been registered yet.
 if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
-  step "Step 9/11: Deploy agent-factory"
+  step "Step 10/11: Deploy agent-factory"
 
   # Agent factory infra runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/agent-factory/infra"
@@ -911,19 +934,27 @@ region         = "${AWS_REGION}"
 encrypt        = true
 dynamodb_table = "${LOCK_TABLE}"
 EOF
-  [ ! -f terraform.tfvars ] && cat > terraform.tfvars << EOF
-environment      = "${ENVIRONMENT}"
-aws_region       = "${AWS_REGION}"
-account_id       = "${ACCOUNT_ID}"
-github_org       = "${ADP_GITHUB_ORG:-aws-e}"
-runner_namespace = "arc-runners"
+  # Detect if GitHub App secrets exist (fresh deploy = no apps yet)
+  _GH_APPS_EXIST=false
+  if aws secretsmanager describe-secret --secret-id "adp/${ADP_GITHUB_ORG:-aws-e}/gh-app-dev-id" --region "$AWS_REGION" &>/dev/null; then
+    _GH_APPS_EXIST=true
+  fi
+  # Always regenerate tfvars to reflect current state (gateway is deployed by
+  # the time we reach this step; enable_github_apps tracks secret presence).
+  cat > terraform.tfvars << EOF
+environment        = "${ENVIRONMENT}"
+aws_region         = "${AWS_REGION}"
+github_org         = "${ADP_GITHUB_ORG:-aws-e}"
+runner_namespace   = "arc-runners"
+enable_github_apps = ${_GH_APPS_EXIST}
+gateway_deployed   = true
 EOF
   terraform init -backend-config="$BACKEND_FILE" -input=false
   terraform apply -var-file=terraform.tfvars -auto-approve
   ok "Agent-factory deployed"
 
   # --- Agent Gateway build + deploy (part of agent-factory) ---
-  step "Step 9b/11: Build and deploy agent gateway"
+  step "Step 10b/11: Build and deploy agent gateway"
 
   # --- Docker build: use CodeBuild (needs privileged mode) or local Docker ---
   LOCAL_IMAGE_TAG="${IMAGE_TAG:-latest}"
@@ -965,25 +996,7 @@ EOF
 
   warn "Store GitHub App creds in Secrets Manager (see modules/agent-factory/SETUP-GUIDE.md)"
 else
-  step "Step 9/11: Skipping agent-factory"
-fi
-
-refresh_credentials
-# =============================================================================
-# Step 10/11: Webhook-ingress stack
-# =============================================================================
-# deploy-webhook-ingress.sh builds the agent-runtime image, packages the webhook
-# Lambda zip, and terraform-applies the webhook-ingress stack (API GW → Lambda →
-# SQS → KEDA → agent-worker). Requires agent-factory infra (step 9) to exist.
-if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_WEBHOOK_INGRESS" = false ]; then
-  step "Step 10/11: Deploy webhook-ingress stack"
-  bash "$ROOT_DIR/modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh" \
-    --env "$ENVIRONMENT" --region "$AWS_REGION"
-  ok "Webhook-ingress deployed"
-elif [ "$SKIP_WEBHOOK_INGRESS" = true ]; then
-  step "Step 10/11: Skipping webhook-ingress (--skip-webhook-ingress)"
-else
-  step "Step 10/11: Skipping webhook-ingress (scope exclusion)"
+  step "Step 10/11: Skipping agent-factory"
 fi
 
 refresh_credentials
