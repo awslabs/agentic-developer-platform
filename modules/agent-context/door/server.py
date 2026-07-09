@@ -591,11 +591,20 @@ async def _handle_search(
             deduped.append(hit.data)
 
     # Definition-aware boost: when the query looks like a symbol identifier,
-    # resolve its definition file(s) via Neptune and pin them to the top.
-    # Reuses the same resolve_symbol() that the understand verb uses (#3303).
+    # resolve its definition file(s) and pin them to the top (#3303, #3375).
+    # Scope-less path: derive candidate repos from the Zoekt hits themselves
+    # so that the boost fires even when project scope doesn't resolve.
     definition_files: set[str] = set()
     if _is_identifier_query(query):
-        definition_files = _resolve_definition_files(query, project_scope)
+        # Collect distinct repo names from the Zoekt results (top-N hits)
+        zoekt_repos: set[str] = set()
+        for hit in filtered:
+            repo = hit.repo_name
+            if repo:
+                zoekt_repos.add(repo)
+        definition_files = await _resolve_definition_files(
+            query, project_scope, zoekt_repos=zoekt_repos
+        )
 
     # Re-rank: boost definition files (score 200), then filename relevance
     deduped.sort(
@@ -1094,12 +1103,48 @@ def _is_identifier_query(query: str) -> bool:
     return False
 
 
-def _resolve_definition_files(query: str, project_scope: "ProjectScope | None") -> set[str]:
-    """Resolve the definition file(s) for a symbol query via Neptune.
+async def _resolve_definition_files(
+    query: str,
+    project_scope: "ProjectScope | None",
+    *,
+    zoekt_repos: set[str] | None = None,
+) -> set[str]:
+    """Resolve the definition file(s) for a symbol query.
 
-    Uses the same resolve_symbol() that the understand verb uses. Best-effort:
-    returns an empty set if Neptune is unavailable or the symbol is not found.
+    Resolution strategies (in order):
+    1. Neptune resolve_symbol() — when Neptune is available and repos are known.
+    2. Code-index.json from S3 — scope-less fallback that works even when project
+       scope doesn't resolve (#3375). Derives candidate repos from the Zoekt hits.
+
+    Best-effort: returns an empty set if resolution fails for any reason.
     This ensures no regression — search falls through to filename-relevance ranking.
+    """
+    # Determine repo scope: prefer project_scope, fall back to zoekt-derived repos
+    repos_to_check: list[str] = []
+    if project_scope and project_scope.repo_names:
+        repos_to_check = list(project_scope.repo_names)
+    elif zoekt_repos:
+        # Scope-less path (#3375): use repos derived from Zoekt hits
+        repos_to_check = list(zoekt_repos)
+
+    if not repos_to_check:
+        return set()
+
+    # Strategy 1: Neptune (when available)
+    definition_files = _resolve_via_neptune(query, repos_to_check)
+    if definition_files:
+        return definition_files
+
+    # Strategy 2: Code-index.json from S3 (scope-less fallback, #3375)
+    # Reuses the same load_code_index() that the understand verb's fallback uses.
+    definition_files = await _resolve_via_code_index(query, repos_to_check)
+    return definition_files
+
+
+def _resolve_via_neptune(query: str, repos_to_check: list[str]) -> set[str]:
+    """Attempt definition resolution via Neptune graph database.
+
+    Returns empty set if Neptune is unavailable or finds nothing.
     """
     from . import neptune_client
 
@@ -1107,15 +1152,6 @@ def _resolve_definition_files(query: str, project_scope: "ProjectScope | None") 
         return set()
 
     if not neptune_client.neptune_available():
-        return set()
-
-    # Determine repo scope from project filter (if available)
-    repos_to_check: list[str] = []
-    if project_scope and project_scope.repo_names:
-        repos_to_check = list(project_scope.repo_names)
-    else:
-        # No project scope — cannot resolve without a repo context
-        # (resolve_symbol requires a repo parameter)
         return set()
 
     definition_files: set[str] = set()
@@ -1128,7 +1164,55 @@ def _resolve_definition_files(query: str, project_scope: "ProjectScope | None") 
                 if file_path:
                     definition_files.add(file_path)
         except Exception:
-            log.debug("Definition file resolution failed for %s in %s", query, repo)
+            log.debug("Neptune definition resolution failed for %s in %s", query, repo)
+
+    return definition_files
+
+
+async def _resolve_via_code_index(query: str, repos_to_check: list[str]) -> set[str]:
+    """Resolve definition files using code-index.json from S3.
+
+    Loads each repo's code-index and searches for exact symbol name matches.
+    This path works without Neptune and without project scope resolution (#3375).
+    """
+    from .structural_backend import _normalize_symbol, load_code_index
+
+    if state.s3_client is None or not config.s3_bucket:
+        return set()
+
+    # Normalize query for case-insensitive matching
+    query_lower = query.lower()
+
+    definition_files: set[str] = set()
+    for repo in repos_to_check:
+        try:
+            index_data = await load_code_index(
+                repo,
+                s3_client=state.s3_client,
+                bucket=config.s3_bucket,
+                prefix=config.code_index_s3_prefix,
+            )
+            if not index_data:
+                continue
+
+            # Search definitions (supports both 'definitions' and 'symbols' keys)
+            symbols = index_data.get("definitions", []) or index_data.get("symbols", [])
+            for defn in symbols:
+                normalized = _normalize_symbol(defn)
+                symbol_name = normalized.get("symbol", "")
+                # Exact match (case-insensitive) for the symbol name
+                if symbol_name.lower() == query_lower:
+                    file_path = normalized.get("file", "")
+                    if file_path:
+                        # Prefix with repo name for cross-repo uniqueness
+                        # (matches the file format in Zoekt results: "repo/path")
+                        full_path = f"{repo}/{file_path}" if "/" not in file_path[:3] else file_path
+                        definition_files.add(full_path)
+                        # Also add without repo prefix for matching against
+                        # deduped results that may use either format
+                        definition_files.add(file_path)
+        except Exception:
+            log.debug("Code-index definition resolution failed for %s in %s", query, repo)
 
     return definition_files
 

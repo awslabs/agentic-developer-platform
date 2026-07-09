@@ -1,0 +1,61 @@
+{
+  "_comment": "Realistic volatility3 code-index fixture for scope-less definition boost test (#3375).",
+  "repo_id": "volatilityfoundation/volatility3",
+  "indexed_at": "2026-07-01T00:00:00Z",
+  "definitions": [
+    {
+      "symbol": "DataLayerInterface",
+      "file": "framework/interfaces/layers.py",
+      "line": 45,
+      "kind": "class",
+      "signature": "class DataLayerInterface(metaclass=ABCMeta)"
+    },
+    {
+      "symbol": "TranslationLayerInterface",
+      "file": "framework/interfaces/layers.py",
+      "line": 120,
+      "kind": "class",
+      "signature": "class TranslationLayerInterface(DataLayerInterface)"
+    },
+    {
+      "symbol": "LinearlyMappedLayer",
+      "file": "framework/layers/linear.py",
+      "line": 18,
+      "kind": "class",
+      "signature": "class LinearlyMappedLayer(TranslationLayerInterface)"
+    },
+    {
+      "symbol": "LayerStacker",
+      "file": "framework/automagic/stacker.py",
+      "line": 30,
+      "kind": "class",
+      "signature": "class LayerStacker(interfaces.automagic.AutomagicInterface)"
+    },
+    {
+      "symbol": "PsList",
+      "file": "framework/plugins/windows/pslist.py",
+      "line": 22,
+      "kind": "class",
+      "signature": "class PsList(interfaces.plugins.PluginInterface)"
+    },
+    {
+      "symbol": "PluginInterface",
+      "file": "framework/interfaces/plugins.py",
+      "line": 10,
+      "kind": "class",
+      "signature": "class PluginInterface(metaclass=ABCMeta)"
+    }
+  ],
+  "call_graph": {
+    "framework/interfaces/layers.py::DataLayerInterface": [
+      "framework/layers/linear.py::LinearlyMappedLayer",
+      "framework/automagic/stacker.py::LayerStacker"
+    ],
+    "framework/interfaces/layers.py::TranslationLayerInterface": [
+      "framework/layers/linear.py::LinearlyMappedLayer"
+    ],
+    "framework/layers/linear.py::LinearlyMappedLayer": [],
+    "framework/automagic/stacker.py::LayerStacker": [],
+    "framework/plugins/windows/pslist.py::PsList": []
+  }
+}

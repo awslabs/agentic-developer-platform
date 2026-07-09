@@ -1,12 +1,17 @@
-"""Unit tests for search definition-boost ranking (#3303).
+"""Unit tests for search definition-boost ranking (#3303, #3375).
 
 Verifies:
 - _is_identifier_query detects CamelCase, snake_case, and rejects free-text
 - _definition_boosted_score pins definition files above all other tiers
-- _resolve_definition_files returns empty set when Neptune is unavailable (no regression)
+- _resolve_definition_files works scope-less via code-index (#3375)
+- Non-mocked integration: _handle_search with code-index fixture, no project scope
 """
 
 from __future__ import annotations
+
+import json
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -14,7 +19,10 @@ from door.server import (
     _definition_boosted_score,
     _file_relevance_score,
     _is_identifier_query,
+    _resolve_via_code_index,
 )
+
+FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
 
 # ---------------------------------------------------------------------------
@@ -273,3 +281,339 @@ class TestSearchRankingWithDefinitionBoost:
         # "layers" which matches via normalized score, etc.)
         # The key point: it doesn't crash and produces a valid ordering
         assert len(ranked) == 2
+
+
+# ---------------------------------------------------------------------------
+# Scope-less definition resolution via code-index (#3375)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveViaCodeIndex:
+    """Verify that _resolve_via_code_index resolves definitions from S3 code-index."""
+
+    @pytest.fixture
+    def vol3_index(self) -> dict:
+        """Load the vol3 code-index fixture."""
+        fixture_path = FIXTURES_DIR / "code-index-vol3-fixture.json"
+        return json.loads(fixture_path.read_text())
+
+    @pytest.fixture
+    def fake_s3_client(self, vol3_index):
+        """Fake S3 client that returns the vol3 fixture for load_code_index."""
+        client = MagicMock()
+        # Simulate get_object returning the fixture JSON
+        body_mock = MagicMock()
+        body_mock.read.return_value = json.dumps(vol3_index).encode()
+        client.get_object.return_value = {"Body": body_mock}
+        # NoSuchKey exception type
+        client.exceptions = MagicMock()
+        client.exceptions.NoSuchKey = type("NoSuchKey", (Exception,), {})
+        return client
+
+    @pytest.mark.asyncio
+    async def test_resolves_definition_without_project_scope(self, fake_s3_client, vol3_index):
+        """Definition file found via code-index when no project scope is available."""
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+        ):
+            mock_state.s3_client = fake_s3_client
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+
+            result = await _resolve_via_code_index(
+                "DataLayerInterface", ["volatilityfoundation/volatility3"]
+            )
+
+        # Should find the definition file
+        assert "framework/interfaces/layers.py" in result
+
+    @pytest.mark.asyncio
+    async def test_resolves_multiple_repos(self, fake_s3_client, vol3_index):
+        """Should check all repos in the list."""
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+        ):
+            mock_state.s3_client = fake_s3_client
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+
+            result = await _resolve_via_code_index(
+                "PsList",
+                ["volatilityfoundation/volatility3", "other/repo"],
+            )
+
+        # PsList should be found in vol3
+        assert "framework/plugins/windows/pslist.py" in result
+
+    @pytest.mark.asyncio
+    async def test_case_insensitive_match(self, fake_s3_client, vol3_index):
+        """Symbol matching should be case-insensitive."""
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+        ):
+            mock_state.s3_client = fake_s3_client
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+
+            result = await _resolve_via_code_index(
+                "datalayerinterface", ["volatilityfoundation/volatility3"]
+            )
+
+        assert "framework/interfaces/layers.py" in result
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_symbol_not_found(self, fake_s3_client, vol3_index):
+        """Returns empty set when the symbol doesn't exist in any repo's index."""
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+        ):
+            mock_state.s3_client = fake_s3_client
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+
+            result = await _resolve_via_code_index(
+                "NonExistentSymbol", ["volatilityfoundation/volatility3"]
+            )
+
+        assert result == set()
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_s3_unavailable(self):
+        """Returns empty set when S3 client is not configured."""
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+        ):
+            mock_state.s3_client = None
+            mock_config.s3_bucket = ""
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+
+            result = await _resolve_via_code_index(
+                "DataLayerInterface", ["volatilityfoundation/volatility3"]
+            )
+
+        assert result == set()
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_empty_repos_list(self, fake_s3_client):
+        """Returns empty set when no repos to check."""
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+        ):
+            mock_state.s3_client = fake_s3_client
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+
+            result = await _resolve_via_code_index("DataLayerInterface", [])
+
+        assert result == set()
+
+    @pytest.mark.asyncio
+    async def test_graceful_on_s3_error(self, fake_s3_client, vol3_index):
+        """Returns empty set (does not raise) when S3 throws an exception."""
+        fake_s3_client.get_object.side_effect = Exception("S3 error")
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+        ):
+            mock_state.s3_client = fake_s3_client
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+
+            result = await _resolve_via_code_index(
+                "DataLayerInterface", ["volatilityfoundation/volatility3"]
+            )
+
+        assert result == set()
+
+
+# ---------------------------------------------------------------------------
+# Non-mocked integration test: _handle_search end-to-end (#3375 mandatory)
+# ---------------------------------------------------------------------------
+
+
+class TestSearchDefinitionBoostIntegration:
+    """End-to-end test that exercises _handle_search with definition resolution
+    NOT mocked — realistic code-index fixture, NO project argument.
+
+    This is the test that would have caught the round-1 no-op: it verifies
+    that definition boost fires scope-less (from Zoekt-derived repos).
+    """
+
+    @pytest.fixture
+    def vol3_index(self) -> dict:
+        """Load the vol3 code-index fixture."""
+        fixture_path = FIXTURES_DIR / "code-index-vol3-fixture.json"
+        return json.loads(fixture_path.read_text())
+
+    @pytest.fixture
+    def fake_s3_client(self, vol3_index):
+        """Fake S3 client that returns the vol3 fixture."""
+        client = MagicMock()
+        body_mock = MagicMock()
+        body_mock.read.return_value = json.dumps(vol3_index).encode()
+        client.get_object.return_value = {"Body": body_mock}
+        client.exceptions = MagicMock()
+        client.exceptions.NoSuchKey = type("NoSuchKey", (Exception,), {})
+        return client
+
+    @pytest.fixture
+    def fake_zoekt(self):
+        """Fake Zoekt backend returning vol3 search hits."""
+        from door.acl import SearchHit
+
+        zoekt = AsyncMock()
+        # Simulate Zoekt results for "DataLayerInterface" query
+        # Returns multiple hits across different files in vol3 — the definition
+        # file is buried in the middle (not first).
+        zoekt.search.return_value = [
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "framework/plugins/windows/pslist.py",
+                    "line": 55,
+                    "content": "class PsList(DataLayerInterface):",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "framework/automagic/stacker.py",
+                    "line": 102,
+                    "content": "    layer: DataLayerInterface = ...",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "framework/layers/physical.py",
+                    "line": 30,
+                    "content": "class PhysicalLayer(DataLayerInterface):",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "framework/interfaces/layers.py",
+                    "line": 45,
+                    "content": "class DataLayerInterface(metaclass=ABCMeta):",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "tests/test_layers.py",
+                    "line": 12,
+                    "content": "from volatility3.framework.interfaces.layers import DataLayerInterface",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "framework/plugins/linux/proc.py",
+                    "line": 88,
+                    "content": "    def _get_layer(self) -> DataLayerInterface:",
+                    "match_type": "exact",
+                },
+            ),
+        ]
+        return zoekt
+
+    @pytest.mark.asyncio
+    async def test_definition_file_ranked_first_without_project_scope(
+        self, fake_s3_client, fake_zoekt, vol3_index
+    ):
+        """The definition file lands in top results when no project argument is passed.
+
+        This is the mandatory test from #3375 Validation: exercises _handle_search()
+        end-to-end with definition resolution NOT mocked. The code-index fixture
+        provides the definition mapping; Zoekt provides the initial hit list.
+        Neptune is disabled. No project_scope is passed.
+        """
+        from door.acl import CallerPrincipal
+        from door.server import _handle_search
+
+        # Use a resolved caller so ACL passthrough works
+        caller = CallerPrincipal(github_login="test-user", github_teams=["eng"])
+
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+            patch("door.neptune_client.neptune_enabled", return_value=False),
+            # Bypass ACL — we're testing ranking, not permissions
+            patch("door.server._apply_acl", side_effect=lambda hits, _: hits),
+        ):
+            mock_state.zoekt = fake_zoekt
+            mock_state.s3_client = fake_s3_client
+            mock_state.acl_store = None
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+            mock_config.semantic_enabled = False
+
+            result = await _handle_search(
+                {"query": "DataLayerInterface", "scope": "code", "limit": 20},
+                caller=caller,
+                project_scope=None,  # NO project scope — the key constraint
+            )
+
+        # Verify we got results
+        assert result["total"] > 0
+        results = result["results"]
+
+        # The definition file MUST be in the top results
+        result_files = [r.get("file", "") for r in results]
+        assert "framework/interfaces/layers.py" in result_files
+
+        # The definition file should be ranked FIRST (score 200 boost)
+        assert results[0]["file"] == "framework/interfaces/layers.py"
+
+    @pytest.mark.asyncio
+    async def test_boost_works_with_project_scope_too(self, fake_s3_client, fake_zoekt, vol3_index):
+        """Definition boost still works when project scope IS provided (no regression)."""
+        from door.acl import CallerPrincipal
+        from door.project_filter import ProjectScope
+        from door.server import _handle_search
+
+        caller = CallerPrincipal(github_login="test-user", github_teams=["eng"])
+        project_scope = ProjectScope(
+            project_id="vol3-project",
+            repo_names={"volatilityfoundation/volatility3"},
+        )
+
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+            patch("door.neptune_client.neptune_enabled", return_value=False),
+            patch("door.server._apply_acl", side_effect=lambda hits, _: hits),
+        ):
+            mock_state.zoekt = fake_zoekt
+            mock_state.s3_client = fake_s3_client
+            mock_state.acl_store = None
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+            mock_config.semantic_enabled = False
+
+            result = await _handle_search(
+                {"query": "DataLayerInterface", "scope": "code", "limit": 20},
+                caller=caller,
+                project_scope=project_scope,
+            )
+
+        results = result["results"]
+        assert results[0]["file"] == "framework/interfaces/layers.py"
