@@ -934,20 +934,36 @@ region         = "${AWS_REGION}"
 encrypt        = true
 dynamodb_table = "${LOCK_TABLE}"
 EOF
-  # Detect if GitHub App secrets exist (fresh deploy = no apps yet)
+  # Detect current state to set conditional flags
   _GH_APPS_EXIST=false
   if aws secretsmanager describe-secret --secret-id "adp/${ADP_GITHUB_ORG:-aws-e}/gh-app-dev-id" --region "$AWS_REGION" &>/dev/null; then
     _GH_APPS_EXIST=true
   fi
+  _AC_NS_EXISTS=false
+  if kubectl get namespace agent-context &>/dev/null; then
+    _AC_NS_EXISTS=true
+  fi
+  # Check if agent-registry already has the scaledjob-worker entry (from
+  # gateway-infra seed or a prior partial apply). Skip seeding if present to
+  # avoid ConditionalCheckFailedException on PutItem.
+  _SEED_REGISTRY=true
+  _REG_TABLE=$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/agent-registry-table" --query Parameter.Value --output text 2>/dev/null || echo "")
+  if [ -n "$_REG_TABLE" ]; then
+    if aws dynamodb get-item --table-name "$_REG_TABLE" --key '{"agent_id":{"S":"scaledjob-worker"}}' --query 'Item.agent_id' --output text 2>/dev/null | grep -q "scaledjob-worker"; then
+      _SEED_REGISTRY=false
+    fi
+  fi
   # Always regenerate tfvars to reflect current state (gateway is deployed by
   # the time we reach this step; enable_github_apps tracks secret presence).
   cat > terraform.tfvars << EOF
-environment        = "${ENVIRONMENT}"
-aws_region         = "${AWS_REGION}"
-github_org         = "${ADP_GITHUB_ORG:-aws-e}"
-runner_namespace   = "arc-runners"
-enable_github_apps = ${_GH_APPS_EXIST}
-gateway_deployed   = true
+environment              = "${ENVIRONMENT}"
+aws_region               = "${AWS_REGION}"
+github_org               = "${ADP_GITHUB_ORG:-aws-e}"
+runner_namespace         = "arc-runners"
+enable_github_apps       = ${_GH_APPS_EXIST}
+enable_agent_context_rbac = ${_AC_NS_EXISTS}
+seed_agent_registry      = ${_SEED_REGISTRY}
+gateway_deployed         = true
 EOF
   terraform init -backend-config="$BACKEND_FILE" -input=false
   terraform apply -var-file=terraform.tfvars -auto-approve
