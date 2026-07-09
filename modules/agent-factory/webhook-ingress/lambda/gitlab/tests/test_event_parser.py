@@ -46,7 +46,8 @@ class TestNoteEventWithMention:
         assert result.author_name == "Alice Smith"
         assert result.body == "@agent please fix the login bug"
         assert result.mention_target == "agent"
-        assert result.gitlab_url == "https://gitlab.dev.adp.internal/group/repo"
+        # web_url is the project URL; parser must strip the project path to the instance base URL
+        assert result.gitlab_url == "https://gitlab.dev.adp.internal"
         assert result.reason == ""
 
     def test_persona_mention(self):

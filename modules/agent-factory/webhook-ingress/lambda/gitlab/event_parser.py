@@ -57,7 +57,14 @@ def parse_event(payload: dict[str, Any]) -> ParsedGitLabEvent:
     project = payload.get("project", {})
     project_id = project.get("id", 0)
     project_path = project.get("path_with_namespace", "")
-    gitlab_url = project.get("web_url", "")
+    # project.web_url is the PROJECT URL (https://host/group/proj); the agent
+    # worker needs the instance BASE URL to build /api/v4 calls — strip the
+    # project path suffix (#3436 follow-up: 422s from /group/proj/api/v4/...).
+    web_url = project.get("web_url", "")
+    if project_path and web_url.endswith("/" + project_path):
+        gitlab_url = web_url[: -(len(project_path) + 1)]
+    else:
+        gitlab_url = web_url
 
     # Only handle note events
     if object_kind != "note":
