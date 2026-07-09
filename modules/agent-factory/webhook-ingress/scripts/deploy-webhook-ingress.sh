@@ -131,17 +131,28 @@ else
 fi
 
 BACKEND="${REPO_ROOT}/environments/${ENVIRONMENT}/modules/webhook-ingress-backend.tfvars"
+
+# Check if gitlab.zip exists in S3; if not, override gitlab_webhook_enabled to
+# false so terraform doesn't fail on the missing artifact (Issue #3488).
+GITLAB_OVERRIDE=""
+if ! aws s3api head-object --bucket "$STATE_BUCKET" --key "lambda-artifacts/webhook-ingress/gitlab.zip" --region "$AWS_REGION" &>/dev/null; then
+  warn "gitlab.zip not found in S3 — overriding gitlab_webhook_enabled=false"
+  GITLAB_OVERRIDE='-var=gitlab_webhook_enabled=false'
+fi
+
 if [ "$SKIP_TF" = true ]; then
   warn "Skipping terraform apply (--skip-terraform)."
 elif [ "$DRY_RUN" = true ]; then
   echo "  [dry-run] terraform init -backend-config=$BACKEND"
-  echo "  [dry-run] terraform apply -var=environment=$ENVIRONMENT -var=gateway_api_url=$GATEWAY_API_URL"
+  echo "  [dry-run] terraform apply -var=environment=$ENVIRONMENT -var=gateway_api_url=$GATEWAY_API_URL${GITLAB_OVERRIDE:+ $GITLAB_OVERRIDE}"
 else
+  # shellcheck disable=SC2086
   ( cd "${MODULE_ROOT}/infra" \
     && terraform init -backend-config="$BACKEND" -input=false -reconfigure >/dev/null \
     && terraform apply \
          -var="environment=${ENVIRONMENT}" \
          -var="gateway_api_url=${GATEWAY_API_URL}" \
+         $GITLAB_OVERRIDE \
          -input=false -auto-approve )
   ok "webhook-ingress applied"
 fi

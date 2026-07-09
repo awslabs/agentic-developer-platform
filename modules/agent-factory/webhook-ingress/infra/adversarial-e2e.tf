@@ -12,6 +12,10 @@
 #   2. S3 bucket + SSM param /adp/<env>/adversarial-tests/evidence-bucket — the
 #      workflow uploads evidence (transcripts, assertion reports) to S3 for
 #      durable archival and audit.
+#
+# Gated by var.enable_adversarial_e2e (default false) — the Secrets Manager
+# secret must exist before these resources can plan. Fresh deploy-all.sh runs
+# (where CI has not seeded the secret) leave this disabled. Issue #3488.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -26,18 +30,21 @@
 # apply — the value is seeded once and may be rotated out-of-band.
 
 data "aws_secretsmanager_secret" "gateway_internal_api_key" {
-  name = "adp/${var.environment}/gateway/internal-api-key"
+  count = var.enable_adversarial_e2e ? 1 : 0
+  name  = "adp/${var.environment}/gateway/internal-api-key"
 }
 
 data "aws_secretsmanager_secret_version" "gateway_internal_api_key" {
-  secret_id = data.aws_secretsmanager_secret.gateway_internal_api_key.id
+  count     = var.enable_adversarial_e2e ? 1 : 0
+  secret_id = data.aws_secretsmanager_secret.gateway_internal_api_key[0].id
 }
 
 resource "aws_ssm_parameter" "gateway_internal_api_key" {
+  count       = var.enable_adversarial_e2e ? 1 : 0
   name        = "/adp/${var.environment}/gateway/internal-api-key"
   description = "Gateway internal API key for /internal/v1/* shared-secret auth (mirrored from Secrets Manager for E2E workflow consumption)"
   type        = "SecureString"
-  value       = data.aws_secretsmanager_secret_version.gateway_internal_api_key.secret_string
+  value       = data.aws_secretsmanager_secret_version.gateway_internal_api_key[0].secret_string
 
   tags = {
     Purpose   = "adversarial-e2e"
@@ -59,6 +66,7 @@ resource "aws_ssm_parameter" "gateway_internal_api_key" {
 # test output, not compliance data).
 
 resource "aws_s3_bucket" "adversarial_evidence" {
+  count  = var.enable_adversarial_e2e ? 1 : 0
   bucket = "adp-${var.environment}-adversarial-evidence-${local.account_id}"
 
   tags = {
@@ -70,7 +78,8 @@ resource "aws_s3_bucket" "adversarial_evidence" {
 }
 
 resource "aws_s3_bucket_public_access_block" "adversarial_evidence" {
-  bucket = aws_s3_bucket.adversarial_evidence.id
+  count  = var.enable_adversarial_e2e ? 1 : 0
+  bucket = aws_s3_bucket.adversarial_evidence[0].id
 
   block_public_acls       = true
   block_public_policy     = true
@@ -79,7 +88,8 @@ resource "aws_s3_bucket_public_access_block" "adversarial_evidence" {
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "adversarial_evidence" {
-  bucket = aws_s3_bucket.adversarial_evidence.id
+  count  = var.enable_adversarial_e2e ? 1 : 0
+  bucket = aws_s3_bucket.adversarial_evidence[0].id
 
   rule {
     apply_server_side_encryption_by_default {
@@ -89,7 +99,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "adversarial_evide
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "adversarial_evidence" {
-  bucket = aws_s3_bucket.adversarial_evidence.id
+  count  = var.enable_adversarial_e2e ? 1 : 0
+  bucket = aws_s3_bucket.adversarial_evidence[0].id
 
   rule {
     id     = "expire-after-90-days"
@@ -107,10 +118,11 @@ resource "aws_s3_bucket_lifecycle_configuration" "adversarial_evidence" {
 # The adversarial E2E workflow resolves the bucket name from this parameter.
 
 resource "aws_ssm_parameter" "adversarial_evidence_bucket" {
+  count       = var.enable_adversarial_e2e ? 1 : 0
   name        = "/adp/${var.environment}/adversarial-tests/evidence-bucket"
   description = "S3 bucket name for adversarial E2E test evidence (credential-binding S8)"
   type        = "String"
-  value       = aws_s3_bucket.adversarial_evidence.id
+  value       = aws_s3_bucket.adversarial_evidence[0].id
 
   tags = {
     Purpose   = "adversarial-e2e"

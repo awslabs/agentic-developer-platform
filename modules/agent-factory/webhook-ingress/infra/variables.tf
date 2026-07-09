@@ -253,6 +253,16 @@ variable "gitlab_webhook_enabled" {
   default     = false
 }
 
+# -----------------------------------------------------------------------------
+# Adversarial E2E (Issue #3488)
+# -----------------------------------------------------------------------------
+
+variable "enable_adversarial_e2e" {
+  description = "Enable adversarial E2E test infrastructure (SSM mirror of gateway internal API key, evidence S3 bucket). Requires the secret adp/<env>/gateway/internal-api-key to exist in Secrets Manager. Set to false on fresh deploys where CI has not yet seeded the secret."
+  type        = bool
+  default     = false
+}
+
 # Issue #575: the gateway's API Gateway invoke URL is resolved at apply time
 # from SSM (published by modules/gateway/infra/) rather than passed in as a
 # tfvar. Keeps new environments repeatable — no per-env hardcoding.

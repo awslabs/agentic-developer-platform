@@ -31,3 +31,9 @@ enable_agent_otel = true
 # Lambda — silently breaking GitLab dispatch. dev == embark1 spike environment;
 # envs without a GitLab instance override this to false in their own tfvars.
 gitlab_webhook_enabled = true
+
+# Issue #3488: disable adversarial E2E infra on fresh deploys — the Secrets
+# Manager secret adp/<env>/gateway/internal-api-key must exist first (CI
+# creates it). deploy-all.sh runs on accounts without that secret; leaving
+# this false prevents terraform plan/apply from failing on the data source.
+enable_adversarial_e2e = false
