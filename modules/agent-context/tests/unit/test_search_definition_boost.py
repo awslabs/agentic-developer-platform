@@ -1,10 +1,11 @@
-"""Unit tests for search definition-boost ranking (#3303, #3375).
+"""Unit tests for search definition-boost ranking (#3303, #3375, #3451).
 
 Verifies:
 - _is_identifier_query detects CamelCase, snake_case, and rejects free-text
 - _definition_boosted_score pins definition files above all other tiers
 - _resolve_definition_files works scope-less via code-index (#3375)
 - Non-mocked integration: _handle_search with code-index fixture, no project scope
+- Injection: definition files absent from Zoekt are synthesized and injected (#3451)
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from door.server import (
     _file_relevance_score,
     _is_identifier_query,
     _resolve_via_code_index,
+    _synthesize_definition_entry,
 )
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
@@ -617,3 +619,424 @@ class TestSearchDefinitionBoostIntegration:
 
         results = result["results"]
         assert results[0]["file"] == "framework/interfaces/layers.py"
+
+
+# ---------------------------------------------------------------------------
+# _synthesize_definition_entry unit tests (#3451)
+# ---------------------------------------------------------------------------
+
+
+class TestSynthesizeDefinitionEntry:
+    """Verify that injected entries match Zoekt-hit shape."""
+
+    def test_entry_shape_matches_zoekt_hit(self):
+        """Synthesized entry must have all required Zoekt-hit fields."""
+        definition_files = {"framework/interfaces/layers.py"}
+        zoekt_repos = {"volatilityfoundation/volatility3"}
+
+        entry = _synthesize_definition_entry(
+            "framework/interfaces/layers.py",
+            "DataLayerInterface",
+            definition_files,
+            zoekt_repos,
+        )
+
+        assert entry is not None
+        # Must have all fields that a Zoekt hit has
+        assert "repo_id" in entry
+        assert "file" in entry
+        assert "line" in entry
+        assert "content" in entry
+        assert "match_type" in entry
+        # Types must match
+        assert isinstance(entry["repo_id"], str)
+        assert isinstance(entry["file"], str)
+        assert isinstance(entry["line"], int)
+        assert isinstance(entry["content"], str)
+        assert entry["match_type"] == "exact"
+
+    def test_entry_file_path_is_bare(self):
+        """Synthesized entry uses bare path (no repo prefix), matching Zoekt format."""
+        definition_files = {
+            "framework/interfaces/layers.py",
+            "volatilityfoundation/volatility3/framework/interfaces/layers.py",
+        }
+        zoekt_repos = {"volatilityfoundation/volatility3"}
+
+        # When called with repo-prefixed path, it should strip the prefix
+        entry = _synthesize_definition_entry(
+            "volatilityfoundation/volatility3/framework/interfaces/layers.py",
+            "DataLayerInterface",
+            definition_files,
+            zoekt_repos,
+        )
+
+        assert entry is not None
+        assert entry["file"] == "framework/interfaces/layers.py"
+        assert entry["repo_id"] == "volatilityfoundation/volatility3"
+
+    def test_returns_none_for_empty_path(self):
+        """Empty file path should return None."""
+        entry = _synthesize_definition_entry(
+            "", "DataLayerInterface", set(), set()
+        )
+        assert entry is None
+
+    def test_bare_path_preserved_when_no_repo_prefix(self):
+        """Bare path (no repo prefix) is kept as-is in the file field."""
+        definition_files = {"framework/interfaces/layers.py"}
+        zoekt_repos = {"volatilityfoundation/volatility3"}
+
+        entry = _synthesize_definition_entry(
+            "framework/interfaces/layers.py",
+            "DataLayerInterface",
+            definition_files,
+            zoekt_repos,
+        )
+
+        assert entry is not None
+        assert entry["file"] == "framework/interfaces/layers.py"
+
+    def test_repo_id_populated_from_zoekt_repos(self):
+        """repo_id should be set from the zoekt_repos set."""
+        definition_files = {"src/models.py"}
+        zoekt_repos = {"myorg/myrepo"}
+
+        entry = _synthesize_definition_entry(
+            "src/models.py", "MyModel", definition_files, zoekt_repos
+        )
+
+        assert entry is not None
+        assert entry["repo_id"] == "myorg/myrepo"
+
+
+# ---------------------------------------------------------------------------
+# Injection cap and gating tests (#3451)
+# ---------------------------------------------------------------------------
+
+
+class TestDefinitionInjection:
+    """Verify injection behavior: cap, gating on identifier queries, no duplication."""
+
+    @pytest.fixture
+    def vol3_index(self) -> dict:
+        """Load the vol3 code-index fixture."""
+        fixture_path = FIXTURES_DIR / "code-index-vol3-fixture.json"
+        return json.loads(fixture_path.read_text())
+
+    @pytest.fixture
+    def fake_s3_client(self, vol3_index):
+        """Fake S3 client that returns the vol3 fixture."""
+        client = MagicMock()
+        body_mock = MagicMock()
+        body_mock.read.return_value = json.dumps(vol3_index).encode()
+        client.get_object.return_value = {"Body": body_mock}
+        client.exceptions = MagicMock()
+        client.exceptions.NoSuchKey = type("NoSuchKey", (Exception,), {})
+        return client
+
+    @pytest.fixture
+    def fake_zoekt_without_definition(self):
+        """Fake Zoekt backend whose results do NOT contain the definition file.
+
+        This is the corrected fixture from #3451: round 2's test had the
+        definition file IN the Zoekt results, masking the injection gap.
+        """
+        from door.acl import SearchHit
+
+        zoekt = AsyncMock()
+        # Only usage files — definition file (framework/interfaces/layers.py)
+        # is deliberately ABSENT, simulating the real-world case where hundreds
+        # of usage files crowd it out of Zoekt's top results.
+        zoekt.search.return_value = [
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "framework/plugins/windows/pslist.py",
+                    "line": 55,
+                    "content": "class PsList(DataLayerInterface):",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "framework/automagic/stacker.py",
+                    "line": 102,
+                    "content": "    layer: DataLayerInterface = ...",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "framework/layers/physical.py",
+                    "line": 30,
+                    "content": "class PhysicalLayer(DataLayerInterface):",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "tests/test_layers.py",
+                    "line": 12,
+                    "content": "from volatility3.framework.interfaces.layers import DataLayerInterface",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "framework/plugins/linux/proc.py",
+                    "line": 88,
+                    "content": "    def _get_layer(self) -> DataLayerInterface:",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "framework/plugins/windows/modules.py",
+                    "line": 44,
+                    "content": "    layer: DataLayerInterface",
+                    "match_type": "exact",
+                },
+            ),
+        ]
+        return zoekt
+
+    @pytest.mark.asyncio
+    async def test_injection_when_definition_absent_from_zoekt(
+        self, fake_s3_client, fake_zoekt_without_definition, vol3_index
+    ):
+        """MANDATORY corrected test (#3451): definition file NOT in Zoekt results
+        but resolved via code-index → must be INJECTED into top results.
+
+        This is the test round 2 should have had. Round 2's fixture contained
+        the definition file in Zoekt results, so it only tested re-ranking.
+        """
+        from door.acl import CallerPrincipal
+        from door.server import _handle_search
+
+        caller = CallerPrincipal(github_login="test-user", github_teams=["eng"])
+
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+            patch("door.neptune_client.neptune_enabled", return_value=False),
+            patch("door.server._apply_acl", side_effect=lambda hits, _: hits),
+        ):
+            mock_state.zoekt = fake_zoekt_without_definition
+            mock_state.s3_client = fake_s3_client
+            mock_state.acl_store = None
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+            mock_config.semantic_enabled = False
+
+            result = await _handle_search(
+                {"query": "DataLayerInterface", "scope": "code", "limit": 20},
+                caller=caller,
+                project_scope=None,
+            )
+
+        # The definition file must appear in results despite not being in Zoekt
+        results = result["results"]
+        result_files = [r.get("file", "") for r in results]
+        assert "framework/interfaces/layers.py" in result_files, (
+            "Definition file should be INJECTED when absent from Zoekt results"
+        )
+
+        # It must be ranked FIRST (score 200 from definition boost)
+        assert results[0]["file"] == "framework/interfaces/layers.py", (
+            "Injected definition file should be ranked first via boost"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_injection_for_natural_language_query(
+        self, fake_s3_client, fake_zoekt_without_definition
+    ):
+        """Natural-language queries must NOT trigger injection."""
+        from door.acl import CallerPrincipal
+        from door.server import _handle_search
+
+        caller = CallerPrincipal(github_login="test-user", github_teams=["eng"])
+
+        # Modify the zoekt mock to return results for a free-text query
+        from door.acl import SearchHit
+
+        fake_zoekt_without_definition.search.return_value = [
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "docs/getting-started.md",
+                    "line": 10,
+                    "content": "layer interface overview",
+                    "match_type": "exact",
+                },
+            ),
+        ]
+
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+            patch("door.neptune_client.neptune_enabled", return_value=False),
+            patch("door.server._apply_acl", side_effect=lambda hits, _: hits),
+        ):
+            mock_state.zoekt = fake_zoekt_without_definition
+            mock_state.s3_client = fake_s3_client
+            mock_state.acl_store = None
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+            mock_config.semantic_enabled = False
+
+            result = await _handle_search(
+                {"query": "layer interface overview", "scope": "code", "limit": 20},
+                caller=caller,
+                project_scope=None,
+            )
+
+        # No injection should happen — the query isn't identifier-shaped
+        results = result["results"]
+        result_files = [r.get("file", "") for r in results]
+        assert "framework/interfaces/layers.py" not in result_files
+
+    @pytest.mark.asyncio
+    async def test_injection_capped_at_two(self, fake_s3_client):
+        """At most 2 definition files should be injected per query."""
+        from door.acl import CallerPrincipal, SearchHit
+        from door.server import _handle_search
+
+        # Create a code-index with 4 definitions for the same symbol
+        multi_def_index = {
+            "repo_id": "org/repo",
+            "indexed_at": "2026-07-01T00:00:00Z",
+            "definitions": [
+                {"symbol": "Widget", "file": "src/widget_a.py", "line": 1, "kind": "class"},
+                {"symbol": "Widget", "file": "src/widget_b.py", "line": 1, "kind": "class"},
+                {"symbol": "Widget", "file": "src/widget_c.py", "line": 1, "kind": "class"},
+                {"symbol": "Widget", "file": "src/widget_d.py", "line": 1, "kind": "class"},
+            ],
+        }
+        body_mock = MagicMock()
+        body_mock.read.return_value = json.dumps(multi_def_index).encode()
+        fake_s3_client.get_object.return_value = {"Body": body_mock}
+
+        caller = CallerPrincipal(github_login="test-user", github_teams=["eng"])
+
+        # Zoekt returns a single unrelated file
+        fake_zoekt = AsyncMock()
+        fake_zoekt.search.return_value = [
+            SearchHit(
+                repo_name="org/repo",
+                data={
+                    "repo_id": "org/repo",
+                    "file": "tests/test_widget.py",
+                    "line": 5,
+                    "content": "from src.widget_a import Widget",
+                    "match_type": "exact",
+                },
+            ),
+        ]
+
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+            patch("door.neptune_client.neptune_enabled", return_value=False),
+            patch("door.server._apply_acl", side_effect=lambda hits, _: hits),
+        ):
+            mock_state.zoekt = fake_zoekt
+            mock_state.s3_client = fake_s3_client
+            mock_state.acl_store = None
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+            mock_config.semantic_enabled = False
+
+            result = await _handle_search(
+                {"query": "Widget", "scope": "code", "limit": 20},
+                caller=caller,
+                project_scope=None,
+            )
+
+        results = result["results"]
+        # Total results: 1 from Zoekt + at most 2 injected = 3
+        # (4 definitions resolved but cap is 2)
+        injected_files = [
+            r["file"] for r in results
+            if r["file"].startswith("src/widget_") and r["file"] != "tests/test_widget.py"
+        ]
+        assert len(injected_files) <= 2, (
+            f"Injection should be capped at 2, got {len(injected_files)}"
+        )
+        # At least some injection happened
+        assert len(injected_files) > 0
+
+    @pytest.mark.asyncio
+    async def test_no_duplicate_injection_when_already_in_zoekt(
+        self, fake_s3_client, vol3_index
+    ):
+        """If definition file is already in Zoekt results, don't inject a duplicate."""
+        from door.acl import CallerPrincipal, SearchHit
+        from door.server import _handle_search
+
+        caller = CallerPrincipal(github_login="test-user", github_teams=["eng"])
+
+        # Zoekt results INCLUDE the definition file
+        fake_zoekt = AsyncMock()
+        fake_zoekt.search.return_value = [
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "framework/interfaces/layers.py",
+                    "line": 45,
+                    "content": "class DataLayerInterface(metaclass=ABCMeta):",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "volatilityfoundation/volatility3",
+                    "file": "framework/plugins/windows/pslist.py",
+                    "line": 55,
+                    "content": "class PsList(DataLayerInterface):",
+                    "match_type": "exact",
+                },
+            ),
+        ]
+
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+            patch("door.neptune_client.neptune_enabled", return_value=False),
+            patch("door.server._apply_acl", side_effect=lambda hits, _: hits),
+        ):
+            mock_state.zoekt = fake_zoekt
+            mock_state.s3_client = fake_s3_client
+            mock_state.acl_store = None
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+            mock_config.semantic_enabled = False
+
+            result = await _handle_search(
+                {"query": "DataLayerInterface", "scope": "code", "limit": 20},
+                caller=caller,
+                project_scope=None,
+            )
+
+        results = result["results"]
+        # Count occurrences of the definition file — should be exactly 1 (from Zoekt, not injected)
+        def_file_count = sum(
+            1 for r in results if r["file"] == "framework/interfaces/layers.py"
+        )
+        assert def_file_count == 1, (
+            f"Definition file should appear exactly once, found {def_file_count}"
+        )

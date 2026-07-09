@@ -606,6 +606,33 @@ async def _handle_search(
             query, project_scope, zoekt_repos=zoekt_repos
         )
 
+        # Injection (#3451): if the resolved definition file(s) are NOT already
+        # in the Zoekt results, synthesize entries and inject them so the boost
+        # has something to pin. Without this, the boost only re-ranks existing
+        # results and can't surface files that Zoekt didn't return.
+        if definition_files:
+            injected_count = 0
+            max_injections = 2
+            for def_file in sorted(definition_files):
+                if injected_count >= max_injections:
+                    break
+                # Skip if already present (check both repo-prefixed and bare path)
+                if def_file in seen_files:
+                    continue
+                # Synthesize a Zoekt-shaped result entry
+                entry = _synthesize_definition_entry(
+                    def_file, query, definition_files, zoekt_repos
+                )
+                if entry:
+                    # Track the file path from the synthesized entry (bare form)
+                    injected_file = entry.get("file", "")
+                    if injected_file in seen_files:
+                        continue
+                    seen_files.add(def_file)
+                    seen_files.add(injected_file)
+                    deduped.append(entry)
+                    injected_count += 1
+
     # Re-rank: boost definition files (score 200), then filename relevance
     deduped.sort(
         key=lambda d: -_definition_boosted_score(d.get("file", ""), query, definition_files)
@@ -1215,6 +1242,47 @@ async def _resolve_via_code_index(query: str, repos_to_check: list[str]) -> set[
             log.debug("Code-index definition resolution failed for %s in %s", query, repo)
 
     return definition_files
+
+
+def _synthesize_definition_entry(
+    file_path: str,
+    query: str,
+    definition_files: set[str],
+    zoekt_repos: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """Synthesize a Zoekt-shaped result entry for a resolved definition file.
+
+    Creates a result dict with the same shape as entries in ``deduped``
+    (repo_id, file, line, content, match_type) so downstream consumers
+    (scorers, formatters) treat injected results identically to Zoekt hits.
+
+    Returns None if file_path is empty or can't determine a valid entry.
+    (#3451: injection for definition files absent from Zoekt candidates)
+    """
+    if not file_path:
+        return None
+
+    # Determine repo_id: if file_path contains a slash with an org prefix
+    # (e.g., "volatilityfoundation/volatility3/framework/..."), use the first
+    # two segments. Otherwise, use the first zoekt_repo that the path belongs to.
+    repo_id = ""
+    if zoekt_repos:
+        for repo in zoekt_repos:
+            if file_path.startswith(f"{repo}/"):
+                repo_id = repo
+                file_path = file_path[len(repo) + 1 :]
+                break
+        if not repo_id:
+            # Take first available repo (best-effort)
+            repo_id = next(iter(sorted(zoekt_repos)), "")
+
+    return {
+        "repo_id": repo_id,
+        "file": file_path,
+        "line": 0,
+        "content": f"[definition of {query}]",
+        "match_type": "exact",
+    }
 
 
 def _definition_boosted_score(file_path: str, query: str, definition_files: set[str]) -> int:
