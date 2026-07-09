@@ -1,7 +1,7 @@
 # =============================================================================
 # GitLab CE Infrastructure
 # =============================================================================
-# Self-hosted GitLab CE 17.x on EC2 with internal ALB, private subnet,
+# Self-hosted GitLab CE 19.1.x on EC2 with internal ALB, private subnet,
 # security groups, EBS storage, and Route53 DNS.
 # Uses remote state to reference the shared platform VPC and networking.
 # =============================================================================

@@ -2,7 +2,8 @@
 # =============================================================================
 # GitLab CE Omnibus Installation — Cloud-Init User Data
 # =============================================================================
-# Installs GitLab CE 17.x via the official Omnibus package on Ubuntu 22.04 LTS.
+# Installs GitLab CE 19.1.x (pin policy: vendor's current maintained minor at spec time)
+# via the official Omnibus package on Ubuntu 22.04 LTS.
 # ALB terminates TLS, so GitLab listens on HTTP:80 only.
 # =============================================================================
 set -euo pipefail
@@ -23,7 +24,7 @@ curl -fsSL https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/scr
 # -----------------------------------------------------------------------------
 # Install GitLab CE
 # -----------------------------------------------------------------------------
-EXTERNAL_URL="${gitlab_external_url}" apt-get install -y gitlab-ce=17.7.*
+EXTERNAL_URL="${gitlab_external_url}" apt-get install -y gitlab-ce=19.1.*
 
 # -----------------------------------------------------------------------------
 # Configure GitLab — ALB terminates TLS, GitLab listens on HTTP:80

@@ -10,6 +10,8 @@ resource "aws_instance" "gitlab" {
   iam_instance_profile   = aws_iam_instance_profile.gitlab.name
   key_name               = var.key_name != "" ? var.key_name : null
 
+  user_data_replace_on_change = true
+
   user_data = templatefile("${path.module}/user_data.sh", {
     gitlab_external_url = "http://${var.gitlab_domain}"
     backup_bucket_name  = var.backup_enabled ? aws_s3_bucket.backup[0].id : ""
