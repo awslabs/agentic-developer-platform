@@ -32,8 +32,13 @@ enable_agent_otel = true
 # envs without a GitLab instance override this to false in their own tfvars.
 gitlab_webhook_enabled = true
 
-# Issue #3488: disable adversarial E2E infra on fresh deploys — the Secrets
-# Manager secret adp/<env>/gateway/internal-api-key must exist first (CI
-# creates it). deploy-all.sh runs on accounts without that secret; leaving
-# this false prevents terraform plan/apply from failing on the data source.
-enable_adversarial_e2e = false
+# Issue #3488 / #3494: adversarial E2E infra gating (dual-path design).
+#
+# CI path (webhook-ingress-deploy.yml) uses `-var-file=terraform.tfvars`, so
+# this value governs existing environments where the Secrets Manager secret
+# adp/<env>/gateway/internal-api-key already exists. Set TRUE here.
+#
+# Fresh-deploy path (deploy-webhook-ingress.sh) does NOT pass -var-file, so
+# it picks up `default = false` from variables.tf — safe on new accounts
+# where CI hasn't seeded the secret yet.
+enable_adversarial_e2e = true
