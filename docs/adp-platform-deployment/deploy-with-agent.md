@@ -107,17 +107,19 @@ product; then re-run the script.
    involve a browser/OAuth flow. Hand the user the install URL afterward if the
    App wasn't installed during the manifest flow.
 
-**Critical — the "placeholder artifact" rule.** `deploy-all.sh` chains Phases
-1–6 (incl. 6b) but **NOT 6c, 6d, 7, or 8.** Terraform ships *placeholders* for
-things a push-triggered CI workflow normally publishes — the MOCK API Gateway
-body, a 503 broker Lambda stub, `:latest` image refs, the webhook Lambda zip. A
-fresh manual deploy fires none of those workflows, so `deploy-all.sh` alone
-leaves you **without working GitHub login, a first admin, or the agent path.**
-The stage-by-stage scripts (6c/6d/7/8) are the manual equivalents.
-deploy-quickstart.md sequences them — don't skip them.
+**Critical — the "placeholder artifact" rule.** Terraform ships *placeholders*
+for things a push-triggered CI workflow normally publishes — the MOCK API
+Gateway body, a 503 broker Lambda stub, `:latest` image refs, the webhook
+Lambda zip. A fresh manual deploy fires none of those workflows, so each
+placeholder must be replaced by its publish script. `deploy-all.sh` now chains
+Phases 1–7 (steps 1–10/11: incl. broker 6c, first-admin 6d, webhook stack 7);
+only GitHub App wiring (Phase 8/9) remains manual. When deploying
+module-by-module instead, the stage-by-stage scripts (6c/6d/7) are the manual
+equivalents — deploy-quickstart.md sequences them; don't skip them.
 
 `deploy-all.sh` flags: `--gateway-only` (no GitHub), `--agent-context-only`,
-`--skip-frontend`, `--local` (Docker instead of CodeBuild), `--destroy`.
+`--skip-frontend`, `--skip-broker`, `--skip-admin-bootstrap`,
+`--skip-webhook-ingress`, `--local` (Docker instead of CodeBuild), `--destroy`.
 
 ## Silent-failure gotchas — read these before the agent path
 

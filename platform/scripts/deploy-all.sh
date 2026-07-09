@@ -4,17 +4,23 @@ set -euo pipefail
 # =============================================================================
 # ADP — Deploy Everything
 # =============================================================================
-# Deploys the entire platform. Requires: AWS CLI, Terraform, Node.js, kubectl.
-# Docker builds use CodeBuild (4 Terraform-managed projects in
-# platform/infra/modules/codebuild/). Everything else runs directly.
+# Deploys the entire platform end-to-end (11 steps). Requires: AWS CLI,
+# Terraform, Node.js, kubectl. Docker builds use CodeBuild (4 Terraform-managed
+# projects in platform/infra/modules/codebuild/). Everything else runs directly.
+#
+# See docs/adp-platform-deployment/deploy-quickstart.md for the phase-by-phase
+# guide and troubleshooting.
 #
 # Usage:
-#   ./platform/scripts/deploy-all.sh                        # Deploy all modules
-#   ./platform/scripts/deploy-all.sh --gateway-only         # Platform + gateway only
-#   ./platform/scripts/deploy-all.sh --agent-context-only   # Platform + agent-context only
-#   ./platform/scripts/deploy-all.sh --destroy              # Tear down everything
-#   ./platform/scripts/deploy-all.sh --local                # Run everything locally (needs Terraform, Docker, Node, kubectl)
-#   ./platform/scripts/deploy-all.sh --ci                   # CI mode: validate outputs exist without re-applying
+#   ./platform/scripts/deploy-all.sh                            # Deploy all modules
+#   ./platform/scripts/deploy-all.sh --gateway-only             # Platform + gateway only
+#   ./platform/scripts/deploy-all.sh --agent-context-only       # Platform + agent-context only
+#   ./platform/scripts/deploy-all.sh --destroy                  # Tear down everything
+#   ./platform/scripts/deploy-all.sh --local                    # Run everything locally (needs Terraform, Docker, Node, kubectl)
+#   ./platform/scripts/deploy-all.sh --ci                       # CI mode: validate outputs exist without re-applying
+#   ./platform/scripts/deploy-all.sh --skip-broker              # Skip broker Lambda deploy (step 7)
+#   ./platform/scripts/deploy-all.sh --skip-admin-bootstrap     # Skip first-admin DB seeding (step 8)
+#   ./platform/scripts/deploy-all.sh --skip-webhook-ingress     # Skip webhook-ingress stack (step 10)
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,6 +42,9 @@ SKIP_AGENT_CONTEXT=false
 AGENT_CONTEXT_ENABLED="${AGENT_CONTEXT_ENABLED:-false}"
 DESTROY=false
 SKIP_FRONTEND=false
+SKIP_BROKER=false
+SKIP_ADMIN_BOOTSTRAP=false
+SKIP_WEBHOOK_INGRESS=false
 LOCAL_MODE=false
 CI_MODE=false
 
@@ -47,20 +56,31 @@ for arg in "$@"; do
     --skip-agent-context) SKIP_AGENT_CONTEXT=true ;;
     --destroy) DESTROY=true ;;
     --skip-frontend) SKIP_FRONTEND=true ;;
+    --skip-broker) SKIP_BROKER=true ;;
+    --skip-admin-bootstrap) SKIP_ADMIN_BOOTSTRAP=true ;;
+    --skip-webhook-ingress) SKIP_WEBHOOK_INGRESS=true ;;
     --local) LOCAL_MODE=true ;;
     --ci) CI_MODE=true ;;
     --help)
-      echo "Usage: $0 [--gateway-only] [--agent-factory-only] [--agent-context-only] [--skip-agent-context] [--skip-frontend] [--local] [--destroy]"
+      echo "Usage: $0 [OPTIONS]"
       echo ""
-      echo "  (default)              Deploy all modules (platform + gateway + agent-factory; agent-context if AGENT_CONTEXT_ENABLED=true)"
-      echo "  --gateway-only         Deploy platform + gateway only (skip agent-factory, agent-context)"
-      echo "  --agent-factory-only   Deploy platform + agent-factory only (skip gateway, agent-context)"
-      echo "  --agent-context-only   Deploy platform + agent-context only (skip gateway, agent-factory)"
-      echo "  --skip-agent-context   Skip agent-context even if AGENT_CONTEXT_ENABLED=true"
-      echo "  --skip-frontend        Skip frontend build and deploy"
-      echo "  --local                Use local Docker daemon for image builds (instead of CodeBuild)"
-      echo "  --ci                   CI mode: validate outputs exist without re-applying (use after GH Actions deploys)"
-      echo "  --destroy              Tear down all infrastructure"
+      echo "Scope flags:"
+      echo "  (default)                Deploy all modules (platform + gateway + agent-factory; agent-context if AGENT_CONTEXT_ENABLED=true)"
+      echo "  --gateway-only           Deploy platform + gateway only (skip agent-factory, webhook-ingress, agent-context)"
+      echo "  --agent-factory-only     Deploy platform + agent-factory only (skip gateway, agent-context)"
+      echo "  --agent-context-only     Deploy platform + agent-context only (skip gateway, agent-factory)"
+      echo ""
+      echo "Skip flags:"
+      echo "  --skip-agent-context     Skip agent-context even if AGENT_CONTEXT_ENABLED=true"
+      echo "  --skip-frontend          Skip frontend build and deploy (step 6)"
+      echo "  --skip-broker            Skip broker Lambda deploy (step 7). Use when enable_github_auth_broker=false"
+      echo "  --skip-admin-bootstrap   Skip first-admin DB seeding (step 8). Use on re-deploys where the admin already exists"
+      echo "  --skip-webhook-ingress   Skip webhook-ingress stack (step 10). Use when only gateway is needed but agent-factory infra is wanted"
+      echo ""
+      echo "Mode flags:"
+      echo "  --local                  Use local Docker daemon for image builds (instead of CodeBuild)"
+      echo "  --ci                     CI mode: validate outputs exist without re-applying (use after GH Actions deploys)"
+      echo "  --destroy                Tear down all infrastructure (LEGACY — prefer undeploy.sh)"
       exit 0
       ;;
   esac
@@ -469,7 +489,7 @@ fi
 # =============================================================================
 # Step 1: Bootstrap (always local — chicken-and-egg)
 # =============================================================================
-step "Step 1/6: Bootstrap Terraform state backend"
+step "Step 1/11: Bootstrap Terraform state backend"
 
 if aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null; then
   ok "State bucket exists: $STATE_BUCKET"
@@ -516,7 +536,7 @@ ok "Environment configs updated"
 # =============================================================================
 # Step 2: Platform infra
 # =============================================================================
-step "Step 2/6: Deploy shared platform (VPC, EKS, ECR, IAM)"
+step "Step 2/11: Deploy shared platform (VPC, EKS, ECR, IAM)"
 
 # Platform infra runs directly (Terraform + kubectl) — no CodeBuild needed.
 cd "$ROOT_DIR/platform/infra"
@@ -532,7 +552,7 @@ fi
 # =============================================================================
 # Step 3: Gateway infra
 # =============================================================================
-step "Step 3/6: Deploy gateway infrastructure"
+step "Step 3/11: Deploy gateway infrastructure"
 
 if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
   echo "Skipping gateway infra (--agent-factory-only or --agent-context-only)"
@@ -571,7 +591,7 @@ fi
 # =============================================================================
 # Step 4: Build + deploy gateway
 # =============================================================================
-step "Step 4/6: Build and deploy gateway"
+step "Step 4/11: Build and deploy gateway"
 
 if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
   echo "Skipping gateway deploy (--agent-factory-only or --agent-context-only)"
@@ -661,10 +681,10 @@ fi
 ok "Gateway deployed"
 
 # =============================================================================
-# Step 4b: Discover internal ALB and wire to API Gateway + CloudFront (Bug 3)
+# Step 5/11: Discover internal ALB and wire to API Gateway + CloudFront
 # =============================================================================
 if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
-  step "Step 4b/8: Wire internal ALB to API Gateway and CloudFront"
+  step "Step 5/11: Wire internal ALB to API Gateway and CloudFront"
 
   # Discover ALB, cache to SSM, export ALB_ARN / ALB_DNS / ALB_SG_IDS.
   # The shared script exits 1 if the ALB is not found after 10 min; in
@@ -704,7 +724,7 @@ fi
 # Step 5: Frontend
 # =============================================================================
 if [ "$SKIP_FRONTEND" = false ] && [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
-  step "Step 5/6: Deploy frontend"
+  step "Step 6/11: Deploy frontend"
 
   # Frontend build runs directly (npm + aws s3 sync) — no CodeBuild needed.
   cd "$ROOT_DIR/modules/gateway/frontend"
@@ -738,14 +758,53 @@ if [ "$SKIP_FRONTEND" = false ] && [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGEN
     warn "Frontend bucket not found in SSM"
   fi
 else
-  step "Step 5/6: Skipping frontend"
+  step "Step 6/11: Skipping frontend"
 fi
 
 # =============================================================================
-# Step 6: Agent Factory
+# Step 7/11: Broker Lambda code
+# =============================================================================
+# deploy-broker.sh packages the real github-auth-broker Lambda code and updates
+# the live Lambda (terraform ships a 503 placeholder). Required for GitHub login.
+# Gateway-scope: runs unless --agent-factory-only or --agent-context-only.
+if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_BROKER" = false ]; then
+  step "Step 7/11: Deploy broker Lambda code"
+  bash "$ROOT_DIR/modules/gateway/scripts/deploy-broker.sh" --env "$ENVIRONMENT" --region "$AWS_REGION"
+  ok "Broker Lambda deployed"
+elif [ "$SKIP_BROKER" = true ]; then
+  step "Step 7/11: Skipping broker Lambda (--skip-broker)"
+else
+  step "Step 7/11: Skipping broker Lambda (scope exclusion)"
+fi
+
+# =============================================================================
+# Step 8/11: Bootstrap first admin
+# =============================================================================
+# bootstrap-admin.sh seeds the first platform_admin's DB rows via kubectl exec.
+# Without it, the onboarding gate shows "request access" for everyone. Requires
+# the gateway pod to be healthy — we enforce a strict rollout gate here.
+# Gateway-scope: runs unless --agent-factory-only or --agent-context-only.
+if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_ADMIN_BOOTSTRAP" = false ]; then
+  step "Step 8/11: Bootstrap first admin"
+  # Strict rollout gate: bootstrap-admin.sh does kubectl exec into the gateway
+  # pod, so the deployment must be fully healthy. Wait up to 300s (retries).
+  echo "Waiting for gateway rollout to complete (required for admin bootstrap)..."
+  if ! kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s 2>/dev/null; then
+    fail "Gateway deployment not healthy after 300s. Cannot bootstrap admin (kubectl exec requires a running pod). Fix the gateway first, then re-run."
+  fi
+  bash "$ROOT_DIR/modules/gateway/scripts/bootstrap-admin.sh" --env "$ENVIRONMENT" --region "$AWS_REGION"
+  ok "First admin bootstrapped"
+elif [ "$SKIP_ADMIN_BOOTSTRAP" = true ]; then
+  step "Step 8/11: Skipping admin bootstrap (--skip-admin-bootstrap)"
+else
+  step "Step 8/11: Skipping admin bootstrap (scope exclusion)"
+fi
+
+# =============================================================================
+# Step 9/11: Agent Factory
 # =============================================================================
 if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
-  step "Step 6/8: Deploy agent-factory"
+  step "Step 9/11: Deploy agent-factory"
 
   # Agent factory infra runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/agent-factory/infra"
@@ -769,7 +828,7 @@ EOF
   ok "Agent-factory deployed"
 
   # --- Agent Gateway build + deploy (part of agent-factory) ---
-  step "Step 7/8: Build and deploy agent gateway"
+  step "Step 9b/11: Build and deploy agent gateway"
 
   # --- Docker build: use CodeBuild (needs privileged mode) or local Docker ---
   LOCAL_IMAGE_TAG="${IMAGE_TAG:-latest}"
@@ -811,11 +870,28 @@ EOF
 
   warn "Store GitHub App creds in Secrets Manager (see modules/agent-factory/SETUP-GUIDE.md)"
 else
-  step "Step 6/8: Skipping agent-factory"
+  step "Step 9/11: Skipping agent-factory"
 fi
 
 # =============================================================================
-# Step 8: Agent Context (optional — gated by AGENT_CONTEXT_ENABLED or --agent-context-only)
+# Step 10/11: Webhook-ingress stack
+# =============================================================================
+# deploy-webhook-ingress.sh builds the agent-runtime image, packages the webhook
+# Lambda zip, and terraform-applies the webhook-ingress stack (API GW → Lambda →
+# SQS → KEDA → agent-worker). Requires agent-factory infra (step 9) to exist.
+if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_WEBHOOK_INGRESS" = false ]; then
+  step "Step 10/11: Deploy webhook-ingress stack"
+  bash "$ROOT_DIR/modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh" \
+    --env "$ENVIRONMENT" --region "$AWS_REGION"
+  ok "Webhook-ingress deployed"
+elif [ "$SKIP_WEBHOOK_INGRESS" = true ]; then
+  step "Step 10/11: Skipping webhook-ingress (--skip-webhook-ingress)"
+else
+  step "Step 10/11: Skipping webhook-ingress (scope exclusion)"
+fi
+
+# =============================================================================
+# Step 11/11: Agent Context (optional — gated by AGENT_CONTEXT_ENABLED or --agent-context-only)
 # =============================================================================
 DEPLOY_AGENT_CONTEXT=false
 if [ "$AGENT_CONTEXT_ONLY" = true ]; then
@@ -827,7 +903,7 @@ elif [ "$AGENT_CONTEXT_ENABLED" = true ]; then
 fi
 
 if [ "$DEPLOY_AGENT_CONTEXT" = true ]; then
-  step "Step 8/8: Deploy agent-context"
+  step "Step 11/11: Deploy agent-context"
 
   # Agent context runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/agent-context/terraform"
@@ -848,7 +924,7 @@ EOF
   bash deploy.sh --skip-validate
   ok "Agent-context deployed"
 else
-  step "Step 8/8: Skipping agent-context (set AGENT_CONTEXT_ENABLED=true or use --agent-context-only)"
+  step "Step 11/11: Skipping agent-context (set AGENT_CONTEXT_ENABLED=true or use --agent-context-only)"
 fi
 
 # =============================================================================
@@ -864,6 +940,27 @@ CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-d
 [ "$GATEWAY_ONLY" = false ] && echo "Agents:    kubectl get pods -n arc-runners"
 [ "$DEPLOY_AGENT_CONTEXT" = true ] && echo "Context:   kubectl get pods -n agent-context"
 GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
-[ -n "$GW_WS" ] && [ "$GW_WS" != "" ] && echo "Gateway:   $GW_WS"
+[ -n "$GW_WS" ] && [ "$GW_WS" != "" ] && echo "AgentGW:   $GW_WS"
+
+# --- Next steps (manual — GitHub App wiring) ---
+if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+  echo ""
+  echo "━━━ Next steps (manual) ━━━"
+  echo "To complete the agent path, wire a GitHub App:"
+  if [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ]; then
+    echo "  1. Log in as platform_admin at https://${CF_DOMAIN}"
+  else
+    echo "  1. Log in as platform_admin"
+  fi
+  echo "     → Settings → Connections → 'Set up GitHub App'"
+  echo "  2. Or CLI fallback:"
+  echo "     modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env $ENVIRONMENT"
+  echo "  3. Install the App on target repo(s)"
+  echo "  4. Comment '@agent-developer <task>' on an issue to trigger an agent"
+  echo ""
+  echo "Admin credentials location: Secrets Manager → adp/$ENVIRONMENT/gateway/test-admin-credentials"
+fi
+
 echo ""
-echo "To destroy: $0 --destroy"
+echo "To destroy (legacy): $0 --destroy"
+echo "To destroy (recommended): ./platform/scripts/undeploy.sh"

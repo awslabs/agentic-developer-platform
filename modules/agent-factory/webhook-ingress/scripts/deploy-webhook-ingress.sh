@@ -5,8 +5,9 @@ set -euo pipefail
 # deploy-webhook-ingress.sh — Deploy the ARC-free webhook agent path
 # =============================================================================
 # The webhook-ingress stack (API Gateway → github-webhook Lambda → SQS FIFO →
-# KEDA ScaledJob → agent-worker pod) is NOT deployed by deploy-all.sh, and it
-# has two plan/runtime prerequisites that no other flow builds:
+# KEDA ScaledJob → agent-worker pod) is deployed by deploy-all.sh Step 10/11,
+# or run standalone. It has two plan/runtime prerequisites that no other flow
+# builds:
 #
 #   1. The agent-worker image (adp-agent-runtime) the KEDA ScaledJob runs.
 #      Terraform only references the :latest tag; it never validates it, so a

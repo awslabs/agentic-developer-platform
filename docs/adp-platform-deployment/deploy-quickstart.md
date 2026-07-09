@@ -851,10 +851,11 @@ and opens a PR (proves webhook → SQS → KEDA → worker → gateway → Bedro
 > (e.g. issue #1320). Same phase sequence, different execution mechanism; pick one
 > track per deploy, don't interleave.
 
-**`deploy-all.sh` shortcut (⚠️ unverified here):** chains bootstrap → preflight →
-platform infra → gateway infra → backend build → k8s deploy → frontend (incl. the
-two-pass ALB apply), i.e. Phases 1–6b. It does NOT do 6c/6d/7 or the human steps
-8/9 — run those stage-by-stage as above.
+**`deploy-all.sh` shortcut:** chains bootstrap → preflight → platform infra →
+gateway infra → backend build → k8s deploy → ALB wire → frontend → broker (6c) →
+admin bootstrap (6d) → agent-factory → webhook-ingress (7), i.e. Phases 1–7
+(steps 1–10/11 in the script). The only remaining manual step is GitHub App
+wiring (Phase 8/9) — the script prints next-steps guidance at the end.
 
 **Verify when done:**
 ```bash
