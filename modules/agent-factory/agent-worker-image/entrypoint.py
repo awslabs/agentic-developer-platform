@@ -22,6 +22,8 @@ import shutil
 import subprocess
 import sys
 import threading
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import boto3
@@ -286,6 +288,121 @@ def _upload_transcript_to_s3(
         return None
 
 
+# ---------------------------------------------------------------------------
+# GitLab Tier-A acknowledge path (Issue #3436)
+# ---------------------------------------------------------------------------
+# Minimal handler for GitLab-originated messages: posts an ack comment on the
+# source issue, creates a branch, and deletes the SQS message. Full agent
+# execution on GitLab repos (clone, code, MR) is deferred to Phase 1 (#3329).
+# ---------------------------------------------------------------------------
+
+
+def _handle_gitlab_mention(
+    envelope: dict,
+    queue_url: str,
+    region: str,
+    receipt_handle: str,
+) -> int:
+    """Handle a GitLab-originated mention: ack comment + branch create + delete msg.
+
+    Returns 0 on success, 1 on failure. Failures still delete the SQS message
+    to prevent FIFO head-of-line blocking (same contract as the poison guard).
+    """
+    payload = envelope.get("payload", {})
+    source = payload.get("source", {})
+    project_id = source.get("project_id")
+    issue_iid = source.get("issue_iid")
+    # URL precedence: envelope field is primary (self-describing message);
+    # GITLAB_URL env var is an optional break-glass override only.
+    gitlab_url = source.get("gitlab_url", "") or os.environ.get("GITLAB_URL", "")
+    persona = envelope.get("persona", "developer")
+    correlation = envelope.get("correlation", {})
+    correlation_id = correlation.get("correlation_id", "")
+
+    if not gitlab_url or not project_id or not issue_iid:
+        logger.error(
+            "GitLab path: missing required fields (gitlab_url=%s, project_id=%s, issue_iid=%s)",
+            gitlab_url,
+            project_id,
+            issue_iid,
+        )
+        _delete_message(queue_url, region, receipt_handle)
+        return 1
+
+    # Resolve GitLab API token from Secrets Manager.
+    # Single-tenant spike: token secret is adp/<env>/gitlab-api-token.
+    # Phase 1 (#3329) will resolve per-tenant tokens.
+    env_name = os.environ.get("ENVIRONMENT", os.environ.get("ENV", "dev"))
+    secret_name = f"adp/{env_name}/gitlab-api-token"
+    try:
+        sm = boto3.client("secretsmanager", region_name=region)
+        resp = sm.get_secret_value(SecretId=secret_name)
+        api_token = resp["SecretString"]
+    except Exception as exc:
+        logger.error("GitLab path: failed to read API token from %s: %s", secret_name, exc)
+        _delete_message(queue_url, region, receipt_handle)
+        return 1
+
+    # Strip trailing slash from URL for clean concatenation
+    base_url = gitlab_url.rstrip("/")
+    headers = {"PRIVATE-TOKEN": api_token, "Content-Type": "application/json"}
+
+    # 1. Post acknowledge comment on the source issue
+    ack_body = (
+        f"🤖 **Agent `{persona}` acknowledged** this mention.\n\n"
+        f"Correlation: `{correlation_id}`\n\n"
+        f"_Processing — Tier A acknowledge only (Phase 0 spike)._"
+    )
+    notes_url = f"{base_url}/api/v4/projects/{project_id}/issues/{issue_iid}/notes"
+    note_payload = json.dumps({"body": ack_body}).encode("utf-8")
+
+    ack_failed = False
+    try:
+        req = urllib.request.Request(notes_url, data=note_payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            logger.info(
+                "GitLab ack comment posted: project=%s issue=%s status=%s",
+                project_id,
+                issue_iid,
+                resp.status,
+            )
+    except Exception as exc:
+        logger.error("GitLab path: failed to post ack comment: %s", exc)
+        ack_failed = True
+
+    # 2. Create branch agent/issue-<iid> from default branch (idempotent)
+    branch_name = f"agent/issue-{issue_iid}"
+    branches_url = f"{base_url}/api/v4/projects/{project_id}/repository/branches"
+    branch_payload = json.dumps({"branch": branch_name, "ref": "main"}).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            branches_url, data=branch_payload, headers=headers, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            logger.info("GitLab branch created: %s (status=%s)", branch_name, resp.status)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 400:
+            # Branch already exists — expected idempotent case
+            logger.info("GitLab branch already exists: %s (400 tolerated)", branch_name)
+        else:
+            logger.error("GitLab path: failed to create branch: %s (status=%s)", exc, exc.code)
+    except Exception as exc:
+        logger.error("GitLab path: failed to create branch: %s", exc)
+
+    # 3. Delete the SQS message — always, to prevent FIFO jam
+    try:
+        _delete_message(queue_url, region, receipt_handle)
+        logger.info("GitLab message deleted successfully")
+    except Exception as exc:
+        logger.error("GitLab path: failed to delete SQS message: %s", exc)
+        return 1
+
+    # Return 1 if the ack comment failed (the primary deliverable of Tier A);
+    # the message is still deleted above to prevent FIFO jam.
+    return 1 if ack_failed else 0
+
+
 def main() -> int:
     queue_url = os.environ.get("QUEUE_URL")
     if not queue_url:
@@ -337,9 +454,28 @@ def main() -> int:
     arrived_at = envelope.get("arrived_at", "")
     actor = envelope.get("actor", {})
 
+    # Issue #3436: Provider detection — route GitLab messages to the lightweight
+    # acknowledge path before the poison guard fires. GitLab envelopes always
+    # have installation_id=0 (no GitHub App) so the guard would delete them.
+    provider = (envelope.get("payload") or {}).get("provider", "")
+    if provider == "gitlab":
+        logger.info(
+            "GitLab provider detected (message_id=%s, repo=%s, issue=%s). "
+            "Routing to GitLab acknowledge path.",
+            message_id,
+            repo,
+            issue,
+        )
+        bootstrap_log.step_success(
+            1, "parse_envelope", tenant_id=tenant_id, persona=persona, repo=repo, issue=issue
+        )
+        bootstrap_log.close()
+        return _handle_gitlab_mention(envelope, queue_url, region, receipt_handle)
+
     # Issue #2336: Defense-in-depth — if installation_id is 0/None/"0", the
     # token-mint will 404 deterministically. Delete the poison message to
-    # prevent FIFO head-of-line blocking and exit cleanly.
+    # prevent FIFO head-of-line blocking and exit cleanly. Only applies to
+    # GitHub-path messages (GitLab is routed above).
     if installation_id in (0, None, "0"):
         logger.error(
             "FATAL: installation_id=%r is invalid (message_id=%s, repo=%s, issue=%s). "
