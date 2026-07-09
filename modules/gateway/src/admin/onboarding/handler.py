@@ -252,9 +252,12 @@ async def _find_matching_tenants_for_user(
                         username=github_login,
                     )
                     if is_member:
+                        # Issue #2954: If this org is linked to a parent tenant,
+                        # resolve to the parent (attach-forward-only rule 3).
+                        resolved_org_id = org.parent_tenant_id or org.id
                         matched.append(
                             MatchedTenant(
-                                org_id=org.id,
+                                org_id=resolved_org_id,
                                 org_name=org.name,
                                 install_id=int(install_id),
                             )
@@ -271,7 +274,18 @@ async def _find_matching_tenants_for_user(
                     continue  # try next install / next org
     finally:
         await client.aclose()
-    return matched
+
+    # Issue #2954: Deduplicate by org_id — rule 3 can produce duplicates when a
+    # user belongs to both the parent org and a linked child (both resolve to the
+    # same parent_tenant_id). Without dedup, _create_memberships_for_matches
+    # would hit a UniqueConstraint violation on (user_id, tenant_id).
+    seen_ids: set[str] = set()
+    deduped: list[MatchedTenant] = []
+    for m in matched:
+        if m.org_id not in seen_ids:
+            seen_ids.add(m.org_id)
+            deduped.append(m)
+    return deduped
 
 
 async def _determine_role_for_matched_user(

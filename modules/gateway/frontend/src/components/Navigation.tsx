@@ -104,6 +104,11 @@ export function Navigation() {
     navItems.push({ to: '/admin/indexing', label: 'Indexing Status', icon: '🔍' });
   }
 
+  // Tenant Org Links page for platform admins (Issue #2954)
+  if (isPlatformAdmin()) {
+    navItems.push({ to: '/admin/tenant-links', label: 'Tenant Org Links', icon: '🏢' });
+  }
+
   return (
     <nav className="flex flex-col gap-1" aria-label="Main navigation">
       {navItems.map((item) => (

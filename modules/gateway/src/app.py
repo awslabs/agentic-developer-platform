@@ -34,6 +34,7 @@ UNIT_MODULES = [
     "src.admin.routes",
     "src.admin.identity.router",
     "src.admin.connections.routes",  # Issue #465: GitHub App install + connections
+    "src.admin.tenants.routes",  # Issue #2954: Multi-org-to-tenant linking (rule 3)
     "src.admin.onboarding.handler",  # Issue #538: Self-serve onboarding flow
     "src.pool.routes",
     "src.budget.routes",
