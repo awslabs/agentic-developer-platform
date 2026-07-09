@@ -96,9 +96,22 @@ def _poll_sqs_for_gitlab_message(
                 body.get("channel") == "gitlab"
                 and body.get("payload", {}).get("source", {}).get("project_path") == project_path
             ):
-                # Clean up the message
-                sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=msg["ReceiptHandle"])
+                # PEEK only — release the message back to the queue immediately.
+                # Deleting (or holding) it here steals the dispatch from the
+                # agent worker and the round-trip assertion below can never
+                # pass (self-defeating race; found live 2026-07-09).
+                sqs_client.change_message_visibility(
+                    QueueUrl=queue_url,
+                    ReceiptHandle=msg["ReceiptHandle"],
+                    VisibilityTimeout=0,
+                )
                 return body
+            # Not ours — release it for the real consumer too
+            sqs_client.change_message_visibility(
+                QueueUrl=queue_url,
+                ReceiptHandle=msg["ReceiptHandle"],
+                VisibilityTimeout=0,
+            )
         # nosemgrep: arbitrary-sleep — polling interval in deadline-bounded loop
         time.sleep(1.0)
     return None
@@ -204,13 +217,18 @@ class TestGitLabRoundTrip:
             body = resp.json()
             assert body.get("status") == "accepted", f"Webhook not accepted: {body}"
 
-            # 4. Verify SQS received the message
+            # 4. Best-effort SQS observation. The agent worker (KEDA ScaledJob)
+            # competes on the same queue and usually wins the receive — that is
+            # the success path, not a failure. SQS publish is already proven by
+            # the webhook's 200 {"status": "accepted", "message_id": ...} above;
+            # the authoritative end-to-end assertion is the agent comment in
+            # step 5.
             sqs_msg = _poll_sqs_for_gitlab_message(
-                self.sqs_client, self.sqs_queue_url, self.project_path, timeout=15
+                self.sqs_client, self.sqs_queue_url, self.project_path, timeout=5
             )
-            assert sqs_msg is not None, "No GitLab message found in SQS within 15s"
-            assert sqs_msg["channel"] == "gitlab"
-            assert sqs_msg["payload"]["source"]["issue_iid"] == issue_iid
+            if sqs_msg is not None:
+                assert sqs_msg["channel"] == "gitlab"
+                assert sqs_msg["payload"]["source"]["issue_iid"] == issue_iid
 
             # 5. Poll GitLab for agent response comment (timeout: 60s)
             agent_comment = _poll_gitlab_for_comment(
