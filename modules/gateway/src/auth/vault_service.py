@@ -18,6 +18,7 @@ import asyncio
 import logging
 
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.vault import UserCredential, UserIdentity
@@ -48,6 +49,10 @@ class InsufficientPrivilegesError(Exception):
 
 class InvalidScopeConfigError(Exception):
     """Request is missing required scope-specific fields (→ 422)."""
+
+
+class DuplicateCredentialError(Exception):
+    """A credential with this (scope, service, label) already exists (→ 409)."""
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +239,19 @@ async def create_credential(
         strict=data.strict,
     )
     db.add(cred)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        # SM secret was already created — delete it to prevent orphaned secrets (F2)
+        try:
+            await asyncio.to_thread(sm.delete_secret, secret_arn)
+        except Exception:
+            logger.exception(
+                "Failed to delete orphaned SM secret %s after duplicate credential attempt",
+                secret_arn,
+            )
+        raise DuplicateCredentialError(f"A credential with service={data.service!r} label={data.label!r} already exists")
     await db.refresh(cred)
 
     logger.info(

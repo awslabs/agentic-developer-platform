@@ -50,6 +50,7 @@ from .middleware import get_current_user_context
 from .vault_schemas import VALID_SCOPES, CredentialCreate, CredentialResponse, CredentialUpdate, IdentityResponse
 from .vault_service import (
     CredentialNotFoundError,
+    DuplicateCredentialError,
     IdentityNotFoundError,
     InsufficientPrivilegesError,
     InvalidScopeConfigError,
@@ -152,6 +153,16 @@ async def create_credential_endpoint(
         raise HTTPException(status_code=403, detail={"error": "insufficient_privileges", "message": str(exc)})
     except InvalidScopeConfigError as exc:
         raise HTTPException(status_code=422, detail={"error": "invalid_scope_config", "message": str(exc)})
+    except DuplicateCredentialError:
+        # Service layer already cleaned up the orphaned SM secret (F2) and
+        # rolled back the DB session.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "duplicate_credential",
+                "message": "A credential with this service and label already exists. Delete it first to re-register.",
+            },
+        )
     except Exception:
         logger.exception("Unexpected error creating credential for user=%s", token_context.user_id)
         raise HTTPException(status_code=500, detail={"error": "create_failed", "message": "Failed to create credential"})
