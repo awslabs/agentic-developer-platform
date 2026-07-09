@@ -24,3 +24,10 @@ enable_agent_otel = true
 # live here re-declared those keys and fought default_tags, so it was removed
 # (#888). Resource-level `merge(var.tags, {...})` callers still work — var.tags
 # defaults to {} in variables.tf.
+
+# Issue #3436 / GitLab Phase 0 (#3320): keep the GitLab webhook route + Lambda
+# deployed. This was enabled ad-hoc during the Phase 0 delivery loop but never
+# committed, so subsequent applies (default=false) destroyed /gitlab and its
+# Lambda — silently breaking GitLab dispatch. dev == embark1 spike environment;
+# envs without a GitLab instance override this to false in their own tfvars.
+gitlab_webhook_enabled = true
