@@ -1682,6 +1682,241 @@ async def register_app_callback(
     return "/settings/connections?github_app=registered&login_enabled=false"
 
 
+# ---------------------------------------------------------------------------
+# Manual registration (Issue #3360)
+# ---------------------------------------------------------------------------
+
+
+def _normalize_pem(raw: str) -> str:
+    """Normalize a PEM private key — handle escaped \\n and whitespace.
+
+    Accepts both:
+      - Real newlines (copy-pasted from a .pem file)
+      - Escaped \\n literals (from .env files, JSON, or single-line paste)
+
+    Returns the PEM with real newlines and no trailing whitespace.
+    """
+    # Replace escaped \n (literal two chars) with real newline
+    normalized = raw.replace("\\n", "\n")
+    # Collapse any \r\n from Windows pastes
+    normalized = normalized.replace("\r\n", "\n")
+    # Trim trailing whitespace/newlines
+    normalized = normalized.strip()
+    # Ensure trailing newline (PEM convention)
+    if not normalized.endswith("\n"):
+        normalized += "\n"
+    return normalized
+
+
+async def register_app_manual(
+    *,
+    app_id: str,
+    private_key: str,
+    webhook_secret: str = "",
+    client_id: str = "",
+    client_secret: str = "",
+) -> dict:
+    """Import an existing GitHub App by validating credentials and storing them.
+
+    Issue #3360: Manual registration path for admins who already have a GitHub
+    App (created outside ADP, or migrating from another deployment).
+
+    Steps:
+      1. Normalize the PEM key.
+      2. Mint a JWT and call GET /app to validate credentials.
+      3. Check deployment configuration (webhook URL, permissions, events).
+      4. Store via _store_app_credentials (same as callback path).
+      5. Invalidate caches.
+
+    Returns a dict with: registered, app_id, app_slug, app_name, login_enabled, warnings.
+
+    Raises:
+        HTTPException(400) — invalid PEM or mismatched app_id/key
+    """
+    import jwt as pyjwt
+
+    from .github_client import _mint_app_jwt
+
+    warnings: list[str] = []
+
+    # 1. Normalize PEM
+    pem = _normalize_pem(private_key)
+
+    # 2. Validate credentials: mint a single JWT and call GET /app
+    try:
+        token = _mint_app_jwt(app_id, pem)
+    except (ValueError, TypeError, pyjwt.exceptions.PyJWTError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid private key: could not encode JWT. {exc}",
+        ) from exc
+
+    # Call GET /app to verify the app_id + key pair
+    app_slug = ""
+    app_name = ""
+    app_permissions: dict = {}
+    app_events: list[str] = []
+    app_webhook_url = ""
+
+    _auth_headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                "https://api.github.com/app",
+                headers=_auth_headers,
+            )
+
+            if resp.status_code == 401:
+                raise HTTPException(
+                    status_code=400,
+                    detail="App ID and private key don't match. GitHub returned 401 Unauthorized.",
+                )
+            if resp.status_code != 200:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"GitHub API returned {resp.status_code} when validating App credentials.",
+                )
+
+            data = resp.json()
+            app_slug = data.get("slug", "")
+            app_name = data.get("name", "")
+            app_permissions = data.get("permissions", {})
+            app_events = data.get("events", [])
+
+            # Fetch webhook config from the dedicated endpoint (GET /app
+            # does NOT include webhook URL — it lives at GET /app/hook/config).
+            try:
+                hook_resp = await client.get(
+                    "https://api.github.com/app/hook/config",
+                    headers=_auth_headers,
+                )
+                if hook_resp.status_code == 200:
+                    hook_data = hook_resp.json()
+                    app_webhook_url = hook_data.get("url", "")
+            except Exception as hook_exc:
+                logger.debug("Could not fetch /app/hook/config: %s", hook_exc)
+
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach GitHub API to validate App credentials: {exc}",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to validate App credentials against GitHub: {exc}",
+        ) from exc
+
+    # 3. Non-blocking configuration verification
+    # 3a. Webhook URL check
+    expected_webhook_url = os.environ.get("WEBHOOK_URL", "")
+    if not expected_webhook_url:
+        try:
+            import boto3
+
+            env = _get_environment()
+            region = os.environ.get("AWS_REGION", "us-east-1")
+            ssm = boto3.client("ssm", region_name=region)
+            param = ssm.get_parameter(Name=f"/adp/{env}/webhook-ingress/endpoint")
+            expected_webhook_url = param["Parameter"]["Value"]
+        except Exception:
+            pass
+
+    if expected_webhook_url and app_webhook_url:
+        if app_webhook_url != expected_webhook_url:
+            warnings.append(
+                f"Webhook URL mismatch: App has '{app_webhook_url}', "
+                f"deployment expects '{expected_webhook_url}'. "
+                "Update the App's webhook URL in GitHub Settings to receive events."
+            )
+    elif expected_webhook_url and not app_webhook_url:
+        warnings.append(f"Could not verify webhook URL from GitHub API response. Ensure the App's webhook points to: {expected_webhook_url}")
+
+    # 3b. Permissions check
+    expected_permissions = {
+        "contents": "write",
+        "issues": "write",
+        "pull_requests": "write",
+        "checks": "write",
+        "metadata": "read",
+    }
+    missing_perms = []
+    for perm, level in expected_permissions.items():
+        actual = app_permissions.get(perm, "")
+        if not actual:
+            missing_perms.append(f"{perm}: {level}")
+        elif level == "write" and actual == "read":
+            missing_perms.append(f"{perm}: needs 'write', has 'read'")
+    if missing_perms:
+        warnings.append("Missing or insufficient permissions: " + ", ".join(missing_perms) + ". Update in GitHub App Settings → Permissions.")
+
+    # 3c. Events check
+    expected_events = {
+        "issues",
+        "issue_comment",
+        "pull_request",
+        "pull_request_review",
+        "pull_request_review_comment",
+        "label",
+    }
+    missing_events = expected_events - set(app_events)
+    if missing_events:
+        warnings.append(
+            "Missing event subscriptions: " + ", ".join(sorted(missing_events)) + ". Enable in GitHub App Settings → Subscribe to events."
+        )
+
+    # 3d. OAuth credentials warning
+    if not client_id or not client_secret:
+        warnings.append(
+            "OAuth credentials (client_id/client_secret) not provided. "
+            "'Sign in with GitHub' will not work until these are configured. "
+            "Find them in the App's settings under 'Client secrets'."
+        )
+
+    # 4. Store credentials via the shared helper
+    store_result = await _store_app_credentials(
+        app_id=app_id,
+        app_slug=app_slug,
+        pem=pem,
+        client_id=client_id,
+        client_secret=client_secret,
+        webhook_secret=webhook_secret,
+    )
+
+    # login_enabled is true only when OAuth credentials were actually provided
+    # AND the store succeeded. _store_app_credentials returns True even when
+    # nothing was written (defensive branch), so we must gate on the inputs.
+    login_enabled = bool(client_id and client_secret) and store_result
+
+    # 5. Invalidate caches
+    get_github_app_provider().invalidate()
+    _invalidate_login_enabled_cache()
+
+    logger.info(
+        "register-app-manual: App imported successfully id=%s slug=%s login_enabled=%s warnings=%d",
+        app_id,
+        app_slug,
+        login_enabled,
+        len(warnings),
+    )
+
+    return {
+        "registered": True,
+        "app_id": app_id,
+        "app_slug": app_slug,
+        "app_name": app_name,
+        "login_enabled": login_enabled,
+        "warnings": warnings,
+    }
+
+
 async def _store_app_credentials(
     *,
     app_id: str,
@@ -1732,13 +1967,27 @@ async def _store_app_credentials(
         per_app_key_path = f"adp/{env}/github-app/{app_slug}-key" if app_slug else None
         per_app_meta_path = f"adp/{env}/github-app/{app_slug}-meta" if app_slug else None
 
+        # Issue #3360: When optional fields (webhook_secret, client_id,
+        # client_secret) are empty, merge with existing meta blob rather than
+        # overwriting with blanks. This preserves values written by a prior
+        # registration or manual setup.
+        existing_meta: dict[str, str] = {}
+        if not webhook_secret or not client_id or not client_secret:
+            try:
+                existing_resp = sm.get_secret_value(SecretId=meta_path)
+                existing_raw = existing_resp.get("SecretString", "")
+                if existing_raw:
+                    existing_meta = json.loads(existing_raw)
+            except Exception:
+                pass  # No existing meta or unreadable — proceed with empty
+
         meta_payload = json.dumps(
             {
                 "app_id": app_id,
                 "app_slug": app_slug,
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "webhook_secret": webhook_secret,
+                "client_id": client_id or existing_meta.get("client_id", ""),
+                "client_secret": client_secret or existing_meta.get("client_secret", ""),
+                "webhook_secret": webhook_secret or existing_meta.get("webhook_secret", ""),
             }
         )
 

@@ -14,7 +14,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { type GitHubConnectionItem } from '@/services/connections';
-import type { AppStatusResponse } from '@/services/connections';
+import type { AppStatusResponse, RegisterManualResponse } from '@/services/connections';
 import { InstallationCard } from './InstallationCard';
 
 interface GitHubTileProps {
@@ -37,6 +37,14 @@ interface GitHubTileProps {
   onDisconnectApp: () => Promise<void>;
   /** Issue #3071: Called to switch the active workspace (tenant). */
   onSwitchTenant?: (tenantId: string) => Promise<void>;
+  /** Issue #3360: Called when admin manually registers an existing App. */
+  onRegisterManual?: (data: {
+    app_id: string;
+    private_key: string;
+    webhook_secret?: string;
+    client_id?: string;
+    client_secret?: string;
+  }) => Promise<RegisterManualResponse>;
 }
 
 export function GitHubTile({
@@ -52,6 +60,7 @@ export function GitHubTile({
   onRotateKey,
   onDisconnectApp,
   onSwitchTenant,
+  onRegisterManual,
 }: GitHubTileProps) {
   // For non-platform-admins, appStatus is null (they can't call the status endpoint).
   // In that case, assume registered so the existing install UI is shown.
@@ -130,7 +139,12 @@ export function GitHubTile({
       ) : !isRegistered ? (
         // --- Unregistered state ---
         isPlatformAdmin ? (
-          <RegistrationForm onRegister={onRegister} />
+          <div className="space-y-4">
+            <RegistrationForm onRegister={onRegister} />
+            {onRegisterManual && (
+              <ManualRegistrationForm onRegisterManual={onRegisterManual} />
+            )}
+          </div>
         ) : (
           <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-900/20">
             <p className="text-sm text-amber-800 dark:text-amber-200">
@@ -488,6 +502,213 @@ function AppInfoPanel({
             {confirmDisconnect ? 'Confirm disconnect?' : 'Disconnect app'}
           </Button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ManualRegistrationForm — connect an existing App (Issue #3360)
+// ---------------------------------------------------------------------------
+
+function ManualRegistrationForm({
+  onRegisterManual,
+}: {
+  onRegisterManual: (data: {
+    app_id: string;
+    private_key: string;
+    webhook_secret?: string;
+    client_id?: string;
+    client_secret?: string;
+  }) => Promise<RegisterManualResponse>;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [appId, setAppId] = useState('');
+  const [privateKey, setPrivateKey] = useState('');
+  const [webhookSecret, setWebhookSecret] = useState('');
+  const [oauthClientId, setOauthClientId] = useState('');
+  const [oauthClientSecret, setOauthClientSecret] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const canSubmit = appId.trim().length > 0 && privateKey.trim().length > 0;
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setIsSubmitting(true);
+    setError('');
+    try {
+      await onRegisterManual({
+        app_id: appId.trim(),
+        private_key: privateKey,
+        webhook_secret: webhookSecret.trim() || undefined,
+        client_id: oauthClientId.trim() || undefined,
+        client_secret: oauthClientSecret.trim() || undefined,
+      });
+      // Warnings are lifted to page level by the parent handler;
+      // the form will unmount on successful registration (status refetch).
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to register App';
+      setError(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (!isExpanded) {
+    return (
+      <div className="mt-2">
+        <button
+          type="button"
+          onClick={() => setIsExpanded(true)}
+          className="text-sm font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+          data-testid="expand-manual-register"
+        >
+          Connect an existing App &rarr;
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-4 space-y-4" data-testid="manual-register-form">
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+            Connect an existing GitHub App
+          </p>
+          <button
+            type="button"
+            onClick={() => setIsExpanded(false)}
+            className="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+            aria-label="Collapse"
+          >
+            &times;
+          </button>
+        </div>
+        <p className="mb-4 text-xs text-gray-500 dark:text-gray-400">
+          Paste credentials from an existing GitHub App. The App ID and private key
+          will be validated against GitHub before storing.
+        </p>
+
+        {/* App ID */}
+        <div className="mb-3">
+          <label
+            htmlFor="manual-app-id"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            App ID <span className="text-red-500">*</span>
+          </label>
+          <input
+            id="manual-app-id"
+            type="text"
+            inputMode="numeric"
+            value={appId}
+            onChange={(e) => setAppId(e.target.value.replace(/\D/g, ''))}
+            placeholder="123456"
+            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+            data-testid="manual-app-id-input"
+          />
+        </div>
+
+        {/* Private Key */}
+        <div className="mb-3">
+          <label
+            htmlFor="manual-private-key"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            Private Key (PEM) <span className="text-red-500">*</span>
+          </label>
+          <textarea
+            id="manual-private-key"
+            value={privateKey}
+            onChange={(e) => setPrivateKey(e.target.value)}
+            placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"
+            rows={4}
+            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 font-mono text-xs shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+            data-testid="manual-private-key-input"
+          />
+        </div>
+
+        {/* Webhook Secret (optional) */}
+        <div className="mb-3">
+          <label
+            htmlFor="manual-webhook-secret"
+            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            Webhook Secret <span className="text-xs font-normal text-gray-400">(optional)</span>
+          </label>
+          <input
+            id="manual-webhook-secret"
+            type="password"
+            value={webhookSecret}
+            onChange={(e) => setWebhookSecret(e.target.value)}
+            placeholder="whsec_..."
+            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+            data-testid="manual-webhook-secret-input"
+          />
+        </div>
+
+        {/* OAuth credentials (optional) */}
+        <details className="mb-3">
+          <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-300">
+            OAuth credentials <span className="text-xs font-normal text-gray-400">(optional — for &ldquo;Sign in with GitHub&rdquo;)</span>
+          </summary>
+          <div className="mt-2 space-y-3 pl-2">
+            <div>
+              <label
+                htmlFor="manual-oauth-client-id"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              >
+                Client ID
+              </label>
+              <input
+                id="manual-oauth-client-id"
+                type="text"
+                value={oauthClientId}
+                onChange={(e) => setOauthClientId(e.target.value)}
+                placeholder="Iv1.abc123..."
+                className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                data-testid="manual-oauth-client-id-input"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="manual-oauth-client-secret"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              >
+                Client Secret
+              </label>
+              <input
+                id="manual-oauth-client-secret"
+                type="password"
+                value={oauthClientSecret}
+                onChange={(e) => setOauthClientSecret(e.target.value)}
+                placeholder="secret_..."
+                className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                data-testid="manual-oauth-client-secret-input"
+              />
+            </div>
+          </div>
+        </details>
+
+        {/* Error */}
+        {error && (
+          <div className="mb-3 rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-700 dark:bg-red-900/20" data-testid="manual-register-error">
+            <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
+          </div>
+        )}
+
+        {/* Submit */}
+        <Button
+          onClick={handleSubmit}
+          disabled={!canSubmit || isSubmitting}
+          isLoading={isSubmitting}
+          variant="primary"
+          size="md"
+        >
+          {isSubmitting ? 'Validating & storing…' : 'Connect App'}
+        </Button>
       </div>
     </div>
   );

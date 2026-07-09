@@ -3,6 +3,7 @@
 Issue #465: GitHub App install + connection management.
 Issue #2593: Platform-admin GitHub App registration via manifest conversion flow.
 Issue #2595: GitHub App lifecycle endpoints (status, rotate-key, disconnect).
+Issue #3360: Manual GitHub App registration (import existing App).
 
 Endpoints:
     POST   /admin/connections/github/install-start
@@ -11,6 +12,7 @@ Endpoints:
     DELETE /admin/connections/github/{installation_id}
     POST   /admin/connections/github/app/register-start    (platform_admin only)
     GET    /admin/connections/github/app/register-callback  (platform_admin via state nonce)
+    POST   /admin/connections/github/app/register-manual   (platform_admin only)
     GET    /admin/connections/github/app/status             (platform_admin only)
     POST   /admin/connections/github/app/rotate-key         (platform_admin only)
     POST   /admin/connections/github/app/disconnect         (platform_admin only)
@@ -46,6 +48,8 @@ from .schemas import (
     InstallStartResponse,
     RegisterAppStartRequest,
     RegisterAppStartResponse,
+    RegisterManualRequest,
+    RegisterManualResponse,
     RotateKeyResponse,
     SwitchTenantRequest,
     SwitchTenantResponse,
@@ -58,6 +62,7 @@ from .service import (
     install_start,
     list_connections,
     register_app_callback,
+    register_app_manual,
     register_app_start,
     rotate_app_key,
 )
@@ -518,6 +523,46 @@ async def github_app_register_callback(
     except Exception as exc:
         logger.error("register-app-callback unexpected error: %s", exc)
         return _redirect_error("internal_error", "An unexpected error occurred during App registration.")
+
+
+# ---------------------------------------------------------------------------
+# Manual GitHub App registration (Issue #3360)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/github/app/register-manual", response_model=RegisterManualResponse)
+async def github_app_register_manual(
+    body: RegisterManualRequest,
+    current_user: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
+) -> RegisterManualResponse:
+    """Import an existing GitHub App by providing its credentials.
+
+    Platform-admin only. Validates the App ID + private key against GitHub,
+    stores credentials, and returns non-blocking configuration warnings.
+    """
+    try:
+        access.require_platform_admin(current_user)
+    except AccessDeniedError:
+        raise HTTPException(
+            status_code=403,
+            detail="Platform administrator privileges required",
+        )
+
+    try:
+        result = await register_app_manual(
+            app_id=body.app_id,
+            private_key=body.private_key,
+            webhook_secret=body.webhook_secret,
+            client_id=body.client_id,
+            client_secret=body.client_secret,
+        )
+        return RegisterManualResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("register-app-manual failed for user=%s: %s", current_user.user_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to register GitHub App") from exc
 
 
 # ---------------------------------------------------------------------------

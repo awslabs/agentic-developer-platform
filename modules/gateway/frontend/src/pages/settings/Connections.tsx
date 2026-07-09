@@ -24,12 +24,14 @@ import {
   disconnectGitHubApp,
   getGitHubAppStatus,
   listConnections,
+  registerManualGitHubApp,
   rotateGitHubAppKey,
   startGitHubAppRegistration,
   startGitHubInstall,
   switchTenant,
   type AppStatusResponse,
   type GitHubConnectionItem,
+  type RegisterManualResponse,
 } from "@/services/connections";
 import { GitHubTile } from "./components/GitHubTile";
 
@@ -55,6 +57,9 @@ export default function Connections() {
     installed: string;
     switchedFrom: string;
   } | null>(null);
+  // Issue #3360: Lift manual registration warnings to page level so they
+  // survive the status refetch that unmounts the form.
+  const [manualRegWarnings, setManualRegWarnings] = useState<string[]>([]);
 
   // -------------------------------------------------------------------------
   // Load connections + app status
@@ -271,6 +276,30 @@ export default function Connections() {
   };
 
   // -------------------------------------------------------------------------
+  // Manual registration handler (Issue #3360)
+  // -------------------------------------------------------------------------
+
+  const handleRegisterManual = async (data: {
+    app_id: string;
+    private_key: string;
+    webhook_secret?: string;
+    client_id?: string;
+    client_secret?: string;
+  }): Promise<RegisterManualResponse> => {
+    const result = await registerManualGitHubApp(data);
+    // Lift warnings to page level BEFORE refetching status, so they survive
+    // the form unmount that happens when status shows the App as registered.
+    if (result.warnings?.length) {
+      setManualRegWarnings(result.warnings);
+    }
+    if (result.registered) {
+      toast.success("GitHub App connected successfully!");
+      await loadAppStatus();
+    }
+    return result;
+  };
+
+  // -------------------------------------------------------------------------
   // Issue #3072: Switch-back handler for auto-switch banner
   // -------------------------------------------------------------------------
 
@@ -352,6 +381,30 @@ export default function Connections() {
         </div>
       )}
 
+      {/* Issue #3360: Page-level warnings from manual registration */}
+      {manualRegWarnings.length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-700 dark:bg-amber-900/20">
+          <div className="flex items-start justify-between">
+            <p className="mb-2 text-sm font-medium text-amber-800 dark:text-amber-200">
+              Configuration warnings
+            </p>
+            <button
+              type="button"
+              onClick={() => setManualRegWarnings([])}
+              className="text-sm text-amber-600 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-200"
+              aria-label="Dismiss warnings"
+            >
+              &times;
+            </button>
+          </div>
+          <ul className="list-inside list-disc space-y-1 text-xs text-amber-700 dark:text-amber-300">
+            {manualRegWarnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* GitHub section */}
       <div className="space-y-6">
         <GitHubTile
@@ -367,6 +420,7 @@ export default function Connections() {
           onRotateKey={handleRotateKey}
           onDisconnectApp={handleDisconnectApp}
           onSwitchTenant={handleSwitchTenant}
+          onRegisterManual={isPlatformAdmin ? handleRegisterManual : undefined}
         />
 
         {/* Future integrations — placeholder tiles */}
