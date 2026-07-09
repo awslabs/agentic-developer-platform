@@ -154,6 +154,40 @@ EKS_CLUSTER="adp-${ENVIRONMENT}-eks-cluster"
 CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
 
 # =============================================================================
+# Helper: refresh AWS credentials (cross-account / short-lived sessions)
+# =============================================================================
+# Issue #3424: In ADP-managed mode the gateway vault may issue short-lived STS
+# credentials. This helper re-runs the assume to get fresh creds. Called before
+# each step to avoid mid-operation expiry. No-op in self-managed mode (direct
+# creds don't expire within a single deploy run).
+_ASSUME_SCRIPT="${SCRIPT_DIR}/assume-customer-creds.py"
+_CRED_REFRESH_INTERVAL=300  # seconds — refresh if creds are older than this
+_CRED_LAST_REFRESH=${EPOCHSECONDS:-$(date +%s)}
+refresh_credentials() {
+  # Skip if not in cross-account mode or assume script missing
+  if [ -z "${ADP_CUSTOMER_ACCOUNT_ID:-}" ] || [ ! -x "$_ASSUME_SCRIPT" ]; then
+    return 0
+  fi
+  local NOW=${EPOCHSECONDS:-$(date +%s)}
+  local ELAPSED=$((NOW - _CRED_LAST_REFRESH))
+  if [ "$ELAPSED" -lt "$_CRED_REFRESH_INTERVAL" ] && [ "${1:-}" != "--force" ]; then
+    return 0
+  fi
+  local _OUTPUT
+  _OUTPUT=$("$_ASSUME_SCRIPT" 2>&1 >/tmp/.deploy-creds.$$) || {
+    warn "Credential refresh failed: $_OUTPUT"
+    rm -f /tmp/.deploy-creds.$$
+    return 1
+  }
+  if [ -s /tmp/.deploy-creds.$$ ]; then
+    # shellcheck disable=SC1090
+    . /tmp/.deploy-creds.$$
+  fi
+  rm -f /tmp/.deploy-creds.$$
+  _CRED_LAST_REFRESH=${EPOCHSECONDS:-$(date +%s)}
+}
+
+# =============================================================================
 # Helper: check if the webhook-secrets KMS alias exists
 # =============================================================================
 # Issue #3419: The enable_webhook_secrets_kms_grant flag in gateway.tfvars
@@ -506,6 +540,7 @@ fi
 # =============================================================================
 # Step 1: Bootstrap (always local — chicken-and-egg)
 # =============================================================================
+refresh_credentials
 step "Step 1/11: Bootstrap Terraform state backend"
 
 if aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null; then
@@ -550,6 +585,7 @@ ok "Environment configs updated"
 # kubectl apply) now runs directly — no CodeBuild needed.
 # =============================================================================
 
+refresh_credentials
 # =============================================================================
 # Step 2: Platform infra
 # =============================================================================
@@ -566,6 +602,7 @@ if command -v kubectl >/dev/null 2>&1; then
   aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" 2>/dev/null || true
 fi
 
+refresh_credentials
 # =============================================================================
 # Step 3: Gateway infra
 # =============================================================================
@@ -616,6 +653,7 @@ else
   ok "Gateway infrastructure deployed (enable_webhook_secrets_kms_grant=$KMS_GRANT)"
 fi
 
+refresh_credentials
 # =============================================================================
 # Step 4: Build + deploy gateway
 # =============================================================================
@@ -708,6 +746,7 @@ else
 fi
 ok "Gateway deployed"
 
+refresh_credentials
 # =============================================================================
 # Step 5/11: Discover internal ALB and wire to API Gateway + CloudFront
 # =============================================================================
@@ -751,6 +790,7 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
   fi
 fi
 
+refresh_credentials
 # =============================================================================
 # Step 5: Frontend
 # =============================================================================
@@ -792,6 +832,7 @@ else
   step "Step 6/11: Skipping frontend"
 fi
 
+refresh_credentials
 # =============================================================================
 # Step 7/11: Broker Lambda code
 # =============================================================================
@@ -808,6 +849,7 @@ else
   step "Step 7/11: Skipping broker Lambda (scope exclusion)"
 fi
 
+refresh_credentials
 # =============================================================================
 # Step 8/11: Bootstrap first admin
 # =============================================================================
@@ -831,6 +873,7 @@ else
   step "Step 8/11: Skipping admin bootstrap (scope exclusion)"
 fi
 
+refresh_credentials
 # =============================================================================
 # Step 9/11: Agent Factory
 # =============================================================================
@@ -904,6 +947,7 @@ else
   step "Step 9/11: Skipping agent-factory"
 fi
 
+refresh_credentials
 # =============================================================================
 # Step 10/11: Webhook-ingress stack
 # =============================================================================
@@ -921,6 +965,7 @@ else
   step "Step 10/11: Skipping webhook-ingress (scope exclusion)"
 fi
 
+refresh_credentials
 # =============================================================================
 # Step 11/11: Agent Context (optional — gated by AGENT_CONTEXT_ENABLED or --agent-context-only)
 # =============================================================================

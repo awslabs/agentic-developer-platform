@@ -71,11 +71,29 @@ echo "  Build: $BUILD_ID (source: ${SOURCE_KEY})"
 
 # --- Poll until completion ----------------------------------------------------
 PHASE=""
+CONSECUTIVE_FAILURES=0
+MAX_CONSECUTIVE_FAILURES=20  # ~5 minutes at 15s intervals
 while true; do
   RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --region "$REGION" \
-    --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
+    --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null) || true
   STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
   CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
+
+  # Track consecutive API failures (empty/invalid response)
+  if [ -z "$RESULT" ] || ! echo "$RESULT" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+    CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
+    if [ "$CONSECUTIVE_FAILURES" -eq 1 ]; then
+      echo "  ⚠ AWS API call failed, retrying..." >&2
+    fi
+    if [ "$CONSECUTIVE_FAILURES" -ge "$MAX_CONSECUTIVE_FAILURES" ]; then
+      echo "  Lost contact with CodeBuild API for $((MAX_CONSECUTIVE_FAILURES * POLL_INTERVAL))s — credentials may have expired." >&2
+      exit 1
+    fi
+    sleep "$POLL_INTERVAL"
+    continue
+  fi
+  CONSECUTIVE_FAILURES=0
+
   [ "$CUR_PHASE" != "$PHASE" ] && [ -n "$CUR_PHASE" ] && echo "  Phase: $CUR_PHASE" && PHASE="$CUR_PHASE"
   case "$STATUS" in
     SUCCEEDED) echo "  Build succeeded: $PROJECT_NAME"; exit 0 ;;
