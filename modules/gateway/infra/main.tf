@@ -1270,11 +1270,12 @@ resource "aws_iam_role_policy" "gateway_identity_index" {
         Sid    = "IdentityIndexReadWrite"
         Effect = "Allow"
         Action = [
-          "dynamodb:PutItem",
+          "dynamodb:BatchWriteItem",
           "dynamodb:DeleteItem",
           "dynamodb:GetItem",
+          "dynamodb:PutItem",
           "dynamodb:Query",
-          "dynamodb:BatchWriteItem"
+          "dynamodb:UpdateItem"
         ]
         Resource = [
           aws_dynamodb_table.identity_index.arn
