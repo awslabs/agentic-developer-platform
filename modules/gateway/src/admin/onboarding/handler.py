@@ -619,6 +619,14 @@ async def get_access_status(
                 github_login, _ = _fetch_github_identity_from_cognito(cognito_sub)
             if github_login:
                 await sync_memberships_on_login(db, user, github_login)
+            else:
+                # Issue #3031: greppable event for post-deploy smoke diagnostics.
+                # Silent no-op when github_login cannot be resolved — membership
+                # sync is skipped entirely.
+                logger.info(
+                    "membership_sync_skipped reason=no_github_login user=%s",
+                    cognito_sub,
+                )
         except Exception:
             # Best-effort: identity resolution or membership sync failure
             # must not break login. Non-GitHub sessions (email/password admin)

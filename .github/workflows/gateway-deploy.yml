@@ -473,3 +473,27 @@ jobs:
       customer_account_id: ${{ inputs.customer_account_id || '' }}
       customer_aws_label: ${{ inputs.customer_aws_label || '' }}
       customer_user_id: ${{ inputs.customer_user_id || '' }}
+
+  smoke-test:
+    name: Post-deploy Smoke Test
+    needs: [deploy-backend, deploy-frontend, run-migrations]
+    # Issue #3031: Real-token smoke against the deployed gateway.
+    # Runs after backend + frontend + migrations are done. Skipped dependencies
+    # are fine (e.g. frontend-only push still triggers smoke if backend succeeded
+    # in a prior run).
+    if: |
+      always() &&
+      (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped') &&
+      (needs.deploy-frontend.result == 'success' || needs.deploy-frontend.result == 'skipped') &&
+      (needs.run-migrations.result == 'success' || needs.run-migrations.result == 'skipped')
+    uses: ./.github/workflows/gateway-smoke.yml
+    # Graceful skip: when the smoke token hasn't been captured yet, the workflow
+    # exits cleanly (token step exits 0 → subsequent steps skip → job succeeds).
+    # Once the token is live and validated, smoke failures WILL fail this run
+    # (which is intentional — regressions should block deploys).
+    with:
+      environment: ${{ inputs.environment || 'dev' }}
+      account_id: ${{ inputs.account_id || '' }}
+      customer_account_id: ${{ inputs.customer_account_id || '' }}
+      customer_aws_label: ${{ inputs.customer_aws_label || '' }}
+      customer_user_id: ${{ inputs.customer_user_id || '' }}

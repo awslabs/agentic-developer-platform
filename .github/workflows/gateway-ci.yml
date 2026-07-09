@@ -11,7 +11,10 @@ on:
       - 'modules/gateway/frontend/package*.json'
       - 'modules/gateway/frontend/tests/**'
       - 'libs/python/adp-common/**'
+      - 'platform/scripts/smoke_assertions.py'
+      - 'platform/scripts/tests/test_smoke_assertions.py'
       - '.github/workflows/gateway-ci.yml'
+      - '.github/workflows/gateway-smoke.yml'
     branches:
       - main
   push:
@@ -151,3 +154,20 @@ jobs:
             esac
             sleep 20
           done
+
+  smoke-assertions:
+    name: Smoke Assertion Tests
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run smoke assertion tests
+        run: pytest platform/scripts/tests/test_smoke_assertions.py -v --tb=short

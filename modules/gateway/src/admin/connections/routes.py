@@ -271,8 +271,14 @@ async def get_connections(
                 if active_rows:
                     effective_org_id = active_rows[0][0]
         except Exception as exc:
-            # Non-fatal: fall back to single-org behavior if membership lookup fails
-            logger.debug("multi-tenant membership lookup failed (falling back to single-org): %s", exc)
+            # Non-fatal: fall back to single-org behavior if membership lookup fails.
+            # Issue #3031: logged at INFO with greppable event name for post-deploy
+            # smoke diagnostics. Previously debug-only.
+            logger.info(
+                "membership_lookup_fallback reason=exception user=%s error=%s",
+                current_user.user_id,
+                exc,
+            )
 
         return await list_connections(
             caller_org_id=effective_org_id,
