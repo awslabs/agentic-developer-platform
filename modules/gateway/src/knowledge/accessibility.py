@@ -22,6 +22,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.knowledge.github_app_service import (
+    check_membership_for_installation,
     resolve_installation_for_repo,
     verify_installation_ownership,
 )
@@ -43,6 +44,9 @@ class AccessibilityResult:
     allowed: bool
     shared: bool = False  # True → public repo, tenant_id=NULL
     installation_id: int | None = None
+    # Issue #3266: When membership fallback resolves a different owning tenant,
+    # this field carries the org tenant_id the asset should be scoped to.
+    tenant_id: str | None = None
     error_message: str | None = None
     error_code: int = 422  # HTTP status code to use on rejection
 
@@ -168,6 +172,8 @@ async def validate_repo_accessibility(
     tenant_id: str,
     *,
     db: AsyncSession,
+    gateway_db: AsyncSession,
+    caller_user_id: str | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> AccessibilityResult:
     """Validate a repo's accessibility at registration time.
@@ -180,12 +186,19 @@ async def validate_repo_accessibility(
       2. Public check → accept shared (no installation needed)
       3. Resolve installation → None means App not installed
       4. Ownership check → reject if installation belongs to another tenant
+      4b. Membership fallback (Issue #3266) → if ownership check fails, check
+          if the caller is a member of any tenant that owns the installation
       5. Accept tenant-scoped with installation_id
 
     Args:
         source_ref: The GitHub URL (e.g. https://github.com/acme/my-repo)
         tenant_id: The caller's tenant ID (from session JWT)
-        db: Database session for ownership check
+        db: Agent-context database session (knowledge_assets table)
+        gateway_db: Gateway database session for ownership/membership queries
+            (users, channel_tenant_map, tenant_memberships). These tables live
+            in the bedrockgateway DB, NOT agent_context — passing the wrong
+            session causes 500s. Issue #3358.
+        caller_user_id: The caller's Cognito sub (for membership fallback)
         http_client: Optional httpx client for testing
     """
     # Step 1: Parse owner/repo
@@ -235,18 +248,40 @@ async def validate_repo_accessibility(
             error_code=422,
         )
 
-    # Step 4: Ownership check
-    owns_installation = await verify_installation_ownership(tenant_id, installation_id, db=db)
-    if not owns_installation:
+    # Step 4: Ownership check (per-tenant connection model)
+    # Issue #3358: ownership/membership queries hit gateway tables (users,
+    # channel_tenant_map, tenant_memberships) which live in the bedrockgateway DB.
+    owns_installation = await verify_installation_ownership(tenant_id, installation_id, db=gateway_db)
+    if owns_installation:
+        # Step 5: Accept tenant-scoped
         return AccessibilityResult(
-            allowed=False,
-            error_message=(f"The GitHub App installation for {owner}/{repo} does not belong to your tenant."),
-            error_code=403,
+            allowed=True,
+            shared=False,
+            installation_id=installation_id,
         )
 
-    # Step 5: Accept tenant-scoped
+    # Step 4b: Membership fallback (Issue #3266)
+    # The caller's personal tenant doesn't own the installation, but they may
+    # be a member of an org-tenant that does. Check tenant_memberships.
+    if caller_user_id:
+        owning_tenant_id = await check_membership_for_installation(caller_user_id, installation_id, db=gateway_db)
+        if owning_tenant_id:
+            logger.info(
+                "Membership fallback: user %s granted access to %s/%s via org tenant %s",
+                caller_user_id,
+                owner,
+                repo,
+                owning_tenant_id,
+            )
+            return AccessibilityResult(
+                allowed=True,
+                shared=False,
+                installation_id=installation_id,
+                tenant_id=owning_tenant_id,
+            )
+
     return AccessibilityResult(
-        allowed=True,
-        shared=False,
-        installation_id=installation_id,
+        allowed=False,
+        error_message=(f"The GitHub App installation for {owner}/{repo} does not belong to your tenant."),
+        error_code=403,
     )

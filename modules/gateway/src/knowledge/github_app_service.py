@@ -59,6 +59,32 @@ def _get_environment() -> str:
     return os.environ.get("ENVIRONMENT", "dev")
 
 
+def _classify_boto3_error(exc: Exception) -> str | None:
+    """Extract the AWS error code from a boto3 ClientError.
+
+    Issue #3358: Uses the structured response['Error']['Code'] field when
+    available (proper ClientError), falls back to string matching for generic
+    exceptions (e.g. connection timeouts wrapped in non-ClientError types).
+
+    Returns the error code string (e.g. 'ResourceNotFoundException',
+    'AccessDeniedException') or None if it cannot be determined.
+    """
+    # Try structured boto3 ClientError first
+    if hasattr(exc, "response"):
+        try:
+            return exc.response.get("Error", {}).get("Code")
+        except (AttributeError, TypeError):
+            pass
+
+    # Fallback: string matching for exceptions that don't carry .response
+    exc_str = str(exc)
+    if "ResourceNotFoundException" in exc_str:
+        return "ResourceNotFoundException"
+    elif "AccessDeniedException" in exc_str:
+        return "AccessDeniedException"
+    return None
+
+
 async def resolve_tenant_app_credentials(
     org_id: str,
     *,
@@ -98,7 +124,24 @@ async def resolve_tenant_app_credentials(
             secret_id,
             exc,
         )
-        raise ValueError(f"GitHub App not configured for tenant '{org_id}'. Ensure a GitHub App is installed via Settings > Connections.") from exc
+        # Issue #3266/#3358: Classify boto3 ClientError by response code for
+        # actionable error messages; fall back to string matching for non-
+        # ClientError exceptions (e.g. connection timeouts).
+        error_code = _classify_boto3_error(exc)
+        if error_code == "ResourceNotFoundException":
+            raise ValueError(
+                f"No GitHub App connection configured for tenant '{org_id}'. "
+                f"Set up a connection via Settings → Connections, or register "
+                f"repos covered by your organization's existing installation."
+            ) from exc
+        elif error_code == "AccessDeniedException":
+            raise ValueError(
+                f"Platform IAM policy does not permit reading credentials for "
+                f"tenant '{org_id}'. This is a platform configuration issue — "
+                f"please contact your administrator."
+            ) from exc
+        else:
+            raise ValueError(f"Failed to resolve GitHub App credentials for tenant '{org_id}'. Please try again later.") from exc
 
     app_id = creds.get("app_id", "")
     private_key = creds.get("private_key", "")
@@ -328,3 +371,55 @@ async def verify_installation_ownership(
         {"tenant_id": tenant_id, "installation_id": str(installation_id)},
     )
     return result.fetchone() is not None
+
+
+# ---------------------------------------------------------------------------
+# Membership-based installation ownership (Issue #3266)
+# ---------------------------------------------------------------------------
+
+
+async def check_membership_for_installation(
+    caller_user_id: str,
+    installation_id: int,
+    *,
+    db: AsyncSession,
+) -> str | None:
+    """Check if the caller is a member of any tenant that owns the installation.
+
+    Issue #3266: Migrates Knowledge Layer registration onto the tenant-membership
+    model (D5). When the per-tenant ownership check fails, this fallback resolves
+    the caller's Cognito sub → users.id → tenant_memberships, and checks whether
+    any of those tenants own the installation in channel_tenant_map.
+
+    Returns:
+        The owning tenant_id if the caller is a member of an org that owns the
+        installation, or None if no membership match is found.
+    """
+    # Resolve Postgres users.id from Cognito sub (same pattern as connections/routes.py)
+    user_result = await db.execute(
+        text("SELECT id FROM users WHERE cognito_sub = :cognito_sub"),
+        {"cognito_sub": caller_user_id},
+    )
+    user_row = user_result.fetchone()
+    if user_row is None:
+        return None
+
+    pg_user_id = user_row[0]
+
+    # Find all tenant_ids the user is a member of
+    # Then check if any of those tenants own the installation
+    result = await db.execute(
+        text("""
+            SELECT ctm.org_id
+            FROM channel_tenant_map ctm
+            INNER JOIN tenant_memberships tm
+                ON tm.tenant_id = ctm.org_id
+            WHERE ctm.provider = 'github'
+              AND ctm.metadata->>'installation_id' = :installation_id
+              AND tm.user_id = :pg_user_id
+            LIMIT 1
+        """),
+        {"installation_id": str(installation_id), "pg_user_id": pg_user_id},
+    )
+    row = result.fetchone()
+    return row[0] if row is not None else None
