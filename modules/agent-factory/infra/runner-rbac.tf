@@ -71,7 +71,7 @@ resource "kubernetes_role_binding" "runner_deploy_gateway" {
 resource "kubernetes_role" "runner_keda_manage_gateway_agents" {
   metadata {
     name      = "adp-runner-keda-manage"
-    namespace = "adp-gateway-agents"
+    namespace = kubernetes_namespace.gateway_agents.metadata[0].name
 
     labels = {
       "app.kubernetes.io/managed-by" = "terraform"
@@ -96,7 +96,7 @@ resource "kubernetes_role" "runner_keda_manage_gateway_agents" {
 resource "kubernetes_role_binding" "runner_keda_manage_gateway_agents" {
   metadata {
     name      = "adp-runner-keda-manage"
-    namespace = "adp-gateway-agents"
+    namespace = kubernetes_namespace.gateway_agents.metadata[0].name
 
     labels = {
       "app.kubernetes.io/managed-by" = "terraform"
