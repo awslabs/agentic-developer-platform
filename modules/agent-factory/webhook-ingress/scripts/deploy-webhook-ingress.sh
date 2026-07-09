@@ -118,16 +118,31 @@ fi
 # [3/3] terraform apply the webhook-ingress stack
 # ---------------------------------------------------------------------------
 step "[3/3] terraform apply webhook-ingress"
+
+# Read gateway API GW URL from SSM for the resolve-installation fallback path.
+# Published by gateway-infra terraform; empty string is safe (disables fallback).
+GATEWAY_API_URL=$(aws ssm get-parameter \
+  --name "/adp/${ENVIRONMENT}/gateway/apigw-invoke-url" \
+  --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+if [ -n "$GATEWAY_API_URL" ]; then
+  ok "Gateway API URL: ${GATEWAY_API_URL}"
+else
+  warn "Gateway API URL not found in SSM — resolve-installation fallback will be disabled"
+fi
+
 BACKEND="${REPO_ROOT}/environments/${ENVIRONMENT}/modules/webhook-ingress-backend.tfvars"
 if [ "$SKIP_TF" = true ]; then
   warn "Skipping terraform apply (--skip-terraform)."
 elif [ "$DRY_RUN" = true ]; then
   echo "  [dry-run] terraform init -backend-config=$BACKEND"
-  echo "  [dry-run] terraform apply -var=environment=$ENVIRONMENT"
+  echo "  [dry-run] terraform apply -var=environment=$ENVIRONMENT -var=gateway_api_url=$GATEWAY_API_URL"
 else
   ( cd "${MODULE_ROOT}/infra" \
     && terraform init -backend-config="$BACKEND" -input=false -reconfigure >/dev/null \
-    && terraform apply -var="environment=${ENVIRONMENT}" -input=false -auto-approve )
+    && terraform apply \
+         -var="environment=${ENVIRONMENT}" \
+         -var="gateway_api_url=${GATEWAY_API_URL}" \
+         -input=false -auto-approve )
   ok "webhook-ingress applied"
 fi
 
