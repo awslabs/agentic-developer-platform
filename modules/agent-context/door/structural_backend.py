@@ -163,6 +163,29 @@ async def understand(
     # --- Neptune path (primary) ---
     neptune_results = await _understand_via_neptune(repo_id, query_target, depth)
     if neptune_results is not None:
+        # For symbol queries: if Neptune's best result is NOT an exact-case name
+        # match, also check the code index — it may have the correct symbol that
+        # Neptune's graph lacks (e.g., Go symbols not indexed by SCIP). (#3450)
+        symbol_name = _extract_symbol_name(query_target)
+        if symbol_name and neptune_results:
+            top_score = _symbol_match_score(
+                symbol_name,
+                neptune_results[0].data.get("symbol", ""),
+                neptune_results[0].data.get("file", ""),
+            )
+            if top_score < 200:
+                # Neptune's best is not exact — check code index for exact match
+                code_index_results = await _check_code_index_for_exact_match(
+                    repo_id,
+                    query_target,
+                    symbol_name,
+                    depth,
+                    s3_client=s3_client,
+                    bucket=bucket,
+                    prefix=prefix,
+                )
+                if code_index_results:
+                    return code_index_results
         return neptune_results
 
     # --- Fallback: code-index.json from S3 ---
@@ -387,6 +410,85 @@ def _understand_neptune_inner(
             return results
 
     return None  # Fall back
+
+
+# ---------------------------------------------------------------------------
+# Neptune-to-code-index fallthrough helpers (#3450)
+# ---------------------------------------------------------------------------
+
+
+def _extract_symbol_name(query_target: str) -> str:
+    """Extract the symbol name from a query_target if it's a symbol reference.
+
+    Returns the symbol name for '::'-separated targets and bare symbol targets
+    (no '/' separator). Returns empty string for file/directory targets where
+    code-index fallthrough doesn't apply.
+    """
+    if "::" in query_target:
+        return query_target.rsplit("::", 1)[1]
+    if "/" not in query_target:
+        # Bare symbol (no file path separators)
+        return query_target
+    return ""
+
+
+async def _check_code_index_for_exact_match(
+    repo_id: str,
+    query_target: str,
+    symbol_name: str,
+    depth: str,
+    *,
+    s3_client: Any,
+    bucket: str,
+    prefix: str,
+) -> list[SearchHit] | None:
+    """Check the code index for an exact-case match on symbol_name.
+
+    Called when Neptune's best result is not an exact match. If the code index
+    has an exact-case match (score >= 200), returns those results; otherwise
+    returns None to signal "keep Neptune's results."
+
+    This prevents Neptune's fuzzy/substring matches from blocking the code-index
+    path when Neptune's graph lacks the correct symbols (e.g., Go symbols not in
+    SCIP index). (#3450)
+    """
+    index = await load_code_index(repo_id, s3_client=s3_client, bucket=bucket, prefix=prefix)
+    if not index:
+        return None
+
+    raw_definitions = index.get("symbols", []) or index.get("definitions", [])
+    definitions = [_normalize_symbol(d) for d in raw_definitions]
+    call_graph = index.get("call_graph", {})
+
+    # Find exact-case name matches in the code index
+    exact_matches: list[SearchHit] = []
+    for defn in definitions:
+        symbol = defn["symbol"]
+        if symbol == symbol_name:
+            # Exact-case name match — build a SearchHit
+            file_path = defn["file"]
+            full_key = f"{file_path}::{symbol}"
+            callees = call_graph.get(full_key, [])
+            callers = _find_callers(full_key, call_graph)
+
+            data: dict[str, Any] = {
+                "repo_id": repo_id,
+                "file": file_path,
+                "line": defn["line"],
+                "symbol": symbol,
+                "kind": defn["kind"],
+                "signature": defn["signature"],
+                "callers": callers if depth == "detailed" else callers[:3],
+                "callees": callees if depth == "detailed" else callees[:3],
+                "source": "code-index-fallback",
+            }
+            exact_matches.append(SearchHit(repo_name=repo_id, data=data))
+
+    if exact_matches:
+        # Rank among exact matches (demote generated files)
+        return _rank_understand_results(symbol_name, exact_matches)
+
+    return None
 
 
 async def _understand_via_code_index(
