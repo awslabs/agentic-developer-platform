@@ -558,21 +558,26 @@ if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
   echo "Skipping gateway infra (--agent-factory-only or --agent-context-only)"
   ok "Skipped"
 else
-  # Fail fast if the GitHub auth broker is enabled but its OAuth secret is
-  # absent. gateway/infra reads adp/$ENVIRONMENT/cognito/github-oauth-credentials
-  # via a data source that resolves at PLAN time, so a missing secret aborts the
-  # apply with a cryptic "couldn't find secret". Surface it with the fix instead.
+  # Ensure the GitHub OAuth secret exists when the auth broker is enabled.
+  # gateway/infra reads adp/$ENVIRONMENT/cognito/github-oauth-credentials via a
+  # data source at PLAN time — a missing secret aborts the apply. On fresh
+  # accounts the secret won't exist yet (it's provisioned during GitHub App
+  # setup), so we create a valid-schema placeholder that lets terraform proceed.
+  # Real values are provisioned later by register-github-app or the UI flow.
   if grep -qE '^\s*enable_github_auth_broker\s*=\s*true' \
        "$ROOT_DIR/environments/$ENVIRONMENT/modules/gateway.tfvars" 2>/dev/null; then
     OAUTH_SECRET="adp/${ENVIRONMENT}/cognito/github-oauth-credentials"
     if ! aws secretsmanager describe-secret --secret-id "$OAUTH_SECRET" \
            --region "$AWS_REGION" &>/dev/null; then
-      fail "enable_github_auth_broker=true but Secrets Manager secret '$OAUTH_SECRET' is missing.
-  The gateway terraform plan reads it via a data source and will fail without it.
-  Provision the GitHub OAuth App credentials out-of-band, e.g.:
-    aws secretsmanager create-secret --name '$OAUTH_SECRET' \\
-      --secret-string '{\"client_id\":\"<id>\",\"client_secret\":\"<secret>\"}' --region $AWS_REGION
-  Or set enable_github_auth_broker=false in environments/$ENVIRONMENT/modules/gateway.tfvars to skip GitHub login."
+      echo "Secret '$OAUTH_SECRET' not found — creating placeholder for terraform plan..."
+      aws secretsmanager create-secret \
+        --name "$OAUTH_SECRET" \
+        --description "GitHub OAuth credentials for ADP auth broker (placeholder — replace with real values during GitHub App setup)" \
+        --secret-string '{"client_id":"PLACEHOLDER_AWAITING_GITHUB_APP_SETUP","client_secret":"PLACEHOLDER_AWAITING_GITHUB_APP_SETUP"}' \
+        --region "$AWS_REGION" > /dev/null
+      warn "Created placeholder secret '$OAUTH_SECRET'. GitHub login will not work until real OAuth credentials are provisioned (Settings → Connections → 'Set up GitHub App')."
+    else
+      ok "GitHub OAuth secret exists: $OAUTH_SECRET"
     fi
   fi
 
