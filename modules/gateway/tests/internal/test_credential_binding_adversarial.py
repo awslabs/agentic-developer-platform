@@ -208,20 +208,29 @@ def _settings_mock(*, enforce: bool = True, raw_read_enabled: bool = True):
     return s
 
 
-def _mock_ddb_get_item(authorized_user_id: str | None = None, invocation_id: str = ""):
-    """Build a mock DDB GetItem response.
+def _mock_ddb_query_response(authorized_user_id: str | None = None, invocation_id: str = "", arrived_at: str = "2026-07-08T12:00:00Z"):
+    """Build a mock DDB Query response (composite-key table: event_id + arrived_at).
 
-    None → item not found; "" → item exists without the attribute.
+    None → no items found; "" → item exists without authorized_user_id attribute.
     """
     if authorized_user_id is None:
-        return {"ResponseMetadata": {"HTTPStatusCode": 200}}
+        return {"Items": [], "Count": 0, "ScannedCount": 0}
     if authorized_user_id == "":
-        return {"Item": {"event_id": invocation_id}}
-    return {
-        "Item": {
-            "event_id": invocation_id,
-            "authorized_user_id": authorized_user_id,
+        return {
+            "Items": [{"event_id": invocation_id, "arrived_at": arrived_at}],
+            "Count": 1,
+            "ScannedCount": 1,
         }
+    return {
+        "Items": [
+            {
+                "event_id": invocation_id,
+                "arrived_at": arrived_at,
+                "authorized_user_id": authorized_user_id,
+            }
+        ],
+        "Count": 1,
+        "ScannedCount": 1,
     }
 
 
@@ -267,7 +276,7 @@ class TestA1EnvVarInjectionRawRead:
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
             # Registry says the run belongs to the ATTACKER
-            mock_table.get_item.return_value = _mock_ddb_get_item(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
+            mock_table.query.return_value = _mock_ddb_query_response(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
 
             client = _make_raw_read_app(db)
             resp = client.post(
@@ -310,7 +319,7 @@ class TestA1EnvVarInjectionRawRead:
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
             # Registry says attacker
-            mock_table.get_item.return_value = _mock_ddb_get_item(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
+            mock_table.query.return_value = _mock_ddb_query_response(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
 
             client = _make_raw_read_app(db, mock_sm)
             resp = client.post(
@@ -362,7 +371,7 @@ class TestA2AssumeRoleInjection:
         ):
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
-            mock_table.get_item.return_value = _mock_ddb_get_item(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
+            mock_table.query.return_value = _mock_ddb_query_response(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
 
             client = _make_assume_role_app(db)
             resp = client.post(
@@ -400,7 +409,7 @@ class TestA2AssumeRoleInjection:
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
             # Registry resolves to ATTACKER
-            mock_table.get_item.return_value = _mock_ddb_get_item(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
+            mock_table.query.return_value = _mock_ddb_query_response(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
 
             mock_sts_client = MagicMock()
             mock_boto3.client.return_value = mock_sts_client
@@ -450,7 +459,11 @@ class TestA4DepthGating:
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
             # Row exists but authorized_user_id is missing (depth exceeded at spawn)
-            mock_table.get_item.return_value = {"Item": {"event_id": "inv-deep-chain"}}
+            mock_table.query.return_value = {
+                "Items": [{"event_id": "inv-deep-chain", "arrived_at": "2026-07-08T10:00:00Z"}],
+                "Count": 1,
+                "ScannedCount": 1,
+            }
 
             client = _make_raw_read_app(db)
             resp = client.post(
@@ -487,7 +500,11 @@ class TestA4DepthGating:
         ):
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
-            mock_table.get_item.return_value = {"Item": {"event_id": "inv-deep-chain-ar"}}
+            mock_table.query.return_value = {
+                "Items": [{"event_id": "inv-deep-chain-ar", "arrived_at": "2026-07-08T10:00:00Z"}],
+                "Count": 1,
+                "ScannedCount": 1,
+            }
 
             client = _make_assume_role_app(db)
             resp = client.post(
@@ -532,7 +549,7 @@ class TestA5LongHorizonRefresh:
         ):
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
-            mock_table.get_item.return_value = _mock_ddb_get_item(_ATTACKER_USER_ID, _INVOCATION_LONG_HORIZON)
+            mock_table.query.return_value = _mock_ddb_query_response(_ATTACKER_USER_ID, _INVOCATION_LONG_HORIZON)
 
             client = _make_raw_read_app(db, mock_sm)
 
@@ -580,7 +597,7 @@ class TestA7HappyPath:
         ):
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
-            mock_table.get_item.return_value = _mock_ddb_get_item(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
+            mock_table.query.return_value = _mock_ddb_query_response(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
 
             client = _make_raw_read_app(db, mock_sm)
             resp = client.post(
@@ -621,7 +638,7 @@ class TestA7HappyPath:
         ):
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
-            mock_table.get_item.return_value = _mock_ddb_get_item(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
+            mock_table.query.return_value = _mock_ddb_query_response(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
 
             mock_sts_client = MagicMock()
             mock_boto3.client.return_value = mock_sts_client
@@ -673,7 +690,7 @@ class TestImprovisedInvocationReplay:
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
             # The VICTIM's run is in the registry under this invocation_id
-            mock_table.get_item.return_value = _mock_ddb_get_item(_VICTIM_USER_ID, _INVOCATION_VICTIM)
+            mock_table.query.return_value = _mock_ddb_query_response(_VICTIM_USER_ID, _INVOCATION_VICTIM)
 
             client = _make_raw_read_app(db)
             resp = client.post(
@@ -722,7 +739,7 @@ class TestImprovisedInvocationReplay:
         ):
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
-            mock_table.get_item.return_value = _mock_ddb_get_item(_VICTIM_USER_ID, _INVOCATION_VICTIM)
+            mock_table.query.return_value = _mock_ddb_query_response(_VICTIM_USER_ID, _INVOCATION_VICTIM)
 
             client = _make_raw_read_app(db, mock_sm)
             resp = client.post(
@@ -839,7 +856,7 @@ class TestImprovisedEmptyInvocationId:
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
             # DDB won't find a row for whitespace key
-            mock_table.get_item.return_value = {"ResponseMetadata": {"HTTPStatusCode": 200}}
+            mock_table.query.return_value = {"Items": [], "Count": 0, "ScannedCount": 0}
 
             client = _make_raw_read_app(db)
             resp = client.post(
@@ -892,9 +909,9 @@ class TestImprovisedDDBEdgeCases:
         ):
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
-            mock_table.get_item.side_effect = ClientError(
+            mock_table.query.side_effect = ClientError(
                 {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "Rate exceeded"}},
-                "GetItem",
+                "Query",
             )
 
             client = _make_raw_read_app(db)
@@ -937,12 +954,17 @@ class TestImprovisedDDBEdgeCases:
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
             # Item exists but no authorized_user_id attribute
-            mock_table.get_item.return_value = {
-                "Item": {
-                    "event_id": "inv-old-format",
-                    "tenant_id": "old-tenant",
-                    "status": "completed",
-                }
+            mock_table.query.return_value = {
+                "Items": [
+                    {
+                        "event_id": "inv-old-format",
+                        "arrived_at": "2026-07-08T10:00:00Z",
+                        "tenant_id": "old-tenant",
+                        "status": "completed",
+                    }
+                ],
+                "Count": 1,
+                "ScannedCount": 1,
             }
 
             client = _make_raw_read_app(db)
@@ -979,7 +1001,7 @@ class TestImprovisedDDBEdgeCases:
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
             # DDB won't find a row for this gibberish
-            mock_table.get_item.return_value = {"ResponseMetadata": {"HTTPStatusCode": 200}}
+            mock_table.query.return_value = {"Items": [], "Count": 0, "ScannedCount": 0}
 
             long_id = "a" * 1024
             client = _make_raw_read_app(db)
@@ -1031,7 +1053,7 @@ class TestImprovisedCredentialIsolation:
         ):
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
-            mock_table.get_item.return_value = _mock_ddb_get_item(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
+            mock_table.query.return_value = _mock_ddb_query_response(_ATTACKER_USER_ID, _INVOCATION_ATTACKER)
 
             client = _make_raw_read_app(db, mock_sm)
             # Request with attacker's legitimate invocation_id

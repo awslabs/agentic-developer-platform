@@ -6,7 +6,9 @@ and enforces or shadows based on the ENFORCE_CREDENTIAL_BINDING flag.
 
 Flow:
   1. Client sends `invocation_id` (= event_id PK in webhook-events).
-  2. This module does a DDB GetItem to retrieve `authorized_user_id`.
+  2. This module does a DDB Query on event_id to retrieve `authorized_user_id`.
+     (The table has a composite key: event_id HASH + arrived_at RANGE —
+     Issue #3376 fixed this from GetItem which required both keys.)
   3. If flag is ENFORCE: missing invocation_id or empty authorized_user_id -> 403.
   4. If flag is SHADOW (default): resolve from registry when present, compare
      to body user_id, emit drift/fallback metrics, never block.
@@ -18,6 +20,7 @@ import logging
 from dataclasses import dataclass
 
 import boto3
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 from fastapi import HTTPException
 
@@ -173,21 +176,25 @@ def _lookup_authorized_user(
 ) -> str:
     """Look up authorized_user_id from webhook-events DDB table.
 
-    Uses GetItem with event_id as the partition key.
+    Uses a Query on event_id (partition key). The table has a composite
+    primary key (event_id HASH + arrived_at RANGE), so GetItem would
+    require both keys. Query by PK returns all items for that event_id;
+    we pick the one with the latest arrived_at (handles re-delivery).
 
     Returns the authorized_user_id string, or "" if not found / error.
     """
     try:
         table = _get_dynamodb_table(table_name, aws_region)
-        response = table.get_item(
-            Key={"event_id": invocation_id},
-            ProjectionExpression="authorized_user_id",
-            ConsistentRead=False,
+        response = table.query(
+            KeyConditionExpression=Key("event_id").eq(invocation_id),
+            ProjectionExpression="authorized_user_id, arrived_at",
+            ScanIndexForward=False,  # descending arrived_at → latest first
+            Limit=1,
         )
     except ClientError as exc:
         error_code = exc.response.get("Error", {}).get("Code", "")
         logger.warning(
-            "credential_binding: DDB GetItem failed — invocation_id=%s error_code=%s table=%s",
+            "credential_binding: DDB Query failed — invocation_id=%s error_code=%s table=%s",
             invocation_id,
             error_code,
             table_name,
@@ -196,12 +203,12 @@ def _lookup_authorized_user(
         # In enforce mode, an empty result will trigger the 403 above.
         return ""
 
-    item = response.get("Item")
-    if item is None:
+    items = response.get("Items", [])
+    if not items:
         logger.info(
             "credential_binding: no registry row for invocation_id=%s",
             invocation_id,
         )
         return ""
 
-    return item.get("authorized_user_id", "")
+    return items[0].get("authorized_user_id", "")

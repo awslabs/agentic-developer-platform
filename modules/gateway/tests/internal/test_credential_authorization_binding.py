@@ -21,9 +21,11 @@ import json
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
+import boto3
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from moto import mock_aws
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -181,20 +183,29 @@ def _settings_mock(*, enforce: bool = False, raw_read_enabled: bool = True):
     return s
 
 
-def _mock_ddb_get_item(authorized_user_id: str | None = None):
-    """Create a mock for DDB GetItem response.
+def _mock_ddb_query_response(authorized_user_id: str | None = None, arrived_at: str = "2026-07-08T12:00:00Z"):
+    """Create a mock for DDB Query response (composite-key table: event_id + arrived_at).
 
-    If authorized_user_id is None, simulates item not found.
+    If authorized_user_id is None, simulates no items found.
     """
     if authorized_user_id is None:
-        return {"ResponseMetadata": {"HTTPStatusCode": 200}}
+        return {"Items": [], "Count": 0, "ScannedCount": 0}
     if authorized_user_id == "":
-        return {"Item": {"event_id": _INVOCATION_ID}}
-    return {
-        "Item": {
-            "event_id": _INVOCATION_ID,
-            "authorized_user_id": authorized_user_id,
+        return {
+            "Items": [{"event_id": _INVOCATION_ID, "arrived_at": arrived_at}],
+            "Count": 1,
+            "ScannedCount": 1,
         }
+    return {
+        "Items": [
+            {
+                "event_id": _INVOCATION_ID,
+                "arrived_at": arrived_at,
+                "authorized_user_id": authorized_user_id,
+            }
+        ],
+        "Count": 1,
+        "ScannedCount": 1,
     }
 
 
@@ -239,7 +250,7 @@ class TestRawReadBinding:
         ):
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
-            mock_table.get_item.return_value = _mock_ddb_get_item(_USER_ALICE_ID)
+            mock_table.query.return_value = _mock_ddb_query_response(_USER_ALICE_ID)
 
             client = _make_raw_read_app(db, mock_sm)
             resp = client.post(
@@ -263,12 +274,11 @@ class TestRawReadBinding:
         assert data["value"] == "ghp_secret_token_value"
         assert data["credential_type"] == "bearer"
 
-        # Verify DDB was queried with the invocation_id.
-        mock_table.get_item.assert_called_once_with(
-            Key={"event_id": _INVOCATION_ID},
-            ProjectionExpression="authorized_user_id",
-            ConsistentRead=False,
-        )
+        # Verify DDB was queried with the invocation_id (composite-key table).
+        mock_table.query.assert_called_once()
+        call_kwargs = mock_table.query.call_args[1]
+        assert call_kwargs["ScanIndexForward"] is False
+        assert call_kwargs["Limit"] == 1
 
     @pytest.mark.asyncio
     async def test_raw_read_rejects_mismatched_user_id(self, db):
@@ -284,7 +294,7 @@ class TestRawReadBinding:
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
             # Registry says alice, but body says bob.
-            mock_table.get_item.return_value = _mock_ddb_get_item(_USER_ALICE_ID)
+            mock_table.query.return_value = _mock_ddb_query_response(_USER_ALICE_ID)
 
             client = _make_raw_read_app(db)
             resp = client.post(
@@ -390,7 +400,7 @@ class TestRawReadBinding:
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
             # Registry says alice, body says bob — drift! But shadow mode = no block.
-            mock_table.get_item.return_value = _mock_ddb_get_item(_USER_ALICE_ID)
+            mock_table.query.return_value = _mock_ddb_query_response(_USER_ALICE_ID)
 
             client = _make_raw_read_app(db, mock_sm)
             resp = client.post(
@@ -448,7 +458,7 @@ class TestAssumeRoleBinding:
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
             # Registry says alice, body says bob.
-            mock_table.get_item.return_value = _mock_ddb_get_item(_USER_ALICE_ID)
+            mock_table.query.return_value = _mock_ddb_query_response(_USER_ALICE_ID)
 
             client = _make_assume_role_app(db)
             resp = client.post(
@@ -485,7 +495,7 @@ class TestAssumeRoleBinding:
         ):
             mock_table = MagicMock()
             mock_get_table.return_value = mock_table
-            mock_table.get_item.return_value = _mock_ddb_get_item(_USER_ALICE_ID)
+            mock_table.query.return_value = _mock_ddb_query_response(_USER_ALICE_ID)
 
             mock_sts_client = MagicMock()
             mock_boto3.client.return_value = mock_sts_client
@@ -580,3 +590,295 @@ class TestAssumeRoleBinding:
         call_kwargs = mock_sts_client.assume_role.call_args[1]
         tags = {t["Key"]: t["Value"] for t in call_kwargs["Tags"]}
         assert tags["adp:user_id"] == _USER_ALICE_ID
+
+
+# ---------------------------------------------------------------------------
+# Tests: _lookup_authorized_user — composite-key table behavior
+# ---------------------------------------------------------------------------
+
+
+class TestLookupAuthorizedUser:
+    """Unit tests for _lookup_authorized_user with composite-key DDB table.
+
+    The webhook-events table has a composite primary key (event_id HASH +
+    arrived_at RANGE). These tests verify the Query-based lookup handles:
+    - Single item → returns authorized_user_id
+    - Multiple items (re-delivery) → picks latest arrived_at
+    - No items → returns ""
+    - DDB error → returns "" (fail-soft)
+    """
+
+    def test_single_item_resolves_user(self):
+        """Happy path: one item for event_id → returns authorized_user_id."""
+        with patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table:
+            mock_table = MagicMock()
+            mock_get_table.return_value = mock_table
+            mock_table.query.return_value = {
+                "Items": [
+                    {
+                        "event_id": "inv-123",
+                        "arrived_at": "2026-07-08T12:00:00Z",
+                        "authorized_user_id": "user-resolved",
+                    }
+                ],
+                "Count": 1,
+                "ScannedCount": 1,
+            }
+
+            from src.internal.credential_binding import _lookup_authorized_user
+
+            result = _lookup_authorized_user(
+                invocation_id="inv-123",
+                table_name="adp-test-webhook-events",
+                aws_region="us-east-1",
+            )
+
+        assert result == "user-resolved"
+        # Verify Query uses correct params for composite-key table.
+        mock_table.query.assert_called_once()
+        call_kwargs = mock_table.query.call_args[1]
+        assert call_kwargs["ScanIndexForward"] is False
+        assert call_kwargs["Limit"] == 1
+        assert "authorized_user_id" in call_kwargs["ProjectionExpression"]
+        assert "arrived_at" in call_kwargs["ProjectionExpression"]
+
+    def test_multi_item_picks_latest_arrived_at(self):
+        """Multiple items for same event_id (re-delivery): Query with
+        ScanIndexForward=False + Limit=1 returns latest arrived_at."""
+        with patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table:
+            mock_table = MagicMock()
+            mock_get_table.return_value = mock_table
+            # Simulates ScanIndexForward=False + Limit=1: DDB returns only the
+            # latest item (descending sort key order, limited to 1).
+            mock_table.query.return_value = {
+                "Items": [
+                    {
+                        "event_id": "inv-redelivered",
+                        "arrived_at": "2026-07-08T14:00:00Z",
+                        "authorized_user_id": "user-latest",
+                    }
+                ],
+                "Count": 1,
+                "ScannedCount": 1,
+            }
+
+            from src.internal.credential_binding import _lookup_authorized_user
+
+            result = _lookup_authorized_user(
+                invocation_id="inv-redelivered",
+                table_name="adp-test-webhook-events",
+                aws_region="us-east-1",
+            )
+
+        assert result == "user-latest"
+
+    def test_no_items_returns_empty(self):
+        """No items found for event_id → returns ""."""
+        with patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table:
+            mock_table = MagicMock()
+            mock_get_table.return_value = mock_table
+            mock_table.query.return_value = {"Items": [], "Count": 0, "ScannedCount": 0}
+
+            from src.internal.credential_binding import _lookup_authorized_user
+
+            result = _lookup_authorized_user(
+                invocation_id="inv-nonexistent",
+                table_name="adp-test-webhook-events",
+                aws_region="us-east-1",
+            )
+
+        assert result == ""
+
+    def test_ddb_client_error_returns_empty(self):
+        """DDB ClientError → fail-soft returns ""."""
+        from botocore.exceptions import ClientError
+
+        with patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table:
+            mock_table = MagicMock()
+            mock_get_table.return_value = mock_table
+            mock_table.query.side_effect = ClientError(
+                {"Error": {"Code": "InternalServerError", "Message": "DDB internal"}},
+                "Query",
+            )
+
+            from src.internal.credential_binding import _lookup_authorized_user
+
+            result = _lookup_authorized_user(
+                invocation_id="inv-error",
+                table_name="adp-test-webhook-events",
+                aws_region="us-east-1",
+            )
+
+        assert result == ""
+
+    def test_item_without_authorized_user_id_attribute(self):
+        """Item exists but lacks authorized_user_id attribute → returns ""."""
+        with patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table:
+            mock_table = MagicMock()
+            mock_get_table.return_value = mock_table
+            mock_table.query.return_value = {
+                "Items": [
+                    {
+                        "event_id": "inv-no-attr",
+                        "arrived_at": "2026-07-08T12:00:00Z",
+                        # No authorized_user_id attribute
+                    }
+                ],
+                "Count": 1,
+                "ScannedCount": 1,
+            }
+
+            from src.internal.credential_binding import _lookup_authorized_user
+
+            result = _lookup_authorized_user(
+                invocation_id="inv-no-attr",
+                table_name="adp-test-webhook-events",
+                aws_region="us-east-1",
+            )
+
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# Tests: _lookup_authorized_user — moto-backed composite-key table (Issue #3380)
+# ---------------------------------------------------------------------------
+
+_MOTO_TABLE_NAME = "adp-test-webhook-events"
+_MOTO_REGION = "us-east-1"
+
+
+def _create_webhook_events_table(region: str = _MOTO_REGION) -> None:
+    """Create a DynamoDB table with the REAL composite key schema.
+
+    Schema mirrors production: event_id (HASH) + arrived_at (RANGE).
+    """
+    dynamodb = boto3.resource("dynamodb", region_name=region)
+    dynamodb.create_table(
+        TableName=_MOTO_TABLE_NAME,
+        KeySchema=[
+            {"AttributeName": "event_id", "KeyType": "HASH"},
+            {"AttributeName": "arrived_at", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "event_id", "AttributeType": "S"},
+            {"AttributeName": "arrived_at", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+class TestLookupAuthorizedUserMoto:
+    """Moto-backed integration tests for _lookup_authorized_user.
+
+    Uses a REAL DynamoDB table (via moto) with the composite primary key
+    (event_id HASH + arrived_at RANGE). These tests catch schema-mismatch
+    bugs that MagicMock-based tests cannot — e.g. the original GetItem bug
+    where only the partition key was provided (Issue #3376).
+    """
+
+    @mock_aws
+    def test_happy_path_single_item(self):
+        """Single item in table → resolves authorized_user_id correctly."""
+        _create_webhook_events_table()
+        table = boto3.resource("dynamodb", region_name=_MOTO_REGION).Table(_MOTO_TABLE_NAME)
+        table.put_item(
+            Item={
+                "event_id": "inv-moto-001",
+                "arrived_at": "2026-07-08T10:00:00Z",
+                "authorized_user_id": "user-moto-resolved",
+            }
+        )
+
+        from src.internal.credential_binding import _lookup_authorized_user
+
+        result = _lookup_authorized_user(
+            invocation_id="inv-moto-001",
+            table_name=_MOTO_TABLE_NAME,
+            aws_region=_MOTO_REGION,
+        )
+
+        assert result == "user-moto-resolved"
+
+    @mock_aws
+    def test_multi_item_returns_latest_arrived_at(self):
+        """Multiple items for same event_id (re-delivery) → returns the one
+        with the latest arrived_at (ScanIndexForward=False + Limit=1)."""
+        _create_webhook_events_table()
+        table = boto3.resource("dynamodb", region_name=_MOTO_REGION).Table(_MOTO_TABLE_NAME)
+
+        # Insert 3 items with different arrived_at timestamps.
+        table.put_item(
+            Item={
+                "event_id": "inv-multi",
+                "arrived_at": "2026-07-08T08:00:00Z",
+                "authorized_user_id": "user-earliest",
+            }
+        )
+        table.put_item(
+            Item={
+                "event_id": "inv-multi",
+                "arrived_at": "2026-07-08T12:00:00Z",
+                "authorized_user_id": "user-latest",
+            }
+        )
+        table.put_item(
+            Item={
+                "event_id": "inv-multi",
+                "arrived_at": "2026-07-08T10:00:00Z",
+                "authorized_user_id": "user-middle",
+            }
+        )
+
+        from src.internal.credential_binding import _lookup_authorized_user
+
+        result = _lookup_authorized_user(
+            invocation_id="inv-multi",
+            table_name=_MOTO_TABLE_NAME,
+            aws_region=_MOTO_REGION,
+        )
+
+        # Must pick user-latest (arrived_at "2026-07-08T12:00:00Z").
+        assert result == "user-latest"
+
+    @mock_aws
+    def test_missing_event_id_returns_empty(self):
+        """Query for a nonexistent event_id → returns ""."""
+        _create_webhook_events_table()
+
+        from src.internal.credential_binding import _lookup_authorized_user
+
+        result = _lookup_authorized_user(
+            invocation_id="inv-does-not-exist",
+            table_name=_MOTO_TABLE_NAME,
+            aws_region=_MOTO_REGION,
+        )
+
+        assert result == ""
+
+    @mock_aws
+    def test_regression_get_item_raises_validation_exception(self):
+        """REGRESSION: the OLD get_item(Key={"event_id": ...}) call raises
+        ValidationException against a composite-key table because GetItem
+        requires BOTH partition key AND sort key.
+
+        This test documents WHY the code was changed from GetItem to Query
+        (Issue #3376) and ensures the bug class is permanently caught.
+        """
+        _create_webhook_events_table()
+        table = boto3.resource("dynamodb", region_name=_MOTO_REGION).Table(_MOTO_TABLE_NAME)
+        table.put_item(
+            Item={
+                "event_id": "inv-regression",
+                "arrived_at": "2026-07-08T10:00:00Z",
+                "authorized_user_id": "user-regression",
+            }
+        )
+
+        from botocore.exceptions import ClientError
+
+        # Attempt the OLD get_item call shape — only partition key, no sort key.
+        with pytest.raises(ClientError) as exc_info:
+            table.get_item(Key={"event_id": "inv-regression"})
+
+        error_code = exc_info.value.response["Error"]["Code"]
+        assert error_code == "ValidationException"
