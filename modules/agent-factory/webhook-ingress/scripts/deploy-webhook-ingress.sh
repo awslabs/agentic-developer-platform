@@ -140,6 +140,16 @@ if ! aws s3api head-object --bucket "$STATE_BUCKET" --key "lambda-artifacts/webh
   GITLAB_OVERRIDE='-var=gitlab_webhook_enabled=false'
 fi
 
+# Check if the gateway internal-api-key secret exists; if not, override
+# enable_adversarial_e2e to false so terraform doesn't fail on the missing
+# secret. terraform.tfvars sets enable_adversarial_e2e=true for CI, but the
+# auto-loaded tfvars also applies to fresh deploys. (Issue #3488/#3490)
+ADVERSARIAL_OVERRIDE=""
+if ! aws secretsmanager describe-secret --secret-id "adp/${ENVIRONMENT}/gateway/internal-api-key" --region "$AWS_REGION" &>/dev/null; then
+  warn "internal-api-key secret not found — overriding enable_adversarial_e2e=false"
+  ADVERSARIAL_OVERRIDE='-var=enable_adversarial_e2e=false'
+fi
+
 if [ "$SKIP_TF" = true ]; then
   warn "Skipping terraform apply (--skip-terraform)."
 elif [ "$DRY_RUN" = true ]; then
@@ -153,6 +163,7 @@ else
          -var="environment=${ENVIRONMENT}" \
          -var="gateway_api_url=${GATEWAY_API_URL}" \
          $GITLAB_OVERRIDE \
+         $ADVERSARIAL_OVERRIDE \
          -input=false -auto-approve )
   ok "webhook-ingress applied"
 fi
