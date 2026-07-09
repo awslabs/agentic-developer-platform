@@ -731,6 +731,10 @@ else
       -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|off|g" \
       -e "s|__TRUST_APIGW_HEADERS__|true|g" \
       -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
+      -e "s|__ENFORCE_CREDENTIAL_BINDING__|false|g" \
+      -e "s|__VAULT_PROXY_HOST_ALLOWLIST__||g" \
+      -e "s|__INGESTION_QUEUE_URL__||g" \
+      -e "s|__AGENT_RUN_LOGS_BUCKET__||g" \
       k8s/configmap.yaml | kubectl apply -f -
   # Render serviceaccount with the correct IRSA role ARN (Issue #1008)
   sed -e "s|__GATEWAY_IRSA_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
