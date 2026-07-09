@@ -229,6 +229,10 @@ def resolve_symbol(
     2. Suffix/contains match: WHERE s.name CONTAINS target
     3. File-stem interpretation: treat "module.sub/func" as file-path hint
 
+    Results from all strategies are ranked by match quality (#3374):
+    exact-case+exact-name > case-insensitive exact-name > substring.
+    Generated-file definitions are demoted as a tiebreaker.
+
     Parameters
     ----------
     repo:
@@ -238,7 +242,8 @@ def resolve_symbol(
 
     Returns
     -------
-    List of {name, file, kind, symbol_id} dicts (up to 10 matches).
+    List of {name, file, kind, symbol_id} dicts (up to 10 matches),
+    ranked by match quality (best first).
     Empty list if nothing found (caller distinguishes from no-callers).
     """
     driver = get_neptune_driver()
@@ -260,7 +265,8 @@ def resolve_symbol(
             result = session.run(cypher_exact, {"repo": repo, "name": clean_target})
             records = [dict(r) for r in result]
             if records:
-                return records
+                # Rank: demote generated-file definitions (#3374)
+                return _rank_resolved(clean_target, records)
     except Exception:
         log.debug("resolve_symbol exact match failed for %s in %s", target, repo)
 
@@ -278,7 +284,8 @@ def resolve_symbol(
             result = session.run(cypher_contains, {"repo": repo, "name": clean_target})
             records = [dict(r) for r in result]
             if records:
-                return records
+                # Rank: exact-case > case-insensitive > substring (#3374)
+                return _rank_resolved(clean_target, records)
     except Exception:
         log.debug("resolve_symbol contains match failed for %s in %s", target, repo)
 
@@ -310,11 +317,79 @@ def resolve_symbol(
                     )
                     records = [dict(r) for r in result]
                     if records:
-                        return records
+                        return _rank_resolved(clean_target, records)
             except Exception:
                 log.debug("resolve_symbol path match failed for %s in %s", target, repo)
 
     return []
+
+
+# ---------------------------------------------------------------------------
+# resolve_symbol ranking helpers (#3374)
+# ---------------------------------------------------------------------------
+
+# File patterns indicating generated/stub code — demoted as a tiebreaker.
+_GENERATED_FILE_PATTERNS = (
+    "_pb2.py",
+    "_pb2_grpc.py",
+    ".pb.go",
+    "_grpc.pb.go",
+    ".generated.",
+    "_generated.",
+    "/generated/",
+    "/gen/",
+)
+
+
+def _is_generated_file(file_path: str) -> bool:
+    """Return True if file_path matches a generated-code pattern."""
+    lower = file_path.lower()
+    return any(pat in lower for pat in _GENERATED_FILE_PATTERNS)
+
+
+def _resolve_match_score(query: str, candidate_name: str, file_path: str) -> int:
+    """Score a candidate symbol match against the query for ranking.
+
+    Higher = better. Scoring tiers:
+    - 200: exact-case + exact-name
+    - 150: case-insensitive exact-name
+    - 100: exact-case substring (query is substring of candidate)
+    - 50:  case-insensitive substring
+    - 0:   no recognizable match
+
+    Tiebreaker: generated-file candidates get -10 (demotes below
+    hand-written sources at the same tier, but does NOT filter them).
+    """
+    query_lower = query.lower()
+    candidate_lower = candidate_name.lower()
+
+    if candidate_name == query:
+        score = 200
+    elif candidate_lower == query_lower:
+        score = 150
+    elif query in candidate_name:
+        score = 100
+    elif query_lower in candidate_lower:
+        score = 50
+    else:
+        score = 0
+
+    if _is_generated_file(file_path):
+        score -= 10
+
+    return score
+
+
+def _rank_resolved(query: str, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rank resolve_symbol results by match quality (#3374).
+
+    Exact-case matches outrank case-insensitive; generated files are demoted.
+    """
+    records.sort(
+        key=lambda r: _resolve_match_score(query, r.get("name", ""), r.get("file", "")),
+        reverse=True,
+    )
+    return records
 
 
 def symbol_exists(repo: str, file: str, symbol_name: str) -> bool:

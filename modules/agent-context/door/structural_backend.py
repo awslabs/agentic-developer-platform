@@ -272,7 +272,8 @@ def _understand_neptune_inner(
                 "source": "neptune",
             }
             results.append(SearchHit(repo_name=repo_id, data=data))
-        return results
+        # Rank: exact-case matches first, demote generated files (#3374)
+        return _rank_understand_results(symbol_name, results)
 
     # File path target
     if "." in query_target.split("/")[-1] if "/" in query_target else False:
@@ -357,7 +358,8 @@ def _understand_neptune_inner(
                 "source": "neptune",
             }
             results.append(SearchHit(repo_name=repo_id, data=data))
-        return results
+        # Rank: exact-case matches first, demote generated files (#3374)
+        return _rank_understand_results(query_target, results)
 
     # Last resort: try resolve_symbol for fuzzy/module-path targets
     resolved = neptune_client.resolve_symbol(repo_id, query_target)
@@ -523,6 +525,10 @@ async def _understand_via_code_index(
                         break
             except Exception:
                 log.debug("Zoekt fallback failed for understand %s", target, exc_info=True)
+
+    # Rank results: exact-case matches first, generated files demoted (#3374)
+    if results and query_target:
+        results = _rank_understand_results(query_target, results)
 
     return results
 
@@ -1045,3 +1051,96 @@ def _find_callers(target_key: str, call_graph: dict[str, list[str]]) -> list[str
         if target_key in callees:
             callers.append(caller)
     return callers
+
+
+# ---------------------------------------------------------------------------
+# Symbol resolution ranking helpers (#3374)
+# ---------------------------------------------------------------------------
+
+# File patterns indicating generated/stub code — demoted as a tiebreaker.
+_GENERATED_FILE_PATTERNS = (
+    "_pb2.py",
+    "_pb2_grpc.py",
+    ".pb.go",
+    "_grpc.pb.go",
+    ".generated.",
+    "_generated.",
+    "/generated/",
+    "/gen/",
+)
+
+
+def _is_generated_file(file_path: str) -> bool:
+    """Return True if file_path matches a generated-code pattern."""
+    lower = file_path.lower()
+    return any(pat in lower for pat in _GENERATED_FILE_PATTERNS)
+
+
+def _symbol_match_score(query: str, candidate_name: str, file_path: str) -> int:
+    """Score a candidate symbol match against the query.
+
+    Higher scores = better match. Used for ranking, not filtering.
+
+    Scoring tiers:
+    - 200: exact-case + exact-name match
+    - 150: case-insensitive exact-name match
+    - 100: exact-case substring match (query is a substring of candidate)
+    - 50:  case-insensitive substring match
+
+    Tiebreaker: generated-file candidates get -10 penalty (demotes them
+    below hand-written sources at the same tier, but does NOT filter them out).
+    """
+    score = 0
+    query_lower = query.lower()
+    candidate_lower = candidate_name.lower()
+
+    if candidate_name == query:
+        # Exact case + exact name
+        score = 200
+    elif candidate_lower == query_lower:
+        # Case-insensitive exact name
+        score = 150
+    elif query in candidate_name:
+        # Exact-case substring
+        score = 100
+    elif query_lower in candidate_lower:
+        # Case-insensitive substring
+        score = 50
+    else:
+        score = 0
+
+    # Tiebreaker: demote generated files
+    if _is_generated_file(file_path):
+        score -= 10
+
+    return score
+
+
+def _rank_resolve_results(query: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rank resolve_symbol results by match quality.
+
+    Sorts in-place and returns the sorted list for convenience.
+    Exact-case matches outrank case-insensitive; generated files are demoted.
+    """
+    results.sort(
+        key=lambda r: _symbol_match_score(query, r.get("name", ""), r.get("file", "")),
+        reverse=True,
+    )
+    return results
+
+
+def _rank_understand_results(query: str, results: list["SearchHit"]) -> list["SearchHit"]:
+    """Rank understand verb results by match quality + generated-file demotion.
+
+    Used after query_understand returns multiple symbols (bare-symbol path)
+    and after code-index fallback collects all matches.
+    """
+    results.sort(
+        key=lambda hit: _symbol_match_score(
+            query,
+            hit.data.get("symbol", ""),
+            hit.data.get("file", ""),
+        ),
+        reverse=True,
+    )
+    return results
