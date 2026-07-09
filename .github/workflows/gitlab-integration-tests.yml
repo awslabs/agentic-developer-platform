@@ -1,0 +1,141 @@
+name: GitLab Integration Tests
+
+on:
+  pull_request:
+    paths:
+      - 'modules/agent-factory/**'
+      - 'modules/source-control/gitlab/**'
+    branches:
+      - main
+  push:
+    branches:
+      - main
+    paths:
+      - 'modules/agent-factory/**'
+      - 'modules/source-control/gitlab/**'
+
+concurrency:
+  group: gitlab-e2e-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  gitlab-e2e-tests:
+    name: GitLab E2E Tests
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    environment: dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        working-directory: modules/agent-factory
+        run: |
+          pip install pytest requests boto3 pytest-timeout
+
+      - name: Resolve test configuration from SSM
+        run: |
+          REGION="${AWS_REGION:-us-east-1}"
+          ENV="${DEPLOY_ENV:-dev}"
+
+          # GitLab webhook endpoint (API Gateway URL for /gitlab route)
+          GITLAB_WEBHOOK_ENDPOINT=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/webhook-ingress/gitlab-endpoint" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+
+          # GitLab webhook secret from Secrets Manager
+          GITLAB_SECRET_ARN=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/webhook-ingress/gitlab-webhook-secret-arn" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          if [ -n "$GITLAB_SECRET_ARN" ]; then
+            GITLAB_WEBHOOK_SECRET=$(aws secretsmanager get-secret-value \
+              --secret-id "$GITLAB_SECRET_ARN" \
+              --query "SecretString" --output text 2>/dev/null || echo "")
+          fi
+
+          # GitLab instance details
+          GITLAB_URL=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/gitlab/url" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          GITLAB_TOKEN_ARN=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/gitlab/api-token-arn" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          if [ -n "$GITLAB_TOKEN_ARN" ]; then
+            GITLAB_TOKEN=$(aws secretsmanager get-secret-value \
+              --secret-id "$GITLAB_TOKEN_ARN" \
+              --query "SecretString" --output text 2>/dev/null || echo "")
+          fi
+          GITLAB_PROJECT_ID=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/gitlab/test-project-id" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          GITLAB_PROJECT_PATH=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/gitlab/test-project-path" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+
+          # GitHub webhook endpoint (for regression tests)
+          WEBHOOK_ENDPOINT=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/webhook-ingress/endpoint" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          WEBHOOK_SECRET_ARN=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/webhook-ingress/webhook-secret-arn" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          if [ -n "$WEBHOOK_SECRET_ARN" ]; then
+            WEBHOOK_SECRET=$(aws secretsmanager get-secret-value \
+              --secret-id "$WEBHOOK_SECRET_ARN" \
+              --query "SecretString" --output text 2>/dev/null || echo "")
+          fi
+
+          # Shared SQS queue
+          WEBHOOK_SQS_QUEUE_URL=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/webhook-ingress/sqs-queue-url" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+
+          # Export all to GITHUB_ENV
+          {
+            echo "GITLAB_WEBHOOK_ENDPOINT=${GITLAB_WEBHOOK_ENDPOINT}"
+            echo "GITLAB_WEBHOOK_SECRET=${GITLAB_WEBHOOK_SECRET}"
+            echo "GITLAB_URL=${GITLAB_URL}"
+            echo "GITLAB_TOKEN=${GITLAB_TOKEN}"
+            echo "GITLAB_PROJECT_ID=${GITLAB_PROJECT_ID}"
+            echo "GITLAB_PROJECT_PATH=${GITLAB_PROJECT_PATH}"
+            echo "WEBHOOK_ENDPOINT=${WEBHOOK_ENDPOINT}"
+            echo "WEBHOOK_SECRET=${WEBHOOK_SECRET}"
+            echo "WEBHOOK_SQS_QUEUE_URL=${WEBHOOK_SQS_QUEUE_URL}"
+            echo "TEST_ENV=${ENV}"
+          } >> "$GITHUB_ENV"
+
+      - name: Run GitLab E2E tests
+        working-directory: modules/agent-factory
+        run: |
+          python3 -m pytest tests/e2e/test_gitlab_roundtrip.py tests/e2e/test_github_regression.py \
+            -v --tb=short --timeout=120 \
+            -m "integration" \
+            --junitxml=test-results.xml
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitlab-e2e-test-results
+          path: modules/agent-factory/test-results.xml
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## GitLab E2E Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f modules/agent-factory/test-results.xml ]; then
+            TESTS=$(grep -oP 'tests="\K[^"]+' modules/agent-factory/test-results.xml | head -1)
+            FAILURES=$(grep -oP 'failures="\K[^"]+' modules/agent-factory/test-results.xml | head -1)
+            ERRORS=$(grep -oP 'errors="\K[^"]+' modules/agent-factory/test-results.xml | head -1)
+            echo "- **Tests**: ${TESTS:-0}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Failures**: ${FAILURES:-0}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Errors**: ${ERRORS:-0}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- No test results file found" >> "$GITHUB_STEP_SUMMARY"
+          fi

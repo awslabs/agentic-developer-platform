@@ -13,6 +13,7 @@ dependencies = [
 [project.optional-dependencies]
 live = [
     "websockets>=12.0",
+    "requests>=2.31",
 ]
 lint = [
     "shellcheck-py>=0.9",
@@ -36,6 +37,8 @@ markers = [
     "leave_data: skip DDB cleanup after test (for debugging)",
     "github: github_actions classifier flow tests; skipped unless RUN_GITHUB_TESTS=yes",
     "integration: webhook ingress e2e tests requiring deployed stack",
+    "gitlab: GitLab webhook round-trip e2e tests requiring GitLab instance",
+    "github_regression: GitHub webhook regression tests after GitLab additions",
 ]
 # Default: run only unit tests (skip live_only, workflow)
 addopts = "-m 'not live_only and not workflow'"
