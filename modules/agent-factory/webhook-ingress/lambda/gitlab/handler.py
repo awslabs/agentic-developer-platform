@@ -199,7 +199,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return _response(400, {"error": "Invalid JSON body"})
 
     # Parse the event
-    from gitlab.event_parser import parse_event
+    from event_parser import parse_event
 
     parsed = parse_event(payload)
 

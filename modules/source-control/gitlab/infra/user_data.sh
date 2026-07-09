@@ -56,18 +56,18 @@ GITLAB_CONFIG
 # Install AWS CLI for SSM parameter retrieval
 apt-get install -y awscli
 
-OIDC_CLIENT_ID=$$(aws ssm get-parameter \
+OIDC_CLIENT_ID=$(aws ssm get-parameter \
   --name "/adp/${environment}/gitlab/oidc-client-id" \
   --region "${aws_region}" \
   --query "Parameter.Value" --output text)
 
-OIDC_CLIENT_SECRET=$$(aws ssm get-parameter \
+OIDC_CLIENT_SECRET=$(aws ssm get-parameter \
   --name "/adp/${environment}/gitlab/oidc-client-secret" \
   --region "${aws_region}" \
   --with-decryption \
   --query "Parameter.Value" --output text)
 
-OIDC_ISSUER=$$(aws ssm get-parameter \
+OIDC_ISSUER=$(aws ssm get-parameter \
   --name "/adp/${environment}/gitlab/oidc-issuer" \
   --region "${aws_region}" \
   --query "Parameter.Value" --output text)
@@ -89,13 +89,13 @@ gitlab_rails['omniauth_providers'] = [
       name: "openid_connect",
       scope: ["openid", "email", "profile"],
       response_type: "code",
-      issuer: "$$OIDC_ISSUER",
+      issuer: "$OIDC_ISSUER",
       discovery: true,
       client_auth_method: "basic",
       uid_field: "sub",
       client_options: {
-        identifier: "$$OIDC_CLIENT_ID",
-        secret: "$$OIDC_CLIENT_SECRET",
+        identifier: "$OIDC_CLIENT_ID",
+        secret: "$OIDC_CLIENT_SECRET",
         redirect_uri: "https://${gitlab_domain}/users/auth/openid_connect/callback"
       }
     }
