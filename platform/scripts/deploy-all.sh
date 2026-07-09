@@ -799,7 +799,12 @@ if [ "$SKIP_FRONTEND" = false ] && [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGEN
 
   # Frontend build runs directly (npm + aws s3 sync) — no CodeBuild needed.
   cd "$ROOT_DIR/modules/gateway/frontend"
+  # Issue #3426: NODE_ENV=production (common in K8s pods) causes npm ci to skip
+  # devDependencies (typescript, vite, etc.) needed for the build.
+  _ORIG_NODE_ENV="${NODE_ENV:-}"
+  export NODE_ENV=development
   npm ci
+  export NODE_ENV="${_ORIG_NODE_ENV:-production}"
   # Build with the FULL VITE_* env from SSM (NOT just VITE_API_URL) — these are
   # baked into the bundle at build time; omitting them ships a broken app
   # ("GitHub sign-in is not configured" + Cognito unconfigured). Mirrors
