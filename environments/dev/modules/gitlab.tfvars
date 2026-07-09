@@ -11,6 +11,10 @@ gitlab_domain      = "gitlab.dev.adp.internal"
 route53_zone_name  = "dev.adp.internal"
 certificate_arn    = ""
 
+# Cognito OIDC
+cognito_user_pool_id = "us-east-1_JEhv9xSGG"
+cognito_domain       = "bedrockgw-dev-auth-18057152"
+
 # Backup
 backup_enabled        = true
 backup_retention_days = 90
