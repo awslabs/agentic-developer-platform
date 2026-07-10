@@ -3401,7 +3401,8 @@ class TestHandleGitLabMention:
         monkeypatch,
     ):
         """Full happy path: token read, ack posted, branch created, msg deleted.
-        URL resolved from envelope's payload.source.gitlab_url (primary)."""
+        URL resolved from envelope's payload.source.gitlab_url (primary).
+        Default branch resolved from project API."""
         from entrypoint import _handle_gitlab_mention
 
         # No GITLAB_URL env var — URL comes from the envelope's gitlab_url field
@@ -3412,12 +3413,31 @@ class TestHandleGitLabMention:
         mock_boto_client.return_value = mock_sm
         mock_sm.get_secret_value.return_value = {"SecretString": "glpat-test-token"}
 
-        # Mock urllib.request.urlopen for both calls (ack comment + branch)
-        mock_response = MagicMock()
-        mock_response.status = 201
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
+        # Mock urllib.request.urlopen for all three calls:
+        # 1) ack comment, 2) project lookup, 3) branch create
+        mock_ack_response = MagicMock()
+        mock_ack_response.status = 201
+        mock_ack_response.__enter__ = MagicMock(return_value=mock_ack_response)
+        mock_ack_response.__exit__ = MagicMock(return_value=False)
+
+        mock_project_response = MagicMock()
+        mock_project_response.status = 200
+        mock_project_response.read.return_value = json.dumps({"default_branch": "main"}).encode(
+            "utf-8"
+        )
+        mock_project_response.__enter__ = MagicMock(return_value=mock_project_response)
+        mock_project_response.__exit__ = MagicMock(return_value=False)
+
+        mock_branch_response = MagicMock()
+        mock_branch_response.status = 201
+        mock_branch_response.__enter__ = MagicMock(return_value=mock_branch_response)
+        mock_branch_response.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [
+            mock_ack_response,
+            mock_project_response,
+            mock_branch_response,
+        ]
 
         result = _handle_gitlab_mention(
             SAMPLE_GITLAB_ENVELOPE,
@@ -3429,8 +3449,8 @@ class TestHandleGitLabMention:
         assert result == 0
         # Secrets Manager called for the token
         mock_sm.get_secret_value.assert_called_once_with(SecretId="adp/dev/gitlab-api-token")
-        # Two urlopen calls: ack comment + branch create
-        assert mock_urlopen.call_count == 2
+        # Three urlopen calls: ack comment + project lookup + branch create
+        assert mock_urlopen.call_count == 3
         # Message was deleted
         mock_delete_msg.assert_called_once_with(
             "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
@@ -3469,16 +3489,17 @@ class TestHandleGitLabMention:
     @patch("entrypoint.boto3.client")
     @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
-    def test_branch_create_400_tolerated(
+    def test_branch_create_400_already_exists_tolerated(
         self,
         mock_delete_msg,
         mock_urlopen,
         mock_boto_client,
         monkeypatch,
     ):
-        """Branch already exists (400) must be tolerated — not cause failure."""
+        """Branch already exists (400 with 'already exists' body) tolerated — not failure."""
         from entrypoint import _handle_gitlab_mention
         import urllib.error
+        from io import BytesIO
 
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
@@ -3486,11 +3507,19 @@ class TestHandleGitLabMention:
         mock_boto_client.return_value = mock_sm
         mock_sm.get_secret_value.return_value = {"SecretString": "glpat-test"}
 
-        # First call (ack comment) succeeds, second call (branch) returns 400
+        # Calls: 1) ack comment, 2) project lookup, 3) branch create (400 already exists)
         mock_ack_response = MagicMock()
         mock_ack_response.status = 201
         mock_ack_response.__enter__ = MagicMock(return_value=mock_ack_response)
         mock_ack_response.__exit__ = MagicMock(return_value=False)
+
+        mock_project_response = MagicMock()
+        mock_project_response.status = 200
+        mock_project_response.read.return_value = json.dumps({"default_branch": "main"}).encode(
+            "utf-8"
+        )
+        mock_project_response.__enter__ = MagicMock(return_value=mock_project_response)
+        mock_project_response.__exit__ = MagicMock(return_value=False)
 
         call_count = [0]
 
@@ -3498,10 +3527,17 @@ class TestHandleGitLabMention:
             call_count[0] += 1
             if call_count[0] == 1:
                 return mock_ack_response
-            # Second call: branch create returns 400
-            raise urllib.error.HTTPError(
-                url=req.full_url, code=400, msg="Branch already exists", hdrs={}, fp=None
+            if call_count[0] == 2:
+                return mock_project_response
+            # Third call: branch create returns 400 with "already exists" body
+            err = urllib.error.HTTPError(
+                url=req.full_url,
+                code=400,
+                msg="Bad Request",
+                hdrs={},
+                fp=BytesIO(b'{"message":"Branch already exists"}'),
             )
+            raise err
 
         mock_urlopen.side_effect = urlopen_side_effect
 
@@ -3512,7 +3548,7 @@ class TestHandleGitLabMention:
             "receipt-gl-400",
         )
 
-        # 400 on branch create is tolerated — still success
+        # 400 with "already exists" body is tolerated — still success
         assert result == 0
         mock_delete_msg.assert_called_once()
 
@@ -3605,11 +3641,29 @@ class TestHandleGitLabMention:
         mock_boto_client.return_value = mock_sm
         mock_sm.get_secret_value.return_value = {"SecretString": "glpat-test"}
 
-        mock_response = MagicMock()
-        mock_response.status = 201
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
+        mock_ack_response = MagicMock()
+        mock_ack_response.status = 201
+        mock_ack_response.__enter__ = MagicMock(return_value=mock_ack_response)
+        mock_ack_response.__exit__ = MagicMock(return_value=False)
+
+        mock_project_response = MagicMock()
+        mock_project_response.status = 200
+        mock_project_response.read.return_value = json.dumps({"default_branch": "main"}).encode(
+            "utf-8"
+        )
+        mock_project_response.__enter__ = MagicMock(return_value=mock_project_response)
+        mock_project_response.__exit__ = MagicMock(return_value=False)
+
+        mock_branch_response = MagicMock()
+        mock_branch_response.status = 201
+        mock_branch_response.__enter__ = MagicMock(return_value=mock_branch_response)
+        mock_branch_response.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [
+            mock_ack_response,
+            mock_project_response,
+            mock_branch_response,
+        ]
 
         _handle_gitlab_mention(
             SAMPLE_GITLAB_ENVELOPE,
@@ -3643,11 +3697,29 @@ class TestHandleGitLabMention:
         mock_boto_client.return_value = mock_sm
         mock_sm.get_secret_value.return_value = {"SecretString": "glpat-test"}
 
-        mock_response = MagicMock()
-        mock_response.status = 201
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
+        mock_ack_response = MagicMock()
+        mock_ack_response.status = 201
+        mock_ack_response.__enter__ = MagicMock(return_value=mock_ack_response)
+        mock_ack_response.__exit__ = MagicMock(return_value=False)
+
+        mock_project_response = MagicMock()
+        mock_project_response.status = 200
+        mock_project_response.read.return_value = json.dumps({"default_branch": "main"}).encode(
+            "utf-8"
+        )
+        mock_project_response.__enter__ = MagicMock(return_value=mock_project_response)
+        mock_project_response.__exit__ = MagicMock(return_value=False)
+
+        mock_branch_response = MagicMock()
+        mock_branch_response.status = 201
+        mock_branch_response.__enter__ = MagicMock(return_value=mock_branch_response)
+        mock_branch_response.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [
+            mock_ack_response,
+            mock_project_response,
+            mock_branch_response,
+        ]
 
         # Envelope with empty gitlab_url in source
         envelope_empty_url = {
@@ -3671,3 +3743,130 @@ class TestHandleGitLabMention:
         # Verify the URL used is from env var (fallback)
         first_call_req = mock_urlopen.call_args_list[0][0][0]
         assert "override-gitlab.internal" in first_call_req.full_url
+
+    @patch("entrypoint.boto3.client")
+    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint._delete_message")
+    def test_branch_create_400_invalid_ref_returns_1(
+        self,
+        mock_delete_msg,
+        mock_urlopen,
+        mock_boto_client,
+        monkeypatch,
+    ):
+        """Issue #3452: branch 400 with non-'already exists' body → error, return 1."""
+        from entrypoint import _handle_gitlab_mention
+        import urllib.error
+        from io import BytesIO
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        mock_sm = MagicMock()
+        mock_boto_client.return_value = mock_sm
+        mock_sm.get_secret_value.return_value = {"SecretString": "glpat-test"}
+
+        # Calls: 1) ack comment, 2) project lookup, 3) branch create (400 invalid ref)
+        mock_ack_response = MagicMock()
+        mock_ack_response.status = 201
+        mock_ack_response.__enter__ = MagicMock(return_value=mock_ack_response)
+        mock_ack_response.__exit__ = MagicMock(return_value=False)
+
+        mock_project_response = MagicMock()
+        mock_project_response.status = 200
+        mock_project_response.read.return_value = json.dumps({"default_branch": "main"}).encode(
+            "utf-8"
+        )
+        mock_project_response.__enter__ = MagicMock(return_value=mock_project_response)
+        mock_project_response.__exit__ = MagicMock(return_value=False)
+
+        call_count = [0]
+
+        def urlopen_side_effect(req, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return mock_ack_response
+            if call_count[0] == 2:
+                return mock_project_response
+            # Third call: branch create returns 400 with invalid ref body
+            err = urllib.error.HTTPError(
+                url=req.full_url,
+                code=400,
+                msg="Bad Request",
+                hdrs={},
+                fp=BytesIO(b'{"message":"Invalid reference name"}'),
+            )
+            raise err
+
+        mock_urlopen.side_effect = urlopen_side_effect
+
+        result = _handle_gitlab_mention(
+            SAMPLE_GITLAB_ENVELOPE,
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-400-invalid",
+        )
+
+        # 400 with non-"already exists" body is a real error — return 1
+        assert result == 1
+        mock_delete_msg.assert_called_once()
+
+    @patch("entrypoint.boto3.client")
+    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint._delete_message")
+    def test_default_branch_resolved_from_project_api(
+        self,
+        mock_delete_msg,
+        mock_urlopen,
+        mock_boto_client,
+        monkeypatch,
+    ):
+        """Issue #3452: default branch resolved from project API (non-'main' works)."""
+        from entrypoint import _handle_gitlab_mention
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        mock_sm = MagicMock()
+        mock_boto_client.return_value = mock_sm
+        mock_sm.get_secret_value.return_value = {"SecretString": "glpat-test"}
+
+        # Calls: 1) ack comment, 2) project lookup (develop), 3) branch create
+        mock_ack_response = MagicMock()
+        mock_ack_response.status = 201
+        mock_ack_response.__enter__ = MagicMock(return_value=mock_ack_response)
+        mock_ack_response.__exit__ = MagicMock(return_value=False)
+
+        mock_project_response = MagicMock()
+        mock_project_response.status = 200
+        mock_project_response.read.return_value = json.dumps({"default_branch": "develop"}).encode(
+            "utf-8"
+        )
+        mock_project_response.__enter__ = MagicMock(return_value=mock_project_response)
+        mock_project_response.__exit__ = MagicMock(return_value=False)
+
+        mock_branch_response = MagicMock()
+        mock_branch_response.status = 201
+        mock_branch_response.__enter__ = MagicMock(return_value=mock_branch_response)
+        mock_branch_response.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [
+            mock_ack_response,
+            mock_project_response,
+            mock_branch_response,
+        ]
+
+        result = _handle_gitlab_mention(
+            SAMPLE_GITLAB_ENVELOPE,
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-develop",
+        )
+
+        assert result == 0
+        # Verify the branch-create request used "develop" as ref, not "main"
+        branch_create_req = mock_urlopen.call_args_list[2][0][0]
+        assert branch_create_req.data is not None
+        import json as json_mod
+
+        branch_payload = json_mod.loads(branch_create_req.data.decode("utf-8"))
+        assert branch_payload["ref"] == "develop"
+        assert branch_payload["branch"] == "agent/issue-7"

@@ -370,10 +370,28 @@ def _handle_gitlab_mention(
         logger.error("GitLab path: failed to post ack comment: %s", exc)
         ack_failed = True
 
-    # 2. Create branch agent/issue-<iid> from default branch (idempotent)
+    # 2. Resolve default branch from project metadata
+    default_branch = "main"  # fallback
+    project_url = f"{base_url}/api/v4/projects/{project_id}"
+    try:
+        req = urllib.request.Request(project_url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            project_data = json.loads(resp.read().decode("utf-8"))
+            default_branch = project_data.get("default_branch", "main") or "main"
+            logger.info(
+                "GitLab default branch resolved: project=%s branch=%s",
+                project_id,
+                default_branch,
+            )
+    except Exception as exc:
+        logger.warning(
+            "GitLab path: failed to resolve default branch, falling back to 'main': %s", exc
+        )
+
+    # 3. Create branch agent/issue-<iid> from default branch (idempotent)
     branch_name = f"agent/issue-{issue_iid}"
     branches_url = f"{base_url}/api/v4/projects/{project_id}/repository/branches"
-    branch_payload = json.dumps({"branch": branch_name, "ref": "main"}).encode("utf-8")
+    branch_payload = json.dumps({"branch": branch_name, "ref": default_branch}).encode("utf-8")
 
     try:
         req = urllib.request.Request(
@@ -383,14 +401,27 @@ def _handle_gitlab_mention(
             logger.info("GitLab branch created: %s (status=%s)", branch_name, resp.status)
     except urllib.error.HTTPError as exc:
         if exc.code == 400:
-            # Branch already exists — expected idempotent case
-            logger.info("GitLab branch already exists: %s (400 tolerated)", branch_name)
+            # Disambiguate: "already exists" is tolerable; other 400s are real errors
+            error_body = ""
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            if "already exists" in error_body.lower():
+                logger.info("GitLab branch already exists: %s (400 tolerated)", branch_name)
+            else:
+                logger.error(
+                    "GitLab path: branch create 400 — not 'already exists': %s body=%s",
+                    branch_name,
+                    error_body,
+                )
+                ack_failed = True
         else:
             logger.error("GitLab path: failed to create branch: %s (status=%s)", exc, exc.code)
     except Exception as exc:
         logger.error("GitLab path: failed to create branch: %s", exc)
 
-    # 3. Delete the SQS message — always, to prevent FIFO jam
+    # 4. Delete the SQS message — always, to prevent FIFO jam
     try:
         _delete_message(queue_url, region, receipt_handle)
         logger.info("GitLab message deleted successfully")
