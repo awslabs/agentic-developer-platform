@@ -47,6 +47,8 @@ SKIP_ADMIN_BOOTSTRAP=false
 SKIP_WEBHOOK_INGRESS=false
 LOCAL_MODE=false
 CI_MODE=false
+UPDATE_MODE=false
+CONFIRM_DESTRUCTIVE=false
 
 for arg in "$@"; do
   case $arg in
@@ -61,26 +63,34 @@ for arg in "$@"; do
     --skip-webhook-ingress) SKIP_WEBHOOK_INGRESS=true ;;
     --local) LOCAL_MODE=true ;;
     --ci) CI_MODE=true ;;
+    --update) UPDATE_MODE=true ;;
+    --confirm-destructive) CONFIRM_DESTRUCTIVE=true ;;
     --help)
       echo "Usage: $0 [OPTIONS]"
       echo ""
-      echo "Scope flags:"
-      echo "  (default)                Deploy all modules (platform + gateway + agent-factory; agent-context if AGENT_CONTEXT_ENABLED=true)"
-      echo "  --gateway-only           Deploy platform + gateway only (skip agent-factory, webhook-ingress, agent-context)"
-      echo "  --agent-factory-only     Deploy platform + agent-factory only (skip gateway, agent-context)"
-      echo "  --agent-context-only     Deploy platform + agent-context only (skip gateway, agent-factory)"
+      echo "Modes:"
+      echo "  (default)              Fresh deploy — stand up the platform from scratch"
+      echo "  --update               Update mode — converge an existing deployment to newer code"
+      echo "  --destroy              Tear down all infrastructure (LEGACY — prefer undeploy.sh)"
+      echo "  --ci                   CI mode: validate outputs exist without re-applying"
       echo ""
-      echo "Skip flags:"
-      echo "  --skip-agent-context     Skip agent-context even if AGENT_CONTEXT_ENABLED=true"
-      echo "  --skip-frontend          Skip frontend build and deploy (step 6)"
-      echo "  --skip-broker            Skip broker Lambda deploy (step 7). Use when enable_github_auth_broker=false"
-      echo "  --skip-admin-bootstrap   Skip first-admin DB seeding (step 8). Use on re-deploys where the admin already exists"
-      echo "  --skip-webhook-ingress   Skip webhook-ingress stack (step 9). Use when only gateway is needed but agent-factory infra is wanted"
+      echo "Update-mode flags (only with --update):"
+      echo "  --confirm-destructive  Authorize terraform applies that include resource destroys"
       echo ""
-      echo "Mode flags:"
-      echo "  --local                  Use local Docker daemon for image builds (instead of CodeBuild)"
-      echo "  --ci                     CI mode: validate outputs exist without re-applying (use after GH Actions deploys)"
-      echo "  --destroy                Tear down all infrastructure (LEGACY — prefer undeploy.sh)"
+      echo "Scope:"
+      echo "  --gateway-only         Platform + gateway only"
+      echo "  --agent-factory-only   Platform + agent-factory only"
+      echo "  --agent-context-only   Platform + agent-context only"
+      echo ""
+      echo "Skip:"
+      echo "  --skip-frontend        Skip frontend build and deploy"
+      echo "  --skip-broker          Skip broker Lambda deploy"
+      echo "  --skip-admin-bootstrap Skip first-admin DB seeding"
+      echo "  --skip-webhook-ingress Skip webhook-ingress stack"
+      echo "  --skip-agent-context   Skip agent-context even if AGENT_CONTEXT_ENABLED=true"
+      echo ""
+      echo "Build:"
+      echo "  --local                Use local Docker for image builds (instead of CodeBuild)"
       exit 0
       ;;
   esac
@@ -93,17 +103,116 @@ warn() { echo -e "${YELLOW}⚠ $1${NC}"; }
 fail() { echo -e "${RED}✗ $1${NC}"; exit 1; }
 
 # =============================================================================
+# Mutual exclusion checks
+# =============================================================================
+if [ "$UPDATE_MODE" = true ] && [ "$DESTROY" = true ]; then
+  fail "--update and --destroy are mutually exclusive"
+fi
+if [ "$UPDATE_MODE" = true ] && [ "$CI_MODE" = true ]; then
+  fail "--update and --ci are mutually exclusive"
+fi
+
+# =============================================================================
+# Helper: terraform_update_apply — plan-gated apply for update mode (§4)
+# =============================================================================
+# In update mode, every terraform apply is replaced with a plan-first gate that
+# refuses to apply if the plan includes resource destroys (unless
+# --confirm-destructive was passed). This prevents silent destruction of live
+# resources from TF drift.
+terraform_update_apply() {
+  local MODULE_NAME="$1"
+  local VAR_FILE="$2"
+  shift 2
+  local EXTRA_VARS=("${@}")
+
+  # 1. Plan to a file (captures the plan for inspection)
+  local PLAN_FILE="/tmp/tf-plan-${MODULE_NAME}-$$.tfplan"
+  local PLAN_OUTPUT="/tmp/tf-plan-${MODULE_NAME}-$$.txt"
+
+  # Disable pipefail around the plan command: terraform plan -detailed-exitcode
+  # returns exit code 2 when changes are present (the expected case for update
+  # mode). With pipefail, the pipeline's exit code would be 2, and set -e would
+  # terminate the script before PIPESTATUS can be captured.
+  set +o pipefail
+  if [ ${#EXTRA_VARS[@]} -gt 0 ]; then
+    terraform plan \
+      -var-file="$VAR_FILE" \
+      "${EXTRA_VARS[@]}" \
+      -out="$PLAN_FILE" \
+      -detailed-exitcode 2>&1 | tee "$PLAN_OUTPUT"
+  else
+    terraform plan \
+      -var-file="$VAR_FILE" \
+      -out="$PLAN_FILE" \
+      -detailed-exitcode 2>&1 | tee "$PLAN_OUTPUT"
+  fi
+  local EXIT_CODE=${PIPESTATUS[0]}
+  set -o pipefail
+
+  # Exit code: 0 = no changes, 1 = error, 2 = changes present
+  if [ "$EXIT_CODE" -eq 0 ]; then
+    ok "$MODULE_NAME: no changes"
+    rm -f "$PLAN_FILE" "$PLAN_OUTPUT"
+    return 0
+  elif [ "$EXIT_CODE" -eq 1 ]; then
+    rm -f "$PLAN_FILE" "$PLAN_OUTPUT"
+    fail "$MODULE_NAME: terraform plan failed"
+  fi
+
+  # 2. Check for destroys
+  DESTROYS=$(grep -c 'will be destroyed' "$PLAN_OUTPUT" 2>/dev/null) || DESTROYS=0
+
+  if [ "$DESTROYS" -gt 0 ]; then
+    echo ""
+    echo -e "${RED}━━━ DESTROY GATE ━━━${NC}"
+    echo -e "${RED}$MODULE_NAME plan includes $DESTROYS resource(s) to be destroyed:${NC}"
+    echo ""
+    grep 'will be destroyed' "$PLAN_OUTPUT"
+    echo ""
+
+    if [ "$CONFIRM_DESTRUCTIVE" = true ]; then
+      warn "Operator confirmed destructive apply (--confirm-destructive). Proceeding."
+    else
+      echo "To authorize this apply, re-run with --confirm-destructive."
+      echo "To inspect the full plan: cat $PLAN_OUTPUT"
+      echo ""
+      echo "Known drift issues to check:"
+      echo "  - agent-context/Neptune: full apply may want to destroy 9 Neptune resources (Issue #2769)"
+      echo "  - gateway/kms:Decrypt policy: missing 'moved' block causes destroy+recreate (Issue #2909)"
+      echo "  - platform/EKS access entries: role ARN format drift between CI and manual applies"
+      echo ""
+      fail "Refusing to apply $MODULE_NAME plan with $DESTROYS destroy(s). Pass --confirm-destructive to override."
+    fi
+  fi
+
+  # 3. Apply the saved plan (no -auto-approve needed — plan file is pre-approved)
+  terraform apply "$PLAN_FILE"
+  ok "$MODULE_NAME: applied successfully"
+
+  # Cleanup
+  rm -f "$PLAN_FILE" "$PLAN_OUTPUT"
+}
+
+# =============================================================================
 # Preflight
 # =============================================================================
 step "Preflight checks"
 
-echo "Running preflight validation..."
-LOCAL_FLAG=""
-[ "$LOCAL_MODE" = true ] && LOCAL_FLAG="--local"
-if [ -f "$SCRIPT_DIR/preflight-check.sh" ]; then
-  bash "$SCRIPT_DIR/preflight-check.sh" $LOCAL_FLAG || fail "Preflight checks failed. Fix the issues above and retry."
+if [ "$UPDATE_MODE" = true ]; then
+  # Update mode: partial preflight — skip tool-install checks; keep AWS auth + cluster-reachable
+  echo "Running partial preflight (update mode)..."
+  command -v aws >/dev/null 2>&1 || fail "aws CLI not found"
+  command -v kubectl >/dev/null 2>&1 || fail "kubectl not found"
+  command -v terraform >/dev/null 2>&1 || fail "terraform not found"
 else
-  warn "preflight-check.sh not found, skipping validation"
+  echo "Running preflight validation..."
+  LOCAL_FLAG=""
+  [ "$LOCAL_MODE" = true ] && LOCAL_FLAG="--local"
+  if [ -f "$SCRIPT_DIR/preflight-check.sh" ]; then
+    bash "$SCRIPT_DIR/preflight-check.sh" $LOCAL_FLAG || fail "Preflight checks failed. Fix the issues above and retry."
+  else
+    warn "preflight-check.sh not found, skipping validation"
+  fi
 fi
 
 command -v aws >/dev/null 2>&1 || fail "aws CLI not found"
@@ -123,8 +232,12 @@ ok "AWS Account: $ACCOUNT_ID | Region: $AWS_REGION | Env: $ENVIRONMENT"
 # AccessDeniedException and the agent-worker misreports it as "no changes
 # needed". Idempotent — skips models already enabled.
 # ---------------------------------------------------------------------------
-step "Bedrock model access"
-bash "$SCRIPT_DIR/enable-bedrock-models.sh" || fail "Bedrock model agreements could not be enabled. Agents cannot invoke Claude without them."
+if [ "$UPDATE_MODE" = true ]; then
+  step "Bedrock model access (skipped — update mode)"
+else
+  step "Bedrock model access"
+  bash "$SCRIPT_DIR/enable-bedrock-models.sh" || fail "Bedrock model agreements could not be enabled. Agents cannot invoke Claude without them."
+fi
 
 # ---------------------------------------------------------------------------
 # Detect operator's public IP and lock EKS public API to /32 (portable)
@@ -152,6 +265,34 @@ STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
 LOCK_TABLE="adp-terraform-locks"
 EKS_CLUSTER="adp-${ENVIRONMENT}-eks-cluster"
 CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
+
+# =============================================================================
+# Update mode: precondition checks (§1)
+# =============================================================================
+if [ "$UPDATE_MODE" = true ]; then
+  step "Update mode: precondition checks"
+
+  # 1. State bucket must exist
+  aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null \
+    || fail "--update requires an existing deployment. State bucket '$STATE_BUCKET' not found."
+
+  # 2. EKS cluster must exist and be ACTIVE
+  CLUSTER_STATUS=$(aws eks describe-cluster --name "$EKS_CLUSTER" \
+    --query 'cluster.status' --output text 2>/dev/null) || true
+  [ "$CLUSTER_STATUS" = "ACTIVE" ] \
+    || fail "--update requires a running EKS cluster. Got status: ${CLUSTER_STATUS:-not found}"
+
+  # 3. Gateway namespace must exist (indicates prior deploy)
+  kubectl get namespace adp-gateway &>/dev/null \
+    || fail "--update requires prior gateway deployment. Namespace 'adp-gateway' not found."
+
+  ok "Preconditions met: state bucket exists, EKS ACTIVE, adp-gateway namespace present"
+
+  # Determine source SHA for image tagging (§2)
+  SOURCE_SHA=$(git rev-parse --short=12 HEAD 2>/dev/null || echo "manual-$(date +%s)")
+  export IMAGE_TAG="$SOURCE_SHA"
+  ok "Image tag for this update: $IMAGE_TAG"
+fi
 
 # =============================================================================
 # Helper: refresh AWS credentials (cross-account / short-lived sessions)
@@ -244,6 +385,13 @@ run_codebuild() {
   fi
 
   # Delegate to codebuild-run.sh for per-build isolated source upload + start + poll
+  # In update mode, forward IMAGE_TAG so CodeBuild pushes the SHA-tagged image
+  # (without this, only :latest is pushed and kubectl set image :<sha> fails).
+  local _CB_IMAGE_TAG_OVERRIDE=""
+  if [ -n "${IMAGE_TAG:-}" ]; then
+    _CB_IMAGE_TAG_OVERRIDE="name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT"
+  fi
+  # shellcheck disable=SC2086
   STATE_BUCKET="$STATE_BUCKET" AWS_REGION="$AWS_REGION" SOURCE_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)" \
     bash "$SCRIPT_DIR/codebuild-run.sh" "$PROJECT_NAME" \
       "name=AWS_REGION,value=$AWS_REGION" \
@@ -252,6 +400,7 @@ run_codebuild() {
       "name=REGISTRY,value=$REGISTRY" \
       "name=STATE_BUCKET,value=$STATE_BUCKET" \
       "name=EKS_CLUSTER,value=$EKS_CLUSTER" \
+      ${_CB_IMAGE_TAG_OVERRIDE:+"$_CB_IMAGE_TAG_OVERRIDE"} \
   || fail "Build failed: $PROJECT_NAME"
   ok "Build succeeded: $PROJECT_NAME"
 }
@@ -541,40 +690,45 @@ fi
 # Step 1: Bootstrap (always local — chicken-and-egg)
 # =============================================================================
 refresh_credentials
-step "Step 1/11: Bootstrap Terraform state backend"
-
-if aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null; then
-  ok "State bucket exists: $STATE_BUCKET"
+if [ "$UPDATE_MODE" = true ]; then
+  step "Step 1/11: Bootstrap (skipped — update mode)"
+  ok "State bucket verified in preconditions: $STATE_BUCKET"
 else
-  echo "Creating S3 bucket and DynamoDB table..."
-  aws s3api create-bucket --bucket "$STATE_BUCKET" --region "$AWS_REGION" \
-    $([ "$AWS_REGION" != "us-east-1" ] && echo "--create-bucket-configuration LocationConstraint=$AWS_REGION") > /dev/null 2>&1
-  aws s3api put-bucket-versioning --bucket "$STATE_BUCKET" --versioning-configuration Status=Enabled
-  aws s3api put-bucket-encryption --bucket "$STATE_BUCKET" \
-    --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-  aws s3api put-public-access-block --bucket "$STATE_BUCKET" \
-    --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-  ok "S3 bucket created: $STATE_BUCKET"
-fi
+  step "Step 1/11: Bootstrap Terraform state backend"
 
-if ! aws dynamodb describe-table --table-name "$LOCK_TABLE" --region "$AWS_REGION" > /dev/null 2>&1; then
-  aws dynamodb create-table --table-name "$LOCK_TABLE" \
-    --attribute-definitions AttributeName=LockID,AttributeType=S \
-    --key-schema AttributeName=LockID,KeyType=HASH \
-    --billing-mode PAY_PER_REQUEST --region "$AWS_REGION" > /dev/null
-  aws dynamodb wait table-exists --table-name "$LOCK_TABLE" --region "$AWS_REGION"
-  ok "DynamoDB table created: $LOCK_TABLE"
-else
-  ok "DynamoDB table exists: $LOCK_TABLE"
-fi
-
-# Replace ACCOUNT_ID placeholders
-find "$ROOT_DIR/environments/" -name "*.tfvars" 2>/dev/null | while read f; do
-  if grep -q "ACCOUNT_ID" "$f" 2>/dev/null; then
-    sed -i '' "s/ACCOUNT_ID/${ACCOUNT_ID}/g" "$f" 2>/dev/null || sed -i "s/ACCOUNT_ID/${ACCOUNT_ID}/g" "$f"
+  if aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null; then
+    ok "State bucket exists: $STATE_BUCKET"
+  else
+    echo "Creating S3 bucket and DynamoDB table..."
+    aws s3api create-bucket --bucket "$STATE_BUCKET" --region "$AWS_REGION" \
+      $([ "$AWS_REGION" != "us-east-1" ] && echo "--create-bucket-configuration LocationConstraint=$AWS_REGION") > /dev/null 2>&1
+    aws s3api put-bucket-versioning --bucket "$STATE_BUCKET" --versioning-configuration Status=Enabled
+    aws s3api put-bucket-encryption --bucket "$STATE_BUCKET" \
+      --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+    aws s3api put-public-access-block --bucket "$STATE_BUCKET" \
+      --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+    ok "S3 bucket created: $STATE_BUCKET"
   fi
-done
-ok "Environment configs updated"
+
+  if ! aws dynamodb describe-table --table-name "$LOCK_TABLE" --region "$AWS_REGION" > /dev/null 2>&1; then
+    aws dynamodb create-table --table-name "$LOCK_TABLE" \
+      --attribute-definitions AttributeName=LockID,AttributeType=S \
+      --key-schema AttributeName=LockID,KeyType=HASH \
+      --billing-mode PAY_PER_REQUEST --region "$AWS_REGION" > /dev/null
+    aws dynamodb wait table-exists --table-name "$LOCK_TABLE" --region "$AWS_REGION"
+    ok "DynamoDB table created: $LOCK_TABLE"
+  else
+    ok "DynamoDB table exists: $LOCK_TABLE"
+  fi
+
+  # Replace ACCOUNT_ID placeholders
+  find "$ROOT_DIR/environments/" -name "*.tfvars" 2>/dev/null | while read f; do
+    if grep -q "ACCOUNT_ID" "$f" 2>/dev/null; then
+      sed -i '' "s/ACCOUNT_ID/${ACCOUNT_ID}/g" "$f" 2>/dev/null || sed -i "s/ACCOUNT_ID/${ACCOUNT_ID}/g" "$f"
+    fi
+  done
+  ok "Environment configs updated"
+fi
 
 # =============================================================================
 # Upload source for CodeBuild docker-build steps
@@ -594,8 +748,12 @@ step "Step 2/11: Deploy shared platform (VPC, EKS, ECR, IAM)"
 # Platform infra runs directly (Terraform + kubectl) — no CodeBuild needed.
 cd "$ROOT_DIR/platform/infra"
 terraform init -backend-config="../../environments/$ENVIRONMENT/backend.tfvars" -input=false
-terraform apply -var-file="../../environments/$ENVIRONMENT/platform.tfvars" -auto-approve
-ok "Platform deployed"
+if [ "$UPDATE_MODE" = true ]; then
+  terraform_update_apply "platform" "../../environments/$ENVIRONMENT/platform.tfvars"
+else
+  terraform apply -var-file="../../environments/$ENVIRONMENT/platform.tfvars" -auto-approve
+  ok "Platform deployed"
+fi
 
 # Configure kubectl (needed for k8s steps — local or CodeBuild deploy step)
 if command -v kubectl >/dev/null 2>&1; then
@@ -647,10 +805,15 @@ else
   # KMS alias actually exists. On fresh deploys it won't (webhook-ingress is
   # Step 9); on re-deploys it will.
   KMS_GRANT=$(webhook_kms_grant_value)
-  terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
-    -var "enable_webhook_secrets_kms_grant=$KMS_GRANT" \
-    -auto-approve
-  ok "Gateway infrastructure deployed (enable_webhook_secrets_kms_grant=$KMS_GRANT)"
+  if [ "$UPDATE_MODE" = true ]; then
+    terraform_update_apply "gateway" "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+      -var "enable_webhook_secrets_kms_grant=$KMS_GRANT"
+  else
+    terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+      -var "enable_webhook_secrets_kms_grant=$KMS_GRANT" \
+      -auto-approve
+    ok "Gateway infrastructure deployed (enable_webhook_secrets_kms_grant=$KMS_GRANT)"
+  fi
 fi
 
 refresh_credentials
@@ -663,11 +826,41 @@ if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
   echo "Skipping gateway deploy (--agent-factory-only or --agent-context-only)"
   ok "Skipped"
 else
+  # ─── Migrations (update mode only — run BEFORE backend rollout, §3) ───
+  if [ "$UPDATE_MODE" = true ]; then
+    step "Step 4a/11: Run database migrations"
+
+    # Find a running gateway pod (mirrors run-gateway-migrations.yml logic)
+    NS="adp-gateway"
+    POD=$(kubectl get pods -n "$NS" --field-selector=status.phase=Running \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || true
+
+    if [ -z "$POD" ]; then
+      warn "No running gateway pod found. Skipping migrations (will run after rollout if pods start)."
+    else
+      echo "Running alembic migrations on $NS/$POD..."
+      echo "=== Current revision ==="
+      kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic current 2>&1 || true
+      echo ""
+      echo "=== Upgrading to head ==="
+      kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic upgrade head \
+        || fail "Alembic migration failed. Check: kubectl exec -n $NS $POD -- env PYTHONPATH=/app alembic history"
+      echo ""
+      echo "=== New revision ==="
+      kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic current
+      ok "Migrations complete"
+    fi
+  fi
+
   # --- Docker build: use CodeBuild (needs privileged mode) or local Docker ---
   if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
     cd "$ROOT_DIR/modules/gateway"
     docker build -t adp-gateway .
     aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+    if [ "$UPDATE_MODE" = true ]; then
+      docker tag adp-gateway:latest "$REGISTRY/adp-gateway:${IMAGE_TAG}"
+      docker push "$REGISTRY/adp-gateway:${IMAGE_TAG}"
+    fi
     docker tag adp-gateway:latest "$REGISTRY/adp-gateway:latest"
     docker push "$REGISTRY/adp-gateway:latest"
   else
@@ -745,19 +938,64 @@ else
       *) kubectl apply -f "$f" -n adp-gateway ;;
     esac
   done
-  kubectl set image deployment/bedrockgateway bedrockgateway="${REGISTRY}/adp-gateway:latest" -n adp-gateway 2>/dev/null || true
-  kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || warn "Rollout not complete"
 
-  # Run database migrations (alembic upgrade head) — required for fresh deploys
-  # where Terraform creates the RDS instance but doesn't populate the schema.
-  # Idempotent on re-deploys (alembic tracks applied versions).
-  echo "Running database migrations..."
-  _GW_POD=$(kubectl get pods -n adp-gateway -l app=bedrockgateway --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-  if [ -n "$_GW_POD" ]; then
-    kubectl exec -n adp-gateway "$_GW_POD" -- env PYTHONPATH=/app alembic upgrade head 2>&1 | tail -5
-    ok "Database migrations applied"
+  if [ "$UPDATE_MODE" = true ]; then
+    # Update mode: SHA-tagged image + mandatory rollout + health check (§2, §8)
+    CURRENT_IMAGE=$(kubectl get deployment/bedrockgateway -n adp-gateway \
+      -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
+    if [ "$CURRENT_IMAGE" = "${REGISTRY}/adp-gateway:${IMAGE_TAG}" ]; then
+      echo "Image tag unchanged. Forcing rollout restart..."
+      kubectl rollout restart deployment/bedrockgateway -n adp-gateway
+    else
+      kubectl set image deployment/bedrockgateway \
+        bedrockgateway="${REGISTRY}/adp-gateway:${IMAGE_TAG}" -n adp-gateway
+    fi
+    kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s \
+      || fail "Gateway rollout failed. Check: kubectl describe deployment/bedrockgateway -n adp-gateway"
+
+    # Post-rollout health check (§2)
+    sleep 5
+    HEALTH=$(kubectl exec -n adp-gateway deploy/bedrockgateway -- \
+      curl -sf http://localhost:8080/health 2>/dev/null) || true
+    echo "$HEALTH" | grep -q '"status"' \
+      || warn "Health check inconclusive. Verify: kubectl exec -n adp-gateway deploy/bedrockgateway -- curl http://localhost:8080/health"
+
+    # Post-rollout migration (runs on the NEW pod which has updated alembic files).
+    # The pre-rollout step (Step 4a) catches half-applied prior migrations but
+    # cannot apply new revisions introduced by the update (old image lacks them).
+    # This step mirrors CI's ordering: gateway-deploy.yml runs migrations AFTER
+    # the new image is live (needs: [deploy-backend]).
+    # Pick the NEWEST running gateway pod: right after rollout status returns,
+    # old pods can still be Terminating (phase=Running), and an unordered pick
+    # could exec into an old pod — silently no-oping the new revisions again.
+    POST_POD=$(kubectl get pods -n adp-gateway -l app=bedrockgateway \
+      --field-selector=status.phase=Running \
+      --sort-by=.metadata.creationTimestamp \
+      -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null) || true
+    if [ -n "$POST_POD" ]; then
+      echo "Running post-rollout migrations on new pod ($POST_POD)..."
+      kubectl exec -n adp-gateway "$POST_POD" -- env PYTHONPATH=/app alembic upgrade head \
+        || fail "Post-rollout alembic migration failed. The new image is live but schema may be stale. Check: kubectl exec -n adp-gateway $POST_POD -- env PYTHONPATH=/app alembic history"
+      ok "Post-rollout migrations complete"
+    else
+      warn "No running pod found after rollout — cannot run post-rollout migrations"
+    fi
   else
-    warn "No running gateway pod found — skipping migrations (will retry at Step 8)"
+    # Fresh-deploy mode: :latest tag, non-fatal rollout check
+    kubectl set image deployment/bedrockgateway bedrockgateway="${REGISTRY}/adp-gateway:latest" -n adp-gateway 2>/dev/null || true
+    kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || warn "Rollout not complete"
+
+    # Run database migrations (alembic upgrade head) — required for fresh deploys
+    # where Terraform creates the RDS instance but doesn't populate the schema.
+    # Idempotent on re-deploys (alembic tracks applied versions).
+    echo "Running database migrations..."
+    _GW_POD=$(kubectl get pods -n adp-gateway -l app=bedrockgateway --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    if [ -n "$_GW_POD" ]; then
+      kubectl exec -n adp-gateway "$_GW_POD" -- env PYTHONPATH=/app alembic upgrade head 2>&1 | tail -5
+      ok "Database migrations applied"
+    else
+      warn "No running gateway pod found — skipping migrations (will retry at Step 8)"
+    fi
   fi
 fi
 ok "Gateway deployed"
@@ -794,15 +1032,24 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
     cd "$ROOT_DIR/modules/gateway/infra"
     # Issue #3419: re-check KMS alias existence for the second pass too.
     KMS_GRANT=$(webhook_kms_grant_value)
-    terraform apply \
-      -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
-      -var "internal_alb_arn=$ALB_ARN" \
-      -var "internal_alb_dns=$ALB_DNS" \
-      -var "alb_security_group_ids=$ALB_SG_IDS" \
-      -var "enable_vpc_origin=true" \
-      -var "enable_webhook_secrets_kms_grant=$KMS_GRANT" \
-      -auto-approve
-    ok "API Gateway VPC Link and CloudFront VPC Origin wired to ALB (enable_webhook_secrets_kms_grant=$KMS_GRANT)"
+    if [ "$UPDATE_MODE" = true ]; then
+      terraform_update_apply "gateway-alb-wire" "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+        -var "internal_alb_arn=$ALB_ARN" \
+        -var "internal_alb_dns=$ALB_DNS" \
+        -var "alb_security_group_ids=$ALB_SG_IDS" \
+        -var "enable_vpc_origin=true" \
+        -var "enable_webhook_secrets_kms_grant=$KMS_GRANT"
+    else
+      terraform apply \
+        -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+        -var "internal_alb_arn=$ALB_ARN" \
+        -var "internal_alb_dns=$ALB_DNS" \
+        -var "alb_security_group_ids=$ALB_SG_IDS" \
+        -var "enable_vpc_origin=true" \
+        -var "enable_webhook_secrets_kms_grant=$KMS_GRANT" \
+        -auto-approve
+      ok "API Gateway VPC Link and CloudFront VPC Origin wired to ALB (enable_webhook_secrets_kms_grant=$KMS_GRANT)"
+    fi
   fi
 fi
 
@@ -878,7 +1125,10 @@ refresh_credentials
 # Without it, the onboarding gate shows "request access" for everyone. Requires
 # the gateway pod to be healthy — we enforce a strict rollout gate here.
 # Gateway-scope: runs unless --agent-factory-only or --agent-context-only.
-if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_ADMIN_BOOTSTRAP" = false ]; then
+if [ "$UPDATE_MODE" = true ]; then
+  step "Step 8/11: Admin bootstrap (skipped — update mode)"
+  ok "Admin already exists on live platform"
+elif [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_ADMIN_BOOTSTRAP" = false ]; then
   step "Step 8/11: Bootstrap first admin"
   # Strict rollout gate: bootstrap-admin.sh does kubectl exec into the gateway
   # pod, so the deployment must be fully healthy. Wait up to 300s (retries).
@@ -966,8 +1216,12 @@ seed_agent_registry      = ${_SEED_REGISTRY}
 gateway_deployed         = true
 EOF
   terraform init -backend-config="$BACKEND_FILE" -input=false
-  terraform apply -var-file=terraform.tfvars -auto-approve
-  ok "Agent-factory deployed"
+  if [ "$UPDATE_MODE" = true ]; then
+    terraform_update_apply "agent-factory" "terraform.tfvars"
+  else
+    terraform apply -var-file=terraform.tfvars -auto-approve
+    ok "Agent-factory deployed"
+  fi
 
   # --- Agent Gateway build + deploy (part of agent-factory) ---
   step "Step 10b/11: Build and deploy agent gateway"
@@ -1008,9 +1262,16 @@ EOF
       -e "s|REPLACE_WITH_SESSIONS_TABLE_NAME|${SESSIONS_TABLE}|g" \
       -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
       gateway/k8s/keda-scaledjob.yaml | kubectl apply -f -
-  ok "Agent gateway deployed"
 
-  warn "Store GitHub App creds in Secrets Manager (see modules/agent-factory/SETUP-GUIDE.md)"
+  if [ "$UPDATE_MODE" = true ]; then
+    # Update mode: mandatory rollout verification for agent-gateway (§2)
+    kubectl rollout status deployment/adp-agent-gateway -n adp-gateway-agents --timeout=300s 2>/dev/null \
+      || warn "Agent gateway rollout status check skipped (ScaledJob — no persistent deployment)"
+    ok "Agent gateway deployed (SHA: $IMAGE_TAG)"
+  else
+    ok "Agent gateway deployed"
+    warn "Store GitHub App creds in Secrets Manager (see modules/agent-factory/SETUP-GUIDE.md)"
+  fi
 else
   step "Step 10/11: Skipping agent-factory"
 fi
@@ -1042,8 +1303,12 @@ encrypt        = true
 dynamodb_table = "${LOCK_TABLE}"
 EOF
   terraform init -backend-config="$BACKEND_FILE" -input=false
-  terraform apply -var-file="$ROOT_DIR/environments/$ENVIRONMENT/modules/agent-context.tfvars" -auto-approve
-  ok "Agent-context infrastructure deployed"
+  if [ "$UPDATE_MODE" = true ]; then
+    terraform_update_apply "agent-context" "$ROOT_DIR/environments/$ENVIRONMENT/modules/agent-context.tfvars"
+  else
+    terraform apply -var-file="$ROOT_DIR/environments/$ENVIRONMENT/modules/agent-context.tfvars" -auto-approve
+    ok "Agent-context infrastructure deployed"
+  fi
 
   # Deploy k8s manifests
   cd "$ROOT_DIR/modules/agent-context"
@@ -1068,8 +1333,8 @@ CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-d
 GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
 [ -n "$GW_WS" ] && [ "$GW_WS" != "" ] && echo "AgentGW:   $GW_WS"
 
-# --- Next steps (manual — GitHub App wiring) ---
-if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+# --- Next steps (manual — GitHub App wiring; skipped in update mode) ---
+if [ "$UPDATE_MODE" = false ] && [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
   echo ""
   echo "━━━ Next steps (manual) ━━━"
   echo "To complete the agent path, wire a GitHub App:"

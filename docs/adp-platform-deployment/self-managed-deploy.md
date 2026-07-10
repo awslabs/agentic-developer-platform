@@ -42,6 +42,29 @@ the UI (Settings → Connections → "Set up GitHub App" as the `platform_admin`
 or the CLI fallback `register-github-app.sh` (see Phase 3b). The script prints
 next-steps guidance at the end.
 
+### Updating an existing deployment
+
+To converge an already-deployed platform to newer code (after pulling latest
+`main` or a pinned tag), use **`--update` mode**:
+
+```bash
+git pull origin main
+./platform/scripts/deploy-all.sh --update [--gateway-only] [--skip-frontend]
+```
+
+Update mode differs from a fresh deploy:
+- **Skips** bootstrap, Bedrock model agreements, and admin bootstrap
+- **Runs database migrations** (alembic) BEFORE rolling out the new backend
+- **Tags images with the source SHA** (not `:latest`) to guarantee Kubernetes
+  triggers a rollout on code changes
+- **Plan-gates Terraform applies** — refuses to apply if the plan includes
+  resource destroys (pass `--confirm-destructive` to override after reviewing)
+- **Mandatory rollout verification** — the script halts on rollout failure
+  instead of continuing
+
+See the full design in
+[`deploy-all-update-mode-design.md`](./deploy-all-update-mode-design.md).
+
 ### Deployment config
 
 `config/deployment.yml` (gitignored) is **optional**. If absent, every script

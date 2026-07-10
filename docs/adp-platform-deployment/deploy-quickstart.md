@@ -114,6 +114,13 @@ If you just want to see the platform work with the least setup,
 > **AWS profile** (above) — `config/deployment.yml` is optional (account resolves
 > from the profile if absent).
 
+> **Updating an existing deployment?** Use `deploy-all.sh --update` instead of
+> re-running the default fresh-deploy path. Update mode plan-gates Terraform
+> (refuses destructive changes), runs alembic migrations before rollout, and
+> SHA-tags images to guarantee Kubernetes rollout triggers. See
+> [`deploy-all-update-mode-design.md`](./deploy-all-update-mode-design.md) for
+> the full design, or `deploy-all.sh --help` for usage.
+
 ---
 
 ## Phase 1 — Bootstrap ✅ verified
