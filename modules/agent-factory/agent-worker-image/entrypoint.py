@@ -47,6 +47,14 @@ SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
 
+# Personas whose branch-bootstrap logic should NEVER delete an existing remote
+# branch. AIDLC runs multiple sequential stages on the same issue/branch, each
+# committing artifacts (problem-frame.md, requirements, design, stories, delivery
+# plan) without opening a PR until the final stage. The stale-branch reset
+# (case (a) in Step 6b) would destroy prior stage commits. These personas always
+# fetch + extend instead. Issue #3430.
+PERSONAS_EXTENDING_BRANCH = frozenset({"aidlc"})
+
 # STS session tag values must match [\p{L}\p{Z}\p{N}_.:/=+\-@]*. The natural
 # task ID shape `<owner>/<repo>#<issue>` contains '#' which fails validation.
 # Replace any character outside the allowed set with '_'.
@@ -816,6 +824,19 @@ def main() -> int:
                 logger.info(
                     "Branch %s exists with open PR; extending instead of resetting",
                     branch_name,
+                )
+                run_cmd(["git", "fetch", "origin", branch_name], cwd=WORK_DIR)
+                run_cmd(["git", "checkout", branch_name], cwd=WORK_DIR)
+            elif persona in PERSONAS_EXTENDING_BRANCH:
+                # (a-aidlc) AIDLC stages commit artifacts sequentially on one
+                # branch without opening a PR until the end. Never delete the
+                # remote branch — fetch + extend so prior stage commits survive.
+                # Issue #3430.
+                logger.info(
+                    "Branch %s exists with no open PR; persona=%s is in "
+                    "PERSONAS_EXTENDING_BRANCH — extending instead of resetting",
+                    branch_name,
+                    persona,
                 )
                 run_cmd(["git", "fetch", "origin", branch_name], cwd=WORK_DIR)
                 run_cmd(["git", "checkout", branch_name], cwd=WORK_DIR)

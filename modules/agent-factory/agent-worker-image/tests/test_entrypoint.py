@@ -732,6 +732,340 @@ class TestStaleBranchHandling:
         assert not bool(result.stdout.strip())
 
 
+# --- Test: AIDLC stale-branch extend (Issue #3430) ---
+
+
+class TestAidlcBranchExtend:
+    """Verify persona-aware branch-bootstrap logic added by Issue #3430.
+
+    AIDLC stages commit artifacts sequentially on one branch without opening a PR
+    until the final stage. The stale-branch reset (case (a) in Step 6b) must NOT
+    delete the remote branch for aidlc persona; it must fetch + extend instead.
+    Developer/architect/ops personas retain the existing reset-to-main behavior.
+    """
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_aidlc_persona_existing_branch_no_pr_extends(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_create_cr,
+        mock_update_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """aidlc persona + existing remote branch + no open PR → fetch+checkout, NO delete."""
+        from entrypoint import main
+        import entrypoint
+
+        aidlc_envelope = {**SAMPLE_ENVELOPE, "persona": "aidlc"}
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(aidlc_envelope), "receipt-aidlc-1")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+
+        # Simulate: branch exists on remote, no open PR
+        def subprocess_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if cmd and cmd[0:2] == ["git", "ls-remote"]:
+                # Branch exists
+                return MagicMock(
+                    returncode=0, stdout="abc123 refs/heads/agent/issue-42\n", stderr=""
+                )
+            if cmd and cmd[0:3] == ["gh", "pr", "list"]:
+                # No open PR
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if cmd and len(cmd) >= 4 and cmd[0:2] == ["git", "push"] and "--delete" in cmd:
+                # Should NOT be called for aidlc — track it
+                raise AssertionError("git push --delete should NOT be called for aidlc persona")
+            # Final node agent execution
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_subprocess_run.side_effect = subprocess_side_effect
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Verify run_cmd was called with fetch + checkout (extend path)
+        run_cmd_calls = [str(c) for c in mock_run_cmd.call_args_list]
+        # Find the fetch and checkout calls for the branch
+        fetch_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "fetch" in str(c) and "agent/issue-42" in str(c)
+        ]
+        checkout_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "checkout" in str(c) and "agent/issue-42" in str(c) and "-b" not in str(c)
+        ]
+        assert len(fetch_calls) >= 1, f"Expected git fetch for branch, got calls: {run_cmd_calls}"
+        assert len(checkout_calls) >= 1, (
+            f"Expected git checkout (extend), got calls: {run_cmd_calls}"
+        )
+
+        # Verify git push --delete was NOT called via subprocess.run
+        subprocess_calls = mock_subprocess_run.call_args_list
+        for call in subprocess_calls:
+            cmd = call[0][0] if call[0] else call[1].get("args", [])
+            assert not (cmd[0:2] == ["git", "push"] and "--delete" in cmd), (
+                "git push --delete must NOT be called for aidlc persona"
+            )
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_developer_persona_existing_branch_no_pr_resets(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_create_cr,
+        mock_update_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """developer persona + existing remote branch + no open PR → delete + recreate (regression guard)."""
+        from entrypoint import main
+        import entrypoint
+
+        # SAMPLE_ENVELOPE already has persona="developer"
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-dev-1")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+
+        # Simulate: branch exists on remote, no open PR.
+        # Distinguish _is_already_completed (--state merged) from Step 6b (--state open).
+        delete_called = []
+
+        def subprocess_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if cmd and cmd[0:2] == ["git", "ls-remote"]:
+                return MagicMock(
+                    returncode=0, stdout="abc123 refs/heads/agent/issue-42\n", stderr=""
+                )
+            if cmd and cmd[0:3] == ["gh", "pr", "list"]:
+                # _is_already_completed passes --state merged; Step 6b passes --state open
+                # Both should return empty (no merged PR, no open PR)
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if cmd and len(cmd) >= 4 and cmd[0:2] == ["git", "push"] and "--delete" in cmd:
+                delete_called.append(cmd)
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_subprocess_run.side_effect = subprocess_side_effect
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # git push --delete MUST be called for developer persona (stale reset)
+        assert len(delete_called) == 1, (
+            f"Expected exactly one git push --delete for developer persona, got: {delete_called}"
+        )
+        assert "agent/issue-42" in delete_called[0]
+
+        # Verify checkout -b (fresh creation) was called via run_cmd
+        checkout_b_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "checkout" in str(c) and "-b" in str(c) and "agent/issue-42" in str(c)
+        ]
+        assert len(checkout_b_calls) >= 1, "Expected git checkout -b for developer reset"
+
+    @patch("entrypoint._is_already_completed")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_existing_branch_with_open_pr_extends_regardless_of_persona(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_create_cr,
+        mock_update_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_already_completed,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Any persona + existing branch + open PR → extend (no delete). Regression guard."""
+        from entrypoint import main
+        import entrypoint
+
+        # Use developer persona — even with open PR, should extend not reset
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-pr-1")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        # Skip idempotency guard (it also calls gh pr list --state merged)
+        mock_already_completed.return_value = False
+
+        # Simulate: branch exists + open PR (Step 6b's gh pr list --state open)
+        def subprocess_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if cmd and cmd[0:2] == ["git", "ls-remote"]:
+                return MagicMock(
+                    returncode=0, stdout="abc123 refs/heads/agent/issue-42\n", stderr=""
+                )
+            if cmd and cmd[0:3] == ["gh", "pr", "list"]:
+                # Open PR exists (Step 6b check)
+                return MagicMock(returncode=0, stdout="456\n", stderr="")
+            if cmd and len(cmd) >= 4 and cmd[0:2] == ["git", "push"] and "--delete" in cmd:
+                raise AssertionError("git push --delete should NOT be called when PR is open")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_subprocess_run.side_effect = subprocess_side_effect
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Verify fetch + checkout (extend) was called
+        fetch_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "fetch" in str(c) and "agent/issue-42" in str(c)
+        ]
+        checkout_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "checkout" in str(c) and "agent/issue-42" in str(c) and "-b" not in str(c)
+        ]
+        assert len(fetch_calls) >= 1, "Expected git fetch for open-PR extend"
+        assert len(checkout_calls) >= 1, "Expected git checkout (extend) for open-PR"
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_first_run_no_remote_branch_creates_fresh(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_create_cr,
+        mock_update_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """First run on issue (no remote branch) → clean creation for any persona. Regression guard."""
+        from entrypoint import main
+        import entrypoint
+
+        aidlc_envelope = {**SAMPLE_ENVELOPE, "persona": "aidlc"}
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(aidlc_envelope), "receipt-fresh-1")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+
+        # Simulate: no remote branch exists
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Verify checkout -b (fresh branch creation) was called
+        checkout_b_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "checkout" in str(c) and "-b" in str(c) and "agent/issue-42" in str(c)
+        ]
+        assert len(checkout_b_calls) >= 1, "Expected git checkout -b for fresh branch creation"
+
+        # Verify no fetch was done (no existing remote branch to fetch)
+        fetch_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "fetch" in str(c) and "agent/issue-42" in str(c)
+        ]
+        assert len(fetch_calls) == 0, "Should not fetch when branch doesn't exist"
+
+
 # --- Test: check_run library ---
 
 
