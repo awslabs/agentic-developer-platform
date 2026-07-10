@@ -35,7 +35,9 @@ logger = logging.getLogger(__name__)
 MAX_CHAIN_DEPTH = int(os.environ.get("MAX_CHAIN_DEPTH", "8"))
 
 # Issue #3174: Default max credential chain depth (tenant-configurable).
-DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH = 3
+# A human's credential authority propagates through depths 0..4 (the root human
+# plus four spawn hops); depth 5 and beyond get authorized_user_id="" (no vault).
+DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH = 5
 
 # Issue #2149: Cross-persona loop threshold.
 CROSS_PERSONA_LOOP_THRESHOLD = int(os.environ.get("CROSS_PERSONA_LOOP_THRESHOLD", "4"))
@@ -419,7 +421,7 @@ def _get_max_credential_chain_depth(installation_id: int | str) -> int:
     """Read max_credential_chain_depth from tenant-registry DDB (fail-soft).
 
     Issue #3174: Tenant-configurable depth limit for credential chain
-    propagation. Defaults to DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH (3) if:
+    propagation. Defaults to DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH (5) if:
       - TENANT_REGISTRY_TABLE env var not set
       - DDB read fails
       - Attribute absent on tenant row
@@ -515,7 +517,7 @@ def _capture_invocation_event(
     persona: str,
     payload: dict,
     correlation_ctx: dict,
-    max_credential_chain_depth: int = 3,
+    max_credential_chain_depth: int = DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH,
 ) -> None:
     """Write enriched invocation row to DynamoDB (best-effort).
 

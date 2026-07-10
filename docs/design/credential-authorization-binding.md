@@ -130,7 +130,7 @@ Gateway endpoint:
 | `is_human_rooted == true` AND `chain_depth >= max_cred_depth` | `""` (no vault access) | Defense-in-depth: deep chains lose credential authority |
 | `is_human_rooted == false` (bot-rooted) | `""` (no vault access) | Machine-triggered runs get no user credentials by default |
 
-**`max_cred_depth`:** Tenant-configurable (default: 3). Stored in tenant-registry DDB table as `max_credential_chain_depth`. Checked at spawn time by `spawn_persona`.
+**`max_cred_depth`:** Tenant-configurable (default: 5 — the root human plus four spawn hops). Stored in tenant-registry DDB table as `max_credential_chain_depth`. Checked at spawn time by `spawn_persona`.
 
 ### Implementation in `spawn_persona`
 
@@ -139,7 +139,7 @@ Gateway endpoint:
 authorized_user_id = ""
 if correlation_ctx.get("is_human_rooted") and correlation_ctx.get("root_human_id"):
     chain_depth = correlation_ctx.get("chain_depth", 0)
-    max_cred_depth = tenant_config.get("max_credential_chain_depth", 3)
+    max_cred_depth = tenant_config.get("max_credential_chain_depth", 5)
     if chain_depth < max_cred_depth:
         authorized_user_id = correlation_ctx["root_human_id"]
 
@@ -496,7 +496,7 @@ A reviewer can replay exactly what the agent tried by:
 
 ## Open Questions for Operator Review
 
-1. **`max_credential_chain_depth` default:** Proposed default is 3. Should this be lower (2 = safer) or higher (5 = more flexible for complex multi-agent workflows)?
+1. **`max_credential_chain_depth` default:** RESOLVED — default is **5** (root human + four spawn hops), chosen for flexibility in complex multi-agent workflows. Tenants can still override lower via the tenant-registry row.
 
 2. **E2E test frequency:** Proposed nightly + on-demand. Should adversarial E2E tests also run on every PR that touches credential-path files?
 

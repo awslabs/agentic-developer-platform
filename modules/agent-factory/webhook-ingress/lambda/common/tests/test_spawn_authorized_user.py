@@ -5,7 +5,7 @@ Covers the credential-authorization binding chain policy (design §Q3):
   - Human-rooted chain under depth limit → root_human_id
   - Human-rooted chain at/over max_credential_chain_depth → ""
   - Bot-rooted (not human-rooted) → ""
-  - max_credential_chain_depth read from tenant-registry (default 3)
+  - max_credential_chain_depth read from tenant-registry (default 5)
   - Existing tests unaffected (new kwarg defaults to "")
 """
 
@@ -133,6 +133,36 @@ class TestComputeAuthorizedUserId:
         )
         assert result == "user-orig"
 
+    def test_human_rooted_depths_3_and_4_carry_authority_under_default_5(self):
+        """With the default limit of 5, depths 3 and 4 still inherit root_human_id
+        (they were blocked under the old default of 3)."""
+        for depth in (3, 4):
+            ctx = {
+                "is_human_rooted": True,
+                "root_human_id": "user-orig",
+                "chain_depth": depth,
+            }
+            result = _compute_authorized_user_id(
+                correlation_ctx=ctx,
+                cognito_sub="",
+                max_credential_chain_depth=DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH,
+            )
+            assert result == "user-orig", f"depth {depth} should inherit under limit 5"
+
+    def test_human_rooted_depth_5_returns_empty_under_default(self):
+        """Depth 5 == default limit → "" (no vault); authority stops here."""
+        ctx = {
+            "is_human_rooted": True,
+            "root_human_id": "user-orig",
+            "chain_depth": 5,
+        }
+        result = _compute_authorized_user_id(
+            correlation_ctx=ctx,
+            cognito_sub="",
+            max_credential_chain_depth=DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH,
+        )
+        assert result == ""
+
     def test_cognito_sub_takes_precedence_when_set(self):
         """When cognito_sub is set (human sender), use it over root_human_id."""
         ctx = {
@@ -197,9 +227,9 @@ class TestComputeAuthorizedUserId:
 class TestGetMaxCredentialChainDepth:
     """Tenant-registry lookup for max_credential_chain_depth."""
 
-    def test_default_value_is_3(self):
-        """DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH is 3."""
-        assert DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH == 3
+    def test_default_value_is_5(self):
+        """DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH is 5 (root human + 4 spawn hops)."""
+        assert DEFAULT_MAX_CREDENTIAL_CHAIN_DEPTH == 5
 
     def test_missing_env_var_returns_default(self):
         """No TENANT_REGISTRY_TABLE env → returns default."""
