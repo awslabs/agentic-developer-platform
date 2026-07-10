@@ -183,6 +183,7 @@ def ensure_repo_exists(
     *,
     allowed_principals: list[str] | None = None,
     tenant_id: str | None = None,
+    owner_sub: str | None = None,
 ) -> str:
     """Ensure a repository row exists, returning its UUID.
 
@@ -193,6 +194,11 @@ def ensure_repo_exists(
     updates existing rows that have empty principals (fixes the #1920 root
     cause where repos were invisible due to empty allowed_principals).
     When tenant_id is provided, stamps it on the row for correct scoping.
+
+    Issue #3529: When owner_sub is provided, stamps it on the row so the
+    registering user's scoped queries (door/acl.py) correctly include this
+    repo. Without this, the ACL row gets tenant_id derived from the GitHub
+    org name instead of the scope envelope's values.
     """
     import json as _json
 
@@ -203,8 +209,8 @@ def ensure_repo_exists(
     try:
         cursor.execute(
             """
-            INSERT INTO repositories (repo_name, git_url, owner, allowed_principals, tenant_id)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO repositories (repo_name, git_url, owner, allowed_principals, tenant_id, owner_sub)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (repo_name) DO UPDATE
                 SET allowed_principals = CASE
                         WHEN repositories.allowed_principals = '[]'::jsonb
@@ -212,9 +218,10 @@ def ensure_repo_exists(
                         THEN EXCLUDED.allowed_principals
                         ELSE repositories.allowed_principals
                     END,
-                    tenant_id = COALESCE(repositories.tenant_id, EXCLUDED.tenant_id)
+                    tenant_id = COALESCE(EXCLUDED.tenant_id, repositories.tenant_id),
+                    owner_sub = COALESCE(EXCLUDED.owner_sub, repositories.owner_sub)
             """,
-            (org_repo, git_url, owner, principals_json, tenant_id),
+            (org_repo, git_url, owner, principals_json, tenant_id, owner_sub),
         )
         conn.commit()
 

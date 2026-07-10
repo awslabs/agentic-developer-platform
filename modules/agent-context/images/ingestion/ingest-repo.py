@@ -38,7 +38,7 @@ log = get_logger("ingest-repo")
 from config import settings
 from lang_go import extract_go_func_name as _extract_go_func_name
 from lang_go import extract_go_type as _extract_go_type
-from scope import compute_s3_prefix, parse_scope_from_env
+from scope import IngestionScope, compute_s3_prefix, parse_scope_from_env
 from scip_indexer import index_repo as scip_index_repo, detect_languages, cleanup_indexing_artifacts
 from scip_ingester import ingest_scip, merge_graphs
 from scip_neptune_csv import (
@@ -1329,6 +1329,7 @@ def _generate_source_sbom(
     org_repo: str,
     s3_store: S3ContentStore,
     sbom_s3_prefix: str | None = None,
+    scope: "IngestionScope | None" = None,
 ) -> str:
     """Run Syft against a cloned repo directory and store the CycloneDX SBOM.
 
@@ -1419,7 +1420,14 @@ def _generate_source_sbom(
                 conn = sbom_db.get_connection()
                 try:
                     git_url = f"https://github.com/{org_repo}"
-                    repo_id = sbom_db.ensure_repo_exists(conn, org_repo, git_url)
+                    # Issue #3529: propagate scope for SBOM path too
+                    repo_id = sbom_db.ensure_repo_exists(
+                        conn,
+                        org_repo,
+                        git_url,
+                        tenant_id=scope.tenant_id if scope else None,
+                        owner_sub=scope.owner_sub if scope else None,
+                    )
                     sbom_db.upsert_dependencies(conn, repo_id, records)
                     # Get current SHA for status update
                     sha = None
@@ -1573,7 +1581,16 @@ def ingest_repo(
         import db as stage_db
 
         db_conn = stage_db.get_connection()
-        repo_id = stage_db.ensure_repo_exists(db_conn, org_repo, f"https://github.com/{org_repo}")
+        # Issue #3529: propagate scope envelope's tenant_id/owner_sub into the
+        # repositories ACL row so tenant-scoped queries include this repo for
+        # the registering user (not the GitHub org name).
+        repo_id = stage_db.ensure_repo_exists(
+            db_conn,
+            org_repo,
+            f"https://github.com/{org_repo}",
+            tenant_id=scope.tenant_id,
+            owner_sub=scope.owner_sub,
+        )
     except Exception as e:
         log.warning("DB unavailable for stage tracking — legacy mode: %s", e)
         db_conn = None
@@ -2035,7 +2052,11 @@ def ingest_repo(
         else:
             try:
                 sbom_result = _generate_source_sbom(
-                    clone_path, org_repo, s3_store, sbom_s3_prefix=scoped_sbom_prefix
+                    clone_path,
+                    org_repo,
+                    s3_store,
+                    sbom_s3_prefix=scoped_sbom_prefix,
+                    scope=scope,
                 )
                 result["sbom_source"] = sbom_result
 

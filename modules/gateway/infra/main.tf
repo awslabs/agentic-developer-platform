@@ -488,7 +488,12 @@ resource "aws_iam_role_policy" "gateway_vault_secrets" {
           # webhook_secret here so webhooks from a UI-registered App pass HMAC
           # validation in the webhook-ingress Lambda. Terraform seeds this secret
           # with a placeholder and never updates it. Narrow to this exact secret.
-          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/webhook-ingress/github-webhook-secret*"
+          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/webhook-ingress/github-webhook-secret*",
+          # Issue #3529: The gateway resolver needs to read ops-App credentials
+          # (gh-app-ops-id / gh-app-ops-key) so it resolves installation_ids
+          # using the SAME App the ingestion worker mints tokens with. Without
+          # this pattern, GetSecretValue returns AccessDeniedException.
+          "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/*/gh-app-ops-*"
         ]
       },
       {

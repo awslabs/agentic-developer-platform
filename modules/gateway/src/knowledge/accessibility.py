@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.knowledge.github_app_service import (
     check_membership_for_installation,
     resolve_installation_for_repo,
+    resolve_worker_installation_for_repo,
     verify_installation_ownership,
 )
 
@@ -252,36 +253,70 @@ async def validate_repo_accessibility(
     # Issue #3358: ownership/membership queries hit gateway tables (users,
     # channel_tenant_map, tenant_memberships) which live in the bedrockgateway DB.
     owns_installation = await verify_installation_ownership(tenant_id, installation_id, db=gateway_db)
-    if owns_installation:
-        # Step 5: Accept tenant-scoped
+    if not owns_installation:
+        # Step 4b: Membership fallback (Issue #3266)
+        # The caller's personal tenant doesn't own the installation, but they may
+        # be a member of an org-tenant that does. Check tenant_memberships.
+        if caller_user_id:
+            owning_tenant_id = await check_membership_for_installation(caller_user_id, installation_id, db=gateway_db)
+            if owning_tenant_id:
+                logger.info(
+                    "Membership fallback: user %s granted access to %s/%s via org tenant %s",
+                    caller_user_id,
+                    owner,
+                    repo,
+                    owning_tenant_id,
+                )
+                tenant_id = owning_tenant_id
+            else:
+                return AccessibilityResult(
+                    allowed=False,
+                    error_message=(f"The GitHub App installation for {owner}/{repo} does not belong to your tenant."),
+                    error_code=403,
+                )
+        else:
+            return AccessibilityResult(
+                allowed=False,
+                error_message=(f"The GitHub App installation for {owner}/{repo} does not belong to your tenant."),
+                error_code=403,
+            )
+
+    # Step 5: Resolve the ops-App installation_id for the worker (Issue #3529)
+    # channel_tenant_map stores dev-App installation ids (written by the UI connect
+    # flow), but the ingestion worker mints tokens with the ops App. We must store
+    # the OPS-App installation_id on the asset so the worker can actually mint.
+    try:
+        worker_installation_id = await resolve_worker_installation_for_repo(owner, repo, http_client=http_client)
+    except ValueError as exc:
+        # Ops App credentials unreadable (IAM not applied yet)
+        logger.warning("Cannot resolve ops-App installation for %s/%s: %s", owner, repo, exc)
         return AccessibilityResult(
-            allowed=True,
-            shared=False,
-            installation_id=installation_id,
+            allowed=False,
+            error_message=(f"Platform ops-App credentials unavailable for {owner}/{repo}. Run Gateway Infra Apply to add the required IAM pattern."),
+            error_code=503,
+        )
+    except Exception as exc:
+        logger.warning("Ops-App installation resolution failed for %s/%s: %s", owner, repo, exc)
+        return AccessibilityResult(
+            allowed=False,
+            error_message=(f"Failed to resolve worker App access to {owner}/{repo}. Please try again later."),
+            error_code=502,
         )
 
-    # Step 4b: Membership fallback (Issue #3266)
-    # The caller's personal tenant doesn't own the installation, but they may
-    # be a member of an org-tenant that does. Check tenant_memberships.
-    if caller_user_id:
-        owning_tenant_id = await check_membership_for_installation(caller_user_id, installation_id, db=gateway_db)
-        if owning_tenant_id:
-            logger.info(
-                "Membership fallback: user %s granted access to %s/%s via org tenant %s",
-                caller_user_id,
-                owner,
-                repo,
-                owning_tenant_id,
-            )
-            return AccessibilityResult(
-                allowed=True,
-                shared=False,
-                installation_id=installation_id,
-                tenant_id=owning_tenant_id,
-            )
+    if worker_installation_id is None:
+        return AccessibilityResult(
+            allowed=False,
+            error_message=(
+                f"The ingestion worker's GitHub App is not installed on {owner}/{repo}. "
+                f"Install the ops App (adp-agent-ops) on this repo to enable ingestion."
+            ),
+            error_code=422,
+        )
 
+    # Step 6: Accept tenant-scoped with the WORKER's installation_id
     return AccessibilityResult(
-        allowed=False,
-        error_message=(f"The GitHub App installation for {owner}/{repo} does not belong to your tenant."),
-        error_code=403,
+        allowed=True,
+        shared=False,
+        installation_id=worker_installation_id,
+        tenant_id=tenant_id if not owns_installation else None,
     )

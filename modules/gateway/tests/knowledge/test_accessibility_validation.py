@@ -493,7 +493,7 @@ class TestValidateRepoAccessibility:
 
     @pytest.mark.anyio
     async def test_private_repo_owned_installation_accepts_with_id(self):
-        """Private repo + owned installation → accept with installation_id."""
+        """Private repo + owned installation → accept with worker installation_id."""
         from src.knowledge.accessibility import (
             clear_public_cache,
             validate_repo_accessibility,
@@ -516,16 +516,21 @@ class TestValidateRepoAccessibility:
                     "src.knowledge.accessibility.verify_installation_ownership",
                     return_value=True,
                 ):
-                    result = await validate_repo_accessibility(
-                        "https://github.com/acme/private-svc",
-                        "acme-corp",
-                        db=mock_db,
-                        gateway_db=mock_gateway_db,
-                    )
+                    with patch(
+                        "src.knowledge.accessibility.resolve_worker_installation_for_repo",
+                        AsyncMock(return_value=98770),
+                    ):
+                        result = await validate_repo_accessibility(
+                            "https://github.com/acme/private-svc",
+                            "acme-corp",
+                            db=mock_db,
+                            gateway_db=mock_gateway_db,
+                        )
 
         assert result.allowed is True
         assert result.shared is False
-        assert result.installation_id == 98765
+        # Issue #3529: stored installation_id is the WORKER's (ops-App), not the dev-App's
+        assert result.installation_id == 98770
 
     @pytest.mark.anyio
     async def test_private_repo_other_tenant_rejects(self):
@@ -652,17 +657,22 @@ class TestMembershipFallback:
                         "src.knowledge.accessibility.check_membership_for_installation",
                         return_value="aws-e",
                     ) as mock_membership:
-                        result = await validate_repo_accessibility(
-                            "https://github.com/aws-e/adp",
-                            "pranavsharma1000",
-                            db=mock_db,
-                            gateway_db=mock_gateway_db,
-                            caller_user_id="cognito-sub-123",
-                        )
+                        with patch(
+                            "src.knowledge.accessibility.resolve_worker_installation_for_repo",
+                            AsyncMock(return_value=124731359),
+                        ):
+                            result = await validate_repo_accessibility(
+                                "https://github.com/aws-e/adp",
+                                "pranavsharma1000",
+                                db=mock_db,
+                                gateway_db=mock_gateway_db,
+                                caller_user_id="cognito-sub-123",
+                            )
 
         assert result.allowed is True
         assert result.shared is False
-        assert result.installation_id == 124731
+        # Issue #3529: stored installation_id is the WORKER's (ops-App)
+        assert result.installation_id == 124731359
         assert result.tenant_id == "aws-e"
         mock_membership.assert_called_once_with("cognito-sub-123", 124731, db=mock_gateway_db)
 
@@ -735,17 +745,22 @@ class TestMembershipFallback:
                     with patch(
                         "src.knowledge.accessibility.check_membership_for_installation",
                     ) as mock_membership:
-                        result = await validate_repo_accessibility(
-                            "https://github.com/acme/private-svc",
-                            "acme-corp",
-                            db=mock_db,
-                            gateway_db=mock_gateway_db,
-                            caller_user_id="cognito-sub-789",
-                        )
+                        with patch(
+                            "src.knowledge.accessibility.resolve_worker_installation_for_repo",
+                            AsyncMock(return_value=98770),
+                        ):
+                            result = await validate_repo_accessibility(
+                                "https://github.com/acme/private-svc",
+                                "acme-corp",
+                                db=mock_db,
+                                gateway_db=mock_gateway_db,
+                                caller_user_id="cognito-sub-789",
+                            )
 
         assert result.allowed is True
         assert result.shared is False
-        assert result.installation_id == 98765
+        # Issue #3529: stored installation_id is the WORKER's (ops-App)
+        assert result.installation_id == 98770
         assert result.tenant_id is None  # No override — per-tenant path won
         # Membership fallback should NOT have been called
         mock_membership.assert_not_called()
@@ -949,18 +964,22 @@ class TestMembershipFallbackRouteIntegration:
                     return_value=124731,
                 ):
                     with patch(
-                        "src.knowledge.routes.dispatch_ingestion",
-                        new_callable=AsyncMock,
+                        "src.knowledge.accessibility.resolve_worker_installation_for_repo",
+                        AsyncMock(return_value=124731359),
                     ):
-                        async with make_client(db, fake_user, gateway_db_session=gateway_db) as client:
-                            resp = await client.post(
-                                "/api/agent-context/assets",
-                                json={
-                                    "asset_type": "repo",
-                                    "source_ref": "https://github.com/aws-e/adp",
-                                    "scope": "personal",
-                                },
-                            )
+                        with patch(
+                            "src.knowledge.routes.dispatch_ingestion",
+                            new_callable=AsyncMock,
+                        ):
+                            async with make_client(db, fake_user, gateway_db_session=gateway_db) as client:
+                                resp = await client.post(
+                                    "/api/agent-context/assets",
+                                    json={
+                                        "asset_type": "repo",
+                                        "source_ref": "https://github.com/aws-e/adp",
+                                        "scope": "personal",
+                                    },
+                                )
 
         assert resp.status_code == 201
 
@@ -970,7 +989,8 @@ class TestMembershipFallbackRouteIntegration:
         insert_params = db.executed_statements[2][1]
         assert insert_params["tenant_id"] == "aws-e"
         assert insert_params["owner_sub"] is None  # Org-scoped, not personal
-        assert insert_params["installation_id"] == 124731
+        # Issue #3529: stored installation_id is the WORKER's (ops-App)
+        assert insert_params["installation_id"] == 124731359
 
     @pytest.mark.anyio
     async def test_register_asset_gateway_db_used_for_ownership_check(self, make_client, fake_user):
@@ -1009,18 +1029,22 @@ class TestMembershipFallbackRouteIntegration:
                     return_value=98765,
                 ):
                     with patch(
-                        "src.knowledge.routes.dispatch_ingestion",
-                        new_callable=AsyncMock,
+                        "src.knowledge.accessibility.resolve_worker_installation_for_repo",
+                        AsyncMock(return_value=98770),
                     ):
-                        async with make_client(db, fake_user, gateway_db_session=gateway_db) as client:
-                            resp = await client.post(
-                                "/api/agent-context/assets",
-                                json={
-                                    "asset_type": "repo",
-                                    "source_ref": "https://github.com/acme/private-svc",
-                                    "scope": "personal",
-                                },
-                            )
+                        with patch(
+                            "src.knowledge.routes.dispatch_ingestion",
+                            new_callable=AsyncMock,
+                        ):
+                            async with make_client(db, fake_user, gateway_db_session=gateway_db) as client:
+                                resp = await client.post(
+                                    "/api/agent-context/assets",
+                                    json={
+                                        "asset_type": "repo",
+                                        "source_ref": "https://github.com/acme/private-svc",
+                                        "scope": "personal",
+                                    },
+                                )
 
         assert resp.status_code == 201
 
