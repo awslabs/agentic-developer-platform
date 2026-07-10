@@ -466,3 +466,133 @@ class TestBridgeCostToUsageLogs:
         sql_call = mock_cursor.execute.call_args
         # Params: (cost, None, request_id)
         assert sql_call[0][1] == (0.03, None, "req-789")
+
+
+@pytest.mark.skipif(
+    not _has_psycopg2(),
+    reason="psycopg2 not installed (Lambda-only dependency)",
+)
+class TestTransactionIsolation:
+    """Per-record transaction isolation for the shared batch connection.
+
+    Incident 2026-07-08: budget_usage.total_tokens hit the int32 ceiling and
+    every upsert raised NumericValueOutOfRange. Because the whole batch shared
+    one transaction, the already-executed usage_logs cost bridge was rolled
+    back too — Agent Activity showed $0 for every run. These tests pin the
+    fix: bridge commits independently, and a failing record rolls back
+    without poisoning the connection for the rest of the batch.
+    """
+
+    @staticmethod
+    def _mock_conn(rowcount: int = 1):
+        from unittest.mock import MagicMock
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.rowcount = rowcount
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        return mock_conn, mock_cursor
+
+    @staticmethod
+    def _chat_log(request_id: str = "req-1") -> dict:
+        return {
+            "org_id": "org-1",
+            "user_id": "user-1",
+            "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "response": {"usage": {"input_tokens": 100, "output_tokens": 50}},
+            "timestamp": "2026-07-10T12:00:00Z",
+            "request_id": request_id,
+        }
+
+    def test_bridge_rolls_back_on_exception(self):
+        """A failed bridge statement must rollback so the connection isn't poisoned."""
+        from unittest.mock import MagicMock
+
+        bridge_cost_to_usage_logs = load_handler("budget-usage-tracker").bridge_cost_to_usage_logs
+
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(side_effect=Exception("boom"))
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.01"))
+
+        assert result is False
+        mock_conn.rollback.assert_called_once()
+
+    def test_process_chat_log_commits_bridge_before_upserts(self):
+        """The cost bridge must be committed before any budget_usage upsert runs.
+
+        If the commit happened after the upserts, an upsert failure would
+        discard the bridged cost (the exact incident failure mode).
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        mock_conn, mock_cursor = self._mock_conn()
+
+        calls: list[str] = []
+        mock_conn.commit.side_effect = lambda: calls.append("commit")
+        original_execute = mock_cursor.execute
+
+        def tracking_execute(sql, *args, **kwargs):
+            if "UPDATE usage_logs" in sql:
+                calls.append("bridge")
+            elif "INSERT INTO budget_usage" in sql:
+                calls.append("upsert")
+            return original_execute(sql, *args, **kwargs)
+
+        mock_cursor.execute = tracking_execute
+
+        handler_mod.process_chat_log(mock_conn, self._chat_log(), handler_mod.MODEL_PRICING, chat_log_s3_key="k.json")
+
+        assert "bridge" in calls and "upsert" in calls
+        # A commit must sit between the bridge and the first upsert.
+        assert calls.index("bridge") < calls.index("commit") < calls.index("upsert")
+
+    def test_handler_isolates_failing_record(self):
+        """One record failing mid-batch must not abort or roll back the others."""
+        import json as json_mod
+        from unittest.mock import MagicMock, patch
+
+        handler_mod = load_handler("budget-usage-tracker")
+        mock_conn, _ = self._mock_conn()
+
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=mock_conn)
+        cm.__exit__ = MagicMock(return_value=False)
+
+        bodies = {
+            "logs/a.json": json_mod.dumps(self._chat_log("req-a")),
+            "logs/b.json": json_mod.dumps(self._chat_log("req-b")),
+            "logs/c.json": json_mod.dumps(self._chat_log("req-c")),
+        }
+
+        def fake_get_object(Bucket, Key):  # noqa: N803 — boto3 kwarg names
+            body = MagicMock()
+            body.read.return_value = bodies[Key].encode()
+            return {"Body": body}
+
+        process_calls = []
+
+        def fake_process(conn, chat_log, pricing_table, chat_log_s3_key=None):
+            process_calls.append(chat_log_s3_key)
+            if chat_log_s3_key == "logs/b.json":
+                raise Exception("integer out of range")
+
+        event = {"Records": [{"s3": {"bucket": {"name": "bkt"}, "object": {"key": k}}} for k in ["logs/a.json", "logs/b.json", "logs/c.json"]]}
+
+        with (
+            patch.object(handler_mod, "get_db_connection", return_value=cm),
+            patch.object(handler_mod, "get_pricing_table", return_value=handler_mod.MODEL_PRICING),
+            patch.object(handler_mod.s3_client, "get_object", side_effect=fake_get_object),
+            patch.object(handler_mod, "process_chat_log", side_effect=fake_process),
+        ):
+            result = handler_mod.handler(event, None)
+
+        body = json_mod.loads(result["body"])
+        # All three attempted; the failure neither stopped the batch nor
+        # counted the good records as errors.
+        assert process_calls == ["logs/a.json", "logs/b.json", "logs/c.json"]
+        assert body == {"processed": 2, "errors": 1}
+        # Good records committed individually; the bad one rolled back.
+        assert mock_conn.commit.call_count >= 2
+        mock_conn.rollback.assert_called_once()
