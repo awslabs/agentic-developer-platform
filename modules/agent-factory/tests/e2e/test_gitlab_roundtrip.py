@@ -26,6 +26,7 @@ import uuid
 
 import pytest
 import requests
+import urllib3
 
 from .helpers.gitlab_fixtures import (
     gitlab_mr_note_payload,
@@ -35,6 +36,18 @@ from .helpers.gitlab_fixtures import (
 
 # All tests require a live environment with GitLab + webhook infrastructure
 pytestmark = [pytest.mark.integration, pytest.mark.gitlab]
+
+# ---------------------------------------------------------------------------
+# TLS verification toggle for GitLab API calls.
+# The dev environment uses a self-signed cert on the ALB HTTPS listener.
+# Set GITLAB_TLS_VERIFY=false in CI to bypass verification for GitLab-only
+# calls while keeping TLS verification active for webhook-endpoint (API GW)
+# and GitHub-regression calls.
+# ---------------------------------------------------------------------------
+_GITLAB_TLS_VERIFY: bool = os.environ.get("GITLAB_TLS_VERIFY", "true").lower() != "false"
+
+if not _GITLAB_TLS_VERIFY:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +151,7 @@ def _poll_gitlab_for_comment(
 
     while time.monotonic() < deadline:
         try:
-            resp = requests.get(url, headers=headers, timeout=10)
+            resp = requests.get(url, headers=headers, timeout=10, verify=_GITLAB_TLS_VERIFY)
             if resp.status_code == 200:
                 notes = resp.json()
                 for note in notes:
@@ -182,6 +195,7 @@ class TestGitLabRoundTrip:
             headers={"PRIVATE-TOKEN": self.gitlab_token},
             json={"title": issue_title, "description": "Automated E2E test"},
             timeout=10,
+            verify=_GITLAB_TLS_VERIFY,
         )
         assert create_resp.status_code == 201, (
             f"Failed to create GitLab issue: {create_resp.status_code} {create_resp.text}"
@@ -195,6 +209,7 @@ class TestGitLabRoundTrip:
                 f"{self.gitlab_url}/api/v4/projects/{self.project_id}/issues/{issue_iid}/notes",
                 headers={"PRIVATE-TOKEN": self.gitlab_token},
                 timeout=10,
+                verify=_GITLAB_TLS_VERIFY,
             )
             existing_notes = notes_resp.json() if notes_resp.status_code == 200 else []
             baseline_note_id = max((n["id"] for n in existing_notes), default=0)
@@ -250,6 +265,7 @@ class TestGitLabRoundTrip:
                 headers={"PRIVATE-TOKEN": self.gitlab_token},
                 json={"state_event": "close"},
                 timeout=10,
+                verify=_GITLAB_TLS_VERIFY,
             )
 
     def test_invalid_token_rejected(self):
