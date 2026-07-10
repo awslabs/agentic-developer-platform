@@ -596,12 +596,15 @@ async def _handle_search(
     # so that the boost fires even when project scope doesn't resolve.
     definition_files: set[str] = set()
     if _is_identifier_query(query):
-        # Collect distinct repo names from the Zoekt results (top-N hits)
+        # Collect distinct repo names from the Zoekt results (top-N hits).
+        # Strip host prefix (e.g. "github.com/org/repo" → "org/repo") because
+        # Zoekt stores the full host-qualified name but Neptune and code-index
+        # lookups expect org/repo format (#3512).
         zoekt_repos: set[str] = set()
         for hit in filtered:
             repo = hit.repo_name
             if repo:
-                zoekt_repos.add(repo)
+                zoekt_repos.add(_strip_host_prefix(repo))
         definition_files = await _resolve_definition_files(
             query, project_scope, zoekt_repos=zoekt_repos
         )
@@ -1128,6 +1131,30 @@ def _is_identifier_query(query: str) -> bool:
 
     # Multi-word: NOT an identifier (it's a natural-language phrase)
     return False
+
+
+def _strip_host_prefix(repo: str) -> str:
+    """Strip the host segment from a Zoekt repo name if present.
+
+    Zoekt returns repo names as 'github.com/org/repo' (host-prefixed),
+    but Neptune and code-index lookups expect 'org/repo'.
+
+    Logic: if the first path segment contains a '.' (indicating a hostname
+    like github.com, gitlab.example.com, etc.), drop it.
+    Leaves 'org/repo' and bare 'repo' names untouched.
+
+    Examples:
+        github.com/org/repo        → org/repo
+        gitlab.example.com/org/repo → org/repo
+        org/repo                   → org/repo  (no change)
+        repo                       → repo      (no change)
+    """
+    if "/" not in repo:
+        return repo
+    first, rest = repo.split("/", 1)
+    if "." in first:
+        return rest
+    return repo
 
 
 async def _resolve_definition_files(

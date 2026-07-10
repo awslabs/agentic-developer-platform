@@ -1040,3 +1040,283 @@ class TestDefinitionInjection:
         assert def_file_count == 1, (
             f"Definition file should appear exactly once, found {def_file_count}"
         )
+
+
+# ---------------------------------------------------------------------------
+# _strip_host_prefix tests (#3512)
+# ---------------------------------------------------------------------------
+
+
+class TestStripHostPrefix:
+    """Verify host-prefix stripping for Zoekt repo names (#3512)."""
+
+    def test_github_com_prefix_stripped(self):
+        from door.server import _strip_host_prefix
+
+        assert _strip_host_prefix("github.com/org/repo") == "org/repo"
+
+    def test_github_com_full_repo_stripped(self):
+        from door.server import _strip_host_prefix
+
+        assert (
+            _strip_host_prefix("github.com/volatilityfoundation/volatility3")
+            == "volatilityfoundation/volatility3"
+        )
+
+    def test_gitlab_example_com_stripped(self):
+        from door.server import _strip_host_prefix
+
+        assert _strip_host_prefix("gitlab.example.com/org/repo") == "org/repo"
+
+    def test_org_repo_unchanged(self):
+        from door.server import _strip_host_prefix
+
+        assert _strip_host_prefix("org/repo") == "org/repo"
+
+    def test_org_repo_full_unchanged(self):
+        from door.server import _strip_host_prefix
+
+        assert (
+            _strip_host_prefix("volatilityfoundation/volatility3")
+            == "volatilityfoundation/volatility3"
+        )
+
+    def test_bare_repo_name_unchanged(self):
+        from door.server import _strip_host_prefix
+
+        assert _strip_host_prefix("repo") == "repo"
+
+    def test_empty_string_unchanged(self):
+        from door.server import _strip_host_prefix
+
+        assert _strip_host_prefix("") == ""
+
+    def test_self_hosted_domain_stripped(self):
+        from door.server import _strip_host_prefix
+
+        assert _strip_host_prefix("git.internal.corp/team/project") == "team/project"
+
+
+# ---------------------------------------------------------------------------
+# Host-prefixed repo regression test (#3512)
+# ---------------------------------------------------------------------------
+
+
+class TestHostPrefixedRepoResolution:
+    """Mandatory non-mocked regression test: host-prefixed repo_name from Zoekt
+    must still resolve definitions via code-index (#3512).
+
+    This test reproduces the LIVE failing condition:
+    - SearchHit.repo_name = "github.com/volatilityfoundation/volatility3" (host-prefixed)
+    - Zoekt results EXCLUDE the definition file (framework/interfaces/layers.py)
+    - S3 code-index key is "code-indexes/volatilityfoundation-volatility3.json"
+
+    Before the fix, _resolve_via_code_index receives the host-prefixed name,
+    normalizes it to "github.com-volatilityfoundation-volatility3", and fails
+    to find the S3 key. Result: definition_files is empty, injection never fires.
+    """
+
+    @pytest.fixture
+    def vol3_index(self) -> dict:
+        """Load the vol3 code-index fixture."""
+        fixture_path = FIXTURES_DIR / "code-index-vol3-fixture.json"
+        return json.loads(fixture_path.read_text())
+
+    @pytest.fixture
+    def fake_s3_client(self, vol3_index):
+        """Fake S3 client keyed ONLY at the real S3 path (no host prefix).
+
+        The only valid key is 'code-indexes/volatilityfoundation-volatility3.json'.
+        A request for 'code-indexes/github.com-volatilityfoundation-volatility3.json'
+        will raise NoSuchKey — exactly reproducing the live failure.
+        """
+        client = MagicMock()
+        NoSuchKey = type("NoSuchKey", (Exception,), {})
+        client.exceptions = MagicMock()
+        client.exceptions.NoSuchKey = NoSuchKey
+
+        valid_key = "code-indexes/volatilityfoundation-volatility3.json"
+
+        def get_object_side_effect(Bucket, Key):
+            if Key == valid_key:
+                body_mock = MagicMock()
+                body_mock.read.return_value = json.dumps(vol3_index).encode()
+                return {"Body": body_mock}
+            raise NoSuchKey(f"NoSuchKey: {Key}")
+
+        client.get_object.side_effect = get_object_side_effect
+        # list_objects_v2 for suffix-match strategy
+        client.list_objects_v2.return_value = {
+            "Contents": [{"Key": valid_key}],
+        }
+        return client
+
+    @pytest.fixture
+    def fake_zoekt_host_prefixed(self):
+        """Fake Zoekt backend returning hits with HOST-PREFIXED repo_name.
+
+        This is the key difference from existing tests: repo_name includes
+        'github.com/' prefix, exactly as the live Zoekt API returns.
+        Definition file (framework/interfaces/layers.py) is deliberately ABSENT.
+        """
+        from door.acl import SearchHit
+
+        zoekt = AsyncMock()
+        zoekt.search.return_value = [
+            SearchHit(
+                repo_name="github.com/volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "github.com/volatilityfoundation/volatility3",
+                    "file": "framework/plugins/windows/pslist.py",
+                    "line": 55,
+                    "content": "class PsList(DataLayerInterface):",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="github.com/volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "github.com/volatilityfoundation/volatility3",
+                    "file": "framework/automagic/stacker.py",
+                    "line": 102,
+                    "content": "    layer: DataLayerInterface = ...",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="github.com/volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "github.com/volatilityfoundation/volatility3",
+                    "file": "framework/layers/physical.py",
+                    "line": 30,
+                    "content": "class PhysicalLayer(DataLayerInterface):",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="github.com/volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "github.com/volatilityfoundation/volatility3",
+                    "file": "tests/test_layers.py",
+                    "line": 12,
+                    "content": "from volatility3.framework.interfaces.layers import DataLayerInterface",
+                    "match_type": "exact",
+                },
+            ),
+            SearchHit(
+                repo_name="github.com/volatilityfoundation/volatility3",
+                data={
+                    "repo_id": "github.com/volatilityfoundation/volatility3",
+                    "file": "framework/plugins/linux/proc.py",
+                    "line": 88,
+                    "content": "    def _get_layer(self) -> DataLayerInterface:",
+                    "match_type": "exact",
+                },
+            ),
+        ]
+        return zoekt
+
+    @pytest.mark.asyncio
+    async def test_host_prefixed_repo_resolves_definition(
+        self, fake_s3_client, fake_zoekt_host_prefixed
+    ):
+        """Host-prefixed repo names from Zoekt must resolve definitions via code-index.
+
+        This test MUST fail on main before the fix (host prefix defeats lookup)
+        and pass after applying _strip_host_prefix at zoekt_repos collection.
+        """
+        from door.acl import CallerPrincipal
+        from door.server import _handle_search
+
+        caller = CallerPrincipal(github_login="test-user", github_teams=["eng"])
+
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+            patch("door.neptune_client.neptune_enabled", return_value=False),
+            patch("door.server._apply_acl", side_effect=lambda hits, _: hits),
+        ):
+            mock_state.zoekt = fake_zoekt_host_prefixed
+            mock_state.s3_client = fake_s3_client
+            mock_state.acl_store = None
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+            mock_config.semantic_enabled = False
+
+            result = await _handle_search(
+                {"query": "DataLayerInterface", "scope": "code", "limit": 20},
+                caller=caller,
+                project_scope=None,
+            )
+
+        results = result["results"]
+        result_files = [r.get("file", "") for r in results]
+
+        # The definition file MUST be injected (it's not in Zoekt results)
+        assert "framework/interfaces/layers.py" in result_files, (
+            "Definition file must be injected when Zoekt returns host-prefixed repo names. "
+            f"Got files: {result_files}"
+        )
+
+        # It must be ranked FIRST (score 200 from definition boost)
+        assert results[0]["file"] == "framework/interfaces/layers.py", (
+            "Injected definition file must be ranked first via boost. "
+            f"Got first: {results[0].get('file', '')}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_host_prefixed_repo_code_index_receives_stripped_name(
+        self, fake_s3_client, fake_zoekt_host_prefixed
+    ):
+        """Verify _resolve_via_code_index receives org/repo (not host/org/repo).
+
+        Directly tests that the stripping produces a name that matches the
+        real S3 key format (code-indexes/volatilityfoundation-volatility3.json).
+        """
+        from door.server import _resolve_via_code_index
+
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+        ):
+            mock_state.s3_client = fake_s3_client
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+
+            # With stripped name (correct — should find the index)
+            result = await _resolve_via_code_index(
+                "DataLayerInterface",
+                ["volatilityfoundation/volatility3"],
+            )
+            assert result, "Stripped repo name must resolve via code-index"
+            assert any("layers.py" in f for f in result)
+
+    @pytest.mark.asyncio
+    async def test_host_prefixed_name_fails_without_stripping(
+        self, fake_s3_client, fake_zoekt_host_prefixed
+    ):
+        """Confirm the host-prefixed name fails to resolve (documents the bug).
+
+        This validates our S3 mock is realistic: a request for the wrong key
+        raises NoSuchKey, and the suffix-match also fails because the normalized
+        name is longer than the real filename.
+        """
+        from door.server import _resolve_via_code_index
+
+        with (
+            patch("door.server.state") as mock_state,
+            patch("door.server.config") as mock_config,
+        ):
+            mock_state.s3_client = fake_s3_client
+            mock_config.s3_bucket = "test-bucket"
+            mock_config.code_index_s3_prefix = "content/code-indexes"
+
+            # With host-prefixed name (the bug — should NOT find the index)
+            result = await _resolve_via_code_index(
+                "DataLayerInterface",
+                ["github.com/volatilityfoundation/volatility3"],
+            )
+            assert not result, (
+                "Host-prefixed repo name should NOT resolve via code-index "
+                "(this documents the bug that #3512 fixes)"
+            )
