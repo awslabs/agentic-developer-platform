@@ -42,7 +42,10 @@ def _test_sender_id() -> int:
 
 
 def _issue_labeled_payload(installation_id: str, sender_type: str = "User") -> dict:
-    """Build a minimal issues.labeled webhook payload."""
+    """Build a minimal issues.labeled webhook payload.
+
+    Uses label "developer" which maps to persona "developer" in LABEL_TO_PERSONA.
+    """
     return {
         "action": "labeled",
         "issue": {
@@ -50,10 +53,10 @@ def _issue_labeled_payload(installation_id: str, sender_type: str = "User") -> d
             "title": "Test issue for E2E webhook",
             "body": "This is an integration test issue.",
             "user": {"login": "test-user", "id": _test_sender_id(), "type": "User"},
-            "labels": [{"name": "agent-developer"}],
+            "labels": [{"name": "developer"}],
             "html_url": "https://github.com/test-org-e2e/test-repo/issues/42",
         },
-        "label": {"name": "agent-developer"},
+        "label": {"name": "developer"},
         "repository": {
             "full_name": "test-org-e2e/test-repo",
             "name": "test-repo",
@@ -65,7 +68,11 @@ def _issue_labeled_payload(installation_id: str, sender_type: str = "User") -> d
 
 
 def _pr_opened_payload(installation_id: str) -> dict:
-    """Build a minimal pull_request.opened webhook payload."""
+    """Build a minimal pull_request.opened webhook payload.
+
+    Uses head.ref="agent/issue-999" to match the agent/issue-* branch filter
+    required by the intent parser for reviewer persona dispatch.
+    """
     return {
         "action": "opened",
         "pull_request": {
@@ -74,7 +81,7 @@ def _pr_opened_payload(installation_id: str) -> dict:
             "body": "This PR adds a great feature.",
             "user": {"login": "test-user", "id": _test_sender_id(), "type": "User"},
             "html_url": "https://github.com/test-org-e2e/test-repo/pull/99",
-            "head": {"ref": "feature/new-thing", "sha": "abc123"},
+            "head": {"ref": "agent/issue-999", "sha": "abc123"},
             "base": {"ref": "main", "sha": "def456"},
         },
         "repository": {
@@ -184,7 +191,14 @@ class TestWebhookE2E:
         unique_delivery_id,
         cleanup_ddb_events,
     ):
-        """Fire a properly signed issue.labeled webhook -> assert SQS receives envelope."""
+        """Fire a properly signed issue.labeled webhook -> assert 202 accepted + SQS envelope.
+
+        The SQS envelope uses a normalized schema (see spawn_persona.py::_build_envelope):
+        top-level keys are version, channel, tenant_id, persona, actor, source_ref,
+        intent, correlation, payload, arrived_at, message_id. There is NO delivery_id,
+        event_type, or action at the top level. We match on the SQS MessageId returned
+        in the 202 response (poll_sqs returns it as msg["message_id"]).
+        """
         payload = _issue_labeled_payload(test_tenant["installation_id"])
         cleanup_ddb_events.track(unique_delivery_id)
 
@@ -196,7 +210,13 @@ class TestWebhookE2E:
             delivery_id=unique_delivery_id,
         )
 
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        # Successful dispatch returns 202 with message_id (handler.py:1290)
+        assert resp.status_code == 202, f"Expected 202, got {resp.status_code}: {resp.text}"
+        resp_body = resp.json()
+        assert resp_body.get("status") == "accepted"
+        assert "message_id" in resp_body, f"Response missing message_id: {resp_body}"
+
+        sqs_message_id = resp_body["message_id"]
 
         # Poll SQS for the dispatched message
         messages = poll_sqs(
@@ -207,26 +227,24 @@ class TestWebhookE2E:
 
         assert len(messages) > 0, "No message received in SQS within timeout"
 
-        # Find our message by delivery_id or installation_id
+        # Match by SQS MessageId (returned in 202 response, stored as msg["message_id"])
         our_msg = None
         for msg in messages:
-            body = msg["body"]
-            if (
-                body.get("delivery_id") == unique_delivery_id
-                or body.get("installation_id") == test_tenant["installation_id"]
-            ):
+            if msg["message_id"] == sqs_message_id:
                 our_msg = msg
                 break
 
         assert our_msg is not None, (
-            f"Could not find message for delivery {unique_delivery_id} in SQS. "
-            f"Got: {[m['body'].get('delivery_id') for m in messages]}"
+            f"Could not find SQS message with MessageId={sqs_message_id}. "
+            f"Got: {[m['message_id'] for m in messages]}"
         )
 
         envelope = our_msg["body"]
-        assert envelope.get("event_type") == "issues"
-        assert envelope.get("action") == "labeled"
+        # Envelope uses intent.trigger (not top-level event_type/action)
+        assert envelope.get("intent", {}).get("trigger") == "issue_labeled"
+        assert envelope.get("persona") == "developer"
         assert envelope.get("tenant_id") == test_tenant["tenant_id"]
+        assert envelope.get("source_ref", {}).get("repo") == "test-org-e2e/test-repo"
 
         # Cleanup SQS
         cleanup_sqs(
@@ -266,6 +284,9 @@ class TestWebhookE2E:
             timeout=3,
         )
 
+        # The envelope has no top-level delivery_id — this filter is a safety net
+        # verifying no message body accidentally references our delivery. Primary
+        # assertion is the 401 status code above.
         matching = [m for m in messages if m["body"].get("delivery_id") == unique_delivery_id]
         assert len(matching) == 0, "Message should NOT be dispatched for invalid signature"
 
@@ -285,9 +306,33 @@ class TestWebhookE2E:
         unique_delivery_id,
         cleanup_ddb_events,
     ):
-        """Fire webhook from unregistered installation -> 403 unknown_identity, no SQS."""
-        # Use an installation_id that doesn't exist in identity-index
-        payload = _issue_labeled_payload("11111111")
+        """Fire webhook from unregistered installation with no resolvable org -> 403, no SQS.
+
+        The handler self-heals unknown installations when the payload carries a
+        resolvable org login (handler.py:988-999). To exercise the 403 path, the
+        payload must have NO owner.login so auto-registration cannot succeed.
+        """
+        # Build a payload with an unknown installation AND no resolvable org_login.
+        # This prevents the self-heal path from auto-registering the installation.
+        payload = {
+            "action": "labeled",
+            "issue": {
+                "number": 42,
+                "title": "Test issue for 403 path",
+                "body": "This is an integration test issue.",
+                "user": {"login": "ghost", "id": 0, "type": "User"},
+                "labels": [{"name": "developer"}],
+                "html_url": "https://github.com/unknown/unknown/issues/42",
+            },
+            "label": {"name": "developer"},
+            "repository": {
+                "full_name": "unknown/unknown",
+                "name": "unknown",
+                "owner": {},  # Empty owner — no login to resolve
+            },
+            "installation": {"id": 11111111},
+            "sender": {"login": "ghost", "id": 0, "type": "User"},
+        }
         cleanup_ddb_events.track(unique_delivery_id)
 
         resp = _send_webhook(
@@ -329,19 +374,54 @@ class TestWebhookE2E:
         unique_delivery_id,
         cleanup_ddb_events,
     ):
-        """Exceed rate limit -> assert 429 response."""
-        payload = _issue_labeled_payload(rate_limited_tenant["installation_id"])
+        """Exceed rate limit -> assert 429 response.
+
+        Uses issue_comment with @agent-developer mention so the handler resolves
+        identity and reaches the rate limiter (handler.py:1083-1116). The
+        rate_limited_tenant fixture pre-exhausts the rate-limit counters.
+        Uses a dedicated sender_id that maps to a user in the rate-limited
+        tenant's org (seeded by seed_identity_index fixture).
+        """
+        # Build payload with the rate-limited tenant's dedicated sender_id
+        # so identity resolution succeeds and the handler reaches the rate limiter.
+        rl_sender_id = rate_limited_tenant["sender_id"]
+        payload = {
+            "action": "created",
+            "issue": {
+                "number": 42,
+                "title": "Test issue",
+                "body": "Original issue body.",
+                "user": {"login": "rl-user", "id": rl_sender_id, "type": "User"},
+                "labels": [],
+                "html_url": "https://github.com/test-org-e2e/test-repo/issues/42",
+            },
+            "comment": {
+                "body": "@agent-developer please fix this bug",
+                "user": {"login": "rl-user", "id": rl_sender_id, "type": "User"},
+                "html_url": "https://github.com/test-org-e2e/test-repo/issues/42#issuecomment-1",
+            },
+            "repository": {
+                "full_name": "test-org-e2e/test-repo",
+                "name": "test-repo",
+                "owner": {"login": "test-org-e2e"},
+            },
+            "installation": {"id": int(rate_limited_tenant["installation_id"])},
+            "sender": {"login": "rl-user", "id": rl_sender_id, "type": "User"},
+        }
         cleanup_ddb_events.track(unique_delivery_id)
 
         resp = _send_webhook(
             webhook_endpoint,
             webhook_secret,
-            "issues",
+            "issue_comment",
             payload,
             delivery_id=unique_delivery_id,
         )
 
         assert resp.status_code == 429, f"Expected 429, got {resp.status_code}: {resp.text}"
+        resp_body = resp.json()
+        assert resp_body.get("error") == "Rate limited"
+        assert "retry_after" in resp_body
 
     def test_no_actionable_intent_returns_200_no_dispatch(
         self,
@@ -393,7 +473,7 @@ class TestWebhookE2E:
         unique_delivery_id,
         cleanup_ddb_events,
     ):
-        """Fire pull_request.opened -> assert reviewer persona in SQS envelope."""
+        """Fire pull_request.opened with agent/issue-* branch -> 202 + reviewer persona."""
         payload = _pr_opened_payload(test_tenant["installation_id"])
         cleanup_ddb_events.track(unique_delivery_id)
 
@@ -405,7 +485,13 @@ class TestWebhookE2E:
             delivery_id=unique_delivery_id,
         )
 
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        # Successful dispatch returns 202 accepted (handler.py:1290)
+        assert resp.status_code == 202, f"Expected 202, got {resp.status_code}: {resp.text}"
+        resp_body = resp.json()
+        assert resp_body.get("status") == "accepted"
+        assert "message_id" in resp_body
+
+        sqs_message_id = resp_body["message_id"]
 
         # Poll SQS for the dispatched message
         messages = poll_sqs(
@@ -414,22 +500,25 @@ class TestWebhookE2E:
             timeout=10,
         )
 
+        # Match by SQS MessageId (returned in 202 response)
         our_msg = None
         for msg in messages:
-            body = msg["body"]
-            if body.get("delivery_id") == unique_delivery_id:
+            if msg["message_id"] == sqs_message_id:
                 our_msg = msg
                 break
 
-        assert our_msg is not None, f"No SQS message for delivery {unique_delivery_id}"
+        assert our_msg is not None, (
+            f"No SQS message with MessageId={sqs_message_id}. "
+            f"Got: {[m['message_id'] for m in messages]}"
+        )
 
         envelope = our_msg["body"]
-        assert envelope.get("event_type") == "pull_request"
-        assert envelope.get("action") == "opened"
+        assert envelope.get("intent", {}).get("trigger") == "pr_opened"
         # PR opened should dispatch with reviewer persona
         assert envelope.get("persona") == "reviewer", (
             f"Expected 'reviewer' persona, got '{envelope.get('persona')}'"
         )
+        assert envelope.get("tenant_id") == test_tenant["tenant_id"]
 
         cleanup_sqs(
             sqs_client["client"],
@@ -446,7 +535,7 @@ class TestWebhookE2E:
         unique_delivery_id,
         cleanup_ddb_events,
     ):
-        """Fire issue_comment with @agent-developer -> assert developer persona."""
+        """Fire issue_comment with @agent-developer -> 202 accepted + developer persona."""
         payload = _issue_comment_payload(
             test_tenant["installation_id"],
             body="@agent-developer please review this code and suggest improvements",
@@ -461,7 +550,13 @@ class TestWebhookE2E:
             delivery_id=unique_delivery_id,
         )
 
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        # Successful dispatch returns 202 accepted (handler.py:1290)
+        assert resp.status_code == 202, f"Expected 202, got {resp.status_code}: {resp.text}"
+        resp_body = resp.json()
+        assert resp_body.get("status") == "accepted"
+        assert "message_id" in resp_body
+
+        sqs_message_id = resp_body["message_id"]
 
         messages = poll_sqs(
             sqs_client["client"],
@@ -469,21 +564,25 @@ class TestWebhookE2E:
             timeout=10,
         )
 
+        # Match by SQS MessageId (returned in 202 response)
         our_msg = None
         for msg in messages:
-            body = msg["body"]
-            if body.get("delivery_id") == unique_delivery_id:
+            if msg["message_id"] == sqs_message_id:
                 our_msg = msg
                 break
 
-        assert our_msg is not None, f"No SQS message for delivery {unique_delivery_id}"
+        assert our_msg is not None, (
+            f"No SQS message with MessageId={sqs_message_id}. "
+            f"Got: {[m['message_id'] for m in messages]}"
+        )
 
         envelope = our_msg["body"]
-        assert envelope.get("event_type") == "issue_comment"
+        assert envelope.get("intent", {}).get("trigger") == "mentioned"
         assert envelope.get("persona") == "developer", (
             f"Expected 'developer' persona from @agent-developer mention, "
             f"got '{envelope.get('persona')}'"
         )
+        assert envelope.get("tenant_id") == test_tenant["tenant_id"]
 
         cleanup_sqs(
             sqs_client["client"],
@@ -495,44 +594,101 @@ class TestWebhookE2E:
         self,
         webhook_endpoint,
         webhook_secret,
+        sqs_client,
         ddb_client,
         test_tenant,
         unique_delivery_id,
         cleanup_ddb_events,
     ):
-        """After any webhook, assert webhook-events DDB table has the record."""
-        payload = _issue_labeled_payload(test_tenant["installation_id"])
+        """After a dispatched webhook, assert webhook-events DDB table has the record.
+
+        The DDB table uses PK=event_id + SK=arrived_at, where event_id is the
+        envelope's internal UUID (envelope["message_id"]), NOT the SQS MessageId.
+        The 202 response's message_id is the SQS MessageId (AWS-generated).
+
+        Strategy: poll SQS to get the envelope, extract envelope["message_id"]
+        (the internal UUID written to DDB as event_id), then query DDB with it.
+        This also proves the Lambda→SQS→DDB key contract is consistent.
+        """
+        # Use a mention-based comment to trigger a full dispatch (202 response)
+        payload = _issue_comment_payload(
+            test_tenant["installation_id"],
+            body="@agent-developer check the DDB event log",
+        )
         cleanup_ddb_events.track(unique_delivery_id)
 
         resp = _send_webhook(
             webhook_endpoint,
             webhook_secret,
-            "issues",
+            "issue_comment",
             payload,
             delivery_id=unique_delivery_id,
         )
 
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        # Successful dispatch returns 202 with SQS MessageId
+        assert resp.status_code == 202, f"Expected 202, got {resp.status_code}: {resp.text}"
+        resp_body = resp.json()
+        sqs_message_id = resp_body.get("message_id")
+        assert sqs_message_id, f"Response missing message_id: {resp_body}"
 
-        # Allow time for async DDB write
+        # Poll SQS to retrieve the envelope and extract the internal event_id
+        messages = poll_sqs(
+            sqs_client["client"],
+            sqs_client["queue_url"],
+            timeout=10,
+        )
+
+        our_msg = None
+        for msg in messages:
+            if msg["message_id"] == sqs_message_id:
+                our_msg = msg
+                break
+
+        assert our_msg is not None, (
+            f"No SQS message with MessageId={sqs_message_id}. "
+            f"Got: {[m['message_id'] for m in messages]}"
+        )
+
+        # The envelope's internal message_id is what DDB uses as event_id (PK)
+        envelope = our_msg["body"]
+        event_id = envelope.get("message_id")
+        assert event_id, f"Envelope missing message_id field: {list(envelope.keys())}"
+
+        # Allow time for DDB eventual consistency (event is logged before SQS
+        # publish in spawn_persona, so it should already be there)
         time.sleep(2)
 
-        # Query DDB for the event log entry
+        # Query DDB for the event log entry by event_id (PK).
+        # SK is arrived_at — use query with ScanIndexForward=False to get latest.
         events_table = ddb_client["events_table"]
+        from boto3.dynamodb.conditions import Key
+
         try:
-            result = events_table.get_item(Key={"delivery_id": unique_delivery_id})
+            result = events_table.query(
+                KeyConditionExpression=Key("event_id").eq(event_id),
+                ScanIndexForward=False,
+                Limit=1,
+            )
         except Exception as e:
             pytest.fail(f"Failed to query webhook-events table: {e}")
 
-        item = result.get("Item")
-        assert item is not None, f"No event log entry found for delivery_id={unique_delivery_id}"
+        items = result.get("Items", [])
+        assert len(items) > 0, f"No event log entry found for event_id={event_id}"
 
+        item = items[0]
         # Validate the logged event has expected fields
-        assert item.get("event_type") == "issues"
-        assert item.get("action") == "labeled"
+        assert item.get("event_type") == "issue_comment"
+        assert item.get("action") == "created"
         assert item.get("installation_id") == test_tenant["installation_id"]
         assert item.get("tenant_id") == test_tenant["tenant_id"]
-        assert "received_at" in item
+        assert "arrived_at" in item
+
+        # Cleanup SQS
+        cleanup_sqs(
+            sqs_client["client"],
+            sqs_client["queue_url"],
+            [m["receipt_handle"] for m in messages],
+        )
 
     def test_mixed_case_headers_accepted(
         self,
@@ -543,11 +699,11 @@ class TestWebhookE2E:
         unique_delivery_id,
         cleanup_ddb_events,
     ):
-        """Fire webhook with mixed-case headers (REST API style) -> 200 accepted.
+        """Fire webhook with mixed-case headers (REST API style) -> 202 accepted.
 
         REST API v1 preserves original header case from GitHub (X-Hub-Signature-256,
         X-GitHub-Event). The Lambda must lowercase headers before accessing them.
-        This test proves the normalization works end-to-end.
+        This test proves the normalization works end-to-end with a successful dispatch.
         """
         payload = _issue_labeled_payload(test_tenant["installation_id"])
         cleanup_ddb_events.track(unique_delivery_id)
@@ -572,11 +728,13 @@ class TestWebhookE2E:
             timeout=30,
         )
 
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        # Successful dispatch with mixed-case headers returns 202 accepted
+        assert resp.status_code == 202, f"Expected 202, got {resp.status_code}: {resp.text}"
         body = resp.json()
         assert body["status"] == "accepted", (
             f"Expected 'accepted' status with mixed-case headers, got: {body}"
         )
+        assert "message_id" in body, f"Response missing message_id: {body}"
 
         # Cleanup SQS
         messages = poll_sqs(
