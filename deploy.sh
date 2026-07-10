@@ -53,7 +53,7 @@ done
 # =============================================================================
 # Interactive prompts for required arguments not provided
 # =============================================================================
-if [ -z "$AWS_REGION" ] || [ "$AWS_REGION" = "us-east-1" ]; then
+if [ -t 0 ] && { [ -z "$AWS_REGION" ] || [ "$AWS_REGION" = "us-east-1" ]; }; then
   echo -n "AWS region [us-east-1]: "
   read -r INPUT_REGION
   [ -n "$INPUT_REGION" ] && AWS_REGION="$INPUT_REGION"
