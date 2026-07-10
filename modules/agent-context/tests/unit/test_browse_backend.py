@@ -12,6 +12,7 @@ Issue #2406.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from typing import Any
@@ -26,6 +27,7 @@ from door.browse_backend import (
     _CONTENT_ROOTS,
     _list_s3_prefix,
     _read_content,
+    _read_zoekt_file,
     browse,
 )
 
@@ -763,3 +765,251 @@ class TestUnscopedOrgRepoListing:
         sent = json.loads(route.calls[0].request.content)
         assert "r:^([^/]+/)?HKUDS/Vibe\\-Trading$" in sent["q"]
         assert "f:^agent/" in sent["q"]
+
+
+# ---------------------------------------------------------------------------
+# _read_zoekt_file tests — opts.Whole fix (Issue #3514)
+# ---------------------------------------------------------------------------
+
+# Sample Go file content for multi-line decode tests
+_GO_FILE_CONTENT = """\
+package main
+
+import "math"
+
+// Quote represents a shipping quote.
+type Quote struct {
+\tDollars uint32
+\tCents   uint32
+}
+
+// CreateQuoteFromCount creates a quote based on item count.
+func CreateQuoteFromCount(count int) Quote {
+\treturn Quote{
+\t\tDollars: uint32(count * 2),
+\t\tCents:   75,
+\t}
+}
+
+// CreateQuoteFromFloat creates a quote from a float amount.
+func CreateQuoteFromFloat(value float64) Quote {
+\tdollars := uint32(math.Floor(value))
+\tcents := uint32(math.Round((value - math.Floor(value)) * 100))
+\treturn Quote{Dollars: dollars, Cents: cents}
+}
+"""
+
+# Base64-encoded version as Zoekt would return it via Go's JSON encoder
+_GO_FILE_CONTENT_B64 = base64.b64encode(_GO_FILE_CONTENT.encode()).decode()
+
+
+def _zoekt_production_response_no_content(repo: str, file_name: str) -> str:
+    """Build a production-shaped Zoekt response WITHOUT Content.
+
+    This matches what Zoekt returns when Whole is NOT correctly nested in opts:
+    - Result.Files (not FileMatches)
+    - LineMatches present (legacy field)
+    - NO Content field on the FileMatch
+    """
+    return json.dumps(
+        {
+            "Result": {
+                "Files": [
+                    {
+                        "Repository": repo,
+                        "FileName": file_name,
+                        "LineMatches": [
+                            {
+                                "Line": base64.b64encode(
+                                    b"type Quote struct {"
+                                ).decode(),
+                                "LineNumber": 6,
+                                "LineStart": 0,
+                                "LineEnd": 20,
+                            },
+                            {
+                                "Line": base64.b64encode(
+                                    b"func CreateQuoteFromCount(count int) Quote {"
+                                ).decode(),
+                                "LineNumber": 12,
+                                "LineStart": 0,
+                                "LineEnd": 44,
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+    )
+
+
+def _zoekt_production_response_with_content(
+    repo: str, file_name: str, content_b64: str
+) -> str:
+    """Build a production-shaped Zoekt response WITH Content (opts.Whole=true).
+
+    This matches what Zoekt returns when opts.Whole is correctly set:
+    - Result.Files (not FileMatches)
+    - Content field present (base64-encoded full file)
+    - No ChunkMatches (whole-file mode)
+    """
+    return json.dumps(
+        {
+            "Result": {
+                "Files": [
+                    {
+                        "Repository": repo,
+                        "FileName": file_name,
+                        "Content": content_b64,
+                    }
+                ]
+            }
+        }
+    )
+
+
+class TestReadZoektFileOptsWhole:
+    """Verify _read_zoekt_file sends opts.Whole and handles production responses.
+
+    Issue #3514: Zoekt ignores a top-level 'Whole' field; it must be nested
+    as opts.Whole (or Opts.Whole). These tests verify the fix.
+    """
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_request_body_sends_opts_whole(self):
+        """_read_zoekt_file must send opts.Whole=true (nested), not top-level Whole."""
+        route = respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(
+                200,
+                text=_zoekt_production_response_with_content(
+                    "GoogleCloudPlatform/microservices-demo",
+                    "src/shippingservice/quote.go",
+                    _GO_FILE_CONTENT_B64,
+                ),
+            )
+        )
+        await _read_zoekt_file(
+            "GoogleCloudPlatform/microservices-demo",
+            "src/shippingservice/quote.go",
+            zoekt_url=ZOEKT_URL,
+        )
+        assert route.called
+        sent = json.loads(route.calls[0].request.content)
+        # Must have opts.Whole nested, NOT top-level Whole
+        assert "opts" in sent, "Request body must contain 'opts' key"
+        assert sent["opts"].get("Whole") is True, "opts.Whole must be True"
+        assert "Whole" not in {
+            k for k in sent if k != "opts"
+        }, "Top-level 'Whole' must NOT be present"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_production_response_no_content_returns_empty(self):
+        """Production-shaped response without Content (top-level Whole) yields empty.
+
+        This is the pre-fix behavior: Zoekt returns Result.Files with LineMatches
+        only (no Content, no ChunkMatches) because top-level Whole was ignored.
+        _read_zoekt_file must return [] since _extract_file_content returns None.
+        """
+        respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(
+                200,
+                text=_zoekt_production_response_no_content(
+                    "GoogleCloudPlatform/microservices-demo",
+                    "src/shippingservice/quote.go",
+                ),
+            )
+        )
+        results = await _read_zoekt_file(
+            "GoogleCloudPlatform/microservices-demo",
+            "src/shippingservice/quote.go",
+            zoekt_url=ZOEKT_URL,
+        )
+        assert results == [], (
+            "A response with LineMatches-only (no Content) must yield empty — "
+            "this is the broken pre-fix state"
+        )
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_production_response_with_content_returns_file(self):
+        """Production-shaped response WITH Content (opts.Whole) yields full file.
+
+        This is the post-fix behavior: Zoekt returns Result.Files with Content
+        field populated (base64-encoded full file).
+        """
+        respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(
+                200,
+                text=_zoekt_production_response_with_content(
+                    "GoogleCloudPlatform/microservices-demo",
+                    "src/shippingservice/quote.go",
+                    _GO_FILE_CONTENT_B64,
+                ),
+            )
+        )
+        results = await _read_zoekt_file(
+            "GoogleCloudPlatform/microservices-demo",
+            "src/shippingservice/quote.go",
+            zoekt_url=ZOEKT_URL,
+        )
+        assert len(results) == 1
+        data = results[0].data
+        assert data["name"] == "quote.go"
+        assert data["path"] == "src/shippingservice/quote.go"
+        assert data["entry_type"] == "file"
+        assert results[0].repo_name == "GoogleCloudPlatform/microservices-demo"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_multiline_go_file_decodes_correctly(self):
+        """Decoded Go file contains expected type and function definitions."""
+        respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(
+                200,
+                text=_zoekt_production_response_with_content(
+                    "GoogleCloudPlatform/microservices-demo",
+                    "src/shippingservice/quote.go",
+                    _GO_FILE_CONTENT_B64,
+                ),
+            )
+        )
+        results = await _read_zoekt_file(
+            "GoogleCloudPlatform/microservices-demo",
+            "src/shippingservice/quote.go",
+            zoekt_url=ZOEKT_URL,
+        )
+        assert len(results) == 1
+        content = results[0].data["content"]
+        assert "type Quote struct" in content
+        assert "func CreateQuoteFromCount" in content
+        assert "func CreateQuoteFromFloat" in content
+        assert data["size"] > 0 if (data := results[0].data) else False
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_nonexistent_file_returns_empty(self):
+        """Zoekt returning no matches for the file yields empty list."""
+        respx.post(f"{ZOEKT_URL}/api/search").mock(
+            return_value=httpx.Response(
+                200,
+                text=json.dumps({"Result": {"Files": []}}),
+            )
+        )
+        results = await _read_zoekt_file(
+            "GoogleCloudPlatform/microservices-demo",
+            "src/shippingservice/nonexistent.go",
+            zoekt_url=ZOEKT_URL,
+        )
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_no_zoekt_url_returns_empty(self):
+        """Empty zoekt_url returns immediately without network call."""
+        results = await _read_zoekt_file(
+            "GoogleCloudPlatform/microservices-demo",
+            "src/shippingservice/quote.go",
+            zoekt_url="",
+        )
+        assert results == []
