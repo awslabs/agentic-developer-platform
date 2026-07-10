@@ -40,6 +40,17 @@ Create at **your org** → Settings → Developer settings → GitHub Apps → N
 GitHub App (or open the existing App's settings page). App names are globally
 unique — prefix with your org name, e.g. `<your-org>-adp-agent-platform`.
 
+**Where each setting lives.** On the *New GitHub App* form, everything below
+is one page. On an **existing App's** settings page the sections are split
+across tabs in the left sidebar:
+
+| Doc section | Existing-App location |
+|---|---|
+| §2.1 webhook config, §2.4 callback URL + client secret | **General** tab |
+| §2.2 permissions, §2.3 event subscriptions | **Permissions & events** tab — separate **Save changes** button; permission changes send existing installations a consent prompt that an org admin must accept before they take effect |
+| §2.5 visibility | **Advanced** tab |
+| §2.6 private key | **General** tab → *Private keys* |
+
 ### 2.1 Basic settings
 
 | Field | Value |
@@ -57,22 +68,58 @@ tenant (bug #2823). This is the single most commonly missed setting.
 
 ### 2.2 Repository permissions (for agents to operate on repos)
 
+Permissions are tiered so the request you take to your GitHub org /
+enterprise admin is easy to approve. The **core set** is all a hosted ADP
+deployment needs for the full agent loop (issue in → PR out) — it matches
+what the manifest flow requests, and it contains none of the scopes
+enterprise admins scrutinize (no repo administration, no Actions control, no
+org-wide access). Request the optional tiers only if your deployment uses
+those features, and say which feature in the request.
+
+Everything in this section is a **repository** permission: defined on the
+App, but granted per installation and scoped to **only the repos selected at
+install time** (§3) — even Contents: write is not org-wide. The org-wide
+scopes (all read-mostly) are the separate organization-permissions table at
+the end of this section. This distinction is usually what gets an enterprise
+admin to approve: they pick the repos, and adding/removing repos later never
+re-prompts for permissions.
+
+**Core (required — the agent loop does not work without these):**
+
 | Permission | Access | Why |
 |---|---|---|
 | Contents | **Read and write** | agents clone, branch, commit, push |
-| Issues | **Read and write** | agents read task issues, comment progress, open child issues |
-| Pull requests | **Read and write** | agents open/update PRs, post review comments |
+| Issues | **Read and write** | agents read task issues, comment progress, open child issues. Also covers conversation comments on issues *and* PRs — GitHub has no separate "comments" permission |
+| Pull requests | **Read and write** | agents open/update PRs, post inline review comments |
 | Checks | **Read and write** | agents publish check runs (pass/fail gates) |
 | Metadata | **Read** | mandatory baseline (GitHub forces it) |
 
-**Recommended addition — Organization permissions → Members: Read.** The
-manifest flow doesn't request it (agents don't need it), but the login path's
-tenant matcher calls the org-membership API to map a signing-in user to your
-org's tenant. Without it, GitHub answers that call with a 302, the platform
-logs `check_org_membership: 302 … app likely lacks 'Organization members:
-read'`, membership verification returns false, and users may not auto-match
-to your org tenant (an admin can still approve them manually). No other
-organization or account permissions are required.
+**Optional — agents may edit CI workflows:**
+
+| Permission | Access | Why |
+|---|---|---|
+| Workflows | **Read and write** | without it, GitHub rejects any agent push touching `.github/workflows/**` with "refusing to allow a GitHub App to create or update workflow". Agents hit this the first time an issue asks for a CI change. Safe to omit initially — every other agent capability keeps working, and only workflow-editing pushes fail (visibly, in the agent's progress comments). |
+
+**Optional — self-hosted-runner (ARC) deployments only.** Skip this tier for
+hosted deployments; these are the scopes admins push back on hardest, so do
+not request them by default:
+
+| Permission | Access | Why |
+|---|---|---|
+| Administration | **Read and write** | ARC registers repo-scoped self-hosted runners |
+| Actions | **Read and write** | those runners claim and run workflow jobs |
+
+**Organization permissions (optional):**
+
+| Permission | Access | Why |
+|---|---|---|
+| Members | **Read** | the login path's tenant matcher calls the org-membership API to map a signing-in user to your org's tenant. Without it, GitHub answers with a 302, the platform logs `check_org_membership: 302 … app likely lacks 'Organization members: read'`, and users don't auto-match to your org tenant (a platform admin can still approve them manually). |
+| Projects | **Read and write** | only if you use the PM agent's project-board features |
+
+No other organization or account permissions are required. Permissions can
+also be added later — existing installations just get a consent prompt for
+the addition — so starting with the core set and expanding when a feature
+needs it is a sound strategy with a cautious admin.
 
 ### 2.3 Event subscriptions
 
@@ -84,6 +131,14 @@ Subscribe to exactly these events:
 - `pull_request_review`
 - `pull_request_review_comment`
 - `label`
+
+There is no "webhooks" permission — delivery is governed by the webhook
+config (§2.1) plus these subscriptions. But each event needs its backing
+permission from §2.2: `issues`/`issue_comment` need Issues read,
+`pull_request*` need Pull requests read, `label` needs Metadata. The core
+set covers all of them. If an event checkbox is greyed out, or a
+subscription silently disappears after a permission change, a backing
+permission was removed.
 
 ### 2.4 User authorization — the OAuth half (for "Sign in with GitHub")
 
@@ -209,6 +264,8 @@ ADP login page with no session means the broker callback URL doesn't match
 | `issue_comment` event not subscribed | mentions do nothing; no delivery attempted |
 | Contents/PR permission missing | agent starts but fails to push / open PR |
 | Checks permission missing | agent works but no check runs appear |
+| Workflows permission missing | agent pushes touching `.github/workflows/**` rejected with "refusing to allow a GitHub App to create or update workflow" |
+| Issues/PR permission removed after setup | matching event subscriptions silently dropped; mentions do nothing (see §2.3) |
 | Setup URL missing | install "succeeds" on GitHub but never appears in ADP Connections (#2823) |
 | OAuth callback URL wrong/missing | GitHub login bounces to the ADP login page with no session |
 | Client ID/secret not seeded | login button errors or Cognito rejects the identity |
