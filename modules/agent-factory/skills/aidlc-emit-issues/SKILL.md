@@ -3,8 +3,10 @@ name: aidlc-emit-issues
 description: >-
   Emit AIDLC inception artifacts as GitHub issues: one EPIC per intent, one child
   per AIDLC unit, natively sub-issue-linked, each in the repo's mandatory
-  five-section format with deterministic Validation gates. Invoked automatically
-  after the delivery-planning gate is approved.
+  five-section format with deterministic Validation gates. Additionally generates
+  the autonomous delivery loop (per-wave orchestrators, per-wave deterministic
+  evaluation issues, and the defect protocol). Invoked automatically after the
+  delivery-planning gate is approved.
 ---
 
 # aidlc-emit-issues
@@ -192,31 +194,144 @@ gh api graphql -f query='
 shown above. Create children in dependency order so the EPIC's sub-issue list
 reflects the implementation sequence.
 
-### Step 7: Post completion summary
+### Step 7: Generate the delivery loop
 
-After all issues are created and linked, post a summary comment on the
-originating AIDLC issue:
+After all story issues are created and linked (Step 6), generate the
+autonomous delivery loop: per-wave orchestrators, per-wave evaluations, and
+the defect protocol. This turns the issue tree into a self-driving build-out.
+
+Templates live in `modules/agent-factory/rules/templates/delivery-loop/`.
+
+#### Step 7a: Derive waves from the delivery plan
+
+Read the delivery plan's dependency graph. Group units into waves:
+- **Wave 1**: units with no dependencies (can run in parallel)
+- **Wave 2**: units that depend only on Wave 1 units
+- **Wave N**: units that depend only on already-scheduled waves
+
+Record the wave assignment for each story issue.
+
+#### Step 7b: Create evaluation issues (one per wave)
+
+For EACH wave, compose an evaluation issue using the template at
+`modules/agent-factory/rules/templates/delivery-loop/evaluation-template.md`.
+
+**Deriving checks:**
+1. From each wave-story's `## Validation` section, extract the smoke-test
+   commands and CI check names → convert to `[command] returns [expected]` form.
+2. From the intent's acceptance criteria, extract cross-cutting invariants
+   (e.g. "zero diff on path X", "latency < N ms") → add as cumulative checks.
+3. Every check MUST be a concrete command + expected output. No judgment calls.
+
+**Deterministic-only enforcement:** Before posting, verify NO check contains
+the banned phrases: "verify it works", "ensure the feature is functional",
+"confirm correct behavior", "test the integration" (without a named command).
+If any check fails this lint, rewrite it as a concrete assertion.
+
+Create evaluation issues BEFORE orchestrators (orchestrators reference eval
+issue numbers).
+
+```bash
+EVAL_URL=$(gh issue create \
+  --title "[Phase-slug] Wave [N] Evaluation — [what it proves]" \
+  --label "evaluation" \
+  --body "$(cat <<'EOF'
+<composed evaluation body from template>
+EOF
+)")
+EVAL_NUMBER=$(echo "$EVAL_URL" | grep -oP '\d+$')
+```
+
+Link each evaluation as a native sub-issue of its phase EPIC.
+
+#### Step 7c: Create orchestrator issues (one per wave)
+
+For EACH wave, compose a lean orchestrator issue using the template at
+`modules/agent-factory/rules/templates/delivery-loop/orchestrator-template.md`.
+
+**Size enforcement:** The body MUST be < 2048 bytes. If it exceeds:
+- Trim story summaries to just issue number + title
+- Remove any detail that belongs in child stories
+- If still over, split into sub-waves
+
+```bash
+ORCH_URL=$(gh issue create \
+  --title "ORCH: [Intent-slug] Wave [N] — [scope summary]" \
+  --label "orchestrator" \
+  --body "$(cat <<'EOF'
+<composed orchestrator body from template, referencing $EVAL_NUMBER>
+EOF
+)")
+ORCH_NUMBER=$(echo "$ORCH_URL" | grep -oP '\d+$')
+```
+
+Link each orchestrator as a native sub-issue of its phase EPIC.
+
+#### Step 7d: Emission lint rules
+
+Before posting ANY delivery-loop issue (orchestrator or evaluation), apply
+these four lint rules. These were derived from gaps exposed in the GitLab CE
+dogfood run (#3299):
+
+**Rule 1 — CI apply path must exist:**
+Every story whose `## Deployment` section mentions "terraform apply" or
+"infrastructure deploy" MUST reference a dispatchable CI workflow (e.g.
+`gh workflow run <name>.yml`). If no such workflow exists, emit a story to
+CREATE it, sequenced as a dependency before the stories that need it.
+Fail the emission lint if a story requires infra apply but has no workflow ref.
+
+**Rule 2 — Account + credential label must be explicit:**
+Every story's `## Deployment` section and every orchestrator's "Deployment
+target" section MUST specify:
+- The AWS account ID (12-digit number)
+- The `adp-cred` label (e.g. `adp-embark1`)
+Never rely on ambient/IRSA credentials. If the delivery plan does not specify
+these, STOP and ask the user before emitting.
+
+**Rule 3 — Version pins must cite currently-maintained releases:**
+Every version pin in story `## Design` or `## Validation` sections must
+reference a version that is currently maintained by the vendor at emission
+time. If the delivery plan cites an EOL version (detectable from the
+requirements or from the vendor's documented lifecycle), WARN in the emission
+summary and update the pin to the latest LTS/stable.
+
+**Rule 4 — Hotfix-branch protocol:**
+Include in every orchestrator's "Guards" section:
+```
+- Hotfix branches: if the ops agent must self-fix a deployment blocker that
+  isn't a story-scope defect, use branch `agent/issue-[ORCH]-hotfix-[N]`.
+  The hotfix PR references the orchestrator issue (not a story). After merge,
+  re-run the evaluation.
+```
+This codifies the ad-hoc pattern from PR #3372 into the emitted orchestrator.
+
+### Step 8: Post completion summary
+
+After all issues are created and linked (stories + delivery loop), post a
+summary comment on the originating AIDLC issue:
 
 ```markdown
 ## Issue Emitter Complete
 
 **EPIC**: #<epic-number> — <title>
-**Children created**: <N> sub-issues
+**Children created**: <N> story sub-issues
+**Delivery loop**: <M> orchestrator issues + <M> evaluation issues
 
-| # | Issue | Unit | Depends on |
-|---|-------|------|------------|
-| 1 | #<number> | <unit-name> | None |
-| 2 | #<number> | <unit-name> | #<dep> |
+| Wave | Orchestrator | Evaluation | Stories |
+|------|-------------|------------|---------|
+| 1 | #<orch-1> | #<eval-1> | #<s1>, #<s2> |
+| 2 | #<orch-2> | #<eval-2> | #<s3>, #<s4> |
 | ... | ... | ... | ... |
 
 All children pass five-section lint. Validation gates are deterministic
 (named test files + CI checks + coverage thresholds).
+Emission lint: ✅ CI-apply-path | ✅ account-explicit | ✅ version-pins | ✅ hotfix-protocol
 
 The AIDLC inception audit trail is committed on branch `<branch>` under
 `aidlc/` / `aidlc-docs/`.
 
-**Next**: dispatch `@agent-developer` on child #1 (no dependencies) to begin
-implementation.
+**Next**: the delivery loop is self-driving. Dispatch the operations persona
+on orchestrator #<orch-1> (Wave 1) to begin the autonomous build-out.
 ```
 
 ## Error handling
