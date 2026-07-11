@@ -16,15 +16,16 @@
  * - Chain view: click correlation chain to see indented tree
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { Alert, Button, Input, Select } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
 import InvocationChain from '@/components/InvocationChain';
 import { InvocationDetail } from '@/components/InvocationDetail';
 import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { usePermissions } from '@/hooks/usePermissions';
-import { getMyInvocations, getMyChains, getAllInvocations } from '@/services/activity';
+import { getMyInvocations, getMyChains, getAllInvocations, getMyInvocationDetail } from '@/services/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
 import type {
   InvocationItem,
@@ -384,6 +385,9 @@ export default function AgentActivity() {
   const { isPlatformAdmin, isOrgAdmin } = usePermissions();
   const isAdmin = isPlatformAdmin() || isOrgAdmin();
 
+  // Issue #3632: URL query-param deep-linking
+  const [searchParams] = useSearchParams();
+
   // View toggle: "mine" or "all" (admin only)
   const [viewMode, setViewMode] = useState<'mine' | 'all'>('mine');
 
@@ -403,11 +407,23 @@ export default function AgentActivity() {
   // Issue #3069: Transcript viewer state
   const [transcriptInvocationId, setTranscriptInvocationId] = useState<string | null>(null);
 
-  // Filters
-  const [statusFilter, setStatusFilter] = useState('');
+  // Filters — Issue #3632: initialize from URL query params if present
+  const [statusFilter, setStatusFilter] = useState(() => {
+    const paramStatus = searchParams.get('status');
+    if (paramStatus && STATUS_OPTIONS.some((opt) => opt.value === paramStatus)) {
+      return paramStatus;
+    }
+    return '';
+  });
   const [channelFilter, setChannelFilter] = useState('');
   const [personaFilter, setPersonaFilter] = useState('');
-  const [startDate, setStartDate] = useState('');
+  const [startDate, setStartDate] = useState(() => {
+    const paramSince = searchParams.get('since');
+    if (paramSince === 'today') {
+      return new Date().toISOString().split('T')[0];
+    }
+    return '';
+  });
   const [endDate, setEndDate] = useState('');
 
   // Issue #1658: "Show all events" toggle — when off (default), non-triggering
@@ -417,6 +433,28 @@ export default function AgentActivity() {
   // Cursor-based pagination state
   const [cursorStack, setCursorStack] = useState<string[]>([]);
   const [currentCursor, setCurrentCursor] = useState<string | undefined>(undefined);
+
+  // Issue #3632: Deep-link — auto-open detail modal when ?id= param is present.
+  // Fetches the invocation detail on mount; silently ignores 404/errors.
+  useEffect(() => {
+    const deepLinkId = searchParams.get('id');
+    if (!deepLinkId) return;
+
+    let cancelled = false;
+    getMyInvocationDetail(deepLinkId)
+      .then((item) => {
+        if (!cancelled) {
+          setDetailItem(item);
+        }
+      })
+      .catch(() => {
+        // Silently ignore — invocation not found or not owned by user (404)
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams]);
 
   // Build query params
   // Issue #1658: An explicit status filter takes precedence — if the user
