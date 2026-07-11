@@ -806,8 +806,23 @@ else
   # Step 9); on re-deploys it will.
   KMS_GRANT=$(webhook_kms_grant_value)
   if [ "$UPDATE_MODE" = true ]; then
+    # Issue #3665: In update mode, read cached ALB vars from SSM so that
+    # enable_vpc_origin stays consistent between Step 3 and Step 5. Without
+    # this, Step 3 defaults enable_vpc_origin=false → destroys the VPC origin,
+    # then Step 5 recreates it — causing ~10 min of 504 errors.
+    _ALB_ARN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-arn" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    _ALB_DNS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-dns" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+    _ALB_SG_IDS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-security-group-ids" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "[]")
+
+    STEP3_EXTRA_VARS=(-var "enable_webhook_secrets_kms_grant=$KMS_GRANT")
+    if [ -n "$_ALB_ARN" ] && [ "$_ALB_ARN" != "None" ] && [ -n "$_ALB_DNS" ] && [ "$_ALB_DNS" != "None" ]; then
+      echo "Update mode: found cached ALB details in SSM — passing to Step 3 to preserve VPC origin."
+      STEP3_EXTRA_VARS+=(-var "internal_alb_arn=$_ALB_ARN" -var "internal_alb_dns=$_ALB_DNS" -var "alb_security_group_ids=$_ALB_SG_IDS" -var "enable_vpc_origin=true")
+    else
+      warn "Update mode: ALB details not yet in SSM (first deploy?). Step 3 will run without VPC origin vars — Step 5 will wire them."
+    fi
     terraform_update_apply "gateway" "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
-      -var "enable_webhook_secrets_kms_grant=$KMS_GRANT"
+      "${STEP3_EXTRA_VARS[@]}"
   else
     terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
       -var "enable_webhook_secrets_kms_grant=$KMS_GRANT" \
