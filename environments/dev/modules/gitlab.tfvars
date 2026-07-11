@@ -25,3 +25,8 @@ backup_enabled        = true
 backup_retention_days = 90
 backup_schedule       = "cron(0 2 * * ? *)"
 backup_s3_bucket_name = ""
+
+# CloudFront VPC origin ingress (Issue #3557 Wave 1 hotfix): the /gitlab/*
+# behavior's VPC origin ENIs use CloudFront's managed service SG, which the
+# VPC-CIDR rules do NOT admit. Requires the gateway VPC origin to exist first.
+enable_cloudfront_vpc_origin_ingress = true

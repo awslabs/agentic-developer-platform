@@ -41,6 +41,29 @@ resource "aws_security_group_rule" "alb_ingress_http" {
   security_group_id = aws_security_group.alb.id
 }
 
+# CloudFront VPC origin traffic is NOT matched by the VPC-CIDR rule above even
+# though the CloudFront-managed ENIs live inside the VPC — it is only admitted
+# by a rule referencing CloudFront's managed service SG (created automatically
+# when the first VPC origin is provisioned in the VPC). Guarded by a variable
+# because the service SG doesn't exist until a VPC origin does; enable after
+# the gateway CloudFront VPC origin is live. See EPIC #3557 / orch #3622.
+data "aws_security_group" "cloudfront_vpc_origins" {
+  count  = var.enable_cloudfront_vpc_origin_ingress ? 1 : 0
+  name   = "CloudFront-VPCOrigins-Service-SG"
+  vpc_id = local.vpc_id
+}
+
+resource "aws_security_group_rule" "alb_ingress_cloudfront_vpc_origin" {
+  count                    = var.enable_cloudfront_vpc_origin_ingress ? 1 : 0
+  type                     = "ingress"
+  description              = "HTTP from CloudFront VPC origin service SG (/gitlab/* behavior)"
+  from_port                = 80
+  to_port                  = 80
+  protocol                 = "tcp"
+  source_security_group_id = data.aws_security_group.cloudfront_vpc_origins[0].id
+  security_group_id        = aws_security_group.alb.id
+}
+
 resource "aws_security_group_rule" "alb_egress_to_instance" {
   type                     = "egress"
   description              = "HTTP to GitLab instance"

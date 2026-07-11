@@ -107,3 +107,9 @@ variable "backup_schedule" {
   description = "Cron expression for the SSM maintenance window (default: daily at 02:00 UTC)"
   default     = "cron(0 2 * * ? *)"
 }
+
+variable "enable_cloudfront_vpc_origin_ingress" {
+  type        = bool
+  description = "Allow HTTP:80 ingress on the GitLab ALB from the CloudFront-VPCOrigins-Service-SG. Enable only after a CloudFront VPC origin exists in the VPC (the service SG is created with the first VPC origin)."
+  default     = false
+}
