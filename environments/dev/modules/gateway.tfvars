@@ -68,6 +68,6 @@ enable_lambda_reserved_concurrency = false
 enable_webhook_secrets_kms_grant = true
 
 # Issue #3583: GitLab VPC Origin for CloudFront /gitlab/* behavior.
-# Set both to non-empty after GitLab module outputs the internal ALB DNS/ARN.
-gitlab_origin_dns = ""
-gitlab_origin_arn = ""
+# Values from the gitlab module outputs in embark1 (adp-dev-gitlab-alb).
+gitlab_origin_dns = "internal-adp-dev-gitlab-alb-1395653446.us-east-1.elb.amazonaws.com"
+gitlab_origin_arn = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/adp-dev-gitlab-alb/dd32988e2bbdda5f"
