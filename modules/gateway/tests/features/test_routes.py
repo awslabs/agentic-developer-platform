@@ -42,6 +42,7 @@ class TestFeaturesDefaults:
             "FEATURE_INDEXING_ENABLED",
             "FEATURE_CONNECTIONS_ENABLED",
             "FEATURE_CREDENTIALS_ENABLED",
+            "FEATURE_SYSTEM_DASHBOARD_ENABLED",
             "AGENT_CONTEXT_ENABLED",
         ]:
             monkeypatch.delenv(var, raising=False)
@@ -56,6 +57,7 @@ class TestFeaturesDefaults:
                 "indexing": True,
                 "connections": True,
                 "credentials": True,
+                "system_dashboard": True,
             }
         }
 

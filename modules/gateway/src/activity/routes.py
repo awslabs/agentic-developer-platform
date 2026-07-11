@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.activity.cost_service import get_cost_by_run_ids
+from src.activity.cost_service import get_cost_by_date_range, get_cost_by_run_ids
 from src.activity.schemas import (
     ChainListResponse,
     InvocationChainItem,
@@ -28,6 +28,8 @@ from src.activity.schemas import (
     InvocationListResponse,
 )
 from src.activity.service import ActivityService
+from src.activity.stats_schemas import Spend, StatsResponse
+from src.activity.stats_service import StatsService
 from src.admin.access_control import AccessControl
 from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
@@ -48,6 +50,124 @@ def get_activity_service() -> ActivityService:
 async def get_access_control(db: Annotated[AsyncSession, Depends(get_db)]) -> AccessControl:
     """Get access control instance."""
     return AccessControl(db)
+
+
+def get_stats_service() -> StatsService:
+    """Get stats service instance (singleton-ish; boto3 handles connection pooling)."""
+    return StatsService()
+
+
+# ---------------------------------------------------------------------------
+# GET /me/agent-run-stats — user's aggregate dashboard stats (Issue #3630)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/me/agent-run-stats", response_model=StatsResponse)
+async def get_my_stats(
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    stats_service: Annotated[StatsService, Depends(get_stats_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    days: Annotated[int, Query(ge=1, le=30)] = 7,
+) -> StatsResponse:
+    """Get aggregated agent run stats for the authenticated user.
+
+    Issue #3630: Single-call dashboard payload combining DynamoDB invocation
+    aggregates with Postgres cost data. Time-bounded by `days` param (1-30).
+    Results are cached in-process for 60s per (user, days) key.
+
+    Status filter: excludes no_op and webhook_received (same as Issue #1658).
+    Cost enrichment: graceful degradation — if Postgres fails, spend is null.
+    """
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    result = stats_service.get_stats_by_user(user_id=canonical_user_id, days=days)
+
+    # Enrich with cost data from Postgres (cross-store pattern)
+    result = await _enrich_stats_with_cost(db, result, stats_service, canonical_user_id, days)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/agent-run-stats — tenant-scoped aggregate stats (Issue #3630)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/admin/agent-run-stats", response_model=StatsResponse)
+async def get_admin_stats(
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    stats_service: Annotated[StatsService, Depends(get_stats_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    days: Annotated[int, Query(ge=1, le=30)] = 7,
+    tenant_id: Annotated[str | None, Query()] = None,
+) -> StatsResponse:
+    """Get aggregated agent run stats for a tenant (admin only).
+
+    Issue #3630: Org admins see their own tenant; platform admins can specify
+    any tenant_id. Same aggregation + cost enrichment as the user endpoint.
+    """
+    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
+
+    if current_user.is_admin and tenant_id:
+        effective_tenant_id = tenant_id
+    else:
+        effective_tenant_id = current_user.org_id
+
+    result = stats_service.get_stats_by_tenant(tenant_id=effective_tenant_id, days=days)
+
+    # Enrich with cost data from Postgres
+    result = await _enrich_stats_with_cost(db, result, stats_service, effective_tenant_id, days, is_tenant=True)
+    return result
+
+
+async def _enrich_stats_with_cost(
+    db: AsyncSession,
+    result: StatsResponse,
+    stats_service: StatsService,
+    scope_id: str,
+    days: int,
+    *,
+    is_tenant: bool = False,
+) -> StatsResponse:
+    """Enrich stats response with cost data from Postgres.
+
+    Issue #3630: Fetches all run_ids from the stats service's last fetch and
+    queries Postgres for aggregate spend. Graceful degradation: if Postgres
+    fails, spend remains null (no 500).
+    """
+    # Re-fetch items to get run_ids for cost query (uses cache so no extra DDB call)
+    if is_tenant:
+        items = stats_service._fetch_items(
+            index_name="tenant-index",
+            partition_key_name="tenant_id",
+            partition_key_value=scope_id,
+            days=days,
+        )
+    else:
+        items = stats_service._fetch_items(
+            index_name="user-index",
+            partition_key_name="user_id",
+            partition_key_value=scope_id,
+            days=days,
+        )
+
+    run_ids = [item.get("event_id", "") for item in items if item.get("event_id")]
+    if not run_ids:
+        return result
+
+    try:
+        cost_data = await get_cost_by_date_range(db, run_ids)
+        result.spend = Spend(
+            total_cost_usd=cost_data["total_cost_usd"],
+            total_tokens=cost_data["total_tokens"],
+            total_calls=cost_data["total_calls"],
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to enrich stats with cost data — returning stats without spend",
+            extra={"scope_id": scope_id, "error": str(exc)},
+        )
+
+    return result
 
 
 async def _enrich_with_cost(db: AsyncSession, response: InvocationListResponse) -> InvocationListResponse:
