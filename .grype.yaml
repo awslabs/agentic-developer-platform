@@ -225,6 +225,74 @@ ignore:
       name: cross-spawn
 
   # ============================================================================
+  # Platform-arc-runner: Ubuntu 24.04 distro packages with no fix available.
+  # Grype rates these HIGH from raw CVSS; Ubuntu's own triage rates them
+  # low/medium. No upstream patch exists for the current base image version.
+  # Re-evaluate on next base image bump (next: 2026-10-01).
+  # Source: Issue #3586, scan run 29144039049.
+  # ============================================================================
+
+  # CVE-2025-8941: libpam authentication bypass — requires local account access
+  # not available in runner container context.
+  - vulnerability: CVE-2025-8941
+    package:
+      name: libpam-modules
+  - vulnerability: CVE-2025-8941
+    package:
+      name: libpam-modules-bin
+  - vulnerability: CVE-2025-8941
+    package:
+      name: libpam-runtime
+  - vulnerability: CVE-2025-8941
+    package:
+      name: libpam0g
+
+  # CVE-2016-2568: polkit local privilege escalation — runner pod has no
+  # interactive sessions or polkit-mediated actions.
+  - vulnerability: CVE-2016-2568
+    package:
+      name: libpolkit-agent-1-0
+  - vulnerability: CVE-2016-2568
+    package:
+      name: libpolkit-gobject-1-0
+  - vulnerability: CVE-2016-2568
+    package:
+      name: polkitd
+
+  # CVE-2025-66418: pip wheel vulnerability — pip used only at build-time for
+  # trusted packages; runner does not pip-install untrusted packages at runtime.
+  - vulnerability: CVE-2025-66418
+    package:
+      name: python3-pip-whl
+
+  # CVE-2025-66471: pip wheel vulnerability — same rationale.
+  - vulnerability: CVE-2025-66471
+    package:
+      name: python3-pip-whl
+
+  # CVE-2026-21441: pip wheel vulnerability — same rationale.
+  - vulnerability: CVE-2026-21441
+    package:
+      name: python3-pip-whl
+
+  # CVE-2026-24049: pip wheel vulnerability — same rationale.
+  - vulnerability: CVE-2026-24049
+    package:
+      name: python3-pip-whl
+
+  # CVE-2026-26007: python3-cryptography vulnerability — no fix in Ubuntu 24.04.
+  # Cryptography is used only for boto3 SigV4 signing against trusted AWS endpoints.
+  - vulnerability: CVE-2026-26007
+    package:
+      name: python3-cryptography
+
+  # CVE-2025-5222: libicu74 vulnerability — no fix in Ubuntu 24.04.
+  # ICU is a transitive dependency; runner does not process untrusted locale data.
+  - vulnerability: CVE-2025-5222
+    package:
+      name: libicu74
+
+  # ============================================================================
   # Agent-worker-image: Go stdlib in pre-compiled binaries (containerd/runc).
   # These CVEs affect Go standard library packages bundled with containerd, runc,
   # and ctr binaries that ship their own Go runtime. The agent-worker uses these
