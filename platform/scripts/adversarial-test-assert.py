@@ -157,10 +157,28 @@ def verify_sandbox_config(
         )
         return _verify_sandbox_config_ssm(sandbox_tenant, aws_region=aws_region)
 
+    # CloudFront SPA fallback returns 200 + text/html for unknown paths.
+    # Treat non-JSON responses as "endpoint absent" and fall back to SSM.
+    content_type = resp.headers.get("content-type", "")
+    if resp.status_code == 200 and "application/json" not in content_type:
+        logger.warning(
+            "Tenant config endpoint returned non-JSON content-type (%s) — "
+            "likely CloudFront SPA fallback; falling back to SSM check",
+            content_type,
+        )
+        return _verify_sandbox_config_ssm(sandbox_tenant, aws_region=aws_region)
+
     if resp.status_code != 200:
         return False, f"Admin API returned {resp.status_code}: {resp.text[:200]}"
 
-    config = resp.json()
+    try:
+        config = resp.json()
+    except (ValueError, requests.exceptions.JSONDecodeError):
+        logger.warning(
+            "Tenant config endpoint returned unparseable response — "
+            "falling back to SSM check"
+        )
+        return _verify_sandbox_config_ssm(sandbox_tenant, aws_region=aws_region)
     enable_user_creds = config.get("enable_user_credentials", False)
     enforce_binding = config.get("enforce_credential_binding", False)
 
@@ -491,7 +509,25 @@ def collect_audit_entries(
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=15)
         if resp.status_code == 200:
-            entries = resp.json().get("entries", resp.json())
+            # CloudFront SPA fallback returns 200 + text/html for unknown paths.
+            # Treat non-JSON responses as "endpoint absent" — return empty list.
+            content_type = resp.headers.get("content-type", "")
+            if "application/json" not in content_type:
+                logger.warning(
+                    "Audit entries endpoint returned non-JSON content-type (%s) — "
+                    "likely CloudFront SPA fallback; treating as empty",
+                    content_type,
+                )
+                return []
+            try:
+                data = resp.json()
+            except (ValueError, requests.exceptions.JSONDecodeError):
+                logger.warning(
+                    "Audit entries endpoint returned unparseable response — "
+                    "treating as empty"
+                )
+                return []
+            entries = data.get("entries", data)
             if isinstance(entries, list):
                 logger.info(
                     "Collected %d audit entries for run %s", len(entries), run_id

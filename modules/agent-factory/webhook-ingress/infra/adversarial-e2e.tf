@@ -130,3 +130,21 @@ resource "aws_ssm_parameter" "adversarial_evidence_bucket" {
     Component = "credential-binding"
   }
 }
+
+# -----------------------------------------------------------------------------
+# 4. Sandbox Tenant Config SSM Parameters — Issue #3462
+# -----------------------------------------------------------------------------
+# The adversarial E2E script's SSM fallback reads these params to verify the
+# sandbox tenant has credential features enabled (anti-gaming clause).
+#
+# These params are MANUALLY SEEDED via the #3186 runbook (flip-gate Gate 4)
+# and are runbook-owned — NOT managed by Terraform. Rationale:
+#   - /adp/dev/adp-security-test/enable-user-credentials was seeded 2026-07-11
+#   - /adp/dev/adp-security-test/enforce-credential-binding was seeded 2026-07-11
+#   - Managing them here would fail with ParameterAlreadyExists on apply.
+#
+# If you need to recreate them (new environment), use:
+#   aws ssm put-parameter --name "/adp/<env>/adp-security-test/enable-user-credentials" \
+#     --type String --value "true" --tags Key=Purpose,Value=adversarial-e2e
+#   aws ssm put-parameter --name "/adp/<env>/adp-security-test/enforce-credential-binding" \
+#     --type String --value "true" --tags Key=Purpose,Value=adversarial-e2e

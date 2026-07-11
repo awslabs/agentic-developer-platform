@@ -30,6 +30,7 @@ UNIT_MODULES = [
     "src.internal.assume_role_routes",  # Issue #481: aws_role STS assume delivery path
     "src.internal.provenance_routes",  # Issue #785: action provenance write endpoint
     "src.internal.status_callback_routes",  # Issue #2049: ingestion worker status callback
+    "src.internal.admin_routes",  # Issue #3462: admin read endpoints for adversarial E2E
     "src.proxy.routes",
     "src.admin.routes",
     "src.admin.identity.router",
