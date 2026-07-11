@@ -2,7 +2,8 @@
  * Tests for Navigation component — Issue #3590.
  *
  * Verifies: GitLab link renders for authenticated users, uses a plain <a> tag
- * (not NavLink), and has href="/gitlab".
+ * (not NavLink), and has href="/gitlab/" (trailing slash — the CloudFront
+ * /gitlab/* behavior does not match the bare /gitlab path).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -68,11 +69,11 @@ describe('Navigation', () => {
       expect(gitlabLink!.getAttribute('data-discover')).toBeNull();
     });
 
-    it('has href="/gitlab"', () => {
+    it('has href="/gitlab/" (trailing slash required by CloudFront /gitlab/* behavior)', () => {
       renderNavigation();
 
       const gitlabLink = screen.getByText('GitLab').closest('a');
-      expect(gitlabLink).toHaveAttribute('href', '/gitlab');
+      expect(gitlabLink).toHaveAttribute('href', '/gitlab/');
     });
 
     it('displays the fox emoji icon', () => {

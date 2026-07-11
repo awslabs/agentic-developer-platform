@@ -42,7 +42,7 @@ run "callback_urls_include_cloudfront_when_set" {
   assert {
     condition = contains(
       aws_cognito_user_pool_client.gitlab_oidc.logout_urls,
-      "https://d123abc.cloudfront.net/gitlab"
+      "https://d123abc.cloudfront.net/gitlab/"
     )
     error_message = "CloudFront logout URL should be present when cloudfront_domain is set"
   }

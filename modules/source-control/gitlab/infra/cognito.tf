@@ -39,7 +39,9 @@ resource "aws_cognito_user_pool_client" "gitlab_oidc" {
   ])
   logout_urls = compact([
     "https://${var.gitlab_domain}",
-    var.cloudfront_domain != "" ? "https://${var.cloudfront_domain}/gitlab" : "",
+    # Trailing slash: bare /gitlab misses the CloudFront /gitlab/* behavior
+    # and 404s in the SPA (see PR #3706).
+    var.cloudfront_domain != "" ? "https://${var.cloudfront_domain}/gitlab/" : "",
   ])
 
   # Token validity (matches existing gateway client pattern)
