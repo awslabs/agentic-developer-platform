@@ -18,6 +18,10 @@ locals {
   # VPC Origin takes precedence when enabled and configured
   api_origin_enabled = var.enable_vpc_origin || var.alb_domain_name != ""
   use_vpc_origin     = var.enable_vpc_origin && var.internal_alb_arn != ""
+
+  # GitLab VPC Origin: enabled only when both DNS and ARN are provided
+  gitlab_origin_enabled = var.gitlab_origin_dns != "" && var.gitlab_origin_arn != ""
+  gitlab_origin_id      = "${var.name_prefix}-gitlab-origin"
 }
 
 # Origin Access Control for S3 (recommended over OAI)
@@ -135,6 +139,35 @@ resource "aws_cloudfront_vpc_origin" "api" {
   })
 }
 
+# =============================================================================
+# CloudFront VPC Origin for GitLab Internal ALB
+# =============================================================================
+# Created only when gitlab_origin_dns and gitlab_origin_arn are both non-empty.
+# Routes /gitlab/* traffic to the GitLab internal ALB via CloudFront.
+
+resource "aws_cloudfront_vpc_origin" "gitlab" {
+  count = local.gitlab_origin_enabled ? 1 : 0
+
+  vpc_origin_endpoint_config {
+    name                   = "${var.name_prefix}-gitlab-vpc-origin"
+    arn                    = var.gitlab_origin_arn
+    http_port              = 80
+    https_port             = 443
+    origin_protocol_policy = "http-only"
+
+    origin_ssl_protocols {
+      items    = ["TLSv1.2"]
+      quantity = 1
+    }
+  }
+
+  tags = merge(var.common_tags, {
+    Name    = "${var.name_prefix}-gitlab-vpc-origin"
+    Service = "cdn"
+    Purpose = "gitlab-vpc-origin"
+  })
+}
+
 # CloudFront Distribution
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
@@ -193,6 +226,22 @@ resource "aws_cloudfront_distribution" "frontend" {
     }
   }
 
+  # GitLab Origin (internal ALB via VPC Origin)
+  # Created only when gitlab_origin_dns and gitlab_origin_arn are both set.
+  dynamic "origin" {
+    for_each = local.gitlab_origin_enabled ? [1] : []
+    content {
+      domain_name = var.gitlab_origin_dns
+      origin_id   = local.gitlab_origin_id
+
+      vpc_origin_config {
+        vpc_origin_id            = aws_cloudfront_vpc_origin.gitlab[0].id
+        origin_read_timeout      = 60
+        origin_keepalive_timeout = 60
+      }
+    }
+  }
+
   # API Cache Behavior — proxy /api/* to ALB (no caching, forward all headers)
   # Uses either custom origin (internet-facing ALB) or VPC origin (internal ALB)
   dynamic "ordered_cache_behavior" {
@@ -214,6 +263,25 @@ resource "aws_cloudfront_distribution" "frontend" {
         event_type   = "viewer-request"
         function_arn = aws_cloudfront_function.strip_api_prefix.arn
       }
+
+      compress = true
+    }
+  }
+
+  # GitLab Cache Behavior — proxy /gitlab/* to GitLab ALB (no caching, forward all)
+  dynamic "ordered_cache_behavior" {
+    for_each = local.gitlab_origin_enabled ? [1] : []
+    content {
+      path_pattern     = "/gitlab/*"
+      allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+      cached_methods   = ["GET", "HEAD"]
+      target_origin_id = local.gitlab_origin_id
+
+      viewer_protocol_policy = "redirect-to-https"
+
+      # Disable caching — GitLab serves dynamic content
+      cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+      origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
 
       compress = true
     }

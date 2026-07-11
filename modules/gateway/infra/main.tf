@@ -734,6 +734,10 @@ module "cloudfront" {
   internal_alb_dns             = var.internal_alb_dns
   vpc_origin_read_timeout      = var.vpc_origin_read_timeout
   vpc_origin_keepalive_timeout = var.vpc_origin_keepalive_timeout
+
+  # GitLab VPC Origin (Issue #3583)
+  gitlab_origin_dns = var.gitlab_origin_dns
+  gitlab_origin_arn = var.gitlab_origin_arn
 }
 
 # =============================================================================

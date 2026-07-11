@@ -304,6 +304,22 @@ variable "vpc_origin_keepalive_timeout" {
 }
 
 # =============================================================================
+# GitLab VPC Origin Configuration
+# =============================================================================
+
+variable "gitlab_origin_dns" {
+  type        = string
+  description = "DNS hostname of the GitLab internal ALB. When non-empty (along with gitlab_origin_arn), a VPC Origin and /gitlab/* cache behavior are added to CloudFront."
+  default     = ""
+}
+
+variable "gitlab_origin_arn" {
+  type        = string
+  description = "ARN of the GitLab internal ALB for VPC Origin. Required together with gitlab_origin_dns."
+  default     = ""
+}
+
+# =============================================================================
 # Chat Logging Configuration (Issue #143)
 # =============================================================================
 

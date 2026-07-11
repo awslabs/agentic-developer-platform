@@ -66,3 +66,8 @@ enable_lambda_reserved_concurrency = false
 # accounts leave false for the initial Phase 4 apply; flip to true on the
 # gateway second pass (Phase 6b) or any subsequent apply after Phase 7.
 enable_webhook_secrets_kms_grant = true
+
+# Issue #3583: GitLab VPC Origin for CloudFront /gitlab/* behavior.
+# Set both to non-empty after GitLab module outputs the internal ALB DNS/ARN.
+gitlab_origin_dns = ""
+gitlab_origin_arn = ""
