@@ -146,6 +146,16 @@ export function Navigation() {
           <span>{item.label}</span>
         </NavLink>
       ))}
+      {/* External: GitLab (full page navigation, not SPA route) */}
+      <a
+        href="/gitlab"
+        className="flex items-center gap-3 px-4 py-2 rounded-lg transition-colors text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+      >
+        <span className="text-xl" aria-hidden="true">
+          🦊
+        </span>
+        <span>GitLab</span>
+      </a>
     </nav>
   );
 }
