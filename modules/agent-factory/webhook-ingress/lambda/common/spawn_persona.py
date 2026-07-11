@@ -72,6 +72,7 @@ def spawn_persona(
     model_requested: str | None = None,
     model_resolved: str | None = None,
     aws_label: str | None = None,
+    token_source: str | None = None,
 ) -> SpawnResult:
     """Validate guards, write lineage, build envelope, publish to SQS.
 
@@ -98,6 +99,8 @@ def spawn_persona(
         model_resolved: Validated Bedrock model ID, or None if rejected/absent.
         aws_label: Validated AWS credential label from /aws-label directive
             (issue #3574).
+        token_source: Issue #3385 (C3) — "pat" when the tenant's identity-index
+            row carries token_source_override="pat"; None otherwise (App default).
 
     Returns:
         SpawnResult with success=True and message_id, or success=False and
@@ -167,6 +170,7 @@ def spawn_persona(
         model_requested=model_requested,
         model_resolved=model_resolved,
         aws_label=aws_label,
+        token_source=token_source,
     )
 
     # --- Step 8: Capture invocation event to DDB BEFORE SQS ---
@@ -367,6 +371,7 @@ def _build_envelope(
     model_requested: str | None = None,
     model_resolved: str | None = None,
     aws_label: str | None = None,
+    token_source: str | None = None,
 ) -> dict:
     """Build the normalized webhook envelope for SQS."""
     envelope = {
@@ -423,6 +428,11 @@ def _build_envelope(
     # linked account within the authorized user's vault.
     if aws_label is not None:
         envelope["aws_label"] = aws_label
+    # Issue #3385 (C3): Thread token_source through the envelope. The worker
+    # reads this to decide PAT vs App execution path. Only set when explicitly
+    # "pat" — absent/None = legacy App behavior (backward compatible).
+    if token_source is not None:
+        envelope["token_source"] = token_source
     envelope["message_id"] = str(uuid.uuid4())
     return envelope
 

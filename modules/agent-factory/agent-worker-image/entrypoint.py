@@ -65,6 +65,151 @@ def _sanitize_for_sts_tag(value: str) -> str:
     return _STS_TAG_FORBIDDEN.sub("_", value)
 
 
+class PatResolutionResult:
+    """Result of _resolve_execution_token() — PAT mode or App fallback."""
+
+    __slots__ = ("token_mode", "token", "github_login", "warning")
+
+    def __init__(
+        self,
+        token_mode: str = "app",
+        token: str | None = None,
+        github_login: str = "",
+        warning: str | None = None,
+    ):
+        self.token_mode = token_mode
+        self.token = token
+        self.github_login = github_login
+        self.warning = warning
+
+
+def _resolve_execution_token(
+    *,
+    envelope: dict,
+    environ: dict,
+    cred_client: GatewayCredentialClient | None = None,
+    bootstrap_log: "BootstrapLogger | None" = None,
+) -> PatResolutionResult:
+    """Decide PAT vs App token mode and resolve PAT if needed.
+
+    Extracted from the inline entrypoint logic for testability (issue #3385).
+
+    Args:
+        envelope: Parsed SQS envelope dict.
+        environ: Environment dict (usually os.environ).
+        cred_client: Optional GatewayCredentialClient instance (created if None).
+        bootstrap_log: Optional bootstrap logger (steps logged if provided).
+
+    Returns:
+        PatResolutionResult with token_mode, resolved token (if PAT), and login.
+
+    Raises:
+        RuntimeError: If PAT resolution or validation fails (no App fallback).
+    """
+    pat_execution_enabled = environ.get(
+        "ADP_PAT_EXECUTION_ENABLED", ""
+    ).lower() in ("1", "true", "yes")
+    token_source = envelope.get("token_source")
+
+    # Not enabled or not PAT → App path
+    if not (pat_execution_enabled and token_source == "pat"):
+        warning = None
+        if token_source == "pat" and not pat_execution_enabled:
+            warning = (
+                "token_source=pat requested but ADP_PAT_EXECUTION_ENABLED "
+                "not set — falling back to App token path"
+            )
+            logger.warning("%s (message_id=%s)", warning, envelope.get("message_id"))
+        return PatResolutionResult(token_mode="app", warning=warning)
+
+    # PAT resolution (C1)
+    if bootstrap_log:
+        bootstrap_log.step_start(2, "pat_resolve", mode="explicit")
+
+    if cred_client is None:
+        cred_client = GatewayCredentialClient()
+
+    actor = envelope.get("actor", {})
+    actor_user_id = envelope.get("user_id") or actor.get("user_id", "")
+    persona = envelope.get("persona", "")
+    message_id = envelope.get("message_id", "")
+    source_ref = envelope.get("source_ref", {})
+    repo = source_ref.get("repo", "")
+    issue = source_ref.get("issue", "")
+
+    try:
+        result = cred_client.raw_read(
+            user_id=actor_user_id,
+            agent_id=persona,
+            task_id=message_id or f"{repo}/{issue}",
+            service="github",
+            label="github-pat",
+            purpose="entrypoint: PAT resolution for execution token",
+        )
+        pat_token = result["value"]
+    except GatewayCredentialError as exc:
+        if bootstrap_log:
+            bootstrap_log.step_error(2, "pat_resolve", exc)
+            bootstrap_log.close()
+        raise RuntimeError(
+            "PAT mode requested (token_source=pat) but credential "
+            f"resolution failed: {exc}"
+        ) from exc
+
+    if bootstrap_log:
+        bootstrap_log.step_success(2, "pat_resolve")
+
+    # PAT zero-token guard (C4) — validate before clone
+    if bootstrap_log:
+        bootstrap_log.step_start(3, "pat_validate")
+
+    try:
+        req = urllib.request.Request(
+            "https://api.github.com/user",
+            headers={
+                "Authorization": f"Bearer {pat_token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            user_data = json.loads(resp.read().decode("utf-8"))
+            github_login = user_data.get("login", "")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            err = RuntimeError(
+                "PAT validation failed: token is expired or revoked. "
+                "Please register a new PAT in Settings > Credentials."
+            )
+        elif exc.code == 403:
+            err = RuntimeError(
+                "PAT validation failed: token lacks required permissions. "
+                "Ensure the PAT has Contents, Issues, and Pull Requests "
+                "scopes."
+            )
+        else:
+            err = RuntimeError(f"PAT validation failed: HTTP {exc.code}")
+        if bootstrap_log:
+            bootstrap_log.step_error(3, "pat_validate", err)
+            bootstrap_log.close()
+        raise err from exc
+    except Exception as exc:
+        err = RuntimeError(f"PAT validation failed: {exc}")
+        if bootstrap_log:
+            bootstrap_log.step_error(3, "pat_validate", err)
+            bootstrap_log.close()
+        raise err from exc
+
+    if bootstrap_log:
+        bootstrap_log.step_success(
+            3, "pat_validate", github_login=github_login
+        )
+
+    return PatResolutionResult(
+        token_mode="pat", token=pat_token, github_login=github_login
+    )
+
+
 def parse_envelope(raw: str) -> dict:
     """Step 1: Parse SQS envelope and extract required fields."""
     env = json.loads(raw)
@@ -599,28 +744,48 @@ def main() -> int:
         correlation_id or "(none)",
     )
 
-    # Step 2: Fetch GitHub App credentials from vault
-    bootstrap_log.step_start(2, "vault_fetch", secret=f"tenants/{tenant_id}/github-app")
-    try:
-        vault = VaultClient(region=os.environ.get("AWS_REGION", "us-east-1"))
-        app_creds = vault.get_secret(f"tenants/{tenant_id}/github-app")
-        app_id = app_creds["app_id"]
-        private_key = app_creds["private_key"]
-    except Exception as exc:
-        bootstrap_log.step_error(2, "vault_fetch", exc)
-        bootstrap_log.close()
-        raise
-    bootstrap_log.step_success(2, "vault_fetch", app_id=app_id)
+    # --- Issue #3385: PAT execution path (C1+C4) behind kill-switch ---
+    # Gated on ADP_PAT_EXECUTION_ENABLED env var (default absent = dead code).
+    # When enabled AND envelope token_source == "pat", resolve PAT from vault
+    # and skip App token mint. Otherwise: existing App path, byte-identical.
+    _pat_result = _resolve_execution_token(
+        envelope=envelope,
+        environ=dict(os.environ),
+        bootstrap_log=bootstrap_log,
+    )
+    _token_mode = _pat_result.token_mode
+    _pat_token = _pat_result.token
+    _pat_github_login = _pat_result.github_login
 
-    # Step 3: Mint installation token
-    bootstrap_log.step_start(3, "mint_token", app_id=app_id, installation_id=installation_id)
-    try:
-        token = mint_installation_token(str(app_id), private_key, installation_id)
-    except Exception as exc:
-        bootstrap_log.step_error(3, "mint_token", exc)
-        bootstrap_log.close()
-        raise
-    bootstrap_log.step_success(3, "mint_token")
+    # Step 2: Fetch GitHub App credentials from vault (App path — skipped in PAT mode)
+    if _token_mode == "pat":
+        # PAT resolved above; no vault fetch or token mint needed.
+        # Set token variable for downstream use (clone, check-run, etc.)
+        token = _pat_token
+        app_id = ""
+        private_key = ""
+    else:
+        bootstrap_log.step_start(2, "vault_fetch", secret=f"tenants/{tenant_id}/github-app")
+        try:
+            vault = VaultClient(region=os.environ.get("AWS_REGION", "us-east-1"))
+            app_creds = vault.get_secret(f"tenants/{tenant_id}/github-app")
+            app_id = app_creds["app_id"]
+            private_key = app_creds["private_key"]
+        except Exception as exc:
+            bootstrap_log.step_error(2, "vault_fetch", exc)
+            bootstrap_log.close()
+            raise
+        bootstrap_log.step_success(2, "vault_fetch", app_id=app_id)
+
+        # Step 3: Mint installation token
+        bootstrap_log.step_start(3, "mint_token", app_id=app_id, installation_id=installation_id)
+        try:
+            token = mint_installation_token(str(app_id), private_key, installation_id)
+        except Exception as exc:
+            bootstrap_log.step_error(3, "mint_token", exc)
+            bootstrap_log.close()
+            raise
+        bootstrap_log.step_success(3, "mint_token")
 
     # Step 3b: Idempotency guard — skip redelivered messages for completed work.
     # If the issue's agent branch already has a MERGED PR, a prior run completed
@@ -669,18 +834,37 @@ def main() -> int:
         "TENANT_ID": tenant_id,
         "CLAUDE_CODE_USE_BEDROCK": "1",
         "ANTHROPIC_MODEL": effective_model,
+    }
+
+    # Issue #3385 (A4): In PAT mode, do NOT export GH_APP_* vars — TokenManager
+    # must not run its refresh loop (which would overwrite the PAT with a bot
+    # installation token mid-run). Instead export ADP_TOKEN_MODE=pat so the TS
+    # side adopts the env GITHUB_TOKEN as-is.
+    if _token_mode == "pat":
+        env_vars["ADP_TOKEN_MODE"] = "pat"
+        # Write PAT to the askpass token file so git-askpass-helper reads it.
+        # TokenManager won't overwrite since it has no app credentials.
+        # Use 0o600 + atomic rename to prevent world-readable window.
+        _token_tmp = "/tmp/.adp-gh-token.tmp"
+        _token_path = "/tmp/.adp-gh-token"
+        fd = os.open(_token_tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, token.encode())
+        finally:
+            os.close(fd)
+        os.replace(_token_tmp, _token_path)
+    else:
         # GitHub App credentials for token refresh (#1502). The agent-worker.ts
         # TokenManager requires these to re-mint installation tokens before the
         # 1-hour expiry. Without them, long-running agents die with 401.
-        "GH_APP_ID": str(app_id),
-        "GH_APP_PRIVATE_KEY": private_key,
+        env_vars["GH_APP_ID"] = str(app_id)
+        env_vars["GH_APP_PRIVATE_KEY"] = private_key
         # Authoritative installation id for THIS run's target org. The JS worker
         # must re-mint against this installation — NOT installations[0], which is
         # an arbitrary (newest-first) install and resolves to the wrong org once
         # more than one tenant is onboarded, causing 404s on comment/check-run
         # PATCH calls (cross-installation resource access).
-        "GH_APP_INSTALLATION_ID": str(installation_id),
-    }
+        env_vars["GH_APP_INSTALLATION_ID"] = str(installation_id)
 
     # Issue #2279: Expose model_requested so the worker can post a warning
     # if the requested model was rejected (lenient path).
@@ -756,9 +940,15 @@ def main() -> int:
 
     # Step 6: Configure git identity (must come BEFORE WIP branch creation)
     bootstrap_log.step_start(6, "git_config")
-    bot_email = f"{app_id}+adp-agent[bot]@users.noreply.github.com"
-    run_cmd(["git", "config", "user.email", bot_email], cwd=WORK_DIR)
-    run_cmd(["git", "config", "user.name", "adp-agent[bot]"], cwd=WORK_DIR)
+    if _token_mode == "pat" and _pat_github_login:
+        # Issue #3385: PAT runs act AS the human — use their GitHub identity.
+        pat_email = f"{_pat_github_login}@users.noreply.github.com"
+        run_cmd(["git", "config", "user.email", pat_email], cwd=WORK_DIR)
+        run_cmd(["git", "config", "user.name", _pat_github_login], cwd=WORK_DIR)
+    else:
+        bot_email = f"{app_id}+adp-agent[bot]@users.noreply.github.com"
+        run_cmd(["git", "config", "user.email", bot_email], cwd=WORK_DIR)
+        run_cmd(["git", "config", "user.name", "adp-agent[bot]"], cwd=WORK_DIR)
     bootstrap_log.step_success(6, "git_config")
 
     # Step 6b: Create or reset the agent branch + WIP commit BEFORE exec
@@ -1095,8 +1285,13 @@ def main() -> int:
         )
 
     # Update invocation status to in_progress (best-effort)
+    # Issue #3385 (C5): include token_mode provenance on the DDB row.
     _keda_job_name = os.environ.get("JOB_NAME", os.environ.get("HOSTNAME", ""))
-    update_invocation_status(message_id, arrived_at, "in_progress", run_id=_keda_job_name)
+    update_invocation_status(
+        message_id, arrived_at, "in_progress",
+        run_id=_keda_job_name,
+        token_mode=_token_mode,
+    )
 
     # Flush bootstrap logs to CloudWatch before entering the agent phase.
     # From here on, the Node agent SDK / OTEL handles observability.

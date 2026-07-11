@@ -36,6 +36,7 @@ def update_status(
     run_id: str | None = None,
     summary: str | None = None,
     transcript_key: str | None = None,
+    token_mode: str | None = None,
 ) -> None:
     """Update the invocation row's status. Fail-soft: logs and returns on error.
 
@@ -46,6 +47,7 @@ def update_status(
         run_id: KEDA job/pod name (set at in_progress).
         summary: Outcome summary (set at terminal status).
         transcript_key: S3 object key for the full run transcript (set at terminal status).
+        token_mode: Issue #3385 (C5) — "app" or "pat" provenance (set at in_progress).
     """
     table = _table_name or os.environ.get("WEBHOOK_EVENTS_TABLE", "")
     if not table:
@@ -81,6 +83,11 @@ def update_status(
             expr_parts.append("#tk = :transcript_key")
             expr_names["#tk"] = "transcript_key"
             expr_values[":transcript_key"] = {"S": transcript_key}
+
+        if token_mode:
+            expr_parts.append("#tm = :token_mode")
+            expr_names["#tm"] = "token_mode"
+            expr_values[":token_mode"] = {"S": token_mode}
 
         update_expr = "SET " + ", ".join(expr_parts)
 

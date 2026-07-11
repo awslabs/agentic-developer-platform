@@ -1229,6 +1229,18 @@ def handler(event: dict, context) -> dict:
     if aws_label:
         logger.info("handler: /aws-label directive %r accepted", aws_label)
 
+    # Issue #3385 (C3): Read token_source_override from the identity-index
+    # tenant item. When the installation's row carries token_source_override="pat",
+    # the envelope gets token_source="pat" which tells the worker to resolve a
+    # PAT instead of minting an App installation token. Absent = App default.
+    resolver_mod_for_token = _get_identity_resolver()
+    tenant_item = getattr(resolver_mod_for_token, "last_tenant_item", None)
+    token_source = (
+        tenant_item.get("token_source_override")
+        if tenant_item
+        else None
+    )
+
     # Provide a default correlation_ctx if not available (e.g. issues.labeled
     # events where we didn't compute correlation above).
     effective_correlation_ctx = correlation_ctx or {
@@ -1259,6 +1271,7 @@ def handler(event: dict, context) -> dict:
         model_requested=model_requested,
         model_resolved=model_resolved,
         aws_label=aws_label,
+        token_source=token_source,
     )
 
     print(
