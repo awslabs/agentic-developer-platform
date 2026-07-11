@@ -68,6 +68,11 @@ resource "aws_dynamodb_table" "webhook_events" {
     type = "S"
   }
 
+  attribute {
+    name = "root_human_id"
+    type = "S"
+  }
+
   # correlation-index powers the Agent Activity chain view (#1616): retrieve all
   # invocations sharing a correlation_id via a Query (was a full-table Scan,
   # which is costly and required a dynamodb:Scan grant the gateway role lacks).
@@ -88,6 +93,18 @@ resource "aws_dynamodb_table" "webhook_events" {
   global_secondary_index {
     name            = "user-index"
     hash_key        = "user_id"
+    range_key       = "arrived_at"
+    projection_type = "ALL"
+  }
+
+  # root-human-index: sparse GSI for chain runs attributed to a human user.
+  # Issue #3705: Agent-spawned chain runs carry user_id = <bot>, but
+  # root_human_id = <the human who caused the chain>. This index lets the
+  # stats + activity services include those runs in /me queries. Sparse by
+  # nature: only rows with root_human_id are indexed.
+  global_secondary_index {
+    name            = "root-human-index"
+    hash_key        = "root_human_id"
     range_key       = "arrived_at"
     projection_type = "ALL"
   }

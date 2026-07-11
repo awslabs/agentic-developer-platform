@@ -75,6 +75,7 @@ def mock_stats_service():
         )
     )
     service._fetch_items = MagicMock(return_value=[])
+    service._fetch_items_merged = MagicMock(return_value=[])
     return service
 
 
@@ -347,8 +348,9 @@ class TestStatsCostEnrichment:
 
     def test_cost_failure_returns_stats_without_spend(self, client, mock_stats_service, mock_db):
         """If Postgres cost query fails, stats are returned with spend=null."""
-        # Make _fetch_items return items so cost enrichment is attempted
-        mock_stats_service._fetch_items.return_value = [{"event_id": "inv-1"}]
+        # Make _fetch_items_merged return items so cost enrichment is attempted
+        # Issue #3705: route now calls _fetch_items_merged for user scope
+        mock_stats_service._fetch_items_merged.return_value = [{"event_id": "inv-1"}]
         # Make db.execute raise to simulate Postgres failure
         mock_db.execute = AsyncMock(side_effect=Exception("DB connection failed"))
 
@@ -359,7 +361,8 @@ class TestStatsCostEnrichment:
 
     def test_cost_enriched_when_available(self, client, mock_stats_service, mock_db):
         """When cost data is available, spend field is populated."""
-        mock_stats_service._fetch_items.return_value = [{"event_id": "inv-1"}]
+        # Issue #3705: route now calls _fetch_items_merged for user scope
+        mock_stats_service._fetch_items_merged.return_value = [{"event_id": "inv-1"}]
         # Mock successful cost query
         mock_result = MagicMock()
         mock_row = MagicMock()

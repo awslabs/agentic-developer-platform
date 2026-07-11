@@ -104,10 +104,12 @@ class TestQueryByUser:
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
         service.query_by_user(user_id="user-token-value")
 
-        call_kwargs = mock_dynamodb_table.query.call_args[1]
-        assert call_kwargs["IndexName"] == "user-index"
+        # Issue #3705: query_by_user now makes two calls (user-index + root-human-index).
+        # Check the FIRST call targets user-index with the correct partition key.
+        first_call_kwargs = mock_dynamodb_table.query.call_args_list[0][1]
+        assert first_call_kwargs["IndexName"] == "user-index"
         # Verify the key condition uses user_id as PK and the correct value
-        key_expr = call_kwargs["KeyConditionExpression"]
+        key_expr = first_call_kwargs["KeyConditionExpression"]
         expr_dict = key_expr.get_expression()
         # values[0] is the Key object, values[1] is the partition key value
         key_obj = expr_dict["values"][0]
@@ -215,6 +217,8 @@ class TestQueryByUser:
             page("inv-1", True),
             page("inv-2", True),
             page("inv-3", False),  # exhausted
+            # Issue #3705: root-human-index query (returns empty — no chain runs)
+            {"Items": [], "Count": 0},
         ]
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
         result = service.query_by_user(user_id="user-1", page_size=3)
@@ -248,8 +252,9 @@ class TestQueryByUser:
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
         service.query_by_user(user_id="user-1", last_key=cursor)
 
-        call_kwargs = mock_dynamodb_table.query.call_args[1]
-        assert call_kwargs["ExclusiveStartKey"] == start_key
+        # Issue #3705: First call is user-index with the cursor as ExclusiveStartKey
+        first_call_kwargs = mock_dynamodb_table.query.call_args_list[0][1]
+        assert first_call_kwargs["ExclusiveStartKey"] == start_key
 
     def test_bad_cursor_raises_value_error(self, mock_dynamodb_resource):
         """Malformed cursor raises ValueError (caught by route → 400)."""
@@ -1631,3 +1636,194 @@ class TestQueryChainsByUser:
         # correlation-index queried exactly once (not once per attributed run).
         correlation_queries = [c for c in mock_dynamodb_table.query.call_args_list if c.kwargs.get("IndexName") == "correlation-index"]
         assert len(correlation_queries) == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #3705 tests: root-human-index dual-query merge (list parity)
+# ---------------------------------------------------------------------------
+
+
+class TestQueryByUserRootHumanMerge:
+    """Tests for Issue #3705: query_by_user dual-query with root-human-index.
+
+    Validates:
+    - Chain runs (root_human_id = caller) appear in the list
+    - Dedup: item with user_id = root_human_id = caller is NOT double-counted
+    - Scoping: other user's runs never appear
+    - Missing GSI fallback: returns user-index-only results without error
+    """
+
+    def test_chain_runs_included_in_list(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Bot-attributed chain runs (root_human_id = caller) appear in list results."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "event_id": "direct-1",
+                            "arrived_at": "2026-07-10T10:00:00Z",
+                            "status": "complete",
+                            "user_id": "user-1",
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                return {
+                    "Items": [
+                        {
+                            "event_id": "chain-1",
+                            "arrived_at": "2026-07-10T10:05:00Z",
+                            "status": "in_progress",
+                            "user_id": "bot-svc-account",
+                            "root_human_id": "user-1",
+                        }
+                    ],
+                    "Count": 1,
+                }
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        # Both runs should appear
+        assert result.count == 2
+        inv_ids = {i.invocation_id for i in result.items}
+        assert "direct-1" in inv_ids
+        assert "chain-1" in inv_ids
+
+    def test_dedup_no_double_count(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Item with user_id = root_human_id = caller is NOT double-counted."""
+        shared_item = {
+            "event_id": "shared-1",
+            "arrived_at": "2026-07-10T10:00:00Z",
+            "status": "complete",
+            "user_id": "user-1",
+            "root_human_id": "user-1",
+        }
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index in ("user-index", "root-human-index"):
+                return {"Items": [shared_item], "Count": 1}
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        # Only counted once
+        assert result.count == 1
+        assert result.items[0].invocation_id == "shared-1"
+
+    def test_missing_gsi_fallback(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """If root-human-index is missing, falls back to user-index only."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "event_id": "direct-1",
+                            "arrived_at": "2026-07-10T10:00:00Z",
+                            "status": "complete",
+                            "user_id": "user-1",
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                raise ClientError(
+                    {"Error": {"Code": "ValidationException", "Message": "Index not found"}},
+                    "Query",
+                )
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        # Should NOT raise; returns user-index-only results
+        assert result.count == 1
+        assert result.items[0].invocation_id == "direct-1"
+
+    def test_sorted_by_arrived_at_descending(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Merged results are sorted newest-first (arrived_at descending)."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "event_id": "old-direct",
+                            "arrived_at": "2026-07-10T08:00:00Z",
+                            "status": "complete",
+                            "user_id": "user-1",
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                return {
+                    "Items": [
+                        {
+                            "event_id": "new-chain",
+                            "arrived_at": "2026-07-10T12:00:00Z",
+                            "status": "in_progress",
+                            "user_id": "bot-svc",
+                            "root_human_id": "user-1",
+                        }
+                    ],
+                    "Count": 1,
+                }
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        # Newest first
+        assert result.items[0].invocation_id == "new-chain"
+        assert result.items[1].invocation_id == "old-direct"
+
+    def test_page_size_respected_after_merge(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Merged results are trimmed to page_size."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                items = [
+                    {
+                        "event_id": f"direct-{i}",
+                        "arrived_at": f"2026-07-10T{10 + i:02d}:00:00Z",
+                        "status": "complete",
+                        "user_id": "user-1",
+                    }
+                    for i in range(3)
+                ]
+                return {"Items": items, "Count": 3}
+            elif index == "root-human-index":
+                items = [
+                    {
+                        "event_id": f"chain-{i}",
+                        "arrived_at": f"2026-07-10T{13 + i:02d}:00:00Z",
+                        "status": "complete",
+                        "user_id": "bot-svc",
+                        "root_human_id": "user-1",
+                    }
+                    for i in range(3)
+                ]
+                return {"Items": items, "Count": 3}
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1", page_size=4)
+
+        # 6 total items, but page_size=4 trims the result
+        assert result.count == 4

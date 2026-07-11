@@ -95,7 +95,12 @@ class ActivityService:
         until: str | None = None,
         include_non_triggering: bool = False,
     ) -> InvocationListResponse:
-        """Query invocations for a specific user via user-index GSI.
+        """Query invocations for a specific user via user-index + root-human-index.
+
+        Issue #3705: Queries BOTH user-index (direct runs) and root-human-index
+        (chain runs attributed to this user via root_human_id) for list-parity
+        with the stats dashboard. Merges with dedup on event_id. Falls back to
+        user-index-only if root-human-index is missing.
 
         Args:
             user_id: The user's ID (from token, never from request param).
@@ -113,7 +118,8 @@ class ActivityService:
         Returns:
             InvocationListResponse with items, count, and optional next cursor.
         """
-        return self._execute_query(
+        # Primary query: direct runs (user_id = caller)
+        primary = self._execute_query(
             index_name="user-index",
             partition_key_name="user_id",
             partition_key_value=user_id,
@@ -125,6 +131,55 @@ class ActivityService:
             since=since,
             until=until,
             include_non_triggering=include_non_triggering,
+        )
+
+        # Secondary query: chain runs attributed via root_human_id
+        # Only fetch if we have no cursor (first page) or cursor belongs to user-index.
+        # On paginated calls, root-human-index items are already merged from page 1;
+        # we fetch them again to ensure completeness but dedup handles overlap.
+        secondary = self._execute_query(
+            index_name="root-human-index",
+            partition_key_name="root_human_id",
+            partition_key_value=user_id,
+            page_size=page_size,
+            last_key=None,  # root-human-index has its own key space
+            status=status,
+            channel=channel,
+            persona=persona,
+            since=since,
+            until=until,
+            include_non_triggering=include_non_triggering,
+        )
+
+        # If secondary returned nothing (GSI missing or no chain runs), return primary as-is
+        if not secondary.items:
+            return primary
+
+        # Merge with dedup on invocation_id, sorted by invoked_at descending
+        seen_ids: set[str] = set()
+        merged: list[InvocationItem] = []
+
+        for item in primary.items:
+            if item.invocation_id not in seen_ids:
+                seen_ids.add(item.invocation_id)
+                merged.append(item)
+
+        for item in secondary.items:
+            if item.invocation_id not in seen_ids:
+                seen_ids.add(item.invocation_id)
+                merged.append(item)
+
+        # Sort merged by invoked_at descending (newest first)
+        merged.sort(key=lambda x: x.invoked_at or "", reverse=True)
+
+        # Trim to page_size
+        trimmed = merged[:page_size]
+
+        # Preserve the primary cursor for pagination (user-index drives pagination)
+        return InvocationListResponse(
+            items=trimmed,
+            count=len(trimmed),
+            last_key=primary.last_key,
         )
 
     def query_by_tenant(

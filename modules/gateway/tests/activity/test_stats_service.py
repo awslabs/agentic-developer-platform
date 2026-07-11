@@ -68,9 +68,24 @@ class TestStatsServiceAggregation:
     """Test the aggregation logic in StatsService._aggregate()."""
 
     def _make_service(self, items: list[dict]) -> StatsService:
-        """Create a StatsService with a mocked DynamoDB that returns the given items."""
+        """Create a StatsService with a mocked DynamoDB that returns the given items.
+
+        Issue #3705: get_stats_by_user now queries both user-index and
+        root-human-index. This helper makes user-index return the given items
+        and root-human-index return empty (no chain runs), so existing
+        aggregation tests remain focused on the aggregation logic.
+        """
         mock_table = MagicMock()
-        mock_table.query.return_value = {"Items": items, "LastEvaluatedKey": None}
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {"Items": items, "LastEvaluatedKey": None}
+            elif index == "root-human-index":
+                return {"Items": [], "LastEvaluatedKey": None}
+            return {"Items": [], "LastEvaluatedKey": None}
+
+        mock_table.query.side_effect = query_side_effect
         mock_resource = MagicMock()
         mock_resource.Table.return_value = mock_table
         return StatsService(table_name="test-table", dynamodb_resource=mock_resource)
@@ -255,15 +270,25 @@ class TestStatsServiceItemBackstop:
         mock_table = MagicMock()
         # Return a large batch + LEK to simulate more pages
         large_batch = [_make_item(event_id=f"inv-{i}", arrived_at=_today_iso()) for i in range(_ITEM_BACKSTOP)]
-        mock_table.query.return_value = {"Items": large_batch, "LastEvaluatedKey": {"pk": "next"}}
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {"Items": large_batch, "LastEvaluatedKey": {"pk": "next"}}
+            elif index == "root-human-index":
+                return {"Items": [], "LastEvaluatedKey": None}
+            return {"Items": [], "LastEvaluatedKey": None}
+
+        mock_table.query.side_effect = query_side_effect
         mock_resource = MagicMock()
         mock_resource.Table.return_value = mock_table
         service = StatsService(table_name="test-table", dynamodb_resource=mock_resource)
 
         result = service.get_stats_by_user("user-abc-123", days=7)
 
-        # Should have called query exactly once (items >= backstop after first call)
-        assert mock_table.query.call_count == 1
+        # Should have called query twice: once for user-index (hits backstop),
+        # once for root-human-index (returns empty)
+        assert mock_table.query.call_count == 2
         assert result.today.total == _ITEM_BACKSTOP
 
     def test_pagination_follows_lek(self):
@@ -271,75 +296,94 @@ class TestStatsServiceItemBackstop:
         mock_table = MagicMock()
         page1_items = [_make_item(event_id="inv-1", arrived_at=_today_iso())]
         page2_items = [_make_item(event_id="inv-2", arrived_at=_today_iso())]
-        mock_table.query.side_effect = [
-            {"Items": page1_items, "LastEvaluatedKey": {"pk": "page2"}},
-            {"Items": page2_items, "LastEvaluatedKey": None},
-        ]
+        call_count = [0]
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return {"Items": page1_items, "LastEvaluatedKey": {"pk": "page2"}}
+                else:
+                    return {"Items": page2_items, "LastEvaluatedKey": None}
+            elif index == "root-human-index":
+                return {"Items": [], "LastEvaluatedKey": None}
+            return {"Items": [], "LastEvaluatedKey": None}
+
+        mock_table.query.side_effect = query_side_effect
         mock_resource = MagicMock()
         mock_resource.Table.return_value = mock_table
         service = StatsService(table_name="test-table", dynamodb_resource=mock_resource)
 
         result = service.get_stats_by_user("user-abc-123", days=7)
 
-        assert mock_table.query.call_count == 2
+        # 2 pages for user-index + 1 for root-human-index = 3 total calls
+        assert mock_table.query.call_count == 3
         assert result.today.total == 2
 
 
 class TestStatsServiceCache:
     """Test the in-process TTL cache."""
 
-    def test_cache_serves_stale_within_ttl(self):
-        """Second call within TTL returns cached result without DDB query."""
+    def _make_dual_query_service(self, items: list[dict]):
+        """Create a service with dual-query-aware mocking."""
         mock_table = MagicMock()
-        items = [_make_item(event_id="inv-1", arrived_at=_today_iso())]
-        mock_table.query.return_value = {"Items": items, "LastEvaluatedKey": None}
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {"Items": items, "LastEvaluatedKey": None}
+            elif index == "root-human-index":
+                return {"Items": [], "LastEvaluatedKey": None}
+            return {"Items": [], "LastEvaluatedKey": None}
+
+        mock_table.query.side_effect = query_side_effect
         mock_resource = MagicMock()
         mock_resource.Table.return_value = mock_table
         service = StatsService(table_name="test-table", dynamodb_resource=mock_resource)
+        return service, mock_table
 
-        # First call — hits DDB
+    def test_cache_serves_stale_within_ttl(self):
+        """Second call within TTL returns cached result without DDB query."""
+        items = [_make_item(event_id="inv-1", arrived_at=_today_iso())]
+        service, mock_table = self._make_dual_query_service(items)
+
+        # First call — hits DDB (2 queries: user-index + root-human-index)
         result1 = service.get_stats_by_user("user-abc-123", days=7)
-        assert mock_table.query.call_count == 1
+        first_call_count = mock_table.query.call_count
+        assert first_call_count == 2  # user-index + root-human-index
 
         # Second call — served from cache
         result2 = service.get_stats_by_user("user-abc-123", days=7)
-        assert mock_table.query.call_count == 1  # No additional call
+        assert mock_table.query.call_count == first_call_count  # No additional call
         assert result2.today.total == result1.today.total
 
     def test_cache_expires_after_ttl(self):
         """After TTL expires, cache is evicted and DDB is queried again."""
-        mock_table = MagicMock()
         items = [_make_item(event_id="inv-1", arrived_at=_today_iso())]
-        mock_table.query.return_value = {"Items": items, "LastEvaluatedKey": None}
-        mock_resource = MagicMock()
-        mock_resource.Table.return_value = mock_table
-        service = StatsService(table_name="test-table", dynamodb_resource=mock_resource)
+        service, mock_table = self._make_dual_query_service(items)
 
         # First call
         service.get_stats_by_user("user-abc-123", days=7)
-        assert mock_table.query.call_count == 1
+        first_call_count = mock_table.query.call_count
 
         # Expire the cache by manipulating the entry
         cache_key = "user:user-abc-123:7"
         service._cache[cache_key].expires_at = time.monotonic() - 1
 
-        # Third call — cache expired, hits DDB
+        # Next call — cache expired, hits DDB again
         service.get_stats_by_user("user-abc-123", days=7)
-        assert mock_table.query.call_count == 2
+        assert mock_table.query.call_count == first_call_count * 2
 
     def test_different_days_different_cache_key(self):
         """Different days param produces a different cache key."""
-        mock_table = MagicMock()
         items = [_make_item(event_id="inv-1", arrived_at=_today_iso())]
-        mock_table.query.return_value = {"Items": items, "LastEvaluatedKey": None}
-        mock_resource = MagicMock()
-        mock_resource.Table.return_value = mock_table
-        service = StatsService(table_name="test-table", dynamodb_resource=mock_resource)
+        service, mock_table = self._make_dual_query_service(items)
 
         service.get_stats_by_user("user-abc-123", days=7)
         service.get_stats_by_user("user-abc-123", days=14)
-        # Two different cache keys → two DDB calls
-        assert mock_table.query.call_count == 2
+        # Two different cache keys → 4 DDB calls (2 per user call)
+        assert mock_table.query.call_count == 4
 
 
 class TestStatsServiceGracefulDegradation:
@@ -481,3 +525,155 @@ class TestStatusVocabularyGuard:
 
         overlap = _ACTIVE_STATUSES & _TERMINAL_STATUSES
         assert not overlap, f"Status in both active AND terminal: {overlap}"
+
+
+class TestStatsServiceRootHumanMerge:
+    """Tests for Issue #3705: dual-query merge with root-human-index GSI.
+
+    Validates:
+    - Bot-attributed chain runs (root_human_id = caller) appear in stats
+    - Dedup: item with user_id = root_human_id = caller is NOT double-counted
+    - Scoping: a second user's root_human_id runs never appear
+    - Missing GSI fallback: returns user-index-only stats without error
+    """
+
+    def _make_service_dual(self, user_items: list[dict], root_human_items: list[dict]) -> StatsService:
+        """Create a StatsService where user-index and root-human-index return different items."""
+        mock_table = MagicMock()
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {"Items": user_items, "LastEvaluatedKey": None}
+            elif index == "root-human-index":
+                return {"Items": root_human_items, "LastEvaluatedKey": None}
+            return {"Items": [], "LastEvaluatedKey": None}
+
+        mock_table.query.side_effect = query_side_effect
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+        return StatsService(table_name="test-table", dynamodb_resource=mock_resource)
+
+    def test_chain_runs_included_in_stats(self):
+        """Bot-attributed chain runs (root_human_id = caller) are included in stats."""
+        today = _today_iso()
+        # Direct run owned by user
+        user_items = [
+            _make_item(event_id="direct-1", status="complete", arrived_at=today),
+        ]
+        # Chain run: user_id = bot, root_human_id = caller
+        root_human_items = [
+            _make_item(event_id="chain-1", status="complete", arrived_at=today),
+        ]
+
+        service = self._make_service_dual(user_items, root_human_items)
+        result = service.get_stats_by_user("user-abc-123", days=7)
+
+        # Both runs counted
+        assert result.today.total == 2
+        assert result.today.completed == 2
+
+    def test_dedup_no_double_count(self):
+        """Item with user_id = root_human_id = caller is NOT double-counted."""
+        today = _today_iso()
+        # Same item appears in BOTH indexes (user_id == root_human_id)
+        shared_item = _make_item(event_id="shared-1", status="complete", arrived_at=today)
+
+        service = self._make_service_dual([shared_item], [shared_item])
+        result = service.get_stats_by_user("user-abc-123", days=7)
+
+        # Only counted once
+        assert result.today.total == 1
+        assert result.today.completed == 1
+
+    def test_mixed_dedup_and_unique(self):
+        """Mix of overlapping and unique items: correct count after dedup."""
+        today = _today_iso()
+        shared_item = _make_item(event_id="shared-1", status="complete", arrived_at=today)
+        direct_only = _make_item(event_id="direct-1", status="failed", arrived_at=today)
+        chain_only = _make_item(event_id="chain-1", status="in_progress", arrived_at=today)
+
+        user_items = [shared_item, direct_only]
+        root_human_items = [shared_item, chain_only]
+
+        service = self._make_service_dual(user_items, root_human_items)
+        result = service.get_stats_by_user("user-abc-123", days=7)
+
+        # 3 unique items: shared-1, direct-1, chain-1
+        assert result.today.total == 3
+        assert result.today.completed == 1
+        assert result.today.failed == 1
+        assert len(result.active_runs) == 1
+
+    def test_scoping_other_user_not_included(self):
+        """A second user's root_human_id runs never appear in the caller's stats."""
+        today = _today_iso()
+        # user-index returns only caller's direct runs
+        user_items = [_make_item(event_id="mine-1", status="complete", arrived_at=today)]
+        # root-human-index returns only items matching the queried user_id
+        # (DDB key condition enforces this; no other user's items can appear)
+        root_human_items = []
+
+        service = self._make_service_dual(user_items, root_human_items)
+        result = service.get_stats_by_user("user-abc-123", days=7)
+
+        assert result.today.total == 1
+
+    def test_missing_gsi_fallback(self):
+        """If root-human-index GSI is missing, falls back to user-index only."""
+        from botocore.exceptions import ClientError
+
+        today = _today_iso()
+        user_items = [_make_item(event_id="direct-1", status="complete", arrived_at=today)]
+
+        mock_table = MagicMock()
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {"Items": user_items, "LastEvaluatedKey": None}
+            elif index == "root-human-index":
+                raise ClientError(
+                    {"Error": {"Code": "ValidationException", "Message": "Index not found"}},
+                    "Query",
+                )
+            return {"Items": [], "LastEvaluatedKey": None}
+
+        mock_table.query.side_effect = query_side_effect
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+        service = StatsService(table_name="test-table", dynamodb_resource=mock_resource)
+
+        # Should NOT raise; returns user-index-only stats
+        result = service.get_stats_by_user("user-abc-123", days=7)
+
+        assert result.today.total == 1
+        assert result.today.completed == 1
+
+    def test_empty_root_human_index_no_error(self):
+        """Empty root-human-index result is handled gracefully (no chain runs)."""
+        today = _today_iso()
+        user_items = [_make_item(event_id="direct-1", status="complete", arrived_at=today)]
+
+        service = self._make_service_dual(user_items, [])
+        result = service.get_stats_by_user("user-abc-123", days=7)
+
+        assert result.today.total == 1
+
+    def test_by_persona_aggregates_chain_runs(self):
+        """Persona stats include chain-attributed runs."""
+        today = _today_iso()
+        user_items = [
+            _make_item(event_id="direct-1", status="complete", persona="developer", arrived_at=today),
+        ]
+        root_human_items = [
+            _make_item(event_id="chain-1", status="complete", persona="reviewer", arrived_at=today),
+        ]
+
+        service = self._make_service_dual(user_items, root_human_items)
+        result = service.get_stats_by_user("user-abc-123", days=7)
+
+        assert len(result.by_persona) == 2
+        personas = {p.persona for p in result.by_persona}
+        assert "developer" in personas
+        assert "reviewer" in personas

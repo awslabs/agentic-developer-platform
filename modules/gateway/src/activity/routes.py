@@ -143,10 +143,10 @@ async def _enrich_stats_with_cost(
             days=days,
         )
     else:
-        items = stats_service._fetch_items(
-            index_name="user-index",
-            partition_key_name="user_id",
-            partition_key_value=scope_id,
+        # Issue #3705: Use merged fetch (user-index + root-human-index) so cost
+        # enrichment includes chain-attributed runs.
+        items = stats_service._fetch_items_merged(
+            user_id=scope_id,
             days=days,
         )
 

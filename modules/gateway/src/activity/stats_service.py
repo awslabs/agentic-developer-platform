@@ -94,6 +94,11 @@ class StatsService:
     def get_stats_by_user(self, user_id: str, days: int = 7) -> StatsResponse:
         """Get aggregated stats for a specific user.
 
+        Issue #3705: Queries BOTH user-index (direct runs) and root-human-index
+        (chain runs attributed to the user via root_human_id), merges with dedup
+        on event_id, then aggregates. Falls back to user-index only if the
+        root-human-index GSI is missing (deploy-order tolerance).
+
         Args:
             user_id: The canonical user_id (resolved from token).
             days: Number of days in the stats window (1-30).
@@ -106,12 +111,7 @@ class StatsService:
         if cached is not None:
             return cached
 
-        items = self._fetch_items(
-            index_name="user-index",
-            partition_key_name="user_id",
-            partition_key_value=user_id,
-            days=days,
-        )
+        items = self._fetch_items_merged(user_id=user_id, days=days)
         result = self._aggregate(items, days)
         self._set_cached(cache_key, result)
         return result
@@ -153,6 +153,57 @@ class StatsService:
     def _set_cached(self, key: str, value: StatsResponse) -> None:
         """Store a result in the cache with TTL."""
         self._cache[key] = _CacheEntry(value, _CACHE_TTL_SECONDS)
+
+    def _fetch_items_merged(self, *, user_id: str, days: int) -> list[dict]:
+        """Fetch items from BOTH user-index and root-human-index, deduplicated.
+
+        Issue #3705: Chain runs carry user_id=<bot> but root_human_id=<human>.
+        To surface those in /me stats, we query both indexes for the same
+        canonical user_id, then merge with dedup on event_id (a run where
+        user_id == root_human_id == caller must not be double-counted).
+
+        Falls back to user-index-only if root-human-index is missing (graceful
+        degradation for deploy-order tolerance).
+        """
+        # Primary: direct runs (user_id = caller)
+        user_items = self._fetch_items(
+            index_name="user-index",
+            partition_key_name="user_id",
+            partition_key_value=user_id,
+            days=days,
+        )
+
+        # Secondary: chain runs (root_human_id = caller)
+        root_human_items = self._fetch_items(
+            index_name="root-human-index",
+            partition_key_name="root_human_id",
+            partition_key_value=user_id,
+            days=days,
+        )
+
+        # Merge with dedup on event_id (user_items take precedence)
+        if not root_human_items:
+            return user_items
+
+        seen_ids: set[str] = set()
+        merged: list[dict] = []
+        for item in user_items:
+            eid = item.get("event_id", "")
+            if eid and eid not in seen_ids:
+                seen_ids.add(eid)
+                merged.append(item)
+            elif not eid:
+                merged.append(item)
+
+        for item in root_human_items:
+            eid = item.get("event_id", "")
+            if eid and eid not in seen_ids:
+                seen_ids.add(eid)
+                merged.append(item)
+            elif not eid:
+                merged.append(item)
+
+        return merged
 
     def _fetch_items(
         self,
