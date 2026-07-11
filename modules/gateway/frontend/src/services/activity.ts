@@ -186,6 +186,7 @@ export async function getAdminTranscript(
   const baseUrl = import.meta.env.VITE_API_URL || '/api';
   const token = getAccessToken();
   const query = tenantId ? buildQueryString({ tenant_id: tenantId }) : '';
+  // nosemgrep: javascript-ssrf-rule-node_ssrf — browser-side fetch of own API base; SSRF is not a client-side vulnerability
   const response = await fetch(
     `${baseUrl}/admin/agent-invocations/${encodeURIComponent(invocationId)}/transcript${query}`,
     {
