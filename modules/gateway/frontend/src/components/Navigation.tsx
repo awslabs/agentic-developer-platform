@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useFeatures } from '@/hooks/useFeatures';
 
 interface NavItem {
   to: string;
@@ -20,6 +21,7 @@ export function Navigation() {
     canViewBudgets,
     canViewRateLimits,
   } = usePermissions();
+  const features = useFeatures();
 
   const navItems: NavItem[] = [];
 
@@ -74,25 +76,35 @@ export function Navigation() {
   }
 
   // Knowledge management for all authenticated users (Issue #1794)
-  navItems.push({ to: '/knowledge', label: 'Knowledge', icon: '📚' });
+  if (features.knowledge) {
+    navItems.push({ to: '/knowledge', label: 'Knowledge', icon: '📚' });
+  }
 
   // Agent Activity for all authenticated users (Issue #1457)
   navItems.push({ to: '/activity', label: 'Agent Activity', icon: '📋' });
 
   // Agent Chat for all authenticated users (Issue #97)
-  navItems.push({ to: '/chat', label: 'Agent Chat', icon: '🤖' });
+  if (features.chat) {
+    navItems.push({ to: '/chat', label: 'Agent Chat', icon: '🤖' });
+  }
 
   // My Chats page for all authenticated users (Issue #179)
-  navItems.push({ to: '/my-chats', label: 'My Chats', icon: '💬' });
+  if (features.chat) {
+    navItems.push({ to: '/my-chats', label: 'My Chats', icon: '💬' });
+  }
 
   // Setup page for all authenticated users
   navItems.push({ to: '/setup', label: 'Claude Code Setup', icon: '⚙️' });
 
   // Connections page — link external services (Issue #465)
-  navItems.push({ to: '/settings/connections', label: 'Connections', icon: '🔗' });
+  if (features.connections) {
+    navItems.push({ to: '/settings/connections', label: 'Connections', icon: '🔗' });
+  }
 
   // Credentials — user vault + connected AWS accounts (Issue #562)
-  navItems.push({ to: '/settings/credentials', label: 'Credentials', icon: '🔑' });
+  if (features.credentials) {
+    navItems.push({ to: '/settings/credentials', label: 'Credentials', icon: '🔑' });
+  }
 
   // Access Requests page for platform admins (Issue #545)
   if (isPlatformAdmin()) {
@@ -100,7 +112,7 @@ export function Navigation() {
   }
 
   // Indexing Status page for platform admins (Issue #1424)
-  if (isPlatformAdmin()) {
+  if (features.indexing && isPlatformAdmin()) {
     navItems.push({ to: '/admin/indexing', label: 'Indexing Status', icon: '🔍' });
   }
 

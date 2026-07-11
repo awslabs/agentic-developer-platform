@@ -43,6 +43,7 @@ UNIT_MODULES = [
     "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)
     "src.knowledge.routes",  # Issue #2045: Knowledge-assets registry CRUD
     "src.knowledge.github_repos",  # Issue #2045: GitHub repo picker
+    "src.features.routes",  # Issue #3566: Feature-flag endpoint
 ]
 
 

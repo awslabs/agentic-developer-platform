@@ -2,6 +2,7 @@ import { authHandlers } from './auth';
 import { adminHandlers } from './admin';
 import { indexingHandlers } from './indexing'; // Issue #1424
 import { activityHandlers } from './activity'; // Issue #1457
+import { featuresHandlers } from './features'; // Issue #3566
 import { poolHandlers } from './pool';
 import { budgetHandlers } from './budget';
 import { ratelimitHandlers } from './ratelimit';
@@ -91,6 +92,7 @@ export const handlers = [
   ...adminHandlers,
   ...indexingHandlers, // Issue #1424
   ...activityHandlers, // Issue #1457
+  ...featuresHandlers, // Issue #3566
   ...poolHandlers,
   ...budgetHandlers,
   ...ratelimitHandlers,
