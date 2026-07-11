@@ -690,6 +690,12 @@ def main() -> int:
     if model_resolved:
         env_vars["ADP_MODEL_RESOLVED"] = model_resolved
 
+    # Issue #3574: Expose /aws-label directive for agent visibility.
+    # The label targets a specific linked AWS account within the user's vault.
+    aws_label = envelope.get("aws_label")
+    if aws_label:
+        env_vars["ADP_AWS_LABEL"] = aws_label
+
     # Vault credential context for adp-cred CLI (#137).
     # task_id flows into STS session tags via the gateway's assume-role
     # endpoint; STS rejects values outside [\p{L}\p{Z}\p{N}_.:/=+\-@]*. The
@@ -903,12 +909,19 @@ def main() -> int:
     # session tagging and returns short-lived credentials. Preferred over the
     # raw-read path because credential-assume-role isn't gated by the
     # `vault_raw_read_enabled` feature flag.
+    #
+    # Issue #3574: When aws_label is non-None, the assume-role call targets a
+    # SPECIFIC linked account. Failure is FATAL — we must NOT fall back to
+    # label=None (which would silently pick a different account via the ranked
+    # picker, reproducing the exact bug this fixes). When aws_label is None,
+    # preserve today's non-fatal warning behavior for backward compat.
     if persona in PERSONAS_NEEDING_AWS:
         try:
             sts_creds = _fetch_assumed_aws_credentials(
                 user_id=user_id,
                 agent_id=persona,
                 task_id=task_id,
+                label=aws_label,
             )
             os.environ.update(
                 {
@@ -918,11 +931,24 @@ def main() -> int:
                 }
             )
             logger.info(
-                "Assumed customer AWS role (user-scoped) via gateway provenance_id=%s expires=%s",
+                "Assumed customer AWS role (user-scoped) via gateway "
+                "label=%r provenance_id=%s expires=%s",
+                aws_label,
                 sts_creds.get("provenance_id"),
                 sts_creds.get("expiration"),
             )
         except Exception as exc:
+            if aws_label:
+                # Issue #3574 invariant 2: explicit label + failure = FATAL.
+                # Do NOT retry with label=None — that would silently land in the
+                # wrong account (the exact bug this directive fixes).
+                logger.error(
+                    "FATAL: AWS role assumption failed with explicit label=%r "
+                    "(refusing to fallback to ranked picker): %s",
+                    aws_label,
+                    exc,
+                )
+                raise
             logger.warning("AWS role assumption failed (non-fatal): %s", exc)
 
     # Step 8: Remove trigger label
@@ -1299,7 +1325,9 @@ def _stop_sigv4_proxy(proc: subprocess.Popen) -> None:
     logger.info("sigv4-proxy stopped (exit=%s)", proc.returncode)
 
 
-def _fetch_assumed_aws_credentials(*, user_id: str, agent_id: str, task_id: str) -> dict:
+def _fetch_assumed_aws_credentials(
+    *, user_id: str, agent_id: str, task_id: str, label: str | None = None
+) -> dict:
     """Get short-lived AWS credentials via the gateway's assume-role endpoint.
 
     Calls POST /internal/v1/credential-assume-role with service="aws". The
@@ -1308,6 +1336,14 @@ def _fetch_assumed_aws_credentials(*, user_id: str, agent_id: str, task_id: str)
 
     Preferred over the raw-read path because credential-assume-role isn't
     gated by the `vault_raw_read_enabled` feature flag (default off).
+
+    Args:
+        user_id: Platform user_id of the acting user.
+        agent_id: Agent persona identifier.
+        task_id: Unique task/run identifier.
+        label: Optional credential label targeting a specific linked account
+            (issue #3574). When non-None, the gateway's CredentialResolver
+            adds a WHERE label=:label filter WITHIN the authorized user's vault.
 
     Returns:
         Dict with {profile_name, access_key_id, secret_access_key,
@@ -1336,7 +1372,7 @@ def _fetch_assumed_aws_credentials(*, user_id: str, agent_id: str, task_id: str)
         agent_id=agent_id,
         task_id=task_id,
         service="aws",
-        label=None,
+        label=label,
         purpose="entrypoint: assume customer AWS role",
     )
 

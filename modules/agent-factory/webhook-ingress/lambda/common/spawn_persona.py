@@ -71,6 +71,7 @@ def spawn_persona(
     intent_label: str | None = None,
     model_requested: str | None = None,
     model_resolved: str | None = None,
+    aws_label: str | None = None,
 ) -> SpawnResult:
     """Validate guards, write lineage, build envelope, publish to SQS.
 
@@ -95,6 +96,8 @@ def spawn_persona(
         intent_label: Optional label that triggered this (for issues.labeled).
         model_requested: Raw alias the user typed in /model directive (issue #2279).
         model_resolved: Validated Bedrock model ID, or None if rejected/absent.
+        aws_label: Validated AWS credential label from /aws-label directive
+            (issue #3574).
 
     Returns:
         SpawnResult with success=True and message_id, or success=False and
@@ -163,6 +166,7 @@ def spawn_persona(
         intent_label=intent_label,
         model_requested=model_requested,
         model_resolved=model_resolved,
+        aws_label=aws_label,
     )
 
     # --- Step 8: Capture invocation event to DDB BEFORE SQS ---
@@ -362,6 +366,7 @@ def _build_envelope(
     intent_label: str | None,
     model_requested: str | None = None,
     model_resolved: str | None = None,
+    aws_label: str | None = None,
 ) -> dict:
     """Build the normalized webhook envelope for SQS."""
     envelope = {
@@ -413,6 +418,11 @@ def _build_envelope(
         envelope["model_requested"] = model_requested
     if model_resolved is not None:
         envelope["model_resolved"] = model_resolved
+    # Issue #3574: Thread /aws-label through the envelope. The worker uses this
+    # to pass label= to the gateway's assume-role endpoint, selecting a specific
+    # linked account within the authorized user's vault.
+    if aws_label is not None:
+        envelope["aws_label"] = aws_label
     envelope["message_id"] = str(uuid.uuid4())
     return envelope
 

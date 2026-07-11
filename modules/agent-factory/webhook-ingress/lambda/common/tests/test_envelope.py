@@ -94,3 +94,24 @@ class TestWebhookEnvelope:
         assert envelope.channel == "github"
         assert envelope.tenant_id == ""
         assert envelope.arrived_at != ""
+
+    def test_aws_label_round_trips_to_dict(self) -> None:
+        """Issue #3574: aws_label field round-trips through to_dict()."""
+        envelope = WebhookEnvelope(
+            channel="github",
+            tenant_id="tenant-abc",
+            aws_label="adp-integration-test",
+        )
+        data = envelope.to_dict()
+        assert data["aws_label"] == "adp-integration-test"
+
+    def test_aws_label_none_round_trips(self) -> None:
+        """Issue #3574: aws_label=None is serialized as None (old-message compat)."""
+        envelope = WebhookEnvelope(channel="github", tenant_id="t1")
+        data = envelope.to_dict()
+        assert data["aws_label"] is None
+
+    def test_aws_label_default_is_none(self) -> None:
+        """Issue #3574: aws_label defaults to None (backward compat)."""
+        envelope = WebhookEnvelope()
+        assert envelope.aws_label is None

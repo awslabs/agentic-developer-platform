@@ -1328,6 +1328,91 @@ class TestFetchAssumedAwsCredentials:
         assert call_kwargs["service"] == "aws"
         assert call_kwargs["label"] is None
 
+    @patch("entrypoint.GatewayCredentialClient")
+    def test_calls_assume_role_with_explicit_label(self, mock_gw_cls):
+        """Issue #3574: /aws-label is forwarded as label= to assume_role."""
+        from entrypoint import _fetch_assumed_aws_credentials
+
+        mock_gw = MagicMock()
+        mock_gw_cls.return_value = mock_gw
+        mock_gw.is_configured = True
+        mock_gw.assume_role.return_value = {
+            "access_key_id": "AK",
+            "secret_access_key": "SK",
+            "session_token": "ST",
+            "expiration": "2026-07-11T22:00:00Z",
+            "region": "us-east-1",
+            "profile_name": "p",
+            "provenance_id": "prov",
+        }
+
+        _fetch_assumed_aws_credentials(
+            user_id="user-1",
+            agent_id="operations",
+            task_id="t1",
+            label="adp-integration-test",
+        )
+
+        mock_gw.assume_role.assert_called_once()
+        call_kwargs = mock_gw.assume_role.call_args.kwargs
+        assert call_kwargs["label"] == "adp-integration-test"
+
+    @patch("entrypoint.GatewayCredentialClient")
+    def test_assume_role_label_none_when_not_provided(self, mock_gw_cls):
+        """Issue #3574: Without /aws-label, label=None is passed (ranked picker)."""
+        from entrypoint import _fetch_assumed_aws_credentials
+
+        mock_gw = MagicMock()
+        mock_gw_cls.return_value = mock_gw
+        mock_gw.is_configured = True
+        mock_gw.assume_role.return_value = {
+            "access_key_id": "AK",
+            "secret_access_key": "SK",
+            "session_token": "ST",
+            "expiration": "2026-07-11T22:00:00Z",
+            "region": "us-east-1",
+            "profile_name": "p",
+            "provenance_id": "prov",
+        }
+
+        _fetch_assumed_aws_credentials(user_id="user-1", agent_id="operations", task_id="t1")
+
+        call_kwargs = mock_gw.assume_role.call_args.kwargs
+        assert call_kwargs["label"] is None
+
+
+# --- Test: assume-role fatal when aws_label is non-None (issue #3574 invariant 2) ---
+
+
+class TestAssumeRoleFatalOnLabelMiss:
+    """Issue #3574: gateway 404 + non-None label → fatal, NO fallback to label=None."""
+
+    @patch("entrypoint.GatewayCredentialClient")
+    def test_explicit_label_failure_is_fatal(self, mock_gw_cls):
+        """When aws_label is set and assume_role raises, _fetch re-raises."""
+        from entrypoint import _fetch_assumed_aws_credentials
+        from lib.gateway_credential_client import GatewayCredentialError
+
+        mock_gw = MagicMock()
+        mock_gw_cls.return_value = mock_gw
+        mock_gw.is_configured = True
+        mock_gw.assume_role.side_effect = GatewayCredentialError(
+            "Gateway returned HTTP 404: credential_not_found"
+        )
+
+        # The function itself doesn't know about fatal/non-fatal — that's
+        # the caller's responsibility (Step 7). But the function should still
+        # raise so the caller can decide.
+        import pytest
+
+        with pytest.raises(GatewayCredentialError):
+            _fetch_assumed_aws_credentials(
+                user_id="user-1",
+                agent_id="operations",
+                task_id="t1",
+                label="nonexistent-label",
+            )
+
 
 # --- Test: sts_assume user_id tag ---
 

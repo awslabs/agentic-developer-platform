@@ -67,6 +67,8 @@ class WebhookEnvelope:
     # Issue #2279: Caller-chosen model fields (optional, human /model directive)
     model_requested: str | None = None  # Raw alias the user typed
     model_resolved: str | None = None  # Validated Bedrock model ID, or None
+    # Issue #3574: Explicit AWS credential label (optional, human /aws-label directive)
+    aws_label: str | None = None  # Validated label targeting a specific linked account
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict for JSON/SQS publishing."""
@@ -103,4 +105,5 @@ class WebhookEnvelope:
             "arrived_at": self.arrived_at,
             "model_requested": self.model_requested,
             "model_resolved": self.model_resolved,
+            "aws_label": self.aws_label,
         }

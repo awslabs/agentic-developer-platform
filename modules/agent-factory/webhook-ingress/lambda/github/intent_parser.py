@@ -63,6 +63,7 @@ class Intent:
     trigger: str
     label: str | None = None
     model: str | None = None
+    aws_label: str | None = None
 
 
 def extract_intent(
@@ -194,6 +195,45 @@ def _extract_model_directive(body: str) -> str | None:
     return None
 
 
+# Issue #3574: Line-anchored regex for /aws-label directive. Same anchoring
+# rules as /model — must start at beginning of a line.
+_AWS_LABEL_DIRECTIVE_RE = re.compile(r"^/aws-label\s+(\S+)\s*$", re.MULTILINE)
+
+# Issue #3574: Charset validation for AWS credential labels.
+# Only [A-Za-z0-9_-]{1,64} is accepted; anything else is rejected at parse time.
+_AWS_LABEL_CHARSET_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _extract_aws_label_directive(body: str) -> str | None:
+    """Extract the /aws-label value from the comment body (issue #3574).
+
+    Uses a line-anchored regex so it won't match `/aws-label x` in inline code
+    or blockquotes. Returns the validated label string or None if absent/invalid.
+
+    Charset restriction: [A-Za-z0-9_-]{1,64}. If the captured value fails
+    validation, logs a warning and returns None (lenient — mirrors /model).
+
+    Security note: the label is attacker-influenceable (it comes from a comment
+    body). It can at most select a different account the SAME user linked in their
+    vault — the credential resolver is always constrained by user_id. This is
+    accepted residual risk, mitigated by runbook-mandatory target-account guards.
+    """
+    if not body:
+        return None
+    match = _AWS_LABEL_DIRECTIVE_RE.search(body)
+    if not match:
+        return None
+    raw_label = match.group(1)
+    if not _AWS_LABEL_CHARSET_RE.match(raw_label):
+        logger.warning(
+            "/aws-label directive %r rejected: invalid charset "
+            "(allowed: [A-Za-z0-9_-]{1,64}) — proceeding without label",
+            raw_label,
+        )
+        return None
+    return raw_label
+
+
 def _extract_mention_persona(body: str) -> str | None:
     """Extract the first @agent-X persona mention from comment body.
 
@@ -321,7 +361,11 @@ def _handle_issue_comment(
             return None
         # Issue #2279: Parse /model directive (human path only)
         model = _extract_model_directive(body)
-        return Intent(persona=persona, trigger="mentioned", label=None, model=model)
+        # Issue #3574: Parse /aws-label directive (human path only)
+        aws_label = _extract_aws_label_directive(body)
+        return Intent(
+            persona=persona, trigger="mentioned", label=None, model=model, aws_label=aws_label
+        )
 
     # --- Bot sender path (issue #2149) ---
     # Bot comments require an explicit adp-dispatch:<persona> marker to trigger.

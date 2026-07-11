@@ -1221,6 +1221,14 @@ def handler(event: dict, context) -> dict:
                 model_requested,
             )
 
+    # Issue #3574: Read /aws-label from intent. Already charset-validated in
+    # intent_parser — if it passed parsing, it's [A-Za-z0-9_-]{1,64}. No further
+    # resolution needed (unlike /model, the label is passed as-is to the gateway;
+    # the gateway 404s on unknown label).
+    aws_label = intent.aws_label  # validated label or None
+    if aws_label:
+        logger.info("handler: /aws-label directive %r accepted", aws_label)
+
     # Provide a default correlation_ctx if not available (e.g. issues.labeled
     # events where we didn't compute correlation above).
     effective_correlation_ctx = correlation_ctx or {
@@ -1250,6 +1258,7 @@ def handler(event: dict, context) -> dict:
         intent_label=intent.label,
         model_requested=model_requested,
         model_resolved=model_resolved,
+        aws_label=aws_label,
     )
 
     print(
