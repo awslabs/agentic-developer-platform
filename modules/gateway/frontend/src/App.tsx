@@ -32,6 +32,7 @@ const AccessRequests = lazy(() => import('./pages/admin/AccessRequests')); // Is
 const IndexingStatus = lazy(() => import('./pages/admin/IndexingStatus')); // Issue #1424
 const TenantOrgLinks = lazy(() => import('./pages/admin/TenantOrgLinks')); // Issue #2954
 const AgentActivity = lazy(() => import('./pages/AgentActivity')); // Issue #1457
+const AgentRunDashboard = lazy(() => import('./pages/AgentRunDashboard')); // Issue #3633
 const Knowledge = lazy(() => import('./pages/Knowledge')); // Issue #1794
 const NotFound = lazy(() => import('./pages/NotFound'));
 
@@ -88,6 +89,7 @@ function App() {
               <Route path="/admin/indexing" element={<FeatureGate feature="indexing"><IndexingStatus /></FeatureGate>} /> {/* Issue #1424 */}
               <Route path="/admin/tenant-links" element={<TenantOrgLinks />} /> {/* Issue #2954 */}
               <Route path="/activity" element={<AgentActivity />} /> {/* Issue #1457 */}
+              <Route path="/runs" element={<AgentRunDashboard />} /> {/* Issue #3633 */}
               <Route path="/knowledge" element={<FeatureGate feature="knowledge"><Knowledge /></FeatureGate>} /> {/* Issue #1794 */}
             </Route>
           </Route>
