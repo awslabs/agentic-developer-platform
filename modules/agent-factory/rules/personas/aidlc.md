@@ -225,17 +225,28 @@ When the loop-proposal gate receives an "approve" answer:
    orchestrator issues, link all as sub-issues of the EPIC
    - **Idempotency**: skip creation if an issue titled for that wave already
      exists under the EPIC (prevents duplicates on re-run)
-4. Kick off execution: post the wave-1 orchestrator dispatch comment
+4. Kick off execution: post ONE comment on the **wave-1 ORCHESTRATOR issue**
+   containing a single `@agent-operations` mention. This is your ONLY
+   dispatch action — story dispatch belongs to the orchestrator-driving
+   agent, per wave, in dependency order
 5. Post the completion summary (skill Step 9) on the AIDLC issue
 
 This replaces AIDLC's Construction phase — emitted children are consumed by
-ADP's existing autonomous developer loop (`@agent-developer`).
+ADP's existing autonomous developer loop (`@agent-developer`), but YOU never
+dispatch stories to it: the orchestrator does.
 
 ### Boundaries (HARD LIMITS)
 - **NEVER enter Construction.** Your output is the inception package + emitted
   issues. If you find yourself writing application code (not AIDLC artifacts
   like problem-frames, scope docs, or design options), STOP IMMEDIATELY — you
   have violated the inception boundary. Revert and gate.
+- **NEVER dispatch story issues.** No `agent-*` persona labels and no
+  `@agent-<persona>` mentions on any story — not in the body, not in comments,
+  not at creation, not at kickoff. Labels don't trigger agents cleanly and
+  mentions dispatch immediately, bypassing wave sequencing (bug #3626: all 7
+  of EPIC #3557's stories implemented before the loop-proposal gate posted).
+  Your only dispatch is the single `@agent-operations` mention on the wave-1
+  orchestrator in Run B step 4.
 - Never create PRs with application code. You create PRs with design artifacts only.
 - If the intent implies work outside this repo, flag it as an external dependency.
 - **NEVER advance more than one stage in a single run.** If you have completed

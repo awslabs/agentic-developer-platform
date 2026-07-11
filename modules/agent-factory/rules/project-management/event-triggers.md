@@ -198,7 +198,7 @@ jobs:
         run: |
           # For each unblocked task:
           # - Set assigned_agent
-          # - Add trigger label
+          # - Post a comment with a single @agent-<persona> mention
 ```
 
 ### PM Notification Actions:
@@ -207,7 +207,8 @@ jobs:
 3. Check which tasks are now unblocked
 4. For unblocked tasks:
    - Assign to appropriate agent
-   - Add trigger label
+   - Post a comment on the task with a single `@agent-<persona>` mention
+     (NEVER an `agent-*` trigger label)
 5. Check phase completion:
    - If phase complete, transition to next
    - Create next phase tasks
@@ -217,17 +218,22 @@ jobs:
 
 # LABEL REFERENCE
 
-## Trigger Labels (Add to start work)
+## Agent dispatch (comments, NEVER labels)
+
+Agents are dispatched by posting a comment containing a single
+`@agent-<persona>` mention (`@agent-developer`, `@agent-operations`, etc.).
+**`agent-<persona>` labels do NOT dispatch agents.** Label-based triggering is
+deprecated and forbidden — it causes duplicate/inconsistent runs and bypasses
+wave sequencing (bug #3626: labels applied at issue creation implemented all
+waves of EPIC #3557 at once). If you see an `agent-*` label on an issue, treat
+it as stale metadata, not a trigger. One `@agent-` mention per comment
+(dict-order routing — see core-workflow.md).
+
+## Workflow Init Labels
 | Label | Purpose |
 |-------|---------|
 | `aidlc-start` | Start AIDLC workflow |
 | `aidlc-continue` | Human finished editing files |
-| `agent-pm` | Trigger PM agent |
-| `agent-product` | Trigger product agent |
-| `agent-architect` | Trigger architect agent |
-| `agent-developer` | Trigger developer agent |
-| `agent-reviewer` | Trigger reviewer agent |
-| `agent-operations` | Trigger operations agent |
 
 ## Notification Labels (Add to signal)
 | Label | Purpose |

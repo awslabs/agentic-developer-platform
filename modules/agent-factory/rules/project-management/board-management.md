@@ -106,13 +106,9 @@ gh label create "unit" --color "1d76db" --description "Implementable work packag
 gh label create "task" --color "0075ca" --description "Specific action item" --force
 gh label create "spike" --color "d93f0b" --description "Research or investigation" --force
 
-# Agent labels (for triggering)
-gh label create "agent-pm" --color "fbca04" --description "Assigned to @agent-pm" --force
-gh label create "agent-product" --color "c5def5" --description "Assigned to @agent-product" --force
-gh label create "agent-architect" --color "d4c5f9" --description "Assigned to @agent-architect" --force
-gh label create "agent-developer" --color "1d76db" --description "Assigned to @agent-developer" --force
-gh label create "agent-reviewer" --color "5319e7" --description "Assigned to @agent-reviewer" --force
-gh label create "agent-operations" --color "f9d0c4" --description "Assigned to @agent-operations" --force
+# NOTE: agent-<persona> labels are DEPRECATED — do not create or apply them.
+# They do not dispatch agents; dispatch is a comment with a single
+# @agent-<persona> mention (see core-workflow.md "NEVER do this", bug #3626).
 
 # Phase labels (informational)
 gh label create "phase:inception" --color "bfd4f2" --description "Inception phase" --force
@@ -141,12 +137,12 @@ Main Issue #100: Deploy DeepWiki on EKS (the original request)
 │   │   │   Parent: #101
 │   │   │
 │   │   ├── Unit #103: Terraform VPC module
-│   │   │   │   Labels: unit, phase:construction, agent-developer
+│   │   │   │   Labels: unit, phase:construction
 │   │   │   │   item_type: Unit
 │   │   │   │   Parent: #102, Reports to: #100
 │   │   │   │
 │   │   │   └── Task #104: Write VPC code
-│   │   │           Labels: task, agent-developer
+│   │   │           Labels: task
 │   │   │           item_type: Task
 │   │   │           Parent: #103, Reports to: #100
 │   │   │
@@ -189,9 +185,9 @@ gh issue list --label task
 ```
 
 ### By Agent
+Use the `assigned_agent` project field (agent-* labels are deprecated):
 ```bash
-gh issue list --label agent-developer
-gh issue list --label agent-architect
+gh project item-list [number] --owner [org] --format json | jq '.items[] | select(.assigned_agent=="@agent-developer")'
 ```
 
 ### By Phase
@@ -201,7 +197,7 @@ gh issue list --label phase:construction
 
 ### Combined
 ```bash
-gh issue list --label unit --label agent-developer --label phase:construction
+gh issue list --label unit --label phase:construction
 ```
 
 ---

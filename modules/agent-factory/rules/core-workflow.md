@@ -69,7 +69,8 @@ Every issue includes:
 ### Labels for Filtering
 - Type: `epic`, `story`, `unit`, `task`, `spike`
 - Phase: `phase:inception`, `phase:construction`, `phase:operations`
-- Agent: `agent-product`, `agent-architect`, `agent-developer`, `agent-reviewer`, `agent-operations`
+- ~~Agent: `agent-*`~~ — DEPRECATED, never add these (they don't dispatch and
+  must not be used even as metadata; see "NEVER do this" below, bug #3626)
 
 ## Beads State Management (REQUIRED)
 

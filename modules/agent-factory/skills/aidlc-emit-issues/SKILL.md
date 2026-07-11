@@ -203,6 +203,18 @@ gh api graphql -f query='
 shown above. Create children in dependency order so the EPIC's sub-issue list
 reflects the implementation sequence.
 
+**Stories are created INERT — no dispatch triggers of any kind:**
+- NEVER apply agent-trigger labels (`agent-developer`, `agent-operations`,
+  `agent-reviewer`, or any `agent-*` persona label) to a story issue
+- NEVER post an `@agent-<persona>` mention in a story's body or comments
+- NEVER include an `@agent-<persona>` mention in the composed child body
+
+Dispatching stories is the ORCHESTRATOR's job, at wave-execution time, in
+dependency order (see the orchestrator template's "How to run" section). A
+story dispatched at creation time bypasses wave sequencing entirely — every
+wave implements at once, before the loop-proposal gate has even been reviewed
+(this happened on EPIC #3557 and spawned 12 duplicate/noise PRs, bug #3626).
+
 ### Step 7: Compose delivery-loop drafts (no issue creation)
 
 After all story issues are created and linked (Step 6), compose the delivery
@@ -374,10 +386,18 @@ fi
 1. Create evaluation issues FIRST (orchestrators reference eval issue numbers)
 2. Create orchestrator issues SECOND
 3. Link ALL as native sub-issues of the EPIC
-4. Post the wave-1 orchestrator dispatch comment LAST
+4. Kick off execution LAST: post ONE comment on the **wave-1 ORCHESTRATOR
+   issue** containing a single `@agent-operations` mention
 
 This ordering ensures orchestrators can reference eval issue numbers, and
 dispatch only fires after all issues exist.
+
+**The wave-1 orchestrator mention is the emitter's ONLY dispatch action.**
+The operations agent driving the orchestrator dispatches each story with its
+own `@agent-developer` mention comment, in dependency order (orchestrator
+template "How to run"). The emitter NEVER labels or mentions story issues —
+not at creation (Step 6), not at kickoff (this step). One `@agent-X` mention
+per comment, no other `@agent-Y` in the body ([[feedback_agent_mention_parser_quirk]]).
 
 Orchestrator drafts contain `#[EVAL_WAVE_<K>]` placeholders (Step 7c).
 Substitute the real eval issue numbers before creating — this substitution is
@@ -427,8 +447,9 @@ Emission lint: ✅ CI-apply-path | ✅ account-explicit | ✅ version-pins | ✅
 The AIDLC inception audit trail is committed on branch `<branch>` under
 `aidlc/` / `aidlc-docs/`.
 
-**Next**: the delivery loop is self-driving. Dispatch the operations persona
-on orchestrator #<orch-1> (Wave 1) to begin the autonomous build-out.
+**Next**: the delivery loop is self-driving. The operations persona has been
+dispatched on orchestrator #<orch-1> (Wave 1); it will dispatch stories in
+dependency order and advance waves as evaluations close green.
 ```
 
 ## Error handling
