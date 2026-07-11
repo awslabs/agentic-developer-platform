@@ -3,10 +3,12 @@ name: aidlc-emit-issues
 description: >-
   Emit AIDLC inception artifacts as GitHub issues: one EPIC per intent, one child
   per AIDLC unit, natively sub-issue-linked, each in the repo's mandatory
-  five-section format with deterministic Validation gates. Additionally generates
-  the autonomous delivery loop (per-wave orchestrators, per-wave deterministic
-  evaluation issues, and the defect protocol). Invoked automatically after the
-  delivery-planning gate is approved.
+  five-section format with deterministic Validation gates. Delivery loop
+  generation is a two-stage protocol: Step 7 composes loop drafts as branch
+  artifacts (invoked in Run A after delivery-planning approval); Step 8
+  materializes the issues from approved drafts (invoked in Run B after
+  loop-proposal approval). Orchestrators, evaluations, and defect protocol are
+  created only after human review of the proposed wave structure.
 ---
 
 # aidlc-emit-issues
@@ -14,12 +16,19 @@ description: >-
 After AIDLC's delivery-planning gate is approved, this skill transforms the
 committed inception artifacts into an executable GitHub backlog: one EPIC issue
 per intent, one child issue per AIDLC unit, linked as native GitHub sub-issues.
+Delivery loop generation is split across two runs via the `loop-proposal` gate:
+Run A composes loop drafts as branch artifacts for review; Run B materializes
+the issues from approved drafts.
 
 ## When this skill runs
 
-This skill is invoked automatically by the `@agent-aidlc` persona after the
-delivery-planning gate receives an "approve" answer. Do NOT invoke it manually
-during earlier inception phases.
+This skill is invoked by the `@agent-aidlc` persona in two contexts:
+- **Run A** (delivery-planning gate approved): Steps 1–7 — create EPIC + story
+  children, compose delivery-loop drafts, commit, gate.
+- **Run B** (loop-proposal gate approved): Step 8 — materialize loop issues
+  from approved drafts, Step 9 — post completion summary.
+
+Do NOT invoke it manually during earlier inception phases.
 
 ## Inputs (committed on the work branch)
 
@@ -194,13 +203,16 @@ gh api graphql -f query='
 shown above. Create children in dependency order so the EPIC's sub-issue list
 reflects the implementation sequence.
 
-### Step 7: Generate the delivery loop
+### Step 7: Compose delivery-loop drafts (no issue creation)
 
-After all story issues are created and linked (Step 6), generate the
-autonomous delivery loop: per-wave orchestrators, per-wave evaluations, and
-the defect protocol. This turns the issue tree into a self-driving build-out.
+After all story issues are created and linked (Step 6), compose the delivery
+loop as reviewable branch artifacts. **Do NOT create any issues in this step.**
+The drafts are committed for human review; materialization happens in Step 8
+after the `loop-proposal` gate is approved.
 
 Templates live in `modules/agent-factory/rules/templates/delivery-loop/`.
+
+Output directory: `aidlc/spaces/issue-<N>/construction/loop-proposal/`
 
 #### Step 7a: Derive waves from the delivery plan
 
@@ -209,11 +221,27 @@ Read the delivery plan's dependency graph. Group units into waves:
 - **Wave 2**: units that depend only on Wave 1 units
 - **Wave N**: units that depend only on already-scheduled waves
 
-Record the wave assignment for each story issue.
+Record the wave assignment in a `wave-map.md` file:
 
-#### Step 7b: Create evaluation issues (one per wave)
+```markdown
+# Wave Map
 
-For EACH wave, compose an evaluation issue using the template at
+| Wave | Story Issues | Depends on |
+|------|-------------|------------|
+| 1 | #<s1>, #<s2> | — |
+| 2 | #<s3>, #<s4> | Wave 1 |
+| ... | ... | ... |
+
+**Account ID**: <12-digit>
+**Credential label**: <adp-cred label>
+**EPIC**: #<epic-number>
+```
+
+Commit to: `aidlc/spaces/issue-<N>/construction/loop-proposal/wave-map.md`
+
+#### Step 7b: Compose evaluation issue drafts (one per wave)
+
+For EACH wave, compose an evaluation issue body using the template at
 `modules/agent-factory/rules/templates/delivery-loop/evaluation-template.md`.
 
 **Deriving checks:**
@@ -223,30 +251,20 @@ For EACH wave, compose an evaluation issue using the template at
    (e.g. "zero diff on path X", "latency < N ms") → add as cumulative checks.
 3. Every check MUST be a concrete command + expected output. No judgment calls.
 
-**Deterministic-only enforcement:** Before posting, verify NO check contains
-the banned phrases: "verify it works", "ensure the feature is functional",
-"confirm correct behavior", "test the integration" (without a named command).
-If any check fails this lint, rewrite it as a concrete assertion.
+**Deterministic-only enforcement:** Verify NO check contains the banned
+phrases: "verify it works", "ensure the feature is functional", "confirm
+correct behavior", "test the integration" (without a named command). If any
+check fails this lint, rewrite it as a concrete assertion.
 
-Create evaluation issues BEFORE orchestrators (orchestrators reference eval
-issue numbers).
+Commit each draft to:
+`aidlc/spaces/issue-<N>/construction/loop-proposal/evaluation-wave-<K>.md`
 
-```bash
-EVAL_URL=$(gh issue create \
-  --title "[Phase-slug] Wave [N] Evaluation — [what it proves]" \
-  --label "evaluation" \
-  --body "$(cat <<'EOF'
-<composed evaluation body from template>
-EOF
-)")
-EVAL_NUMBER=$(echo "$EVAL_URL" | grep -oP '\d+$')
-```
+Each file contains the full issue body (title on line 1 as `# [title]`,
+body below). No `gh issue create` — these are review artifacts only.
 
-Link each evaluation as a native sub-issue of its phase EPIC.
+#### Step 7c: Compose orchestrator issue drafts (one per wave)
 
-#### Step 7c: Create orchestrator issues (one per wave)
-
-For EACH wave, compose a lean orchestrator issue using the template at
+For EACH wave, compose a lean orchestrator issue body using the template at
 `modules/agent-factory/rules/templates/delivery-loop/orchestrator-template.md`.
 
 **Size enforcement:** The body MUST be < 2048 bytes. If it exceeds:
@@ -254,24 +272,23 @@ For EACH wave, compose a lean orchestrator issue using the template at
 - Remove any detail that belongs in child stories
 - If still over, split into sub-waves
 
-```bash
-ORCH_URL=$(gh issue create \
-  --title "ORCH: [Intent-slug] Wave [N] — [scope summary]" \
-  --label "orchestrator" \
-  --body "$(cat <<'EOF'
-<composed orchestrator body from template, referencing $EVAL_NUMBER>
-EOF
-)")
-ORCH_NUMBER=$(echo "$ORCH_URL" | grep -oP '\d+$')
-```
+Commit each draft to:
+`aidlc/spaces/issue-<N>/construction/loop-proposal/orchestrator-wave-<K>.md`
 
-Link each orchestrator as a native sub-issue of its phase EPIC.
+Each file contains the full issue body (title on line 1 as `# [title]`,
+body below). No `gh issue create` — these are review artifacts only.
+
+**Eval-number placeholder:** evaluation issues do not exist yet at draft time,
+so the orchestrator draft's `## Evaluation` section MUST use the placeholder
+`#[EVAL_WAVE_<K>]` (e.g. `run #[EVAL_WAVE_2]`). Step 8 substitutes the real
+issue number after the wave's evaluation issue is created. This substitution
+is the ONLY permitted difference between the gated draft and the created issue.
 
 #### Step 7d: Emission lint rules
 
-Before posting ANY delivery-loop issue (orchestrator or evaluation), apply
-these four lint rules. These were derived from gaps exposed in the GitLab CE
-dogfood run (#3299):
+Before committing the drafts, apply these four lint rules to EVERY draft
+(orchestrator and evaluation). These were derived from gaps exposed in the
+GitLab CE dogfood run (#3299):
 
 **Rule 1 — CI apply path must exist:**
 Every story whose `## Deployment` section mentions "terraform apply" or
@@ -305,7 +322,87 @@ Include in every orchestrator's "Guards" section:
 ```
 This codifies the ad-hoc pattern from PR #3372 into the emitted orchestrator.
 
-### Step 8: Post completion summary
+**If any lint rule fails:** fix the draft and re-lint. Do not commit drafts
+that fail lint. Report lint results in the gate comment.
+
+### Step 8: Materialize delivery loop (on loop-proposal approval)
+
+This step runs ONLY after the `loop-proposal` gate is approved (Run B). It
+creates the actual GitHub issues from the committed drafts.
+
+#### Pre-materialization lint
+
+Before creating any issues, re-lint ALL drafts in
+`aidlc/spaces/issue-<N>/construction/loop-proposal/` against the Step 7d rules.
+If any draft fails (e.g. a manual edit broke a rule since the gate was posted),
+**REFUSE** — do not create issues. Re-gate with an error summary listing which
+rules failed on which drafts.
+
+#### Idempotency guard
+
+Before creating each issue, check whether an issue with the same title already
+exists as a sub-issue of the EPIC. If it does, skip creation for that issue.
+This prevents duplicates when Run B is re-triggered (e.g. after a transient
+`gh` failure).
+
+Each draft carries its own title on line 1 (`# [title]`). Derive the issue
+title from that line and strip it from the body — the body posted to GitHub
+must not repeat the title as a heading:
+
+```bash
+DRAFT="aidlc/spaces/issue-<N>/construction/loop-proposal/evaluation-wave-<K>.md"
+TITLE=$(head -1 "$DRAFT" | sed 's/^# *//')
+BODY_FILE=$(mktemp)
+tail -n +2 "$DRAFT" | sed '/./,$!d' > "$BODY_FILE"
+
+# Check for existing issue with this title before creating (any state)
+EXISTING=$(gh issue list --search "in:title \"$TITLE\"" --state all \
+  --repo {owner}/{repo} --json number --jq '.[0].number // empty')
+if [ -n "$EXISTING" ]; then
+  echo "Skipping: \"$TITLE\" already exists as #$EXISTING"
+else
+  EVAL_URL=$(gh issue create \
+    --title "$TITLE" \
+    --label "evaluation" \
+    --body-file "$BODY_FILE")
+  EVAL_NUMBER=$(echo "$EVAL_URL" | grep -oP '\d+$')
+fi
+```
+
+#### Creation order (MANDATORY)
+
+1. Create evaluation issues FIRST (orchestrators reference eval issue numbers)
+2. Create orchestrator issues SECOND
+3. Link ALL as native sub-issues of the EPIC
+4. Post the wave-1 orchestrator dispatch comment LAST
+
+This ordering ensures orchestrators can reference eval issue numbers, and
+dispatch only fires after all issues exist.
+
+Orchestrator drafts contain `#[EVAL_WAVE_<K>]` placeholders (Step 7c).
+Substitute the real eval issue numbers before creating — this substitution is
+the only permitted change to the gated draft body:
+
+```bash
+# After all evals exist, create orchestrators referencing them
+DRAFT="aidlc/spaces/issue-<N>/construction/loop-proposal/orchestrator-wave-<K>.md"
+TITLE=$(head -1 "$DRAFT" | sed 's/^# *//')
+BODY_FILE=$(mktemp)
+tail -n +2 "$DRAFT" | sed '/./,$!d' | sed "s/#\[EVAL_WAVE_<K>\]/#${EVAL_NUMBER}/g" > "$BODY_FILE"
+
+ORCH_URL=$(gh issue create \
+  --title "$TITLE" \
+  --label "orchestrator" \
+  --body-file "$BODY_FILE")
+ORCH_NUMBER=$(echo "$ORCH_URL" | grep -oP '\d+$')
+```
+
+Apply the same idempotency guard (title search, any state) before each create.
+
+Link each orchestrator and evaluation as a native sub-issue of the EPIC (same
+GraphQL mutation as Step 6).
+
+### Step 9: Post completion summary
 
 After all issues are created and linked (stories + delivery loop), post a
 summary comment on the originating AIDLC issue:

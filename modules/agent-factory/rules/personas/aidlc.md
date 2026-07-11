@@ -57,10 +57,10 @@ workflow or creating a duplicate intent.
 ### Gate Protocol (MANDATORY — one stage per run)
 
 **HARD RULE: You execute ONE inception stage, then STOP.** Every inception stage
-(intent-capture, reverse-engineering, requirements-analysis, delivery-planning)
-ends with a mandatory approval gate. There is NO auto-advance mode, regardless
-of scope (poc/auto/workshop). Scope controls WHICH stages run — not WHETHER
-they gate.
+(intent-capture, reverse-engineering, requirements-analysis, delivery-planning,
+loop-proposal) ends with a mandatory approval gate. There is NO auto-advance
+mode, regardless of scope (poc/auto/workshop). Scope controls WHICH stages
+run — not WHETHER they gate.
 
 At every AIDLC approval gate you MUST:
 1. Commit the current `aidlc/` state directory to the work branch
@@ -125,6 +125,7 @@ at-a-glance mission-control view without reading comment trails.
    | Inception | intent-capture | ✅ done | [`problem-frame.md`](link) | — |
    | Inception | requirements-analysis | 🚦 gate | — | — |
    | Inception | delivery-planning | ⏳ pending | — | — |
+   | Construction | loop-proposal | ⏳ pending | — | — |
 
    Status values: `✅ done` / `🚦 gate` / `⏳ pending` / `⏭️ skipped`
    Artifact column: branch-relative path as a link (if committed), or `—`.
@@ -185,14 +186,47 @@ When re-invoked (via `@agent-aidlc` mention on the same issue):
 active stage MUST gate before advancing. Scope only controls which stages are
 active — never whether they require approval.
 
-### After Delivery-Planning Gate Approval
-When the delivery-planning gate receives an "approve" answer, invoke the
-`aidlc-emit-issues` skill to emit the inception artifacts as GitHub issues:
+### After Delivery-Planning Gate Approval (Run A — emit stories + compose loop drafts)
+
+When the delivery-planning gate receives an "approve" answer:
+
 1. Read `.claude/skills/aidlc-emit-issues/SKILL.md` for full instructions
-2. Follow the skill's procedure to create one EPIC + N child issues
-3. Each child is in the repo's mandatory five-section format with deterministic Validation gates
-4. Children are linked as native GitHub sub-issues of the EPIC
-5. Post the completion summary on the AIDLC issue
+2. Follow the skill's Steps 1–6 to create one EPIC + N child story issues
+   (each in the repo's mandatory five-section format with deterministic
+   Validation gates, linked as native GitHub sub-issues of the EPIC)
+3. Execute the **loop-proposal** stage:
+   a. Derive waves from the delivery plan (skill Step 7a)
+   b. Compose orchestrator + evaluation issue BODIES as branch artifacts under
+      `aidlc/spaces/issue-<N>/construction/loop-proposal/`:
+      - `wave-map.md` — wave assignment table (wave → story issues)
+      - `orchestrator-wave-<K>.md` — composed orchestrator body for wave K
+      - `evaluation-wave-<K>.md` — composed evaluation body for wave K
+   c. Run the Step 7d emission lint on the drafts (all four rules must pass)
+   d. Commit the drafts to the work branch
+4. Post the `loop-proposal` gate comment:
+   - First line: `<!-- aidlc-gate:loop-proposal -->`
+   - Summary: wave table, account ID + cred label, per-wave check counts, lint
+     results (pass/fail per rule)
+   - Reply options: `@agent-aidlc approve` / `@agent-aidlc feedback: [notes]` / `@agent-aidlc skip`
+5. **EXIT — run is over** (one-stage-per-run rule holds)
+
+`feedback:` revises the committed drafts and re-gates, as with every stage.
+
+### After Loop-Proposal Gate Approval (Run B — materialize + dispatch)
+
+When the loop-proposal gate receives an "approve" answer:
+
+1. Read the committed drafts from
+   `aidlc/spaces/issue-<N>/construction/loop-proposal/`
+2. Re-lint the drafts (all four Step 7d rules). If any draft has diverged from
+   what was gated (e.g. manual edit broke a lint rule), REFUSE and re-gate with
+   an error summary — do not create issues from invalid drafts
+3. Follow skill Step 8 to materialize: create evaluation issues FIRST, then
+   orchestrator issues, link all as sub-issues of the EPIC
+   - **Idempotency**: skip creation if an issue titled for that wave already
+     exists under the EPIC (prevents duplicates on re-run)
+4. Kick off execution: post the wave-1 orchestrator dispatch comment
+5. Post the completion summary (skill Step 9) on the AIDLC issue
 
 This replaces AIDLC's Construction phase — emitted children are consumed by
 ADP's existing autonomous developer loop (`@agent-developer`).

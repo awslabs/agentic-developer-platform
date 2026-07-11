@@ -54,5 +54,6 @@ When generating an orchestrator issue from a delivery plan:
 5. **Link to the phase EPIC** via native sub-issue (same as story linking).
 6. **Deployment target**: extract account ID + credential label from the delivery
    plan's deployment section. If missing, FAIL lint and do not emit.
-7. **Evaluation reference**: the eval issue number is created first (Step 7b),
-   then referenced here.
+7. **Evaluation reference**: at draft time (Step 7c) use the placeholder
+   `#[EVAL_WAVE_<K>]`; the real eval issue number is substituted at
+   materialization (Step 8), after the wave's evaluation issue is created.

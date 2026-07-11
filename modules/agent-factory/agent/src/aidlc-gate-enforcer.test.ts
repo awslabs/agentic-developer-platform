@@ -76,6 +76,10 @@ describe('normalizeStageId', () => {
   it('trims leading/trailing hyphens', () => {
     expect(normalizeStageId(' -- hello -- ')).toBe('hello');
   });
+
+  it('converts Loop Proposal to loop-proposal', () => {
+    expect(normalizeStageId('Loop Proposal')).toBe('loop-proposal');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -143,6 +147,18 @@ describe('findPendingGateStage', () => {
 - **Next Action**: Waiting
 `);
     expect(findPendingGateStage(tmpDir)).toBe('requirements-analysis');
+  });
+
+  it('detects pending loop-proposal gate from construction phase', () => {
+    writeStateFile(tmpDir, 'aidlc/spaces/issue-100/aidlc-state.md', `# AIDLC State
+
+## Current Status
+- **Phase**: Construction
+- **Stage**: Loop Proposal
+- **Waiting For**: Human input on loop-proposal review
+- **Next Action**: Wait for gate reply
+`);
+    expect(findPendingGateStage(tmpDir)).toBe('loop-proposal');
   });
 });
 
