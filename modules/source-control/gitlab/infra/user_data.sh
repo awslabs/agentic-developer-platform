@@ -51,6 +51,18 @@ nginx['custom_gitlab_server_config'] = "location /-/health {\n  access_log off;\
 GITLAB_CONFIG
 
 # -----------------------------------------------------------------------------
+# CloudFront relative_url_root mode (when cloudfront_domain is set)
+# -----------------------------------------------------------------------------
+%{ if cloudfront_domain != "" ~}
+cat >> /etc/gitlab/gitlab.rb <<'GITLAB_CF_CONFIG'
+
+# CloudFront path-based routing — GitLab served at /gitlab
+gitlab_rails['relative_url_root'] = "/gitlab"
+nginx['relative_url_root'] = "/gitlab"
+GITLAB_CF_CONFIG
+%{ endif ~}
+
+# -----------------------------------------------------------------------------
 # OIDC Configuration — Fetch credentials from SSM and configure OmniAuth
 # -----------------------------------------------------------------------------
 
@@ -72,6 +84,12 @@ OIDC_ISSUER=$(aws ssm get-parameter \
   --name "/adp/${environment}/gitlab/oidc-issuer" \
   --region "${aws_region}" \
   --query "Parameter.Value" --output text)
+
+%{ if cloudfront_domain != "" ~}
+OIDC_REDIRECT_URI="https://${cloudfront_domain}/gitlab/users/auth/openid_connect/callback"
+%{ else ~}
+OIDC_REDIRECT_URI="https://${gitlab_domain}/users/auth/openid_connect/callback"
+%{ endif ~}
 
 cat >> /etc/gitlab/gitlab.rb <<OIDC_CONFIG
 
@@ -97,7 +115,7 @@ gitlab_rails['omniauth_providers'] = [
       client_options: {
         identifier: "$OIDC_CLIENT_ID",
         secret: "$OIDC_CLIENT_SECRET",
-        redirect_uri: "https://${gitlab_domain}/users/auth/openid_connect/callback"
+        redirect_uri: "$OIDC_REDIRECT_URI"
       }
     }
   }
@@ -108,6 +126,19 @@ OIDC_CONFIG
 # Reconfigure GitLab with updated settings (includes OIDC)
 # -----------------------------------------------------------------------------
 gitlab-ctl reconfigure
+
+# -----------------------------------------------------------------------------
+# Seed "Back to ADP Dashboard" appearance header (CloudFront mode only)
+# -----------------------------------------------------------------------------
+%{ if cloudfront_domain != "" ~}
+gitlab-rails runner "
+  appearance = Appearance.first_or_initialize
+  appearance.update!(
+    header_message: '<a href=\"/\" style=\"color:#fff;text-decoration:none;font-size:13px;\">&larr; ADP Dashboard</a>',
+    header_message_html: '<a href=\"/\" style=\"color:#fff;text-decoration:none;font-size:13px;\">&larr; ADP Dashboard</a>'
+  )
+"
+%{ endif ~}
 
 # -----------------------------------------------------------------------------
 # Install backup script (if backup bucket is configured)

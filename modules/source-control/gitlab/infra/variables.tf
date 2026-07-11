@@ -96,6 +96,16 @@ variable "backup_s3_bucket_name" {
   default     = ""
 }
 
+# -----------------------------------------------------------------------------
+# CloudFront Integration
+# -----------------------------------------------------------------------------
+
+variable "cloudfront_domain" {
+  type        = string
+  description = "CloudFront distribution domain. When set, GitLab's external_url becomes https://<domain>/gitlab (relative_url_root mode) and SSM /adp/<env>/gitlab/url is updated accordingly."
+  default     = ""
+}
+
 variable "backup_retention_days" {
   type        = number
   description = "Number of days to retain backups in S3 before deletion"

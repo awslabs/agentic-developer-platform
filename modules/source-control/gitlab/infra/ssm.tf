@@ -44,7 +44,7 @@ resource "aws_ssm_parameter" "gitlab_url" {
   name        = "/adp/${var.environment}/gitlab/url"
   description = "GitLab instance base URL for agent-worker API calls"
   type        = "String"
-  value       = "http://gitlab.${var.environment}.adp.internal"
+  value       = var.cloudfront_domain != "" ? "https://${var.cloudfront_domain}/gitlab" : "http://gitlab.${var.environment}.adp.internal"
 
   tags = local.common_tags
 }

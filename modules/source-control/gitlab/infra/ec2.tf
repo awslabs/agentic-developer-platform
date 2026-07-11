@@ -10,17 +10,24 @@ resource "aws_instance" "gitlab" {
   iam_instance_profile   = aws_iam_instance_profile.gitlab.name
   key_name               = var.key_name != "" ? var.key_name : null
 
-  user_data_replace_on_change = true
+  # GitLab is stateful (repos/DB on the root volume, delete_on_termination):
+  # replacing the instance on user_data edits would destroy all data. With
+  # false, the provider updates user_data via stop/start (~2-3 min outage,
+  # volume preserved); the new user_data only executes on a from-scratch
+  # rebuild, so config changes must be applied manually via gitlab-ctl
+  # reconfigure (see issue #3588 Deployment notes).
+  user_data_replace_on_change = false
 
   user_data = templatefile("${path.module}/user_data.sh", {
-    gitlab_external_url = "http://${var.gitlab_domain}"
+    gitlab_external_url = var.cloudfront_domain != "" ? "https://${var.cloudfront_domain}/gitlab" : "http://${var.gitlab_domain}"
     backup_bucket_name  = var.backup_enabled ? aws_s3_bucket.backup[0].id : ""
     backup_script = var.backup_enabled ? templatefile("${path.module}/templates/backup_script.sh.tpl", {
       bucket_name = aws_s3_bucket.backup[0].id
     }) : ""
-    gitlab_domain = var.gitlab_domain
-    environment   = var.environment
-    aws_region    = var.aws_region
+    gitlab_domain     = var.gitlab_domain
+    cloudfront_domain = var.cloudfront_domain
+    environment       = var.environment
+    aws_region        = var.aws_region
   })
 
   root_block_device {

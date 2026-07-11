@@ -20,6 +20,9 @@ certificate_arn    = "arn:aws:acm:us-east-1:879318057152:certificate/81b4c6bc-63
 cognito_user_pool_id = "us-east-1_JEhv9xSGG"
 cognito_domain       = "bedrockgw-dev-auth-18057152"
 
+# CloudFront Integration
+cloudfront_domain = "d1g6cal2ts4iis.cloudfront.net"
+
 # Backup
 backup_enabled        = true
 backup_retention_days = 90
