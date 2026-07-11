@@ -36,53 +36,84 @@ vi.mock('react-router-dom', async () => {
 // ---------------------------------------------------------------------------
 
 const mockStatsWithData: RunStatsResponse = {
+  window_days: 7,
   active_runs: [
-    { invocation_id: 'inv-active-001', topic: 'Deploy gateway', persona: 'developer' },
+    {
+      invocation_id: 'inv-active-001',
+      invoked_at: '2026-07-11T11:00:00Z',
+      topic: 'Deploy gateway',
+      persona: 'developer',
+      repo: 'acme/api',
+    },
   ],
   today: {
     total: 10,
-    succeeded: 7,
+    completed: 7,
     failed: 2,
-    spend: 12.34,
+    active: 1,
   },
+  daily: [],
+  by_persona: [],
   recent_failures: [
     {
       invocation_id: 'inv-fail-001',
       topic: 'Upgrade dependencies',
-      failed_at: '2026-07-11T10:00:00Z',
+      invoked_at: '2026-07-11T10:00:00Z',
       persona: 'developer',
+      repo: 'acme/api',
+      error_message: null,
     },
     {
       invocation_id: 'inv-fail-002',
       topic: 'Refactor auth module',
-      failed_at: '2026-07-11T08:00:00Z',
+      invoked_at: '2026-07-11T08:00:00Z',
       persona: 'architect',
+      repo: 'acme/web',
+      error_message: null,
     },
   ],
+  top_repos: [],
+  spend: { total_cost_usd: 12.34, total_tokens: 50000, total_calls: 20 },
 };
 
 const mockStatsEmpty: RunStatsResponse = {
+  window_days: 7,
   active_runs: [],
   today: {
     total: 0,
-    succeeded: 0,
+    completed: 0,
     failed: 0,
-    spend: null,
+    active: 0,
   },
+  daily: [],
+  by_persona: [],
   recent_failures: [],
+  top_repos: [],
+  spend: null,
 };
 
 const mockStatsNullSpend: RunStatsResponse = {
+  window_days: 7,
   active_runs: [
-    { invocation_id: 'inv-active-001', topic: 'Running task', persona: 'developer' },
+    {
+      invocation_id: 'inv-active-001',
+      invoked_at: '2026-07-11T11:00:00Z',
+      topic: 'Running task',
+      persona: 'developer',
+      repo: 'acme/api',
+    },
   ],
   today: {
     total: 5,
-    succeeded: 3,
+    completed: 3,
     failed: 1,
-    spend: null,
+    active: 1,
   },
+  daily: [],
+  by_persona: [],
   recent_failures: [],
+  top_repos: [],
+  spend: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -232,7 +263,9 @@ describe('AgentRunDashboard Page', () => {
     await user.click(screen.getByText('Retry'));
 
     await waitFor(() => {
-      expect(mockGetRunStats).toHaveBeenCalledTimes(2);
+      // Page issues two queries (7-day stats + 1-day spend); retry refetches
+      // the failed one, so total calls is at least 3.
+      expect(mockGetRunStats.mock.calls.length).toBeGreaterThanOrEqual(3);
     });
   });
 

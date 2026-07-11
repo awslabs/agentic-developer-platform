@@ -48,6 +48,10 @@ function LoadingSkeleton() {
 export default function AgentRunDashboard() {
   const navigate = useNavigate();
   const { data, isLoading, error, refetch } = useRunStats(7);
+  // Separate 1-day window for the "Spend today" tile — the API's spend
+  // aggregate covers the whole requested window, so today's spend needs
+  // its own query (both responses are served from the backend's 60s cache).
+  const { data: todayData } = useRunStats(1);
 
   // Determine if we should show empty state
   const isEmpty =
@@ -93,8 +97,8 @@ export default function AgentRunDashboard() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <ActiveRunsTile count={data.active_runs.length} />
             <FailedTodayTile count={data.today.failed} />
-            <SpendTodayTile spend={data.today.spend} />
-            <SucceededTodayTile count={data.today.succeeded} />
+            <SpendTodayTile spend={todayData?.spend ? todayData.spend.total_cost_usd : null} />
+            <SucceededTodayTile count={data.today.completed} />
           </div>
 
           {/* Recent failures */}
@@ -117,7 +121,7 @@ export default function AgentRunDashboard() {
                           {failure.topic || 'Untitled run'}
                         </span>
                         <span className="text-xs text-gray-500 dark:text-gray-400 ml-2 whitespace-nowrap">
-                          {formatRelativeTime(failure.failed_at)}
+                          {formatRelativeTime(failure.invoked_at)}
                         </span>
                       </div>
                       {failure.persona && (

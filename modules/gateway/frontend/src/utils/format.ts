@@ -90,8 +90,13 @@ export function formatDateTime(date: string | Date): string {
 /**
  * Format a relative time (e.g., "2 hours ago")
  */
-export function formatRelativeTime(date: string | Date): string {
+export function formatRelativeTime(date: string | Date | null | undefined): string {
   const d = typeof date === 'string' ? new Date(date) : date;
+  // Missing or unparseable timestamps must degrade to a placeholder, not
+  // crash the page (a runtime response shape mismatch reached getTime()).
+  if (!d || Number.isNaN(d.getTime())) {
+    return '—';
+  }
   const now = new Date();
   const diffMs = now.getTime() - d.getTime();
   const diffSecs = Math.floor(diffMs / 1000);

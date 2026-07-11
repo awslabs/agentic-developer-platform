@@ -1,28 +1,50 @@
 /**
- * API client for Agent Run Stats.
+ * Agent Run Stats API client.
  *
- * Issue #3633: Agent Run Dashboard — stats endpoint.
- * Calls GET /me/agent-run-stats?days=N for the current user's run summary.
+ * Issue #3630/#3633: Dashboard stats for the /runs landing page.
+ * Types mirror the backend StatsResponse schema
+ * (modules/gateway/src/activity/stats_schemas.py) — keep in sync.
  */
 
 import { apiClient, buildQueryString } from './api';
 
 export interface RunStatsFailure {
   invocation_id: string;
-  topic: string | null;
-  failed_at: string;
+  invoked_at: string;
   persona: string | null;
+  repo: string | null;
+  topic: string | null;
+  error_message: string | null;
+}
+
+export interface RunStatsActiveRun {
+  invocation_id: string;
+  invoked_at: string;
+  persona: string | null;
+  repo: string | null;
+  topic: string | null;
+}
+
+export interface RunStatsSpend {
+  total_cost_usd: number;
+  total_tokens: number;
+  total_calls: number;
 }
 
 export interface RunStatsResponse {
-  active_runs: Array<{ invocation_id: string; topic: string | null; persona: string | null }>;
+  window_days: number;
+  active_runs: RunStatsActiveRun[];
   today: {
     total: number;
-    succeeded: number;
+    completed: number;
     failed: number;
-    spend: number | null;
+    active: number;
   };
+  daily: Array<{ date: string; total: number; completed: number; failed: number }>;
+  by_persona: Array<{ persona: string; total: number; completed: number; failed: number }>;
   recent_failures: RunStatsFailure[];
+  top_repos: Array<{ repo: string; total: number }>;
+  spend: RunStatsSpend | null;
 }
 
 /**
