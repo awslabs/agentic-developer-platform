@@ -24,6 +24,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.dependencies import get_current_user
@@ -209,31 +210,61 @@ async def register_asset(
 
     # Insert (includes installation_id from accessibility validation — Issue #2087)
     asset_id = str(uuid.uuid4())
-    await db.execute(
-        text("""
-            INSERT INTO knowledge_assets
-                (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
-                 status, registered_by, metadata, display_name, tags,
-                 installation_id)
-            VALUES
-                (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
-                 'registered', :registered_by, CAST(:metadata AS jsonb),
-                 :display_name, CAST(:tags AS jsonb), :installation_id)
-        """),
-        {
-            "id": asset_id,
-            "asset_type": body.asset_type,
-            "source_ref": body.source_ref,
-            "tenant_id": tenant_id,
-            "owner_sub": owner_sub,
-            "registered_by": current_user.user_id,
-            "metadata": _json_dumps(body.metadata),
-            "display_name": body.display_name,
-            "tags": _json_dumps(body.tags),
-            "installation_id": installation_id,
-        },
-    )
-    await db.commit()
+    try:
+        await db.execute(
+            text("""
+                INSERT INTO knowledge_assets
+                    (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
+                     status, registered_by, metadata, display_name, tags,
+                     installation_id)
+                VALUES
+                    (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
+                     'registered', :registered_by, CAST(:metadata AS jsonb),
+                     :display_name, CAST(:tags AS jsonb), :installation_id)
+            """),
+            {
+                "id": asset_id,
+                "asset_type": body.asset_type,
+                "source_ref": body.source_ref,
+                "tenant_id": tenant_id,
+                "owner_sub": owner_sub,
+                "registered_by": current_user.user_id,
+                "metadata": _json_dumps(body.metadata),
+                "display_name": body.display_name,
+                "tags": _json_dumps(body.tags),
+                "installation_id": installation_id,
+            },
+        )
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        if "uq_knowledge_assets_source_scope" in (str(exc.orig) or ""):
+            # Race condition: another request inserted the same source/scope
+            # between our dup-check and INSERT. Return the same 409 as above.
+            logger.warning(
+                "IntegrityError race on register_asset source_ref=%s — returning 409",
+                body.source_ref,
+            )
+            dup_row = await db.execute(
+                text("""
+                    SELECT id FROM knowledge_assets
+                    WHERE source_ref = :sref
+                      AND COALESCE(tenant_id, '') = COALESCE(:tid, '')
+                      AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+                      AND status != 'removed'
+                    LIMIT 1
+                """),
+                {"sref": body.source_ref, "tid": tenant_id or "", "sub": owner_sub or ""},
+            )
+            dup = dup_row.fetchone()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Asset already registered under this scope",
+                    "existing_id": str(dup.id) if dup else None,
+                },
+            ) from exc
+        raise
 
     # Phase 1 inline dispatch: publish to SQS, update status to 'queued'.
     # Row is at 'registered' — row-before-publish invariant.
@@ -860,29 +891,41 @@ async def bulk_commit(
 
         # Insert (includes installation_id — Issue #2087)
         asset_id = str(uuid.uuid4())
-        await db.execute(
-            text("""
-                INSERT INTO knowledge_assets
-                    (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
-                     status, registered_by, metadata, display_name, tags,
-                     installation_id)
-                VALUES
-                    (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
-                     'registered', :registered_by, '{}'::jsonb,
-                     :display_name, CAST(:tags AS jsonb), :installation_id)
-            """),
-            {
-                "id": asset_id,
-                "asset_type": item.asset_type,
-                "source_ref": item.source_ref,
-                "tenant_id": item_tenant_id,
-                "owner_sub": item_owner_sub,
-                "registered_by": current_user.user_id,
-                "display_name": item.display_name,
-                "tags": _json_dumps(item.tags),
-                "installation_id": item_installation_id,
-            },
-        )
+        try:
+            await db.execute(
+                text("""
+                    INSERT INTO knowledge_assets
+                        (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
+                         status, registered_by, metadata, display_name, tags,
+                         installation_id)
+                    VALUES
+                        (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
+                         'registered', :registered_by, '{}'::jsonb,
+                         :display_name, CAST(:tags AS jsonb), :installation_id)
+                """),
+                {
+                    "id": asset_id,
+                    "asset_type": item.asset_type,
+                    "source_ref": item.source_ref,
+                    "tenant_id": item_tenant_id,
+                    "owner_sub": item_owner_sub,
+                    "registered_by": current_user.user_id,
+                    "display_name": item.display_name,
+                    "tags": _json_dumps(item.tags),
+                    "installation_id": item_installation_id,
+                },
+            )
+        except IntegrityError as exc:
+            await db.rollback()
+            if "uq_knowledge_assets_source_scope" in (str(exc.orig) or ""):
+                # Race: another request inserted the same source/scope
+                logger.warning(
+                    "IntegrityError race on bulk_commit source_ref=%s — skipping",
+                    item.source_ref,
+                )
+                skipped_duplicates += 1
+                continue
+            raise
 
         # Dispatch to SQS (Phase 1 inline dispatch)
         try:

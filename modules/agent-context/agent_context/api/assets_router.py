@@ -20,6 +20,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_context.api.assets_schemas import (
@@ -213,29 +214,55 @@ async def register_asset(
 
     # Insert
     asset_id = str(uuid.uuid4())
-    await db.execute(
-        text("""
-            INSERT INTO knowledge_assets
-                (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
-                 status, registered_by, metadata, display_name, tags)
-            VALUES
-                (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
-                 'registered', :registered_by, :metadata::jsonb,
-                 :display_name, :tags::jsonb)
-        """),
-        {
-            "id": asset_id,
-            "asset_type": body.asset_type,
-            "source_ref": body.source_ref,
-            "tenant_id": tenant_id,
-            "owner_sub": owner_sub,
-            "registered_by": current_user.user_id,
-            "metadata": _json_dumps(body.metadata),
-            "display_name": body.display_name,
-            "tags": _json_dumps(body.tags),
-        },
-    )
-    await db.commit()
+    try:
+        await db.execute(
+            text("""
+                INSERT INTO knowledge_assets
+                    (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
+                     status, registered_by, metadata, display_name, tags)
+                VALUES
+                    (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
+                     'registered', :registered_by, :metadata::jsonb,
+                     :display_name, :tags::jsonb)
+            """),
+            {
+                "id": asset_id,
+                "asset_type": body.asset_type,
+                "source_ref": body.source_ref,
+                "tenant_id": tenant_id,
+                "owner_sub": owner_sub,
+                "registered_by": current_user.user_id,
+                "metadata": _json_dumps(body.metadata),
+                "display_name": body.display_name,
+                "tags": _json_dumps(body.tags),
+            },
+        )
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        if "uq_knowledge_assets_source_scope" in (str(exc.orig) or ""):
+            # Race condition: another request inserted the same source/scope
+            # between our dup-check and INSERT. Return the same 409 as above.
+            dup_row = await db.execute(
+                text("""
+                    SELECT id FROM knowledge_assets
+                    WHERE source_ref = :sref
+                      AND COALESCE(tenant_id, '') = COALESCE(:tid, '')
+                      AND COALESCE(owner_sub, '') = COALESCE(:sub, '')
+                      AND status != 'removed'
+                    LIMIT 1
+                """),
+                {"sref": body.source_ref, "tid": tenant_id or "", "sub": owner_sub or ""},
+            )
+            dup = dup_row.fetchone()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Asset already registered under this scope",
+                    "existing_id": str(dup.id) if dup else None,
+                },
+            ) from exc
+        raise
 
     # Phase 1 inline dispatch: publish to SQS, update status to 'queued'.
     # Row is at 'registered' — row-before-publish invariant (§8.9).
@@ -304,7 +331,9 @@ async def list_assets(
 
     # Count
     count_result = await db.execute(
-        text(f"SELECT COUNT(*) FROM knowledge_assets WHERE {where_clause}"),  # nosemgrep: avoid-sqlalchemy-text
+        text(
+            f"SELECT COUNT(*) FROM knowledge_assets WHERE {where_clause}"
+        ),  # nosemgrep: avoid-sqlalchemy-text
         params,
     )
     total = count_result.scalar() or 0
@@ -772,27 +801,35 @@ async def bulk_commit(
 
         # Insert
         asset_id = str(uuid.uuid4())
-        await db.execute(
-            text("""
-                INSERT INTO knowledge_assets
-                    (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
-                     status, registered_by, metadata, display_name, tags)
-                VALUES
-                    (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
-                     'registered', :registered_by, '{}'::jsonb,
-                     :display_name, :tags::jsonb)
-            """),
-            {
-                "id": asset_id,
-                "asset_type": item.asset_type,
-                "source_ref": item.source_ref,
-                "tenant_id": tenant_id,
-                "owner_sub": owner_sub,
-                "registered_by": current_user.user_id,
-                "display_name": item.display_name,
-                "tags": _json_dumps(item.tags),
-            },
-        )
+        try:
+            await db.execute(
+                text("""
+                    INSERT INTO knowledge_assets
+                        (id, asset_type, source_ref, tenant_id, owner_sub, project_id,
+                         status, registered_by, metadata, display_name, tags)
+                    VALUES
+                        (:id, :asset_type, :source_ref, :tenant_id, :owner_sub, NULL,
+                         'registered', :registered_by, '{}'::jsonb,
+                         :display_name, :tags::jsonb)
+                """),
+                {
+                    "id": asset_id,
+                    "asset_type": item.asset_type,
+                    "source_ref": item.source_ref,
+                    "tenant_id": tenant_id,
+                    "owner_sub": owner_sub,
+                    "registered_by": current_user.user_id,
+                    "display_name": item.display_name,
+                    "tags": _json_dumps(item.tags),
+                },
+            )
+        except IntegrityError as exc:
+            await db.rollback()
+            if "uq_knowledge_assets_source_scope" in (str(exc.orig) or ""):
+                # Race: another request inserted the same source/scope
+                skipped_duplicates += 1
+                continue
+            raise
 
         # Dispatch to SQS (Phase 1 inline dispatch)
         try:
