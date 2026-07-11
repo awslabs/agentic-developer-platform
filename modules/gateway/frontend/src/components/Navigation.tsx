@@ -25,19 +25,19 @@ export function Navigation() {
 
   const navItems: NavItem[] = [];
 
-  // Platform admin sees dashboard and all orgs
+  // Dashboard link — all users see this, points to /runs (Issue #3634)
+  navItems.push({ to: '/runs', label: 'Dashboard', icon: '📊' });
+
+  // Platform admin sees org/pool/metrics links (now under /admin/system — Issue #3634)
   if (isPlatformAdmin()) {
-    navItems.push(
-      { to: '/dashboard', label: 'Dashboard', icon: '📊' },
-    );
     if (canViewOrganizations()) {
-      navItems.push({ to: '/dashboard#organizations', label: 'Organizations', icon: '🏢' });
+      navItems.push({ to: '/admin/system#organizations', label: 'Organizations', icon: '🏢' });
     }
     if (canViewPool()) {
-      navItems.push({ to: '/dashboard#pool', label: 'Pool Health', icon: '🔄' });
+      navItems.push({ to: '/admin/system#pool', label: 'Pool Health', icon: '🔄' });
     }
     if (canViewMetrics()) {
-      navItems.push({ to: '/dashboard#metrics', label: 'System Metrics', icon: '📈' });
+      navItems.push({ to: '/admin/system#metrics', label: 'System Metrics', icon: '📈' });
     }
   }
 
@@ -104,6 +104,11 @@ export function Navigation() {
   // Credentials — user vault + connected AWS accounts (Issue #562)
   if (features.credentials) {
     navItems.push({ to: '/settings/credentials', label: 'Credentials', icon: '🔑' });
+  }
+
+  // System Health (demoted proxy dashboard) for platform admins (Issue #3634)
+  if (features.system_dashboard && isPlatformAdmin()) {
+    navItems.push({ to: '/admin/system', label: 'System Health', icon: '🖥️' });
   }
 
   // Access Requests page for platform admins (Issue #545)

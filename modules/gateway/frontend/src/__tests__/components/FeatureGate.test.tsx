@@ -18,6 +18,7 @@ const mockFeatures: FeatureFlags = {
   indexing: true,
   connections: true,
   credentials: true,
+  system_dashboard: true,
 };
 
 vi.mock('@/hooks/useFeatures', () => ({
@@ -66,6 +67,7 @@ describe('FeatureGate', () => {
     mockFeatures.indexing = true;
     mockFeatures.connections = true;
     mockFeatures.credentials = true;
+    mockFeatures.system_dashboard = true;
   });
 
   it('renders children when feature is enabled', () => {

@@ -8,6 +8,8 @@ import { FeatureGate } from './components/FeatureGate'; // Issue #3566
 import { LoadingScreen } from './components/LoadingScreen';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { RoleBasedRedirect } from './components/RoleBasedRedirect';
+import { DashboardRedirect } from './components/DashboardRedirect';
+import { AdminGuard } from './components/AdminGuard';
 
 // Lazy load pages for code splitting
 const Login = lazy(() => import('./pages/Login'));
@@ -72,7 +74,8 @@ function App() {
           >
             <Route element={<MainLayout />}>
               <Route path="/" element={<RoleBasedRedirect />} />
-              <Route path="/dashboard" element={<PlatformDashboard />} />
+              <Route path="/dashboard" element={<DashboardRedirect />} />
+              <Route path="/admin/system" element={<AdminGuard><PlatformDashboard /></AdminGuard>} />
               <Route path="/org/:orgId" element={<OrgDashboard />} />
               <Route path="/org/:orgId/department/:deptId" element={<DepartmentDashboard />} />
               <Route path="/logs" element={<LogViewer />} />

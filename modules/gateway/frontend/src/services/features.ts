@@ -12,6 +12,7 @@ export interface FeatureFlags {
   indexing: boolean;
   connections: boolean;
   credentials: boolean;
+  system_dashboard: boolean;
 }
 
 export interface FeaturesResponse {
@@ -25,6 +26,7 @@ export const ALL_FEATURES_ENABLED: FeatureFlags = {
   indexing: true,
   connections: true,
   credentials: true,
+  system_dashboard: true,
 };
 
 export async function fetchFeatures(): Promise<FeatureFlags> {
