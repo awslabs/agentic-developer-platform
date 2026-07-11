@@ -135,6 +135,19 @@ judgment calls. Every child's Validation MUST include:
 
 These are NOT deterministic — an agent will self-certify broken features.
 
+#### Fixture provenance rule (cross-boundary stories)
+
+When a story adds MSW mocks, test fixtures, or mock data for a backend
+endpoint, its `## Validation` section MUST include:
+
+> Fixtures must be derived from the backend schema file (`<path>`) or a
+> captured real response — not written from the frontend type.
+
+Name the specific backend schema/model file. This prevents the
+"closed-loop self-consistent wrongness" failure mode where frontend types
+invent fields that the backend never sends, and both mocks and tests
+validate the invented shape (ref: #3675, #2415).
+
 #### Body size limit
 
 Each child issue body MUST be <= 8KB (per `docs/orchestration-issue-guide.md`).
@@ -261,7 +274,13 @@ For EACH wave, compose an evaluation issue body using the template at
    commands and CI check names → convert to `[command] returns [expected]` form.
 2. From the intent's acceptance criteria, extract cross-cutting invariants
    (e.g. "zero diff on path X", "latency < N ms") → add as cumulative checks.
-3. Every check MUST be a concrete command + expected output. No judgment calls.
+3. **Live API-contract check (Rule 5):** if the wave is cross-boundary
+   (frontend consumes a typed backend response), emit the contract check per
+   Step 7d Rule 5. Read the TS interface from the story's Design section,
+   enumerate expected fields, and emit a curl + jq assertion comparing live
+   response keys to the frontend type's field list. This check validates
+   against the REAL deployed endpoint, not the story's own mocks/fixtures.
+4. Every check MUST be a concrete command + expected output. No judgment calls.
 
 **Deterministic-only enforcement:** Verify NO check contains the banned
 phrases: "verify it works", "ensure the feature is functional", "confirm
@@ -298,9 +317,9 @@ is the ONLY permitted difference between the gated draft and the created issue.
 
 #### Step 7d: Emission lint rules
 
-Before committing the drafts, apply these four lint rules to EVERY draft
-(orchestrator and evaluation). These were derived from gaps exposed in the
-GitLab CE dogfood run (#3299):
+Before committing the drafts, apply these five lint rules to EVERY draft
+(orchestrator and evaluation). Rules 1–4 were derived from gaps exposed in
+the GitLab CE dogfood run (#3299); Rule 5 from the dashboard crash #3675:
 
 **Rule 1 — CI apply path must exist:**
 Every story whose `## Deployment` section mentions "terraform apply" or
@@ -333,6 +352,50 @@ Include in every orchestrator's "Guards" section:
   re-run the evaluation.
 ```
 This codifies the ad-hoc pattern from PR #3372 into the emitted orchestrator.
+
+**Rule 5 — Live API-contract check (cross-boundary waves):**
+When a wave's stories introduce or consume a typed API response across the
+frontend/backend boundary (i.e. a frontend component fetches from a backend
+endpoint and maps the response into a TypeScript interface), the emitted
+evaluation MUST include a deterministic contract check that:
+
+1. Calls the REAL deployed endpoint (authed, via the same `adp-cred` +
+   gateway-token path that evals already use for smoke checks).
+2. Extracts the response's key set (e.g. `curl ... | jq '[.[] | keys] | flatten | unique'`
+   for arrays, or `jq 'keys'` for objects).
+3. Asserts every field referenced by the frontend TypeScript interface exists
+   in the live response. The expected field list is enumerated at emission time
+   by reading the TS interface from the story's `## Design` section.
+4. Fails the wave if ANY expected key is missing or renamed.
+
+**Triggering condition:** this rule applies when the wave contains stories
+where a frontend component declares a TypeScript response type AND a backend
+endpoint serves that response — detectable by: (a) the story's Design section
+names both a TS interface and an API endpoint path, OR (b) stories in the
+wave span both `modules/gateway/frontend/` and `modules/gateway/src/` (or
+equivalent backend path). It does NOT key on labels — structural detection
+only.
+
+**Emitted check format (in the evaluation draft):**
+```
+N. Live API-contract: `curl -s -H "Authorization: Bearer $TOKEN" https://<domain>/api/<path> | jq '<extract-expr>'` contains keys [<field1>, <field2>, ...].
+   Source: frontend type `<InterfaceName>` in `<file-path>`.
+   Expected fields: <comma-separated list from the TS interface>.
+   Rule: every field in the frontend type MUST exist in the live response keys.
+```
+
+**Fixture-provenance sub-check:** if the wave's stories add MSW mocks or
+test fixtures for the same endpoint, add a second check:
+```
+N+1. Fixture provenance: `jq 'keys' <fixture-file>` ⊆ live response keys.
+   Source: fixture derived from backend schema `<schema-file>`.
+   Rule: fixture keys must be a subset of live-response keys (no invented fields).
+```
+
+**What this prevents:** the failure mode from #3675 where `RunStatsResponse`
+invented `failed_at`, `today.succeeded`, `today.spend` that the backend
+`StatsResponse` never sends — unit tests, MSW mocks, AND the eval all
+validated against the invented shape because nothing compared to the live API.
 
 **If any lint rule fails:** fix the draft and re-lint. Do not commit drafts
 that fail lint. Report lint results in the gate comment.
@@ -442,7 +505,7 @@ summary comment on the originating AIDLC issue:
 
 All children pass five-section lint. Validation gates are deterministic
 (named test files + CI checks + coverage thresholds).
-Emission lint: ✅ CI-apply-path | ✅ account-explicit | ✅ version-pins | ✅ hotfix-protocol
+Emission lint: ✅ CI-apply-path | ✅ account-explicit | ✅ version-pins | ✅ hotfix-protocol | ✅ api-contract-check
 
 The AIDLC inception audit trail is committed on branch `<branch>` under
 `aidlc/` / `aidlc-docs/`.

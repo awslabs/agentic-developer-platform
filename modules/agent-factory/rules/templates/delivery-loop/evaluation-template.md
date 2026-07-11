@@ -61,3 +61,33 @@ When generating an evaluation issue from a delivery plan:
 7. **Size limit**: body <= 8KB (same as story issues).
 8. **Create BEFORE the orchestrator** — the orchestrator references the eval's
    issue number.
+9. **Live API-contract check (Rule 5 — cross-boundary waves):**
+   When the wave's stories span the frontend/backend boundary (a frontend
+   component declares a TypeScript response type for a backend endpoint), the
+   evaluation MUST include a contract check that:
+   - Calls the REAL deployed endpoint (authed, via `adp-cred` + gateway token).
+   - Extracts the response key set via `jq`.
+   - Asserts every field in the frontend TS interface exists in the live
+     response (field list enumerated at emission time from the TS interface).
+   - Fails the wave on any missing/renamed key.
+
+   This prevents the "closed-loop self-consistent wrongness" failure mode
+   (#3675) where frontend types invent fields the backend never sends, and
+   story-level tests + MSW mocks + the eval all validate the invented shape.
+
+   **Check format in the Checks section:**
+   ```
+   N. Live API-contract: `curl -s -H "Authorization: Bearer $TOKEN" \
+      https://<domain>/api/<path> | jq '<extract-expr>'` contains keys \
+      [<field1>, <field2>, ...].
+      Source: frontend type `<InterfaceName>` in `<file-path>`.
+      Expected fields: <comma-separated list from the TS interface>.
+      Rule: every field in the frontend type MUST exist in the live response.
+   ```
+
+   **Fixture-provenance sub-check** (if the wave adds MSW mocks/test fixtures):
+   ```
+   N+1. Fixture provenance: fixture keys ⊆ live response keys.
+      Source: fixture derived from backend schema `<schema-file>`.
+      Rule: no invented fields — fixture keys must be a subset of live keys.
+   ```
