@@ -186,8 +186,9 @@ describe('AgentActivity Deep Link (Issue #3632)', () => {
   it('?status=failed pre-fills the status filter dropdown', async () => {
     renderWithParams('?status=failed');
 
+    // Issue #3723 follow-up: a valid status param opens the FLAT view
     await waitFor(() => {
-      expect(mockGetMyChains).toHaveBeenCalled();
+      expect(mockGetMine).toHaveBeenCalled();
     });
 
     // The status filter select should have "failed" selected
@@ -252,6 +253,7 @@ describe('AgentActivity Deep Link (Issue #3632)', () => {
   it('?status=invalid_value does not set the filter (graceful handling)', async () => {
     renderWithParams('?status=bogus_value');
 
+    // Invalid status is ignored entirely — stays on the default chain view
     await waitFor(() => {
       expect(mockGetMyChains).toHaveBeenCalled();
     });

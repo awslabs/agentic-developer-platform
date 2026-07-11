@@ -509,8 +509,10 @@ describe('AgentActivity Page', () => {
   // Issue #3723: include_non_triggering derivation
   // ---------------------------------------------------------------------------
 
-  it('status=in_progress from URL does NOT set include_non_triggering (Issue #3723)', async () => {
-    // Render with URL param ?status=in_progress (dashboard tile click)
+  it('status=in_progress from URL lands on flat view without include_non_triggering (Issue #3723)', async () => {
+    // Render with URL param ?status=in_progress (dashboard tile click).
+    // A status filter opens the FLAT view: chain grouping filters by root
+    // status, so counts would disagree with the tile that was clicked.
     const queryClient = createTestQueryClient();
     const { unmount } = render(
       <QueryClientProvider client={queryClient}>
@@ -520,20 +522,19 @@ describe('AgentActivity Page', () => {
       </QueryClientProvider>,
     );
 
-    // Default view is chain mode — check chainQuery params
     await waitFor(() => {
-      expect(mockGetMyChains).toHaveBeenCalled();
+      expect(mockGetMine).toHaveBeenCalled();
     });
+    expect(mockGetMyChains).not.toHaveBeenCalled();
 
-    // The chain query should NOT have include_non_triggering=true
-    const chainCallParams = mockGetMyChains.mock.calls[0][0];
-    expect(chainCallParams.status).toBe('in_progress');
-    expect(chainCallParams.include_non_triggering).toBeUndefined();
+    const flatCallParams = mockGetMine.mock.calls[0][0];
+    expect(flatCallParams.status).toBe('in_progress');
+    expect(flatCallParams.include_non_triggering).toBeUndefined();
 
     unmount();
   });
 
-  it('status=no_op DOES set include_non_triggering (Issue #3723)', async () => {
+  it('status=no_op lands on flat view WITH include_non_triggering (Issue #3723)', async () => {
     // Render with URL param ?status=no_op (user explicitly filtering by no_op)
     const queryClient = createTestQueryClient();
     const { unmount } = render(
@@ -545,13 +546,47 @@ describe('AgentActivity Page', () => {
     );
 
     await waitFor(() => {
+      expect(mockGetMine).toHaveBeenCalled();
+    });
+
+    const flatCallParams = mockGetMine.mock.calls[0][0];
+    expect(flatCallParams.status).toBe('no_op');
+    expect(flatCallParams.include_non_triggering).toBe(true);
+
+    unmount();
+  });
+
+  it('no URL params defaults to chain view (Issue #3723 follow-up)', async () => {
+    const queryClient = createTestQueryClient();
+    const { unmount } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/activity']}>
+          <AgentActivity />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
       expect(mockGetMyChains).toHaveBeenCalled();
     });
 
-    // The chain query SHOULD have include_non_triggering=true for no_op filter
-    const chainCallParams = mockGetMyChains.mock.calls[0][0];
-    expect(chainCallParams.status).toBe('no_op');
-    expect(chainCallParams.include_non_triggering).toBe(true);
+    unmount();
+  });
+
+  it('view=runs URL param lands on flat view (Issue #3723 follow-up)', async () => {
+    const queryClient = createTestQueryClient();
+    const { unmount } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/activity?view=runs']}>
+          <AgentActivity />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(mockGetMine).toHaveBeenCalled();
+    });
+    expect(mockGetMyChains).not.toHaveBeenCalled();
 
     unmount();
   });

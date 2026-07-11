@@ -392,7 +392,15 @@ export default function AgentActivity() {
   const [viewMode, setViewMode] = useState<'mine' | 'all'>('mine');
 
   // Issue #1662: Group-by toggle: "run" (flat) or "chain" (grouped)
-  const [groupBy, setGroupBy] = useState<'run' | 'chain'>('chain');
+  // Issue #3723 follow-up: a status filter in the URL (dashboard tile click)
+  // lands on the flat run view — chain grouping filters by ROOT status, so a
+  // chain whose root completed hides an in-progress child and the count would
+  // disagree with the tile that was clicked.
+  const [groupBy, setGroupBy] = useState<'run' | 'chain'>(() => {
+    const paramStatus = searchParams.get('status');
+    const validStatus = paramStatus && STATUS_OPTIONS.some((opt) => opt.value === paramStatus);
+    return validStatus || searchParams.get('view') === 'runs' ? 'run' : 'chain';
+  });
 
   // Chain row expand/collapse state (issue #1662)
   const [expandedChains, setExpandedChains] = useState<Set<string>>(new Set());
