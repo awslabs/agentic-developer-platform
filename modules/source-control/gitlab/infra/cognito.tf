@@ -31,8 +31,16 @@ resource "aws_cognito_user_pool_client" "gitlab_oidc" {
   supported_identity_providers         = ["COGNITO"]
 
   # Callback and logout URLs
-  callback_urls = ["https://${var.gitlab_domain}/users/auth/openid_connect/callback"]
-  logout_urls   = ["https://${var.gitlab_domain}"]
+  # During CloudFront transition, both internal ALB and CloudFront URLs are present.
+  # compact() strips empty strings when cloudfront_domain is unset (zero-change default).
+  callback_urls = compact([
+    "https://${var.gitlab_domain}/users/auth/openid_connect/callback",
+    var.cloudfront_domain != "" ? "https://${var.cloudfront_domain}/gitlab/users/auth/openid_connect/callback" : "",
+  ])
+  logout_urls = compact([
+    "https://${var.gitlab_domain}",
+    var.cloudfront_domain != "" ? "https://${var.cloudfront_domain}/gitlab" : "",
+  ])
 
   # Token validity (matches existing gateway client pattern)
   access_token_validity  = 60 # minutes
