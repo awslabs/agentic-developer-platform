@@ -394,11 +394,19 @@ class ActivityService:
         user_id: str | None = None,
         tenant_id: str | None = None,
         depth_cap: int = _CHAIN_DEPTH_CAP,
+        include_non_triggering: bool = False,
     ) -> InvocationChainResponse:
         """Retrieve all invocations sharing a correlation_id and build a tree.
 
         Scoping: filters by user_id (for /me/) or tenant_id (for /admin/).
         If both are None, returns empty (safety: never return unscoped data).
+
+        Issue #3708: When include_non_triggering is False (default), excludes
+        no_op and webhook_received statuses — the same convention as the flat
+        list endpoints (Issue #1658). This prevents webhook echoes from
+        appearing as phantom child runs in the chain view. The depth_cap is
+        applied AFTER filtering (DynamoDB FilterExpression removes items before
+        they enter all_items), so cap budget is not wasted on echoes.
 
         Depth cap: returns at most `depth_cap` items. If more exist, sets
         `depth_capped=True` in the response.
@@ -427,6 +435,15 @@ class ActivityService:
             scope_filter = Attr("user_id").eq(user_id)
         elif tenant_id:
             scope_filter = Attr("tenant_id").eq(tenant_id)
+
+        # Issue #3708: Exclude non-triggering statuses (no_op, webhook_received)
+        # by default — same convention as the flat list endpoints (Issue #1658).
+        # Filter is on STATUS only (never user_id/is_bot — real child runs are
+        # bot-attributed and must survive).
+        if not include_non_triggering:
+            _non_triggering = ["no_op", "webhook_received"]
+            status_filter = ~Attr("status").is_in(_non_triggering)
+            scope_filter = (scope_filter & status_filter) if scope_filter else status_filter
 
         all_items: list[dict] = []
         depth_capped = False

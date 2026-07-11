@@ -462,17 +462,23 @@ async def get_my_invocation_chain(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     service: Annotated[ActivityService, Depends(get_activity_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    include_non_triggering: Annotated[bool, Query()] = False,
 ) -> InvocationChainResponse:
     """Get the chain view for a specific correlation_id.
 
     Scoping: only returns invocations the caller owns (canonical user_id derived
     from the token's Cognito sub). Shows the entire chain the caller roots or
     participates in.
+
+    Issue #3708: When include_non_triggering is False (default), no_op and
+    webhook_received items are excluded from the chain — same convention as
+    the flat list endpoints (Issue #1658).
     """
     canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
     chain = service.get_chain(
         correlation_id=correlation_id,
         user_id=canonical_user_id,
+        include_non_triggering=include_non_triggering,
     )
     return await _enrich_chain_with_cost(db, chain)
 
@@ -536,11 +542,15 @@ async def get_admin_invocation_chain(
     service: Annotated[ActivityService, Depends(get_activity_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
     tenant_id: Annotated[str | None, Query()] = None,
+    include_non_triggering: Annotated[bool, Query()] = False,
 ) -> InvocationChainResponse:
     """Get the chain view for a specific correlation_id (admin).
 
     Scoping: org admins see chains within their tenant; platform admins
     can specify any tenant_id.
+
+    Issue #3708: When include_non_triggering is False (default), no_op and
+    webhook_received items are excluded — same convention as flat list.
     """
     await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
 
@@ -552,6 +562,7 @@ async def get_admin_invocation_chain(
     chain = service.get_chain(
         correlation_id=correlation_id,
         tenant_id=effective_tenant_id,
+        include_non_triggering=include_non_triggering,
     )
     return await _enrich_chain_with_cost(db, chain)
 

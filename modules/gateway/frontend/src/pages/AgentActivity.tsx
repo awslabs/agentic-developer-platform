@@ -776,6 +776,7 @@ export default function AgentActivity() {
           correlationId={activeChainId}
           isAdmin={viewMode === 'all' && isAdmin}
           highlightInvocationId={chainHighlightId}
+          includeNonTriggering={showAllEvents}
           onClose={handleCloseChain}
           onNodeClick={(invocationId) => {
             // Open the detail modal for a clicked chain node. The node may not

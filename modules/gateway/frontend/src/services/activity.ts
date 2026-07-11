@@ -103,24 +103,38 @@ export async function getAllInvocations(
 
 /**
  * Fetch the chain view for a correlation_id (user's own invocations).
+ *
+ * Issue #3708: Accepts include_non_triggering to control whether no_op and
+ * webhook_received items appear in the chain (default: excluded).
  */
 export async function getMyInvocationChain(
   correlationId: string,
+  includeNonTriggering?: boolean,
 ): Promise<InvocationChainResponse> {
+  const query = buildQueryString({
+    include_non_triggering: includeNonTriggering,
+  });
   const response = await apiClient.get<InvocationChainResponse>(
-    `/me/agent-invocations/chain/${encodeURIComponent(correlationId)}`,
+    `/me/agent-invocations/chain/${encodeURIComponent(correlationId)}${query}`,
   );
   return response;
 }
 
 /**
  * Fetch the chain view for a correlation_id (admin view).
+ *
+ * Issue #3708: Accepts include_non_triggering to control whether no_op and
+ * webhook_received items appear in the chain (default: excluded).
  */
 export async function getAdminInvocationChain(
   correlationId: string,
   tenantId?: string,
+  includeNonTriggering?: boolean,
 ): Promise<InvocationChainResponse> {
-  const query = tenantId ? buildQueryString({ tenant_id: tenantId }) : '';
+  const query = buildQueryString({
+    tenant_id: tenantId,
+    include_non_triggering: includeNonTriggering,
+  });
   const response = await apiClient.get<InvocationChainResponse>(
     `/admin/agent-invocations/chain/${encodeURIComponent(correlationId)}${query}`,
   );

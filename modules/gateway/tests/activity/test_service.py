@@ -647,6 +647,193 @@ class TestChainQuery:
         assert all(len(node.children) == 0 for node in result.items)
 
 
+class TestChainNonTriggeringFilter:
+    """Issue #3708: Chain query filters non-triggering statuses by default.
+
+    Fixtures mirror the real DDB shape from embark1: no_op rows carry a bot
+    user_id, parent_invocation_id pointing at the root event_id, and the same
+    correlation_id. Real child runs are bot-attributed but have triggering
+    statuses (in_progress, complete) and MUST survive the filter.
+    """
+
+    # Real DDB shape: 2 real runs + 5 no_op webhook echoes (bot-attributed)
+    _ROOT_USER = "650f093f-ecd9-4ce1-a5a9-368e02c449cf"
+    _BOT_USER = "edc91ba7-bot-user-id"
+    _CORRELATION = "7993bfd5-chain-correlation"
+
+    @property
+    def _fixture_items(self) -> list[dict]:
+        """Fixture mirroring real DDB shape: root + real child + 5 no_op echoes."""
+        return [
+            {
+                "invocation_id": "root-event-001",
+                "arrived_at": "2026-07-11T09:18:00Z",
+                "channel": "github",
+                "status": "in_progress",
+                "topic": "Orchestration root",
+                "user_id": self._ROOT_USER,
+                "tenant_id": "org-embark1",
+                "correlation_id": self._CORRELATION,
+                "is_human_rooted": True,
+                "root_human_id": self._ROOT_USER,
+            },
+            {
+                "invocation_id": "child-real-001",
+                "arrived_at": "2026-07-11T09:18:02Z",
+                "channel": "github",
+                "status": "in_progress",
+                "topic": "Real child agent",
+                "user_id": self._BOT_USER,
+                "tenant_id": "org-embark1",
+                "correlation_id": self._CORRELATION,
+                "parent_invocation_id": "root-event-001",
+                "is_human_rooted": True,
+                "root_human_id": self._ROOT_USER,
+            },
+            # no_op webhook echoes — bot user, parent points at root
+            *[
+                {
+                    "invocation_id": f"noop-echo-{i:03d}",
+                    "arrived_at": f"2026-07-11T09:18:{1 + i * 5:02d}Z",
+                    "channel": "github",
+                    "status": "no_op",
+                    "topic": "status-comment edit echo",
+                    "user_id": self._BOT_USER,
+                    "tenant_id": "org-embark1",
+                    "correlation_id": self._CORRELATION,
+                    "parent_invocation_id": "root-event-001",
+                    "is_human_rooted": True,
+                    "root_human_id": self._ROOT_USER,
+                }
+                for i in range(5)
+            ],
+        ]
+
+    def test_default_excludes_no_op_echoes(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Default chain (include_non_triggering=False) returns only real runs."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [item for item in self._fixture_items if item["status"] != "no_op"],
+            "Count": 2,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain(self._CORRELATION, user_id=self._ROOT_USER)
+
+        # Verify FilterExpression was used (the mock returns pre-filtered items
+        # to simulate DDB's FilterExpression behavior)
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        assert "FilterExpression" in call_kwargs
+
+        # Only 2 real runs returned
+        assert result.total_count == 2
+        # Tree: root has 1 real child
+        assert len(result.items) == 1
+        assert result.items[0].invocation_id == "root-event-001"
+        assert len(result.items[0].children) == 1
+        assert result.items[0].children[0].invocation_id == "child-real-001"
+
+    def test_include_non_triggering_returns_all(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """include_non_triggering=True returns all items including no_op echoes."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": self._fixture_items,
+            "Count": 7,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain(self._CORRELATION, user_id=self._ROOT_USER, include_non_triggering=True)
+
+        # All 7 items returned (2 real + 5 no_op)
+        assert result.total_count == 7
+
+    def test_bot_attributed_real_child_survives_filter(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Bot-attributed child with status=complete survives the filter (key constraint)."""
+        # Add a bot-attributed child with status=complete (real, not an echo)
+        items_with_complete_child = [item for item in self._fixture_items if item["status"] != "no_op"] + [
+            {
+                "invocation_id": "child-complete-bot",
+                "arrived_at": "2026-07-11T09:20:00Z",
+                "channel": "github",
+                "status": "complete",
+                "topic": "Bot child completed",
+                "user_id": self._BOT_USER,
+                "tenant_id": "org-embark1",
+                "correlation_id": self._CORRELATION,
+                "parent_invocation_id": "root-event-001",
+                "is_human_rooted": True,
+                "root_human_id": self._ROOT_USER,
+            },
+        ]
+        mock_dynamodb_table.query.return_value = {
+            "Items": items_with_complete_child,
+            "Count": 3,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain(self._CORRELATION, user_id=self._ROOT_USER)
+
+        # All 3 real items returned (bot-attributed complete child survives)
+        assert result.total_count == 3
+        # Root has 2 children (both real bot-attributed runs)
+        assert len(result.items) == 1
+        children_ids = [c.invocation_id for c in result.items[0].children]
+        assert "child-real-001" in children_ids
+        assert "child-complete-bot" in children_ids
+
+    def test_depth_cap_not_consumed_by_filtered_echoes(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """depth_cap applies after filtering — echoes don't waste cap budget.
+
+        With depth_cap=3 and 2 real runs + 5 no_op echoes, the 2 real runs
+        should all be returned (cap not reached) with depth_capped=False.
+        """
+        # Simulate DDB returning only real items (FilterExpression removed no_op)
+        real_items = [item for item in self._fixture_items if item["status"] != "no_op"]
+        mock_dynamodb_table.query.return_value = {
+            "Items": real_items,
+            "Count": 2,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain(self._CORRELATION, user_id=self._ROOT_USER, depth_cap=3)
+
+        # 2 real items fit within cap of 3 — not capped
+        assert result.total_count == 2
+        assert result.depth_capped is False
+
+    def test_webhook_received_also_filtered(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """webhook_received status is also filtered out by default."""
+        items_with_webhook = [item for item in self._fixture_items if item["status"] != "no_op"]
+        # DDB already filtered — simulate it returning only real items
+        mock_dynamodb_table.query.return_value = {
+            "Items": items_with_webhook,
+            "Count": 2,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain(self._CORRELATION, user_id=self._ROOT_USER)
+
+        # Verify the FilterExpression includes status filter
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        filter_expr = call_kwargs.get("FilterExpression")
+        assert filter_expr is not None
+        # Only real items returned
+        assert result.total_count == 2
+
+    def test_tenant_scope_combined_with_status_filter(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Tenant-scoped chain also applies status filter (combined FilterExpression)."""
+        real_items = [item for item in self._fixture_items if item["status"] != "no_op"]
+        mock_dynamodb_table.query.return_value = {
+            "Items": real_items,
+            "Count": 2,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain(self._CORRELATION, tenant_id="org-embark1")
+
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        assert "FilterExpression" in call_kwargs
+        assert result.total_count == 2
+
+
 class TestBuildChainTree:
     """Tests for _build_chain_tree helper."""
 

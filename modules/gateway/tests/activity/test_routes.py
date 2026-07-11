@@ -410,6 +410,7 @@ class TestGetMyInvocationChain:
         mock_service.get_chain.assert_called_once_with(
             correlation_id="chain-001",
             user_id=CANONICAL_USER_ID,
+            include_non_triggering=False,
         )
 
         data = resp.json()
@@ -463,6 +464,7 @@ class TestGetAdminInvocationChain:
         mock_service.get_chain.assert_called_once_with(
             correlation_id="chain-001",
             tenant_id="org-xyz",
+            include_non_triggering=False,
         )
 
     def test_org_admin_chain_scoped_to_own_org(self, app, mock_service, mock_access, mock_db, org_admin_user):
@@ -492,6 +494,61 @@ class TestGetAdminInvocationChain:
         mock_service.get_chain.assert_called_once_with(
             correlation_id="chain-001",
             tenant_id=org_admin_user.org_id,
+            include_non_triggering=False,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue #3708: include_non_triggering on chain endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestChainIncludeNonTriggering:
+    """Issue #3708: Chain endpoints pass include_non_triggering to service."""
+
+    def test_me_chain_default_excludes_non_triggering(self, client, mock_service):
+        """/me chain default (no param) passes include_non_triggering=False."""
+        client.get("/me/agent-invocations/chain/chain-001")
+        mock_service.get_chain.assert_called_once_with(
+            correlation_id="chain-001",
+            user_id=CANONICAL_USER_ID,
+            include_non_triggering=False,
+        )
+
+    def test_me_chain_include_non_triggering_true(self, client, mock_service):
+        """/me chain with include_non_triggering=true passes True."""
+        client.get("/me/agent-invocations/chain/chain-001?include_non_triggering=true")
+        mock_service.get_chain.assert_called_once_with(
+            correlation_id="chain-001",
+            user_id=CANONICAL_USER_ID,
+            include_non_triggering=True,
+        )
+
+    def test_me_chain_include_non_triggering_false_explicit(self, client, mock_service):
+        """/me chain with include_non_triggering=false passes False."""
+        client.get("/me/agent-invocations/chain/chain-001?include_non_triggering=false")
+        mock_service.get_chain.assert_called_once_with(
+            correlation_id="chain-001",
+            user_id=CANONICAL_USER_ID,
+            include_non_triggering=False,
+        )
+
+    def test_admin_chain_default_excludes_non_triggering(self, admin_client, mock_service, admin_user):
+        """/admin chain default (no param) passes include_non_triggering=False."""
+        admin_client.get("/admin/agent-invocations/chain/chain-001?tenant_id=org-xyz")
+        mock_service.get_chain.assert_called_once_with(
+            correlation_id="chain-001",
+            tenant_id="org-xyz",
+            include_non_triggering=False,
+        )
+
+    def test_admin_chain_include_non_triggering_true(self, admin_client, mock_service, admin_user):
+        """/admin chain with include_non_triggering=true passes True."""
+        admin_client.get("/admin/agent-invocations/chain/chain-001?tenant_id=org-xyz&include_non_triggering=true")
+        mock_service.get_chain.assert_called_once_with(
+            correlation_id="chain-001",
+            tenant_id="org-xyz",
+            include_non_triggering=True,
         )
 
 
