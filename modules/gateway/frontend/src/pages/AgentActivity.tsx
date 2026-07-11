@@ -457,9 +457,17 @@ export default function AgentActivity() {
   }, [searchParams]);
 
   // Build query params
-  // Issue #1658: An explicit status filter takes precedence — if the user
-  // selects a specific status (including no_op), send include_non_triggering=true
-  // so the backend doesn't exclude it. Otherwise, respect the toggle.
+  // Issue #1658: include_non_triggering=true tells the backend to include
+  // no_op and webhook_received rows. We send it when:
+  // - showAllEvents toggle is on (user wants the full trail), OR
+  // - the selected status IS itself a non-triggering status (user explicitly
+  //   wants to filter BY no_op/webhook_received).
+  // Issue #3723: A normal status filter (in_progress/complete/failed) must NOT
+  // set include_non_triggering — otherwise chain descendants are unfiltered,
+  // causing phantom children (the dashboard tile click sends ?status=in_progress).
+  const NON_TRIGGERING_STATUSES: InvocationStatus[] = ['no_op', 'webhook_received'];
+  const shouldIncludeNonTriggering = showAllEvents ||
+    (statusFilter ? NON_TRIGGERING_STATUSES.includes(statusFilter as InvocationStatus) : false);
   const queryParams: InvocationQueryParams = {
     status: (statusFilter || undefined) as InvocationStatus | undefined,
     channel: (channelFilter || undefined) as InvocationChannel | undefined,
@@ -468,7 +476,7 @@ export default function AgentActivity() {
     end_date: endDate || undefined,
     limit: 20,
     last_key: currentCursor,
-    include_non_triggering: (statusFilter || showAllEvents) ? true : undefined,
+    include_non_triggering: shouldIncludeNonTriggering ? true : undefined,
   };
 
   // Issue #1662: Choose fetch function based on view mode + group-by

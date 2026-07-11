@@ -97,11 +97,11 @@ function createTestQueryClient() {
   });
 }
 
-function renderAgentActivity() {
+function renderAgentActivity(initialRoute = '/') {
   const queryClient = createTestQueryClient();
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialRoute]}>
         <AgentActivity />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -503,5 +503,56 @@ describe('AgentActivity Page', () => {
     expect(screen.getByTestId('trigger-badge-human')).toBeInTheDocument();
     // No "View chain" link when correlation_id is null
     expect(screen.queryByText('View chain')).not.toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue #3723: include_non_triggering derivation
+  // ---------------------------------------------------------------------------
+
+  it('status=in_progress from URL does NOT set include_non_triggering (Issue #3723)', async () => {
+    // Render with URL param ?status=in_progress (dashboard tile click)
+    const queryClient = createTestQueryClient();
+    const { unmount } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/activity?status=in_progress']}>
+          <AgentActivity />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // Default view is chain mode — check chainQuery params
+    await waitFor(() => {
+      expect(mockGetMyChains).toHaveBeenCalled();
+    });
+
+    // The chain query should NOT have include_non_triggering=true
+    const chainCallParams = mockGetMyChains.mock.calls[0][0];
+    expect(chainCallParams.status).toBe('in_progress');
+    expect(chainCallParams.include_non_triggering).toBeUndefined();
+
+    unmount();
+  });
+
+  it('status=no_op DOES set include_non_triggering (Issue #3723)', async () => {
+    // Render with URL param ?status=no_op (user explicitly filtering by no_op)
+    const queryClient = createTestQueryClient();
+    const { unmount } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/activity?status=no_op']}>
+          <AgentActivity />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(mockGetMyChains).toHaveBeenCalled();
+    });
+
+    // The chain query SHOULD have include_non_triggering=true for no_op filter
+    const chainCallParams = mockGetMyChains.mock.calls[0][0];
+    expect(chainCallParams.status).toBe('no_op');
+    expect(chainCallParams.include_non_triggering).toBe(true);
+
+    unmount();
   });
 });
