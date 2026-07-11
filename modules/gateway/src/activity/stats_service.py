@@ -42,10 +42,18 @@ _DEFAULT_TABLE_NAME = "adp-dev-webhook-events"
 _ITEM_BACKSTOP = 10_000
 
 # In-progress statuses (non-terminal).
-_ACTIVE_STATUSES = {"running", "queued", "pending", "dispatched"}
+# Canonical source: modules/agent-factory/agent-worker-image/lib/invocation_status.py
+# (writes "in_progress" when pod starts; see also #3696 for the vocabulary audit).
+_ACTIVE_STATUSES = {"in_progress"}
 
-# Terminal statuses
-_TERMINAL_STATUSES = {"complete", "failed", "rejected", "rate_limited", "no_op"}
+# Terminal statuses — canonical sources:
+# - "complete" / "failed": agent-worker-image/lib/invocation_status.py
+# - "rate_limited" / "no_op": webhook-ingress/lambda/github/handler.py
+_TERMINAL_STATUSES = {"complete", "failed", "rate_limited", "no_op"}
+
+# Staleness cutoff for active runs (hours). An in_progress run older than this
+# is treated as orphaned (terminal status was never delivered). Issue #3696.
+_ACTIVE_STALENESS_HOURS = 24
 
 # Statuses to exclude from stats (same as Issue #1658)
 _NON_TRIGGERING_STATUSES = {"no_op", "webhook_received"}
@@ -203,9 +211,11 @@ class StatsService:
         """Aggregate raw DDB items into the stats response shape."""
         now = datetime.now(UTC)
         today_str = now.strftime("%Y-%m-%d")
+        staleness_cutoff = (now - timedelta(hours=_ACTIVE_STALENESS_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Initialize containers
         active_runs: list[ActiveRun] = []
+        stale_count = 0
         today_counts = TodayCounts()
         daily_map: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "completed": 0, "failed": 0})
         persona_map: dict[str, dict[str, int]] = defaultdict(lambda: {"total": 0, "completed": 0, "failed": 0})
@@ -222,17 +232,20 @@ class StatsService:
             # Extract date part from ISO timestamp
             date_part = arrived_at[:10] if len(arrived_at) >= 10 else ""
 
-            # Active runs (non-terminal status)
+            # Active runs (non-terminal status) — exclude stale orphans (#3696)
             if status in _ACTIVE_STATUSES:
-                active_runs.append(
-                    ActiveRun(
-                        invocation_id=invocation_id,
-                        invoked_at=arrived_at,
-                        persona=persona,
-                        repo=repo,
-                        topic=item.get("topic"),
+                if arrived_at >= staleness_cutoff:
+                    active_runs.append(
+                        ActiveRun(
+                            invocation_id=invocation_id,
+                            invoked_at=arrived_at,
+                            persona=persona,
+                            repo=repo,
+                            topic=item.get("topic"),
+                        )
                     )
-                )
+                else:
+                    stale_count += 1
 
             # Today's counts
             if date_part == today_str:
@@ -241,7 +254,7 @@ class StatsService:
                     today_counts.completed += 1
                 elif status == "failed":
                     today_counts.failed += 1
-                elif status in _ACTIVE_STATUSES:
+                elif status in _ACTIVE_STATUSES and arrived_at >= staleness_cutoff:
                     today_counts.active += 1
 
             # Daily breakdown
@@ -301,6 +314,7 @@ class StatsService:
         return StatsResponse(
             window_days=days,
             active_runs=active_runs,
+            stale_count=stale_count,
             today=today_counts,
             daily=daily,
             by_persona=by_persona,

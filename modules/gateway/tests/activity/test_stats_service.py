@@ -82,7 +82,7 @@ class TestStatsServiceAggregation:
             _make_item(event_id="inv-1", status="complete", arrived_at=today),
             _make_item(event_id="inv-2", status="complete", arrived_at=today),
             _make_item(event_id="inv-3", status="failed", arrived_at=today),
-            _make_item(event_id="inv-4", status="running", arrived_at=today),
+            _make_item(event_id="inv-4", status="in_progress", arrived_at=today),
         ]
         service = self._make_service(items)
         result = service.get_stats_by_user("user-abc-123", days=7)
@@ -159,11 +159,11 @@ class TestStatsServiceAggregation:
         assert result.recent_failures[0].error_message == "err-0"
 
     def test_active_runs_detected(self):
-        """Non-terminal statuses are captured as active runs."""
+        """in_progress status is captured as active run (real DDB vocabulary)."""
         today = _today_iso()
         items = [
-            _make_item(event_id="inv-1", status="running", arrived_at=today),
-            _make_item(event_id="inv-2", status="queued", arrived_at=today),
+            _make_item(event_id="inv-1", status="in_progress", arrived_at=today),
+            _make_item(event_id="inv-2", status="in_progress", arrived_at=today),
             _make_item(event_id="inv-3", status="complete", arrived_at=today),
         ]
         service = self._make_service(items)
@@ -173,6 +173,21 @@ class TestStatsServiceAggregation:
         active_ids = {r.invocation_id for r in result.active_runs}
         assert "inv-1" in active_ids
         assert "inv-2" in active_ids
+
+    def test_stale_active_runs_excluded(self):
+        """in_progress runs older than 24h are excluded from active_runs (stale orphans)."""
+        today = _today_iso()
+        old = (datetime.now(UTC) - timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        items = [
+            _make_item(event_id="inv-fresh", status="in_progress", arrived_at=today),
+            _make_item(event_id="inv-stale", status="in_progress", arrived_at=old),
+        ]
+        service = self._make_service(items)
+        result = service.get_stats_by_user("user-abc-123", days=7)
+
+        assert len(result.active_runs) == 1
+        assert result.active_runs[0].invocation_id == "inv-fresh"
+        assert result.stale_count == 1
 
     def test_empty_window_returns_zeros(self):
         """Empty result set → zero counts, empty arrays, not an error."""
@@ -398,3 +413,71 @@ class TestStatsServiceTenantScope:
 
         call_kwargs = mock_table.query.call_args[1]
         assert call_kwargs["IndexName"] == "tenant-index"
+
+
+class TestStatusVocabularyGuard:
+    """Guard test: stats_service status constants must use real DDB vocabulary.
+
+    Issue #3696: The original _ACTIVE_STATUSES used invented values (running,
+    queued, pending, dispatched) that no writer ever produces. This guard test
+    ensures the constants stay aligned with the REAL vocabulary written by:
+    - Lambda: modules/agent-factory/webhook-ingress/lambda/common/webhook_events.py
+    - Worker: modules/agent-factory/agent-worker-image/lib/invocation_status.py
+    - Lambda: modules/agent-factory/webhook-ingress/lambda/github/handler.py
+
+    If a new status is added to a writer, it must be added to KNOWN_REAL_STATUSES
+    below AND classified into either _ACTIVE_STATUSES or _TERMINAL_STATUSES.
+    """
+
+    # The complete set of statuses that can appear in webhook-events rows.
+    # Canonical sources cited above. Update this ONLY when a writer is changed.
+    KNOWN_REAL_STATUSES = {
+        "webhook_received",  # Lambda: initial capture before dispatch
+        "in_progress",  # Worker: pod bootstrap complete, agent executing
+        "complete",  # Worker: agent exited 0 + transcript uploaded
+        "failed",  # Worker: agent exited non-zero
+        "no_op",  # Lambda: event passed guards but no agent dispatched
+        "rate_limited",  # Lambda: tenant rate limit exceeded
+    }
+
+    def test_active_statuses_are_real(self):
+        """_ACTIVE_STATUSES must be a subset of real DDB statuses."""
+        from src.activity.stats_service import _ACTIVE_STATUSES
+
+        unknown = _ACTIVE_STATUSES - self.KNOWN_REAL_STATUSES
+        assert not unknown, (
+            f"_ACTIVE_STATUSES contains values not in the real DDB vocabulary: {unknown}. "
+            f"If a new status was added to a writer, update KNOWN_REAL_STATUSES in this test."
+        )
+
+    def test_terminal_statuses_are_real(self):
+        """_TERMINAL_STATUSES must be a subset of real DDB statuses."""
+        from src.activity.stats_service import _TERMINAL_STATUSES
+
+        unknown = _TERMINAL_STATUSES - self.KNOWN_REAL_STATUSES
+        assert not unknown, (
+            f"_TERMINAL_STATUSES contains values not in the real DDB vocabulary: {unknown}. "
+            f"If a new status was added to a writer, update KNOWN_REAL_STATUSES in this test."
+        )
+
+    def test_all_real_statuses_classified(self):
+        """Every known real status must be in _ACTIVE, _TERMINAL, or _NON_TRIGGERING."""
+        from src.activity.stats_service import (
+            _ACTIVE_STATUSES,
+            _NON_TRIGGERING_STATUSES,
+            _TERMINAL_STATUSES,
+        )
+
+        classified = _ACTIVE_STATUSES | _TERMINAL_STATUSES | _NON_TRIGGERING_STATUSES
+        unclassified = self.KNOWN_REAL_STATUSES - classified
+        assert not unclassified, (
+            f"Real DDB statuses not classified in any constant: {unclassified}. "
+            f"Add them to _ACTIVE_STATUSES, _TERMINAL_STATUSES, or _NON_TRIGGERING_STATUSES."
+        )
+
+    def test_active_and_terminal_disjoint(self):
+        """Active and terminal sets must not overlap."""
+        from src.activity.stats_service import _ACTIVE_STATUSES, _TERMINAL_STATUSES
+
+        overlap = _ACTIVE_STATUSES & _TERMINAL_STATUSES
+        assert not overlap, f"Status in both active AND terminal: {overlap}"

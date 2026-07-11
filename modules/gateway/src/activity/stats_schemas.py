@@ -78,6 +78,7 @@ class StatsResponse(BaseModel):
 
     window_days: int = Field(description="Number of days in the stats window (1-30).")
     active_runs: list[ActiveRun] = Field(default_factory=list, description="Currently in-progress runs.")
+    stale_count: int = Field(default=0, description="In-progress runs older than 24h (orphaned — terminal status never received). Issue #3696.")
     today: TodayCounts = Field(default_factory=TodayCounts, description="Today's aggregate counts.")
     daily: list[DailyEntry] = Field(default_factory=list, description="Per-day breakdown for the window.")
     by_persona: list[PersonaStats] = Field(default_factory=list, description="Per-persona breakdown.")
