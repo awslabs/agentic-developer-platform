@@ -18,6 +18,7 @@
  */
 
 import { PersonalContextIdentity, getPersonalContextHeaders } from './personal-context-headers';
+import { validateBaseUrl } from '../lib/url-guard';
 
 /**
  * Feature flag: enable recall-at-task-start. Default off until validated.
@@ -40,9 +41,13 @@ const RECALL_TIMEOUT_MS = Number(process.env.PERSONAL_CONTEXT_RECALL_TIMEOUT_MS 
  * Context MCP Server URL. Internal K8s service address.
  * Canonical: context-mcp.agent-context.svc.cluster.local:5100
  */
-const CONTEXT_MCP_URL =
+const CONTEXT_MCP_URL_RAW =
   process.env.CONTEXT_MCP_SERVER_URL ??
   'http://context-mcp.agent-context.svc.cluster.local:5100';
+
+// SSRF guard: validate at module load; allowHttp for internal cluster (#3582)
+validateBaseUrl(CONTEXT_MCP_URL_RAW, { allowHttp: true });
+const CONTEXT_MCP_URL = CONTEXT_MCP_URL_RAW;
 
 /**
  * Maximum number of recall results to request.

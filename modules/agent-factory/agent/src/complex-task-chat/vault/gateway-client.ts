@@ -7,6 +7,8 @@
  * Issue #137: Vault Phase 4
  */
 
+import { validateBaseUrl } from '../../lib/url-guard';
+
 export interface VaultClientConfig {
   /** Base URL of the gateway (e.g. http://bedrockgateway.adp-gateway:8080) */
   baseUrl: string;
@@ -100,6 +102,10 @@ export class VaultGatewayClient {
   private readonly apiKey: string;
 
   constructor(config: VaultClientConfig) {
+    // SSRF guard: validate + pin to configured internal gateway host (#3582).
+    // allowHttp: internal cluster communication uses plain HTTP.
+    const parsed = new URL(config.baseUrl);
+    validateBaseUrl(config.baseUrl, { allowHttp: true, pinHost: parsed.hostname });
     this.baseUrl = config.baseUrl.replace(/\/$/, '');
     this.apiKey = config.apiKey;
   }

@@ -8,6 +8,8 @@
  * Design reference: docs/hosted-platform-design.md §Live progress UX (Phase 1)
  */
 
+import { validateBaseUrl } from './lib/url-guard';
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 /** Status of a single stage in the pipeline. */
@@ -116,6 +118,8 @@ export class LiveStatusComment {
       minUpdateIntervalMs: 5000,
       ...options,
     };
+    // SSRF guard: validate the API base URL at construction time (#3582)
+    validateBaseUrl(this.options.apiBaseUrl);
     this.runStartTime = Date.now();
     this.heartbeat = setInterval(() => {
       if (this.commentId) this.scheduleUpdate();

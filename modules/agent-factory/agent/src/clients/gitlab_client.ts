@@ -12,12 +12,15 @@ import {
   CreateMergeRequestOptions,
   MergeRequestResult,
 } from './gitlab_types';
+import { validateBaseUrl } from '../lib/url-guard';
 
 export class GitLabClient {
   private readonly baseUrl: string;
   private readonly accessToken: string;
 
   constructor(config: GitLabClientConfig) {
+    // SSRF guard: validate tenant-supplied base URL at construction time (#3582)
+    validateBaseUrl(config.baseUrl);
     this.baseUrl = config.baseUrl.replace(/\/$/, '');
     this.accessToken = config.accessToken;
   }
