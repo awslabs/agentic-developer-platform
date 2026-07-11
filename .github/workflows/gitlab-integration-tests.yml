@@ -107,7 +107,6 @@ jobs:
             echo "WEBHOOK_SECRET=${WEBHOOK_SECRET}"
             echo "WEBHOOK_SQS_QUEUE_URL=${WEBHOOK_SQS_QUEUE_URL}"
             echo "TEST_ENV=${ENV}"
-            echo "GITLAB_TLS_VERIFY=false"
           } >> "$GITHUB_ENV"
 
       - name: Run GitLab E2E tests
