@@ -139,12 +139,12 @@ terraform_update_apply() {
       -var-file="$VAR_FILE" \
       "${EXTRA_VARS[@]}" \
       -out="$PLAN_FILE" \
-      -detailed-exitcode 2>&1 | tee "$PLAN_OUTPUT"
+      -detailed-exitcode -no-color 2>&1 | tee "$PLAN_OUTPUT"
   else
     terraform plan \
       -var-file="$VAR_FILE" \
       -out="$PLAN_FILE" \
-      -detailed-exitcode 2>&1 | tee "$PLAN_OUTPUT"
+      -detailed-exitcode -no-color 2>&1 | tee "$PLAN_OUTPUT"
   fi
   local EXIT_CODE=${PIPESTATUS[0]}
   set -o pipefail
