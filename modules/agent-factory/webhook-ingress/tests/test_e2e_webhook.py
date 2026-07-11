@@ -311,9 +311,15 @@ class TestWebhookE2E:
         The handler self-heals unknown installations when the payload carries a
         resolvable org login (handler.py:988-999). To exercise the 403 path, the
         payload must have NO owner.login so auto-registration cannot succeed.
+
+        The installation_id must be random per run: a fixed id (e.g. 11111111)
+        gets auto-registered into the live identity-index by other payload
+        shapes and then resolves as a tenant forever after, turning the outcome
+        into unknown_user instead of unknown_installation.
         """
-        # Build a payload with an unknown installation AND no resolvable org_login.
-        # This prevents the self-heal path from auto-registering the installation.
+        # Random unknown installation id — never registered, and this payload
+        # has no org_login so the self-heal path cannot register it either.
+        unknown_installation_id = 900_000_000 + (uuid.uuid4().int % 100_000_000)
         payload = {
             "action": "labeled",
             "issue": {
@@ -330,7 +336,7 @@ class TestWebhookE2E:
                 "name": "unknown",
                 "owner": {},  # Empty owner — no login to resolve
             },
-            "installation": {"id": 11111111},
+            "installation": {"id": unknown_installation_id},
             "sender": {"login": "ghost", "id": 0, "type": "User"},
         }
         cleanup_ddb_events.track(unique_delivery_id)

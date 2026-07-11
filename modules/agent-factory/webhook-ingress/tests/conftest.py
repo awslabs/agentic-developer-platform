@@ -357,9 +357,12 @@ def seed_rate_limit_counters():
         f"{(next_window_start.minute // 5) * 5:02d}"
     )
 
-    # Set counter above the limit (default limit is 50 per window)
+    # Set counter above the Lambda's limit. The deployed limit comes from the
+    # Terraform var rate_limit_per_window (currently 50000 — bumped from 50 to
+    # drain backlogs) which the test env can't see, so seed a value that
+    # exceeds any plausible configuration.
     limit = int(os.environ.get("RATE_LIMIT_PER_WINDOW", "50"))
-    counter_value = limit + 10  # Safely above threshold
+    counter_value = max(limit, 10_000_000) + 10
 
     window_keys = [window_key, next_window_key]
 
