@@ -193,6 +193,33 @@ benign list, re-run with `--confirm-destructive`. The flag is **global for the
 run**: it authorizes destroys in every module the run applies, so evaluate the
 complete set, not just the first refusal.
 
+### Severely outdated deployments
+
+There is no separate "allow destroys" mode — `--confirm-destructive` **is**
+that mode. What changes on a very stale deployment is how risky it becomes:
+
+- **Destroys are discovered one module at a time.** The run stops at the
+  *first* refusing module; you cannot see what later modules plan to destroy
+  without either applying the earlier ones or pre-approving everything. And
+  because the flag is global, confirming module 1's benign churn also
+  pre-approves — sight unseen — whatever modules 2..N plan to destroy.
+  On a stale deployment, that global pre-approval is most dangerous exactly
+  when it is most tempting. Workaround today: run the module plans manually
+  first (`terraform plan -no-color` per module directory) to build the full
+  destroy picture before deciding. Issue #3733 tracks the proper fix
+  (`--plan-only` consolidated preview + per-module
+  `--confirm-destructive=<modules>` scoping).
+
+- **"Genuinely outdated" does not make stateful destroys OK.** An old
+  deployment's RDS still holds real data; Neptune drift still plans destroys
+  that lose graphs. If the deployment is so far behind that Terraform wants
+  to replace **stateful** resources wholesale, the honest operation is not
+  update-with-destroys — it is a deliberate **migrate-or-teardown decision**
+  (`undeploy.sh` / `--destroy` + fresh deploy, with data migration planned
+  explicitly). The confirm flag is for *reviewed, benign churn*; treating it
+  as "the deployment is old, just force it" is how the pre-gate blind
+  `-auto-approve` incidents happened.
+
 ### Known gate limitations
 
 - The gate covers the six Terraform applies inside `deploy-all.sh`. The
@@ -352,7 +379,8 @@ issue** (see the #3565 runbook pattern, EPIC #2571) instead of a terminal:
   against it.
 - **Webhook-ingress destroy-gating** — see §5 (issue #3543).
 - **A `--plan-only` preview** — there is no dry-run flag yet; the plan-gate
-  output during a run is the preview. (Deferred follow-on from #3414.)
+  output during a run is the preview. Tracked with per-module
+  `--confirm-destructive` scoping in issue #3733.
 - **Alembic downgrades** — rollback relies on additive migrations (§8).
 - **GitHub App changes** — App registration/installation is UI-driven and
   independent of code upgrades.
