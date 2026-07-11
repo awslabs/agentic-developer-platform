@@ -11,6 +11,7 @@ Documentation for deploying ADP. Two tracks, pick one:
 
 - [`deployment-manifest.md`](./deployment-manifest.md) — what gets deployed where, with per-resource validation commands. Used by both tracks.
 - [`self-managed-deploy-experience.md`](./self-managed-deploy-experience.md) — human-narrative companion to the self-managed track ("what to expect at each phase").
+- [`platform_upgrades.md`](./platform_upgrades.md) — how to update an already-deployed platform (`deploy-all.sh --update`): commands, destroy gate, verification, rollback. Both tracks.
 - [`customer-aws-setup.md`](./customer-aws-setup.md) — how to link an AWS account from the ADP dashboard. Required for the ADP-managed track.
 
 ## Phase status
