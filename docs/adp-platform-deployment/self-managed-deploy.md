@@ -458,7 +458,7 @@ Common cause: Docker Hub rate limit on `python:3.12-slim`. The Dockerfile should
 | `platform/scripts/bootstrap.sh` | Create Terraform state backend |
 | `platform/scripts/bootstrap-destroy.sh` | Destroy state backend |
 | `platform/scripts/setup-org.sh` | Configure repo for your GitHub org |
-| `platform/scripts/create-github-apps.sh` | Create + install GitHub Apps |
+| `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh` | Register GitHub App (CLI fallback) + permission validation |
 | `platform/scripts/wire-gateway-alb.sh` | Discover ALB, cache to SSM |
 | `platform/scripts/empty-s3-buckets.sh` | Empty S3 buckets before destroy |
 | `platform/scripts/delete-ingress-and-wait.sh` | Clean up ALB before destroy |

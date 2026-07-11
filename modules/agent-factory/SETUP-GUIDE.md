@@ -38,7 +38,7 @@ End-to-end guide for deploying the ADP code agents on the shared EKS cluster.
 
 ## Step 1: Create GitHub Apps
 
-Each agent persona uses a separate GitHub App for rate limit isolation (5000 req/hr each).
+Each agent persona uses a separate GitHub App for rate-limit isolation (5000 req/hr per installation; see design note §3 in `docs/design-notes/github-integration-consolidation.md`).
 
 You need three apps:
 
@@ -59,11 +59,11 @@ For each app, go to **GitHub Org Settings → Developer Settings → GitHub Apps
 
 After creating each app, note the App ID and download the private key `.pem` file.
 
-Alternatively, use the helper script:
-```bash
-cd modules/agent-factory/runner-infra/scripts
-./create-github-apps.sh
-```
+> **Note:** The legacy `create-github-apps.sh` script has been removed. For the
+> **webhook agent path** (recommended), use the Connections UI or
+> `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh` instead
+> — it registers a single App with post-registration permission validation. The
+> per-role App setup above is only needed for the ARC self-hosted runner path.
 
 ## Step 2: Store GitHub App Credentials in Secrets Manager
 

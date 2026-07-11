@@ -1,10 +1,14 @@
 # =============================================================================
-# Secrets Manager — GitHub App credentials for agent personas
+# Secrets Manager — GitHub App credentials for agent personas (ARC runner path)
 # =============================================================================
-# The secrets themselves are created by platform/scripts/create-github-apps.sh
-# during the interactive Phase 0 setup (the script also stores the App IDs and
-# private keys). This Terraform file only *references* them so the module can
-# expose a stable prefix to downstream modules.
+# These secrets are created manually during ARC runner setup (see
+# modules/agent-factory/SETUP-GUIDE.md). This Terraform file *references* them
+# so the module can expose a stable prefix to downstream modules.
+#
+# NOTE: The primary webhook agent path uses a single App registered via
+# register-github-app.sh or the Connections UI, stored at a different path
+# (adp/<env>/github-app/adp-agent-platform-*). This module is for the
+# complementary ARC self-hosted runner execution model only.
 #
 # Secret layout (per persona):
 #   adp/<github-org>/gh-app-<role>-id     -> App ID (plaintext string)

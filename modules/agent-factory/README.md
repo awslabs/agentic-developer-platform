@@ -210,15 +210,20 @@ aws sqs get-queue-url --queue-name adp-dev-agent-submit.fifo
 aws dynamodb describe-table --table-name adp-dev-tenant-registry --query 'Table.TableStatus'
 ```
 
-### GitHub Apps Setup
+### GitHub App Setup
 
-Three GitHub Apps must be created before agents can operate:
+A single GitHub App is registered via the Connections UI (Settings → Connections
+→ "Set up GitHub App") or the CLI fallback:
 
 ```bash
-./platform/scripts/create-github-apps.sh <GITHUB_ORG> [extra-repos...]
+modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <GITHUB_ORG>
 ```
 
-Opens your browser three times (once per app), prompts for App ID, auto-detects `.pem`, stores in Secrets Manager at `adp/<github_org>/gh-app-{dev,pm,ops}-{id,key}`.
+The script stores credentials in Secrets Manager and validates the App's
+permissions/events against the expected set (warnings only).
+
+> **ARC runner path (legacy):** If using per-role Apps for self-hosted runners,
+> see `modules/agent-factory/SETUP-GUIDE.md` for manual App creation.
 
 ## Triggering Agents
 

@@ -463,6 +463,136 @@ echo "    Key: $SECRET_KEY_PATH"
 echo ""
 
 # =============================================================================
+# Step 7b: Post-registration permission/event validation
+# =============================================================================
+# Mint a JWT from the stored credentials, call GET /app, and diff the App's
+# live permissions + events against the expected set (mirrored from
+# _build_app_manifest() in modules/gateway/src/admin/connections/service.py).
+# Warnings only — never fails registration.
+# =============================================================================
+
+_validate_app_config() {
+  local app_id="$1"
+  local pem_path="$2"
+
+  # Check for dependencies: openssl for JWT, curl for API call
+  if ! command -v openssl &>/dev/null; then
+    info "Skipping permission validation (openssl not available)"
+    return 0
+  fi
+
+  # Mint a JWT (RS256, iat = now - 60, exp = now + 600, iss = app_id)
+  local now header payload header_b64 payload_b64 signature token
+  now=$(date +%s)
+
+  header='{"alg":"RS256","typ":"JWT"}'
+  payload="{\"iat\":$((now - 60)),\"exp\":$((now + 600)),\"iss\":${app_id}}"
+
+  header_b64=$(printf '%s' "$header" | openssl base64 -e | tr -d '=\n' | tr '+/' '-_')
+  payload_b64=$(printf '%s' "$payload" | openssl base64 -e | tr -d '=\n' | tr '+/' '-_')
+
+  signature=$(printf '%s.%s' "$header_b64" "$payload_b64" \
+    | openssl dgst -sha256 -sign "$pem_path" -binary \
+    | openssl base64 -e | tr -d '=\n' | tr '+/' '-_')
+
+  token="${header_b64}.${payload_b64}.${signature}"
+
+  # Call GET /app
+  local response http_code body
+  response=$(curl -s -w "\n%{http_code}" \
+    -H "Authorization: Bearer ${token}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/app" 2>/dev/null) || { info "Skipping validation (curl failed)"; return 0; }
+
+  http_code=$(echo "$response" | tail -1)
+  body=$(echo "$response" | sed '$d')
+
+  if [ "$http_code" != "200" ]; then
+    warn "Could not validate App config (GET /app returned HTTP $http_code). Skipping."
+    return 0
+  fi
+
+  echo ""
+  echo -e "${BLUE}━━━ Permission & Event Validation ━━━${NC}"
+  echo ""
+
+  # Expected permissions — mirrored from _build_app_manifest() in service.py
+  # Format: "permission_name=minimum_level" (bash 3.2 compatible; no associative arrays)
+  local EXPECTED_PERMISSIONS="contents=write issues=write pull_requests=write checks=write metadata=read"
+
+  # Expected events — mirrored from _build_app_manifest() in service.py
+  local EXPECTED_EVENTS="issues issue_comment pull_request pull_request_review pull_request_review_comment label"
+
+  # Parse permissions from JSON response (portable: uses grep/sed, no jq dependency)
+  local has_warnings=false
+
+  # Check each expected permission
+  local perm_entry perm expected_level actual_level
+  for perm_entry in $EXPECTED_PERMISSIONS; do
+    perm="${perm_entry%%=*}"
+    expected_level="${perm_entry#*=}"
+    # Extract the permission value from the JSON "permissions" object.
+    # GitHub pretty-prints its JSON ("issues": "write" — space after colon), so
+    # the pattern must tolerate whitespace around the colon.
+    # || true guards against set -e abort when grep finds no match (the missing-permission case)
+    actual_level=$(echo "$body" | grep -o "\"${perm}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed 's/.*"\([^"]*\)"$/\1/' || true)
+
+    if [ -z "$actual_level" ]; then
+      warn "Missing permission: ${perm} (expected: ${expected_level})"
+      has_warnings=true
+    elif [ "$expected_level" = "write" ] && [ "$actual_level" = "read" ]; then
+      warn "Insufficient permission: ${perm} has 'read', needs 'write'"
+      has_warnings=true
+    else
+      ok "Permission: ${perm} = ${actual_level}"
+    fi
+  done
+
+  # Check each expected event — scope the search to the "events" array only.
+  # A whole-body grep would false-positive: e.g. the event "issues" matches the
+  # "issues" PERMISSION key even when the event is not subscribed.
+  local event events_block
+  events_block=$(echo "$body" | sed -n '/"events"[[:space:]]*:/,/\]/p' || true)
+  for event in $EXPECTED_EVENTS; do
+    if echo "$events_block" | grep -q "\"${event}\""; then
+      ok "Event: ${event}"
+    else
+      warn "Missing event subscription: ${event}"
+      has_warnings=true
+    fi
+  done
+
+  if [ "$has_warnings" = true ]; then
+    echo ""
+    warn "Some permissions or events are missing. The App will work for features"
+    warn "  that don't need the missing capabilities, but some agent operations"
+    warn "  may fail. Update in: GitHub → App Settings → Permissions & events."
+  else
+    echo ""
+    ok "All expected permissions and events are configured correctly."
+  fi
+  echo ""
+}
+
+# Run validation (best-effort; uses the .pem file if still accessible)
+if [ -f "$PEM_FILE" ]; then
+  _validate_app_config "$APP_ID" "$PEM_FILE"
+else
+  # Try to retrieve the key from Secrets Manager for validation
+  _tmp_pem=$(mktemp)
+  if aws secretsmanager get-secret-value \
+       --secret-id "$SECRET_KEY_PATH" \
+       --query 'SecretString' --output text \
+       --region "$AWS_REGION" > "$_tmp_pem" 2>/dev/null && [ -s "$_tmp_pem" ]; then
+    _validate_app_config "$APP_ID" "$_tmp_pem"
+  else
+    info "Skipping permission validation (private key file not accessible)"
+  fi
+  rm -f "$_tmp_pem"
+fi
+
+# =============================================================================
 # Step 8: Wire the app into the running platform (gateway UI install + login)
 # =============================================================================
 # Registering only stores the app creds. wire-github-app.sh points the running

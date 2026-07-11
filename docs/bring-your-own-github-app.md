@@ -68,6 +68,11 @@ tenant (bug #2823). This is the single most commonly missed setting.
 
 ### 2.2 Repository permissions (for agents to operate on repos)
 
+> **The manifest is authoritative.** The core permission table below is derived
+> from `_build_app_manifest()` in `service.py`. Both the Connections UI and
+> `register-github-app.sh` validate live App config against that function's
+> output. If this table and the code disagree, the code wins.
+
 Permissions are tiered so the request you take to your GitHub org /
 enterprise admin is easy to approve. The **core set** is all a hosted ADP
 deployment needs for the full agent loop (issue in → PR out) — it matches
@@ -198,7 +203,7 @@ You now hold four secrets:
 3. **Client ID + client secret** — login (OAuth)
 4. **Webhook secret** — delivery signature verification
 
-### Preferred: the Connections UI (once #3354 ships)
+### Preferred: the Connections UI
 
 Dashboard → Settings → Connections → **Connect an existing App** → paste App
 ID, private key, webhook secret, and the OAuth client ID + secret. ADP
@@ -206,7 +211,17 @@ validates the App ID/key pair against `GET /app`, checks the App's webhook
 URL, permissions, and events against this deployment's expectations (warns on
 mismatch — see §2.2/§2.3), and stores everything in the right places.
 
-### Until then: manual seeding (platform operator, per environment)
+### Alternative: CLI fallback (`register-github-app.sh`)
+
+```bash
+modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <GITHUB_ORG> \
+  --app-id <APP_ID> --pem-path /path/to/key.pem --client-secret <SECRET>
+```
+
+The script stores credentials, then validates permissions and events against
+`_build_app_manifest()` (warnings only — never fails registration).
+
+### Manual seeding (platform operator, per environment)
 
 ```bash
 ENV=dev  # your environment

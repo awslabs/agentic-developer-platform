@@ -27,7 +27,7 @@ region: us-east-1
 # Deployment environment. Used in resource names like `adp-${environment}-eks-cluster`.
 environment: dev
 
-# GitHub org that owns the repo. Used by setup-org.sh and create-github-apps.sh.
+# GitHub org that owns the repo. Used by setup-org.sh and register-github-app.sh.
 # Leave empty to derive from the git remote URL at runtime.
 github_org: ""
 

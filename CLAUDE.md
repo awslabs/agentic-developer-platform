@@ -232,7 +232,7 @@ Individual module destroy workflows remain available for targeted teardowns:
 | `platform/scripts/deploy-all.sh` | Automated deploy script (alternative to agent-driven deploy); `--destroy` flag is legacy |
 | `platform/scripts/preflight-check.sh` | Environment validation |
 | `platform/scripts/setup-org.sh` | Configure repo for your GitHub org |
-| `platform/scripts/create-github-apps.sh` | Create GitHub Apps + store creds + install on repos |
+| `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh` | Register GitHub App (CLI fallback) + post-registration permission validation |
 | `platform/scripts/bootstrap.sh` | Creates Terraform state backend |
 | `platform/scripts/bootstrap-destroy.sh` | Destroys Terraform state backend (separate intentional step) |
 | `platform/scripts/empty-s3-buckets.sh` | Idempotent S3 bucket emptier (versioned + non-versioned) |
