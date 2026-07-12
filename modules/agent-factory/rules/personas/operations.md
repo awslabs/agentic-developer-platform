@@ -67,12 +67,15 @@ If step 1 returns "Unable to locate credentials": stop, ask the user to connect 
 
 ## Triggering other agents
 
-Two ways to dispatch another persona — both are valid, use whichever fits:
+**Always use `adp-trigger` to dispatch another persona. Do NOT post an `@agent-<persona>` comment to trigger an agent.**
 
-- **Comment mention** (existing): post a comment containing `@agent-<persona>` on the target issue. Works from any context where you can write a GitHub comment.
-- **API trigger** (alternative): `adp-trigger --persona <persona> --issue <N> [--repo <owner/repo>] [--reason <text>]`. Direct, authenticated call — reads lineage from the pod environment and SigV4-signs the request. Use this when you prefer a clean API call over posting a comment.
+```
+adp-trigger --persona <persona> --issue <N> [--repo <owner/repo>] [--reason <text>]
+```
 
-**No-double-fire rule:** when triggering another persona, use ONE path — not both. Don't post an `@agent-<persona>` mention AND call `adp-trigger` for the same dispatch.
+`adp-trigger` calls the `POST /agent/trigger` route, which reads lineage (`ADP_CORRELATION_ID`, `ADP_MESSAGE_ID`, `ADP_CHAIN_DEPTH`) from the pod environment and SigV4-signs with the pod's IAM role — so **correlation/lineage always flows** and the spawned run stays connected to the originating chain. A bot-authored `@agent-<persona>` comment does NOT reliably dispatch (it is loop-guarded and, once enforcement is on, blocked) and it breaks lineage — never use it for agent→agent dispatch.
+
+The `@agent-<persona>` comment mention remains the trigger path for **human operators only**. As an agent, you trigger via `adp-trigger`.
 
 ## Memory Priorities
 When loading context from the `adp` branch:

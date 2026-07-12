@@ -87,9 +87,11 @@ Before creating any issues, ensure these labels exist. Use `gh label create` if 
 
 `agent-<persona>` labels (`agent-pm`, `agent-developer`, `agent-operations`,
 etc.) are deprecated. They do NOT dispatch agents and MUST NOT be added to
-issues — dispatch happens only via a comment with a single `@agent-<persona>`
-mention (see core-workflow.md "NEVER do this"; bug #3626). Treat any existing
-`agent-*` label as stale metadata.
+issues — as an agent, dispatch happens only via `adp-trigger --persona
+<persona> --issue <N>` (see core-workflow.md TRIGGERS; bug #3626). A bot-authored
+`@agent-<persona>` comment does not reliably dispatch and breaks lineage; the
+mention path is for human operators only. Treat any existing `agent-*` label as
+stale metadata.
 
 ---
 

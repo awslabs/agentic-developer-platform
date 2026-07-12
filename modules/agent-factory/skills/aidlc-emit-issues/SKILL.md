@@ -449,18 +449,22 @@ fi
 1. Create evaluation issues FIRST (orchestrators reference eval issue numbers)
 2. Create orchestrator issues SECOND
 3. Link ALL as native sub-issues of the EPIC
-4. Kick off execution LAST: post ONE comment on the **wave-1 ORCHESTRATOR
-   issue** containing a single `@agent-operations` mention
+4. Kick off execution LAST: dispatch the **wave-1 ORCHESTRATOR issue** via
+   `adp-trigger --persona operations --issue <WAVE_1_ORCH_NUMBER> --reason "kick off delivery loop"`.
+   Do NOT post an `@agent-operations` comment — a bot-authored mention does not
+   reliably dispatch and breaks correlation lineage. `adp-trigger` stamps lineage
+   at ingress so the entire loop stays under the originating chain.
 
 This ordering ensures orchestrators can reference eval issue numbers, and
 dispatch only fires after all issues exist.
 
-**The wave-1 orchestrator mention is the emitter's ONLY dispatch action.**
-The operations agent driving the orchestrator dispatches each story with its
-own `@agent-developer` mention comment, in dependency order (orchestrator
-template "How to run"). The emitter NEVER labels or mentions story issues —
-not at creation (Step 6), not at kickoff (this step). One `@agent-X` mention
-per comment, no other `@agent-Y` in the body ([[feedback_agent_mention_parser_quirk]]).
+**The wave-1 orchestrator `adp-trigger` call is the emitter's ONLY dispatch action.**
+The operations agent driving the orchestrator dispatches each story with its own
+`adp-trigger` call, in dependency order (orchestrator template "How to run"). The
+emitter NEVER labels, mentions, or otherwise triggers story issues — not at
+creation (Step 6), not at kickoff (this step). Agent→agent dispatch is ALWAYS
+`adp-trigger`, never an `@agent-<persona>` comment ([[feedback_agent_mention_parser_quirk]],
+[[feedback_trigger_agents_by_mention_not_label]]).
 
 Orchestrator drafts contain `#[EVAL_WAVE_<K>]` placeholders (Step 7c).
 Substitute the real eval issue numbers before creating — this substitution is

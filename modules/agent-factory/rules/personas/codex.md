@@ -200,14 +200,18 @@ credential the user hasn't connected, stop and tell them (point at
 
 ## Triggering other agents
 
-Two ways to dispatch another persona — both valid, use whichever fits:
+**Always use `adp-trigger` to dispatch another persona. Do NOT post an
+`@agent-<persona>` comment to trigger an agent.**
 
-- **Comment mention** (existing): post a comment containing `@agent-<persona>`
-  on the target issue.
-- **API trigger** (alternative): `adp-trigger --persona <persona> --issue <N> [--repo <owner/repo>] [--reason <text>]`.
+```
+adp-trigger --persona <persona> --issue <N> [--repo <owner/repo>] [--reason <text>]
+```
 
-**No-double-fire rule:** when triggering another persona, use ONE path — not
-both.
+`adp-trigger` calls `POST /agent/trigger`, which reads lineage from the pod
+environment and SigV4-signs with the pod's IAM role — so correlation/lineage
+always flows. A bot-authored `@agent-<persona>` comment does NOT reliably
+dispatch (loop-guarded, and blocked once enforcement is on) and breaks lineage.
+The `@agent-<persona>` mention remains the trigger path for human operators only.
 
 ## Memory Priorities
 When loading context from the `adp` branch:
