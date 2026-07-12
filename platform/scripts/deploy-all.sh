@@ -886,6 +886,12 @@ else
   # Gateway IRSA role ARN lives in the platform layer; read it from IAM rather
   # than cross-layer terraform_remote_state. Deterministic given name_prefix.
   GATEWAY_ROLE_ARN=$(aws iam get-role --role-name "adp-${ENVIRONMENT}-role-gateway-service" --query 'Role.Arn' --output text 2>/dev/null || echo "")
+  CFN_TEMPLATE_BUCKET=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/frontend-bucket" \
+    --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [ -z "$CFN_TEMPLATE_BUCKET" ] || [ "$CFN_TEMPLATE_BUCKET" = "None" ]; then
+    CFN_TEMPLATE_BUCKET=""
+    warn "ADP_CFN_TEMPLATE_BUCKET resolved empty — 'Connect AWS account' will not work until the frontend bucket SSM param is published"
+  fi
   cd "$ROOT_DIR/modules/gateway"
   kubectl create namespace adp-gateway --dry-run=client -o yaml | kubectl apply -f -
   # Issue #1008: Create bedrockgateway-secrets K8s Secret from Secrets Manager
@@ -920,7 +926,7 @@ else
       -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \
       -e "s|__CORS_ALLOWED_ORIGINS__|https://${CF_DOMAIN},http://localhost:5173|g" \
       -e "s|__GATEWAY_BASE_URL__|https://${CF_DOMAIN}|g" \
-      -e "s|__CFN_TEMPLATE_BUCKET__|$(terraform output -raw frontend_bucket_name 2>/dev/null || echo '')|g" \
+      -e "s|__CFN_TEMPLATE_BUCKET__|${CFN_TEMPLATE_BUCKET}|g" \
       -e "s|__GATEWAY_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
       -e "s|__CHAT_LOGGING_ENABLED__|false|g" \
       -e "s|__CHAT_LOGGING_BUCKET__||g" \
