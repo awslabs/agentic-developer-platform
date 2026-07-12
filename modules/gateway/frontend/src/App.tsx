@@ -75,10 +75,10 @@ function App() {
             <Route element={<MainLayout />}>
               <Route path="/" element={<RoleBasedRedirect />} />
               <Route path="/dashboard" element={<DashboardRedirect />} />
-              <Route path="/admin/system" element={<AdminGuard><PlatformDashboard /></AdminGuard>} />
+              <Route path="/admin/system" element={<FeatureGate feature="system_dashboard"><AdminGuard><PlatformDashboard /></AdminGuard></FeatureGate>} />
               <Route path="/org/:orgId" element={<OrgDashboard />} />
               <Route path="/org/:orgId/department/:deptId" element={<DepartmentDashboard />} />
-              <Route path="/logs" element={<LogViewer />} />
+              <Route path="/logs" element={<FeatureGate feature="logs"><LogViewer /></FeatureGate>} /> {/* Issue #3747 */}
               <Route path="/setup" element={<ClaudeSetup />} />
               <Route path="/agents" element={<AgentManagement />} /> {/* Issue #119 */}
               <Route path="/budgets" element={<BudgetManagement />} /> {/* Issue #185 */}

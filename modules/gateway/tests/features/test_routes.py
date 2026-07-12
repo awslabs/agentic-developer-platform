@@ -43,6 +43,7 @@ class TestFeaturesDefaults:
             "FEATURE_CONNECTIONS_ENABLED",
             "FEATURE_CREDENTIALS_ENABLED",
             "FEATURE_SYSTEM_DASHBOARD_ENABLED",
+            "FEATURE_LOGS_ENABLED",
             "AGENT_CONTEXT_ENABLED",
         ]:
             monkeypatch.delenv(var, raising=False)
@@ -58,6 +59,7 @@ class TestFeaturesDefaults:
                 "connections": True,
                 "credentials": True,
                 "system_dashboard": True,
+                "logs": True,
             }
         }
 
@@ -97,6 +99,13 @@ class TestIndividualFlags:
         response = client.get("/features")
         data = response.json()["features"]
         assert data["credentials"] is False
+
+    def test_logs_disabled(self, client, monkeypatch):
+        monkeypatch.setenv("FEATURE_LOGS_ENABLED", "false")
+        response = client.get("/features")
+        data = response.json()["features"]
+        assert data["logs"] is False
+        assert data["chat"] is True
 
     def test_case_insensitive(self, client, monkeypatch):
         """Flag values are case-insensitive."""

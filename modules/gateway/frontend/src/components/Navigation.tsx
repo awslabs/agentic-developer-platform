@@ -28,8 +28,9 @@ export function Navigation() {
   // Dashboard link — all users see this, points to /runs (Issue #3634)
   navItems.push({ to: '/runs', label: 'Dashboard', icon: '📊' });
 
-  // Platform admin sees org/pool/metrics links (now under /admin/system — Issue #3634)
-  if (isPlatformAdmin()) {
+  // Platform admin sees org/pool/metrics links (now under /admin/system — Issue #3634).
+  // These are anchors INTO the system dashboard, so they share its feature gate.
+  if (features.system_dashboard && isPlatformAdmin()) {
     if (canViewOrganizations()) {
       navItems.push({ to: '/admin/system#organizations', label: 'Organizations', icon: '🏢' });
     }
@@ -55,8 +56,8 @@ export function Navigation() {
     );
   }
 
-  // Everyone with log access can see logs
-  if (canViewLogs()) {
+  // Everyone with log access can see logs (feature-gated — Issue #3747)
+  if (features.logs && canViewLogs()) {
     navItems.push({ to: '/logs', label: 'Logs', icon: '📝' });
   }
 

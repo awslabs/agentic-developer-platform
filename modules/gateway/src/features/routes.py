@@ -51,5 +51,6 @@ async def get_features(_current_user=Depends(get_current_user)):
             "connections": _is_enabled("FEATURE_CONNECTIONS_ENABLED"),
             "credentials": _is_enabled("FEATURE_CREDENTIALS_ENABLED"),
             "system_dashboard": _is_enabled("FEATURE_SYSTEM_DASHBOARD_ENABLED"),
+            "logs": _is_enabled("FEATURE_LOGS_ENABLED"),
         }
     }

@@ -121,6 +121,10 @@ spec:
             #   value: "false"
             # - name: FEATURE_CREDENTIALS_ENABLED
             #   value: "false"
+            # - name: FEATURE_SYSTEM_DASHBOARD_ENABLED
+            #   value: "false"
+            # - name: FEATURE_LOGS_ENABLED
+            #   value: "false"
             # Issue #537: Identity projection feature flags. Backfill complete in dev
             # (v2 table adp-dev-user-identity-index has all 4 distinct users from v1).
             # WRITE=true unblocks the onboarding endpoint; READ stays false through

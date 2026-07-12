@@ -15,6 +15,8 @@ export const featuresHandlers = [
         indexing: true,
         connections: true,
         credentials: true,
+        system_dashboard: true,
+        logs: true,
       },
     });
   }),
