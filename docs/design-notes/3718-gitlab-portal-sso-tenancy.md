@@ -67,7 +67,7 @@ Instance-per-tenant (Option B) remains the documented long-term target when:
 
 **Migration mechanics (preserved for future reference):**
 - State key: `{env}/gitlab/{tenant_id}/terraform.tfstate`
-- Secret path: `adp/{env}/tenants/{tenant_id}/gitlab-jwt-private-key`
+- Secret path: `adp/{env}/tenants/{tenant_id}/gateway-oidc-signing-key`
 - SSM discovery: `/adp/{env}/tenants/{tenant_id}/gitlab/url`
 - The existing TF module is stampable by adding a `tenant_id` variable
 - JWT `aud` claim already includes `tenant_id` — per-tenant audience validation
@@ -84,7 +84,7 @@ Instance-per-tenant (Option B) remains the documented long-term target when:
 ### v1 Implications
 
 - **State key**: `{env}/gitlab/terraform.tfstate` (single instance)
-- **Secret paths**: `adp/{env}/gitlab-jwt-private-key` (per-environment, not per-tenant)
+- **Secret paths**: `adp/{env}/gateway-oidc-signing-key` (per-environment, not per-tenant)
 - **SSM discovery**: `/adp/{env}/gitlab/url` (existing; `ssm.tf:44`)
 - **Provisioning**: Group creation is a tenant-onboarding step (reconciler creates
   top-level group when tenant is added to ADP)
@@ -283,13 +283,21 @@ instance-per-tenant migration.
 
 ### Key Storage (v1 — per-environment)
 
+The key pair is the **gateway's signing identity**, not a GitLab-specific secret —
+named accordingly so future OIDC clients (see "Evolution" section) reuse it:
+
 | Secret | Path | Who reads | Who writes |
 |--------|------|-----------|------------|
-| RSA private key (PEM) | `adp/{env}/gitlab-jwt-private-key` | Gateway service | Key rotation script |
-| RSA public key (PEM) | SSM `/adp/{env}/gitlab/jwt-public-key` | GitLab instance (at reconfigure) | Key rotation script |
+| RSA private key (PEM) | `adp/{env}/gateway-oidc-signing-key` | Gateway service | Key rotation script |
+| RSA public key (PEM) | SSM `/adp/{env}/gitlab/jwt-public-key` + gateway `/.well-known/jwks.json` | GitLab instance (at reconfigure); future OIDC clients via JWKS | Key rotation script |
+
+The gateway exposes `/.well-known/jwks.json` from Wave 2 (day one). GitLab's `jwt`
+provider doesn't consume it (takes a PEM in config), but every standard OIDC client
+does — and rotation then becomes standard JWKS rollover instead of a bespoke
+SSM-push + reconfigure.
 
 **Future (per-tenant, post-migration):**
-- Private key: `adp/{env}/tenants/{tenant_id}/gitlab-jwt-private-key`
+- Private key: `adp/{env}/tenants/{tenant_id}/gateway-oidc-signing-key`
 - Public key: SSM `/adp/{env}/tenants/{tenant_id}/gitlab/jwt-public-key`
 - Each tenant instance validates its own key; cross-tenant token use impossible
 
@@ -309,13 +317,14 @@ instance-per-tenant migration.
 ```json
 {
   "iss": "urn:adp:gateway:{environment}",
-  "sub": "{cognito_sub}",
+  "sub": "{adp_user_id}",
   "aud": "adp-gitlab-{environment}",
   "iat": 1720000000,
   "exp": 1720000060,
   "jti": "{uuid4}",
   "tenant_id": "{tenant_id}",
-  "uid": "{cognito_sub}",
+  "uid": "{adp_user_id}",
+  "cognito_sub": "{cognito_sub}",
   "name": "{user_display_name}",
   "email": "{user_email}",
   "username": "{github_username_or_email_prefix}",
@@ -328,16 +337,39 @@ instance-per-tenant migration.
 
 | Claim | Purpose | GitLab mapping |
 |-------|---------|----------------|
-| `sub` | Stable user identifier (Cognito subject) | `uid_field: "sub"` -> GitLab `extern_uid` |
+| `sub` / `uid` | **Canonical platform user ID** — `users.id` (UUID PK in gateway Postgres) | `uid_field: "sub"` -> GitLab `extern_uid` |
+| `cognito_sub` | Cognito subject, secondary — audit correlation only | Custom; not consumed by GitLab |
 | `aud` | Audience restriction — environment-scoped for v1 (shared instance) | Validated by GitLab if `required_claims` includes `aud` |
-| `uid` | Redundant with `sub` for GitLab compatibility | Maps to `uid_field` in provider |
 | `name` | Display name | `info_map: { name: "name" }` |
 | `email` | Email address | `info_map: { email: "email" }` |
 | `username` | Preferred GitLab username | `info_map: { nickname: "username" }` |
 | `groups` | Group membership seed (reconciler is authoritative) | `groups_attribute: "groups"` |
-| `tenant_id` | ADP tenant — drives group assignment + future routing | Custom; consumed by reconciler; preserved for instance-per-tenant migration |
+| `tenant_id` | ADP tenant (canonical Postgres team/tenant ID, NOT Cognito-derived) — drives group assignment + future routing | Custom; consumed by reconciler; preserved for instance-per-tenant migration |
 | `pre_authorized` | Signals this user should be auto-unblocked | Custom; consumed by reconciler |
 | `jti` | Unique token ID (for audit trail) | Not consumed by GitLab |
+
+### Why the canonical ID, not the Cognito sub (revision 2026-07-12)
+
+The platform's canonical identity is `users.id` in gateway Postgres; `cognito_sub`
+is a **nullable** column on that row (partial unique index, `organization.py`).
+Keying GitLab's `extern_uid` on the Cognito sub has two failure modes:
+
+1. **Cognito subs are not durable.** If a Cognito user is deleted/recreated (pool
+   migration, broker edge case, account recovery), the new sub differs — GitLab
+   would orphan the old account or JIT-create a duplicate, splitting repo history
+   and permissions across two identities.
+2. **The reconciler joins on Postgres anyway.** Its authoritative check ("is this
+   person in the ADP tenant membership table") is keyed by `users.id`. Carrying
+   the canonical ID makes that join direct; shadow/bot users (where `cognito_sub`
+   IS NULL) remain addressable.
+
+The SSO endpoint is an authenticated gateway route with DB access — resolving the
+canonical row at mint time is one indexed lookup (sub->user fallback already exists
+in the identity middleware).
+
+**Consequence:** merging or re-keying a canonical user row becomes a GitLab-visible
+identity event. The reconciler's drift handling must treat `users.id` changes as
+block-old + provision-new (added to threat model as row 12).
 
 **v1 audience note:** `aud` is `adp-gitlab-{environment}` (environment-scoped,
 shared across all tenants on that instance). For instance-per-tenant migration,
@@ -428,7 +460,7 @@ async def gitlab_sso_redirect(
 - **GitLab URL**: Cached in-process for 5 minutes (SSM `GetParameter` on
   `/adp/{env}/gitlab/url`). Miss = feature disabled for this environment.
 - **RSA private key**: Cached in-process for 5 minutes (Secrets Manager
-  `GetSecretValue` on `adp/{env}/gitlab-jwt-private-key`). Miss = 503.
+  `GetSecretValue` on `adp/{env}/gateway-oidc-signing-key`). Miss = 503.
   Rotation takes effect within 5 minutes without restart.
 - **Cache pattern**: Uses `time.monotonic() + TTL_SECONDS` pattern (consistent
   with `admin/connections/service.py` and `agent_registry.py`).
@@ -585,7 +617,7 @@ redirects to GitLab, establishing the authenticated session.
 | # | Threat | Attack vector | Mitigation | Residual risk |
 |---|--------|---------------|------------|---------------|
 | 1 | **Replay** | Attacker intercepts JWT and replays within 60s window | HTTPS-only transport; 60s `exp`; GitLab `valid_within: 65`; `jti` logged for forensics | Replay possible within 60s if TLS is compromised (accepted; same as Cognito token exchange) |
-| 2 | **Secret leak (private key)** | Attacker compromises Secrets Manager or gateway memory | IAM scoping: only gateway role can read `gitlab-jwt-private-key`; key rotation script; single env-scoped key (v1) limits blast to one environment | If gateway IAM role is compromised, attacker can forge tokens for all tenants on that environment until key is rotated |
+| 2 | **Secret leak (private key)** | Attacker compromises Secrets Manager or gateway memory | IAM scoping: only gateway role can read `gateway-oidc-signing-key`; key rotation script; single env-scoped key (v1) limits blast to one environment | If gateway IAM role is compromised, attacker can forge tokens for all tenants on that environment until key is rotated |
 | 3 | **Claim forgery** | Attacker crafts JWT with elevated claims (e.g., `pre_authorized`, wrong `tenant_id`, wrong `groups`) | RS256 signature — requires private key; `required_claims` validation in GitLab; reconciler as authoritative group membership source (claim alone is insufficient for access) | Impossible without private key |
 | 4 | **Open redirect on return URL** | Attacker substitutes a malicious `auth_url` in GitLab config | `auth_url` is hardcoded in `gitlab.rb` (not user-supplied); redirect target is the gateway's own CloudFront domain | None — no user-controlled redirect parameter |
 | 5 | **Token leakage via Referer** | JWT appears in URL query string; Referer header leaks it to external resources | GitLab callback page should not load external resources; 60s expiry limits window; `Referrer-Policy: no-referrer` on the redirect | Minimal — GitLab login callback is self-contained |
@@ -595,6 +627,7 @@ redirects to GitLab, establishing the authenticated session.
 | 9 | **Groupless-but-active JIT user** | JIT creates user who is unblocked but has no group membership (accessing instance-wide resources) | `block_auto_created_users = true` ensures JIT users are BLOCKED until reconciler explicitly assigns group + unblocks; `user_default_external = true` means even if unblocked without group, user sees nothing | Residual: if reconciler unblocks without group assignment (bug), user is active but external with no group access — no data exposure |
 | 10 | **Instance-wide token misuse by agents** | Agent worker uses `adp/{env}/gitlab-api-token` (instance-wide admin scope) to access other tenants' projects | Migration to per-tenant bot tokens with group-scoped access; deprecate instance-wide token; IAM policy on agent worker role restricts to per-tenant secret path only | During migration period, instance-wide token still exists — mitigated by agent identity resolution (webhook-ingress scopes job to tenant) |
 | 11 | **Cross-tenant user directory enumeration** | Tenant A user calls GitLab `/users` API to discover tenant B users | `user_default_external = true` (external users cannot list other users); `restricted_visibility_levels = ['public']`; `/users` API returns only users in shared groups (private groups = no shared members visible); Admin mode required for full user list | External users with no shared groups see empty user list — verified against GitLab CE behavior |
+| 12 | **Canonical user re-key** | A `users.id` merge/re-key makes an old GitLab account (extern_uid = old id) orphaned while a new JIT account appears | Reconciler drift handling: treat `users.id` changes as block-old + provision-new; GitLab admin audit of blocked orphans | Repo contributions attributed to the orphaned account remain (acceptable — same as any deactivated-employee history) |
 
 ---
 
@@ -616,7 +649,7 @@ Gateway resolves tenant_id from TokenContext.org_id
 Gateway reads SSM: /adp/{env}/gitlab/url
          | (cached 5min; missing -> "not configured" 404)
          v
-Gateway reads Secrets Manager: adp/{env}/gitlab-jwt-private-key
+Gateway reads Secrets Manager: adp/{env}/gateway-oidc-signing-key
          | (cached 5min; missing -> 503)
          v
 Gateway mints RS256 JWT (60s exp, claims include tenant_id + groups)
@@ -707,6 +740,90 @@ Stores token in Secrets Manager:
          v
 GitLab is ready for tenant users
 ```
+
+---
+
+## Why Not Cognito's Own Token Endpoints? (recorded 2026-07-12)
+
+Cognito does vend tokens — the OAuth2 `/oauth2/token` endpoint and
+`InitiateAuth`/`AdminInitiateAuth` (the latter is exactly what the GitHub auth
+broker uses). None of them close this gap, because **GitLab's OIDC flow consumes a
+browser authorization-code redirect, and Cognito has no bridge from
+"token-in-hand" to "Hosted-UI browser session":**
+
+- GitLab's `openid_connect` provider redirects the browser to Cognito's
+  `/oauth2/authorize`; Cognito answers with a code only if the browser holds a
+  Hosted-UI session cookie. The broker's flow never creates one.
+- Cognito does not support OAuth2 token exchange (RFC 8693) — there is no API
+  that accepts a valid access token for client A and mints an auth code or
+  session for client B.
+- `admin_initiate_auth` returns raw tokens for one app client, not a browser
+  session; GitLab's callback cannot consume raw Cognito tokens.
+
+The alternative — GitHub as a real federated IdP inside Cognito, so the Hosted UI
+itself could log the user in — is the #518 path reverted in #519 (GitHub OAuth is
+not spec-compliant OIDC), and would still bounce users through a Hosted-UI
+redirect. Hence the gateway-signed JWT: the gateway is already the de-facto
+identity authority (it alone joins Cognito identity to canonical user + tenant),
+so it vouches directly.
+
+---
+
+## Evolution: Gateway as the Platform OIDC Provider (one identity solution)
+
+**Owner direction (2026-07-12): the platform should converge on ONE identity
+solution that extends to future optional modules (a second GitLab-like tool,
+Grafana, SonarQube, ArgoCD, ...) without inventing a new handoff per tool.**
+
+### What generalizes from this design vs. what doesn't
+
+Module-agnostic (durable): the gateway as sole identity authority; the RS256
+signing identity + JWKS; the claim schema (canonical `adp_user_id`, `tenant_id`,
+`groups`); lazy-discovery / zero-dependency wiring; fail-closed feature flags;
+the reconciler concept.
+
+GitLab-specific (does NOT generalize): the `jwt`-OmniAuth URL handoff. GitLab
+happens to ship a provider that accepts a signed token in a URL; most tools
+don't. What they all speak is **standard OIDC** (authorization-code flow against
+an issuer).
+
+### Target end-state
+
+Promote the gateway to a first-class OIDC identity provider:
+
+- Gateway exposes `/authorize`, `/token`, `/jwks`,
+  `/.well-known/openid-configuration`, and sets a **browser session cookie** at
+  login (GitHub-via-broker or Cognito upstream, unchanged).
+- Every optional module becomes an **OIDC client registration**: issuer = the
+  gateway; client credentials live in the module's own Terraform (dependency
+  direction preserved); claims carry `adp_user_id` + `tenant_id` as specified
+  here.
+- Adding module N = register a client + point the module's standard OIDC config
+  at the gateway. No new endpoint, key, or mechanism. SSO becomes real in both
+  directions: the first module visited establishes the gateway session; every
+  subsequent module's OIDC redirect completes silently against that cookie.
+
+(Considered and set aside: deploying an off-the-shelf IdP — Dex/Keycloak — that
+federates GitHub natively. It solves the OIDC-protocol part but does not know the
+tenancy model; the gateway would still have to sit behind it as the claims/tenant
+authority, i.e. two identity services instead of one. Revisit only if
+implementing `/authorize` + `/token` in the gateway proves unexpectedly hard.)
+
+### Trigger and migration
+
+- **Trigger: the second SSO-consuming module.** For one module (GitLab), the JWT
+  handoff is the right cheaper call; a second module is where the OIDC-issuer
+  investment pays for itself.
+- Wave 2 of THIS EPIC is built as the stepping stone (see Key Storage): the
+  signing key is the gateway's OIDC signing identity (`adp/{env}/gateway-oidc-signing-key`),
+  `/.well-known/jwks.json` ships day one, issuer is `urn:adp:gateway:{env}`,
+  audiences are per-client. `/auth/gitlab-sso` is explicitly ONE client adapter
+  over that identity — not the pattern.
+- When module #2 arrives: build `/authorize` + `/token` + the session cookie,
+  register module #2 as a standard OIDC client, and **migrate GitLab from the
+  jwt handoff to standard OIDC against the gateway** (re-point GitLab's
+  `openid_connect` provider from Cognito to the gateway — a gitlab.rb change).
+  The reconciler and tenancy enforcement carry over untouched.
 
 ---
 
@@ -863,7 +980,7 @@ per-tenant bot users + group-scoped tokens.
 **Design**:
 - Script: `modules/source-control/gitlab/scripts/provision-jwt-keys.sh`
   - Generates RSA-2048 key pair via `openssl`
-  - Stores private key: `aws secretsmanager create-secret --secret-id adp/{env}/gitlab-jwt-private-key`
+  - Stores private key: `aws secretsmanager create-secret --secret-id adp/{env}/gateway-oidc-signing-key`
   - Stores public key: `aws ssm put-parameter --name /adp/{env}/gitlab/jwt-public-key`
   - Idempotent (checks existence first)
 - Reconciler: Lambda (scheduled every 60s via EventBridge) or K8s CronJob
