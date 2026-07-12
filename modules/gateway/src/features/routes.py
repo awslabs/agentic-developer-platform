@@ -1,8 +1,11 @@
 """Feature-flags endpoint — Issue #3566.
 
-Returns deployment-level feature gates. All flags default to enabled
+Returns deployment-level feature gates. Core flags default to enabled
 (fail-open). Knowledge and indexing flags inherit from AGENT_CONTEXT_ENABLED
 when their own FEATURE_* env var is unset.
+
+Optional add-on flags (e.g. gitlab) use fail-closed semantics: they default
+to False and must be explicitly enabled with "true" (Issue #3773).
 
 The endpoint requires authentication (inherits gateway JWT middleware)
 but is not tenant-scoped — flags are deployment-wide.
@@ -15,6 +18,19 @@ from fastapi import APIRouter, Depends
 from src.auth.dependencies import get_current_user
 
 router = APIRouter(prefix="/features", tags=["features"])
+
+
+def _is_enabled_strict(env_var: str) -> bool:
+    """Read a fail-closed feature flag from the environment.
+
+    Returns True ONLY if the env var is explicitly set to "true" (case-insensitive).
+    Any other value or absence → False. Use for optional add-on features where
+    the safe default is disabled (Issue #3773).
+    """
+    value = os.environ.get(env_var)
+    if value is not None:
+        return value.lower() == "true"
+    return False
 
 
 def _is_enabled(env_var: str, fallback_var: str | None = None) -> bool:
@@ -52,5 +68,7 @@ async def get_features(_current_user=Depends(get_current_user)):
             "credentials": _is_enabled("FEATURE_CREDENTIALS_ENABLED"),
             "system_dashboard": _is_enabled("FEATURE_SYSTEM_DASHBOARD_ENABLED"),
             "logs": _is_enabled("FEATURE_LOGS_ENABLED"),
+            # Fail-closed: optional add-on, hidden by default (Issue #3773)
+            "gitlab": _is_enabled_strict("FEATURE_GITLAB_ENABLED"),
         }
     }

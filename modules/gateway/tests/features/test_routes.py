@@ -31,10 +31,13 @@ def client(app):
 
 
 class TestFeaturesDefaults:
-    """All flags default to True when no env vars are set (fail-open)."""
+    """All flags default to True when no env vars are set (fail-open).
+
+    Exception: gitlab defaults to False (fail-closed, Issue #3773).
+    """
 
     def test_all_enabled_by_default(self, client, monkeypatch):
-        """With no FEATURE_* env vars, all flags are True."""
+        """With no FEATURE_* env vars, core flags are True; gitlab is False."""
         # Clear any existing feature flags
         for var in [
             "FEATURE_CHAT_ENABLED",
@@ -44,6 +47,7 @@ class TestFeaturesDefaults:
             "FEATURE_CREDENTIALS_ENABLED",
             "FEATURE_SYSTEM_DASHBOARD_ENABLED",
             "FEATURE_LOGS_ENABLED",
+            "FEATURE_GITLAB_ENABLED",
             "AGENT_CONTEXT_ENABLED",
         ]:
             monkeypatch.delenv(var, raising=False)
@@ -60,6 +64,7 @@ class TestFeaturesDefaults:
                 "credentials": True,
                 "system_dashboard": True,
                 "logs": True,
+                "gitlab": False,
             }
         }
 
@@ -160,6 +165,59 @@ class TestAgentContextFallback:
         monkeypatch.setenv("AGENT_CONTEXT_ENABLED", "true")
         response = client.get("/features")
         assert response.json()["features"]["knowledge"] is False
+
+
+class TestGitlabFailClosed:
+    """GitLab flag uses fail-closed semantics (Issue #3773).
+
+    Unlike core flags which default to True (fail-open), gitlab defaults to
+    False and only enables when FEATURE_GITLAB_ENABLED is explicitly "true".
+    """
+
+    def test_gitlab_false_by_default(self, client, monkeypatch):
+        """With no FEATURE_GITLAB_ENABLED env var, gitlab is False."""
+        monkeypatch.delenv("FEATURE_GITLAB_ENABLED", raising=False)
+        response = client.get("/features")
+        assert response.json()["features"]["gitlab"] is False
+
+    def test_gitlab_true_when_explicitly_enabled(self, client, monkeypatch):
+        """FEATURE_GITLAB_ENABLED=true enables the flag."""
+        monkeypatch.setenv("FEATURE_GITLAB_ENABLED", "true")
+        response = client.get("/features")
+        assert response.json()["features"]["gitlab"] is True
+
+    def test_gitlab_true_case_insensitive(self, client, monkeypatch):
+        """Flag is case-insensitive for 'true'."""
+        monkeypatch.setenv("FEATURE_GITLAB_ENABLED", "True")
+        response = client.get("/features")
+        assert response.json()["features"]["gitlab"] is True
+
+        monkeypatch.setenv("FEATURE_GITLAB_ENABLED", "TRUE")
+        response = client.get("/features")
+        assert response.json()["features"]["gitlab"] is True
+
+    def test_gitlab_false_for_non_true_values(self, client, monkeypatch):
+        """Any value other than 'true' (case-insensitive) keeps flag disabled."""
+        monkeypatch.setenv("FEATURE_GITLAB_ENABLED", "false")
+        response = client.get("/features")
+        assert response.json()["features"]["gitlab"] is False
+
+        monkeypatch.setenv("FEATURE_GITLAB_ENABLED", "yes")
+        response = client.get("/features")
+        assert response.json()["features"]["gitlab"] is False
+
+        monkeypatch.setenv("FEATURE_GITLAB_ENABLED", "1")
+        response = client.get("/features")
+        assert response.json()["features"]["gitlab"] is False
+
+    def test_gitlab_does_not_affect_other_flags(self, client, monkeypatch):
+        """Enabling/disabling gitlab leaves core flags unchanged."""
+        monkeypatch.delenv("FEATURE_GITLAB_ENABLED", raising=False)
+        response = client.get("/features")
+        data = response.json()["features"]
+        assert data["gitlab"] is False
+        assert data["chat"] is True
+        assert data["connections"] is True
 
 
 class TestRouterPrefix:

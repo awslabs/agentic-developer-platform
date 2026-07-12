@@ -150,16 +150,19 @@ export function Navigation() {
       {/* External: GitLab (full page navigation, not SPA route).
           Trailing slash is required: the CloudFront behavior pattern is
           /gitlab/* which does NOT match the bare /gitlab — that falls
-          through to the S3/SPA default behavior and 404s. */}
-      <a
-        href="/gitlab/"
-        className="flex items-center gap-3 px-4 py-2 rounded-lg transition-colors text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
-      >
-        <span className="text-xl" aria-hidden="true">
-          🦊
-        </span>
-        <span>GitLab</span>
-      </a>
+          through to the S3/SPA default behavior and 404s.
+          Feature-gated: fail-closed behind FEATURE_GITLAB_ENABLED (Issue #3773). */}
+      {features.gitlab && (
+        <a
+          href="/gitlab/"
+          className="flex items-center gap-3 px-4 py-2 rounded-lg transition-colors text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+        >
+          <span className="text-xl" aria-hidden="true">
+            🦊
+          </span>
+          <span>GitLab</span>
+        </a>
+      )}
     </nav>
   );
 }

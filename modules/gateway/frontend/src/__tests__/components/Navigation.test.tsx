@@ -1,9 +1,10 @@
 /**
- * Tests for Navigation component — Issue #3590.
+ * Tests for Navigation component — Issues #3590, #3773.
  *
- * Verifies: GitLab link renders for authenticated users, uses a plain <a> tag
- * (not NavLink), and has href="/gitlab/" (trailing slash — the CloudFront
- * /gitlab/* behavior does not match the bare /gitlab path).
+ * Verifies: GitLab link is feature-gated behind FEATURE_GITLAB_ENABLED
+ * (fail-closed). When enabled, renders as a plain <a> tag (not NavLink),
+ * with href="/gitlab/" (trailing slash — the CloudFront /gitlab/* behavior
+ * does not match the bare /gitlab path).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -27,15 +28,10 @@ vi.mock('@/hooks/usePermissions', () => ({
   }),
 }));
 
-// Mock useFeatures — all features enabled (fail-open default)
+// Mock useFeatures — default: all features enabled, gitlab disabled (fail-closed)
+const mockUseFeatures = vi.fn();
 vi.mock('@/hooks/useFeatures', () => ({
-  useFeatures: () => ({
-    chat: true,
-    knowledge: true,
-    indexing: true,
-    connections: true,
-    credentials: true,
-  }),
+  useFeatures: () => mockUseFeatures(),
 }));
 
 function renderNavigation() {
@@ -49,10 +45,38 @@ function renderNavigation() {
 describe('Navigation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: all core features enabled, gitlab disabled (fail-closed)
+    mockUseFeatures.mockReturnValue({
+      chat: true,
+      knowledge: true,
+      indexing: true,
+      connections: true,
+      credentials: true,
+      system_dashboard: true,
+      logs: true,
+      gitlab: false,
+    });
   });
 
-  describe('GitLab link', () => {
-    it('renders a GitLab link visible to all authenticated users', () => {
+  describe('GitLab link (feature-gated, Issue #3773)', () => {
+    it('does NOT render when features.gitlab is false (fail-closed default)', () => {
+      renderNavigation();
+
+      expect(screen.queryByText('GitLab')).not.toBeInTheDocument();
+    });
+
+    it('renders when features.gitlab is true', () => {
+      mockUseFeatures.mockReturnValue({
+        chat: true,
+        knowledge: true,
+        indexing: true,
+        connections: true,
+        credentials: true,
+        system_dashboard: true,
+        logs: true,
+        gitlab: true,
+      });
+
       renderNavigation();
 
       const gitlabLink = screen.getByText('GitLab');
@@ -60,6 +84,17 @@ describe('Navigation', () => {
     });
 
     it('uses a plain <a> tag, not a NavLink (full page navigation)', () => {
+      mockUseFeatures.mockReturnValue({
+        chat: true,
+        knowledge: true,
+        indexing: true,
+        connections: true,
+        credentials: true,
+        system_dashboard: true,
+        logs: true,
+        gitlab: true,
+      });
+
       renderNavigation();
 
       const gitlabLink = screen.getByText('GitLab').closest('a');
@@ -70,13 +105,35 @@ describe('Navigation', () => {
     });
 
     it('has href="/gitlab/" (trailing slash required by CloudFront /gitlab/* behavior)', () => {
+      mockUseFeatures.mockReturnValue({
+        chat: true,
+        knowledge: true,
+        indexing: true,
+        connections: true,
+        credentials: true,
+        system_dashboard: true,
+        logs: true,
+        gitlab: true,
+      });
+
       renderNavigation();
 
       const gitlabLink = screen.getByText('GitLab').closest('a');
       expect(gitlabLink).toHaveAttribute('href', '/gitlab/');
     });
 
-    it('displays the fox emoji icon', () => {
+    it('displays the fox emoji icon when enabled', () => {
+      mockUseFeatures.mockReturnValue({
+        chat: true,
+        knowledge: true,
+        indexing: true,
+        connections: true,
+        credentials: true,
+        system_dashboard: true,
+        logs: true,
+        gitlab: true,
+      });
+
       renderNavigation();
 
       const gitlabLink = screen.getByText('GitLab').closest('a');

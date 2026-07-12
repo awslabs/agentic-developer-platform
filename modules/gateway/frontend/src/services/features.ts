@@ -14,13 +14,15 @@ export interface FeatureFlags {
   credentials: boolean;
   system_dashboard: boolean;
   logs: boolean;
+  gitlab: boolean;
 }
 
 export interface FeaturesResponse {
   features: FeatureFlags;
 }
 
-/** All features enabled — used as fail-open default. */
+/** All features enabled — used as fail-open default.
+ *  Exception: gitlab defaults to false (fail-closed, Issue #3773). */
 export const ALL_FEATURES_ENABLED: FeatureFlags = {
   chat: true,
   knowledge: true,
@@ -29,6 +31,7 @@ export const ALL_FEATURES_ENABLED: FeatureFlags = {
   credentials: true,
   system_dashboard: true,
   logs: true,
+  gitlab: false,
 };
 
 export async function fetchFeatures(): Promise<FeatureFlags> {

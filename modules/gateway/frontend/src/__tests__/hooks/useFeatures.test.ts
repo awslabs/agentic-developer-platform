@@ -21,6 +21,7 @@ vi.mock('@/services/features', () => ({
     indexing: true,
     connections: true,
     credentials: true,
+    gitlab: false,
   },
 }));
 
@@ -43,13 +44,14 @@ describe('useFeatures', () => {
     vi.clearAllMocks();
   });
 
-  it('returns all-enabled when fetch succeeds with all-true', async () => {
+  it('returns all-enabled when fetch succeeds with all-true (gitlab from server)', async () => {
     mockFetchFeatures.mockResolvedValue({
       chat: true,
       knowledge: true,
       indexing: true,
       connections: true,
       credentials: true,
+      gitlab: true,
     });
 
     const { result } = renderHook(() => useFeatures(), { wrapper: createWrapper() });
@@ -64,24 +66,26 @@ describe('useFeatures', () => {
       indexing: true,
       connections: true,
       credentials: true,
+      gitlab: true,
     });
   });
 
-  it('returns all-enabled when fetch rejects (fail-open)', async () => {
+  it('returns fail-open defaults when fetch rejects (gitlab stays false)', async () => {
     mockFetchFeatures.mockRejectedValue(new Error('Network error'));
 
     const { result } = renderHook(() => useFeatures(), { wrapper: createWrapper() });
 
-    // Should immediately return all-enabled (fail-open default)
+    // Should immediately return fail-open defaults (gitlab: false is the exception)
     expect(result.current).toEqual({
       chat: true,
       knowledge: true,
       indexing: true,
       connections: true,
       credentials: true,
+      gitlab: false,
     });
 
-    // After the query settles (error), still all-enabled
+    // After the query settles (error), same defaults
     await waitFor(() => {
       expect(mockFetchFeatures).toHaveBeenCalled();
     });
@@ -92,6 +96,7 @@ describe('useFeatures', () => {
       indexing: true,
       connections: true,
       credentials: true,
+      gitlab: false,
     });
   });
 
@@ -102,6 +107,7 @@ describe('useFeatures', () => {
       indexing: false,
       connections: true,
       credentials: true,
+      gitlab: false,
     });
 
     const { result } = renderHook(() => useFeatures(), { wrapper: createWrapper() });
@@ -115,21 +121,23 @@ describe('useFeatures', () => {
     expect(result.current.indexing).toBe(false);
     expect(result.current.connections).toBe(true);
     expect(result.current.credentials).toBe(true);
+    expect(result.current.gitlab).toBe(false);
   });
 
-  it('returns all-enabled before fetch completes (fail-open while loading)', () => {
+  it('returns fail-open defaults before fetch completes (gitlab stays false)', () => {
     // Never resolves — simulates slow network
     mockFetchFeatures.mockReturnValue(new Promise(() => {}));
 
     const { result } = renderHook(() => useFeatures(), { wrapper: createWrapper() });
 
-    // Immediate value should be all-enabled (the ?? fallback)
+    // Immediate value should be fail-open defaults (gitlab: false is the exception)
     expect(result.current).toEqual({
       chat: true,
       knowledge: true,
       indexing: true,
       connections: true,
       credentials: true,
+      gitlab: false,
     });
   });
 });
