@@ -892,6 +892,40 @@ else
     CFN_TEMPLATE_BUCKET=""
     warn "ADP_CFN_TEMPLATE_BUCKET resolved empty — 'Connect AWS account' will not work until the frontend bucket SSM param is published"
   fi
+
+  # --- SSM resolution for configmap values (parity with gateway-deploy.yml) ---
+  # Helper: read SSM param with fallback (same pattern as the workflow's get_ssm)
+  _get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "${2:-}"; }
+
+  # Issue #143: Chat logging — conditional on chat-logs bucket existence
+  CHAT_LOGS_BUCKET=$(_get_ssm "/adp/$ENVIRONMENT/gateway/chat-logs-bucket" "")
+  if [ "$CHAT_LOGS_BUCKET" = "None" ]; then CHAT_LOGS_BUCKET=""; fi
+  if [ -n "$CHAT_LOGS_BUCKET" ]; then
+    CHAT_LOGGING_ENABLED="true"
+  else
+    CHAT_LOGGING_ENABLED="false"
+    warn "Chat-logs bucket not found in SSM — chat logging disabled (set /adp/$ENVIRONMENT/gateway/chat-logs-bucket to enable)"
+  fi
+  CHAT_LOGGING_SCRUB_LEVEL="basic"
+
+  # #3182/#3477: Credential binding enforcement. Default "true" (safe-by-default
+  # for fresh accounts). Existing deployments pin via SSM param; dev stays in
+  # shadow mode via /adp/dev/gateway/enforce-credential-binding=false.
+  ENFORCE_CREDENTIAL_BINDING=$(_get_ssm "/adp/$ENVIRONMENT/gateway/enforce-credential-binding" "true")
+  if [ "$ENFORCE_CREDENTIAL_BINDING" = "None" ]; then ENFORCE_CREDENTIAL_BINDING="true"; fi
+
+  # Issue #1158: Vault proxy host allowlist (SSRF mitigation, FAIL-CLOSED when empty)
+  VAULT_PROXY_HOST_ALLOWLIST=$(_get_ssm "/adp/$ENVIRONMENT/gateway/vault-proxy-host-allowlist" "api.github.com,api.openai.com,api.anthropic.com,*.atlassian.net,api.stripe.com,slack.com")
+  if [ "$VAULT_PROXY_HOST_ALLOWLIST" = "None" ]; then VAULT_PROXY_HOST_ALLOWLIST="api.github.com,api.openai.com,api.anthropic.com,*.atlassian.net,api.stripe.com,slack.com"; fi
+
+  # #2082: Knowledge-registry ingestion queue (agent-context SQS). Empty is safe —
+  # registry routes still mount; dispatch returns 503 until set.
+  INGESTION_QUEUE_URL=$(_get_ssm "/adp/$ENVIRONMENT/agent-context/ingestion-queue-url" "")
+  if [ "$INGESTION_QUEUE_URL" = "None" ]; then INGESTION_QUEUE_URL=""; fi
+
+  # #3069/#3105: Agent run-logs transcript bucket (deterministic naming)
+  EFFECTIVE_ACCOUNT="${ADP_CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
+  AGENT_RUN_LOGS_BUCKET="adp-${ENVIRONMENT}-agent-run-logs-${EFFECTIVE_ACCOUNT}"
   cd "$ROOT_DIR/modules/gateway"
   kubectl create namespace adp-gateway --dry-run=client -o yaml | kubectl apply -f -
   # Issue #1008: Create bedrockgateway-secrets K8s Secret from Secrets Manager
@@ -928,15 +962,15 @@ else
       -e "s|__GATEWAY_BASE_URL__|https://${CF_DOMAIN}|g" \
       -e "s|__CFN_TEMPLATE_BUCKET__|${CFN_TEMPLATE_BUCKET}|g" \
       -e "s|__GATEWAY_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
-      -e "s|__CHAT_LOGGING_ENABLED__|false|g" \
-      -e "s|__CHAT_LOGGING_BUCKET__||g" \
-      -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|off|g" \
+      -e "s|__CHAT_LOGGING_ENABLED__|${CHAT_LOGGING_ENABLED}|g" \
+      -e "s|__CHAT_LOGGING_BUCKET__|${CHAT_LOGS_BUCKET}|g" \
+      -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|${CHAT_LOGGING_SCRUB_LEVEL}|g" \
       -e "s|__TRUST_APIGW_HEADERS__|true|g" \
       -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
-      -e "s|__ENFORCE_CREDENTIAL_BINDING__|false|g" \
-      -e "s|__VAULT_PROXY_HOST_ALLOWLIST__||g" \
-      -e "s|__INGESTION_QUEUE_URL__||g" \
-      -e "s|__AGENT_RUN_LOGS_BUCKET__||g" \
+      -e "s|__ENFORCE_CREDENTIAL_BINDING__|${ENFORCE_CREDENTIAL_BINDING}|g" \
+      -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
+      -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
+      -e "s|__AGENT_RUN_LOGS_BUCKET__|${AGENT_RUN_LOGS_BUCKET}|g" \
       k8s/configmap.yaml | kubectl apply -f -
   # Render serviceaccount with the correct IRSA role ARN (Issue #1008)
   sed -e "s|__GATEWAY_IRSA_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
