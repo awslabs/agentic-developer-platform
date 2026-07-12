@@ -121,9 +121,10 @@ def cmd_assume(args: list[str]) -> None:
         # Replace this process with the user's command.
         exec_cmd = exec_args[0]
         exec_path = shutil.which(exec_cmd) or exec_cmd
-        os.execvpe(
+        # nosemgrep: tmp.gitlab.bandit.B606 — exec-ing the user's own command is the documented contract of `adp-cred assume --exec`; the prior trailing nosemgrep landed on the closing paren, not the call's start line (124), so it never applied
+        os.execvpe(  # nosec: B606
             exec_path, exec_args, env
-        )  # nosemgrep  # nosec: B606 — exec-ing user's own command is the CLI's documented contract
+        )
     else:
         # Legacy behavior: print ONLY the profile name to stdout.
         print(profile_name, end="")
