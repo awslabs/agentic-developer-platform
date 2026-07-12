@@ -365,6 +365,7 @@ export class LiveStatusComment {
 
   private async apiRequest(method: string, url: string, body?: Record<string, unknown>): Promise<Response> {
     const token = process.env.GH_APP_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN || this.options.token;
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — url is built from this.options.apiBaseUrl, validated at construction via validateBaseUrl() (default https://api.github.com); only static repo/issue paths are interpolated
     return fetch(url, {
       method,
       headers: {

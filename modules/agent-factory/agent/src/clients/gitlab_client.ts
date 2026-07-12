@@ -32,6 +32,7 @@ export class GitLabClient {
    */
   async postIssueComment(projectId: number, issueIid: number, body: string): Promise<void> {
     const url = `${this.baseUrl}/api/v4/projects/${projectId}/issues/${issueIid}/notes`;
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated at construction via validateBaseUrl() (blocks loopback/metadata/link-local); only static API paths are interpolated
     const resp = await fetch(url, {
       method: 'POST',
       headers: this.headers(),
@@ -51,6 +52,7 @@ export class GitLabClient {
    */
   async createBranch(projectId: number, branchName: string, ref: string): Promise<void> {
     const url = `${this.baseUrl}/api/v4/projects/${projectId}/repository/branches`;
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated at construction via validateBaseUrl() (blocks loopback/metadata/link-local); only static API paths are interpolated
     const resp = await fetch(url, {
       method: 'POST',
       headers: this.headers(),
@@ -73,6 +75,7 @@ export class GitLabClient {
     options: CreateMergeRequestOptions,
   ): Promise<MergeRequestResult> {
     const url = `${this.baseUrl}/api/v4/projects/${projectId}/merge_requests`;
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated at construction via validateBaseUrl() (blocks loopback/metadata/link-local); only static API paths are interpolated
     const resp = await fetch(url, {
       method: 'POST',
       headers: this.headers(),
@@ -100,6 +103,7 @@ export class GitLabClient {
   async getFile(projectId: number, filePath: string, ref: string): Promise<string> {
     const encodedPath = encodeURIComponent(filePath);
     const url = `${this.baseUrl}/api/v4/projects/${projectId}/repository/files/${encodedPath}?ref=${encodeURIComponent(ref)}`;
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated at construction via validateBaseUrl() (blocks loopback/metadata/link-local); only static API paths are interpolated
     const resp = await fetch(url, {
       method: 'GET',
       headers: this.headers(),

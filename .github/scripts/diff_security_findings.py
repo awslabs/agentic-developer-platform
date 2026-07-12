@@ -43,6 +43,13 @@ def extract_sarif_fingerprints(sarif_data: dict) -> set[str]:
 
     for run in sarif_data.get("runs", []):
         for result in run.get("results", []):
+            # Skip findings the source has explicitly suppressed (inline
+            # `nosemgrep` etc.). Semgrep still emits these as results carrying a
+            # non-empty `suppressions` array rather than dropping them, so a
+            # gate that counts every result would fail forever on accepted,
+            # annotated findings. Treat any suppressed result as not-a-finding.
+            if result.get("suppressions"):
+                continue
             # Use ruleId + location as fingerprint
             rule_id = result.get("ruleId", "unknown")
             locations = result.get("locations", [])

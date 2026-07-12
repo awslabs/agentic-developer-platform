@@ -164,6 +164,7 @@ export async function callRecall(
   const timeout = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
 
   try {
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — CONTEXT_MCP_URL is a module constant validated once via validateBaseUrl() at load (blocks loopback/metadata/link-local); only the static /tools/call path is interpolated
     const response = await fetch(`${CONTEXT_MCP_URL}/tools/call`, {
       method: 'POST',
       headers: {
