@@ -175,7 +175,7 @@ describe('AgentRunDashboard Page', () => {
     // Failed = 2
     expect(screen.getByLabelText(/Failed today: 2/)).toBeInTheDocument();
     // Spend = $12.34 (in tile — use aria-label to target the tile specifically)
-    expect(screen.getByLabelText('Spend today: $12.34')).toBeInTheDocument();
+    expect(screen.getByLabelText('Spend today: $12.34. Click to view run costs.')).toBeInTheDocument();
     // Succeeded = 7
     expect(screen.getByLabelText(/Succeeded today: 7/)).toBeInTheDocument();
   });
@@ -257,6 +257,35 @@ describe('AgentRunDashboard Page', () => {
     // Click "Succeeded today" tile
     await user.click(screen.getByLabelText(/Succeeded today: 7/));
     expect(mockNavigate).toHaveBeenCalledWith('/activity?status=complete&since=today');
+
+    mockNavigate.mockClear();
+
+    // Click "Spend today" tile (Issue #3766)
+    await user.click(screen.getByLabelText(/Spend today: \$12\.34\. Click to view run costs\./));
+    expect(mockNavigate).toHaveBeenCalledWith('/activity?view=runs');
+  });
+
+  it('Spend tile keyboard Enter/Space triggers navigation (Issue #3766)', async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(screen.getByText('Spend today')).toBeInTheDocument();
+    });
+
+    const spendTile = screen.getByLabelText(/Spend today: \$12\.34\. Click to view run costs\./);
+
+    // Enter key navigates
+    spendTile.focus();
+    await user.keyboard('{Enter}');
+    expect(mockNavigate).toHaveBeenCalledWith('/activity?view=runs');
+
+    mockNavigate.mockClear();
+
+    // Space key navigates
+    spendTile.focus();
+    await user.keyboard(' ');
+    expect(mockNavigate).toHaveBeenCalledWith('/activity?view=runs');
   });
 
   it('shows error state with retry button on API failure', async () => {
