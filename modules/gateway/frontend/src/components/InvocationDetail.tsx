@@ -10,7 +10,7 @@
 
 import { useState } from 'react';
 import { Modal } from '@/components/ui';
-import { TranscriptViewer } from '@/components/TranscriptViewer';
+import { TranscriptContent } from '@/components/TranscriptViewer';
 import { formatDateTime, formatRelativeTime } from '@/utils/format';
 import type { InvocationItem, InvocationStatus } from '@/types/activity';
 
@@ -316,57 +316,68 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
   // ---------------------------------------------------------------------------
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Invocation Detail" size="lg">
-      <dl className="divide-y divide-gray-200 dark:divide-gray-700">
-        {item.status === 'failed' ? (
-          <>
-            {/* Failed-run order: Status → Error → Duration → Cost → Topic →
-                Source → Transcript → Lineage → IDs → Timing → Channel → Summary */}
-            {statusRow}
-            {errorRow}
-            {durationRow}
-            {costRow}
-            {topicRow}
-            {sourceRow}
-            {runLogRow}
-            {transcriptRow}
-            {lineageRow}
-            {identifierRows}
-            {timingRows}
-            {channelRow}
-            {summaryRow}
-          </>
-        ) : (
-          <>
-            {/* Default order (non-failed runs) */}
-            {statusRow}
-            {identifierRows}
-            {timingRows}
-            {channelRow}
-            {topicRow}
-            {summaryRow}
-            {durationRow}
-            {costRow}
-            {sourceRow}
-            {runLogRow}
-            {transcriptRow}
-            {lineageRow}
-          </>
-        )}
-      </dl>
+    <Modal isOpen={isOpen} onClose={onClose} title={showTranscript ? 'Run Transcript' : 'Invocation Detail'} size="lg">
+      {showTranscript ? (
+        /* Issue #3767: Inline transcript content swap (replaces nested modal) */
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowTranscript(false)}
+            className="mb-4 inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 hover:underline"
+          >
+            ← Back to detail
+          </button>
+          <TranscriptContent
+            invocationId={item.invocation_id}
+            isAdmin={isAdmin}
+          />
+        </div>
+      ) : (
+        <>
+          <dl className="divide-y divide-gray-200 dark:divide-gray-700">
+            {item.status === 'failed' ? (
+              <>
+                {/* Failed-run order: Status → Error → Duration → Cost → Topic →
+                    Source → Transcript → Lineage → IDs → Timing → Channel → Summary */}
+                {statusRow}
+                {errorRow}
+                {durationRow}
+                {costRow}
+                {topicRow}
+                {sourceRow}
+                {runLogRow}
+                {transcriptRow}
+                {lineageRow}
+                {identifierRows}
+                {timingRows}
+                {channelRow}
+                {summaryRow}
+              </>
+            ) : (
+              <>
+                {/* Default order (non-failed runs) */}
+                {statusRow}
+                {identifierRows}
+                {timingRows}
+                {channelRow}
+                {topicRow}
+                {summaryRow}
+                {durationRow}
+                {costRow}
+                {sourceRow}
+                {runLogRow}
+                {transcriptRow}
+                {lineageRow}
+              </>
+            )}
+          </dl>
 
-      {/* Status timeline note */}
-      <p className="mt-4 text-xs text-gray-400 dark:text-gray-500 italic">
-        Status shows current state and last transition time. Full transition history is not retained.
-      </p>
-
-      {/* Issue #3069: Transcript viewer modal (nested) */}
-      <TranscriptViewer
-        invocationId={showTranscript ? item.invocation_id : null}
-        isOpen={showTranscript}
-        onClose={() => setShowTranscript(false)}
-        isAdmin={isAdmin}
-      />
+          {/* Status timeline note */}
+          <p className="mt-4 text-xs text-gray-400 dark:text-gray-500 italic">
+            Status shows current state and last transition time. Full transition history is not retained.
+          </p>
+        </>
+      )}
     </Modal>
   );
 }

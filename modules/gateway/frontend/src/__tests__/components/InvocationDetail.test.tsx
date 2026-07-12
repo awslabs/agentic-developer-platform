@@ -281,4 +281,65 @@ describe('InvocationDetail', () => {
       expect(screen.getByText('Transcript not available for this invocation.')).toBeInTheDocument();
     });
   });
+
+  // Issue #3767: Inline transcript content swap (no nested modal)
+  describe('inline transcript (Issue #3767)', () => {
+    it('does not render a nested modal — only one dialog present when transcript is shown', async () => {
+      const user = userEvent.setup();
+      mockGetMyTranscript.mockResolvedValueOnce('# Test transcript\nSome content');
+      const item = makeItem({ transcript_key: 'runs/inv-001/transcript.md' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      // Click "View full transcript"
+      const transcriptBtn = screen.getByRole('button', { name: /view full transcript/i });
+      await user.click(transcriptBtn);
+
+      // Only ONE dialog should be present (the outer InvocationDetail modal)
+      const dialogs = screen.getAllByRole('dialog');
+      expect(dialogs).toHaveLength(1);
+    });
+
+    it('shows "Back to detail" button and returns to detail view when clicked', async () => {
+      const user = userEvent.setup();
+      mockGetMyTranscript.mockResolvedValueOnce('# Test transcript');
+      const item = makeItem({ transcript_key: 'runs/inv-001/transcript.md' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      // Click "View full transcript"
+      const transcriptBtn = screen.getByRole('button', { name: /view full transcript/i });
+      await user.click(transcriptBtn);
+
+      // Should show "Back to detail" button
+      const backBtn = screen.getByRole('button', { name: /back to detail/i });
+      expect(backBtn).toBeInTheDocument();
+
+      // Detail content should be hidden (no detail rows visible)
+      expect(screen.queryByText('Invocation ID')).not.toBeInTheDocument();
+
+      // Click back
+      await user.click(backBtn);
+
+      // Detail content should be visible again
+      expect(screen.getByText('inv-001')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /back to detail/i })).not.toBeInTheDocument();
+    });
+
+    it('changes modal title to "Run Transcript" when transcript is shown', async () => {
+      const user = userEvent.setup();
+      mockGetMyTranscript.mockResolvedValueOnce('# Test transcript');
+      const item = makeItem({ transcript_key: 'runs/inv-001/transcript.md' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      // Initially shows "Invocation Detail"
+      expect(screen.getByText('Invocation Detail')).toBeInTheDocument();
+
+      // Click transcript
+      const transcriptBtn = screen.getByRole('button', { name: /view full transcript/i });
+      await user.click(transcriptBtn);
+
+      // Title changes to "Run Transcript"
+      expect(screen.getByText('Run Transcript')).toBeInTheDocument();
+      expect(screen.queryByText('Invocation Detail')).not.toBeInTheDocument();
+    });
+  });
 });
