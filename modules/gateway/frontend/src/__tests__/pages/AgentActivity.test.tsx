@@ -375,18 +375,22 @@ describe('AgentActivity Page', () => {
     });
   });
 
-  it('shows empty state "No agent activity yet" when no items and no cursor', async () => {
+  it('shows empty state with guidance when no items and no cursor', async () => {
     // In chain view (default), empty means no chains
     mockGetMyChains.mockResolvedValue({ chains: [], count: 0, last_key: null });
 
     renderAgentActivity();
 
     await waitFor(() => {
-      expect(screen.getByText('No agent activity yet')).toBeInTheDocument();
+      expect(screen.getByText('No agent runs yet')).toBeInTheDocument();
     });
+
+    // Provides concrete guidance instead of a dead end
+    expect(screen.getByText(/Mention the developer agent/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /View setup guide/ })).toHaveAttribute('href', '/setup');
   });
 
-  it('renders page title and subtitle', async () => {
+  it('renders page title with cross-link subtitle to Dashboard', async () => {
     renderAgentActivity();
 
     expect(screen.getByText('Agent Activity')).toBeInTheDocument();
@@ -395,7 +399,8 @@ describe('AgentActivity Page', () => {
       expect(mockGetMyChains).toHaveBeenCalled();
     });
 
-    expect(screen.getByText('Your agent invocations')).toBeInTheDocument();
+    expect(screen.getByText(/Every run, filterable/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Dashboard' })).toHaveAttribute('href', '/runs');
   });
 
   // ---------------------------------------------------------------------------

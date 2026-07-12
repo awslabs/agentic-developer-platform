@@ -180,7 +180,7 @@ describe('AgentActivity Deep Link (Issue #3632)', () => {
     expect(screen.queryByText('Failed to load agent activity')).not.toBeInTheDocument();
 
     // Empty state is fine since we have no chains
-    expect(screen.getByText('No agent activity yet')).toBeInTheDocument();
+    expect(screen.getByText('No agent runs yet')).toBeInTheDocument();
   });
 
   it('?status=failed pre-fills the status filter dropdown', async () => {
@@ -226,7 +226,7 @@ describe('AgentActivity Deep Link (Issue #3632)', () => {
     expect(statusSelect.value).toBe('');
 
     // Empty state shows normally
-    expect(screen.getByText('No agent activity yet')).toBeInTheDocument();
+    expect(screen.getByText('No agent runs yet')).toBeInTheDocument();
   });
 
   it('combined ?id=X&status=failed opens modal AND sets filter', async () => {

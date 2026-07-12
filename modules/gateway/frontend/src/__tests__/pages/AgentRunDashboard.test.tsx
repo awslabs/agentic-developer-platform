@@ -185,8 +185,12 @@ describe('AgentRunDashboard Page', () => {
     renderDashboard();
 
     await waitFor(() => {
-      expect(screen.getByText('No agent runs yet')).toBeInTheDocument();
+      expect(screen.getByText('No runs yet')).toBeInTheDocument();
     });
+
+    // Empty state provides concrete guidance (not a circular link to /activity)
+    expect(screen.getByText(/Mention the developer agent/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /View setup guide/ })).toHaveAttribute('href', '/setup');
 
     // Tiles should not be visible
     expect(screen.queryByText('Running now')).not.toBeInTheDocument();
@@ -277,11 +281,12 @@ describe('AgentRunDashboard Page', () => {
     });
   });
 
-  it('renders page title and subtitle', async () => {
+  it('renders page title with cross-link subtitle to Activity', async () => {
     renderDashboard();
 
-    expect(screen.getByText('Agent Runs')).toBeInTheDocument();
-    expect(screen.getByText('Overview of your agent run activity')).toBeInTheDocument();
+    expect(screen.getByText('Dashboard')).toBeInTheDocument();
+    expect(screen.getByText(/Your agent runs at a glance/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Activity' })).toHaveAttribute('href', '/activity');
   });
 
   // Issue #3771: Trend strip + week summary integration tests

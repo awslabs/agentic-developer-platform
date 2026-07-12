@@ -18,7 +18,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Input, Select } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
 import InvocationChain from '@/components/InvocationChain';
@@ -654,10 +654,17 @@ export default function AgentActivity() {
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
             Agent Activity
           </h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1">
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
             {viewMode === 'mine'
-              ? 'Your agent invocations'
-              : 'All agent invocations (admin)'}
+              ? <>Every run, filterable — summarized on your{' '}
+                  <Link
+                    to="/runs"
+                    className="text-primary-600 dark:text-primary-400 hover:underline"
+                  >
+                    Dashboard
+                  </Link>
+                </>
+              : 'All agent runs (admin view)'}
           </p>
         </div>
 
@@ -1042,8 +1049,17 @@ export default function AgentActivity() {
             (!isChainView && flatData && flatData.items.length === 0)
           ) ? (
             <div className="text-center py-12">
-              <p className="text-gray-500 dark:text-gray-400">
-                No agent activity yet
+              <p className="text-gray-500 dark:text-gray-400 mb-2">
+                No agent runs yet
+              </p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Mention the developer agent on a GitHub issue to trigger your first run.{' '}
+                <Link
+                  to="/setup"
+                  className="text-primary-600 dark:text-primary-400 hover:underline"
+                >
+                  View setup guide
+                </Link>
               </p>
             </div>
           ) : !isLoading && data && hasNextPage && (

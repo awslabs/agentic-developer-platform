@@ -5,7 +5,7 @@
  * recent failures list, loading skeletons, and guided empty state.
  */
 
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useRunStats } from '@/hooks/useRunStats';
 import { Card } from '@/components/ui';
 import {
@@ -64,10 +64,17 @@ export default function AgentRunDashboard() {
       {/* Page header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-          Agent Runs
+          Dashboard
         </h1>
         <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          Overview of your agent run activity
+          Your agent runs at a glance — see{' '}
+          <Link
+            to="/activity"
+            className="text-primary-600 dark:text-primary-400 hover:underline"
+          >
+            Activity
+          </Link>{' '}
+          for the full history
         </p>
       </div>
 
