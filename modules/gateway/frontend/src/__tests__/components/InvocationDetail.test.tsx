@@ -196,6 +196,76 @@ describe('InvocationDetail', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  // Issue #3765: Error-first detail layout for failed runs
+  describe('error-first layout (Issue #3765)', () => {
+    it('renders error row immediately after status for failed runs', () => {
+      const item = makeItem({
+        status: 'failed',
+        error_message: 'Agent timed out after 300s.',
+        completed_at: '2026-06-14T10:30:00Z',
+      });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      // Get all DetailRow labels (dt elements within the dl)
+      const dl = document.querySelector('dl')!;
+      const labels = Array.from(dl.querySelectorAll('dt')).map((dt) => dt.textContent);
+
+      // Error must appear immediately after Status (index 0 → Status, index 1 → Error)
+      const statusIdx = labels.indexOf('Status');
+      const errorIdx = labels.indexOf('Error');
+      const durationIdx = labels.indexOf('Duration');
+
+      expect(statusIdx).toBeGreaterThanOrEqual(0);
+      expect(errorIdx).toBe(statusIdx + 1);
+      // Error must appear before Duration
+      expect(errorIdx).toBeLessThan(durationIdx);
+    });
+
+    it('keeps default order for non-failed runs (no error row)', () => {
+      const item = makeItem({
+        status: 'complete',
+        completed_at: '2026-06-14T10:30:00Z',
+      });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      const dl = document.querySelector('dl')!;
+      const labels = Array.from(dl.querySelectorAll('dt')).map((dt) => dt.textContent);
+
+      // Error row should not be present
+      expect(labels).not.toContain('Error');
+
+      // Default order: Status → Invocation ID → ... → Duration should be after Channel
+      const statusIdx = labels.indexOf('Status');
+      const invocationIdIdx = labels.indexOf('Invocation ID');
+      const channelIdx = labels.indexOf('Channel');
+      const durationIdx = labels.indexOf('Duration');
+
+      expect(statusIdx).toBe(0);
+      expect(invocationIdIdx).toBe(statusIdx + 1);
+      expect(channelIdx).toBeLessThan(durationIdx);
+    });
+
+    it('shows identifiers after lineage for failed runs', () => {
+      const item = makeItem({
+        status: 'failed',
+        error_message: 'Something went wrong',
+        completed_at: '2026-06-14T10:30:00Z',
+        triggered_by_invocation_id: 'inv-parent-001',
+        triggered_by_topic: 'Parent topic',
+      });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      const dl = document.querySelector('dl')!;
+      const labels = Array.from(dl.querySelectorAll('dt')).map((dt) => dt.textContent);
+
+      const lineageIdx = labels.indexOf('Triggered by');
+      const invocationIdIdx = labels.indexOf('Invocation ID');
+
+      expect(lineageIdx).toBeGreaterThanOrEqual(0);
+      expect(invocationIdIdx).toBeGreaterThan(lineageIdx);
+    });
+  });
+
   it('shows "Transcript not available" when transcript fetch returns 404', async () => {
     const user = userEvent.setup();
     mockGetMyTranscript.mockRejectedValueOnce(new Error('Transcript not available'));
