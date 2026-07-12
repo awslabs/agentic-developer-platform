@@ -8,7 +8,7 @@
 resource "aws_secretsmanager_secret" "webhook_secret" {
   name        = "adp/${var.environment}/webhook-ingress/github-webhook-secret"
   description = "GitHub webhook secret for HMAC-SHA256 signature validation"
-  kms_key_id  = aws_kms_key.secrets.arn
+  kms_key_id  = local.webhook_secrets_kms_key_arn
 }
 
 # Placeholder value — will be overwritten during GitHub App webhook configuration
@@ -31,7 +31,7 @@ resource "aws_secretsmanager_secret_version" "webhook_secret" {
 resource "aws_secretsmanager_secret" "github_app_id" {
   name        = "adp/${var.environment}/github-app/adp-agent-platform-id"
   description = "GitHub App ID for the ADP Agent Platform public app"
-  kms_key_id  = aws_kms_key.secrets.arn
+  kms_key_id  = local.webhook_secrets_kms_key_arn
 }
 
 resource "aws_secretsmanager_secret_version" "github_app_id" {
@@ -46,7 +46,7 @@ resource "aws_secretsmanager_secret_version" "github_app_id" {
 resource "aws_secretsmanager_secret" "github_app_key" {
   name        = "adp/${var.environment}/github-app/adp-agent-platform-key"
   description = "Private key (PEM) for the ADP Agent Platform public app"
-  kms_key_id  = aws_kms_key.secrets.arn
+  kms_key_id  = local.webhook_secrets_kms_key_arn
 }
 
 resource "aws_secretsmanager_secret_version" "github_app_key" {
@@ -71,7 +71,7 @@ resource "aws_secretsmanager_secret_version" "github_app_key" {
 resource "aws_secretsmanager_secret" "marker_signing_key" {
   name        = "adp/${var.environment}/webhook-ingress/marker-signing-key"
   description = "HMAC-SHA256 key for signing correlation markers (cred-binding S4)"
-  kms_key_id  = aws_kms_key.secrets.arn
+  kms_key_id  = local.webhook_secrets_kms_key_arn
 
   tags = {
     Purpose  = "marker-signing"
@@ -104,7 +104,7 @@ resource "aws_secretsmanager_secret" "gitlab_webhook_secret" {
   count       = var.gitlab_webhook_enabled ? 1 : 0
   name        = "adp/${var.environment}/gitlab-webhook-secret"
   description = "GitLab webhook secret token for X-Gitlab-Token header validation"
-  kms_key_id  = aws_kms_key.secrets.arn
+  kms_key_id  = local.webhook_secrets_kms_key_arn
 }
 
 resource "aws_secretsmanager_secret_version" "gitlab_webhook_secret" {

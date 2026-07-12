@@ -2336,14 +2336,18 @@ async def get_app_status() -> AppStatusResponse:
             if error_code in ("ResourceNotFoundException", "InvalidRequestException"):
                 return AppStatusResponse(registered=False)
             if error_code in ("AccessDeniedException", "AccessDenied"):
+                # Issue #3789: surface the real botocore error — the cause may be
+                # a missing KMS grant (not just a SecretsManager IAM grant), and
+                # hardcoding a hypothesis misdirects operators.
                 logger.warning(
-                    "get_app_status: AccessDenied reading %s — IAM policy may be missing adp/*/github-app/* grant on the gateway role",
+                    "get_app_status: AccessDenied reading %s — %s",
                     id_path,
+                    str(exc),
                 )
                 raise HTTPException(
                     status_code=503,
                     detail="Unable to determine App registration status — access denied reading secrets. "
-                    "The gateway IAM role may need the adp/*/github-app/* grant.",
+                    f"Check gateway role IAM and KMS grants. Error: {exc}",
                 ) from exc
             raise
 

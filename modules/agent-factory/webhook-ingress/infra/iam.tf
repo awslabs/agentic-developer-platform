@@ -180,7 +180,7 @@ resource "aws_iam_policy" "lambda_secrets" {
             "kms:Decrypt",
             "kms:DescribeKey"
           ]
-          Resource = aws_kms_key.secrets.arn
+          Resource = local.webhook_secrets_kms_key_arn
         }
       ],
       var.internal_api_key_arn != "" ? [

@@ -329,21 +329,12 @@ refresh_credentials() {
 }
 
 # =============================================================================
-# Helper: check if the webhook-secrets KMS alias exists
+# (Removed) Helper: check if the webhook-secrets KMS alias exists
 # =============================================================================
-# Issue #3419: The enable_webhook_secrets_kms_grant flag in gateway.tfvars
-# references a KMS alias created by webhook-ingress (Step 9). On a fresh
-# account Step 3 runs BEFORE Step 9, so the alias doesn't exist yet and the
-# data source hard-fails at plan time. This helper returns "true" (re-deploy)
-# or "false" (fresh deploy) so we can override the tfvars value safely.
-webhook_kms_grant_value() {
-  if aws kms describe-key --key-id "alias/adp-${ENVIRONMENT}-webhook-secrets" \
-       --region "$AWS_REGION" &>/dev/null; then
-    echo "true"
-  else
-    echo "false"
-  fi
-}
+# Issue #3789: webhook_kms_grant_value() and enable_webhook_secrets_kms_grant
+# are deleted. The webhook-secrets CMK now lives in platform infra (Step 2),
+# so it always exists before gateway applies (Step 3). The gateway grant is
+# unconditional — no flag dance needed.
 
 # =============================================================================
 # Helper: ensure CodeBuild IAM role exists
@@ -801,10 +792,8 @@ else
   # Gateway infra runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/gateway/infra"
   terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false
-  # Issue #3419: override enable_webhook_secrets_kms_grant based on whether the
-  # KMS alias actually exists. On fresh deploys it won't (webhook-ingress is
-  # Step 9); on re-deploys it will.
-  KMS_GRANT=$(webhook_kms_grant_value)
+  # Issue #3789: enable_webhook_secrets_kms_grant removed — the CMK now lives in
+  # platform infra (applied Step 2) so the gateway grant is unconditional.
   if [ "$UPDATE_MODE" = true ]; then
     # Issue #3665: In update mode, read cached ALB vars from SSM so that
     # enable_vpc_origin stays consistent between Step 3 and Step 5. Without
@@ -814,7 +803,7 @@ else
     _ALB_DNS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-dns" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
     _ALB_SG_IDS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-security-group-ids" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "[]")
 
-    STEP3_EXTRA_VARS=(-var "enable_webhook_secrets_kms_grant=$KMS_GRANT")
+    STEP3_EXTRA_VARS=()
     if [ -n "$_ALB_ARN" ] && [ "$_ALB_ARN" != "None" ] && [ -n "$_ALB_DNS" ] && [ "$_ALB_DNS" != "None" ]; then
       echo "Update mode: found cached ALB details in SSM — passing to Step 3 to preserve VPC origin."
       STEP3_EXTRA_VARS+=(-var "internal_alb_arn=$_ALB_ARN" -var "internal_alb_dns=$_ALB_DNS" -var "alb_security_group_ids=$_ALB_SG_IDS" -var "enable_vpc_origin=true")
@@ -825,9 +814,8 @@ else
       "${STEP3_EXTRA_VARS[@]}"
   else
     terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
-      -var "enable_webhook_secrets_kms_grant=$KMS_GRANT" \
       -auto-approve
-    ok "Gateway infrastructure deployed (enable_webhook_secrets_kms_grant=$KMS_GRANT)"
+    ok "Gateway infrastructure deployed"
   fi
 fi
 
@@ -1045,15 +1033,12 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
   if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ] && [ -n "$ALB_DNS" ]; then
     echo "Re-applying gateway Terraform with ALB details to wire API Gateway VPC Link v2 and CloudFront..."
     cd "$ROOT_DIR/modules/gateway/infra"
-    # Issue #3419: re-check KMS alias existence for the second pass too.
-    KMS_GRANT=$(webhook_kms_grant_value)
     if [ "$UPDATE_MODE" = true ]; then
       terraform_update_apply "gateway-alb-wire" "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
         -var "internal_alb_arn=$ALB_ARN" \
         -var "internal_alb_dns=$ALB_DNS" \
         -var "alb_security_group_ids=$ALB_SG_IDS" \
-        -var "enable_vpc_origin=true" \
-        -var "enable_webhook_secrets_kms_grant=$KMS_GRANT"
+        -var "enable_vpc_origin=true"
     else
       terraform apply \
         -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
@@ -1061,9 +1046,8 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
         -var "internal_alb_dns=$ALB_DNS" \
         -var "alb_security_group_ids=$ALB_SG_IDS" \
         -var "enable_vpc_origin=true" \
-        -var "enable_webhook_secrets_kms_grant=$KMS_GRANT" \
         -auto-approve
-      ok "API Gateway VPC Link and CloudFront VPC Origin wired to ALB (enable_webhook_secrets_kms_grant=$KMS_GRANT)"
+      ok "API Gateway VPC Link and CloudFront VPC Origin wired to ALB"
     fi
   fi
 fi

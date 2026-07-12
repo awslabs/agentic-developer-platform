@@ -122,6 +122,20 @@ output "codebuild_project_names" {
 }
 
 # ---------------------------------------------------------------------------
+# KMS outputs (Issue #3789)
+# ---------------------------------------------------------------------------
+
+output "webhook_secrets_kms_key_arn" {
+  description = "ARN of the shared webhook-secrets KMS key (consumed by gateway + webhook-ingress)"
+  value       = aws_kms_key.webhook_secrets.arn
+}
+
+output "webhook_secrets_kms_alias_arn" {
+  description = "ARN of the webhook-secrets KMS alias"
+  value       = aws_kms_alias.webhook_secrets.arn
+}
+
+# ---------------------------------------------------------------------------
 # Security Scans outputs
 # ---------------------------------------------------------------------------
 
