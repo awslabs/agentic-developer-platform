@@ -287,6 +287,28 @@ resource "aws_cloudfront_distribution" "frontend" {
     }
   }
 
+  # Well-Known Cache Behavior — proxy /.well-known/* to API origin (no caching)
+  # Routes standard well-known URIs (e.g. /.well-known/jwks.json) to the backend
+  # instead of the S3 default origin. No prefix stripping — backend expects the
+  # full /.well-known/* path.
+  dynamic "ordered_cache_behavior" {
+    for_each = local.api_origin_enabled ? [1] : []
+    content {
+      path_pattern     = "/.well-known/*"
+      allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+      cached_methods   = ["GET", "HEAD"]
+      target_origin_id = local.use_vpc_origin ? local.vpc_origin_id : local.alb_origin_id
+
+      viewer_protocol_policy = "redirect-to-https"
+
+      # Disable caching — well-known responses may change (key rotation, etc.)
+      cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+      origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+
+      compress = true
+    }
+  }
+
   # Default Cache Behavior
   default_cache_behavior {
     allowed_methods  = ["GET", "HEAD", "OPTIONS"]
@@ -306,17 +328,13 @@ resource "aws_cloudfront_distribution" "frontend" {
     compress = true
   }
 
-  # Custom error responses for SPA routing (403 and 404 → /index.html with 200)
+  # Custom error response for SPA routing (403 → /index.html with 200)
+  # NOTE: Only 403 is needed — S3 with OAC returns 403 (Access Denied) for
+  # non-existent objects, not 404. Removing the 404 rule ensures API endpoints
+  # can return semantic 404 responses without CloudFront rewriting them to HTML.
   custom_error_response {
     error_caching_min_ttl = 10
     error_code            = 403
-    response_code         = 200
-    response_page_path    = "/index.html"
-  }
-
-  custom_error_response {
-    error_caching_min_ttl = 10
-    error_code            = 404
     response_code         = 200
     response_page_path    = "/index.html"
   }
