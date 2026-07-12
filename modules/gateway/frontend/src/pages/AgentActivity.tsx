@@ -22,6 +22,8 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Input, Select } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
 import { FilterChips } from '@/components/activity/FilterChips';
+import { ActivityCardList } from '@/components/activity/ActivityCardList';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { ActiveFilter } from '@/components/activity/FilterChips';
 import InvocationChain from '@/components/InvocationChain';
 import { InvocationDetail } from '@/components/InvocationDetail';
@@ -386,6 +388,9 @@ const PERSONA_OPTIONS = [
 export default function AgentActivity() {
   const { isPlatformAdmin, isOrgAdmin } = usePermissions();
   const isAdmin = isPlatformAdmin() || isOrgAdmin();
+
+  // Issue #3770: Responsive layout — card view below lg breakpoint
+  const isNarrowViewport = useMediaQuery('(max-width: 1023px)');
 
   // Issue #3632: URL query-param deep-linking
   const [searchParams] = useSearchParams();
@@ -987,6 +992,15 @@ export default function AgentActivity() {
           ) : !isChainView && flatData && flatData.items.length > 0 ? (
             /* Flat list view (existing) */
             <>
+              {isNarrowViewport ? (
+                /* Card layout for narrow viewports (<1024px) — Issue #3770 */
+                <ActivityCardList
+                  items={flatData.items}
+                  onDetailClick={(item) => setDetailItem(item)}
+                  onTranscriptClick={(id) => setTranscriptInvocationId(id)}
+                />
+              ) : (
+              /* Table layout for wide viewports (>=1024px) */
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                   <thead className="bg-gray-50 dark:bg-gray-900">
@@ -1092,6 +1106,7 @@ export default function AgentActivity() {
                   </tbody>
                 </table>
               </div>
+              )}
 
               {/* Pagination */}
               <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
