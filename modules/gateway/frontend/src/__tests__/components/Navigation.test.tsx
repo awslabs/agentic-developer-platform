@@ -12,6 +12,11 @@ import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { Navigation } from '@/components/Navigation';
 
+// Mock auth service — getAccessToken returns null by default (no SSO redirect)
+vi.mock('@/services/auth', () => ({
+  getAccessToken: () => null,
+}));
+
 // Mock usePermissions — return a basic authenticated user (no admin roles)
 vi.mock('@/hooks/usePermissions', () => ({
   usePermissions: () => ({

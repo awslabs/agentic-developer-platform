@@ -45,6 +45,7 @@ UNIT_MODULES = [
     "src.knowledge.routes",  # Issue #2045: Knowledge-assets registry CRUD
     "src.knowledge.github_repos",  # Issue #2045: GitHub repo picker
     "src.features.routes",  # Issue #3566: Feature-flag endpoint
+    "src.auth.gitlab_sso",  # Issue #3775: GitLab SSO JWT minting + JWKS
 ]
 
 
