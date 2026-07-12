@@ -312,6 +312,35 @@ jobs:
       # platform infra (applied before gateway in all tracks). The gateway KMS
       # grant is unconditional — no enable_webhook_secrets_kms_grant flag needed.
 
+      # Issue #3745: Pre-resolve GitLab ALB from SSM (platform account only).
+      # GitLab is an optional module — its ALB values are NOT in the shared
+      # tfvars. On accounts that have GitLab deployed, the SSM params exist and
+      # we export TF_VAR_gitlab_origin_*; on all other accounts the params are
+      # absent and we silently leave the vars empty (Terraform defaults = no
+      # GitLab origin). This is the normal customer-account path.
+      - name: Pre-resolve GitLab ALB (SSM)
+        id: gitlab_pre
+        run: |
+          GITLAB_DNS=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT:-dev}/gitlab/alb-dns" \
+            --query "Parameter.Value" --output text \
+            --region "$AWS_REGION" 2>/dev/null || echo "")
+          GITLAB_ARN=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT:-dev}/gitlab/alb-arn" \
+            --query "Parameter.Value" --output text \
+            --region "$AWS_REGION" 2>/dev/null || echo "")
+          if [ -n "$GITLAB_DNS" ] && [ -n "$GITLAB_ARN" ]; then
+            echo "GitLab ALB resolved from SSM — enabling /gitlab/* CloudFront origin."
+            echo "  DNS: $GITLAB_DNS"
+            echo "  ARN: $GITLAB_ARN"
+            echo "GITLAB_DNS=$GITLAB_DNS" >> "$GITHUB_OUTPUT"
+            echo "GITLAB_ARN=$GITLAB_ARN" >> "$GITHUB_OUTPUT"
+          else
+            echo "GitLab ALB SSM params not found — GitLab origin disabled (normal for non-platform accounts)."
+            echo "GITLAB_DNS=" >> "$GITHUB_OUTPUT"
+            echo "GITLAB_ARN=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Terraform Plan (destroy-safety check)
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -323,6 +352,8 @@ jobs:
           TF_VAR_internal_alb_dns: ${{ steps.alb_pre.outputs.ALB_DNS }}
           TF_VAR_alb_security_group_ids: ${{ steps.alb_pre.outputs.ALB_SG_IDS }}
           TF_VAR_enable_vpc_origin: ${{ steps.alb_pre.outputs.ALB_ARN != '' && 'true' || 'false' }}
+          TF_VAR_gitlab_origin_dns: ${{ steps.gitlab_pre.outputs.GITLAB_DNS }}
+          TF_VAR_gitlab_origin_arn: ${{ steps.gitlab_pre.outputs.GITLAB_ARN }}
         run: |
           set -e
           set -o pipefail

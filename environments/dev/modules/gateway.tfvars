@@ -63,7 +63,10 @@ enable_lambda_reserved_concurrency = false
 # Issue #3789: enable_webhook_secrets_kms_grant removed. The webhook-secrets
 # CMK is now owned by platform infra and the gateway grant is unconditional.
 
-# Issue #3583: GitLab VPC Origin for CloudFront /gitlab/* behavior.
-# Values from the gitlab module outputs in embark1 (adp-dev-gitlab-alb).
-gitlab_origin_dns = "internal-adp-dev-gitlab-alb-1395653446.us-east-1.elb.amazonaws.com"
-gitlab_origin_arn = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/adp-dev-gitlab-alb/dd32988e2bbdda5f"
+# GitLab VPC Origin for CloudFront /gitlab/* behavior.
+# GitLab is an OPTIONAL module — its values must NOT be hardcoded here.
+# The gateway-infra-apply.yml workflow reads them from SSM at apply time
+# (platform account only); all other accounts get the empty default which
+# disables the GitLab origin. See #3745 / #3440 (core ≠ optional coupling rule).
+gitlab_origin_dns = ""
+gitlab_origin_arn = ""
