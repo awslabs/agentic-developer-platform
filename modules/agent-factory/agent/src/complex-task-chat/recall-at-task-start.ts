@@ -45,9 +45,9 @@ const CONTEXT_MCP_URL_RAW =
   process.env.CONTEXT_MCP_SERVER_URL ??
   'http://context-mcp.agent-context.svc.cluster.local:5100';
 
-// SSRF guard: validate at module load; allowHttp for internal cluster (#3582)
-validateBaseUrl(CONTEXT_MCP_URL_RAW, { allowHttp: true });
-const CONTEXT_MCP_URL = CONTEXT_MCP_URL_RAW;
+// SSRF guard: validateBaseUrl returns the normalized origin, breaking semgrep's
+// taint path from the env-var source → fetch() (#3582, #3713)
+const CONTEXT_MCP_URL = validateBaseUrl(CONTEXT_MCP_URL_RAW, { allowHttp: true });
 
 /**
  * Maximum number of recall results to request.

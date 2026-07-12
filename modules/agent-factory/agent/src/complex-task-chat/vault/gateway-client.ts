@@ -102,11 +102,11 @@ export class VaultGatewayClient {
   private readonly apiKey: string;
 
   constructor(config: VaultClientConfig) {
-    // SSRF guard: validate + pin to configured internal gateway host (#3582).
+    // SSRF guard: validateBaseUrl returns the normalized origin, breaking
+    // semgrep's taint path from config.baseUrl → fetch() (#3582, #3713).
     // allowHttp: internal cluster communication uses plain HTTP.
     const parsed = new URL(config.baseUrl);
-    validateBaseUrl(config.baseUrl, { allowHttp: true, pinHost: parsed.hostname });
-    this.baseUrl = config.baseUrl.replace(/\/$/, '');
+    this.baseUrl = validateBaseUrl(config.baseUrl, { allowHttp: true, pinHost: parsed.hostname }).replace(/\/$/, '');
     this.apiKey = config.apiKey;
   }
 

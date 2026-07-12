@@ -118,8 +118,9 @@ export class LiveStatusComment {
       minUpdateIntervalMs: 5000,
       ...options,
     };
-    // SSRF guard: validate the API base URL at construction time (#3582)
-    validateBaseUrl(this.options.apiBaseUrl);
+    // SSRF guard: validateBaseUrl returns the normalized origin, breaking
+    // semgrep's taint path from options.apiBaseUrl → fetch() (#3582, #3713)
+    this.options.apiBaseUrl = validateBaseUrl(this.options.apiBaseUrl);
     this.runStartTime = Date.now();
     this.heartbeat = setInterval(() => {
       if (this.commentId) this.scheduleUpdate();

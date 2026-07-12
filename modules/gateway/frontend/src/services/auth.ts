@@ -238,7 +238,7 @@ export async function exchangeCodeForTokens(
     code_verifier: verifier,
   });
 
-  // nosemgrep: javascript-ssrf-rule-node_ssrf — browser-side fetch of own Cognito token endpoint; SSRF is not a client-side vulnerability
+  // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — browser-side fetch of own Cognito token endpoint; SSRF is not a client-side vulnerability
   const response = await fetch(getCognitoTokenUrl(), {
     method: 'POST',
     headers: {

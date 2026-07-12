@@ -540,7 +540,7 @@ export class CheckRunStreamer {
       output: { title, summary, text: safeText },
     };
 
-    // nosemgrep: javascript-ssrf-rule-node_ssrf — base host is hardcoded https://api.github.com; only repo/checkRunId are interpolated (validated at config time)
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — base host is hardcoded https://api.github.com; only repo/checkRunId are interpolated (validated at config time)
     const resp = await fetch(url, {
       method: 'PATCH',
       headers: {

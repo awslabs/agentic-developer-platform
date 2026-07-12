@@ -19,9 +19,10 @@ export class GitLabClient {
   private readonly accessToken: string;
 
   constructor(config: GitLabClientConfig) {
-    // SSRF guard: validate tenant-supplied base URL at construction time (#3582)
-    validateBaseUrl(config.baseUrl);
-    this.baseUrl = config.baseUrl.replace(/\/$/, '');
+    // SSRF guard: validateBaseUrl returns the normalized origin, breaking
+    // semgrep's taint path from config.baseUrl → fetch() (#3582, #3713).
+    // allowHttp: GitLab base URL is a configured internal host (e.g. http://gitlab.dev.adp.internal).
+    this.baseUrl = validateBaseUrl(config.baseUrl, { allowHttp: true }).replace(/\/$/, '');
     this.accessToken = config.accessToken;
   }
 

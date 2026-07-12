@@ -176,6 +176,7 @@ export async function getMyTranscript(invocationId: string): Promise<string> {
   const { getAccessToken } = await import('./auth');
   const baseUrl = import.meta.env.VITE_API_URL || '/api';
   const token = getAccessToken();
+  // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — browser-side fetch of own API base; SSRF is not a client-side vulnerability
   const response = await fetch(
     `${baseUrl}/me/agent-invocations/${encodeURIComponent(invocationId)}/transcript`,
     {
@@ -200,7 +201,7 @@ export async function getAdminTranscript(
   const baseUrl = import.meta.env.VITE_API_URL || '/api';
   const token = getAccessToken();
   const query = tenantId ? buildQueryString({ tenant_id: tenantId }) : '';
-  // nosemgrep: javascript-ssrf-rule-node_ssrf — browser-side fetch of own API base; SSRF is not a client-side vulnerability
+  // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — browser-side fetch of own API base; SSRF is not a client-side vulnerability
   const response = await fetch(
     `${baseUrl}/admin/agent-invocations/${encodeURIComponent(invocationId)}/transcript${query}`,
     {
