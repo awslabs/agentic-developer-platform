@@ -430,9 +430,20 @@ export default function AgentActivity() {
     if (paramSince === 'today') {
       return new Date().toISOString().split('T')[0];
     }
+    // Issue #3771: Support YYYY-MM-DD date values from trend strip navigation
+    if (paramSince && /^\d{4}-\d{2}-\d{2}$/.test(paramSince)) {
+      return paramSince;
+    }
     return '';
   });
-  const [endDate, setEndDate] = useState('');
+  const [endDate, setEndDate] = useState(() => {
+    // Issue #3771: Read `until` URL param for day-click navigation from trend strip
+    const paramUntil = searchParams.get('until');
+    if (paramUntil && /^\d{4}-\d{2}-\d{2}$/.test(paramUntil)) {
+      return paramUntil;
+    }
+    return '';
+  });
 
   // Issue #1658: "Show all events" toggle — when off (default), non-triggering
   // statuses (no_op, webhook_received) are hidden from the board.

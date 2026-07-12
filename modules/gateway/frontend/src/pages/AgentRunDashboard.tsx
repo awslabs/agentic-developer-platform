@@ -14,6 +14,8 @@ import {
   SpendTodayTile,
   SucceededTodayTile,
   EmptyState,
+  TrendStrip,
+  WeekSummary,
 } from '@/components/runDashboard';
 import { formatRelativeTime } from '@/utils/format';
 
@@ -100,6 +102,10 @@ export default function AgentRunDashboard() {
             <SpendTodayTile spend={todayData?.spend ? todayData.spend.total_cost_usd : null} />
             <SucceededTodayTile count={data.today.completed} />
           </div>
+
+          {/* 7-day trend strip + week summary (Issue #3771) */}
+          <TrendStrip daily={data.daily} />
+          <WeekSummary daily={data.daily} spend={data.spend} />
 
           {/* Recent failures */}
           {data.recent_failures.length > 0 && (

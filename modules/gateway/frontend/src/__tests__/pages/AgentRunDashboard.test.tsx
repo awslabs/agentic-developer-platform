@@ -52,7 +52,15 @@ const mockStatsWithData: RunStatsResponse = {
     failed: 2,
     active: 1,
   },
-  daily: [],
+  daily: [
+    { date: '2026-07-06', total: 12, completed: 10, failed: 2 },
+    { date: '2026-07-07', total: 8, completed: 7, failed: 1 },
+    { date: '2026-07-08', total: 15, completed: 12, failed: 3 },
+    { date: '2026-07-09', total: 5, completed: 5, failed: 0 },
+    { date: '2026-07-10', total: 20, completed: 18, failed: 2 },
+    { date: '2026-07-11', total: 0, completed: 0, failed: 0 },
+    { date: '2026-07-12', total: 3, completed: 2, failed: 1 },
+  ],
   by_persona: [],
   recent_failures: [
     {
@@ -166,8 +174,8 @@ describe('AgentRunDashboard Page', () => {
     expect(screen.getByLabelText(/Running now: 1/)).toBeInTheDocument();
     // Failed = 2
     expect(screen.getByLabelText(/Failed today: 2/)).toBeInTheDocument();
-    // Spend = $12.34
-    expect(screen.getByText('$12.34')).toBeInTheDocument();
+    // Spend = $12.34 (in tile — use aria-label to target the tile specifically)
+    expect(screen.getByLabelText('Spend today: $12.34')).toBeInTheDocument();
     // Succeeded = 7
     expect(screen.getByLabelText(/Succeeded today: 7/)).toBeInTheDocument();
   });
@@ -274,5 +282,59 @@ describe('AgentRunDashboard Page', () => {
 
     expect(screen.getByText('Agent Runs')).toBeInTheDocument();
     expect(screen.getByText('Overview of your agent run activity')).toBeInTheDocument();
+  });
+
+  // Issue #3771: Trend strip + week summary integration tests
+  it('renders 7-day trend strip when daily data is available', async () => {
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('trend-strip')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('Past 7 days')).toBeInTheDocument();
+  });
+
+  it('hides trend strip when daily data has fewer than 2 entries', async () => {
+    mockGetRunStats.mockResolvedValue({
+      ...mockStatsWithData,
+      daily: [{ date: '2026-07-12', total: 3, completed: 2, failed: 1 }],
+    });
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(screen.getByText('Running now')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByTestId('trend-strip')).not.toBeInTheDocument();
+  });
+
+  it('renders week summary with spend and run count', async () => {
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('week-summary')).toBeInTheDocument();
+    });
+
+    const summary = screen.getByTestId('week-summary');
+    expect(summary).toHaveTextContent('This week:');
+    expect(summary).toHaveTextContent('$12.34');
+    // Total runs from daily: 12+8+15+5+20+0+3 = 63
+    expect(summary).toHaveTextContent('63 runs');
+  });
+
+  it('week summary shows "—" when spend is null', async () => {
+    mockGetRunStats.mockResolvedValue({
+      ...mockStatsWithData,
+      spend: null,
+    });
+    renderDashboard();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('week-summary')).toBeInTheDocument();
+    });
+
+    const summary = screen.getByTestId('week-summary');
+    expect(summary).toHaveTextContent('—');
   });
 });
