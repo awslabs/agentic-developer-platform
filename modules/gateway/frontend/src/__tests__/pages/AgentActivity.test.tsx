@@ -675,4 +675,30 @@ describe('AgentActivity Page', () => {
     expect(row).toBeInTheDocument();
     expect(row).toHaveAttribute('tabindex', '0');
   });
+
+  // ---------------------------------------------------------------------------
+  // Issue #3770: Responsive layout — table above 1024px, cards below
+  // ---------------------------------------------------------------------------
+
+  it('table renders correctly above 1024px (wide viewport uses table layout)', async () => {
+    // Default jsdom has no matchMedia match (window.innerWidth defaults to 1024),
+    // and our mock returns false for "(max-width: 1023px)", meaning wide viewport.
+    // The flat view should render a table element.
+    const items: InvocationItem[] = [
+      makeInvocation({
+        invocation_id: 'inv-wide-1',
+        topic: 'Wide viewport task',
+        status: 'complete',
+      }),
+    ];
+
+    mockGetMine.mockResolvedValue({ items, last_key: null });
+
+    await renderAgentActivityFlat();
+
+    // Table element should be present (wide viewport renders table layout)
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    // Cards should NOT be rendered
+    expect(screen.queryByTestId('activity-card-inv-wide-1')).not.toBeInTheDocument();
+  });
 });

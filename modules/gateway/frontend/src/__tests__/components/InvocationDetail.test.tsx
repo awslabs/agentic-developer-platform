@@ -11,6 +11,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { InvocationDetail } from '@/components/InvocationDetail';
+import { TranscriptViewer } from '@/components/TranscriptViewer';
 import type { InvocationItem } from '@/types/activity';
 
 // Mock the activity service transcript functions
@@ -284,7 +285,7 @@ describe('InvocationDetail', () => {
 
   // Issue #3767: Inline transcript content swap (no nested modal)
   describe('inline transcript (Issue #3767)', () => {
-    it('does not render a nested modal — only one dialog present when transcript is shown', async () => {
+    it('no nested modal — no double role="dialog" when transcript is shown', async () => {
       const user = userEvent.setup();
       mockGetMyTranscript.mockResolvedValueOnce('# Test transcript\nSome content');
       const item = makeItem({ transcript_key: 'runs/inv-001/transcript.md' });
@@ -341,5 +342,19 @@ describe('InvocationDetail', () => {
       expect(screen.getByText('Run Transcript')).toBeInTheDocument();
       expect(screen.queryByText('Invocation Detail')).not.toBeInTheDocument();
     });
+  });
+
+  // Issue #3767 regression: standalone transcript links from activity table still open their own modal
+  it('standalone transcript modal — TranscriptViewer renders its own dialog when used directly', () => {
+    mockGetMyTranscript.mockResolvedValueOnce('# Standalone transcript');
+
+    renderWithClient(
+      <TranscriptViewer invocationId="inv-standalone" isOpen={true} onClose={() => {}} />,
+    );
+
+    // The standalone TranscriptViewer renders its own modal (role="dialog")
+    const dialogs = screen.getAllByRole('dialog');
+    expect(dialogs).toHaveLength(1);
+    expect(screen.getByText('Run Transcript')).toBeInTheDocument();
   });
 });
