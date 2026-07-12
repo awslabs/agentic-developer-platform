@@ -351,7 +351,7 @@ describe('AgentRunDashboard Page', () => {
     });
 
     const summary = screen.getByTestId('week-summary');
-    expect(summary).toHaveTextContent('This week:');
+    expect(summary).toHaveTextContent('Past 7 days:');
     expect(summary).toHaveTextContent('$12.34');
     // Total runs from daily: 12+8+15+5+20+0+3 = 63
     expect(summary).toHaveTextContent('63 runs');

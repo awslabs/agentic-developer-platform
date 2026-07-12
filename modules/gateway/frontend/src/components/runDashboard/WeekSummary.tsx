@@ -1,14 +1,15 @@
 /**
  * Week summary context line for the Agent Run Dashboard.
  *
- * Issue #3771: Shows "This week: $N across M runs" using window spend
- * and sum of daily totals. Provides at-a-glance weekly context that the
- * today-only tiles miss.
+ * Issue #3771: Shows spend and run count for the trend window.
+ * Issue #3825: Uses the same sliceLast7Days helper as TrendStrip so
+ * the run count always matches the visible bars.
  *
  * Displays "—" when spend is null (data unavailable).
  */
 
 import { formatCurrency } from '@/utils/format';
+import { sliceLast7Days } from './TrendStrip';
 import type { TrendDay } from './TrendStrip';
 import type { RunStatsSpend } from '@/services/runStats';
 
@@ -18,7 +19,8 @@ interface WeekSummaryProps {
 }
 
 export function WeekSummary({ daily, spend }: WeekSummaryProps) {
-  const totalRuns = daily.reduce((sum, d) => sum + d.total, 0);
+  const days = sliceLast7Days(daily);
+  const totalRuns = days.reduce((sum, d) => sum + d.total, 0);
 
   // Hide if there's nothing meaningful to show
   if (totalRuns === 0 && spend === null) {
@@ -32,7 +34,7 @@ export function WeekSummary({ daily, spend }: WeekSummaryProps) {
       className="text-sm text-gray-500 dark:text-gray-400"
       data-testid="week-summary"
     >
-      This week:{' '}
+      Past 7 days:{' '}
       <span className="font-medium text-gray-700 dark:text-gray-300">
         {spendDisplay}
       </span>
