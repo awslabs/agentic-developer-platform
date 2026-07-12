@@ -761,11 +761,13 @@ browser authorization-code redirect, and Cognito has no bridge from
   session; GitLab's callback cannot consume raw Cognito tokens.
 
 The alternative — GitHub as a real federated IdP inside Cognito, so the Hosted UI
-itself could log the user in — is the #518 path reverted in #519 (GitHub OAuth is
-not spec-compliant OIDC), and would still bounce users through a Hosted-UI
-redirect. Hence the gateway-signed JWT: the gateway is already the de-facto
-identity authority (it alone joins Cognito identity to canonical user + tenant),
-so it vouches directly.
+itself could log the user in — failed as DIRECT federation in #518/#519 (GitHub
+OAuth is not spec-compliant OIDC; Cognito can't even create the IdP resource).
+A wrapper-based variant remains viable and untested — it is Candidate 2 in the
+Evolution section below, deliberately deferred to the module-#2 decision rather
+than built for a single module. Hence the gateway-signed JWT for v1: the gateway
+is already the de-facto identity authority (it alone joins Cognito identity to
+canonical user + tenant), so it vouches directly.
 
 ---
 
@@ -787,9 +789,13 @@ happens to ship a provider that accepts a signed token in a URL; most tools
 don't. What they all speak is **standard OIDC** (authorization-code flow against
 an issuer).
 
-### Target end-state
+### Two candidate end-states (decision deferred to module #2 — see Trigger)
 
-Promote the gateway to a first-class OIDC identity provider:
+Both candidates achieve the goal — every optional module is a standard OIDC
+client registration against ONE issuer holding a browser session — and both are
+compatible with everything this EPIC builds. They differ in WHO the issuer is.
+
+#### Candidate 1: Gateway as a first-class OIDC identity provider
 
 - Gateway exposes `/authorize`, `/token`, `/jwks`,
   `/.well-known/openid-configuration`, and sets a **browser session cookie** at
@@ -799,31 +805,89 @@ Promote the gateway to a first-class OIDC identity provider:
   direction preserved); claims carry `adp_user_id` + `tenant_id` as specified
   here.
 - Adding module N = register a client + point the module's standard OIDC config
-  at the gateway. No new endpoint, key, or mechanism. SSO becomes real in both
-  directions: the first module visited establishes the gateway session; every
-  subsequent module's OIDC redirect completes silently against that cookie.
+  at the gateway. SSO in both directions: the first module visited establishes
+  the gateway session; every subsequent module's OIDC redirect completes
+  silently against that cookie.
+- **Cost**: implementing and security-hardening the OIDC endpoints ourselves
+  (authorization-code + PKCE, token issuance, session management). The gateway
+  becomes critical-path IdP infrastructure we own.
 
-(Considered and set aside: deploying an off-the-shelf IdP — Dex/Keycloak — that
-federates GitHub natively. It solves the OIDC-protocol part but does not know the
-tenancy model; the gateway would still have to sit behind it as the claims/tenant
-authority, i.e. two identity services instead of one. Revisit only if
-implementing `/authorize` + `/token` in the gateway proves unexpectedly hard.)
+#### Candidate 2: Cognito as the OIDC issuer, GitHub federated via an OIDC wrapper
+
+**Cognito IS a full OIDC IdP** — Hosted UI, `/oauth2/authorize`, `/oauth2/token`,
+JWKS, app-client-per-module. It is not the issuer today for exactly one reason:
+GitHub cannot be attached as a federated IdP directly. What #518 attempted and
+#519 reverted (verified from the PRs, 2026-07-12): Cognito's OIDC provider type
+enforces real OIDC semantics — it calls `/.well-known/openid-configuration` on
+the IdP at CREATE time, expects signed ID tokens and a JWKS endpoint —
+and `github.com/.well-known/openid-configuration` is a 404 (GitHub OAuth is
+plain OAuth 2.0, not OIDC). The IdP resource cannot even be created
+(`InvalidParameterException: Unable to contact well-known endpoint`).
+**Important scope note: #518/#519 tested DIRECT federation only. The wrapper
+variant below was never evaluated.**
+
+- Deploy a **GitHub-OIDC wrapper** (established community pattern, e.g.
+  `github-cognito-openid-wrapper`: a small Lambda/API Gateway shim that
+  fronts GitHub OAuth with a compliant discovery document, `id_token`
+  minting, and JWKS). Cognito federates to the WRAPPER as a standard OIDC IdP.
+- Login flow becomes: module → Cognito Hosted UI → GitHub (via wrapper) →
+  **Hosted-UI browser session exists** → every module's OIDC redirect completes
+  silently. This retroactively fixes the root cause of this whole EPIC (the
+  broker never creates a Hosted-UI session).
+- Tenant + canonical-ID claims ride in via the **pre-token-generation Lambda
+  already in production** (it injects org/team/dept/role today) — Cognito stays
+  the issuer, the gateway stays the claims authority via that trigger.
+- Adding module N = one Cognito app client in the module's own Terraform
+  (dependency direction preserved; the gitlab module already creates its own
+  app client — `cognito.tf` — so this pattern is proven in-repo).
+- **Costs**: (a) the wrapper is still a service we run — "managed Cognito"
+  really means "Cognito + one shim we own"; (b) **identity migration** — today's
+  users are NATIVE Cognito users the broker created (`GitHub_<id>`, password
+  auth); federated users are a different identity type with different subs, so
+  existing users must be migrated or linked (`AdminLinkProviderForUser`), and
+  the broker's allowlist/org-membership/canonical-provisioning logic moves into
+  Cognito triggers; (c) Hosted-UI UX constraints (limited branding, an extra
+  redirect hop visible to users).
+
+#### Comparison
+
+| Dimension | C1: Gateway-as-IdP | C2: Cognito + GitHub wrapper |
+|-----------|--------------------|-----------------------------|
+| OIDC protocol surface | We build + harden it | Managed (Cognito) |
+| GitHub federation | Broker (existing, unchanged) | Wrapper shim (new service, well-trodden pattern) |
+| Existing user identities | Unchanged | Migration/linking required (native -> federated) |
+| Claims/tenant authority | Gateway, in-process | Gateway, via pre-token-gen Lambda (existing) |
+| Session location | Gateway cookie | Cognito Hosted-UI cookie |
+| Per-module cost | OIDC client registration | Cognito app client (pattern already in-repo) |
+| New critical-path service we own | OIDC endpoints in gateway | Wrapper Lambda |
+| Prior art in-repo | Broker, JWKS (Wave 2) | #518/#519 (direct federation only — wrapper untested) |
+
+(Off-the-shelf IdP — Dex/Keycloak — remains set aside: it solves GitHub
+federation like the wrapper does, but as a full second identity SERVICE that
+still doesn't know the tenancy model; strictly more moving parts than either
+candidate. Revisit only if both candidates prove unexpectedly hard.)
 
 ### Trigger and migration
 
 - **Trigger: the second SSO-consuming module.** For one module (GitLab), the JWT
-  handoff is the right cheaper call; a second module is where the OIDC-issuer
-  investment pays for itself.
-- Wave 2 of THIS EPIC is built as the stepping stone (see Key Storage): the
-  signing key is the gateway's OIDC signing identity (`adp/{env}/gateway-oidc-signing-key`),
-  `/.well-known/jwks.json` ships day one, issuer is `urn:adp:gateway:{env}`,
-  audiences are per-client. `/auth/gitlab-sso` is explicitly ONE client adapter
-  over that identity — not the pattern.
-- When module #2 arrives: build `/authorize` + `/token` + the session cookie,
-  register module #2 as a standard OIDC client, and **migrate GitLab from the
-  jwt handoff to standard OIDC against the gateway** (re-point GitLab's
-  `openid_connect` provider from Cognito to the gateway — a gitlab.rb change).
-  The reconciler and tenancy enforcement carry over untouched.
+  handoff is the right cheaper call; a second module is where the one-issuer
+  investment pays for itself. **The C1-vs-C2 decision is made THEN, as a spike
+  with a working proof-of-concept of the C2 wrapper** (its feasibility was never
+  actually tested — do not inherit #519's conclusion, which applies only to
+  direct federation).
+- Wave 2 of THIS EPIC is built as the stepping stone and is **compatible with
+  both candidates**: the signing key is the gateway's OIDC signing identity
+  (`adp/{env}/gateway-oidc-signing-key`), `/.well-known/jwks.json` ships day
+  one, issuer is `urn:adp:gateway:{env}`, audiences are per-client, and claims
+  carry the canonical `adp_user_id` + `tenant_id`. Under C1 these become the
+  issuer's own artifacts; under C2 the claim schema moves into the
+  pre-token-gen Lambda and the signing identity is retired with the handoff.
+  `/auth/gitlab-sso` is explicitly ONE client adapter — not the pattern.
+- When module #2 arrives: run the C1-vs-C2 spike, then **migrate GitLab from
+  the jwt handoff to standard OIDC against the chosen issuer** (re-point
+  GitLab's `openid_connect` provider — a gitlab.rb change in either case; under
+  C2 it can even reuse the existing Cognito app client). The reconciler and
+  tenancy enforcement carry over untouched under both.
 
 ---
 
