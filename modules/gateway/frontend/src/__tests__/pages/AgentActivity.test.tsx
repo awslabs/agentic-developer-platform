@@ -7,7 +7,7 @@
  * admin toggle visibility, error/retry UI, trigger badges, chain view.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -594,5 +594,85 @@ describe('AgentActivity Page', () => {
     expect(mockGetMyChains).not.toHaveBeenCalled();
 
     unmount();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue #3769: Keyboard accessibility for flat view table rows
+  // ---------------------------------------------------------------------------
+
+  it('flat view rows are keyboard-accessible: Enter opens detail modal', async () => {
+    const items: InvocationItem[] = [
+      makeInvocation({
+        invocation_id: 'inv-kbd-1',
+        topic: 'Keyboard test task',
+        status: 'failed',
+      }),
+    ];
+
+    mockGetMine.mockResolvedValue({ items, last_key: null });
+
+    await renderAgentActivityFlat();
+
+    // Find the row by its aria-label
+    const row = screen.getByRole('row', { name: /Run: Keyboard test task, Status: Failed/ });
+    expect(row).toHaveAttribute('tabindex', '0');
+
+    // Before keyboard activation, topic appears only in the table cell
+    expect(screen.getAllByText('Keyboard test task')).toHaveLength(1);
+
+    // Simulate Enter keypress on the row
+    fireEvent.keyDown(row, { key: 'Enter', code: 'Enter' });
+
+    // Detail modal should open — topic now appears in both table cell and detail panel
+    await waitFor(() => {
+      expect(screen.getAllByText('Keyboard test task').length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it('flat view rows are keyboard-accessible: Space opens detail modal', async () => {
+    const items: InvocationItem[] = [
+      makeInvocation({
+        invocation_id: 'inv-kbd-2',
+        topic: 'Space key task',
+        status: 'complete',
+      }),
+    ];
+
+    mockGetMine.mockResolvedValue({ items, last_key: null });
+
+    await renderAgentActivityFlat();
+
+    // Find the row by its aria-label
+    const row = screen.getByRole('row', { name: /Run: Space key task, Status: Complete/ });
+    expect(row).toHaveAttribute('tabindex', '0');
+
+    // Before keyboard activation, topic appears only in the table cell
+    expect(screen.getAllByText('Space key task')).toHaveLength(1);
+
+    // Simulate Space keypress on the row
+    fireEvent.keyDown(row, { key: ' ', code: 'Space' });
+
+    // Detail modal should open — topic now appears in both table cell and detail panel
+    await waitFor(() => {
+      expect(screen.getAllByText('Space key task').length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it('flat view rows have descriptive aria-label for screen readers', async () => {
+    const items: InvocationItem[] = [
+      makeInvocation({
+        invocation_id: 'inv-aria-1',
+        topic: 'Fix login bug',
+        status: 'failed',
+      }),
+    ];
+
+    mockGetMine.mockResolvedValue({ items, last_key: null });
+
+    await renderAgentActivityFlat();
+
+    const row = screen.getByRole('row', { name: /Run: Fix login bug, Status: Failed/ });
+    expect(row).toBeInTheDocument();
+    expect(row).toHaveAttribute('tabindex', '0');
   });
 });

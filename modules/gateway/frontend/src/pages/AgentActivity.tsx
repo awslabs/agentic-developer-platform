@@ -958,8 +958,16 @@ export default function AgentActivity() {
                     {flatData.items.map((item: InvocationItem) => (
                       <tr
                         key={item.invocation_id}
-                        className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer"
+                        className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+                        tabIndex={0}
                         onClick={() => setDetailItem(item)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setDetailItem(item);
+                          }
+                        }}
+                        aria-label={`Run: ${item.topic || 'untitled'}, Status: ${STATUS_CONFIG[item.status]?.label || item.status}, ${formatRelativeTime(item.invoked_at)}`}
                       >
                         <td
                           className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white"
