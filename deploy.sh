@@ -129,6 +129,19 @@ if [ "$DRY_RUN" = false ]; then
     -e "s|arn:aws:sqs:[a-z0-9-]*:[0-9]\{12\}:|arn:aws:sqs:${AWS_REGION}:${ACCOUNT_ID}:|g" \
     "$ROOT_DIR/environments/${ENVIRONMENT}/modules/gateway.tfvars"
 
+  # Blank out gitlab_origin vars if the ALB doesn't exist in this account
+  # (GitLab is only deployed in the platform account, not customer accounts)
+  GITLAB_ALB_EXISTS=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
+    --query "LoadBalancers[?contains(LoadBalancerName,'gitlab')].LoadBalancerArn" \
+    --output text 2>/dev/null || echo "")
+  if [ -z "$GITLAB_ALB_EXISTS" ]; then
+    "${SED_INPLACE[@]}" \
+      -e 's|^gitlab_origin_dns.*|gitlab_origin_dns = ""|' \
+      -e 's|^gitlab_origin_arn.*|gitlab_origin_arn = ""|' \
+      "$ROOT_DIR/environments/${ENVIRONMENT}/modules/gateway.tfvars"
+    ok "GitLab origin disabled (no GitLab ALB in account $ACCOUNT_ID)"
+  fi
+
   ok "All tfvars updated for region=$AWS_REGION account=$ACCOUNT_ID"
 else
   echo "[dry-run] Would rewrite environments/**/*.tfvars with region=$AWS_REGION account=$ACCOUNT_ID"
