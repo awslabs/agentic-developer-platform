@@ -263,6 +263,51 @@ jobs:
         id: alb_pre
         run: bash platform/scripts/wire-gateway-alb.sh --no-wait
 
+      # Issue #3859: fail-safe guard against transient ALB-probe failures.
+      # `wire-gateway-alb.sh --no-wait` does a single live discovery attempt and
+      # returns empty on any transient failure (API throttle, describe error,
+      # eventual-consistency race). An empty result flips enable_vpc_origin=false,
+      # which SCHEDULES A DESTROY of BOTH:
+      #   1. the CloudFront /api/* VPC origin + cache behavior (all /api/* then
+      #      falls through to the S3 SPA — returns index.html instead of JSON), AND
+      #   2. the API Gateway OpenAPI route body — the entire route set
+      #      (/auth/github/{proxy+}, /{proxy+}, /agent/{proxy+}, /internal/{proxy+})
+      #      is gated on `internal_alb_dns != ""`; empty ALB collapses the body to a
+      #      minimal spec, so /auth/github/start returns API GW's
+      #      "Missing Authentication Token" and GitHub sign-in dies.
+      # Either destroy takes login down platform-wide (incident #3843 hit BOTH).
+      # Distinguish "genuinely no ALB (fresh deploy)" from "ALB exists but the probe
+      # blipped": if EITHER the /api VPC origin OR the API Gateway deployment is
+      # already in TF state, an empty probe is transient — ABORT rather than destroy.
+      # A fresh deploy has neither state resource, so it proceeds normally.
+      - name: Guard — ALB probe empty but gateway API resources already exist
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -euo pipefail
+          if [ -n "${{ steps.alb_pre.outputs.ALB_ARN }}" ]; then
+            echo "ALB resolved — no transient-failure risk."
+            exit 0
+          fi
+          # ALB probe returned empty. Are the ALB-dependent gateway API resources
+          # already managed in state? (Either one being present means this is an
+          # established environment, so an empty probe is a transient failure.)
+          STATE="$(terraform state list 2>/dev/null || true)"
+          EXISTING=""
+          echo "$STATE" | grep -q 'module.cloudfront.aws_cloudfront_vpc_origin.api\[0\]' \
+            && EXISTING="${EXISTING} cloudfront-/api-vpc-origin"
+          echo "$STATE" | grep -q 'module.api_gateway\[0\].aws_api_gateway_deployment.main' \
+            && EXISTING="${EXISTING} api-gateway-routes"
+          if [ -n "$EXISTING" ]; then
+            echo "::error::ALB probe returned EMPTY, but these live gateway API resources exist in state:${EXISTING}"
+            echo "::error::This is a transient ALB-discovery failure, NOT a fresh deploy. Proceeding would"
+            echo "::error::DESTROY the CloudFront /api/* origin AND/OR collapse the API Gateway route body,"
+            echo "::error::breaking ADP login platform-wide (incident #3843 / #3859)."
+            echo "::error::Aborting. Re-run this workflow; the ALB is discovered live each run and the SSM"
+            echo "::error::cache (/adp/<env>/gateway/internal-alb-arn) should resolve it on retry."
+            exit 1
+          fi
+          echo "ALB probe empty AND no ALB-dependent gateway API resources in state — genuine fresh deploy. Proceeding."
+
       # Issue #3789: kms_pre step removed. The webhook-secrets CMK now lives in
       # platform infra (applied before gateway in all tracks). The gateway KMS
       # grant is unconditional — no enable_webhook_secrets_kms_grant flag needed.
