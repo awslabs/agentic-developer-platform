@@ -16,11 +16,13 @@
  * - Chain view: click correlation chain to see indented tree
  */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Input, Select } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
+import { FilterChips } from '@/components/activity/FilterChips';
+import type { ActiveFilter } from '@/components/activity/FilterChips';
 import InvocationChain from '@/components/InvocationChain';
 import { InvocationDetail } from '@/components/InvocationDetail';
 import { TranscriptViewer } from '@/components/TranscriptViewer';
@@ -646,6 +648,63 @@ export default function AgentActivity() {
   const chainData = isChainView ? chainQuery.data : undefined;
   const flatData = !isChainView ? flatQuery.data : undefined;
 
+  // Issue #3768: Derive active filter chips for visual indication
+  const activeFilters: ActiveFilter[] = useMemo(() => {
+    const chips: ActiveFilter[] = [];
+    if (statusFilter) {
+      const opt = STATUS_OPTIONS.find((o) => o.value === statusFilter);
+      chips.push({ key: 'status', label: 'Status', displayValue: opt?.label ?? statusFilter });
+    }
+    if (channelFilter) {
+      const opt = CHANNEL_OPTIONS.find((o) => o.value === channelFilter);
+      chips.push({ key: 'channel', label: 'Source', displayValue: opt?.label ?? channelFilter });
+    }
+    if (personaFilter) {
+      const opt = PERSONA_OPTIONS.find((o) => o.value === personaFilter);
+      chips.push({ key: 'persona', label: 'Persona', displayValue: opt?.label ?? personaFilter });
+    }
+    if (startDate) {
+      chips.push({ key: 'startDate', label: 'Since', displayValue: startDate });
+    }
+    if (endDate) {
+      chips.push({ key: 'endDate', label: 'Until', displayValue: endDate });
+    }
+    return chips;
+  }, [statusFilter, channelFilter, personaFilter, startDate, endDate]);
+
+  const handleRemoveFilter = useCallback(
+    (key: string) => {
+      switch (key) {
+        case 'status':
+          setStatusFilter('');
+          break;
+        case 'channel':
+          setChannelFilter('');
+          break;
+        case 'persona':
+          setPersonaFilter('');
+          break;
+        case 'startDate':
+          setStartDate('');
+          break;
+        case 'endDate':
+          setEndDate('');
+          break;
+      }
+      resetPagination();
+    },
+    [resetPagination],
+  );
+
+  const handleClearAllFilters = useCallback(() => {
+    setStatusFilter('');
+    setChannelFilter('');
+    setPersonaFilter('');
+    setStartDate('');
+    setEndDate('');
+    resetPagination();
+  }, [resetPagination]);
+
   return (
     <div className="space-y-6">
       {/* Header + view toggle */}
@@ -803,6 +862,13 @@ export default function AgentActivity() {
           </label>
         </div>
       </div>
+
+      {/* Issue #3768: Active filter chips */}
+      <FilterChips
+        filters={activeFilters}
+        onRemove={handleRemoveFilter}
+        onClearAll={handleClearAllFilters}
+      />
 
       {/* Chain view (shown when a chain is selected) */}
       {activeChainId && (
