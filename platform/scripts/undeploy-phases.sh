@@ -154,6 +154,22 @@ phase_agent_context() {
     return 0
   fi
 
+  # Pre-flight: check if the backend bucket is accessible from the current account.
+  # Agent-context may have been deployed in a different account — if so, no-op gracefully.
+  local backend_file="$ROOT_DIR/environments/$ENVIRONMENT/modules/agent-context-backend.tfvars"
+  if [ -f "$backend_file" ]; then
+    local backend_bucket
+    backend_bucket=$(grep -oP 'bucket\s*=\s*"\K[^"]+' "$backend_file" 2>/dev/null || echo "")
+    if [ -n "$backend_bucket" ]; then
+      local current_account
+      current_account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
+      if [ -n "$current_account" ] && [[ "$backend_bucket" != *"$current_account"* ]]; then
+        _undeploy_log "Agent Context: backend bucket '$backend_bucket' is not in current account ($current_account). No state to destroy — skipping."
+        return 0
+      fi
+    fi
+  fi
+
   # Step 1: Delete K8s namespace
   _undeploy_delete_namespace "agent-context"
 
@@ -185,26 +201,28 @@ phase_webhook_ingress() {
     return 0
   fi
 
-  # Step 1: Clean up Lambda artifacts from S3
   local state_bucket="${STATE_BUCKET:-adp-terraform-state-$(aws sts get-caller-identity --query Account --output text 2>/dev/null)}"
+
+  # Step 1: Delete K8s ScaledJobs (KEDA resources) before namespace
+  if [ "$DRY_RUN" != "true" ] && _undeploy_kubectl_available; then
+    kubectl delete scaledjobs --all -n adp-gateway-agents 2>/dev/null || true
+  fi
+
+  # Step 2: Terraform destroy (must run BEFORE S3 artifact cleanup — TF has
+  #         data sources that read the zip files during refresh)
+  _undeploy_terraform_destroy \
+    "$tf_dir" \
+    "../../../../environments/$ENVIRONMENT/modules/webhook-ingress-backend.tfvars" \
+    "terraform.tfvars"
+  local rc=$?
+
+  # Step 3: Clean up Lambda artifacts from S3 (safe now — TF no longer references them)
   if [ "$DRY_RUN" = "true" ]; then
     _undeploy_log "DRY RUN: would remove s3://${state_bucket}/lambda-artifacts/webhook-ingress/"
   else
     _undeploy_log "Removing Lambda artifacts from S3..."
     aws s3 rm "s3://${state_bucket}/lambda-artifacts/webhook-ingress/" --recursive 2>/dev/null || true
   fi
-
-  # Step 2: Delete K8s ScaledJobs (KEDA resources) before namespace
-  if [ "$DRY_RUN" != "true" ] && _undeploy_kubectl_available; then
-    kubectl delete scaledjobs --all -n adp-gateway-agents 2>/dev/null || true
-  fi
-
-  # Step 3: Terraform destroy
-  _undeploy_terraform_destroy \
-    "$tf_dir" \
-    "../../../../environments/$ENVIRONMENT/modules/webhook-ingress-backend.tfvars" \
-    "terraform.tfvars"
-  local rc=$?
 
   if [ $rc -eq 0 ]; then
     _undeploy_log "=== Webhook Ingress: destroyed ==="
@@ -317,6 +335,12 @@ phase_gateway() {
   # Additional frontend buckets by pattern
   local found
   found=$(_undeploy_find_buckets "bedrockgw-${ENVIRONMENT}-frontend-")
+  if [ -n "$found" ] && [ "$found" != "None" ]; then
+    gw_buckets="$gw_buckets $found"
+  fi
+
+  # Chat-logs buckets (versioned — must be emptied before TF can delete)
+  found=$(_undeploy_find_buckets "bedrockgw-${ENVIRONMENT}-chat-logs-")
   if [ -n "$found" ] && [ "$found" != "None" ]; then
     gw_buckets="$gw_buckets $found"
   fi
