@@ -215,13 +215,18 @@ class StatsService:
     ) -> list[dict]:
         """Fetch all items from DDB within the time window.
 
+        Semantics: days=N means the N calendar days ending today (UTC).
+        For days=1, only today's items are returned (since = today 00:00 UTC).
+        For days=7, items from the last 7 calendar days including today
+        (since = 6 days ago at 00:00 UTC).
+
         Accumulates across pages up to _ITEM_BACKSTOP items. Applies status
         filter to exclude no_op and webhook_received. Uses KeyConditionExpression
         on the date sort key for time-bounding.
         """
-        # Compute time window
+        # Compute time window: days=N → (N-1) days before today at midnight UTC
         now = datetime.now(UTC)
-        since = (now - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00Z")
+        since = (now - timedelta(days=days - 1)).strftime("%Y-%m-%dT00:00:00Z")
 
         # Build KeyConditionExpression with date lower bound
         key_condition = Key(partition_key_name).eq(partition_key_value) & Key("arrived_at").gte(since)

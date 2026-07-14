@@ -72,7 +72,9 @@ async def get_my_stats(
     """Get aggregated agent run stats for the authenticated user.
 
     Issue #3630: Single-call dashboard payload combining DynamoDB invocation
-    aggregates with Postgres cost data. Time-bounded by `days` param (1-30).
+    aggregates with Postgres cost data. Time-bounded by `days` param (1-30):
+    days=N means the N calendar days ending today (UTC). days=1 returns
+    today only; days=7 returns the last 7 calendar days including today.
     Results are cached in-process for 60s per (user, days) key.
 
     Status filter: excludes no_op and webhook_received (same as Issue #1658).
@@ -103,7 +105,8 @@ async def get_admin_stats(
     """Get aggregated agent run stats for a tenant (admin only).
 
     Issue #3630: Org admins see their own tenant; platform admins can specify
-    any tenant_id. Same aggregation + cost enrichment as the user endpoint.
+    any tenant_id. days=N means the N calendar days ending today (UTC).
+    Same aggregation + cost enrichment as the user endpoint.
     """
     await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
 

@@ -677,3 +677,195 @@ class TestStatsServiceRootHumanMerge:
         personas = {p.persona for p in result.by_persona}
         assert "developer" in personas
         assert "reviewer" in personas
+
+
+class TestStatsServiceTimeWindow:
+    """Tests for Issue #3863: correct time-window computation.
+
+    Validates that days=N means the N calendar days ending today (UTC):
+    - days=1 → since = today 00:00 UTC (today only)
+    - days=7 → since = 6 days ago at 00:00 UTC (7 calendar days)
+
+    Uses unittest.mock.patch on datetime to freeze time, then inspects the
+    KeyConditionExpression passed to DynamoDB to verify the window boundary.
+    """
+
+    @staticmethod
+    def _extract_since_from_key_condition(key_expr) -> str:
+        """Extract the 'since' timestamp from a boto3 And condition expression.
+
+        The KeyConditionExpression is: Key(pk).eq(val) & Key('arrived_at').gte(since)
+        Structure: And.get_expression()['values'] = (Equals, GreaterThanEquals)
+        GreaterThanEquals.get_expression()['values'] = (Key, since_string)
+        """
+        expr = key_expr.get_expression()
+        gte_cond = expr["values"][1]  # second operand = gte condition
+        gte_expr = gte_cond.get_expression()
+        return gte_expr["values"][1]  # the since timestamp string
+
+    def _make_service_capturing(self):
+        """Create a StatsService whose DDB mock captures query kwargs."""
+        mock_table = MagicMock()
+        captured_queries = []
+
+        def query_side_effect(**kwargs):
+            captured_queries.append(kwargs)
+            return {"Items": [], "LastEvaluatedKey": None}
+
+        mock_table.query.side_effect = query_side_effect
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+        service = StatsService(table_name="test-table", dynamodb_resource=mock_resource)
+        return service, captured_queries
+
+    def test_days_1_window_starts_today_midnight(self):
+        """days=1 produces since = today 00:00 UTC (not yesterday midnight).
+
+        Issue #3863: The old code used timedelta(days=days) which for days=1
+        produced yesterday midnight — spanning up to 48 hours. The fix uses
+        timedelta(days=days-1) so days=1 starts at today's midnight.
+        """
+        from unittest.mock import patch
+
+        # Freeze time to 2026-07-14T15:30:00 UTC
+        frozen_now = datetime(2026, 7, 14, 15, 30, 0, tzinfo=UTC)
+
+        service, captured_queries = self._make_service_capturing()
+
+        with patch("src.activity.stats_service.datetime") as mock_dt:
+            mock_dt.now.return_value = frozen_now
+            mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+            service._fetch_items(
+                index_name="user-index",
+                partition_key_name="user_id",
+                partition_key_value="user-abc",
+                days=1,
+            )
+
+        # The KeyConditionExpression should use today's midnight as the lower bound
+        assert len(captured_queries) == 1
+        key_expr = captured_queries[0]["KeyConditionExpression"]
+        since = self._extract_since_from_key_condition(key_expr)
+        assert since == "2026-07-14T00:00:00Z"
+
+    def test_days_7_window_starts_6_days_ago_midnight(self):
+        """days=7 produces since = 6 days ago at 00:00 UTC (7 calendar days including today).
+
+        Issue #3863: The old code used timedelta(days=7) = 7 days ago midnight = 8 calendar
+        days. The fix uses timedelta(days=6) so the window spans exactly 7 days.
+        """
+        from unittest.mock import patch
+
+        # Freeze time to 2026-07-14T15:30:00 UTC
+        frozen_now = datetime(2026, 7, 14, 15, 30, 0, tzinfo=UTC)
+
+        service, captured_queries = self._make_service_capturing()
+
+        with patch("src.activity.stats_service.datetime") as mock_dt:
+            mock_dt.now.return_value = frozen_now
+            mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+            service._fetch_items(
+                index_name="user-index",
+                partition_key_name="user_id",
+                partition_key_value="user-abc",
+                days=7,
+            )
+
+        assert len(captured_queries) == 1
+        key_expr = captured_queries[0]["KeyConditionExpression"]
+        since = self._extract_since_from_key_condition(key_expr)
+        # 7 days window starting from 2026-07-08T00:00:00Z (6 days before 2026-07-14)
+        assert since == "2026-07-08T00:00:00Z"
+
+    def test_days_1_excludes_yesterday_includes_today(self):
+        """days=1 window excludes items from yesterday and includes today's items.
+
+        End-to-end: freeze time, feed items straddling midnight, verify aggregation.
+        """
+        from unittest.mock import patch
+
+        frozen_now = datetime(2026, 7, 14, 15, 30, 0, tzinfo=UTC)
+
+        # Items: one from yesterday 23:59 and one from today 00:01
+        yesterday_item = _make_item(event_id="old-1", status="complete", arrived_at="2026-07-13T23:59:00Z")
+        today_item = _make_item(event_id="new-1", status="complete", arrived_at="2026-07-14T00:01:00Z")
+
+        mock_table = MagicMock()
+
+        def query_side_effect(**kwargs):
+            """Simulate DDB time-bounding: only return items >= since."""
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                key_cond = kwargs.get("KeyConditionExpression")
+                since_val = TestStatsServiceTimeWindow._extract_since_from_key_condition(key_cond)
+                filtered = [i for i in [yesterday_item, today_item] if i["arrived_at"] >= since_val]
+                return {"Items": filtered, "LastEvaluatedKey": None}
+            elif index == "root-human-index":
+                return {"Items": [], "LastEvaluatedKey": None}
+            return {"Items": [], "LastEvaluatedKey": None}
+
+        mock_table.query.side_effect = query_side_effect
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+        service = StatsService(table_name="test-table", dynamodb_resource=mock_resource)
+
+        with patch("src.activity.stats_service.datetime") as mock_dt:
+            mock_dt.now.return_value = frozen_now
+            mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+            result = service.get_stats_by_user("user-abc-123", days=1)
+
+        # Only today's item should be included (yesterday excluded by DDB)
+        assert result.today.total == 1
+        assert result.today.completed == 1
+
+    def test_days_7_produces_correct_daily_bucket_count(self):
+        """days=7 produces at most 7 daily buckets (not 8).
+
+        Issue #3863: The old off-by-one caused 8 calendar days in the window.
+        With the fix, days=7 spans exactly 7 calendar days.
+        """
+        from unittest.mock import patch
+
+        frozen_now = datetime(2026, 7, 14, 15, 30, 0, tzinfo=UTC)
+
+        # Create one item per day for 8 days (July 7–14)
+        items = []
+        for day_offset in range(8):
+            day = 14 - day_offset  # 14, 13, 12, ..., 7
+            items.append(
+                _make_item(
+                    event_id=f"inv-day-{day}",
+                    status="complete",
+                    arrived_at=f"2026-07-{day:02d}T12:00:00Z",
+                )
+            )
+
+        mock_table = MagicMock()
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                key_cond = kwargs.get("KeyConditionExpression")
+                since_val = TestStatsServiceTimeWindow._extract_since_from_key_condition(key_cond)
+                filtered = [i for i in items if i["arrived_at"] >= since_val]
+                return {"Items": filtered, "LastEvaluatedKey": None}
+            elif index == "root-human-index":
+                return {"Items": [], "LastEvaluatedKey": None}
+            return {"Items": [], "LastEvaluatedKey": None}
+
+        mock_table.query.side_effect = query_side_effect
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+        service = StatsService(table_name="test-table", dynamodb_resource=mock_resource)
+
+        with patch("src.activity.stats_service.datetime") as mock_dt:
+            mock_dt.now.return_value = frozen_now
+            mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+            result = service.get_stats_by_user("user-abc-123", days=7)
+
+        # Should have exactly 7 daily buckets (July 8–14), not 8
+        assert len(result.daily) == 7
+        dates = {e.date for e in result.daily}
+        assert "2026-07-14" in dates  # today included
+        assert "2026-07-08" in dates  # 6 days ago included
+        assert "2026-07-07" not in dates  # 7 days ago excluded
