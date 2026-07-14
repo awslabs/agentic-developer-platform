@@ -174,12 +174,15 @@ def rate_limited_tenant():
 
     Resolved from WEBHOOK_RATE_LIMITED_INSTALLATION_ID env var.
     Pre-seeded with exhausted rate-limit counters by the deploy workflow.
+    Includes sender_id that maps to a user identity in this tenant's org.
     """
     installation_id = os.environ.get("WEBHOOK_RATE_LIMITED_INSTALLATION_ID", "99999999")
     tenant_id = os.environ.get("WEBHOOK_RATE_LIMITED_TENANT_ID", "rate-limited-tenant-e2e")
+    sender_id = int(os.environ.get("WEBHOOK_RATE_LIMITED_SENDER_ID", "100002"))
     return {
         "installation_id": installation_id,
         "tenant_id": tenant_id,
+        "sender_id": sender_id,
     }
 
 
@@ -250,6 +253,10 @@ def seed_identity_index():
     # Synthetic sender identifiers used in test payloads
     test_sender_id = os.environ.get("WEBHOOK_TEST_SENDER_ID", "100001")
     test_user_id = os.environ.get("WEBHOOK_TEST_USER_ID", "e2e-test-user-0001")
+    # Separate sender ID for the rate-limited tenant so identity resolution
+    # succeeds (the resolver looks up str(sender_id) as identity_value).
+    rl_sender_id = os.environ.get("WEBHOOK_RATE_LIMITED_SENDER_ID", "100002")
+    rl_user_id = f"{test_user_id}-rl"
 
     # Rows to seed (and later clean up)
     seed_rows = [
@@ -278,13 +285,13 @@ def seed_identity_index():
             "user_provisioning_mode": "strict",
             "fixture_source": _SEED_MARKER,
         },
-        # Rate-limited tenant: sender → user mapping (reuse same sender_id
-        # for simplicity; the Lambda resolves sender against the
-        # installation's org, so cross-tenant is fine for test purposes)
+        # Rate-limited tenant: sender → user mapping.
+        # Uses a distinct sender_id (100002) so the identity resolver can
+        # match str(sender_id) against identity_value in this row.
         {
             "identity_type": "github_user",
-            "identity_value": f"{test_sender_id}-rl",
-            "user_id": f"{test_user_id}-rl",
+            "identity_value": rl_sender_id,
+            "user_id": rl_user_id,
             "org_id": rate_limited_tenant_id,
             "user_kind": "human",
             "fixture_source": _SEED_MARKER,
@@ -321,9 +328,10 @@ def seed_rate_limit_counters():
 
     The rate-limit test expects 429 for the rate_limited_tenant. On a fresh
     account the rate-limits table is empty (no counters), so the tenant would
-    pass. This fixture fills the current 5-min window to the configured limit.
+    pass. This fixture fills the current AND next 5-min window to the configured
+    limit to avoid flakes when a test runs across a window boundary.
     """
-    from datetime import UTC, datetime
+    from datetime import UTC, datetime, timedelta
 
     region = os.environ.get("AWS_REGION", "us-east-1")
     table_name = os.environ.get("RATE_LIMITS_TABLE", "")
@@ -343,34 +351,47 @@ def seed_rate_limit_counters():
     now = datetime.now(UTC)
     window_key = now.strftime("%Y-%m-%dT%H:") + f"{(now.minute // 5) * 5:02d}"
 
-    # Set counter above the limit (default limit is 50 per window)
-    limit = int(os.environ.get("RATE_LIMIT_PER_WINDOW", "50"))
-    counter_value = limit + 10  # Safely above threshold
+    # Also seed the NEXT 5-min window to prevent flakes at boundary crossings
+    next_window_start = now + timedelta(minutes=(5 - now.minute % 5))
+    next_window_key = next_window_start.strftime("%Y-%m-%dT%H:") + (
+        f"{(next_window_start.minute // 5) * 5:02d}"
+    )
 
-    try:
-        table.put_item(
-            Item={
-                "tenant_id": rate_limited_tenant_id,
-                "window": window_key,
-                "count": counter_value,
-                "fixture_source": _SEED_MARKER,
-            }
-        )
-    except Exception as e:
-        logger.warning("Failed to seed rate-limit counter: %s", e)
+    # Set counter above the Lambda's limit. The deployed limit comes from the
+    # Terraform var rate_limit_per_window (currently 50000 — bumped from 50 to
+    # drain backlogs) which the test env can't see, so seed a value that
+    # exceeds any plausible configuration.
+    limit = int(os.environ.get("RATE_LIMIT_PER_WINDOW", "50"))
+    counter_value = max(limit, 10_000_000) + 10
+
+    window_keys = [window_key, next_window_key]
+
+    for wk in window_keys:
+        try:
+            table.put_item(
+                Item={
+                    "tenant_id": rate_limited_tenant_id,
+                    "window": wk,
+                    "count": counter_value,
+                    "fixture_source": _SEED_MARKER,
+                }
+            )
+        except Exception as e:
+            logger.warning("Failed to seed rate-limit counter for window %s: %s", wk, e)
 
     yield
 
     # Teardown
-    try:
-        table.delete_item(
-            Key={
-                "tenant_id": rate_limited_tenant_id,
-                "window": window_key,
-            }
-        )
-    except Exception:
-        pass
+    for wk in window_keys:
+        try:
+            table.delete_item(
+                Key={
+                    "tenant_id": rate_limited_tenant_id,
+                    "window": wk,
+                }
+            )
+        except Exception:
+            pass
 
 
 class _DdbEventCleanup:

@@ -27,6 +27,11 @@ MENTION_TO_PERSONA: dict[str, str] = {
     "@agent-product": "product",
     "@agent-malware-analysis-agent": "malware-analysis-agent",
     "@agent-superpower": "pt-superpower",
+    # Issue #3169: AIDLC inception persona. Mention-triggered only (no label
+    # equivalent — the trigger path is issues.opened with aidlc-intent label
+    # OR @agent-aidlc mention). Placed before codex to preserve the codex-last
+    # dict-order invariant.
+    "@agent-aidlc": "aidlc",
     # Issue #2706: codex supervisor persona. Mention-triggered only (the
     # platform standard); intentionally NOT in LABEL_TO_PERSONA. Placed last so
     # it cannot shadow an earlier persona under the first-match dict-order

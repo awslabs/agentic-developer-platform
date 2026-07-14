@@ -16,7 +16,7 @@ locals {
     "agent-gateway"  = { buildspec = "codebuild/bs-agent-gateway.yml" }
     "arc-runner"     = { buildspec = "codebuild/bs-arc-runner.yml" }
     "cyber-worker"   = { buildspec = "codebuild/bs-cyber-worker.yml" }
-    "agent-runtime"  = { buildspec = "codebuild/bs-agent-runtime.yml" }
+    "agent-runtime"  = { buildspec = "codebuild/bs-agent-runtime.yml", build_timeout = 90, compute_type = "BUILD_GENERAL1_LARGE" }
     "pyjwt-layer"    = { buildspec = "codebuild/bs-pyjwt-layer.yml" }
     "psycopg2-layer" = { buildspec = "codebuild/bs-psycopg2-layer.yml" }
     "grype-scan"     = { buildspec = "codebuild/bs-grype-scan.yml", build_timeout = 90 }
@@ -74,7 +74,7 @@ resource "aws_codebuild_project" "main" {
   environment {
     type                        = "LINUX_CONTAINER"
     image                       = "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
-    compute_type                = "BUILD_GENERAL1_MEDIUM"
+    compute_type                = lookup(each.value, "compute_type", "BUILD_GENERAL1_MEDIUM")
     privileged_mode             = true
     image_pull_credentials_type = "CODEBUILD"
 

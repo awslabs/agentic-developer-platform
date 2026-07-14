@@ -318,6 +318,114 @@ class TestSigV4Request:
         assert "/internal/v1/user-credentials" in req.full_url
 
 
+# ---------------------------------------------------------------------------
+# Invocation ID tests (Issue #3176)
+# ---------------------------------------------------------------------------
+
+
+class TestInvocationId:
+    """Test that invocation_id from ADP_MESSAGE_ID is included in request bodies."""
+
+    @patch("adp_cred.client.urlopen")
+    def test_raw_read_includes_invocation_id(self, mock_urlopen, monkeypatch):
+        """When ADP_MESSAGE_ID is set, raw_read includes invocation_id in body."""
+        monkeypatch.setenv("ADP_MESSAGE_ID", "msg-abc-123")
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"value":"secret","credential_type":"token","provenance_id":"p"}'
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        adp_client.raw_read("github", purpose="test")
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data.decode())
+        assert body["invocation_id"] == "msg-abc-123"
+
+    @patch("adp_cred.client.urlopen")
+    def test_raw_read_omits_invocation_id_when_unset(self, mock_urlopen, monkeypatch):
+        """When ADP_MESSAGE_ID is not set, invocation_id is not in body."""
+        monkeypatch.delenv("ADP_MESSAGE_ID", raising=False)
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"value":"secret","credential_type":"token","provenance_id":"p"}'
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        adp_client.raw_read("github", purpose="test")
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data.decode())
+        assert "invocation_id" not in body
+
+    @patch("adp_cred.client.urlopen")
+    def test_raw_read_omits_invocation_id_when_empty(self, mock_urlopen, monkeypatch):
+        """When ADP_MESSAGE_ID is empty string, invocation_id is not in body."""
+        monkeypatch.setenv("ADP_MESSAGE_ID", "")
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"value":"secret","credential_type":"token","provenance_id":"p"}'
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        adp_client.raw_read("github", purpose="test")
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data.decode())
+        assert "invocation_id" not in body
+
+    @patch("adp_cred.client.urlopen")
+    def test_proxy_http_includes_invocation_id(self, mock_urlopen, monkeypatch):
+        """When ADP_MESSAGE_ID is set, proxy_http includes invocation_id in body."""
+        monkeypatch.setenv("ADP_MESSAGE_ID", "msg-proxy-456")
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"status":200,"headers":{},"body":"ok","provenance_id":"p1"}'
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        adp_client.proxy_http("GET", "https://api.github.com/user", "github")
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data.decode())
+        assert body["invocation_id"] == "msg-proxy-456"
+
+    @patch("adp_cred.client.urlopen")
+    def test_materialize_includes_invocation_id(self, mock_urlopen, monkeypatch):
+        """When ADP_MESSAGE_ID is set, materialize includes invocation_id in body."""
+        monkeypatch.setenv("ADP_MESSAGE_ID", "msg-mat-789")
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"materialize_url":"https://s3/x","expires_at":"2026-01-01T00:00:00Z","provenance_id":"p3"}'
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        adp_client.materialize("ssh-key-prod")
+
+        req = mock_urlopen.call_args[0][0]
+        body = json.loads(req.data.decode())
+        assert body["invocation_id"] == "msg-mat-789"
+
+    @patch("adp_cred.client._sigv4_request")
+    def test_raw_read_sigv4_includes_invocation_id(self, mock_sigv4, monkeypatch):
+        """SigV4 mode also sends invocation_id when ADP_MESSAGE_ID is set."""
+        monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://gw.example.com/dev")
+        monkeypatch.setenv("ADP_MESSAGE_ID", "msg-sigv4-001")
+        monkeypatch.delenv("VAULT_GATEWAY_URL", raising=False)
+        monkeypatch.delenv("VAULT_INTERNAL_API_KEY", raising=False)
+        mock_sigv4.return_value = {"value": "secret", "credential_type": "token", "provenance_id": "p"}
+
+        adp_client.raw_read("github", purpose="test")
+
+        call_body = mock_sigv4.call_args[0][2]
+        assert call_body["invocation_id"] == "msg-sigv4-001"
+
+
 class TestSigV4Signing:
     """Test that _sigv4_request produces correct SigV4 headers."""
 

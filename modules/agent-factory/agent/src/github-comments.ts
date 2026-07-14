@@ -8,6 +8,8 @@
  * Design reference: docs/hosted-platform-design.md §Live progress UX (Phase 1)
  */
 
+import { validateBaseUrl } from './lib/url-guard';
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 /** Status of a single stage in the pipeline. */
@@ -116,6 +118,9 @@ export class LiveStatusComment {
       minUpdateIntervalMs: 5000,
       ...options,
     };
+    // SSRF guard: validateBaseUrl returns the normalized origin, breaking
+    // semgrep's taint path from options.apiBaseUrl → fetch() (#3582, #3713)
+    this.options.apiBaseUrl = validateBaseUrl(this.options.apiBaseUrl);
     this.runStartTime = Date.now();
     this.heartbeat = setInterval(() => {
       if (this.commentId) this.scheduleUpdate();
@@ -360,6 +365,7 @@ export class LiveStatusComment {
 
   private async apiRequest(method: string, url: string, body?: Record<string, unknown>): Promise<Response> {
     const token = process.env.GH_APP_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN || this.options.token;
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — url is built from this.options.apiBaseUrl, validated at construction via validateBaseUrl() (default https://api.github.com); only static repo/issue paths are interpolated
     return fetch(url, {
       method,
       headers: {

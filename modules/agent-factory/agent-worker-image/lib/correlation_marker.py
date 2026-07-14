@@ -8,7 +8,12 @@ Phase 2-d of EPIC #779 (Agent identity + action provenance).
 
 from __future__ import annotations
 
+import logging
 import os
+
+from lib.marker_signing import compute_signature
+
+logger = logging.getLogger(__name__)
 
 
 def prepend_correlation_marker(body: str, *, dispatch_persona: str | None = None) -> str:
@@ -59,6 +64,19 @@ def prepend_correlation_marker(body: str, *, dispatch_persona: str | None = None
     # Issue #2149: dispatch marker for intentional cross-issue bot→bot triggers.
     if dispatch_persona:
         parts.append(f"adp-dispatch:{dispatch_persona}")
+
+    # Issue #3178 (cred-binding S4): HMAC-SHA256 signature over marker fields.
+    # Ships dark — S5 verification is separate. Graceful degradation: if key
+    # is unavailable, marker is written unsigned (no crash).
+    sig = compute_signature(
+        correlation_id=corr,
+        root_human_id=root,
+        is_human_rooted=rooted,
+        invocation_id=invocation,
+        chain_depth=chain_depth,
+    )
+    if sig:
+        parts.append(f"adp-sig:{sig}")
 
     marker = f"<!-- {' '.join(parts)} -->\n"
     return marker + body

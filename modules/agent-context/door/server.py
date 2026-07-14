@@ -590,8 +590,56 @@ async def _handle_search(
             seen_files.add(file_key)
             deduped.append(hit.data)
 
-    # Re-rank: boost files whose path matches the query (filename relevance)
-    deduped.sort(key=lambda d: -_file_relevance_score(d.get("file", ""), query))
+    # Definition-aware boost: when the query looks like a symbol identifier,
+    # resolve its definition file(s) and pin them to the top (#3303, #3375).
+    # Scope-less path: derive candidate repos from the Zoekt hits themselves
+    # so that the boost fires even when project scope doesn't resolve.
+    definition_files: set[str] = set()
+    if _is_identifier_query(query):
+        # Collect distinct repo names from the Zoekt results (top-N hits).
+        # Strip host prefix (e.g. "github.com/org/repo" → "org/repo") because
+        # Zoekt stores the full host-qualified name but Neptune and code-index
+        # lookups expect org/repo format (#3512).
+        zoekt_repos: set[str] = set()
+        for hit in filtered:
+            repo = hit.repo_name
+            if repo:
+                zoekt_repos.add(_strip_host_prefix(repo))
+        definition_files = await _resolve_definition_files(
+            query, project_scope, zoekt_repos=zoekt_repos
+        )
+
+        # Injection (#3451): if the resolved definition file(s) are NOT already
+        # in the Zoekt results, synthesize entries and inject them so the boost
+        # has something to pin. Without this, the boost only re-ranks existing
+        # results and can't surface files that Zoekt didn't return.
+        if definition_files:
+            injected_count = 0
+            max_injections = 2
+            for def_file in sorted(definition_files):
+                if injected_count >= max_injections:
+                    break
+                # Skip if already present (check both repo-prefixed and bare path)
+                if def_file in seen_files:
+                    continue
+                # Synthesize a Zoekt-shaped result entry
+                entry = _synthesize_definition_entry(
+                    def_file, query, definition_files, zoekt_repos
+                )
+                if entry:
+                    # Track the file path from the synthesized entry (bare form)
+                    injected_file = entry.get("file", "")
+                    if injected_file in seen_files:
+                        continue
+                    seen_files.add(def_file)
+                    seen_files.add(injected_file)
+                    deduped.append(entry)
+                    injected_count += 1
+
+    # Re-rank: boost definition files (score 200), then filename relevance
+    deduped.sort(
+        key=lambda d: -_definition_boosted_score(d.get("file", ""), query, definition_files)
+    )
 
     return {"results": deduped[:limit], "total": min(len(deduped), limit), "query": query}
 
@@ -1037,8 +1085,243 @@ def _apply_acl(hits: list[SearchHit], caller: CallerPrincipal | None) -> list[Se
 
 
 # ---------------------------------------------------------------------------
-# Search ranking helper
+# Search ranking helpers
 # ---------------------------------------------------------------------------
+
+# Pattern for identifier-shaped queries: CamelCase, PascalCase, snake_case,
+# or a single word that looks like a type/class name (starts uppercase, >2 chars).
+# Excludes multi-word free-text phrases (e.g., "quick start installation").
+_CAMEL_CASE_RE = re.compile(r"^[A-Z][a-zA-Z0-9]+$")
+_SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)+$")
+
+
+def _is_identifier_query(query: str) -> bool:
+    """Detect whether a query looks like a code identifier (symbol name).
+
+    Returns True for:
+      - CamelCase / PascalCase: "DataLayerInterface", "BytesScanner", "PsList"
+      - snake_case: "create_layer", "get_config"
+      - Mixed with numbers: "Layer3D", "sha256_hash"
+
+    Returns False for:
+      - Multi-word free-text: "backtest engine base class", "quick start"
+      - Very short strings (≤2 chars): too ambiguous
+      - Queries that are clearly natural language phrases
+
+    The heuristic: if the query is a single token (no spaces) and matches
+    CamelCase or snake_case patterns, it's an identifier. Multi-token queries
+    are identifiers only if ALL tokens together form a CamelCase word (no spaces
+    in the actual query).
+    """
+    stripped = query.strip()
+    if not stripped or len(stripped) <= 2:
+        return False
+
+    # Single token (no spaces) — check patterns
+    if " " not in stripped:
+        if _CAMEL_CASE_RE.match(stripped):
+            return True
+        if _SNAKE_CASE_RE.match(stripped):
+            return True
+        # Also match identifiers with dots/colons (e.g., "module.ClassName")
+        # but not pure paths (those are handled by filename relevance)
+        if "::" in stripped:
+            return True
+        return False
+
+    # Multi-word: NOT an identifier (it's a natural-language phrase)
+    return False
+
+
+def _strip_host_prefix(repo: str) -> str:
+    """Strip the host segment from a Zoekt repo name if present.
+
+    Zoekt returns repo names as 'github.com/org/repo' (host-prefixed),
+    but Neptune and code-index lookups expect 'org/repo'.
+
+    Logic: if the first path segment contains a '.' (indicating a hostname
+    like github.com, gitlab.example.com, etc.), drop it.
+    Leaves 'org/repo' and bare 'repo' names untouched.
+
+    Examples:
+        github.com/org/repo        → org/repo
+        gitlab.example.com/org/repo → org/repo
+        org/repo                   → org/repo  (no change)
+        repo                       → repo      (no change)
+    """
+    if "/" not in repo:
+        return repo
+    first, rest = repo.split("/", 1)
+    if "." in first:
+        return rest
+    return repo
+
+
+async def _resolve_definition_files(
+    query: str,
+    project_scope: "ProjectScope | None",
+    *,
+    zoekt_repos: set[str] | None = None,
+) -> set[str]:
+    """Resolve the definition file(s) for a symbol query.
+
+    Resolution strategies (in order):
+    1. Neptune resolve_symbol() — when Neptune is available and repos are known.
+    2. Code-index.json from S3 — scope-less fallback that works even when project
+       scope doesn't resolve (#3375). Derives candidate repos from the Zoekt hits.
+
+    Best-effort: returns an empty set if resolution fails for any reason.
+    This ensures no regression — search falls through to filename-relevance ranking.
+    """
+    # Determine repo scope: prefer project_scope, fall back to zoekt-derived repos
+    repos_to_check: list[str] = []
+    if project_scope and project_scope.repo_names:
+        repos_to_check = list(project_scope.repo_names)
+    elif zoekt_repos:
+        # Scope-less path (#3375): use repos derived from Zoekt hits
+        repos_to_check = list(zoekt_repos)
+
+    if not repos_to_check:
+        return set()
+
+    # Strategy 1: Neptune (when available)
+    definition_files = _resolve_via_neptune(query, repos_to_check)
+    if definition_files:
+        return definition_files
+
+    # Strategy 2: Code-index.json from S3 (scope-less fallback, #3375)
+    # Reuses the same load_code_index() that the understand verb's fallback uses.
+    definition_files = await _resolve_via_code_index(query, repos_to_check)
+    return definition_files
+
+
+def _resolve_via_neptune(query: str, repos_to_check: list[str]) -> set[str]:
+    """Attempt definition resolution via Neptune graph database.
+
+    Returns empty set if Neptune is unavailable or finds nothing.
+    """
+    from . import neptune_client
+
+    if not neptune_client.neptune_enabled():
+        return set()
+
+    if not neptune_client.neptune_available():
+        return set()
+
+    definition_files: set[str] = set()
+    for repo in repos_to_check:
+        resolved_repo = neptune_client.resolve_repo_name(repo)
+        try:
+            symbols = neptune_client.resolve_symbol(resolved_repo, query)
+            for sym in symbols:
+                file_path = sym.get("file", "")
+                if file_path:
+                    definition_files.add(file_path)
+        except Exception:
+            log.debug("Neptune definition resolution failed for %s in %s", query, repo)
+
+    return definition_files
+
+
+async def _resolve_via_code_index(query: str, repos_to_check: list[str]) -> set[str]:
+    """Resolve definition files using code-index.json from S3.
+
+    Loads each repo's code-index and searches for exact symbol name matches.
+    This path works without Neptune and without project scope resolution (#3375).
+    """
+    from .structural_backend import _normalize_symbol, load_code_index
+
+    if state.s3_client is None or not config.s3_bucket:
+        return set()
+
+    # Normalize query for case-insensitive matching
+    query_lower = query.lower()
+
+    definition_files: set[str] = set()
+    for repo in repos_to_check:
+        try:
+            index_data = await load_code_index(
+                repo,
+                s3_client=state.s3_client,
+                bucket=config.s3_bucket,
+                prefix=config.code_index_s3_prefix,
+            )
+            if not index_data:
+                continue
+
+            # Search definitions (supports both 'definitions' and 'symbols' keys)
+            symbols = index_data.get("definitions", []) or index_data.get("symbols", [])
+            for defn in symbols:
+                normalized = _normalize_symbol(defn)
+                symbol_name = normalized.get("symbol", "")
+                # Exact match (case-insensitive) for the symbol name
+                if symbol_name.lower() == query_lower:
+                    file_path = normalized.get("file", "")
+                    if file_path:
+                        # Prefix with repo name for cross-repo uniqueness
+                        # (matches the file format in Zoekt results: "repo/path")
+                        full_path = f"{repo}/{file_path}" if "/" not in file_path[:3] else file_path
+                        definition_files.add(full_path)
+                        # Also add without repo prefix for matching against
+                        # deduped results that may use either format
+                        definition_files.add(file_path)
+        except Exception:
+            log.debug("Code-index definition resolution failed for %s in %s", query, repo)
+
+    return definition_files
+
+
+def _synthesize_definition_entry(
+    file_path: str,
+    query: str,
+    definition_files: set[str],
+    zoekt_repos: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """Synthesize a Zoekt-shaped result entry for a resolved definition file.
+
+    Creates a result dict with the same shape as entries in ``deduped``
+    (repo_id, file, line, content, match_type) so downstream consumers
+    (scorers, formatters) treat injected results identically to Zoekt hits.
+
+    Returns None if file_path is empty or can't determine a valid entry.
+    (#3451: injection for definition files absent from Zoekt candidates)
+    """
+    if not file_path:
+        return None
+
+    # Determine repo_id: if file_path contains a slash with an org prefix
+    # (e.g., "volatilityfoundation/volatility3/framework/..."), use the first
+    # two segments. Otherwise, use the first zoekt_repo that the path belongs to.
+    repo_id = ""
+    if zoekt_repos:
+        for repo in zoekt_repos:
+            if file_path.startswith(f"{repo}/"):
+                repo_id = repo
+                file_path = file_path[len(repo) + 1 :]
+                break
+        if not repo_id:
+            # Take first available repo (best-effort)
+            repo_id = next(iter(sorted(zoekt_repos)), "")
+
+    return {
+        "repo_id": repo_id,
+        "file": file_path,
+        "line": 0,
+        "content": f"[definition of {query}]",
+        "match_type": "exact",
+    }
+
+
+def _definition_boosted_score(file_path: str, query: str, definition_files: set[str]) -> int:
+    """Score a file combining definition-boost with filename relevance.
+
+    If the file is a known definition file for the queried symbol, it gets
+    score 200 (above all filename-relevance tiers). Otherwise, delegates to
+    _file_relevance_score().
+    """
+    if definition_files and file_path in definition_files:
+        return 200
+    return _file_relevance_score(file_path, query)
 
 
 def _file_relevance_score(file_path: str, query: str) -> int:

@@ -66,6 +66,7 @@ variable "eks_node_max_size" {
 variable "eks_public_access_cidrs" {
   description = "CIDR blocks allowed to reach the EKS public API endpoint. Set via TF_VAR_eks_public_access_cidrs in the deploy scripts to the operator's current public IP (/32)."
   type        = list(string)
+  default     = []
 }
 
 variable "create_instance_profile" {

@@ -175,6 +175,9 @@ def _settings_mock(
     s.aws_region = "us-east-1"
     s.vault_proxy_host_allowlist = proxy_host_allowlist
     s.vault_proxy_require_https = proxy_require_https
+    # Issue #3175: credential binding defaults to shadow mode (off).
+    s.enforce_credential_binding = False
+    s.webhook_events_table = "adp-test-webhook-events"
     return s
 
 
@@ -921,9 +924,17 @@ class TestCredentialMaterialize:
         def _mock_upload_and_sign():
             return fake_url
 
+        from src.internal.credential_binding import resolve_credential_binding
+
+        async def _selective_to_thread(fn, *args, **kwargs):
+            """Run binding resolution normally; mock S3 upload."""
+            if fn is resolve_credential_binding:
+                return fn(*args, **kwargs)
+            return fake_url
+
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
-            patch("asyncio.to_thread", new=AsyncMock(return_value=fake_url)),
+            patch("asyncio.to_thread", new=_selective_to_thread),
         ):
             client = _make_app(db, mock_sm=mock_sm)
             resp = client.post(
@@ -1099,9 +1110,16 @@ class TestCredentialMaterialize:
 
         fake_url = "https://s3.amazonaws.com/test-bucket/vault/materialize/xyz"
 
+        from src.internal.credential_binding import resolve_credential_binding
+
+        async def _selective_to_thread(fn, *args, **kwargs):
+            if fn is resolve_credential_binding:
+                return fn(*args, **kwargs)
+            return fake_url
+
         with (
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
-            patch("asyncio.to_thread", new=AsyncMock(return_value=fake_url)),
+            patch("asyncio.to_thread", new=_selective_to_thread),
         ):
             client = _make_app(db, mock_sm=mock_sm)
             resp = client.post(

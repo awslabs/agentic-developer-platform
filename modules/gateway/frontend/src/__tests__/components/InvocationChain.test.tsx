@@ -312,7 +312,7 @@ describe('InvocationChain Component', () => {
     renderChain({ isAdmin: true, tenantId: 'org-xyz' });
 
     await waitFor(() => {
-      expect(mockGetAdminChain).toHaveBeenCalledWith('chain-001', 'org-xyz');
+      expect(mockGetAdminChain).toHaveBeenCalledWith('chain-001', 'org-xyz', false);
     });
   });
 

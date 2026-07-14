@@ -11,6 +11,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { InvocationDetail } from '@/components/InvocationDetail';
+import { TranscriptViewer } from '@/components/TranscriptViewer';
 import type { InvocationItem } from '@/types/activity';
 
 // Mock the activity service transcript functions
@@ -196,6 +197,76 @@ describe('InvocationDetail', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  // Issue #3765: Error-first detail layout for failed runs
+  describe('error-first layout (Issue #3765)', () => {
+    it('renders error row immediately after status for failed runs', () => {
+      const item = makeItem({
+        status: 'failed',
+        error_message: 'Agent timed out after 300s.',
+        completed_at: '2026-06-14T10:30:00Z',
+      });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      // Get all DetailRow labels (dt elements within the dl)
+      const dl = document.querySelector('dl')!;
+      const labels = Array.from(dl.querySelectorAll('dt')).map((dt) => dt.textContent);
+
+      // Error must appear immediately after Status (index 0 → Status, index 1 → Error)
+      const statusIdx = labels.indexOf('Status');
+      const errorIdx = labels.indexOf('Error');
+      const durationIdx = labels.indexOf('Duration');
+
+      expect(statusIdx).toBeGreaterThanOrEqual(0);
+      expect(errorIdx).toBe(statusIdx + 1);
+      // Error must appear before Duration
+      expect(errorIdx).toBeLessThan(durationIdx);
+    });
+
+    it('keeps default order for non-failed runs (no error row)', () => {
+      const item = makeItem({
+        status: 'complete',
+        completed_at: '2026-06-14T10:30:00Z',
+      });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      const dl = document.querySelector('dl')!;
+      const labels = Array.from(dl.querySelectorAll('dt')).map((dt) => dt.textContent);
+
+      // Error row should not be present
+      expect(labels).not.toContain('Error');
+
+      // Default order: Status → Invocation ID → ... → Duration should be after Channel
+      const statusIdx = labels.indexOf('Status');
+      const invocationIdIdx = labels.indexOf('Invocation ID');
+      const channelIdx = labels.indexOf('Channel');
+      const durationIdx = labels.indexOf('Duration');
+
+      expect(statusIdx).toBe(0);
+      expect(invocationIdIdx).toBe(statusIdx + 1);
+      expect(channelIdx).toBeLessThan(durationIdx);
+    });
+
+    it('shows identifiers after lineage for failed runs', () => {
+      const item = makeItem({
+        status: 'failed',
+        error_message: 'Something went wrong',
+        completed_at: '2026-06-14T10:30:00Z',
+        triggered_by_invocation_id: 'inv-parent-001',
+        triggered_by_topic: 'Parent topic',
+      });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      const dl = document.querySelector('dl')!;
+      const labels = Array.from(dl.querySelectorAll('dt')).map((dt) => dt.textContent);
+
+      const lineageIdx = labels.indexOf('Triggered by');
+      const invocationIdIdx = labels.indexOf('Invocation ID');
+
+      expect(lineageIdx).toBeGreaterThanOrEqual(0);
+      expect(invocationIdIdx).toBeGreaterThan(lineageIdx);
+    });
+  });
+
   it('shows "Transcript not available" when transcript fetch returns 404', async () => {
     const user = userEvent.setup();
     mockGetMyTranscript.mockRejectedValueOnce(new Error('Transcript not available'));
@@ -210,5 +281,80 @@ describe('InvocationDetail', () => {
     await waitFor(() => {
       expect(screen.getByText('Transcript not available for this invocation.')).toBeInTheDocument();
     });
+  });
+
+  // Issue #3767: Inline transcript content swap (no nested modal)
+  describe('inline transcript (Issue #3767)', () => {
+    it('no nested modal — no double role="dialog" when transcript is shown', async () => {
+      const user = userEvent.setup();
+      mockGetMyTranscript.mockResolvedValueOnce('# Test transcript\nSome content');
+      const item = makeItem({ transcript_key: 'runs/inv-001/transcript.md' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      // Click "View full transcript"
+      const transcriptBtn = screen.getByRole('button', { name: /view full transcript/i });
+      await user.click(transcriptBtn);
+
+      // Only ONE dialog should be present (the outer InvocationDetail modal)
+      const dialogs = screen.getAllByRole('dialog');
+      expect(dialogs).toHaveLength(1);
+    });
+
+    it('shows "Back to detail" button and returns to detail view when clicked', async () => {
+      const user = userEvent.setup();
+      mockGetMyTranscript.mockResolvedValueOnce('# Test transcript');
+      const item = makeItem({ transcript_key: 'runs/inv-001/transcript.md' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      // Click "View full transcript"
+      const transcriptBtn = screen.getByRole('button', { name: /view full transcript/i });
+      await user.click(transcriptBtn);
+
+      // Should show "Back to detail" button
+      const backBtn = screen.getByRole('button', { name: /back to detail/i });
+      expect(backBtn).toBeInTheDocument();
+
+      // Detail content should be hidden (no detail rows visible)
+      expect(screen.queryByText('Invocation ID')).not.toBeInTheDocument();
+
+      // Click back
+      await user.click(backBtn);
+
+      // Detail content should be visible again
+      expect(screen.getByText('inv-001')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /back to detail/i })).not.toBeInTheDocument();
+    });
+
+    it('changes modal title to "Run Transcript" when transcript is shown', async () => {
+      const user = userEvent.setup();
+      mockGetMyTranscript.mockResolvedValueOnce('# Test transcript');
+      const item = makeItem({ transcript_key: 'runs/inv-001/transcript.md' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      // Initially shows "Invocation Detail"
+      expect(screen.getByText('Invocation Detail')).toBeInTheDocument();
+
+      // Click transcript
+      const transcriptBtn = screen.getByRole('button', { name: /view full transcript/i });
+      await user.click(transcriptBtn);
+
+      // Title changes to "Run Transcript"
+      expect(screen.getByText('Run Transcript')).toBeInTheDocument();
+      expect(screen.queryByText('Invocation Detail')).not.toBeInTheDocument();
+    });
+  });
+
+  // Issue #3767 regression: standalone transcript links from activity table still open their own modal
+  it('standalone transcript modal — TranscriptViewer renders its own dialog when used directly', () => {
+    mockGetMyTranscript.mockResolvedValueOnce('# Standalone transcript');
+
+    renderWithClient(
+      <TranscriptViewer invocationId="inv-standalone" isOpen={true} onClose={() => {}} />,
+    );
+
+    // The standalone TranscriptViewer renders its own modal (role="dialog")
+    const dialogs = screen.getAllByRole('dialog');
+    expect(dialogs).toHaveLength(1);
+    expect(screen.getByText('Run Transcript')).toBeInTheDocument();
   });
 });

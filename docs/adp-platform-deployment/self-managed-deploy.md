@@ -36,12 +36,34 @@ aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
 ```
 
 That handles bootstrap, infrastructure, image builds, K8s deployment, frontend,
-and the gateway ALB second pass. **GitHub is not set up upfront** — for the
-webhook agent path, wire GitHub at the end via the UI (Settings → Connections →
-"Set up GitHub App" as the `platform_admin`) or the CLI fallback
-`register-github-app.sh` (see Phase 3b). `deploy-all.sh` does NOT deploy the
-webhook-ingress stack or build the broker/agent-runtime artifacts — use the
-stage-by-stage scripts in Phase 3b for the agent path.
+broker Lambda, admin bootstrap, agent-factory, and webhook-ingress — the full
+11-step sequence. **GitHub is not set up upfront** — wire GitHub at the end via
+the UI (Settings → Connections → "Set up GitHub App" as the `platform_admin`)
+or the CLI fallback `register-github-app.sh` (see Phase 3b). The script prints
+next-steps guidance at the end.
+
+### Updating an existing deployment
+
+To converge an already-deployed platform to newer code (after pulling latest
+`main` or a pinned tag), use **`--update` mode**:
+
+```bash
+git pull origin main
+./platform/scripts/deploy-all.sh --update [--gateway-only] [--skip-frontend]
+```
+
+Update mode differs from a fresh deploy:
+- **Skips** bootstrap, Bedrock model agreements, and admin bootstrap
+- **Runs database migrations** (alembic) BEFORE rolling out the new backend
+- **Tags images with the source SHA** (not `:latest`) to guarantee Kubernetes
+  triggers a rollout on code changes
+- **Plan-gates Terraform applies** — refuses to apply if the plan includes
+  resource destroys (pass `--confirm-destructive` to override after reviewing)
+- **Mandatory rollout verification** — the script halts on rollout failure
+  instead of continuing
+
+See the full design in
+[`deploy-all-update-mode-design.md`](./deploy-all-update-mode-design.md).
 
 ### Deployment config
 
@@ -65,34 +87,47 @@ github_org: your-org
 ## What Gets Deployed
 
 ```
-deploy-all.sh execution order:
+deploy-all.sh execution order (11 steps):
 │
-├── Step 1: Bootstrap
+├── Step  1: Bootstrap
 │   └── S3 bucket (Terraform state) + DynamoDB table (state locking)
 │
-├── Step 2: Platform Infrastructure
+├── Step  2: Platform Infrastructure
 │   └── VPC, EKS cluster (Auto Mode), ECR repos, IAM roles, CodeBuild projects
 │
-├── Step 3: Gateway Infrastructure
+├── Step  3: Gateway Infrastructure
 │   └── RDS PostgreSQL, ElastiCache Redis, Cognito, CloudFront, S3, API Gateway
 │
-├── Step 4: Gateway Backend
+├── Step  4: Gateway Backend
 │   ├── Docker image build (CodeBuild or local)
-│   ├── K8s deployment (configmap, deployment, service, ingress)
-│   └── ALB wiring (discover ALB → re-apply Terraform with VPC Link)
+│   └── K8s deployment (configmap, deployment, service, ingress)
 │
-├── Step 5: Frontend
+├── Step  5: Wire ALB
+│   └── Discover internal ALB → re-apply Terraform with VPC Link + CloudFront VPC Origin
+│
+├── Step  6: Frontend
 │   └── npm build → S3 upload → CloudFront invalidation
 │
-├── Step 6: Agent Factory
-│   └── ARC controller, runner scale set, IRSA, secrets, beads state
+├── Step  7: Broker Lambda (--skip-broker to skip)
+│   └── Package + upload real github-auth-broker code (required for GitHub login)
 │
-├── Step 7: Agent Gateway
-│   ├── Docker image build (CodeBuild or local)
+├── Step  8: Bootstrap First Admin (--skip-admin-bootstrap to skip)
+│   └── Seed platform_admin DB rows (required for first login approval)
+│
+├── Step  9: Agent Factory
+│   ├── Terraform (ARC controller, IRSA, secrets, beads state)
+│   ├── Agent Gateway image build (CodeBuild or local)
 │   └── KEDA ScaledJob deployment
 │
-└── Step 8: Agent Context (opt-in)
+├── Step 10: Webhook-Ingress (--skip-webhook-ingress to skip)
+│   ├── Agent-runtime image build (CodeBuild)
+│   ├── Webhook Lambda zip package + upload
+│   └── Terraform apply (API GW → Lambda → SQS → KEDA → agent-worker)
+│
+└── Step 11: Agent Context (opt-in)
     └── OpenViking, Sourcebot, DeepWiki, LiteLLM, ingestion CronJob
+
+Post-deploy (manual): GitHub App wiring — UI (Settings → Connections) or CLI
 ```
 
 ## Detailed Walkthrough
@@ -200,20 +235,20 @@ Duration: ~30-45 minutes. Longest step is EKS Auto Mode provisioning (~15 min).
 
 ### Phase 3b: Stage-by-stage steps (when NOT using deploy-all.sh)
 
-`deploy-all.sh` chains everything, but operators deploying module-by-module (or
-on a track deploy-all.sh doesn't cover — notably the **webhook agent path**) must
-run several steps that publish artifacts Terraform only ships as **placeholders**.
-A fresh deploy never fires the push-triggered CI workflows that normally publish
-them, so each has a standalone, idempotent script:
+`deploy-all.sh` chains all 11 steps end-to-end, but operators deploying
+module-by-module can run each script standalone. The scripts below publish
+artifacts that Terraform only ships as **placeholders**. A fresh deploy never
+fires the push-triggered CI workflows that normally publish them, so each has a
+standalone, idempotent script:
 
-| Step | Script | Why it's needed |
-|------|--------|-----------------|
-| **Bedrock model agreements** | `platform/scripts/enable-bedrock-models.sh` | Fresh accounts have no marketplace agreement for Anthropic models — every Claude call fails with `AccessDeniedException` and agent runs silently end "no changes needed". deploy-all.sh runs this automatically; run it standalone when deploying module-by-module. Idempotent, CLI-only. |
-| **Gateway second pass (ALB)** | `platform/scripts/wire-gateway-alb.sh --apply` | The gateway API Gateway ships a MOCK OpenAPI body until the ALB is wired. This discovers the EKS Ingress ALB, re-applies gateway-infra with the ALB vars, and forces a stage redeploy so the real routes (backend `/{proxy+}` + `/auth/github`) go live. Run after the gateway backend pods are up. |
-| **Broker Lambda code** | `modules/gateway/scripts/deploy-broker.sh` | Terraform creates the `github-auth-broker` Lambda with a 503 placeholder zip. This packages + uploads + updates the real code. Required for GitHub login. |
-| **First-admin bootstrap** | `modules/gateway/scripts/bootstrap-admin.sh` | A fresh deploy has no `users` rows, so onboarding shows "request access" for everyone — including the seeded Cognito admin — with no one able to approve. `create_test_users=true` only makes the Cognito user, not the DB rows. This seeds the first admin's org/tenant/dept/team/user + cognito identity (role `platform_admin`) so they become "registered" and can approve real users. Idempotent; `--email`/`--pool-id`/`--org` overrides for an SSO admin. (Runs `python -m src.admin.onboarding.bootstrap_admin` in the gateway pod — the deployed image must contain that module.) |
-| **Webhook-ingress stack** | `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh` | deploy-all.sh does NOT deploy this. One cohesive step: builds the `adp-agent-runtime` worker image (CodeBuild), packages + uploads the webhook Lambda zip, and `terraform apply`s the stack (API GW → Lambda → SQS → KEDA → agent-worker). |
-| **GitHub App wiring** | **UI (primary):** Settings → Connections → "Set up GitHub App" (manifest flow; the Phase-6d `platform_admin` is the actor). **CLI fallback:** `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org>` | Final step. The UI flow (recommended) lets the `platform_admin` create + wire the App from the browser — creds are stored automatically. The CLI script is the fallback for headless / CI environments: creates the App (visibility prompt; private by default), stores creds, and calls `wire-github-app.sh`. Pass `--client-secret` to also wire GitHub login. Org owners get an org-owned App; non-owners get a user-owned App (both work). |
+| Step | Script | Also in deploy-all.sh? | Why it's needed |
+|------|--------|:----------------------:|-----------------|
+| **Bedrock model agreements** | `platform/scripts/enable-bedrock-models.sh` | ✅ (pre-step, runs before Step 1; preflight only warns) | Fresh accounts have no marketplace agreement for Anthropic models — every Claude call fails with `AccessDeniedException` and agent runs silently end "no changes needed". Idempotent, CLI-only. |
+| **Gateway second pass (ALB)** | `platform/scripts/wire-gateway-alb.sh --apply` | ✅ Step 5 | The gateway API Gateway ships a MOCK OpenAPI body until the ALB is wired. This discovers the EKS Ingress ALB, re-applies gateway-infra with the ALB vars, and forces a stage redeploy so the real routes (backend `/{proxy+}` + `/auth/github`) go live. Run after the gateway backend pods are up. |
+| **Broker Lambda code** | `modules/gateway/scripts/deploy-broker.sh` | ✅ Step 7 | Terraform creates the `github-auth-broker` Lambda with a 503 placeholder zip. This packages + uploads + updates the real code. Required for GitHub login. |
+| **First-admin bootstrap** | `modules/gateway/scripts/bootstrap-admin.sh` | ✅ Step 8 | A fresh deploy has no `users` rows, so onboarding shows "request access" for everyone — including the seeded Cognito admin — with no one able to approve. `create_test_users=true` only makes the Cognito user, not the DB rows. This seeds the first admin's org/tenant/dept/team/user + cognito identity (role `platform_admin`) so they become "registered" and can approve real users. Idempotent; `--email`/`--pool-id`/`--org` overrides for an SSO admin. (Runs `python -m src.admin.onboarding.bootstrap_admin` in the gateway pod — the deployed image must contain that module.) |
+| **Webhook-ingress stack** | `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh` | ✅ Step 10 | One cohesive step: builds the `adp-agent-runtime` worker image (CodeBuild), packages + uploads the webhook Lambda zip, and `terraform apply`s the stack (API GW → Lambda → SQS → KEDA → agent-worker). |
+| **GitHub App wiring** | **UI (primary):** Settings → Connections → "Set up GitHub App" (manifest flow; the Phase-6d `platform_admin` is the actor). **CLI fallback:** `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org>` | ❌ (manual) | Final step. The UI flow (recommended) lets the `platform_admin` create + wire the App from the browser — creds are stored automatically. The CLI script is the fallback for headless / CI environments: creates the App (visibility prompt; private by default), stores creds, and calls `wire-github-app.sh`. Pass `--client-secret` to also wire GitHub login. Org owners get an org-owned App; non-owners get a user-owned App (both work). |
 
 All scripts support `--dry-run` and `--skip-*` flags and are safe to re-run.
 After GitHub App wiring (UI or CLI), install the App on the target repo(s)
@@ -423,7 +458,7 @@ Common cause: Docker Hub rate limit on `python:3.12-slim`. The Dockerfile should
 | `platform/scripts/bootstrap.sh` | Create Terraform state backend |
 | `platform/scripts/bootstrap-destroy.sh` | Destroy state backend |
 | `platform/scripts/setup-org.sh` | Configure repo for your GitHub org |
-| `platform/scripts/create-github-apps.sh` | Create + install GitHub Apps |
+| `modules/agent-factory/webhook-ingress/scripts/register-github-app.sh` | Register GitHub App (CLI fallback) + permission validation |
 | `platform/scripts/wire-gateway-alb.sh` | Discover ALB, cache to SSM |
 | `platform/scripts/empty-s3-buckets.sh` | Empty S3 buckets before destroy |
 | `platform/scripts/delete-ingress-and-wait.sh` | Clean up ALB before destroy |

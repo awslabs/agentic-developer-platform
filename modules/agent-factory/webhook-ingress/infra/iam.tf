@@ -180,7 +180,7 @@ resource "aws_iam_policy" "lambda_secrets" {
             "kms:Decrypt",
             "kms:DescribeKey"
           ]
-          Resource = aws_kms_key.secrets.arn
+          Resource = local.webhook_secrets_kms_key_arn
         }
       ],
       var.internal_api_key_arn != "" ? [
@@ -189,6 +189,15 @@ resource "aws_iam_policy" "lambda_secrets" {
           Effect   = "Allow"
           Action   = ["secretsmanager:GetSecretValue"]
           Resource = [var.internal_api_key_arn]
+        }
+      ] : [],
+      # Issue #3324: GitLab webhook secret read permission
+      var.gitlab_webhook_enabled ? [
+        {
+          Sid      = "ReadGitLabWebhookSecret"
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue"]
+          Resource = [aws_secretsmanager_secret.gitlab_webhook_secret[0].arn]
         }
       ] : []
     )

@@ -69,7 +69,7 @@ variable "tags" {
 }
 
 variable "github_org" {
-  description = "GitHub org used to namespace the GH App secrets in Secrets Manager. Secrets must be stored at adp/<github_org>/gh-app-<persona>-{id,key} by the onboarding script (platform/scripts/create-github-apps.sh)."
+  description = "GitHub org used to namespace the GH App secrets in Secrets Manager. Secrets must be stored at adp/<github_org>/gh-app-<persona>-{id,key} (ARC runner path; see modules/agent-factory/SETUP-GUIDE.md)."
   type        = string
 }
 

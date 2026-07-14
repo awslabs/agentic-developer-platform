@@ -132,3 +132,22 @@ variable "vpc_origin_keepalive_timeout" {
     error_message = "VPC Origin keepalive timeout must be between 1 and 60 seconds."
   }
 }
+
+# =============================================================================
+# GitLab VPC Origin Configuration
+# =============================================================================
+# When both gitlab_origin_dns and gitlab_origin_arn are non-empty, a VPC Origin
+# and /gitlab/* ordered cache behavior are created. Empty defaults mean zero
+# change to existing deployments.
+
+variable "gitlab_origin_dns" {
+  type        = string
+  description = "DNS hostname of the GitLab internal ALB. When non-empty (along with gitlab_origin_arn), enables the /gitlab/* cache behavior."
+  default     = ""
+}
+
+variable "gitlab_origin_arn" {
+  type        = string
+  description = "ARN of the GitLab internal ALB for VPC Origin. Required together with gitlab_origin_dns to enable the GitLab origin."
+  default     = ""
+}

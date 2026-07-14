@@ -49,13 +49,17 @@ def test_env() -> TestEnvConfig:
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-skip live_only, workflow, and costs_money tests when not in live mode."""
+    """Auto-skip live_only, workflow, costs_money, and integration tests when not in live mode."""
     env_mode = os.environ.get("TEST_ENV", "unit").lower()
     is_live = env_mode not in ("unit", "")
     run_costly = os.environ.get("RUN_COSTLY_TESTS", "").lower() in ("yes", "1", "true")
+    has_gitlab = bool(os.environ.get("GITLAB_WEBHOOK_ENDPOINT"))
 
     skip_live = pytest.mark.skip(reason="TEST_ENV is not set to a live environment")
     skip_costly = pytest.mark.skip(reason="RUN_COSTLY_TESTS is not set to yes")
+    skip_gitlab = pytest.mark.skip(
+        reason="GITLAB_WEBHOOK_ENDPOINT not set — GitLab E2E tests require a running GitLab instance"
+    )
 
     for item in items:
         if "live_only" in item.keywords and not is_live:
@@ -68,6 +72,10 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_live)
         if "costs_money" in item.keywords and not run_costly:
             item.add_marker(skip_costly)
+        if "gitlab" in item.keywords and not has_gitlab:
+            item.add_marker(skip_gitlab)
+        if "integration" in item.keywords and not is_live:
+            item.add_marker(skip_live)
 
 
 # ---------------------------------------------------------------------------

@@ -314,6 +314,47 @@ class TestExtractHeaders:
 
 
 # ---------------------------------------------------------------------------
+# DNS-rebinding protection disabled (Issue #3254)
+# ---------------------------------------------------------------------------
+
+
+class TestDNSRebindingDisabled:
+    """Verify DNS-rebinding protection is disabled on the MCP server.
+
+    Issue #3254: The MCP SDK's default DNS-rebinding protection rejects
+    Host headers that don't match localhost, returning 421 to in-cluster
+    callers using the Kubernetes service DNS name. With the protection
+    disabled, all Host values are accepted.
+    """
+
+    def test_transport_security_dns_rebinding_disabled(self):
+        """MCP server has enable_dns_rebinding_protection=False."""
+        from door.mcp_app import mcp_server
+
+        ts = mcp_server.settings.transport_security
+        assert ts is not None, "transport_security not configured"
+        assert ts.enable_dns_rebinding_protection is False, (
+            "DNS rebinding protection must be disabled for cluster-internal service"
+        )
+
+    def test_transport_security_is_explicit(self):
+        """transport_security is explicitly set (not relying on defaults)."""
+        from door.mcp_app import mcp_server
+
+        # Verify we're using TransportSecuritySettings (not None/default)
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        ts = mcp_server.settings.transport_security
+        assert isinstance(ts, TransportSecuritySettings)
+
+    def test_stateless_http_still_enabled(self):
+        """stateless_http=True is preserved (ACL correctness requirement)."""
+        from door.mcp_app import mcp_server
+
+        assert mcp_server.settings.stateless_http is True
+
+
+# ---------------------------------------------------------------------------
 # Legacy REST backward-compat tests (must still work)
 # ---------------------------------------------------------------------------
 
@@ -329,7 +370,15 @@ class TestLegacyRESTPreserved:
         tools = resp.json()
         assert len(tools) == 7
         names = {t["name"] for t in tools}
-        assert names == {"search", "understand", "impact", "browse", "remember", "experience", "secure"}
+        assert names == {
+            "search",
+            "understand",
+            "impact",
+            "browse",
+            "remember",
+            "experience",
+            "secure",
+        }
 
     @pytest.mark.asyncio
     async def test_post_call_still_works(self, client):

@@ -176,6 +176,23 @@ variable "agent_image_prepull_enabled" {
 }
 
 # -----------------------------------------------------------------------------
+# Knowledge Layer (Issue #3286)
+# -----------------------------------------------------------------------------
+
+variable "knowledge_layer_enabled" {
+  description = <<-DESC
+    Enable Knowledge Layer access from agent-worker pods. When true, adds
+    KNOWLEDGE_LAYER_ENABLED and CONTEXT_MCP_SERVER_URL env vars to the
+    ScaledJob agent-worker container, connecting hosted agents to the
+    agent-context MCP server for code intelligence tools (search, understand,
+    impact, browse, remember, experience, secure). Default true — the
+    agent-context service must be deployed for tools to resolve.
+  DESC
+  type        = bool
+  default     = true
+}
+
+# -----------------------------------------------------------------------------
 # OpenTelemetry / Observability (Issue #1630)
 # -----------------------------------------------------------------------------
 
@@ -224,6 +241,26 @@ variable "eventbridge_alarm_target_repo" {
   description = "GitHub repo (org/repo) where triage issues are created for alarm events."
   type        = string
   default     = ""
+}
+
+# -----------------------------------------------------------------------------
+# GitLab Webhook (Issue #3324)
+# -----------------------------------------------------------------------------
+
+variable "gitlab_webhook_enabled" {
+  description = "Enable the GitLab webhook Lambda and API Gateway route. When false, no GitLab resources are created."
+  type        = bool
+  default     = false
+}
+
+# -----------------------------------------------------------------------------
+# Adversarial E2E (Issue #3488)
+# -----------------------------------------------------------------------------
+
+variable "enable_adversarial_e2e" {
+  description = "Enable adversarial E2E test infrastructure (SSM mirror of gateway internal API key, evidence S3 bucket). Requires the secret adp/<env>/gateway/internal-api-key to exist in Secrets Manager. Set to false on fresh deploys where CI has not yet seeded the secret."
+  type        = bool
+  default     = false
 }
 
 # Issue #575: the gateway's API Gateway invoke URL is resolved at apply time

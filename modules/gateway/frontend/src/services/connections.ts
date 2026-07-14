@@ -189,3 +189,40 @@ export async function disconnectGitHubApp(): Promise<DisconnectAppResponse> {
     {},
   );
 }
+
+// ---------------------------------------------------------------------------
+// Manual App registration (Issue #3360)
+// ---------------------------------------------------------------------------
+
+export interface RegisterManualRequest {
+  app_id: string;
+  private_key: string;
+  webhook_secret?: string;
+  client_id?: string;
+  client_secret?: string;
+}
+
+export interface RegisterManualResponse {
+  registered: boolean;
+  app_id: string;
+  app_slug: string;
+  app_name: string;
+  login_enabled: boolean;
+  warnings: string[];
+}
+
+/**
+ * Register a GitHub App by manually providing App ID + private key.
+ * Validates credentials against GitHub, stores them, returns config warnings.
+ * Platform admin only.
+ *
+ * Issue #3360.
+ */
+export async function registerManualGitHubApp(
+  request: RegisterManualRequest,
+): Promise<RegisterManualResponse> {
+  return apiClient.post<RegisterManualResponse>(
+    '/admin/connections/github/app/register-manual',
+    request,
+  );
+}

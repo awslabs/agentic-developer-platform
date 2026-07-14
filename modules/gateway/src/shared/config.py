@@ -128,6 +128,16 @@ class Settings(BaseSettings):
     # before proxying; per-tenant access is still enforced via the model allowlist.
     mantle_allowed_models: str = "openai.*"
 
+    # Issue #3175: Credential-authorization binding (S2).
+    # When True, credential endpoints ENFORCE registry-based user resolution:
+    # missing invocation_id or empty authorized_user_id → 403.
+    # When False (default), shadow mode: resolve from registry, compare to body,
+    # emit drift/fallback metrics, but never block.
+    enforce_credential_binding: bool = True
+    # DynamoDB table name for webhook-events (used by credential binding to
+    # resolve authorized_user_id). Set via SSM in prod.
+    webhook_events_table: str = "adp-dev-webhook-events"
+
     # Issue #2918: Gate Base.metadata.create_all behind this flag.
     # Default False in deployed envs (migrations are the single source of truth).
     # Set True only for docker-compose / local dev where alembic isn't run on startup.

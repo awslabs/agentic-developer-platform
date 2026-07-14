@@ -1,0 +1,3 @@
+# GitLab webhook handler dependencies.
+# boto3 is included in the Lambda runtime — listed here for documentation.
+boto3

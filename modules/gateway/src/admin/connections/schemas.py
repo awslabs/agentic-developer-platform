@@ -228,3 +228,50 @@ class DisconnectAppResponse(BaseModel):
         default=0,
         description="Number of tenant installations that will stop working",
     )
+
+
+# ---------------------------------------------------------------------------
+# Manual registration (Issue #3360)
+# ---------------------------------------------------------------------------
+
+
+class RegisterManualRequest(BaseModel):
+    """Request body for POST /admin/connections/github/app/register-manual."""
+
+    app_id: str = Field(
+        ...,
+        description="GitHub App numeric ID (from the App's settings page).",
+    )
+    private_key: str = Field(
+        ...,
+        description=("GitHub App private key in PEM format. Accepts both real newlines and escaped \\n (from .env files or JSON)."),
+    )
+    webhook_secret: str = Field(
+        default="",
+        description="Webhook secret configured on the App (used for HMAC validation).",
+    )
+    client_id: str = Field(
+        default="",
+        description=("OAuth client_id for 'Sign in with GitHub'. Optional — omitting disables GitHub login until wired separately."),
+    )
+    client_secret: str = Field(
+        default="",
+        description="OAuth client_secret (paired with client_id).",
+    )
+
+
+class RegisterManualResponse(BaseModel):
+    """Response from POST /admin/connections/github/app/register-manual."""
+
+    registered: bool = Field(..., description="Whether the App credentials were stored successfully")
+    app_id: str = Field(..., description="The registered GitHub App ID")
+    app_slug: str = Field(default="", description="GitHub App slug (from GET /app)")
+    app_name: str = Field(default="", description="GitHub App display name")
+    login_enabled: bool = Field(
+        default=False,
+        description="Whether 'Sign in with GitHub' is wired (OAuth creds stored)",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description=("Non-blocking configuration warnings (e.g. webhook URL mismatch, missing permissions, missing event subscriptions)."),
+    )

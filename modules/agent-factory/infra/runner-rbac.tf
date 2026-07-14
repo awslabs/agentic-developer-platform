@@ -71,7 +71,7 @@ resource "kubernetes_role_binding" "runner_deploy_gateway" {
 resource "kubernetes_role" "runner_keda_manage_gateway_agents" {
   metadata {
     name      = "adp-runner-keda-manage"
-    namespace = "adp-gateway-agents"
+    namespace = kubernetes_namespace.gateway_agents.metadata[0].name
 
     labels = {
       "app.kubernetes.io/managed-by" = "terraform"
@@ -96,7 +96,7 @@ resource "kubernetes_role" "runner_keda_manage_gateway_agents" {
 resource "kubernetes_role_binding" "runner_keda_manage_gateway_agents" {
   metadata {
     name      = "adp-runner-keda-manage"
-    namespace = "adp-gateway-agents"
+    namespace = kubernetes_namespace.gateway_agents.metadata[0].name
 
     labels = {
       "app.kubernetes.io/managed-by" = "terraform"
@@ -120,9 +120,12 @@ resource "kubernetes_role_binding" "runner_keda_manage_gateway_agents" {
 
 # -----------------------------------------------------------------------------
 # arc-systems: read-only for ARC health verification
+# Only created when GitHub Apps are configured (ARC installs arc-systems ns)
 # -----------------------------------------------------------------------------
 
 resource "kubernetes_role" "runner_readonly_arc_systems" {
+  count = var.enable_github_apps ? 1 : 0
+
   metadata {
     name      = "adp-runner-readonly"
     namespace = "arc-systems"
@@ -142,6 +145,8 @@ resource "kubernetes_role" "runner_readonly_arc_systems" {
 }
 
 resource "kubernetes_role_binding" "runner_readonly_arc_systems" {
+  count = var.enable_github_apps ? 1 : 0
+
   metadata {
     name      = "adp-runner-readonly"
     namespace = "arc-systems"
@@ -156,7 +161,7 @@ resource "kubernetes_role_binding" "runner_readonly_arc_systems" {
   role_ref {
     api_group = "rbac.authorization.k8s.io"
     kind      = "Role"
-    name      = kubernetes_role.runner_readonly_arc_systems.metadata[0].name
+    name      = kubernetes_role.runner_readonly_arc_systems[0].metadata[0].name
   }
 
   subject {
@@ -168,9 +173,12 @@ resource "kubernetes_role_binding" "runner_readonly_arc_systems" {
 
 # -----------------------------------------------------------------------------
 # agent-context: deploy lifecycle (configmaps, jobs, pod logs)
+# Only created when agent-context module is deployed (namespace exists)
 # -----------------------------------------------------------------------------
 
 resource "kubernetes_role" "runner_deploy_agent_context" {
+  count = var.enable_agent_context_rbac ? 1 : 0
+
   metadata {
     name      = "adp-runner-deploy"
     namespace = "agent-context"
@@ -190,6 +198,8 @@ resource "kubernetes_role" "runner_deploy_agent_context" {
 }
 
 resource "kubernetes_role_binding" "runner_deploy_agent_context" {
+  count = var.enable_agent_context_rbac ? 1 : 0
+
   metadata {
     name      = "adp-runner-deploy"
     namespace = "agent-context"
@@ -204,7 +214,7 @@ resource "kubernetes_role_binding" "runner_deploy_agent_context" {
   role_ref {
     api_group = "rbac.authorization.k8s.io"
     kind      = "Role"
-    name      = kubernetes_role.runner_deploy_agent_context.metadata[0].name
+    name      = kubernetes_role.runner_deploy_agent_context[0].metadata[0].name
   }
 
   subject {

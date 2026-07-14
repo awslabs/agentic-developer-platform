@@ -22,6 +22,8 @@ import shutil
 import subprocess
 import sys
 import threading
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import boto3
@@ -45,6 +47,14 @@ SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
 
+# Personas whose branch-bootstrap logic should NEVER delete an existing remote
+# branch. AIDLC runs multiple sequential stages on the same issue/branch, each
+# committing artifacts (problem-frame.md, requirements, design, stories, delivery
+# plan) without opening a PR until the final stage. The stale-branch reset
+# (case (a) in Step 6b) would destroy prior stage commits. These personas always
+# fetch + extend instead. Issue #3430.
+PERSONAS_EXTENDING_BRANCH = frozenset({"aidlc"})
+
 # STS session tag values must match [\p{L}\p{Z}\p{N}_.:/=+\-@]*. The natural
 # task ID shape `<owner>/<repo>#<issue>` contains '#' which fails validation.
 # Replace any character outside the allowed set with '_'.
@@ -53,6 +63,151 @@ _STS_TAG_FORBIDDEN = re.compile(r"[^A-Za-z0-9_.:/=+\-@]")
 
 def _sanitize_for_sts_tag(value: str) -> str:
     return _STS_TAG_FORBIDDEN.sub("_", value)
+
+
+class PatResolutionResult:
+    """Result of _resolve_execution_token() — PAT mode or App fallback."""
+
+    __slots__ = ("token_mode", "token", "github_login", "warning")
+
+    def __init__(
+        self,
+        token_mode: str = "app",
+        token: str | None = None,
+        github_login: str = "",
+        warning: str | None = None,
+    ):
+        self.token_mode = token_mode
+        self.token = token
+        self.github_login = github_login
+        self.warning = warning
+
+
+def _resolve_execution_token(
+    *,
+    envelope: dict,
+    environ: dict,
+    cred_client: GatewayCredentialClient | None = None,
+    bootstrap_log: "BootstrapLogger | None" = None,
+) -> PatResolutionResult:
+    """Decide PAT vs App token mode and resolve PAT if needed.
+
+    Extracted from the inline entrypoint logic for testability (issue #3385).
+
+    Args:
+        envelope: Parsed SQS envelope dict.
+        environ: Environment dict (usually os.environ).
+        cred_client: Optional GatewayCredentialClient instance (created if None).
+        bootstrap_log: Optional bootstrap logger (steps logged if provided).
+
+    Returns:
+        PatResolutionResult with token_mode, resolved token (if PAT), and login.
+
+    Raises:
+        RuntimeError: If PAT resolution or validation fails (no App fallback).
+    """
+    pat_execution_enabled = environ.get(
+        "ADP_PAT_EXECUTION_ENABLED", ""
+    ).lower() in ("1", "true", "yes")
+    token_source = envelope.get("token_source")
+
+    # Not enabled or not PAT → App path
+    if not (pat_execution_enabled and token_source == "pat"):
+        warning = None
+        if token_source == "pat" and not pat_execution_enabled:
+            warning = (
+                "token_source=pat requested but ADP_PAT_EXECUTION_ENABLED "
+                "not set — falling back to App token path"
+            )
+            logger.warning("%s (message_id=%s)", warning, envelope.get("message_id"))
+        return PatResolutionResult(token_mode="app", warning=warning)
+
+    # PAT resolution (C1)
+    if bootstrap_log:
+        bootstrap_log.step_start(2, "pat_resolve", mode="explicit")
+
+    if cred_client is None:
+        cred_client = GatewayCredentialClient()
+
+    actor = envelope.get("actor", {})
+    actor_user_id = envelope.get("user_id") or actor.get("user_id", "")
+    persona = envelope.get("persona", "")
+    message_id = envelope.get("message_id", "")
+    source_ref = envelope.get("source_ref", {})
+    repo = source_ref.get("repo", "")
+    issue = source_ref.get("issue", "")
+
+    try:
+        result = cred_client.raw_read(
+            user_id=actor_user_id,
+            agent_id=persona,
+            task_id=message_id or f"{repo}/{issue}",
+            service="github",
+            label="github-pat",
+            purpose="entrypoint: PAT resolution for execution token",
+        )
+        pat_token = result["value"]
+    except GatewayCredentialError as exc:
+        if bootstrap_log:
+            bootstrap_log.step_error(2, "pat_resolve", exc)
+            bootstrap_log.close()
+        raise RuntimeError(
+            "PAT mode requested (token_source=pat) but credential "
+            f"resolution failed: {exc}"
+        ) from exc
+
+    if bootstrap_log:
+        bootstrap_log.step_success(2, "pat_resolve")
+
+    # PAT zero-token guard (C4) — validate before clone
+    if bootstrap_log:
+        bootstrap_log.step_start(3, "pat_validate")
+
+    try:
+        req = urllib.request.Request(
+            "https://api.github.com/user",
+            headers={
+                "Authorization": f"Bearer {pat_token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            user_data = json.loads(resp.read().decode("utf-8"))
+            github_login = user_data.get("login", "")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            err = RuntimeError(
+                "PAT validation failed: token is expired or revoked. "
+                "Please register a new PAT in Settings > Credentials."
+            )
+        elif exc.code == 403:
+            err = RuntimeError(
+                "PAT validation failed: token lacks required permissions. "
+                "Ensure the PAT has Contents, Issues, and Pull Requests "
+                "scopes."
+            )
+        else:
+            err = RuntimeError(f"PAT validation failed: HTTP {exc.code}")
+        if bootstrap_log:
+            bootstrap_log.step_error(3, "pat_validate", err)
+            bootstrap_log.close()
+        raise err from exc
+    except Exception as exc:
+        err = RuntimeError(f"PAT validation failed: {exc}")
+        if bootstrap_log:
+            bootstrap_log.step_error(3, "pat_validate", err)
+            bootstrap_log.close()
+        raise err from exc
+
+    if bootstrap_log:
+        bootstrap_log.step_success(
+            3, "pat_validate", github_login=github_login
+        )
+
+    return PatResolutionResult(
+        token_mode="pat", token=pat_token, github_login=github_login
+    )
 
 
 def parse_envelope(raw: str) -> dict:
@@ -286,6 +441,152 @@ def _upload_transcript_to_s3(
         return None
 
 
+# ---------------------------------------------------------------------------
+# GitLab Tier-A acknowledge path (Issue #3436)
+# ---------------------------------------------------------------------------
+# Minimal handler for GitLab-originated messages: posts an ack comment on the
+# source issue, creates a branch, and deletes the SQS message. Full agent
+# execution on GitLab repos (clone, code, MR) is deferred to Phase 1 (#3329).
+# ---------------------------------------------------------------------------
+
+
+def _handle_gitlab_mention(
+    envelope: dict,
+    queue_url: str,
+    region: str,
+    receipt_handle: str,
+) -> int:
+    """Handle a GitLab-originated mention: ack comment + branch create + delete msg.
+
+    Returns 0 on success, 1 on failure. Failures still delete the SQS message
+    to prevent FIFO head-of-line blocking (same contract as the poison guard).
+    """
+    payload = envelope.get("payload", {})
+    source = payload.get("source", {})
+    project_id = source.get("project_id")
+    issue_iid = source.get("issue_iid")
+    # URL precedence: envelope field is primary (self-describing message);
+    # GITLAB_URL env var is an optional break-glass override only.
+    gitlab_url = source.get("gitlab_url", "") or os.environ.get("GITLAB_URL", "")
+    persona = envelope.get("persona", "developer")
+    correlation = envelope.get("correlation", {})
+    correlation_id = correlation.get("correlation_id", "")
+
+    if not gitlab_url or not project_id or not issue_iid:
+        logger.error(
+            "GitLab path: missing required fields (gitlab_url=%s, project_id=%s, issue_iid=%s)",
+            gitlab_url,
+            project_id,
+            issue_iid,
+        )
+        _delete_message(queue_url, region, receipt_handle)
+        return 1
+
+    # Resolve GitLab API token from Secrets Manager.
+    # Single-tenant spike: token secret is adp/<env>/gitlab-api-token.
+    # Phase 1 (#3329) will resolve per-tenant tokens.
+    env_name = os.environ.get("ENVIRONMENT", os.environ.get("ENV", "dev"))
+    secret_name = f"adp/{env_name}/gitlab-api-token"
+    try:
+        sm = boto3.client("secretsmanager", region_name=region)
+        resp = sm.get_secret_value(SecretId=secret_name)
+        api_token = resp["SecretString"]
+    except Exception as exc:
+        logger.error("GitLab path: failed to read API token from %s: %s", secret_name, exc)
+        _delete_message(queue_url, region, receipt_handle)
+        return 1
+
+    # Strip trailing slash from URL for clean concatenation
+    base_url = gitlab_url.rstrip("/")
+    headers = {"PRIVATE-TOKEN": api_token, "Content-Type": "application/json"}
+
+    # 1. Post acknowledge comment on the source issue
+    ack_body = (
+        f"🤖 **Agent `{persona}` acknowledged** this mention.\n\n"
+        f"Correlation: `{correlation_id}`\n\n"
+        f"_Processing — Tier A acknowledge only (Phase 0 spike)._"
+    )
+    notes_url = f"{base_url}/api/v4/projects/{project_id}/issues/{issue_iid}/notes"
+    note_payload = json.dumps({"body": ack_body}).encode("utf-8")
+
+    ack_failed = False
+    try:
+        req = urllib.request.Request(notes_url, data=note_payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            logger.info(
+                "GitLab ack comment posted: project=%s issue=%s status=%s",
+                project_id,
+                issue_iid,
+                resp.status,
+            )
+    except Exception as exc:
+        logger.error("GitLab path: failed to post ack comment: %s", exc)
+        ack_failed = True
+
+    # 2. Resolve default branch from project metadata
+    default_branch = "main"  # fallback
+    project_url = f"{base_url}/api/v4/projects/{project_id}"
+    try:
+        req = urllib.request.Request(project_url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            project_data = json.loads(resp.read().decode("utf-8"))
+            default_branch = project_data.get("default_branch", "main") or "main"
+            logger.info(
+                "GitLab default branch resolved: project=%s branch=%s",
+                project_id,
+                default_branch,
+            )
+    except Exception as exc:
+        logger.warning(
+            "GitLab path: failed to resolve default branch, falling back to 'main': %s", exc
+        )
+
+    # 3. Create branch agent/issue-<iid> from default branch (idempotent)
+    branch_name = f"agent/issue-{issue_iid}"
+    branches_url = f"{base_url}/api/v4/projects/{project_id}/repository/branches"
+    branch_payload = json.dumps({"branch": branch_name, "ref": default_branch}).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            branches_url, data=branch_payload, headers=headers, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            logger.info("GitLab branch created: %s (status=%s)", branch_name, resp.status)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 400:
+            # Disambiguate: "already exists" is tolerable; other 400s are real errors
+            error_body = ""
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            if "already exists" in error_body.lower():
+                logger.info("GitLab branch already exists: %s (400 tolerated)", branch_name)
+            else:
+                logger.error(
+                    "GitLab path: branch create 400 — not 'already exists': %s body=%s",
+                    branch_name,
+                    error_body,
+                )
+                ack_failed = True
+        else:
+            logger.error("GitLab path: failed to create branch: %s (status=%s)", exc, exc.code)
+    except Exception as exc:
+        logger.error("GitLab path: failed to create branch: %s", exc)
+
+    # 4. Delete the SQS message — always, to prevent FIFO jam
+    try:
+        _delete_message(queue_url, region, receipt_handle)
+        logger.info("GitLab message deleted successfully")
+    except Exception as exc:
+        logger.error("GitLab path: failed to delete SQS message: %s", exc)
+        return 1
+
+    # Return 1 if the ack comment failed (the primary deliverable of Tier A);
+    # the message is still deleted above to prevent FIFO jam.
+    return 1 if ack_failed else 0
+
+
 def main() -> int:
     queue_url = os.environ.get("QUEUE_URL")
     if not queue_url:
@@ -337,9 +638,28 @@ def main() -> int:
     arrived_at = envelope.get("arrived_at", "")
     actor = envelope.get("actor", {})
 
+    # Issue #3436: Provider detection — route GitLab messages to the lightweight
+    # acknowledge path before the poison guard fires. GitLab envelopes always
+    # have installation_id=0 (no GitHub App) so the guard would delete them.
+    provider = (envelope.get("payload") or {}).get("provider", "")
+    if provider == "gitlab":
+        logger.info(
+            "GitLab provider detected (message_id=%s, repo=%s, issue=%s). "
+            "Routing to GitLab acknowledge path.",
+            message_id,
+            repo,
+            issue,
+        )
+        bootstrap_log.step_success(
+            1, "parse_envelope", tenant_id=tenant_id, persona=persona, repo=repo, issue=issue
+        )
+        bootstrap_log.close()
+        return _handle_gitlab_mention(envelope, queue_url, region, receipt_handle)
+
     # Issue #2336: Defense-in-depth — if installation_id is 0/None/"0", the
     # token-mint will 404 deterministically. Delete the poison message to
-    # prevent FIFO head-of-line blocking and exit cleanly.
+    # prevent FIFO head-of-line blocking and exit cleanly. Only applies to
+    # GitHub-path messages (GitLab is routed above).
     if installation_id in (0, None, "0"):
         logger.error(
             "FATAL: installation_id=%r is invalid (message_id=%s, repo=%s, issue=%s). "
@@ -424,28 +744,48 @@ def main() -> int:
         correlation_id or "(none)",
     )
 
-    # Step 2: Fetch GitHub App credentials from vault
-    bootstrap_log.step_start(2, "vault_fetch", secret=f"tenants/{tenant_id}/github-app")
-    try:
-        vault = VaultClient(region=os.environ.get("AWS_REGION", "us-east-1"))
-        app_creds = vault.get_secret(f"tenants/{tenant_id}/github-app")
-        app_id = app_creds["app_id"]
-        private_key = app_creds["private_key"]
-    except Exception as exc:
-        bootstrap_log.step_error(2, "vault_fetch", exc)
-        bootstrap_log.close()
-        raise
-    bootstrap_log.step_success(2, "vault_fetch", app_id=app_id)
+    # --- Issue #3385: PAT execution path (C1+C4) behind kill-switch ---
+    # Gated on ADP_PAT_EXECUTION_ENABLED env var (default absent = dead code).
+    # When enabled AND envelope token_source == "pat", resolve PAT from vault
+    # and skip App token mint. Otherwise: existing App path, byte-identical.
+    _pat_result = _resolve_execution_token(
+        envelope=envelope,
+        environ=dict(os.environ),
+        bootstrap_log=bootstrap_log,
+    )
+    _token_mode = _pat_result.token_mode
+    _pat_token = _pat_result.token
+    _pat_github_login = _pat_result.github_login
 
-    # Step 3: Mint installation token
-    bootstrap_log.step_start(3, "mint_token", app_id=app_id, installation_id=installation_id)
-    try:
-        token = mint_installation_token(str(app_id), private_key, installation_id)
-    except Exception as exc:
-        bootstrap_log.step_error(3, "mint_token", exc)
-        bootstrap_log.close()
-        raise
-    bootstrap_log.step_success(3, "mint_token")
+    # Step 2: Fetch GitHub App credentials from vault (App path — skipped in PAT mode)
+    if _token_mode == "pat":
+        # PAT resolved above; no vault fetch or token mint needed.
+        # Set token variable for downstream use (clone, check-run, etc.)
+        token = _pat_token
+        app_id = ""
+        private_key = ""
+    else:
+        bootstrap_log.step_start(2, "vault_fetch", secret=f"tenants/{tenant_id}/github-app")
+        try:
+            vault = VaultClient(region=os.environ.get("AWS_REGION", "us-east-1"))
+            app_creds = vault.get_secret(f"tenants/{tenant_id}/github-app")
+            app_id = app_creds["app_id"]
+            private_key = app_creds["private_key"]
+        except Exception as exc:
+            bootstrap_log.step_error(2, "vault_fetch", exc)
+            bootstrap_log.close()
+            raise
+        bootstrap_log.step_success(2, "vault_fetch", app_id=app_id)
+
+        # Step 3: Mint installation token
+        bootstrap_log.step_start(3, "mint_token", app_id=app_id, installation_id=installation_id)
+        try:
+            token = mint_installation_token(str(app_id), private_key, installation_id)
+        except Exception as exc:
+            bootstrap_log.step_error(3, "mint_token", exc)
+            bootstrap_log.close()
+            raise
+        bootstrap_log.step_success(3, "mint_token")
 
     # Step 3b: Idempotency guard — skip redelivered messages for completed work.
     # If the issue's agent branch already has a MERGED PR, a prior run completed
@@ -494,18 +834,37 @@ def main() -> int:
         "TENANT_ID": tenant_id,
         "CLAUDE_CODE_USE_BEDROCK": "1",
         "ANTHROPIC_MODEL": effective_model,
+    }
+
+    # Issue #3385 (A4): In PAT mode, do NOT export GH_APP_* vars — TokenManager
+    # must not run its refresh loop (which would overwrite the PAT with a bot
+    # installation token mid-run). Instead export ADP_TOKEN_MODE=pat so the TS
+    # side adopts the env GITHUB_TOKEN as-is.
+    if _token_mode == "pat":
+        env_vars["ADP_TOKEN_MODE"] = "pat"
+        # Write PAT to the askpass token file so git-askpass-helper reads it.
+        # TokenManager won't overwrite since it has no app credentials.
+        # Use 0o600 + atomic rename to prevent world-readable window.
+        _token_tmp = "/tmp/.adp-gh-token.tmp"
+        _token_path = "/tmp/.adp-gh-token"
+        fd = os.open(_token_tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, token.encode())
+        finally:
+            os.close(fd)
+        os.replace(_token_tmp, _token_path)
+    else:
         # GitHub App credentials for token refresh (#1502). The agent-worker.ts
         # TokenManager requires these to re-mint installation tokens before the
         # 1-hour expiry. Without them, long-running agents die with 401.
-        "GH_APP_ID": str(app_id),
-        "GH_APP_PRIVATE_KEY": private_key,
+        env_vars["GH_APP_ID"] = str(app_id)
+        env_vars["GH_APP_PRIVATE_KEY"] = private_key
         # Authoritative installation id for THIS run's target org. The JS worker
         # must re-mint against this installation — NOT installations[0], which is
         # an arbitrary (newest-first) install and resolves to the wrong org once
         # more than one tenant is onboarded, causing 404s on comment/check-run
         # PATCH calls (cross-installation resource access).
-        "GH_APP_INSTALLATION_ID": str(installation_id),
-    }
+        env_vars["GH_APP_INSTALLATION_ID"] = str(installation_id)
 
     # Issue #2279: Expose model_requested so the worker can post a warning
     # if the requested model was rejected (lenient path).
@@ -514,6 +873,12 @@ def main() -> int:
         env_vars["ADP_MODEL_REQUESTED"] = model_requested
     if model_resolved:
         env_vars["ADP_MODEL_RESOLVED"] = model_resolved
+
+    # Issue #3574: Expose /aws-label directive for agent visibility.
+    # The label targets a specific linked AWS account within the user's vault.
+    aws_label = envelope.get("aws_label")
+    if aws_label:
+        env_vars["ADP_AWS_LABEL"] = aws_label
 
     # Vault credential context for adp-cred CLI (#137).
     # task_id flows into STS session tags via the gateway's assume-role
@@ -575,9 +940,15 @@ def main() -> int:
 
     # Step 6: Configure git identity (must come BEFORE WIP branch creation)
     bootstrap_log.step_start(6, "git_config")
-    bot_email = f"{app_id}+adp-agent[bot]@users.noreply.github.com"
-    run_cmd(["git", "config", "user.email", bot_email], cwd=WORK_DIR)
-    run_cmd(["git", "config", "user.name", "adp-agent[bot]"], cwd=WORK_DIR)
+    if _token_mode == "pat" and _pat_github_login:
+        # Issue #3385: PAT runs act AS the human — use their GitHub identity.
+        pat_email = f"{_pat_github_login}@users.noreply.github.com"
+        run_cmd(["git", "config", "user.email", pat_email], cwd=WORK_DIR)
+        run_cmd(["git", "config", "user.name", _pat_github_login], cwd=WORK_DIR)
+    else:
+        bot_email = f"{app_id}+adp-agent[bot]@users.noreply.github.com"
+        run_cmd(["git", "config", "user.email", bot_email], cwd=WORK_DIR)
+        run_cmd(["git", "config", "user.name", "adp-agent[bot]"], cwd=WORK_DIR)
     bootstrap_log.step_success(6, "git_config")
 
     # Step 6b: Create or reset the agent branch + WIP commit BEFORE exec
@@ -652,6 +1023,19 @@ def main() -> int:
                 )
                 run_cmd(["git", "fetch", "origin", branch_name], cwd=WORK_DIR)
                 run_cmd(["git", "checkout", branch_name], cwd=WORK_DIR)
+            elif persona in PERSONAS_EXTENDING_BRANCH:
+                # (a-aidlc) AIDLC stages commit artifacts sequentially on one
+                # branch without opening a PR until the end. Never delete the
+                # remote branch — fetch + extend so prior stage commits survive.
+                # Issue #3430.
+                logger.info(
+                    "Branch %s exists with no open PR; persona=%s is in "
+                    "PERSONAS_EXTENDING_BRANCH — extending instead of resetting",
+                    branch_name,
+                    persona,
+                )
+                run_cmd(["git", "fetch", "origin", branch_name], cwd=WORK_DIR)
+                run_cmd(["git", "checkout", branch_name], cwd=WORK_DIR)
             else:
                 # (a) Stale branch, no PR — delete it and start fresh from main.
                 logger.info(
@@ -715,12 +1099,19 @@ def main() -> int:
     # session tagging and returns short-lived credentials. Preferred over the
     # raw-read path because credential-assume-role isn't gated by the
     # `vault_raw_read_enabled` feature flag.
+    #
+    # Issue #3574: When aws_label is non-None, the assume-role call targets a
+    # SPECIFIC linked account. Failure is FATAL — we must NOT fall back to
+    # label=None (which would silently pick a different account via the ranked
+    # picker, reproducing the exact bug this fixes). When aws_label is None,
+    # preserve today's non-fatal warning behavior for backward compat.
     if persona in PERSONAS_NEEDING_AWS:
         try:
             sts_creds = _fetch_assumed_aws_credentials(
                 user_id=user_id,
                 agent_id=persona,
                 task_id=task_id,
+                label=aws_label,
             )
             os.environ.update(
                 {
@@ -730,11 +1121,24 @@ def main() -> int:
                 }
             )
             logger.info(
-                "Assumed customer AWS role (user-scoped) via gateway provenance_id=%s expires=%s",
+                "Assumed customer AWS role (user-scoped) via gateway "
+                "label=%r provenance_id=%s expires=%s",
+                aws_label,
                 sts_creds.get("provenance_id"),
                 sts_creds.get("expiration"),
             )
         except Exception as exc:
+            if aws_label:
+                # Issue #3574 invariant 2: explicit label + failure = FATAL.
+                # Do NOT retry with label=None — that would silently land in the
+                # wrong account (the exact bug this directive fixes).
+                logger.error(
+                    "FATAL: AWS role assumption failed with explicit label=%r "
+                    "(refusing to fallback to ranked picker): %s",
+                    aws_label,
+                    exc,
+                )
+                raise
             logger.warning("AWS role assumption failed (non-fatal): %s", exc)
 
     # Step 8: Remove trigger label
@@ -881,8 +1285,13 @@ def main() -> int:
         )
 
     # Update invocation status to in_progress (best-effort)
+    # Issue #3385 (C5): include token_mode provenance on the DDB row.
     _keda_job_name = os.environ.get("JOB_NAME", os.environ.get("HOSTNAME", ""))
-    update_invocation_status(message_id, arrived_at, "in_progress", run_id=_keda_job_name)
+    update_invocation_status(
+        message_id, arrived_at, "in_progress",
+        run_id=_keda_job_name,
+        token_mode=_token_mode,
+    )
 
     # Flush bootstrap logs to CloudWatch before entering the agent phase.
     # From here on, the Node agent SDK / OTEL handles observability.
@@ -1111,7 +1520,9 @@ def _stop_sigv4_proxy(proc: subprocess.Popen) -> None:
     logger.info("sigv4-proxy stopped (exit=%s)", proc.returncode)
 
 
-def _fetch_assumed_aws_credentials(*, user_id: str, agent_id: str, task_id: str) -> dict:
+def _fetch_assumed_aws_credentials(
+    *, user_id: str, agent_id: str, task_id: str, label: str | None = None
+) -> dict:
     """Get short-lived AWS credentials via the gateway's assume-role endpoint.
 
     Calls POST /internal/v1/credential-assume-role with service="aws". The
@@ -1120,6 +1531,14 @@ def _fetch_assumed_aws_credentials(*, user_id: str, agent_id: str, task_id: str)
 
     Preferred over the raw-read path because credential-assume-role isn't
     gated by the `vault_raw_read_enabled` feature flag (default off).
+
+    Args:
+        user_id: Platform user_id of the acting user.
+        agent_id: Agent persona identifier.
+        task_id: Unique task/run identifier.
+        label: Optional credential label targeting a specific linked account
+            (issue #3574). When non-None, the gateway's CredentialResolver
+            adds a WHERE label=:label filter WITHIN the authorized user's vault.
 
     Returns:
         Dict with {profile_name, access_key_id, secret_access_key,
@@ -1148,7 +1567,7 @@ def _fetch_assumed_aws_credentials(*, user_id: str, agent_id: str, task_id: str)
         agent_id=agent_id,
         task_id=task_id,
         service="aws",
-        label=None,
+        label=label,
         purpose="entrypoint: assume customer AWS role",
     )
 

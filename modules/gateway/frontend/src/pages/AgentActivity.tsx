@@ -16,15 +16,20 @@
  * - Chain view: click correlation chain to see indented tree
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Input, Select } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
+import { FilterChips } from '@/components/activity/FilterChips';
+import { ActivityCardList } from '@/components/activity/ActivityCardList';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
+import type { ActiveFilter } from '@/components/activity/FilterChips';
 import InvocationChain from '@/components/InvocationChain';
 import { InvocationDetail } from '@/components/InvocationDetail';
 import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { usePermissions } from '@/hooks/usePermissions';
-import { getMyInvocations, getMyChains, getAllInvocations } from '@/services/activity';
+import { getMyInvocations, getMyChains, getAllInvocations, getMyInvocationDetail } from '@/services/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
 import type {
   InvocationItem,
@@ -384,11 +389,25 @@ export default function AgentActivity() {
   const { isPlatformAdmin, isOrgAdmin } = usePermissions();
   const isAdmin = isPlatformAdmin() || isOrgAdmin();
 
+  // Issue #3770: Responsive layout — card view below lg breakpoint
+  const isNarrowViewport = useMediaQuery('(max-width: 1023px)');
+
+  // Issue #3632: URL query-param deep-linking
+  const [searchParams] = useSearchParams();
+
   // View toggle: "mine" or "all" (admin only)
   const [viewMode, setViewMode] = useState<'mine' | 'all'>('mine');
 
   // Issue #1662: Group-by toggle: "run" (flat) or "chain" (grouped)
-  const [groupBy, setGroupBy] = useState<'run' | 'chain'>('chain');
+  // Issue #3723 follow-up: a status filter in the URL (dashboard tile click)
+  // lands on the flat run view — chain grouping filters by ROOT status, so a
+  // chain whose root completed hides an in-progress child and the count would
+  // disagree with the tile that was clicked.
+  const [groupBy, setGroupBy] = useState<'run' | 'chain'>(() => {
+    const paramStatus = searchParams.get('status');
+    const validStatus = paramStatus && STATUS_OPTIONS.some((opt) => opt.value === paramStatus);
+    return validStatus || searchParams.get('view') === 'runs' ? 'run' : 'chain';
+  });
 
   // Chain row expand/collapse state (issue #1662)
   const [expandedChains, setExpandedChains] = useState<Set<string>>(new Set());
@@ -403,12 +422,35 @@ export default function AgentActivity() {
   // Issue #3069: Transcript viewer state
   const [transcriptInvocationId, setTranscriptInvocationId] = useState<string | null>(null);
 
-  // Filters
-  const [statusFilter, setStatusFilter] = useState('');
+  // Filters — Issue #3632: initialize from URL query params if present
+  const [statusFilter, setStatusFilter] = useState(() => {
+    const paramStatus = searchParams.get('status');
+    if (paramStatus && STATUS_OPTIONS.some((opt) => opt.value === paramStatus)) {
+      return paramStatus;
+    }
+    return '';
+  });
   const [channelFilter, setChannelFilter] = useState('');
   const [personaFilter, setPersonaFilter] = useState('');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [startDate, setStartDate] = useState(() => {
+    const paramSince = searchParams.get('since');
+    if (paramSince === 'today') {
+      return new Date().toISOString().split('T')[0];
+    }
+    // Issue #3771: Support YYYY-MM-DD date values from trend strip navigation
+    if (paramSince && /^\d{4}-\d{2}-\d{2}$/.test(paramSince)) {
+      return paramSince;
+    }
+    return '';
+  });
+  const [endDate, setEndDate] = useState(() => {
+    // Issue #3771: Read `until` URL param for day-click navigation from trend strip
+    const paramUntil = searchParams.get('until');
+    if (paramUntil && /^\d{4}-\d{2}-\d{2}$/.test(paramUntil)) {
+      return paramUntil;
+    }
+    return '';
+  });
 
   // Issue #1658: "Show all events" toggle — when off (default), non-triggering
   // statuses (no_op, webhook_received) are hidden from the board.
@@ -418,10 +460,40 @@ export default function AgentActivity() {
   const [cursorStack, setCursorStack] = useState<string[]>([]);
   const [currentCursor, setCurrentCursor] = useState<string | undefined>(undefined);
 
+  // Issue #3632: Deep-link — auto-open detail modal when ?id= param is present.
+  // Fetches the invocation detail on mount; silently ignores 404/errors.
+  useEffect(() => {
+    const deepLinkId = searchParams.get('id');
+    if (!deepLinkId) return;
+
+    let cancelled = false;
+    getMyInvocationDetail(deepLinkId)
+      .then((item) => {
+        if (!cancelled) {
+          setDetailItem(item);
+        }
+      })
+      .catch(() => {
+        // Silently ignore — invocation not found or not owned by user (404)
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams]);
+
   // Build query params
-  // Issue #1658: An explicit status filter takes precedence — if the user
-  // selects a specific status (including no_op), send include_non_triggering=true
-  // so the backend doesn't exclude it. Otherwise, respect the toggle.
+  // Issue #1658: include_non_triggering=true tells the backend to include
+  // no_op and webhook_received rows. We send it when:
+  // - showAllEvents toggle is on (user wants the full trail), OR
+  // - the selected status IS itself a non-triggering status (user explicitly
+  //   wants to filter BY no_op/webhook_received).
+  // Issue #3723: A normal status filter (in_progress/complete/failed) must NOT
+  // set include_non_triggering — otherwise chain descendants are unfiltered,
+  // causing phantom children (the dashboard tile click sends ?status=in_progress).
+  const NON_TRIGGERING_STATUSES: InvocationStatus[] = ['no_op', 'webhook_received'];
+  const shouldIncludeNonTriggering = showAllEvents ||
+    (statusFilter ? NON_TRIGGERING_STATUSES.includes(statusFilter as InvocationStatus) : false);
   const queryParams: InvocationQueryParams = {
     status: (statusFilter || undefined) as InvocationStatus | undefined,
     channel: (channelFilter || undefined) as InvocationChannel | undefined,
@@ -430,7 +502,7 @@ export default function AgentActivity() {
     end_date: endDate || undefined,
     limit: 20,
     last_key: currentCursor,
-    include_non_triggering: (statusFilter || showAllEvents) ? true : undefined,
+    include_non_triggering: shouldIncludeNonTriggering ? true : undefined,
   };
 
   // Issue #1662: Choose fetch function based on view mode + group-by
@@ -581,6 +653,63 @@ export default function AgentActivity() {
   const chainData = isChainView ? chainQuery.data : undefined;
   const flatData = !isChainView ? flatQuery.data : undefined;
 
+  // Issue #3768: Derive active filter chips for visual indication
+  const activeFilters: ActiveFilter[] = useMemo(() => {
+    const chips: ActiveFilter[] = [];
+    if (statusFilter) {
+      const opt = STATUS_OPTIONS.find((o) => o.value === statusFilter);
+      chips.push({ key: 'status', label: 'Status', displayValue: opt?.label ?? statusFilter });
+    }
+    if (channelFilter) {
+      const opt = CHANNEL_OPTIONS.find((o) => o.value === channelFilter);
+      chips.push({ key: 'channel', label: 'Source', displayValue: opt?.label ?? channelFilter });
+    }
+    if (personaFilter) {
+      const opt = PERSONA_OPTIONS.find((o) => o.value === personaFilter);
+      chips.push({ key: 'persona', label: 'Persona', displayValue: opt?.label ?? personaFilter });
+    }
+    if (startDate) {
+      chips.push({ key: 'startDate', label: 'Since', displayValue: startDate });
+    }
+    if (endDate) {
+      chips.push({ key: 'endDate', label: 'Until', displayValue: endDate });
+    }
+    return chips;
+  }, [statusFilter, channelFilter, personaFilter, startDate, endDate]);
+
+  const handleRemoveFilter = useCallback(
+    (key: string) => {
+      switch (key) {
+        case 'status':
+          setStatusFilter('');
+          break;
+        case 'channel':
+          setChannelFilter('');
+          break;
+        case 'persona':
+          setPersonaFilter('');
+          break;
+        case 'startDate':
+          setStartDate('');
+          break;
+        case 'endDate':
+          setEndDate('');
+          break;
+      }
+      resetPagination();
+    },
+    [resetPagination],
+  );
+
+  const handleClearAllFilters = useCallback(() => {
+    setStatusFilter('');
+    setChannelFilter('');
+    setPersonaFilter('');
+    setStartDate('');
+    setEndDate('');
+    resetPagination();
+  }, [resetPagination]);
+
   return (
     <div className="space-y-6">
       {/* Header + view toggle */}
@@ -589,10 +718,17 @@ export default function AgentActivity() {
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
             Agent Activity
           </h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1">
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
             {viewMode === 'mine'
-              ? 'Your agent invocations'
-              : 'All agent invocations (admin)'}
+              ? <>Every run, filterable — summarized on your{' '}
+                  <Link
+                    to="/runs"
+                    className="text-primary-600 dark:text-primary-400 hover:underline"
+                  >
+                    Dashboard
+                  </Link>
+                </>
+              : 'All agent runs (admin view)'}
           </p>
         </div>
 
@@ -732,12 +868,20 @@ export default function AgentActivity() {
         </div>
       </div>
 
+      {/* Issue #3768: Active filter chips */}
+      <FilterChips
+        filters={activeFilters}
+        onRemove={handleRemoveFilter}
+        onClearAll={handleClearAllFilters}
+      />
+
       {/* Chain view (shown when a chain is selected) */}
       {activeChainId && (
         <InvocationChain
           correlationId={activeChainId}
           isAdmin={viewMode === 'all' && isAdmin}
           highlightInvocationId={chainHighlightId}
+          includeNonTriggering={showAllEvents}
           onClose={handleCloseChain}
           onNodeClick={(invocationId) => {
             // Open the detail modal for a clicked chain node. The node may not
@@ -848,6 +992,15 @@ export default function AgentActivity() {
           ) : !isChainView && flatData && flatData.items.length > 0 ? (
             /* Flat list view (existing) */
             <>
+              {isNarrowViewport ? (
+                /* Card layout for narrow viewports (<1024px) — Issue #3770 */
+                <ActivityCardList
+                  items={flatData.items}
+                  onDetailClick={(item) => setDetailItem(item)}
+                  onTranscriptClick={(id) => setTranscriptInvocationId(id)}
+                />
+              ) : (
+              /* Table layout for wide viewports (>=1024px) */
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                   <thead className="bg-gray-50 dark:bg-gray-900">
@@ -885,8 +1038,16 @@ export default function AgentActivity() {
                     {flatData.items.map((item: InvocationItem) => (
                       <tr
                         key={item.invocation_id}
-                        className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer"
+                        className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+                        tabIndex={0}
                         onClick={() => setDetailItem(item)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setDetailItem(item);
+                          }
+                        }}
+                        aria-label={`Run: ${item.topic || 'untitled'}, Status: ${STATUS_CONFIG[item.status]?.label || item.status}, ${formatRelativeTime(item.invoked_at)}`}
                       >
                         <td
                           className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white"
@@ -945,6 +1106,7 @@ export default function AgentActivity() {
                   </tbody>
                 </table>
               </div>
+              )}
 
               {/* Pagination */}
               <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
@@ -976,8 +1138,17 @@ export default function AgentActivity() {
             (!isChainView && flatData && flatData.items.length === 0)
           ) ? (
             <div className="text-center py-12">
-              <p className="text-gray-500 dark:text-gray-400">
-                No agent activity yet
+              <p className="text-gray-500 dark:text-gray-400 mb-2">
+                No agent runs yet
+              </p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Mention the developer agent on a GitHub issue to trigger your first run.{' '}
+                <Link
+                  to="/setup"
+                  className="text-primary-600 dark:text-primary-400 hover:underline"
+                >
+                  View setup guide
+                </Link>
               </p>
             </div>
           ) : !isLoading && data && hasNextPage && (

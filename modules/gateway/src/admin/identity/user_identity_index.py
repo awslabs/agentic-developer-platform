@@ -76,10 +76,12 @@ class UserIdentityIndexClient:
         org_id: str,
         provider_username: str | None = None,
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
+        member_org_ids: list[str] | None = None,
     ) -> bool:
         """Write a user identity to the new DDB table.
 
         PK=provider, SK=provider_user_id. Upsert semantics (PutItem overwrites).
+        Issue #3134: Optional member_org_ids stores the user's tenant memberships.
         Returns True if write succeeded, False if all retries exhausted.
         """
         if provider not in SUPPORTED_PROVIDERS:
@@ -97,6 +99,10 @@ class UserIdentityIndexClient:
 
         if provider_username is not None:
             item["provider_username"] = {"S": provider_username}
+
+        # Issue #3134: member_org_ids as a DDB List attribute
+        if member_org_ids is not None:
+            item["member_org_ids"] = {"L": [{"S": oid} for oid in member_org_ids]}
 
         for attempt in range(MAX_RETRIES):
             try:
@@ -120,6 +126,121 @@ class UserIdentityIndexClient:
 
         logger.error(
             "user-identity-index put_item exhausted retries: provider=%s provider_user_id=%s",
+            provider,
+            provider_user_id,
+        )
+        return False
+
+    async def update_user_core_attrs(
+        self,
+        provider: str,
+        provider_user_id: str,
+        user_id: str,
+        org_id: str,
+        provider_username: str | None = None,
+    ) -> bool:
+        """Update core attrs on a user identity row using SET semantics (UpdateItem).
+
+        Issue #3134 fix: Uses UpdateItem so that member_org_ids (set by
+        membership write-through) is preserved when an unrelated identity
+        operation re-writes the user row.
+
+        Always sets: user_id, org_id, updated_at.
+        Conditionally sets: provider_username (only when not None).
+
+        Returns True if update succeeded, False if all retries exhausted.
+        """
+        key = {
+            "provider": {"S": provider},
+            "provider_user_id": {"S": provider_user_id},
+        }
+
+        set_parts = ["user_id = :uid", "org_id = :org", "updated_at = :now"]
+        expression_values: dict = {
+            ":uid": {"S": user_id},
+            ":org": {"S": org_id},
+            ":now": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+        }
+
+        if provider_username is not None:
+            set_parts.append("provider_username = :pun")
+            expression_values[":pun"] = {"S": provider_username}
+
+        update_expression = "SET " + ", ".join(set_parts)
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                await asyncio.to_thread(
+                    self._client.update_item,
+                    TableName=self._table_name,
+                    Key=key,
+                    UpdateExpression=update_expression,
+                    ExpressionAttributeValues=expression_values,
+                )
+                return True
+            except ClientError as e:
+                wait = BASE_BACKOFF_SECONDS * (2**attempt)
+                logger.warning(
+                    "user-identity-index update_user_core_attrs failed (attempt %d/%d): %s. Retrying in %.1fs",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    e.response["Error"]["Message"],
+                    wait,
+                )
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(wait)
+
+        logger.error(
+            "user-identity-index update_user_core_attrs exhausted retries: provider=%s provider_user_id=%s",
+            provider,
+            provider_user_id,
+        )
+        return False
+
+    async def update_membership_orgs(
+        self,
+        provider: str,
+        provider_user_id: str,
+        member_org_ids: list[str],
+    ) -> bool:
+        """Update only the member_org_ids attribute on a user identity row.
+
+        Issue #3134: Targeted attribute update via UpdateItem.
+        Returns True if update succeeded, False if all retries exhausted.
+        """
+        key = {
+            "provider": {"S": provider},
+            "provider_user_id": {"S": provider_user_id},
+        }
+        expression_values = {
+            ":orgs": {"L": [{"S": oid} for oid in member_org_ids]},
+            ":now": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+        }
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                await asyncio.to_thread(
+                    self._client.update_item,
+                    TableName=self._table_name,
+                    Key=key,
+                    UpdateExpression="SET member_org_ids = :orgs, updated_at = :now",
+                    ExpressionAttributeValues=expression_values,
+                )
+                return True
+            except ClientError as e:
+                wait = BASE_BACKOFF_SECONDS * (2**attempt)
+                logger.warning(
+                    "user-identity-index update_membership_orgs failed (attempt %d/%d): %s. Retrying in %.1fs",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    e.response["Error"]["Message"],
+                    wait,
+                )
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(wait)
+
+        logger.error(
+            "user-identity-index update_membership_orgs exhausted retries: provider=%s provider_user_id=%s",
             provider,
             provider_user_id,
         )

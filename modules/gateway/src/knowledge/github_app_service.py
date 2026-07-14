@@ -59,6 +59,32 @@ def _get_environment() -> str:
     return os.environ.get("ENVIRONMENT", "dev")
 
 
+def _classify_boto3_error(exc: Exception) -> str | None:
+    """Extract the AWS error code from a boto3 ClientError.
+
+    Issue #3358: Uses the structured response['Error']['Code'] field when
+    available (proper ClientError), falls back to string matching for generic
+    exceptions (e.g. connection timeouts wrapped in non-ClientError types).
+
+    Returns the error code string (e.g. 'ResourceNotFoundException',
+    'AccessDeniedException') or None if it cannot be determined.
+    """
+    # Try structured boto3 ClientError first
+    if hasattr(exc, "response"):
+        try:
+            return exc.response.get("Error", {}).get("Code")
+        except (AttributeError, TypeError):
+            pass
+
+    # Fallback: string matching for exceptions that don't carry .response
+    exc_str = str(exc)
+    if "ResourceNotFoundException" in exc_str:
+        return "ResourceNotFoundException"
+    elif "AccessDeniedException" in exc_str:
+        return "AccessDeniedException"
+    return None
+
+
 async def resolve_tenant_app_credentials(
     org_id: str,
     *,
@@ -98,7 +124,24 @@ async def resolve_tenant_app_credentials(
             secret_id,
             exc,
         )
-        raise ValueError(f"GitHub App not configured for tenant '{org_id}'. Ensure a GitHub App is installed via Settings > Connections.") from exc
+        # Issue #3266/#3358: Classify boto3 ClientError by response code for
+        # actionable error messages; fall back to string matching for non-
+        # ClientError exceptions (e.g. connection timeouts).
+        error_code = _classify_boto3_error(exc)
+        if error_code == "ResourceNotFoundException":
+            raise ValueError(
+                f"No GitHub App connection configured for tenant '{org_id}'. "
+                f"Set up a connection via Settings → Connections, or register "
+                f"repos covered by your organization's existing installation."
+            ) from exc
+        elif error_code == "AccessDeniedException":
+            raise ValueError(
+                f"Platform IAM policy does not permit reading credentials for "
+                f"tenant '{org_id}'. This is a platform configuration issue — "
+                f"please contact your administrator."
+            ) from exc
+        else:
+            raise ValueError(f"Failed to resolve GitHub App credentials for tenant '{org_id}'. Please try again later.") from exc
 
     app_id = creds.get("app_id", "")
     private_key = creds.get("private_key", "")
@@ -230,8 +273,18 @@ async def list_accessible_repos(
 
 
 # ---------------------------------------------------------------------------
-# Per-repo installation resolution (Issue #2086)
+# Per-repo installation resolution (Issue #2086, #3529)
 # ---------------------------------------------------------------------------
+
+# Issue #3529: Ops-App secret names (Secrets Manager). The worker mints
+# tokens with these credentials, so the resolver MUST use the same App to
+# ensure the stored installation_id is valid for the worker.
+_OPS_APP_ID_SECRET_ENV = "OPS_GITHUB_APP_ID_SECRET"
+_OPS_APP_KEY_SECRET_ENV = "OPS_GITHUB_APP_KEY_SECRET"
+# Defaults match the ingestion worker's config (GITHUB_APP_ID_SECRET /
+# GITHUB_APP_KEY_SECRET) as deployed via the agent-context ConfigMap.
+_OPS_APP_ID_SECRET_DEFAULT = "adp/aws-e/gh-app-ops-id"
+_OPS_APP_KEY_SECRET_DEFAULT = "adp/aws-e/gh-app-ops-key"
 
 
 def _get_global_app_credentials() -> tuple[str, str]:
@@ -245,16 +298,72 @@ def _get_global_app_credentials() -> tuple[str, str]:
     return settings.github_app_id or "", settings.github_app_private_key or ""
 
 
+async def _get_ops_app_credentials(
+    *,
+    sm_client: Any | None = None,
+) -> tuple[str, str]:
+    """Return (app_id, private_key_pem) for the ops GitHub App.
+
+    Issue #3529: Reads credentials from Secrets Manager using the same secret
+    names the ingestion worker uses (GITHUB_APP_ID_SECRET / GITHUB_APP_KEY_SECRET).
+    This ensures the installation_id we resolve is for the SAME App the worker
+    mints tokens with.
+
+    Configurable via OPS_GITHUB_APP_ID_SECRET / OPS_GITHUB_APP_KEY_SECRET env vars.
+
+    Raises:
+        ValueError: if secrets cannot be read.
+    """
+    import asyncio
+
+    import boto3
+
+    app_id_secret = os.environ.get(_OPS_APP_ID_SECRET_ENV, _OPS_APP_ID_SECRET_DEFAULT)
+    app_key_secret = os.environ.get(_OPS_APP_KEY_SECRET_ENV, _OPS_APP_KEY_SECRET_DEFAULT)
+
+    def _read_secrets() -> tuple[str, str]:
+        client = sm_client or boto3.client(
+            "secretsmanager",
+            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        )
+        app_id_resp = client.get_secret_value(SecretId=app_id_secret)
+        app_key_resp = client.get_secret_value(SecretId=app_key_secret)
+        return app_id_resp["SecretString"], app_key_resp["SecretString"]
+
+    try:
+        app_id, private_key = await asyncio.to_thread(_read_secrets)
+    except Exception as exc:
+        error_code = _classify_boto3_error(exc)
+        if error_code == "AccessDeniedException":
+            raise ValueError(
+                f"Platform IAM policy does not permit reading ops App credentials "
+                f"({app_id_secret}, {app_key_secret}). Run Gateway Infra Apply to "
+                f"add the adp/*/gh-app-ops-* pattern."
+            ) from exc
+        raise ValueError(f"Failed to read ops App credentials from Secrets Manager ({app_id_secret}, {app_key_secret}): {exc}") from exc
+
+    if not app_id or not private_key:
+        raise ValueError(f"Ops App credentials empty (secrets: {app_id_secret}, {app_key_secret}).")
+
+    return app_id.strip(), private_key.strip()
+
+
 async def resolve_installation_for_repo(
     owner: str,
     repo: str,
     *,
     http_client: httpx.AsyncClient | None = None,
 ) -> int | None:
-    """Resolve the GitHub App installation_id that has access to a specific repo.
+    """Resolve the GitHub App installation_id via the global/dev App.
 
-    Uses the global ADP App JWT (BG_GITHUB_APP_ID / BG_GITHUB_APP_PRIVATE_KEY)
-    to call GitHub's GET /repos/{owner}/{repo}/installation endpoint.
+    Uses BG_GITHUB_APP_ID credentials to call GET /repos/{owner}/{repo}/installation.
+    The returned installation_id matches what channel_tenant_map stores (written by
+    the UI connect flow using the same global App), so it is valid for Step 4
+    ownership verification.
+
+    NOTE: This id is NOT valid for the ingestion worker to mint tokens with if
+    the worker uses a different App. Use resolve_worker_installation_for_repo()
+    to get the id the worker can actually mint against.
 
     Returns:
         The installation_id (int) on success, or None if the App is not
@@ -267,7 +376,63 @@ async def resolve_installation_for_repo(
     app_id, private_key = _get_global_app_credentials()
 
     if not app_id or not private_key:
-        raise ValueError("Global GitHub App credentials not configured (BG_GITHUB_APP_ID / BG_GITHUB_APP_PRIVATE_KEY).")
+        raise ValueError("No GitHub App credentials available. Configure global App (BG_GITHUB_APP_ID / BG_GITHUB_APP_PRIVATE_KEY).")
+
+    jwt_token = _mint_app_jwt(app_id, private_key)
+
+    client = http_client or httpx.AsyncClient(
+        base_url=GITHUB_API_BASE,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        timeout=10.0,
+    )
+    try:
+        resp = await client.get(
+            f"/repos/{owner}/{repo}/installation",
+            headers={"Authorization": f"Bearer {jwt_token}"},
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return int(resp.json()["id"])
+    finally:
+        if http_client is None:
+            await client.aclose()
+
+
+async def resolve_worker_installation_for_repo(
+    owner: str,
+    repo: str,
+    *,
+    http_client: httpx.AsyncClient | None = None,
+    sm_client: Any | None = None,
+) -> int | None:
+    """Resolve the ops-App installation_id that the ingestion worker can mint with.
+
+    Issue #3529: Uses the ops App credentials (GITHUB_APP_ID_SECRET / GITHUB_APP_KEY_SECRET
+    — the same App the ingestion worker mints tokens with) to call
+    GET /repos/{owner}/{repo}/installation.
+
+    The returned installation_id is what should be stored on knowledge_assets and
+    passed to the worker via SQS — it is the ONLY id the worker can mint against.
+
+    Called AFTER ownership verification passes (Step 4 uses resolve_installation_for_repo
+    with the global App, since channel_tenant_map stores global-App installation ids).
+
+    Returns:
+        The installation_id (int) on success, or None if the ops App is not
+        installed on that repo (404).
+
+    Raises:
+        httpx.HTTPStatusError: on non-200/non-404 responses.
+        ValueError: if ops App credentials cannot be read (no silent fallback).
+    """
+    # No fallback — if ops creds can't be read, fail loudly. A silent fallback
+    # would store a dev-App id the worker can't mint with, re-introducing the
+    # exact queued-then-access_revoked failure this issue exists to kill.
+    app_id, private_key = await _get_ops_app_credentials(sm_client=sm_client)
 
     jwt_token = _mint_app_jwt(app_id, private_key)
 
@@ -328,3 +493,55 @@ async def verify_installation_ownership(
         {"tenant_id": tenant_id, "installation_id": str(installation_id)},
     )
     return result.fetchone() is not None
+
+
+# ---------------------------------------------------------------------------
+# Membership-based installation ownership (Issue #3266)
+# ---------------------------------------------------------------------------
+
+
+async def check_membership_for_installation(
+    caller_user_id: str,
+    installation_id: int,
+    *,
+    db: AsyncSession,
+) -> str | None:
+    """Check if the caller is a member of any tenant that owns the installation.
+
+    Issue #3266: Migrates Knowledge Layer registration onto the tenant-membership
+    model (D5). When the per-tenant ownership check fails, this fallback resolves
+    the caller's Cognito sub → users.id → tenant_memberships, and checks whether
+    any of those tenants own the installation in channel_tenant_map.
+
+    Returns:
+        The owning tenant_id if the caller is a member of an org that owns the
+        installation, or None if no membership match is found.
+    """
+    # Resolve Postgres users.id from Cognito sub (same pattern as connections/routes.py)
+    user_result = await db.execute(
+        text("SELECT id FROM users WHERE cognito_sub = :cognito_sub"),
+        {"cognito_sub": caller_user_id},
+    )
+    user_row = user_result.fetchone()
+    if user_row is None:
+        return None
+
+    pg_user_id = user_row[0]
+
+    # Find all tenant_ids the user is a member of
+    # Then check if any of those tenants own the installation
+    result = await db.execute(
+        text("""
+            SELECT ctm.org_id
+            FROM channel_tenant_map ctm
+            INNER JOIN tenant_memberships tm
+                ON tm.tenant_id = ctm.org_id
+            WHERE ctm.provider = 'github'
+              AND ctm.metadata->>'installation_id' = :installation_id
+              AND tm.user_id = :pg_user_id
+            LIMIT 1
+        """),
+        {"installation_id": str(installation_id), "pg_user_id": pg_user_id},
+    )
+    row = result.fetchone()
+    return row[0] if row is not None else None

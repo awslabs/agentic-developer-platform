@@ -163,6 +163,29 @@ async def understand(
     # --- Neptune path (primary) ---
     neptune_results = await _understand_via_neptune(repo_id, query_target, depth)
     if neptune_results is not None:
+        # For symbol queries: if Neptune's best result is NOT an exact-case name
+        # match, also check the code index — it may have the correct symbol that
+        # Neptune's graph lacks (e.g., Go symbols not indexed by SCIP). (#3450)
+        symbol_name = _extract_symbol_name(query_target)
+        if symbol_name and neptune_results:
+            top_score = _symbol_match_score(
+                symbol_name,
+                neptune_results[0].data.get("symbol", ""),
+                neptune_results[0].data.get("file", ""),
+            )
+            if top_score < 200:
+                # Neptune's best is not exact — check code index for exact match
+                code_index_results = await _check_code_index_for_exact_match(
+                    repo_id,
+                    query_target,
+                    symbol_name,
+                    depth,
+                    s3_client=s3_client,
+                    bucket=bucket,
+                    prefix=prefix,
+                )
+                if code_index_results:
+                    return code_index_results
         return neptune_results
 
     # --- Fallback: code-index.json from S3 ---
@@ -272,7 +295,8 @@ def _understand_neptune_inner(
                 "source": "neptune",
             }
             results.append(SearchHit(repo_name=repo_id, data=data))
-        return results
+        # Rank: exact-case matches first, demote generated files (#3374)
+        return _rank_understand_results(symbol_name, results)
 
     # File path target
     if "." in query_target.split("/")[-1] if "/" in query_target else False:
@@ -357,7 +381,8 @@ def _understand_neptune_inner(
                 "source": "neptune",
             }
             results.append(SearchHit(repo_name=repo_id, data=data))
-        return results
+        # Rank: exact-case matches first, demote generated files (#3374)
+        return _rank_understand_results(query_target, results)
 
     # Last resort: try resolve_symbol for fuzzy/module-path targets
     resolved = neptune_client.resolve_symbol(repo_id, query_target)
@@ -385,6 +410,85 @@ def _understand_neptune_inner(
             return results
 
     return None  # Fall back
+
+
+# ---------------------------------------------------------------------------
+# Neptune-to-code-index fallthrough helpers (#3450)
+# ---------------------------------------------------------------------------
+
+
+def _extract_symbol_name(query_target: str) -> str:
+    """Extract the symbol name from a query_target if it's a symbol reference.
+
+    Returns the symbol name for '::'-separated targets and bare symbol targets
+    (no '/' separator). Returns empty string for file/directory targets where
+    code-index fallthrough doesn't apply.
+    """
+    if "::" in query_target:
+        return query_target.rsplit("::", 1)[1]
+    if "/" not in query_target:
+        # Bare symbol (no file path separators)
+        return query_target
+    return ""
+
+
+async def _check_code_index_for_exact_match(
+    repo_id: str,
+    query_target: str,
+    symbol_name: str,
+    depth: str,
+    *,
+    s3_client: Any,
+    bucket: str,
+    prefix: str,
+) -> list[SearchHit] | None:
+    """Check the code index for an exact-case match on symbol_name.
+
+    Called when Neptune's best result is not an exact match. If the code index
+    has an exact-case match (score >= 200), returns those results; otherwise
+    returns None to signal "keep Neptune's results."
+
+    This prevents Neptune's fuzzy/substring matches from blocking the code-index
+    path when Neptune's graph lacks the correct symbols (e.g., Go symbols not in
+    SCIP index). (#3450)
+    """
+    index = await load_code_index(repo_id, s3_client=s3_client, bucket=bucket, prefix=prefix)
+    if not index:
+        return None
+
+    raw_definitions = index.get("symbols", []) or index.get("definitions", [])
+    definitions = [_normalize_symbol(d) for d in raw_definitions]
+    call_graph = index.get("call_graph", {})
+
+    # Find exact-case name matches in the code index
+    exact_matches: list[SearchHit] = []
+    for defn in definitions:
+        symbol = defn["symbol"]
+        if symbol == symbol_name:
+            # Exact-case name match — build a SearchHit
+            file_path = defn["file"]
+            full_key = f"{file_path}::{symbol}"
+            callees = call_graph.get(full_key, [])
+            callers = _find_callers(full_key, call_graph)
+
+            data: dict[str, Any] = {
+                "repo_id": repo_id,
+                "file": file_path,
+                "line": defn["line"],
+                "symbol": symbol,
+                "kind": defn["kind"],
+                "signature": defn["signature"],
+                "callers": callers if depth == "detailed" else callers[:3],
+                "callees": callees if depth == "detailed" else callees[:3],
+                "source": "code-index-fallback",
+            }
+            exact_matches.append(SearchHit(repo_name=repo_id, data=data))
+
+    if exact_matches:
+        # Rank among exact matches (demote generated files)
+        return _rank_understand_results(symbol_name, exact_matches)
+
+    return None
 
 
 async def _understand_via_code_index(
@@ -523,6 +627,10 @@ async def _understand_via_code_index(
                         break
             except Exception:
                 log.debug("Zoekt fallback failed for understand %s", target, exc_info=True)
+
+    # Rank results: exact-case matches first, generated files demoted (#3374)
+    if results and query_target:
+        results = _rank_understand_results(query_target, results)
 
     return results
 
@@ -1045,3 +1153,96 @@ def _find_callers(target_key: str, call_graph: dict[str, list[str]]) -> list[str
         if target_key in callees:
             callers.append(caller)
     return callers
+
+
+# ---------------------------------------------------------------------------
+# Symbol resolution ranking helpers (#3374)
+# ---------------------------------------------------------------------------
+
+# File patterns indicating generated/stub code — demoted as a tiebreaker.
+_GENERATED_FILE_PATTERNS = (
+    "_pb2.py",
+    "_pb2_grpc.py",
+    ".pb.go",
+    "_grpc.pb.go",
+    ".generated.",
+    "_generated.",
+    "/generated/",
+    "/gen/",
+)
+
+
+def _is_generated_file(file_path: str) -> bool:
+    """Return True if file_path matches a generated-code pattern."""
+    lower = file_path.lower()
+    return any(pat in lower for pat in _GENERATED_FILE_PATTERNS)
+
+
+def _symbol_match_score(query: str, candidate_name: str, file_path: str) -> int:
+    """Score a candidate symbol match against the query.
+
+    Higher scores = better match. Used for ranking, not filtering.
+
+    Scoring tiers:
+    - 200: exact-case + exact-name match
+    - 150: case-insensitive exact-name match
+    - 100: exact-case substring match (query is a substring of candidate)
+    - 50:  case-insensitive substring match
+
+    Tiebreaker: generated-file candidates get -10 penalty (demotes them
+    below hand-written sources at the same tier, but does NOT filter them out).
+    """
+    score = 0
+    query_lower = query.lower()
+    candidate_lower = candidate_name.lower()
+
+    if candidate_name == query:
+        # Exact case + exact name
+        score = 200
+    elif candidate_lower == query_lower:
+        # Case-insensitive exact name
+        score = 150
+    elif query in candidate_name:
+        # Exact-case substring
+        score = 100
+    elif query_lower in candidate_lower:
+        # Case-insensitive substring
+        score = 50
+    else:
+        score = 0
+
+    # Tiebreaker: demote generated files
+    if _is_generated_file(file_path):
+        score -= 10
+
+    return score
+
+
+def _rank_resolve_results(query: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rank resolve_symbol results by match quality.
+
+    Sorts in-place and returns the sorted list for convenience.
+    Exact-case matches outrank case-insensitive; generated files are demoted.
+    """
+    results.sort(
+        key=lambda r: _symbol_match_score(query, r.get("name", ""), r.get("file", "")),
+        reverse=True,
+    )
+    return results
+
+
+def _rank_understand_results(query: str, results: list["SearchHit"]) -> list["SearchHit"]:
+    """Rank understand verb results by match quality + generated-file demotion.
+
+    Used after query_understand returns multiple symbols (bare-symbol path)
+    and after code-index fallback collects all matches.
+    """
+    results.sort(
+        key=lambda hit: _symbol_match_score(
+            query,
+            hit.data.get("symbol", ""),
+            hit.data.get("file", ""),
+        ),
+        reverse=True,
+    )
+    return results

@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, DateTime, Index, Numeric, String, Text, text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TenantMixin, new_uuid, utcnow
@@ -24,6 +24,15 @@ class Organization(Base):
     github_org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     # Issue #2952 (D11): GitHub App ID for registry seeding.
     github_app_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Issue #2954: Nullable self-FK for multi-org-to-tenant linking (rule 3).
+    # A linked org's row points at the parent tenant. Matcher resolves
+    # parent_tenant_id or id.
+    parent_tenant_id: Mapped[str | None] = mapped_column(
+        String(255),
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     # Issue #719: Per-tenant policy for auto-approving org members on sign-up.
     # Valid values: "auto_approve_org_members", "require_admin_approval"
     member_approval_policy: Mapped[str] = mapped_column(

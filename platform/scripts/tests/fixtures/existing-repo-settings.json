@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write",
+        "hook": "scripts/lint-on-write.sh"
+      }
+    ]
+  },
+  "tools": {
+    "allowed": ["Bash", "Read", "Write", "Edit"],
+    "custom": ["my-tool"]
+  },
+  "permissions": {
+    "allow": ["Bash(npm *)", "Read(*)"]
+  },
+  "myCustomKey": "preserved-value"
+}

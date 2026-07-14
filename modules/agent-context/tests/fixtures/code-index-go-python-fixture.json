@@ -1,0 +1,69 @@
+{
+  "_comment": "Fixture for #3374: Go struct vs Python generated stub ranking.",
+  "repo_id": "microservices-demo",
+  "indexed_at": "2026-07-08T00:00:00Z",
+  "definitions": [
+    {
+      "symbol": "checkoutService",
+      "file": "src/checkoutservice/main.go",
+      "line": 42,
+      "kind": "struct",
+      "signature": "type checkoutService struct"
+    },
+    {
+      "symbol": "CheckoutService",
+      "file": "src/emailservice/demo_pb2_grpc.py",
+      "line": 120,
+      "kind": "class",
+      "signature": "class CheckoutService(object)"
+    },
+    {
+      "symbol": "CheckoutService",
+      "file": "src/frontend/genproto/demo_pb2_grpc.py",
+      "line": 88,
+      "kind": "class",
+      "signature": "class CheckoutService(object)"
+    },
+    {
+      "symbol": "Quote",
+      "file": "src/shippingservice/quote.go",
+      "line": 15,
+      "kind": "struct",
+      "signature": "type Quote struct"
+    },
+    {
+      "symbol": "GetQuote",
+      "file": "src/shippingservice/main.go",
+      "line": 60,
+      "kind": "function",
+      "signature": "func (s *server) GetQuote(ctx context.Context, in *pb.GetQuoteRequest) (*pb.GetQuoteResponse, error)"
+    },
+    {
+      "symbol": "GetQuote",
+      "file": "src/frontend/genproto/demo_pb2_grpc.py",
+      "line": 200,
+      "kind": "function",
+      "signature": "def GetQuote(self, request, context)"
+    },
+    {
+      "symbol": "PlaceOrder",
+      "file": "src/checkoutservice/main.go",
+      "line": 100,
+      "kind": "function",
+      "signature": "func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb.PlaceOrderResponse, error)"
+    },
+    {
+      "symbol": "PlaceOrder",
+      "file": "src/frontend/genproto/demo_pb2_grpc.py",
+      "line": 210,
+      "kind": "function",
+      "signature": "def PlaceOrder(self, request, context)"
+    }
+  ],
+  "call_graph": {
+    "src/checkoutservice/main.go::checkoutService": [],
+    "src/checkoutservice/main.go::PlaceOrder": ["src/shippingservice/quote.go::Quote"],
+    "src/shippingservice/main.go::GetQuote": ["src/shippingservice/quote.go::Quote"],
+    "src/shippingservice/quote.go::Quote": []
+  }
+}

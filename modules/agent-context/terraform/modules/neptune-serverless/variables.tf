@@ -63,6 +63,11 @@ variable "deletion_protection" {
   default     = false
 }
 
+variable "bucket_name" {
+  description = "S3 bucket name for platform data (Neptune Bulk Loader reads CSVs from here)"
+  type        = string
+}
+
 variable "tags" {
   description = "Additional tags"
   type        = map(string)

@@ -186,6 +186,78 @@ class TestQueryImpact:
         assert params["file"] == "lib/utils.py"
         assert params["symbol_name"] == "parse_config"
 
+    def test_cypher_contains_calls_and_references_with_file(self):
+        """Traversal includes CALLS|REFERENCES label union when file is provided."""
+        mock_driver = MagicMock()
+        mock_session = MagicMock()
+        mock_result = MagicMock()
+        mock_result.__iter__ = lambda s: iter([])
+        mock_session.run.return_value = mock_result
+        mock_driver.session.return_value.__enter__ = lambda s: mock_session
+        mock_driver.session.return_value.__exit__ = lambda s, *a: None
+
+        with patch("door.neptune_client.get_neptune_driver", return_value=mock_driver):
+            from door.neptune_client import query_impact
+
+            query_impact("org/repo", "src/models.py", "Position")
+
+        cypher = mock_session.run.call_args[0][0]
+        assert "[:CALLS|REFERENCES*1..4]" in cypher
+
+    def test_cypher_contains_calls_and_references_without_file(self):
+        """Traversal includes CALLS|REFERENCES label union when file is empty."""
+        mock_driver = MagicMock()
+        mock_session = MagicMock()
+        mock_result = MagicMock()
+        mock_result.__iter__ = lambda s: iter([])
+        mock_session.run.return_value = mock_result
+        mock_driver.session.return_value.__enter__ = lambda s: mock_session
+        mock_driver.session.return_value.__exit__ = lambda s, *a: None
+
+        with patch("door.neptune_client.get_neptune_driver", return_value=mock_driver):
+            from door.neptune_client import query_impact
+
+            query_impact("org/repo", "", "Position")
+
+        cypher = mock_session.run.call_args[0][0]
+        assert "[:CALLS|REFERENCES*1..4]" in cypher
+
+    def test_class_target_with_references_returns_results(self):
+        """A class symbol with only REFERENCES edges (no CALLS) returns impact results."""
+        mock_driver = MagicMock()
+        mock_session = MagicMock()
+        # Simulate results from REFERENCES edges to a class
+        mock_records = [
+            {
+                "caller_repo": "org/repo",
+                "caller_file": "src/backtest/engine.py",
+                "caller_name": "run_backtest",
+                "caller_kind": "function",
+                "distance": 1,
+            },
+            {
+                "caller_repo": "org/repo",
+                "caller_file": "src/portfolio/manager.py",
+                "caller_name": "update_positions",
+                "caller_kind": "function",
+                "distance": 1,
+            },
+        ]
+        mock_result = MagicMock()
+        mock_result.__iter__ = lambda s: iter(mock_records)
+        mock_session.run.return_value = mock_result
+        mock_driver.session.return_value.__enter__ = lambda s: mock_session
+        mock_driver.session.return_value.__exit__ = lambda s, *a: None
+
+        with patch("door.neptune_client.get_neptune_driver", return_value=mock_driver):
+            from door.neptune_client import query_impact
+
+            result = query_impact("org/repo", "", "Position")
+
+        assert len(result) == 2
+        assert result[0]["caller_name"] == "run_backtest"
+        assert result[1]["caller_name"] == "update_positions"
+
 
 # ---------------------------------------------------------------------------
 # query_understand tests

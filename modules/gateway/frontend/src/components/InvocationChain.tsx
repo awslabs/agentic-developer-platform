@@ -128,6 +128,12 @@ export interface InvocationChainProps {
   onClose?: () => void;
   /** Callback when a chain node is clicked (for recursive detail navigation). Issue #1653. */
   onNodeClick?: (invocationId: string) => void;
+  /**
+   * Issue #3708: When true, include no_op and webhook_received events in the
+   * chain view (maps to the "Show all events" toggle). Default false = only
+   * real runs are shown.
+   */
+  includeNonTriggering?: boolean;
 }
 
 export default function InvocationChain({
@@ -137,6 +143,7 @@ export default function InvocationChain({
   highlightInvocationId,
   onClose,
   onNodeClick,
+  includeNonTriggering = false,
 }: InvocationChainProps) {
   const {
     data,
@@ -144,11 +151,11 @@ export default function InvocationChain({
     error,
     refetch,
   } = useQuery<InvocationChainResponse>({
-    queryKey: ['invocation-chain', correlationId, isAdmin, tenantId],
+    queryKey: ['invocation-chain', correlationId, isAdmin, tenantId, includeNonTriggering],
     queryFn: () =>
       isAdmin
-        ? getAdminInvocationChain(correlationId, tenantId)
-        : getMyInvocationChain(correlationId),
+        ? getAdminInvocationChain(correlationId, tenantId, includeNonTriggering)
+        : getMyInvocationChain(correlationId, includeNonTriggering),
     enabled: !!correlationId,
   });
 

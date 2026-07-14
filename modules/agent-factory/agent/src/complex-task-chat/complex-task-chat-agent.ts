@@ -80,7 +80,7 @@ async function main(): Promise<void> {
 }
 
 async function processOne(
-  msg: { Body?: string; ReceiptHandle?: string },
+  msg: { Body?: string; ReceiptHandle?: string; MessageId?: string },
   deps: {
     context: ReturnType<typeof buildContextManager>;
     memory: ReturnType<typeof buildMemoryProvider>;
@@ -245,6 +245,7 @@ async function processOne(
         userId: user_id,
         agentId: agent_type,
         taskId: task_id,
+        invocationId: msg.MessageId,
         scrubber,
         client: vaultClient,
       });
@@ -256,12 +257,13 @@ async function processOne(
         userId: user_id,
         agentId: agent_type,
         taskId: task_id,
+        invocationId: msg.MessageId,
         vaultClient,
       });
 
       // Fetch credential list for system-prompt injection (best-effort)
       try {
-        const creds = await vaultClient.listCredentials(user_id);
+        const creds = await vaultClient.listCredentials(user_id, msg.MessageId);
         if (creds.length > 0) {
           const lines = creds.map(c =>
             `  - ${c.service} (${c.credential_type})${c.label ? ` — ${c.label}` : ''}`,

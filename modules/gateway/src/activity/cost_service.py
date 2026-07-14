@@ -65,6 +65,40 @@ async def get_cost_by_run_ids(
     }
 
 
+async def get_cost_by_date_range(
+    db: AsyncSession,
+    run_ids: list[str],
+) -> dict[str, Any]:
+    """Aggregate cost data across a set of run_ids for a date range.
+
+    Issue #3630: Used by the stats endpoint to compute window-level spend.
+    Bounded by the run_ids list (which comes from the time-bounded DDB query,
+    so the Postgres IN clause is bounded by the 10K item backstop).
+
+    Returns:
+        - total_cost_usd: float
+        - total_tokens: int
+        - total_calls: int
+    """
+    if not run_ids:
+        return {"total_cost_usd": 0.0, "total_tokens": 0, "total_calls": 0}
+
+    query = select(
+        func.sum(UsageLog.cost_usd).label("total_cost_usd"),
+        func.sum(UsageLog.input_tokens + UsageLog.output_tokens).label("total_tokens"),
+        func.count(UsageLog.id).label("total_calls"),
+    ).where(UsageLog.agent_run_id.in_(run_ids))
+
+    result = await db.execute(query)
+    row = result.one()
+
+    return {
+        "total_cost_usd": float(row.total_cost_usd or Decimal("0")),
+        "total_tokens": int(row.total_tokens or 0),
+        "total_calls": int(row.total_calls or 0),
+    }
+
+
 async def get_cost_by_correlation_id(
     db: AsyncSession,
     correlation_id: str,

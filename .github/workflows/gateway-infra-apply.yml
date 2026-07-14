@@ -226,7 +226,7 @@ jobs:
               echo "Importing existing scaledjob-worker DynamoDB item into state..."
               terraform import -var-file="../../../${{ env.VAR_FILE }}" \
                 "$RESOURCE_ADDR" \
-                "${TABLE_NAME}/agent_id/scaledjob-worker" || echo "Import failed — continuing (will retry on next apply)"
+                "${TABLE_NAME},scaledjob-worker" || echo "Import failed — continuing (will retry on next apply)"
             else
               echo "scaledjob-worker item not in DynamoDB — will be created by apply."
             fi
@@ -263,20 +263,82 @@ jobs:
         id: alb_pre
         run: bash platform/scripts/wire-gateway-alb.sh --no-wait
 
-      # Issue #2907: Pre-resolve the webhook-ingress KMS alias. On a fresh
-      # account the CMK doesn't exist yet (webhook-ingress deploys in Phase 7,
-      # after gateway in Phase 4). When absent, override the tfvars flag to false
-      # so the conditional data source is skipped and plan doesn't hard-fail.
-      - name: Pre-resolve webhook-secrets KMS alias
-        id: kms_pre
+      # Issue #3859: fail-safe guard against transient ALB-probe failures.
+      # `wire-gateway-alb.sh --no-wait` does a single live discovery attempt and
+      # returns empty on any transient failure (API throttle, describe error,
+      # eventual-consistency race). An empty result flips enable_vpc_origin=false,
+      # which SCHEDULES A DESTROY of BOTH:
+      #   1. the CloudFront /api/* VPC origin + cache behavior (all /api/* then
+      #      falls through to the S3 SPA — returns index.html instead of JSON), AND
+      #   2. the API Gateway OpenAPI route body — the entire route set
+      #      (/auth/github/{proxy+}, /{proxy+}, /agent/{proxy+}, /internal/{proxy+})
+      #      is gated on `internal_alb_dns != ""`; empty ALB collapses the body to a
+      #      minimal spec, so /auth/github/start returns API GW's
+      #      "Missing Authentication Token" and GitHub sign-in dies.
+      # Either destroy takes login down platform-wide (incident #3843 hit BOTH).
+      # Distinguish "genuinely no ALB (fresh deploy)" from "ALB exists but the probe
+      # blipped": if EITHER the /api VPC origin OR the API Gateway deployment is
+      # already in TF state, an empty probe is transient — ABORT rather than destroy.
+      # A fresh deploy has neither state resource, so it proceeds normally.
+      - name: Guard — ALB probe empty but gateway API resources already exist
+        working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
-          ALIAS_NAME="alias/adp-${TF_VAR_environment}-webhook-secrets"
-          if aws kms describe-key --key-id "$ALIAS_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
-            echo "Webhook-secrets KMS alias found — enabling grant."
-            echo "KMS_EXISTS=true" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [ -n "${{ steps.alb_pre.outputs.ALB_ARN }}" ]; then
+            echo "ALB resolved — no transient-failure risk."
+            exit 0
+          fi
+          # ALB probe returned empty. Are the ALB-dependent gateway API resources
+          # already managed in state? (Either one being present means this is an
+          # established environment, so an empty probe is a transient failure.)
+          STATE="$(terraform state list 2>/dev/null || true)"
+          EXISTING=""
+          echo "$STATE" | grep -q 'module.cloudfront.aws_cloudfront_vpc_origin.api\[0\]' \
+            && EXISTING="${EXISTING} cloudfront-/api-vpc-origin"
+          echo "$STATE" | grep -q 'module.api_gateway\[0\].aws_api_gateway_deployment.main' \
+            && EXISTING="${EXISTING} api-gateway-routes"
+          if [ -n "$EXISTING" ]; then
+            echo "::error::ALB probe returned EMPTY, but these live gateway API resources exist in state:${EXISTING}"
+            echo "::error::This is a transient ALB-discovery failure, NOT a fresh deploy. Proceeding would"
+            echo "::error::DESTROY the CloudFront /api/* origin AND/OR collapse the API Gateway route body,"
+            echo "::error::breaking ADP login platform-wide (incident #3843 / #3859)."
+            echo "::error::Aborting. Re-run this workflow; the ALB is discovered live each run and the SSM"
+            echo "::error::cache (/adp/<env>/gateway/internal-alb-arn) should resolve it on retry."
+            exit 1
+          fi
+          echo "ALB probe empty AND no ALB-dependent gateway API resources in state — genuine fresh deploy. Proceeding."
+
+      # Issue #3789: kms_pre step removed. The webhook-secrets CMK now lives in
+      # platform infra (applied before gateway in all tracks). The gateway KMS
+      # grant is unconditional — no enable_webhook_secrets_kms_grant flag needed.
+
+      # Issue #3745: Pre-resolve GitLab ALB from SSM (platform account only).
+      # GitLab is an optional module — its ALB values are NOT in the shared
+      # tfvars. On accounts that have GitLab deployed, the SSM params exist and
+      # we export TF_VAR_gitlab_origin_*; on all other accounts the params are
+      # absent and we silently leave the vars empty (Terraform defaults = no
+      # GitLab origin). This is the normal customer-account path.
+      - name: Pre-resolve GitLab ALB (SSM)
+        id: gitlab_pre
+        run: |
+          GITLAB_DNS=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT:-dev}/gitlab/alb-dns" \
+            --query "Parameter.Value" --output text \
+            --region "$AWS_REGION" 2>/dev/null || echo "")
+          GITLAB_ARN=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT:-dev}/gitlab/alb-arn" \
+            --query "Parameter.Value" --output text \
+            --region "$AWS_REGION" 2>/dev/null || echo "")
+          if [ -n "$GITLAB_DNS" ] && [ -n "$GITLAB_ARN" ]; then
+            echo "GitLab ALB resolved from SSM — enabling /gitlab/* CloudFront origin."
+            echo "  DNS: $GITLAB_DNS"
+            echo "  ARN: $GITLAB_ARN"
+            echo "GITLAB_DNS=$GITLAB_DNS" >> "$GITHUB_OUTPUT"
+            echo "GITLAB_ARN=$GITLAB_ARN" >> "$GITHUB_OUTPUT"
           else
-            echo "Webhook-secrets KMS alias not found (fresh account) — disabling grant for this apply."
-            echo "KMS_EXISTS=false" >> "$GITHUB_OUTPUT"
+            echo "GitLab ALB SSM params not found — GitLab origin disabled (normal for non-platform accounts)."
+            echo "GITLAB_DNS=" >> "$GITHUB_OUTPUT"
+            echo "GITLAB_ARN=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Terraform Plan (destroy-safety check)
@@ -290,7 +352,8 @@ jobs:
           TF_VAR_internal_alb_dns: ${{ steps.alb_pre.outputs.ALB_DNS }}
           TF_VAR_alb_security_group_ids: ${{ steps.alb_pre.outputs.ALB_SG_IDS }}
           TF_VAR_enable_vpc_origin: ${{ steps.alb_pre.outputs.ALB_ARN != '' && 'true' || 'false' }}
-          TF_VAR_enable_webhook_secrets_kms_grant: ${{ steps.kms_pre.outputs.KMS_EXISTS }}
+          TF_VAR_gitlab_origin_dns: ${{ steps.gitlab_pre.outputs.GITLAB_DNS }}
+          TF_VAR_gitlab_origin_arn: ${{ steps.gitlab_pre.outputs.GITLAB_ARN }}
         run: |
           set -e
           set -o pipefail

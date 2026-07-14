@@ -110,5 +110,22 @@ resource "kubernetes_network_policy" "agent_scaledjob_egress" {
         }
       }
     }
+
+    # Agent-context MCP server (port 5100) — Issue #3286
+    # Allows agent-worker pods to reach the Knowledge Layer MCP endpoint
+    # in the agent-context namespace for code intelligence tools.
+    egress {
+      ports {
+        port     = 5100
+        protocol = "TCP"
+      }
+      to {
+        namespace_selector {
+          match_labels = {
+            "kubernetes.io/metadata.name" = "agent-context"
+          }
+        }
+      }
+    }
   }
 }

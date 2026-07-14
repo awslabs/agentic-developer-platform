@@ -153,6 +153,9 @@ class GatewayCredentialClient:
             "label": label,
             "purpose": purpose or "aws_role_assume via entrypoint",
         }
+        invocation_id = os.environ.get("ADP_MESSAGE_ID")
+        if invocation_id:
+            payload["invocation_id"] = invocation_id
 
         logger.info(
             "Fetching credential via gateway (%s mode): user_id=%s service=%s label=%s",
@@ -208,6 +211,9 @@ class GatewayCredentialClient:
             "label": label,
             "purpose": purpose or "entrypoint: assume customer AWS role",
         }
+        invocation_id = os.environ.get("ADP_MESSAGE_ID")
+        if invocation_id:
+            payload["invocation_id"] = invocation_id
 
         logger.info(
             "Assuming role via gateway (%s mode): user_id=%s service=%s label=%s",

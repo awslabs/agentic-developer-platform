@@ -95,7 +95,12 @@ class ActivityService:
         until: str | None = None,
         include_non_triggering: bool = False,
     ) -> InvocationListResponse:
-        """Query invocations for a specific user via user-index GSI.
+        """Query invocations for a specific user via user-index + root-human-index.
+
+        Issue #3705: Queries BOTH user-index (direct runs) and root-human-index
+        (chain runs attributed to this user via root_human_id) for list-parity
+        with the stats dashboard. Merges with dedup on event_id. Falls back to
+        user-index-only if root-human-index is missing.
 
         Args:
             user_id: The user's ID (from token, never from request param).
@@ -113,7 +118,8 @@ class ActivityService:
         Returns:
             InvocationListResponse with items, count, and optional next cursor.
         """
-        return self._execute_query(
+        # Primary query: direct runs (user_id = caller)
+        primary = self._execute_query(
             index_name="user-index",
             partition_key_name="user_id",
             partition_key_value=user_id,
@@ -125,6 +131,55 @@ class ActivityService:
             since=since,
             until=until,
             include_non_triggering=include_non_triggering,
+        )
+
+        # Secondary query: chain runs attributed via root_human_id
+        # Only fetch if we have no cursor (first page) or cursor belongs to user-index.
+        # On paginated calls, root-human-index items are already merged from page 1;
+        # we fetch them again to ensure completeness but dedup handles overlap.
+        secondary = self._execute_query(
+            index_name="root-human-index",
+            partition_key_name="root_human_id",
+            partition_key_value=user_id,
+            page_size=page_size,
+            last_key=None,  # root-human-index has its own key space
+            status=status,
+            channel=channel,
+            persona=persona,
+            since=since,
+            until=until,
+            include_non_triggering=include_non_triggering,
+        )
+
+        # If secondary returned nothing (GSI missing or no chain runs), return primary as-is
+        if not secondary.items:
+            return primary
+
+        # Merge with dedup on invocation_id, sorted by invoked_at descending
+        seen_ids: set[str] = set()
+        merged: list[InvocationItem] = []
+
+        for item in primary.items:
+            if item.invocation_id not in seen_ids:
+                seen_ids.add(item.invocation_id)
+                merged.append(item)
+
+        for item in secondary.items:
+            if item.invocation_id not in seen_ids:
+                seen_ids.add(item.invocation_id)
+                merged.append(item)
+
+        # Sort merged by invoked_at descending (newest first)
+        merged.sort(key=lambda x: x.invoked_at or "", reverse=True)
+
+        # Trim to page_size
+        trimmed = merged[:page_size]
+
+        # Preserve the primary cursor for pagination (user-index drives pagination)
+        return InvocationListResponse(
+            items=trimmed,
+            count=len(trimmed),
+            last_key=primary.last_key,
         )
 
     def query_by_tenant(
@@ -339,11 +394,19 @@ class ActivityService:
         user_id: str | None = None,
         tenant_id: str | None = None,
         depth_cap: int = _CHAIN_DEPTH_CAP,
+        include_non_triggering: bool = False,
     ) -> InvocationChainResponse:
         """Retrieve all invocations sharing a correlation_id and build a tree.
 
         Scoping: filters by user_id (for /me/) or tenant_id (for /admin/).
         If both are None, returns empty (safety: never return unscoped data).
+
+        Issue #3708: When include_non_triggering is False (default), excludes
+        no_op and webhook_received statuses — the same convention as the flat
+        list endpoints (Issue #1658). This prevents webhook echoes from
+        appearing as phantom child runs in the chain view. The depth_cap is
+        applied AFTER filtering (DynamoDB FilterExpression removes items before
+        they enter all_items), so cap budget is not wasted on echoes.
 
         Depth cap: returns at most `depth_cap` items. If more exist, sets
         `depth_capped=True` in the response.
@@ -372,6 +435,15 @@ class ActivityService:
             scope_filter = Attr("user_id").eq(user_id)
         elif tenant_id:
             scope_filter = Attr("tenant_id").eq(tenant_id)
+
+        # Issue #3708: Exclude non-triggering statuses (no_op, webhook_received)
+        # by default — same convention as the flat list endpoints (Issue #1658).
+        # Filter is on STATUS only (never user_id/is_bot — real child runs are
+        # bot-attributed and must survive).
+        if not include_non_triggering:
+            _non_triggering = ["no_op", "webhook_received"]
+            status_filter = ~Attr("status").is_in(_non_triggering)
+            scope_filter = (scope_filter & status_filter) if scope_filter else status_filter
 
         all_items: list[dict] = []
         depth_capped = False
@@ -457,15 +529,18 @@ class ActivityService:
         until: str | None = None,
         include_non_triggering: bool = False,
     ) -> ChainListResponse:
-        """Query chains for a specific user via user-index GSI.
+        """Query chains for a specific user via user-index + root-human-index.
 
-        Issue #1662: Chain-grouped board view. For /me, every user-index hit IS
-        a chain root (humans always start a new correlation_id), so pagination
-        is straightforward — same as flat view, but each root is enriched with
-        its chain descendants.
+        Issue #1662: Chain-grouped board view.
+        Issue #3723: Merged fetch — queries BOTH user-index (direct runs) and
+        root-human-index (bot-attributed runs where root_human_id = caller) for
+        parity with query_by_user and the stats dashboard. Merges with dedup on
+        invocation_id. Falls back to user-index-only if root-human-index is
+        missing.
 
         Steps:
-        1. Query user-index (same as query_by_user) to get the page of roots.
+        1. Query user-index + root-human-index, merge with dedup (same pattern
+           as query_by_user).
         2. For each root with a correlation_id, fetch chain members via
            correlation-index GSI (exclude non-triggering statuses from
            descendants by default).
@@ -473,8 +548,8 @@ class ActivityService:
 
         Cost enrichment is handled at the route layer (batched Postgres query).
         """
-        # Step 1: Get the page of roots (same query as flat view)
-        flat_result = self._execute_query(
+        # Step 1: Get the page of roots via merged fetch (user-index + root-human-index)
+        primary = self._execute_query(
             index_name="user-index",
             partition_key_name="user_id",
             partition_key_value=user_id,
@@ -487,6 +562,45 @@ class ActivityService:
             until=until,
             include_non_triggering=include_non_triggering,
         )
+
+        # Issue #3723: Secondary query — bot-attributed roots via root-human-index
+        secondary = self._execute_query(
+            index_name="root-human-index",
+            partition_key_name="root_human_id",
+            partition_key_value=user_id,
+            page_size=page_size,
+            last_key=None,  # root-human-index has its own key space
+            status=status,
+            channel=channel,
+            persona=persona,
+            since=since,
+            until=until,
+            include_non_triggering=include_non_triggering,
+        )
+
+        # Merge with dedup on invocation_id (same pattern as query_by_user)
+        if secondary.items:
+            seen_ids: set[str] = set()
+            merged: list[InvocationItem] = []
+            for item in primary.items:
+                if item.invocation_id not in seen_ids:
+                    seen_ids.add(item.invocation_id)
+                    merged.append(item)
+            for item in secondary.items:
+                if item.invocation_id not in seen_ids:
+                    seen_ids.add(item.invocation_id)
+                    merged.append(item)
+            # Sort merged by invoked_at descending (newest first)
+            merged.sort(key=lambda x: x.invoked_at or "", reverse=True)
+            # Trim to page_size
+            merged = merged[:page_size]
+            flat_result = InvocationListResponse(
+                items=merged,
+                count=len(merged),
+                last_key=primary.last_key,
+            )
+        else:
+            flat_result = primary
 
         # Step 2: For each TRUE root, fetch descendants from correlation-index.
         #
@@ -563,11 +677,22 @@ class ActivityService:
         Issue #1662: Uses correlation-index GSI. Excludes the root itself
         (already shown as the chain row). Filters out no_op/webhook_received
         descendants by default (consistent with #1658 behavior).
+
+        Issue #3723: Filter non-triggering statuses INSIDE the accumulation loop
+        so that depth_cap counts only REAL descendants. Previously, depth_cap was
+        applied to raw items before filtering, so a noisy chain (many no_op
+        echoes) would fill the cap with noise and silently truncate real
+        descendants beyond item 50. The max-page cap (20) remains as a runaway-
+        protection backstop against unbounded DDB reads.
         """
         # Non-triggering statuses to exclude from descendants
         _non_triggering_statuses = {"no_op", "webhook_received"}
 
-        all_items: list[dict] = []
+        # Issue #3723: Accumulate filtered descendants directly, applying
+        # depth_cap to the POST-FILTER count so noise doesn't consume budget.
+        descendants: list[InvocationChainItem] = []
+        max_pages = 20  # backstop: max raw DDB pages to read (runaway protection)
+        pages = 0
         try:
             query_kwargs: dict = {
                 "IndexName": "correlation-index",
@@ -576,14 +701,39 @@ class ActivityService:
             }
 
             while True:
+                pages += 1
                 response = self._table.query(**query_kwargs)
-                all_items.extend(response.get("Items", []))
 
-                if len(all_items) >= depth_cap:
-                    all_items = all_items[:depth_cap]
-                    break
+                for item in response.get("Items", []):
+                    # Issue #1756: fall back to event_id (the real DDB key)
+                    inv_id = item.get("invocation_id") or item.get("pk") or item.get("event_id", "")
+                    if inv_id == root_invocation_id:
+                        continue  # Skip the root itself
 
-                if "LastEvaluatedKey" not in response:
+                    # Filter non-triggering statuses inside the loop
+                    item_status = item.get("status")
+                    if not include_non_triggering and item_status in _non_triggering_statuses:
+                        continue
+
+                    descendants.append(
+                        InvocationChainItem(
+                            invocation_id=inv_id,
+                            invoked_at=item.get("arrived_at", ""),
+                            channel=item.get("channel"),
+                            status=item_status,
+                            topic=item.get("topic"),
+                            persona=item.get("persona"),
+                            parent_invocation_id=item.get("parent_invocation_id"),
+                            children=[],
+                            transcript_key=item.get("transcript_key"),
+                        )
+                    )
+
+                    # depth_cap counts REAL descendants only
+                    if len(descendants) >= depth_cap:
+                        return descendants
+
+                if "LastEvaluatedKey" not in response or pages >= max_pages:
                     break
                 query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
@@ -596,34 +746,6 @@ class ActivityService:
                 )
                 return []
             raise
-
-        # Filter: exclude the root item and optionally non-triggering statuses
-        descendants: list[InvocationChainItem] = []
-        for item in all_items:
-            # Issue #1756: fall back to event_id (the real DDB key); the row has
-            # no invocation_id/pk attribute, so the old default left this blank.
-            inv_id = item.get("invocation_id") or item.get("pk") or item.get("event_id", "")
-            if inv_id == root_invocation_id:
-                continue  # Skip the root itself
-
-            # Exclude non-triggering statuses from descendants by default
-            item_status = item.get("status")
-            if not include_non_triggering and item_status in _non_triggering_statuses:
-                continue
-
-            descendants.append(
-                InvocationChainItem(
-                    invocation_id=inv_id,
-                    invoked_at=item.get("arrived_at", ""),
-                    channel=item.get("channel"),
-                    status=item_status,
-                    topic=item.get("topic"),
-                    persona=item.get("persona"),
-                    parent_invocation_id=item.get("parent_invocation_id"),
-                    children=[],
-                    transcript_key=item.get("transcript_key"),
-                )
-            )
 
         return descendants
 

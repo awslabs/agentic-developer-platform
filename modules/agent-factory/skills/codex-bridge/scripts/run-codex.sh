@@ -9,8 +9,10 @@
 # Usage:
 #   run-codex.sh write       "<instruction>"  # Codex authors/edits code in $PWD
 #   run-codex.sh review      "<file path>"     # Codex reviews a file (read-only intent)
-#   run-codex.sh review-diff [<base-ref>]      # Codex reviews git diff <base>...
-#                                              #   (read-only; base defaults to origin/main)
+#   run-codex.sh review-diff [<base-ref>] [<head-ref>]
+#                                              # Codex reviews git diff <base>...<head>
+#                                              #   (read-only; base defaults to origin/main,
+#                                              #    head defaults to HEAD)
 #
 # Safety properties (see #2705 impact table):
 #   * set -euo pipefail                 — fail fast, no silent errors
@@ -55,10 +57,11 @@ CODEX_RUNS_DIR="${CODEX_RUNS_DIR:-/tmp/codex-runs}"
 CODEX_EVENTS_FILE="${CODEX_EVENTS_FILE:-/tmp/codex-events/current.jsonl}"
 
 usage() {
-    echo "Usage: run-codex.sh {write|review|review-diff} <instruction|file-path|[base-ref]>" >&2
-    echo "  write       \"<instruction>\"   Codex authors/edits code in the current dir" >&2
-    echo "  review      \"<file path>\"      Codex reviews the given file, findings only" >&2
-    echo "  review-diff [<base-ref>]        Codex reviews git diff <base>... (default origin/main), findings only" >&2
+    echo "Usage: run-codex.sh {write|review|review-diff} <instruction|file-path|[base-ref] [head-ref]>" >&2
+    echo "  write       \"<instruction>\"         Codex authors/edits code in the current dir" >&2
+    echo "  review      \"<file path>\"            Codex reviews the given file, findings only" >&2
+    echo "  review-diff [<base-ref>] [<head-ref>] Codex reviews git diff <base>...<head>" >&2
+    echo "                                        (base defaults to origin/main, head defaults to HEAD)" >&2
 }
 
 # --- Distilled persona pack resolution (issue #2891, #2945) -----------------
@@ -84,6 +87,45 @@ _prepend_distilled() {
     fi
 }
 
+# --- Ref resolution helper (issue #3301, #3302) -----------------------------
+# Fetches a remote-only ref and resolves it locally. Extracted from the #3273
+# inline block so both base and head refs share the same logic. Prints the
+# resolved ref name (or SHA) to stdout. Returns non-zero if the ref cannot be
+# resolved.
+_resolve_ref() {
+    local ref="$1"
+    local label="$2"  # "base" or "head" — used in error messages only
+    if git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null 2>&1; then
+        printf '%s' "${ref}"
+        return 0
+    fi
+    # Strip a leading "origin/" before fetching — callers naturally pass
+    # remote-tracking names like "origin/main" but the remote's ref is just
+    # "main" (issue #3302).
+    local fetch_name="${ref#origin/}"
+    # Not local — attempt fetch from origin (best-effort).
+    git fetch origin "${fetch_name}" >/dev/null 2>&1 || true
+    # After fetch, try the original ref (now a tracking ref may exist) …
+    if git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null 2>&1; then
+        printf '%s' "${ref}"
+        return 0
+    fi
+    # … or the stripped name (fetch may have created a local tracking ref).
+    if [ "${fetch_name}" != "${ref}" ] && git rev-parse --verify --quiet "${fetch_name}^{commit}" >/dev/null 2>&1; then
+        printf '%s' "${fetch_name}"
+        return 0
+    fi
+    # After fetch, try FETCH_HEAD as a fallback (bare branch name that exists on
+    # remote but not as a local tracking ref). Resolve to SHA so a subsequent
+    # fetch (for the other ref) cannot clobber this resolution (issue #3302).
+    if git rev-parse --verify --quiet "FETCH_HEAD^{commit}" >/dev/null 2>&1; then
+        printf '%s' "$(git rev-parse FETCH_HEAD)"
+        return 0
+    fi
+    echo "run-codex.sh: review-diff ${label} ref not found: ${ref}" >&2
+    return 1
+}
+
 MODE="${1:-}"
 
 case "$MODE" in
@@ -106,23 +148,26 @@ case "$MODE" in
         INSTRUCTION="$(_prepend_distilled "Review the file '${ARG}' for correctness, bugs, and clear improvements. Report your findings as a concise list. Do not modify any files.")"
         ;;
     review-diff)
-        # PR-level review: feed `git diff <base>...` (three-dot / merge-base
-        # semantics) to Codex, read-only. Base defaults to origin/main. The diff
-        # is captured to a temp file, size-capped, and embedded as a SINGLE
-        # literal argv (never shell-evaluated — same one-argv contract as write).
-        [ "$#" -le 2 ] || { usage; exit 2; }
+        # PR-level review: feed `git diff <base>...<head>` (three-dot /
+        # merge-base semantics) to Codex, read-only. Base defaults to
+        # origin/main, head defaults to HEAD. The diff is captured to a temp
+        # file, size-capped, and embedded as a SINGLE literal argv (never
+        # shell-evaluated — same one-argv contract as write).
+        [ "$#" -le 3 ] || { usage; exit 2; }
         BASE_REF="${2:-origin/main}"
+        HEAD_REF="${3:-HEAD}"
         if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             echo "run-codex.sh: review-diff must run inside a git repository" >&2
             exit 2
         fi
-        if ! git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null 2>&1; then
-            echo "run-codex.sh: review-diff base ref not found: ${BASE_REF}" >&2
-            exit 2
-        fi
+        # --- Ref resolution (issue #3269, #3301) --------------------------------
+        # Both base and head may be remote-only refs. Use the shared helper to
+        # fetch and resolve each one. Exit 2 if either cannot be resolved.
+        BASE_REF="$(_resolve_ref "${BASE_REF}" "base")" || exit 2
+        HEAD_REF="$(_resolve_ref "${HEAD_REF}" "head")" || exit 2
         CODEX_DIFF_MAX_BYTES="${CODEX_DIFF_MAX_BYTES:-262144}"
         DIFF_FILE="$(mktemp "${TMPDIR:-/tmp}/codex-review-diff.XXXXXX")"
-        if ! git diff "${BASE_REF}..." >"${DIFF_FILE}" 2>/dev/null; then
+        if ! git diff "${BASE_REF}...${HEAD_REF}" >"${DIFF_FILE}" 2>/dev/null; then
             echo "run-codex.sh: git diff failed for base ${BASE_REF}" >&2
             rm -f "${DIFF_FILE}"
             exit 2

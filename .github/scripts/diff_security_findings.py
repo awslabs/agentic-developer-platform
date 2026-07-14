@@ -7,9 +7,52 @@ Optionally updates baseline files (for nightly runs).
 
 import argparse
 import json
-import os
+import re
 import sys
 from pathlib import Path
+
+
+def _sarif_rule_index(run: dict) -> dict:
+    """Map ruleId -> rule object for severity lookups."""
+    driver = run.get("tool", {}).get("driver", {})
+    return {r.get("id"): r for r in driver.get("rules", [])}
+
+
+def _severity_of_sarif_result(result: dict, rules: dict) -> str:
+    """Best-effort severity ('critical'|'high'|'medium'|'low'|'unknown') for a SARIF result.
+
+    Handles: numeric `security-severity` (CVSS), string severity, grype's
+    Severity: line in rule help text, and SARIF `level` as a last resort.
+    """
+    rule = rules.get(result.get("ruleId"), {})
+    props = rule.get("properties", {})
+    ss = str(props.get("security-severity", "")).strip().lower()
+    if ss in ("critical", "high", "medium", "low"):
+        return ss
+    if ss:
+        try:
+            v = float(ss)
+            return (
+                "critical" if v >= 9.0
+                else "high" if v >= 7.0
+                else "medium" if v >= 4.0
+                else "low"
+            )
+        except ValueError:
+            pass
+    # bandit puts issue_severity on the result properties
+    rprops = result.get("properties", {})
+    isev = str(rprops.get("issue_severity", "")).strip().lower()
+    if isev in ("critical", "high", "medium", "low"):
+        return isev
+    # grype embeds "Severity: <x>" in the rule help text
+    help_text = rule.get("help", {}).get("text", "")
+    m = re.search(r"Severity:\s*(\w+)", help_text)
+    if m and m.group(1).lower() in ("critical", "high", "medium", "low", "negligible"):
+        return m.group(1).lower()
+    return {"error": "high", "warning": "medium", "note": "low"}.get(
+        result.get("level", ""), "unknown"
+    )
 
 
 TOOL_BASELINE_MAP = {
@@ -35,23 +78,39 @@ def load_json_safe(path: Path) -> dict | list:
         return {}
 
 
-def extract_sarif_fingerprints(sarif_data: dict) -> set[str]:
-    """Extract unique finding identifiers from SARIF data."""
+def extract_sarif_fingerprints(sarif_data: dict, severities: dict | None = None) -> set[str]:
+    """Extract unique finding identifiers from SARIF data.
+
+    If `severities` is provided, it is populated as {fingerprint: severity}
+    so callers can gate on new critical/high findings.
+    """
     fingerprints = set()
     if not isinstance(sarif_data, dict):
         return fingerprints
 
     for run in sarif_data.get("runs", []):
+        rules = _sarif_rule_index(run)
         for result in run.get("results", []):
+            # Skip findings the source has explicitly suppressed (inline
+            # `nosemgrep` etc.). Semgrep still emits these as results carrying a
+            # non-empty `suppressions` array rather than dropping them, so a
+            # gate that counts every result would fail forever on accepted,
+            # annotated findings. Treat any suppressed result as not-a-finding.
+            if result.get("suppressions"):
+                continue
             # Use ruleId + location as fingerprint
             rule_id = result.get("ruleId", "unknown")
+            sev = _severity_of_sarif_result(result, rules)
             locations = result.get("locations", [])
             for loc in locations:
                 phys = loc.get("physicalLocation", {})
                 artifact = phys.get("artifactLocation", {}).get("uri", "")
                 region = phys.get("region", {})
                 line = region.get("startLine", 0)
-                fingerprints.add(f"{rule_id}:{artifact}:{line}")
+                fp = f"{rule_id}:{artifact}:{line}"
+                fingerprints.add(fp)
+                if severities is not None:
+                    severities[fp] = sev
 
     return fingerprints
 
@@ -101,6 +160,7 @@ def process_tool_findings(
 
     # Find current findings files for this tool
     current_fingerprints: set[str] = set()
+    severities: dict[str, str] = {}
     found_files = []
 
     for path in findings_dir.rglob("*"):
@@ -116,7 +176,7 @@ def process_tool_findings(
 
         # Detect format: SARIF vs plain JSON
         if isinstance(data, dict) and "runs" in data:
-            current_fingerprints |= extract_sarif_fingerprints(data)
+            current_fingerprints |= extract_sarif_fingerprints(data, severities)
         else:
             current_fingerprints |= extract_json_fingerprints(data)
 
@@ -130,6 +190,8 @@ def process_tool_findings(
 
     result = diff_findings(current_fingerprints, baseline_fingerprints)
     result["files_scanned"] = [str(f) for f in found_files]
+    # Severity of each NEW finding (unknown when not resolvable, e.g. JSON tools)
+    result["new_severities"] = {fp: severities.get(fp, "unknown") for fp in result["new"]}
     return result
 
 
@@ -139,6 +201,12 @@ def main() -> None:
     parser.add_argument("--baseline-dir", required=True, help="Directory with baseline files")
     parser.add_argument("--output", required=True, help="Output summary JSON path")
     parser.add_argument("--update-baselines", action="store_true", help="Update baseline files with current findings")
+    parser.add_argument(
+        "--fail-on",
+        default="",
+        help="Comma-separated severities that fail the run when NEW (e.g. 'critical,high'). "
+        "Empty = advisory only (never fail).",
+    )
     args = parser.parse_args()
 
     findings_dir = Path(args.findings_dir)
@@ -171,6 +239,25 @@ def main() -> None:
     total_new = sum(v["new_count"] for v in summary.values())
     total_resolved = sum(v["resolved_count"] for v in summary.values())
     print(f"Summary: {total_new} new findings, {total_resolved} resolved")
+
+    # Hard gate: fail if any NEW finding matches a --fail-on severity.
+    # Baseline-refresh runs pass no --fail-on and stay advisory.
+    fail_sevs = {s.strip().lower() for s in args.fail_on.split(",") if s.strip()}
+    if fail_sevs:
+        offenders = []
+        for tool, res in summary.items():
+            for fp, sev in res.get("new_severities", {}).items():
+                if sev in fail_sevs:
+                    offenders.append((sev, tool, fp))
+        if offenders:
+            print(
+                f"\n::error::Security gate FAILED — {len(offenders)} new "
+                f"{'/'.join(sorted(fail_sevs))} finding(s):"
+            )
+            for sev, tool, fp in sorted(offenders):
+                print(f"  [{sev.upper()}] {tool}: {fp}")
+            sys.exit(1)
+        print(f"Security gate PASSED — no new {'/'.join(sorted(fail_sevs))} findings.")
 
 
 if __name__ == "__main__":

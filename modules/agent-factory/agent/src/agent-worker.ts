@@ -80,6 +80,15 @@ import {
 import { saveExperienceLearnings } from './experience-save-hook';
 import { buildPersonalContextIdentity, getPersonalContextHeaders } from './complex-task-chat/personal-context-headers';
 
+// AIDLC Gate Enforcer — deterministic enforcement of commit + gate comment protocol
+// (Issue #3231, EPIC #3158 hardening wave). Only invoked when AIDLC_ENABLED.
+import { enforceAidlcGate } from './aidlc-gate-enforcer';
+
+// AIDLC Presence — synthetic HUMAN_TURN on gate resume (Issue #3232, EPIC #3158).
+// Writes a synthetic audit event proving a real human answered the gate, satisfying
+// mint-presence.ts's anti-fabrication check in headless mode.
+import { mintSyntheticPresence, extractGateAnswerComment, findPendingGateStage as findPresenceGateStage } from './aidlc-presence';
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -99,6 +108,11 @@ const BEADS_ENABLED = process.env.BEADS_ENABLED !== 'false';
 const BEADS_S3_BUCKET = process.env.BEADS_S3_BUCKET || 'adp-agent-state';
 const BEADS_S3_REGION = process.env.BEADS_S3_REGION || AWS_REGION;
 const BEADS_S3_PATH = process.env.BEADS_S3_PATH || `beads/${REPO_NAME}`;
+
+// AIDLC detection — enable Task tool only when workspace carries an AIDLC install
+// (Issue #3167, EPIC #3158 Decision 2). The `aidlc/` directory is the canonical
+// install marker (contains `spaces/default/memory/`).
+const AIDLC_ENABLED = fs.existsSync(path.join(CWD, 'aidlc'));
 
 // ============================================================================
 // CloudWatch Logging
@@ -1133,6 +1147,9 @@ Now, complete the assigned task.`;
   // ─────────────────────────────────────────────────────────────────────────
 
   log('INFO', 'Starting agent execution...');
+  if (AIDLC_ENABLED) {
+    log('INFO', 'AIDLC install detected — Task tool enabled');
+  }
   console.log('\n' + '═'.repeat(60));
   console.log(`Starting @agent-${AGENT_TYPE} Query`);
   console.log('═'.repeat(60) + '\n');
@@ -1188,6 +1205,7 @@ Now, complete the assigned task.`;
             allowedTools: [
               'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill',
               ...(KNOWLEDGE_LAYER_ENABLED ? KNOWLEDGE_LAYER_TOOLS : []),
+              ...(AIDLC_ENABLED ? ['Task'] : []),
             ],
             ...(KNOWLEDGE_LAYER_ENABLED ? {
               mcpServers: { [KNOWLEDGE_LAYER_SERVER_NAME]: getKnowledgeLayerMcpConfig() },
@@ -1606,6 +1624,36 @@ async function main(): Promise<void> {
       : '';
     log('INFO', `Found ${existingComments.length} existing comments to include in context`);
 
+    // AIDLC Presence — synthetic HUMAN_TURN on gate resume (Issue #3232).
+    // Must run BEFORE the SDK query starts so that mint-presence.ts sees the
+    // event when /aidlc is invoked. Best-effort: never blocks startup.
+    if (AIDLC_ENABLED && existingComments.length > 0) {
+      try {
+        const pendingStage = findPresenceGateStage(CWD);
+        if (pendingStage) {
+          const triggerComment = extractGateAnswerComment(
+            existingComments,
+            pendingStage,
+            REPO_OWNER,
+            REPO_NAME,
+            ISSUE_NUMBER,
+          );
+          const presenceResult = mintSyntheticPresence(
+            { cwd: CWD, log },
+            triggerComment,
+          );
+          if (presenceResult.written) {
+            log('INFO', 'AIDLC presence: synthetic HUMAN_TURN written', {
+              stage: presenceResult.stage,
+              author: triggerComment?.author,
+            });
+          }
+        }
+      } catch (presenceErr) {
+        log('WARN', `AIDLC presence failed (non-blocking): ${(presenceErr as Error).message}`);
+      }
+    }
+
     // Find the main/parent issue
     const mainIssueNumber = findMainIssue(issue.body);
     if (mainIssueNumber) {
@@ -1683,6 +1731,31 @@ Working on this task...`);
         log('INFO', `Beads task ${beadsTaskId} marked complete`);
       } catch (err) {
         log('WARN', `Could not complete Beads task: ${(err as Error).message}`);
+      }
+    }
+
+    // AIDLC Gate Enforcement (Issue #3231) — deterministic commit + gate comment.
+    // Runs only on AIDLC-flagged workspaces. Best-effort: never blocks finalization.
+    if (AIDLC_ENABLED) {
+      try {
+        const enforceResult = await enforceAidlcGate({
+          cwd: CWD,
+          issueNumber: ISSUE_NUMBER,
+          repoOwner: REPO_OWNER,
+          repoName: REPO_NAME,
+          log,
+          execCommand,
+          postComment,
+        });
+        if (enforceResult.committed || enforceResult.gateCommentPosted) {
+          log('INFO', 'AIDLC gate enforcement acted', {
+            committed: enforceResult.committed,
+            gateCommentPosted: enforceResult.gateCommentPosted,
+            stage: enforceResult.stage,
+          });
+        }
+      } catch (enforceErr) {
+        log('WARN', `AIDLC gate enforcement failed (non-blocking): ${(enforceErr as Error).message}`);
       }
     }
 

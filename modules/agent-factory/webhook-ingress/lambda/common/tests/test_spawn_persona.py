@@ -499,3 +499,61 @@ class TestConfiguration:
 
     def test_cross_persona_threshold_default_is_4(self):
         assert CROSS_PERSONA_LOOP_THRESHOLD == 4
+
+
+# --- AWS Label Threading (Issue #3574) ---
+
+
+class TestAwsLabelThreading:
+    """Issue #3574: aws_label field is threaded through to the SQS envelope."""
+
+    @patch("common.spawn_persona._emit_metric")
+    @patch("common.spawn_persona._write_pointer_and_provenance")
+    @patch("common.spawn_persona._capture_invocation_event")
+    @patch("common.sqs_publisher.publish_envelope")
+    def test_aws_label_present_in_envelope(
+        self, mock_sqs, mock_capture, mock_write, mock_metric
+    ):
+        """When aws_label is provided, it appears in the SQS envelope."""
+        mock_sqs.return_value = "msg-awslabel"
+        spawn_persona(**_spawn_kwargs(aws_label="adp-integration-test"))
+
+        assert mock_sqs.called
+        envelope = mock_sqs.call_args[0][0]
+        assert envelope["aws_label"] == "adp-integration-test"
+
+    @patch("common.spawn_persona._emit_metric")
+    @patch("common.spawn_persona._write_pointer_and_provenance")
+    @patch("common.spawn_persona._capture_invocation_event")
+    @patch("common.sqs_publisher.publish_envelope")
+    def test_aws_label_absent_when_none(
+        self, mock_sqs, mock_capture, mock_write, mock_metric
+    ):
+        """When aws_label is None (default), it is NOT in the envelope."""
+        mock_sqs.return_value = "msg-noawslabel"
+        spawn_persona(**_spawn_kwargs())
+
+        envelope = mock_sqs.call_args[0][0]
+        assert "aws_label" not in envelope
+
+    @patch("common.spawn_persona._emit_metric")
+    @patch("common.spawn_persona._write_pointer_and_provenance")
+    @patch("common.spawn_persona._capture_invocation_event")
+    @patch("common.sqs_publisher.publish_envelope")
+    def test_aws_label_coexists_with_model(
+        self, mock_sqs, mock_capture, mock_write, mock_metric
+    ):
+        """aws_label and model_requested can both be present in the same envelope."""
+        mock_sqs.return_value = "msg-both"
+        spawn_persona(
+            **_spawn_kwargs(
+                model_requested="opus",
+                model_resolved="us.anthropic.claude-opus-4-v1",
+                aws_label="my-account",
+            )
+        )
+
+        envelope = mock_sqs.call_args[0][0]
+        assert envelope["model_requested"] == "opus"
+        assert envelope["model_resolved"] == "us.anthropic.claude-opus-4-v1"
+        assert envelope["aws_label"] == "my-account"

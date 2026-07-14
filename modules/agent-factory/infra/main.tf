@@ -130,6 +130,7 @@ module "runner_iam" {
 # =============================================================================
 
 module "secrets" {
+  count  = var.enable_github_apps ? 1 : 0
   source = "./modules/secrets"
 
   environment = var.environment
@@ -154,6 +155,7 @@ module "beads_state" {
 # =============================================================================
 
 module "arc_runner" {
+  count  = var.enable_github_apps ? 1 : 0
   source = "./modules/arc-runner"
 
   environment      = var.environment

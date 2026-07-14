@@ -67,10 +67,15 @@ class WebhookEnvelope:
     # Issue #2279: Caller-chosen model fields (optional, human /model directive)
     model_requested: str | None = None  # Raw alias the user typed
     model_resolved: str | None = None  # Validated Bedrock model ID, or None
+    # Issue #3574: Explicit AWS credential label (optional, human /aws-label directive)
+    aws_label: str | None = None  # Validated label targeting a specific linked account
+    # Issue #3385: PAT execution token source hint (C3)
+    # "pat" = explicit PAT mode; "app" = explicit App mode; None = legacy App (default)
+    token_source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict for JSON/SQS publishing."""
-        return {
+        d = {
             "version": self.version,
             "channel": self.channel,
             "tenant_id": self.tenant_id,
@@ -103,4 +108,10 @@ class WebhookEnvelope:
             "arrived_at": self.arrived_at,
             "model_requested": self.model_requested,
             "model_resolved": self.model_resolved,
+            "aws_label": self.aws_label,
         }
+        # Issue #3385: Only serialize token_source when set (backward compat —
+        # absent key = legacy App behavior for existing consumers).
+        if self.token_source is not None:
+            d["token_source"] = self.token_source
+        return d

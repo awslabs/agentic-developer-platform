@@ -84,6 +84,9 @@ def cmd_assume(args: list[str]) -> None:
         "label": label,
         "purpose": purpose,
     }
+    invocation_id = os.environ.get("ADP_MESSAGE_ID")
+    if invocation_id:
+        payload["invocation_id"] = invocation_id
     endpoint = f"{base_url}/internal/v1/credential-assume-role"
     result = _do_request("POST", endpoint, api_key, use_sigv4, payload)
 
@@ -118,7 +121,10 @@ def cmd_assume(args: list[str]) -> None:
         # Replace this process with the user's command.
         exec_cmd = exec_args[0]
         exec_path = shutil.which(exec_cmd) or exec_cmd
-        os.execvpe(exec_path, exec_args, env)  # nosemgrep: dangerous-os-exec-audit,dangerous-os-exec-tainted-env-args
+        # nosemgrep: tmp.gitlab.bandit.B606 — exec-ing the user's own command is the documented contract of `adp-cred assume --exec`; the prior trailing nosemgrep landed on the closing paren, not the call's start line (124), so it never applied
+        os.execvpe(  # nosec: B606
+            exec_path, exec_args, env
+        )
     else:
         # Legacy behavior: print ONLY the profile name to stdout.
         print(profile_name, end="")

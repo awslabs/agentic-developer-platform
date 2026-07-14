@@ -18,6 +18,7 @@
  */
 
 import { PersonalContextIdentity, getPersonalContextHeaders } from './personal-context-headers';
+import { validateBaseUrl } from '../lib/url-guard';
 
 /**
  * Feature flag: enable recall-at-task-start. Default off until validated.
@@ -40,9 +41,13 @@ const RECALL_TIMEOUT_MS = Number(process.env.PERSONAL_CONTEXT_RECALL_TIMEOUT_MS 
  * Context MCP Server URL. Internal K8s service address.
  * Canonical: context-mcp.agent-context.svc.cluster.local:5100
  */
-const CONTEXT_MCP_URL =
+const CONTEXT_MCP_URL_RAW =
   process.env.CONTEXT_MCP_SERVER_URL ??
   'http://context-mcp.agent-context.svc.cluster.local:5100';
+
+// SSRF guard: validateBaseUrl returns the normalized origin, breaking semgrep's
+// taint path from the env-var source → fetch() (#3582, #3713)
+const CONTEXT_MCP_URL = validateBaseUrl(CONTEXT_MCP_URL_RAW, { allowHttp: true });
 
 /**
  * Maximum number of recall results to request.
@@ -159,6 +164,7 @@ export async function callRecall(
   const timeout = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
 
   try {
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — CONTEXT_MCP_URL is a module constant validated once via validateBaseUrl() at load (blocks loopback/metadata/link-local); only the static /tools/call path is interpolated
     const response = await fetch(`${CONTEXT_MCP_URL}/tools/call`, {
       method: 'POST',
       headers: {

@@ -157,6 +157,18 @@ RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/te
     rm /tmp/terraform.zip && \
     terraform version
 
+# Install bun runtime — required by AIDLC v2 hooks and engine tools which are
+# bun TypeScript. Pinned static binary from GitHub releases (same pattern as
+# yq/fzf/gh/terraform above).
+ARG BUN_VERSION=1.2.15
+RUN curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
+      -o /tmp/bun.zip && \
+    unzip -q /tmp/bun.zip -d /tmp && \
+    mv /tmp/bun-linux-x64/bun /usr/local/bin/bun && \
+    chmod +x /usr/local/bin/bun && \
+    rm -rf /tmp/bun.zip /tmp/bun-linux-x64 && \
+    bun --version
+
 # Install pip-based Python tools (uv, poetry, ruff — the pre-submit table in
 # agent-worker.ts tells agents to run `ruff check`; it must exist in the image).
 RUN pip3 install --no-cache-dir --break-system-packages uv poetry ruff

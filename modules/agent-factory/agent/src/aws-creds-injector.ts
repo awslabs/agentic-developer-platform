@@ -69,6 +69,8 @@ export interface CredsInjectorOptions {
   taskId: string;
   /** Vault gateway client instance. */
   vaultClient: VaultGatewayClient;
+  /** Run invocation ID for credential-authorization binding (Issue #3477). */
+  invocationId?: string;
   /** Optional explicit credential label; omit to use the user's default AWS credential. */
   defaultLabel?: string;
   /** Optional logger. */
@@ -80,7 +82,7 @@ export interface CredsInjectorOptions {
  * Each task gets a fresh instance — no cross-task contamination.
  */
 export function createCredsInjector(opts: CredsInjectorOptions): CredsInjector {
-  const { userId, agentId, taskId, vaultClient, defaultLabel, log = console.log } = opts;
+  const { userId, agentId, taskId, vaultClient, invocationId, defaultLabel, log = console.log } = opts;
 
   let cached: CachedCreds | null = null;
   let assumeFailed = false; // true if assume-role returned no credential (user hasn't connected one)
@@ -95,6 +97,7 @@ export function createCredsInjector(opts: CredsInjectorOptions): CredsInjector {
         service: 'aws',
         label: defaultLabel,
         purpose: 'env-scoping for agent bash shells',
+        invocation_id: invocationId,
       });
 
       return {

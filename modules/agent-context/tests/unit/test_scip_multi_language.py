@@ -1,8 +1,11 @@
-"""Unit tests for multi-language SCIP indexing (#2973).
+"""Unit tests for multi-language SCIP indexing (#2973, #3132).
 
 Tests that index_repo() iterates all detected languages (not just the primary),
 that merge_graphs() correctly unions nodes and edges, and that fail-soft behavior
 skips broken languages without aborting the whole repo.
+
+#3132 additions: Tests for _index_python() PATH-based env handling,
+_ensure_pyright_section() auto-injection, and failed_languages metrics surfacing.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from unittest.mock import patch, MagicMock
 # Add the ingestion image directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "images" / "ingestion"))
 
-from scip_indexer import index_repo, _consolidate_languages
+from scip_indexer import index_repo, _consolidate_languages, _index_python, _ensure_pyright_section
 from scip_ingester import SCIPGraph, SymbolNode, Edge, merge_graphs
 
 
@@ -458,3 +461,317 @@ class TestIndexRepoMultiLanguage:
             assert contents[0] != contents[1], (
                 "Both .scip files have identical content — second language overwrote first"
             )
+
+
+# ---------------------------------------------------------------------------
+# #3132 regression tests: _index_python env handling, pyright section, metrics
+# ---------------------------------------------------------------------------
+
+
+class TestIndexPythonEnvHandling:
+    """Tests that _index_python() uses PATH-based venv discovery, not --environment JSON.
+
+    Regression for #3132: scip-python's --environment expects a JSON array of
+    {name, version, files} package entries, not an {pythonPath, sitePackagesPath} object.
+    The fix drops --environment entirely and puts the venv bin on PATH instead.
+    """
+
+    def test_no_environment_flag_passed(self):
+        """_index_python must NOT pass --environment to scip-python (#3132)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a fake venv so the PATH logic activates
+            venv_bin = os.path.join(tmpdir, ".scip-venv", "bin")
+            os.makedirs(venv_bin)
+            Path(venv_bin, "python3").touch()
+
+            captured_cmd = []
+            captured_env = {}
+
+            def mock_run(cmd, **kwargs):
+                captured_cmd.extend(cmd)
+                captured_env.update(kwargs.get("env", {}))
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_result.stderr = b"mock failure"
+                return mock_result
+
+            with patch("subprocess.run", side_effect=mock_run):
+                _index_python(tmpdir)
+
+            # The --environment flag must NOT appear in the command
+            assert "--environment" not in captured_cmd, (
+                "scip-python should not receive --environment flag (#3132)"
+            )
+
+    def test_venv_bin_on_path(self):
+        """When .scip-venv exists, its bin/ is prepended to PATH."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            venv_bin = os.path.join(tmpdir, ".scip-venv", "bin")
+            os.makedirs(venv_bin)
+
+            captured_env = {}
+
+            def mock_run(cmd, **kwargs):
+                captured_env.update(kwargs.get("env", {}))
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_result.stderr = b"mock failure"
+                return mock_result
+
+            with patch("subprocess.run", side_effect=mock_run):
+                _index_python(tmpdir)
+
+            # PATH must start with the venv bin directory
+            assert captured_env.get("PATH", "").startswith(venv_bin + ":"), (
+                f"PATH should start with venv bin: {captured_env.get('PATH', '')}"
+            )
+            # VIRTUAL_ENV should be set
+            assert captured_env.get("VIRTUAL_ENV") == os.path.join(tmpdir, ".scip-venv")
+
+    def test_no_venv_no_path_modification(self):
+        """Without .scip-venv, scip-python runs with unmodified env (no crash)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            captured_env = {}
+
+            def mock_run(cmd, **kwargs):
+                captured_env.update(kwargs.get("env", {}))
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_result.stderr = b"mock failure"
+                return mock_result
+
+            with patch("subprocess.run", side_effect=mock_run):
+                _index_python(tmpdir)
+
+            # PATH should be the original system PATH (not prepended with anything)
+            assert "VIRTUAL_ENV" not in captured_env
+
+    def test_no_environment_json_file_written(self):
+        """No .scip-environment.json should be created (#3132 root cause)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            venv_bin = os.path.join(tmpdir, ".scip-venv", "bin")
+            os.makedirs(venv_bin)
+
+            def mock_run(cmd, **kwargs):
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_result.stderr = b"mock failure"
+                return mock_result
+
+            with patch("subprocess.run", side_effect=mock_run):
+                _index_python(tmpdir)
+
+            env_file = os.path.join(tmpdir, ".scip-environment.json")
+            assert not os.path.exists(env_file), (
+                ".scip-environment.json should not be created — "
+                "scip-python expects array shape we can't guarantee (#3132)"
+            )
+
+
+class TestIndexPythonHeapAndTimeout:
+    """Tests for #3149: NODE_OPTIONS max-old-space-size and raised timeout.
+
+    scip-python OOMs at Node's default ~2 GB heap on large repos. The fix sets
+    NODE_OPTIONS=--max-old-space-size=4096 in the subprocess env and raises the
+    timeout from 600s to 1800s.
+    """
+
+    def test_node_options_set_in_subprocess_env(self):
+        """NODE_OPTIONS with --max-old-space-size must be present in proc env."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            captured_env = {}
+
+            def mock_run(cmd, **kwargs):
+                captured_env.update(kwargs.get("env", {}))
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_result.stderr = b"mock failure"
+                return mock_result
+
+            with patch("subprocess.run", side_effect=mock_run):
+                _index_python(tmpdir)
+
+            assert "NODE_OPTIONS" in captured_env, "NODE_OPTIONS must be set in subprocess env"
+            assert "--max-old-space-size" in captured_env["NODE_OPTIONS"], (
+                f"NODE_OPTIONS should contain --max-old-space-size, got: {captured_env['NODE_OPTIONS']}"
+            )
+
+    def test_node_options_heap_size_4096(self):
+        """NODE_OPTIONS should set max-old-space-size=4096."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            captured_env = {}
+
+            def mock_run(cmd, **kwargs):
+                captured_env.update(kwargs.get("env", {}))
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_result.stderr = b"mock failure"
+                return mock_result
+
+            with patch("subprocess.run", side_effect=mock_run):
+                _index_python(tmpdir)
+
+            assert captured_env.get("NODE_OPTIONS") == "--max-old-space-size=4096"
+
+    def test_node_options_respects_existing_override(self):
+        """If NODE_OPTIONS is already set in env, _index_python preserves it (setdefault)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            captured_env = {}
+
+            def mock_run(cmd, **kwargs):
+                captured_env.update(kwargs.get("env", {}))
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_result.stderr = b"mock failure"
+                return mock_result
+
+            with patch.dict(os.environ, {"NODE_OPTIONS": "--max-old-space-size=8192"}):
+                with patch("subprocess.run", side_effect=mock_run):
+                    _index_python(tmpdir)
+
+            # Should preserve the operator's override, not overwrite with 4096
+            assert captured_env.get("NODE_OPTIONS") == "--max-old-space-size=8192"
+
+    def test_subprocess_timeout_is_1800(self):
+        """scip-python subprocess timeout must be 1800s (raised from 600s for #3149)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            captured_kwargs = {}
+
+            def mock_run(cmd, **kwargs):
+                captured_kwargs.update(kwargs)
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_result.stderr = b"mock failure"
+                return mock_result
+
+            with patch("subprocess.run", side_effect=mock_run):
+                _index_python(tmpdir)
+
+            assert captured_kwargs.get("timeout") == 1800, (
+                f"Python indexer timeout should be 1800s, got: {captured_kwargs.get('timeout')}"
+            )
+
+    def test_timeout_error_message_reflects_1800s(self):
+        """TimeoutExpired error message should say 1800s, not 600s."""
+        import subprocess as sp
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("subprocess.run", side_effect=sp.TimeoutExpired("scip-python", 1800)):
+                _, error = _index_python(tmpdir)
+
+            assert "1800s" in error, f"Timeout error should mention 1800s, got: {error}"
+
+
+class TestEnsurePyrightSection:
+    """Tests for _ensure_pyright_section() — auto-injection of [tool.pyright].
+
+    Regression for #3132: scip-python hard-fails when pyproject.toml exists but
+    lacks [tool.pyright]. The fix appends an empty section to the clone.
+    """
+
+    def test_appends_section_when_missing(self):
+        """pyproject.toml without [tool.pyright] gets the section appended."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pyproject = Path(tmpdir, "pyproject.toml")
+            pyproject.write_text('[project]\nname = "vibe-trading"\nversion = "0.1.0"\n')
+
+            _ensure_pyright_section(tmpdir)
+
+            content = pyproject.read_text()
+            assert "[tool.pyright]" in content
+            # Original content preserved
+            assert '[project]\nname = "vibe-trading"' in content
+
+    def test_no_duplicate_when_already_present(self):
+        """If [tool.pyright] already exists, don't append a duplicate."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pyproject = Path(tmpdir, "pyproject.toml")
+            original = '[project]\nname = "test"\n\n[tool.pyright]\nvenvPath = "."\n'
+            pyproject.write_text(original)
+
+            _ensure_pyright_section(tmpdir)
+
+            content = pyproject.read_text()
+            # Should remain unchanged
+            assert content == original
+
+    def test_no_pyproject_no_error(self):
+        """No pyproject.toml at all — function is a no-op, no crash."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # No pyproject.toml created
+            _ensure_pyright_section(tmpdir)  # Should not raise
+
+    def test_pyright_appended_before_scip_invocation(self):
+        """Integration: _index_python calls _ensure_pyright_section before indexing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pyproject = Path(tmpdir, "pyproject.toml")
+            pyproject.write_text('[project]\nname = "test-repo"\n')
+
+            def mock_run(cmd, **kwargs):
+                # At the time scip-python is invoked, pyproject should have pyright
+                content = pyproject.read_text()
+                assert "[tool.pyright]" in content, (
+                    "pyright section must be added BEFORE scip-python runs"
+                )
+                mock_result = MagicMock()
+                mock_result.returncode = 1
+                mock_result.stderr = b"mock"
+                return mock_result
+
+            with patch("subprocess.run", side_effect=mock_run):
+                _index_python(tmpdir)
+
+
+class TestFailedLanguagesMetrics:
+    """Tests that per-language failures propagate into stage result metrics (#3132).
+
+    When one language fails but others succeed (any_success=True), the pipeline
+    must record failed_languages in the result dict so stage metrics are grep-able.
+    """
+
+    def test_failed_languages_in_result(self):
+        """Result dict includes failed_languages when one indexer fails."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "main.py").write_text("class Pos: pass\n")
+            Path(tmpdir, "app.ts").write_text("export class Pos {}\n")
+
+            ts_scip = os.path.join(tmpdir, "index.scip")
+            Path(ts_scip).write_bytes(b"TS_DATA")
+
+            mock_py_indexer = MagicMock(
+                return_value=(None, "scip-python exited 1: TypeError: .map is not a function")
+            )
+            mock_ts_indexer = MagicMock(return_value=(ts_scip, None))
+            mock_py_deps = MagicMock(return_value=(True, "ok"))
+            mock_ts_deps = MagicMock(return_value=(True, "ok"))
+
+            with (
+                patch.dict(
+                    "scip_indexer.INDEXERS",
+                    {
+                        "python": mock_py_indexer,
+                        "typescript": mock_ts_indexer,
+                        "javascript": mock_ts_indexer,
+                    },
+                ),
+                patch.dict(
+                    "scip_indexer.DEP_RESOLVERS",
+                    {
+                        "python": mock_py_deps,
+                        "typescript": mock_ts_deps,
+                        "javascript": mock_ts_deps,
+                    },
+                ),
+            ):
+                report = index_repo(tmpdir, "HKUDS/Vibe-Trading")
+
+            # Report itself: TypeScript succeeded, Python failed
+            assert report.any_success
+            assert "typescript" in report.successful_languages
+            assert "python" not in report.successful_languages
+
+            # The failed results are accessible for metrics surfacing
+            failed = [r for r in report.results if not r.success]
+            assert len(failed) == 1
+            assert failed[0].language == "python"
+            assert "map is not a function" in failed[0].error

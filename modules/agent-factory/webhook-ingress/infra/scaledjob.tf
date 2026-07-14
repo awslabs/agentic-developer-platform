@@ -60,6 +60,19 @@ resource "kubernetes_service_account" "agent_scaledjob_sa" {
 # -----------------------------------------------------------------------------
 
 locals {
+  # Knowledge Layer env vars for agent-worker container (#3286).
+  # Conditionally included in the ScaledJob YAML when knowledge_layer_enabled=true.
+  # Uses join() to avoid nested heredoc syntax issues in HCL ternary.
+  knowledge_layer_env_block = var.knowledge_layer_enabled ? join("\n", [
+    "                  # ── Knowledge Layer (Issue #3286) ───────────────────────────────",
+    "                  # Connects hosted agents to the agent-context MCP server for",
+    "                  # code intelligence tools (search, understand, impact, etc.).",
+    "                  - name: KNOWLEDGE_LAYER_ENABLED",
+    "                    value: \"1\"",
+    "                  - name: CONTEXT_MCP_SERVER_URL",
+    "                    value: http://context-mcp.agent-context.svc.cluster.local:5100",
+  ]) : ""
+
   # OpenTelemetry env vars for agent-worker container (#1630).
   # Conditionally included in the ScaledJob YAML when enable_agent_otel=true.
   # Uses join() to avoid nested heredoc syntax issues in HCL ternary.
@@ -193,11 +206,16 @@ locals {
                   # PutItem on this table (scaledjob-iam.tf).
                   - name: CORRELATION_POINTERS_TABLE
                     value: ${aws_dynamodb_table.correlation_pointers.name}
+                  # Issue #3178: correlation marker HMAC signing key (cred-binding S4).
+                  # Worker reads this secret from SM to sign outbound markers.
+                  - name: ADP_MARKER_SIGNING_KEY_SECRET
+                    value: adp/${var.environment}/webhook-ingress/marker-signing-key
                   # Issue #2153: adp-trigger CLI needs the webhook-ingress API
                   # endpoint to POST /agent/trigger (SigV4-signed).
                   - name: ADP_TRIGGER_ENDPOINT
                     value: ${aws_api_gateway_stage.dev.invoke_url}/agent/trigger
 ${local.otel_env_block}
+${local.knowledge_layer_env_block}
                 resources:
                   requests:
                     cpu: "1"

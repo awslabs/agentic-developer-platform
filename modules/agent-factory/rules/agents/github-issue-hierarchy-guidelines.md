@@ -83,16 +83,15 @@ Before creating any issues, ensure these labels exist. Use `gh label create` if 
 | `status: review` | In review |
 | `status: done` | Completed |
 
-### Agent Labels
+### Agent Labels (DEPRECATED — do not add)
 
-| Label | Purpose |
-|-------|---------|
-| `agent-pm` | Assigned to PM agent |
-| `agent-product` | Assigned to Product agent |
-| `agent-architect` | Assigned to Architect agent |
-| `agent-developer` | Assigned to Developer agent |
-| `agent-reviewer` | Assigned to Reviewer agent |
-| `agent-operations` | Assigned to Operations agent |
+`agent-<persona>` labels (`agent-pm`, `agent-developer`, `agent-operations`,
+etc.) are deprecated. They do NOT dispatch agents and MUST NOT be added to
+issues — as an agent, dispatch happens only via `adp-trigger --persona
+<persona> --issue <N>` (see core-workflow.md TRIGGERS; bug #3626). A bot-authored
+`@agent-<persona>` comment does not reliably dispatch and breaks lineage; the
+mention path is for human operators only. Treat any existing `agent-*` label as
+stale metadata.
 
 ---
 

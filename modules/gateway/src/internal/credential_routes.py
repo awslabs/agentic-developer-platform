@@ -38,6 +38,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.internal.auth_deps import verify_internal_or_irsa
+from src.internal.credential_binding import resolve_credential_binding
 from src.internal.credential_injector import FILE_CREDENTIAL_TYPES, inject_credential
 from src.shared.config import Settings, get_settings
 from src.shared.database import get_db
@@ -103,6 +104,7 @@ class ProxyRequestBody(BaseModel):
     url: str
     headers: dict[str, str] | None = None
     body: str | None = None
+    invocation_id: str | None = None
 
 
 class ProxyResponse(BaseModel):
@@ -120,6 +122,7 @@ class MaterializeBody(BaseModel):
     task_id: str
     service: str
     label: str | None = None
+    invocation_id: str | None = None
 
 
 class MaterializeResponse(BaseModel):
@@ -137,6 +140,7 @@ class RawReadBody(BaseModel):
     service: str
     label: str | None = None
     purpose: str | None = None
+    invocation_id: str | None = None
 
 
 class RawReadResponse(BaseModel):
@@ -344,11 +348,24 @@ def _validate_proxy_url(url: str, settings: Settings) -> None:
 async def list_user_credentials(
     user_id: str = Query(..., description="Internal user UUID (cognito sub or shadow user id)"),
     service: str | None = Query(None, description="Service name filter (optional). When omitted, returns all services."),
+    invocation_id: str | None = Query(None, description="Run invocation ID for credential-authorization binding"),
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> list[CredentialMetadata]:
+    settings = get_settings()
+
+    # Issue #3477: Credential-authorization binding.
+    # Resolve the effective user from the webhook-events registry.
+    binding = await asyncio.to_thread(
+        resolve_credential_binding,
+        invocation_id=invocation_id,
+        body_user_id=user_id,
+        settings=settings,
+    )
+    effective_user_id = binding.resolved_user_id
+
     # Validate user exists and resolve canonical user (Issue #700).
-    user = await _get_user_context(user_id, db, calling_endpoint="user-credentials")
+    user = await _get_user_context(effective_user_id, db, calling_endpoint="user-credentials")
 
     # Build query — filter by service only when provided (backwards compat).
     # Issue #700: use canonical user's id and org_id, not the inbound values.
@@ -396,6 +413,16 @@ async def proxy_request(
     provenance_id = str(uuid.uuid4())
     settings = get_settings()
 
+    # Issue #3477: Credential-authorization binding — resolve BEFORE URL validation.
+    # If the caller isn't authorized, don't reveal whether the URL is allowlisted.
+    binding = await asyncio.to_thread(
+        resolve_credential_binding,
+        invocation_id=body.invocation_id,
+        body_user_id=body.user_id,
+        settings=settings,
+    )
+    effective_user_id = binding.resolved_user_id
+
     # Issue #1158: Validate target URL before resolving credentials or making requests.
     try:
         _validate_proxy_url(body.url, settings)
@@ -409,7 +436,7 @@ async def proxy_request(
         )
         # Best-effort audit log — resolve user if possible for org_id context.
         try:
-            user = await _get_user_context(body.user_id, db, calling_endpoint="proxy-request")
+            user = await _get_user_context(effective_user_id, db, calling_endpoint="proxy-request")
             await _write_audit(
                 db,
                 event_type="vault_proxy_request_denied",
@@ -418,6 +445,9 @@ async def proxy_request(
                 details={
                     "provenance_id": provenance_id,
                     "user_id": body.user_id,
+                    "authorized_user_id": effective_user_id,
+                    "binding_from_registry": binding.from_registry,
+                    "binding_drift_detected": binding.drift_detected,
                     "agent_id": body.agent_id,
                     "task_id": body.task_id,
                     "service": body.service,
@@ -430,7 +460,7 @@ async def proxy_request(
             pass  # Don't let audit-log failures mask the security rejection.
         raise
 
-    user = await _get_user_context(body.user_id, db, calling_endpoint="proxy-request")
+    user = await _get_user_context(effective_user_id, db, calling_endpoint="proxy-request")
     # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,
@@ -484,6 +514,7 @@ async def proxy_request(
         details={
             "provenance_id": provenance_id,
             "user_id": body.user_id,
+            "authorized_user_id": effective_user_id,
             "agent_id": body.agent_id,
             "task_id": body.task_id,
             "service": body.service,
@@ -492,6 +523,9 @@ async def proxy_request(
             "method": body.method.upper(),
             "url": body.url,
             "response_status": response.status_code,
+            "invocation_id": body.invocation_id,
+            "binding_from_registry": binding.from_registry,
+            "binding_drift_detected": binding.drift_detected,
         },
     )
     await db.commit()
@@ -535,13 +569,23 @@ async def credential_materialize(
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
     _: None = Depends(verify_internal_or_irsa),
 ) -> MaterializeResponse:
-    # Scope gate.
-    _check_agent_scope(x_agent_scopes, "credential:materialize")
-
     provenance_id = str(uuid.uuid4())
     settings = get_settings()
 
-    user = await _get_user_context(body.user_id, db, calling_endpoint="credential-materialize")
+    # Issue #3477: Credential-authorization binding — resolve BEFORE scope gate.
+    # If the caller isn't bound to a valid run, fail fast before checking scopes.
+    binding = await asyncio.to_thread(
+        resolve_credential_binding,
+        invocation_id=body.invocation_id,
+        body_user_id=body.user_id,
+        settings=settings,
+    )
+    effective_user_id = binding.resolved_user_id
+
+    # Scope gate.
+    _check_agent_scope(x_agent_scopes, "credential:materialize")
+
+    user = await _get_user_context(effective_user_id, db, calling_endpoint="credential-materialize")
     # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,
@@ -608,6 +652,7 @@ async def credential_materialize(
         details={
             "provenance_id": provenance_id,
             "user_id": body.user_id,
+            "authorized_user_id": effective_user_id,
             "agent_id": body.agent_id,
             "task_id": body.task_id,
             "service": body.service,
@@ -615,6 +660,9 @@ async def credential_materialize(
             "credential_id": cred.id,
             "credential_type": cred.credential_type,
             "s3_key": s3_key,
+            "invocation_id": body.invocation_id,
+            "binding_from_registry": binding.from_registry,
+            "binding_drift_detected": binding.drift_detected,
         },
     )
     await db.commit()
@@ -672,7 +720,17 @@ async def credential_raw_read(
     # Scope gate.
     _check_agent_scope(x_agent_scopes, "credential:raw-read")
 
-    user = await _get_user_context(body.user_id, db, calling_endpoint="credential-raw-read")
+    # Issue #3175: Credential-authorization binding (S2).
+    # Resolve the effective user from the webhook-events registry.
+    binding = await asyncio.to_thread(
+        resolve_credential_binding,
+        invocation_id=body.invocation_id,
+        body_user_id=body.user_id,
+        settings=settings,
+    )
+    effective_user_id = binding.resolved_user_id
+
+    user = await _get_user_context(effective_user_id, db, calling_endpoint="credential-raw-read")
     # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,
@@ -694,6 +752,7 @@ async def credential_raw_read(
         details={
             "provenance_id": provenance_id,
             "user_id": body.user_id,
+            "authorized_user_id": effective_user_id,
             "agent_id": body.agent_id,
             "task_id": body.task_id,
             "service": body.service,
@@ -701,15 +760,19 @@ async def credential_raw_read(
             "credential_id": cred.id,
             "credential_type": cred.credential_type,
             "purpose": body.purpose,
+            "invocation_id": body.invocation_id,
+            "binding_from_registry": binding.from_registry,
+            "binding_drift_detected": binding.drift_detected,
         },
     )
     await db.commit()
 
     logger.info(
-        "Raw credential read provenance_id=%s service=%s agent=%s",
+        "Raw credential read provenance_id=%s service=%s agent=%s binding_from_registry=%s",
         provenance_id,
         body.service,
         body.agent_id,
+        binding.from_registry,
     )
     return RawReadResponse(
         value=secret_value,

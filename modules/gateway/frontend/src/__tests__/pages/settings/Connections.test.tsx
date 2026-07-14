@@ -21,12 +21,19 @@ vi.mock('@/services/connections', () => ({
   startGitHubAppRegistration: vi.fn(),
   rotateGitHubAppKey: vi.fn(),
   disconnectGitHubApp: vi.fn(),
+  registerManualGitHubApp: vi.fn(),
+  switchTenant: vi.fn(),
 }));
 
 // Connections calls useAuth() to read the current user (free-tier banner gating)
 // and hasRole for platform_admin check. Mock both.
+// Default: non-admin. Tests that need admin override this via mockUseAuth.
+const mockUseAuth = vi.fn(() => ({
+  user: { orgId: 'org-test' },
+  hasRole: () => false,
+}));
 vi.mock('@/hooks/useAuth', () => ({
-  useAuth: () => ({ user: { orgId: 'org-test' }, hasRole: () => false }),
+  useAuth: () => mockUseAuth(),
 }));
 
 import {
@@ -34,12 +41,14 @@ import {
   listConnections,
   deleteGitHubConnection,
   getGitHubAppStatus,
+  registerManualGitHubApp,
 } from '@/services/connections';
 
 const mockStartGitHubInstall = startGitHubInstall as ReturnType<typeof vi.fn>;
 const mockListConnections = listConnections as ReturnType<typeof vi.fn>;
 const mockDeleteGitHubConnection = deleteGitHubConnection as ReturnType<typeof vi.fn>;
 const mockGetGitHubAppStatus = getGitHubAppStatus as ReturnType<typeof vi.fn>;
+const mockRegisterManualGitHubApp = registerManualGitHubApp as ReturnType<typeof vi.fn>;
 
 function renderConnections(initialEntries: string[] = ['/settings/connections']) {
   return render(
@@ -333,6 +342,80 @@ describe('Connections Page', () => {
       await waitFor(() => {
         expect(screen.getByText('GitHub installation disconnected.')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('Manual registration warnings (Issue #3360)', () => {
+    it('renders page-level warnings after successful manual registration', async () => {
+      // Override useAuth to return platform admin
+      mockUseAuth.mockReturnValue({
+        user: { orgId: 'org-test' },
+        hasRole: () => true,
+      });
+
+      // Initially the app is NOT registered (so the form is shown)
+      mockGetGitHubAppStatus.mockResolvedValue({
+        registered: false,
+        app_slug: null,
+        app_id: null,
+        owner_type: null,
+        created_at: null,
+      });
+
+      // After successful registration, status shows registered
+      const warningMessages = [
+        'Webhook URL mismatch: App has "https://old.example.com", deployment expects "https://new.example.com".',
+        'Missing permissions: contents: write.',
+      ];
+
+      mockRegisterManualGitHubApp.mockResolvedValue({
+        registered: true,
+        app_id: '123456',
+        app_slug: 'my-app',
+        app_name: 'My App',
+        login_enabled: true,
+        warnings: warningMessages,
+      });
+
+      const user = userEvent.setup();
+      renderConnections();
+
+      // Wait for the manual registration expand button to appear
+      await waitFor(() => {
+        expect(screen.getByTestId('expand-manual-register')).toBeInTheDocument();
+      });
+
+      // Expand the manual registration form
+      await user.click(screen.getByTestId('expand-manual-register'));
+
+      // Fill in required fields
+      const appIdInput = screen.getByLabelText(/App ID/i);
+      const privateKeyInput = screen.getByLabelText(/Private Key/i);
+      await user.type(appIdInput, '123456');
+      await user.type(privateKeyInput, '-----BEGIN RSA PRIVATE KEY-----');
+
+      // After submit, loadAppStatus will be called — mock it to return registered
+      mockGetGitHubAppStatus.mockResolvedValue({
+        registered: true,
+        app_slug: 'my-app',
+        app_id: '123456',
+        owner_type: 'Organization',
+        created_at: '2026-07-09T00:00:00Z',
+      });
+
+      // Submit the form
+      const submitButton = screen.getByRole('button', { name: /Connect App/i });
+      await user.click(submitButton);
+
+      // Warnings should render at page level (persist after form unmounts)
+      await waitFor(() => {
+        expect(screen.getByText('Configuration warnings')).toBeInTheDocument();
+      });
+
+      // Verify individual warning messages are rendered
+      for (const warning of warningMessages) {
+        expect(screen.getByText(warning)).toBeInTheDocument();
+      }
     });
   });
 });

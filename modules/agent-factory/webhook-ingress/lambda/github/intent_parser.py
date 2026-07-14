@@ -63,6 +63,7 @@ class Intent:
     trigger: str
     label: str | None = None
     model: str | None = None
+    aws_label: str | None = None
 
 
 def extract_intent(
@@ -86,14 +87,36 @@ def extract_intent(
     sender = payload.get("sender", {})
     action = payload.get("action", "")
 
-    # Non-comment, non-PR events: keep binary bot guard (no behavior change)
+    # Non-comment, non-PR events: binary bot guard with narrowed exception.
+    # Issue #3245: issues.opened with aidlc-intent label is an explicit trigger
+    # signal that should dispatch regardless of sender (the label is the
+    # authorization). All other bot-generated non-comment/non-PR events remain
+    # blocked to prevent self-triggering loops (issue #1696).
     if event_type not in ("issue_comment", "pull_request") and _is_bot_sender(sender):
-        logger.info(
-            "Ignoring bot-generated %s event from %s",
-            event_type,
-            sender.get("login", "unknown"),
-        )
-        return None
+        if event_type == "issues" and action == "opened":
+            label_names = [
+                lbl.get("name", "") for lbl in payload.get("issue", {}).get("labels", [])
+            ]
+            if "aidlc-intent" in label_names:
+                logger.info(
+                    "Bot-generated issues.opened with aidlc-intent label from %s "
+                    "— allowing dispatch (issue #3245)",
+                    sender.get("login", "unknown"),
+                )
+            else:
+                logger.info(
+                    "Ignoring bot-generated %s event from %s",
+                    event_type,
+                    sender.get("login", "unknown"),
+                )
+                return None
+        else:
+            logger.info(
+                "Ignoring bot-generated %s event from %s",
+                event_type,
+                sender.get("login", "unknown"),
+            )
+            return None
 
     # Bot pull_request events: allowed through to _handle_pr_event, which gates
     # on the agent/issue-* branch filter + the synchronize dedup (issue #1716).
@@ -110,6 +133,10 @@ def extract_intent(
     #     the issue's correlation pointer (issue number is in the branch name),
     #     resolved in determine_correlation. Marker ABSENCE no longer blocks.
     # Non-ADP bots (dependabot, etc.) never reach here — they 403 upstream.
+
+    # issues + opened → AIDLC inception (gated on aidlc-intent label)
+    if event_type == "issues" and action == "opened":
+        return _handle_issue_opened(payload)
 
     # issues + labeled → map label to persona
     if event_type == "issues" and action == "labeled":
@@ -168,6 +195,45 @@ def _extract_model_directive(body: str) -> str | None:
     return None
 
 
+# Issue #3574: Line-anchored regex for /aws-label directive. Same anchoring
+# rules as /model — must start at beginning of a line.
+_AWS_LABEL_DIRECTIVE_RE = re.compile(r"^/aws-label\s+(\S+)\s*$", re.MULTILINE)
+
+# Issue #3574: Charset validation for AWS credential labels.
+# Only [A-Za-z0-9_-]{1,64} is accepted; anything else is rejected at parse time.
+_AWS_LABEL_CHARSET_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _extract_aws_label_directive(body: str) -> str | None:
+    """Extract the /aws-label value from the comment body (issue #3574).
+
+    Uses a line-anchored regex so it won't match `/aws-label x` in inline code
+    or blockquotes. Returns the validated label string or None if absent/invalid.
+
+    Charset restriction: [A-Za-z0-9_-]{1,64}. If the captured value fails
+    validation, logs a warning and returns None (lenient — mirrors /model).
+
+    Security note: the label is attacker-influenceable (it comes from a comment
+    body). It can at most select a different account the SAME user linked in their
+    vault — the credential resolver is always constrained by user_id. This is
+    accepted residual risk, mitigated by runbook-mandatory target-account guards.
+    """
+    if not body:
+        return None
+    match = _AWS_LABEL_DIRECTIVE_RE.search(body)
+    if not match:
+        return None
+    raw_label = match.group(1)
+    if not _AWS_LABEL_CHARSET_RE.match(raw_label):
+        logger.warning(
+            "/aws-label directive %r rejected: invalid charset "
+            "(allowed: [A-Za-z0-9_-]{1,64}) — proceeding without label",
+            raw_label,
+        )
+        return None
+    return raw_label
+
+
 def _extract_mention_persona(body: str) -> str | None:
     """Extract the first @agent-X persona mention from comment body.
 
@@ -194,6 +260,31 @@ def _extract_all_mention_personas(body: str) -> list[str]:
         if mention in body:
             personas.append(persona)
     return personas
+
+
+def _handle_issue_opened(payload: dict) -> Intent | None:
+    """Handle issues.opened event — dispatch AIDLC persona if template label present.
+
+    Issue #3169: Only dispatches when the issue carries the `aidlc-intent` label
+    (applied automatically by the AIDLC issue template). All other issues.opened
+    events return None — this prevents a dispatch storm from every new issue.
+
+    Issue #3245: Bot senders are now allowed through the top-level guard when
+    the issue carries the `aidlc-intent` label. The label IS the authorization
+    signal — blocking bot-created issues with this label prevented valid
+    orchestration scenarios (automated testing, CI-driven inception).
+    """
+    labels = payload.get("issue", {}).get("labels", [])
+    label_names = {lbl.get("name", "") for lbl in labels}
+
+    if "aidlc-intent" not in label_names:
+        logger.debug(
+            "issues.opened without aidlc-intent label — no-op (issue #%s)",
+            payload.get("issue", {}).get("number", "?"),
+        )
+        return None
+
+    return Intent(persona="aidlc", trigger="issue_opened", label="aidlc-intent")
 
 
 def _handle_issue_labeled(payload: dict) -> Intent | None:
@@ -270,7 +361,11 @@ def _handle_issue_comment(
             return None
         # Issue #2279: Parse /model directive (human path only)
         model = _extract_model_directive(body)
-        return Intent(persona=persona, trigger="mentioned", label=None, model=model)
+        # Issue #3574: Parse /aws-label directive (human path only)
+        aws_label = _extract_aws_label_directive(body)
+        return Intent(
+            persona=persona, trigger="mentioned", label=None, model=model, aws_label=aws_label
+        )
 
     # --- Bot sender path (issue #2149) ---
     # Bot comments require an explicit adp-dispatch:<persona> marker to trigger.

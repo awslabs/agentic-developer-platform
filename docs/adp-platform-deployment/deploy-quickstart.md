@@ -114,6 +114,13 @@ If you just want to see the platform work with the least setup,
 > **AWS profile** (above) — `config/deployment.yml` is optional (account resolves
 > from the profile if absent).
 
+> **Updating an existing deployment?** Use `deploy-all.sh --update` instead of
+> re-running the default fresh-deploy path. Update mode plan-gates Terraform
+> (refuses destructive changes), runs alembic migrations before rollout, and
+> SHA-tags images to guarantee Kubernetes rollout triggers. See
+> [`deploy-all-update-mode-design.md`](./deploy-all-update-mode-design.md) for
+> the full design, or `deploy-all.sh --help` for usage.
+
 ---
 
 ## Phase 1 — Bootstrap ✅ verified
@@ -417,15 +424,12 @@ This discovers the ALB, re-applies gateway-infra with the ALB vars
 forces an API GW stage redeploy so the routes go live. Idempotent. (Note: the
 CloudFront VPC origin it creates can take ~10 min.)
 
-> **KMS grant for webhook secrets (Issue #2907):** On a **fresh account**, the
-> webhook-ingress CMK (`alias/adp-<env>-webhook-secrets`) does not exist yet at
-> Phase 4 time, so gateway ships with `enable_webhook_secrets_kms_grant = false`.
-> After webhook-ingress deploys in Phase 7 (creates the CMK), either re-run this
-> second pass **or** any subsequent `gateway-infra-apply` with the flag set to
-> `true` in the tfvars. On **existing accounts** the CMK already exists, so the
-> flag can stay `true` from the first apply. The grant is required for the UI
-> GitHub-App register flow (#2797/#2824) to write webhook secrets without
-> `AccessDenied`.
+> **KMS grant for webhook secrets (Issue #3789):** The webhook-secrets CMK
+> (`alias/adp-<env>-webhook-secrets`) is now owned by **platform infra** (Phase 2),
+> so it always exists before gateway applies. The gateway KMS grant is
+> unconditional — no `enable_webhook_secrets_kms_grant` flag needed. For existing
+> environments being migrated, run `platform/scripts/migrate-webhook-kms.sh` to
+> move the CMK state from webhook-ingress to platform (see #3789).
 
 Verify:
 ```bash
@@ -851,10 +855,11 @@ and opens a PR (proves webhook → SQS → KEDA → worker → gateway → Bedro
 > (e.g. issue #1320). Same phase sequence, different execution mechanism; pick one
 > track per deploy, don't interleave.
 
-**`deploy-all.sh` shortcut (⚠️ unverified here):** chains bootstrap → preflight →
-platform infra → gateway infra → backend build → k8s deploy → frontend (incl. the
-two-pass ALB apply), i.e. Phases 1–6b. It does NOT do 6c/6d/7 or the human steps
-8/9 — run those stage-by-stage as above.
+**`deploy-all.sh` shortcut:** chains bootstrap → preflight → platform infra →
+gateway infra → backend build → k8s deploy → ALB wire → frontend → broker (6c) →
+admin bootstrap (6d) → agent-factory → webhook-ingress (7), i.e. Phases 1–7
+(steps 1–10/11 in the script). The only remaining manual step is GitHub App
+wiring (Phase 8/9) — the script prints next-steps guidance at the end.
 
 **Verify when done:**
 ```bash

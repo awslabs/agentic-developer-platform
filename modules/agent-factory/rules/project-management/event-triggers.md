@@ -198,7 +198,7 @@ jobs:
         run: |
           # For each unblocked task:
           # - Set assigned_agent
-          # - Add trigger label
+          # - Dispatch with: adp-trigger --persona <persona> --issue <task>
 ```
 
 ### PM Notification Actions:
@@ -207,7 +207,8 @@ jobs:
 3. Check which tasks are now unblocked
 4. For unblocked tasks:
    - Assign to appropriate agent
-   - Add trigger label
+   - Dispatch with `adp-trigger --persona <persona> --issue <task>`
+     (NEVER an `@agent-<persona>` comment, NEVER an `agent-*` trigger label)
 5. Check phase completion:
    - If phase complete, transition to next
    - Create next phase tasks
@@ -217,17 +218,24 @@ jobs:
 
 # LABEL REFERENCE
 
-## Trigger Labels (Add to start work)
+## Agent dispatch (adp-trigger, NEVER comments or labels)
+
+As an agent, dispatch other agents with `adp-trigger --persona <persona>
+--issue <N>` (calls `POST /agent/trigger`, stamps correlation/lineage at
+ingress). **Neither a bot-authored `@agent-<persona>` comment nor an
+`agent-<persona>` label dispatches an agent for you:** comment mentions are
+loop-guarded/unreliable and break lineage; label triggering is deprecated and
+forbidden — it causes duplicate/inconsistent runs and bypasses wave sequencing
+(bug #3626: labels applied at issue creation implemented all waves of EPIC #3557
+at once). If you see an `agent-*` label on an issue, treat it as stale metadata,
+not a trigger. The `@agent-<persona>` comment path is for **human operators
+only** (see core-workflow.md TRIGGERS).
+
+## Workflow Init Labels
 | Label | Purpose |
 |-------|---------|
 | `aidlc-start` | Start AIDLC workflow |
 | `aidlc-continue` | Human finished editing files |
-| `agent-pm` | Trigger PM agent |
-| `agent-product` | Trigger product agent |
-| `agent-architect` | Trigger architect agent |
-| `agent-developer` | Trigger developer agent |
-| `agent-reviewer` | Trigger reviewer agent |
-| `agent-operations` | Trigger operations agent |
 
 ## Notification Labels (Add to signal)
 | Label | Purpose |

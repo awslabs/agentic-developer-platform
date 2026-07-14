@@ -24,6 +24,7 @@ export interface VaultToolsConfig {
   userId: string;
   agentId: string;
   taskId: string;
+  invocationId?: string;
   scrubber: Scrubber;
   client: VaultGatewayClient;
 }
@@ -42,7 +43,7 @@ export interface SanitizableAgentTool extends AgentTool {
  * Returns vault tools closed over the current task's identity.
  */
 export function vaultToolsForTurn(config: VaultToolsConfig): SanitizableAgentTool[] {
-  const { userId, agentId, taskId, scrubber, client } = config;
+  const { userId, agentId, taskId, invocationId, scrubber, client } = config;
 
   return [
     // 1. list_user_credentials
@@ -56,7 +57,7 @@ export function vaultToolsForTurn(config: VaultToolsConfig): SanitizableAgentToo
       inputSummarySanitizer: (input) => input,
       handler: async (): Promise<AgentToolResult> => {
         try {
-          const credentials = await client.listCredentials(userId);
+          const credentials = await client.listCredentials(userId, invocationId);
           return text(JSON.stringify({ credentials }, null, 2));
         } catch (err) {
           return error(`Failed to list credentials: ${(err as Error).message}`);
@@ -98,6 +99,7 @@ export function vaultToolsForTurn(config: VaultToolsConfig): SanitizableAgentToo
             url: input.url as string,
             headers: input.headers as Record<string, string> | undefined,
             body: input.body as string | undefined,
+            invocation_id: invocationId,
           });
           return text(JSON.stringify({
             status: resp.status,
@@ -131,6 +133,7 @@ export function vaultToolsForTurn(config: VaultToolsConfig): SanitizableAgentToo
             task_id: taskId,
             service: input.service as string,
             label: input.label as string | undefined,
+            invocation_id: invocationId,
           });
           return text(JSON.stringify({
             materialize_url: resp.materialize_url,
@@ -166,6 +169,7 @@ export function vaultToolsForTurn(config: VaultToolsConfig): SanitizableAgentToo
             service: (input.service as string) || 'aws',
             label: input.label as string | undefined,
             purpose: input.purpose as string | undefined,
+            invocation_id: invocationId,
           });
           // CRITICAL: register sensitive values with scrubber BEFORE returning.
           const labelStr = (input.label as string) ?? 'default';
@@ -216,6 +220,7 @@ export function vaultToolsForTurn(config: VaultToolsConfig): SanitizableAgentToo
             service: input.service as string,
             label: input.label as string | undefined,
             purpose: input.purpose as string | undefined,
+            invocation_id: invocationId,
           });
           // CRITICAL: register with scrubber BEFORE returning
           const replacement = `<<redacted:${input.service as string}:${(input.label as string) ?? 'default'}>>`;

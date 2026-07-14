@@ -60,9 +60,13 @@ enable_mantle_passthrough = true
 # its own tfvars / the default.
 enable_lambda_reserved_concurrency = false
 
-# Issue #2907: grant the gateway IRSA role KMS read/write on the
-# webhook-ingress CMK (alias/adp-dev-webhook-secrets). Set to true only after
-# webhook-ingress has deployed (Phase 7) and created the CMK. On fresh
-# accounts leave false for the initial Phase 4 apply; flip to true on the
-# gateway second pass (Phase 6b) or any subsequent apply after Phase 7.
-enable_webhook_secrets_kms_grant = true
+# Issue #3789: enable_webhook_secrets_kms_grant removed. The webhook-secrets
+# CMK is now owned by platform infra and the gateway grant is unconditional.
+
+# GitLab VPC Origin for CloudFront /gitlab/* behavior.
+# GitLab is an OPTIONAL module — its values must NOT be hardcoded here.
+# The gateway-infra-apply.yml workflow reads them from SSM at apply time
+# (platform account only); all other accounts get the empty default which
+# disables the GitLab origin. See #3745 / #3440 (core ≠ optional coupling rule).
+gitlab_origin_dns = ""
+gitlab_origin_arn = ""

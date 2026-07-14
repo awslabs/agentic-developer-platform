@@ -32,6 +32,7 @@ from typing import Any
 
 from mcp.server import FastMCP
 from mcp.server.fastmcp import Context
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 
 from .acl import extract_caller_principal
@@ -143,6 +144,17 @@ mcp_server = FastMCP(
     # The sub-app is mounted at /mcp on the parent FastAPI app, so the internal
     # route is "/" (resolves to POST /mcp externally).
     streamable_http_path="/",
+    # DNS-rebinding protection is disabled because this service is ClusterIP-only
+    # (no browser-origin access). The MCP SDK's default Host-header allowlist
+    # (localhost-only) rejects Kubernetes service DNS names like
+    # "context-mcp.agent-context.svc.cluster.local:5100" with 421 Misdirected
+    # Request, breaking in-cluster MCP clients (agent workers). An allowlist
+    # approach would silently break again whenever a new hostname is introduced;
+    # disabling the check entirely is correct for a pod-to-pod-only service.
+    # See: Issue #3254.
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    ),
 )
 
 

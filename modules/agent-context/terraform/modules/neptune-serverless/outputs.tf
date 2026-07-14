@@ -32,3 +32,8 @@ output "access_role_arn" {
   description = "IAM role ARN for Neptune access (IRSA)"
   value       = aws_iam_role.neptune_access.arn
 }
+
+output "bulk_load_role_arn" {
+  description = "IAM role ARN for Neptune Bulk Loader (S3 read access, attached to cluster)"
+  value       = aws_iam_role.neptune_bulk_load.arn
+}

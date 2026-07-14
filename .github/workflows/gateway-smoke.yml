@@ -1,0 +1,305 @@
+name: Gateway Smoke Test
+
+# Post-deploy verification: exercises the live gateway with a REAL Cognito token
+# to catch auth-adjacent regressions that synthetic-token unit tests miss.
+#
+# Issue #3031. Catches #3021-class (cognito_sub/users.id mismatch) and
+# #3027-class (access-token claim gap) bugs.
+#
+# Prerequisites:
+#   - Smoke user must be a member of >=2 org tenants in the target env
+#   - Refresh token captured in Secrets Manager via:
+#       ./platform/scripts/capture-smoke-token.sh --environment <env>
+#     (stored at: adp/<env>/gateway/smoke-user-refresh-token)
+#
+# Token lifetime: Cognito refresh tokens expire after 30 days.
+# When this workflow emits SMOKE_TOKEN_EXPIRED, re-run capture-smoke-token.sh.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Deployment environment (dev/staging/prod)'
+        required: false
+        type: string
+        default: 'dev'
+      account_id:
+        description: 'Target AWS account (12 digits). Empty = use platform IRSA.'
+        required: false
+        type: string
+        default: ''
+      customer_account_id:
+        description: 'Customer-linked AWS account (cross-account mode).'
+        required: false
+        type: string
+        default: ''
+      customer_aws_label:
+        description: 'Vaulted credential label (when customer_account_id is set).'
+        required: false
+        type: string
+        default: ''
+      customer_user_id:
+        description: 'ADP users.id UUID (when customer_account_id is set).'
+        required: false
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment (dev/staging/prod)'
+        required: false
+        default: 'dev'
+      account_id:
+        description: 'Target AWS account (12 digits). Empty = use platform IRSA.'
+        required: false
+        default: ''
+      customer_account_id:
+        description: 'Customer-linked AWS account (cross-account mode).'
+        required: false
+        default: ''
+      customer_aws_label:
+        description: 'Vaulted credential label (when customer_account_id is set).'
+        required: false
+        default: ''
+      customer_user_id:
+        description: 'ADP users.id UUID (when customer_account_id is set).'
+        required: false
+        default: ''
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  smoke:
+    name: Post-deploy smoke (real token)
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          account_id: ${{ inputs.account_id }}
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+
+      - name: Read refresh token from Secrets Manager
+        id: token
+        run: |
+          set -e
+          SECRET_NAME="adp/${ENVIRONMENT}/gateway/smoke-user-refresh-token"
+
+          # Only ResourceNotFoundException may skip gracefully. Other errors
+          # (AccessDenied, throttle, network) must fail the job so operators
+          # notice infrastructure problems.
+          SM_OUTPUT=$(aws secretsmanager get-secret-value \
+            --secret-id "$SECRET_NAME" \
+            --query SecretString --output text \
+            --region "${AWS_REGION}" 2>&1) && SM_RC=0 || SM_RC=$?
+
+          if [ "$SM_RC" -ne 0 ]; then
+            if echo "$SM_OUTPUT" | grep -q "ResourceNotFoundException"; then
+              echo "::warning::Smoke token not found in Secrets Manager (${SECRET_NAME}). Skipping smoke test."
+              echo "::warning::To enable: run ./platform/scripts/capture-smoke-token.sh --environment ${ENVIRONMENT}"
+              echo "token_available=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::Secrets Manager error (not ResourceNotFoundException): ${SM_OUTPUT}"
+            exit 1
+          fi
+
+          REFRESH_TOKEN="$SM_OUTPUT"
+          if [ -z "$REFRESH_TOKEN" ] || [ "$REFRESH_TOKEN" = "None" ]; then
+            echo "::warning::Smoke token is empty in Secrets Manager (${SECRET_NAME}). Skipping smoke test."
+            echo "::warning::To enable: run ./platform/scripts/capture-smoke-token.sh --environment ${ENVIRONMENT}"
+            echo "token_available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Mask the token so it never appears in logs
+          echo "::add-mask::${REFRESH_TOKEN}"
+          echo "refresh_token=${REFRESH_TOKEN}" >> "$GITHUB_OUTPUT"
+          echo "token_available=true" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve Cognito parameters from SSM
+        if: steps.token.outputs.token_available == 'true'
+        id: cognito
+        run: |
+          set -e
+          get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo ""; }
+
+          USER_POOL_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id")
+          CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-client-id")
+          CF_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cloudfront-domain")
+
+          for var_name in USER_POOL_ID CLIENT_ID CF_DOMAIN; do
+            if [ -z "${!var_name}" ]; then
+              echo "::error::Required SSM param ${var_name} is empty. Cannot run smoke test."
+              exit 1
+            fi
+          done
+
+          echo "user_pool_id=${USER_POOL_ID}" >> "$GITHUB_OUTPUT"
+          echo "client_id=${CLIENT_ID}" >> "$GITHUB_OUTPUT"
+          echo "gateway_url=https://${CF_DOMAIN}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint access token via REFRESH_TOKEN_AUTH
+        if: steps.token.outputs.token_available == 'true'
+        id: mint
+        env:
+          REFRESH_TOKEN: ${{ steps.token.outputs.refresh_token }}
+        run: |
+          set -e
+          # Cognito REFRESH_TOKEN_AUTH returns both AccessToken and IdToken.
+          # The gateway validates access tokens for Bearer auth — the Pre Token
+          # Generation Lambda (V2) injects custom:* claims into access tokens.
+          # Using the access token exercises the #3027 fallback path this suite
+          # exists to test (ID tokens bypass it via bug #2699).
+          RESPONSE=$(aws cognito-idp initiate-auth \
+            --auth-flow REFRESH_TOKEN_AUTH \
+            --client-id "${{ steps.cognito.outputs.client_id }}" \
+            --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
+            --region "${AWS_REGION}" \
+            --output json 2>&1) || {
+            # Only show the error type, not the full response (may contain token echo)
+            ERROR_TYPE=$(echo "$RESPONSE" | grep -oP '(?<=\()[A-Za-z]+Exception(?=\))' || echo "unknown")
+            echo "::error::Cognito InitiateAuth failed: ${ERROR_TYPE}"
+            if echo "$RESPONSE" | grep -qi "NotAuthorizedException"; then
+              echo "::error::SMOKE_TOKEN_EXPIRED: Refresh token has expired. Re-run: ./platform/scripts/capture-smoke-token.sh --environment ${ENVIRONMENT}"
+            fi
+            exit 1
+          }
+
+          # Extract the access token (used as Bearer for gateway auth)
+          ACCESS_TOKEN=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['AuthenticationResult']['AccessToken'])")
+
+          # Mask it
+          echo "::add-mask::${ACCESS_TOKEN}"
+          echo "access_token=${ACCESS_TOKEN}" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke — GET /api/access/status
+        if: steps.token.outputs.token_available == 'true'
+        id: access_status
+        env:
+          ACCESS_TOKEN: ${{ steps.mint.outputs.access_token }}
+        run: |
+          set -e
+          GATEWAY_URL="${{ steps.cognito.outputs.gateway_url }}"
+
+          # CloudFront strips /api prefix before forwarding to the ALB, so the
+          # client must call /api/access/status to reach the backend's /access/status.
+          HTTP_CODE=$(curl -s -o /tmp/smoke_status_body.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            "${GATEWAY_URL}/api/access/status")
+
+          echo "status_code=${HTTP_CODE}" >> "$GITHUB_OUTPUT"
+          echo "/api/access/status → HTTP ${HTTP_CODE}"
+          cat /tmp/smoke_status_body.json | python3 -c "import sys,json; json.dump(json.load(sys.stdin),sys.stdout,indent=2)" 2>/dev/null || true
+
+      - name: Smoke — GET /api/admin/connections
+        if: steps.token.outputs.token_available == 'true'
+        id: connections
+        env:
+          ACCESS_TOKEN: ${{ steps.mint.outputs.access_token }}
+        run: |
+          set -e
+          GATEWAY_URL="${{ steps.cognito.outputs.gateway_url }}"
+
+          # CloudFront strips /api prefix; backend router is /admin/connections.
+          HTTP_CODE=$(curl -s -o /tmp/smoke_connections_body.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            "${GATEWAY_URL}/api/admin/connections")
+
+          echo "status_code=${HTTP_CODE}" >> "$GITHUB_OUTPUT"
+          echo "/api/admin/connections → HTTP ${HTTP_CODE}"
+          # Print structure without exposing sensitive data
+          cat /tmp/smoke_connections_body.json | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          conns = data.get('connections', [])
+          print(f'Connections count: {len(conns)}')
+          tenants = set(c.get('tenant_id','') for c in conns)
+          print(f'Distinct tenants: {len(tenants)}')
+          active = [c.get('tenant_id') for c in conns if c.get('is_active_tenant')]
+          print(f'Active tenant(s): {set(active)}')
+          " 2>/dev/null || true
+
+      - name: Assert smoke results
+        if: steps.token.outputs.token_available == 'true'
+        run: |
+          set -e
+          python3 - <<'PYEOF'
+          import json
+          import sys
+
+          sys.path.insert(0, "platform/scripts")
+          from smoke_assertions import (
+              assert_access_status_registered,
+              assert_connections_multi_tenant,
+              assert_token_not_expired,
+          )
+
+          # Load responses
+          with open("/tmp/smoke_status_body.json") as f:
+              try:
+                  status_body = json.load(f)
+              except json.JSONDecodeError:
+                  status_body = {}
+
+          with open("/tmp/smoke_connections_body.json") as f:
+              try:
+                  connections_body = json.load(f)
+              except json.JSONDecodeError:
+                  connections_body = {}
+
+          status_code_status = int("${{ steps.access_status.outputs.status_code }}")
+          status_code_conns = int("${{ steps.connections.outputs.status_code }}")
+
+          # Run assertions
+          results = []
+
+          # Check token validity first
+          token_check = assert_token_not_expired(status_code_status, status_body)
+          results.append(token_check)
+
+          if token_check.passed:
+              results.append(assert_access_status_registered(status_body, status_code_status))
+              results.append(assert_connections_multi_tenant(connections_body, status_code_conns))
+
+          # Report
+          failed = [r for r in results if not r.passed]
+          passed = [r for r in results if r.passed]
+
+          print(f"\n{'='*60}")
+          print(f"SMOKE TEST RESULTS: {len(passed)} passed, {len(failed)} failed")
+          print(f"{'='*60}")
+          for r in passed:
+              print(f"  ✓ {r.reason}")
+          for r in failed:
+              print(f"  ✗ {r.reason}")
+          print()
+
+          if failed:
+              for r in failed:
+                  print(f"::error::{r.reason}")
+              sys.exit(1)
+
+          print("All smoke assertions passed.")
+          PYEOF
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Gateway Smoke Test — ${ENVIRONMENT}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.token.outputs.token_available }}" != "true" ]; then
+            echo "⚠️ **Skipped**: no smoke token in Secrets Manager." >> "$GITHUB_STEP_SUMMARY"
+            echo "Run \`./platform/scripts/capture-smoke-token.sh --environment ${ENVIRONMENT}\` to enable." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Gateway: ${{ steps.cognito.outputs.gateway_url }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- /api/access/status → HTTP ${{ steps.access_status.outputs.status_code }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- /api/admin/connections → HTTP ${{ steps.connections.outputs.status_code }}" >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -48,6 +48,11 @@ output "neptune_access_role_arn" {
   value       = var.neptune_enabled ? module.neptune_serverless[0].access_role_arn : ""
 }
 
+output "neptune_bulk_load_role_arn" {
+  description = "IAM role ARN for Neptune Bulk Loader (S3 read access)"
+  value       = var.neptune_enabled ? module.neptune_serverless[0].bulk_load_role_arn : ""
+}
+
 output "opensearch_collection_endpoint" {
   description = "OpenSearch Serverless collection endpoint"
   value       = var.graphrag_enabled ? module.opensearch_serverless[0].collection_endpoint : ""

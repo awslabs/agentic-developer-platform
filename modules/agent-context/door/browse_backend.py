@@ -564,7 +564,7 @@ async def _read_zoekt_file(
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
                 f"{zoekt_url}/api/search",
-                json={"q": query, "num": 5, "Whole": True},
+                json={"q": query, "num": 5, "opts": {"Whole": True}},
             )
             if resp.status_code != 200:
                 log.warning(

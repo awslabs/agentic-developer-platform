@@ -304,6 +304,22 @@ variable "vpc_origin_keepalive_timeout" {
 }
 
 # =============================================================================
+# GitLab VPC Origin Configuration
+# =============================================================================
+
+variable "gitlab_origin_dns" {
+  type        = string
+  description = "DNS hostname of the GitLab internal ALB. When non-empty (along with gitlab_origin_arn), a VPC Origin and /gitlab/* cache behavior are added to CloudFront."
+  default     = ""
+}
+
+variable "gitlab_origin_arn" {
+  type        = string
+  description = "ARN of the GitLab internal ALB for VPC Origin. Required together with gitlab_origin_dns."
+  default     = ""
+}
+
+# =============================================================================
 # Chat Logging Configuration (Issue #143)
 # =============================================================================
 
@@ -429,15 +445,6 @@ variable "agent_context_ingestion_queue_arn" {
   default     = ""
 }
 
-# =============================================================================
-# Webhook Secrets KMS Grant (Issue #2907)
-# =============================================================================
-
-variable "enable_webhook_secrets_kms_grant" {
-  type        = bool
-  description = "Grant the gateway IRSA role KMS read/write on the webhook-ingress CMK (alias/adp-<env>-webhook-secrets). Set to false on first apply (the CMK doesn't exist yet); flip to true after webhook-ingress deploys (Phase 7) or on the gateway second pass."
-  default     = false
-}
 
 # =============================================================================
 # Test Users Configuration (Issue #60)

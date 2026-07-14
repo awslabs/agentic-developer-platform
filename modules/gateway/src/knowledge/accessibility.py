@@ -22,7 +22,9 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.knowledge.github_app_service import (
+    check_membership_for_installation,
     resolve_installation_for_repo,
+    resolve_worker_installation_for_repo,
     verify_installation_ownership,
 )
 
@@ -43,6 +45,9 @@ class AccessibilityResult:
     allowed: bool
     shared: bool = False  # True → public repo, tenant_id=NULL
     installation_id: int | None = None
+    # Issue #3266: When membership fallback resolves a different owning tenant,
+    # this field carries the org tenant_id the asset should be scoped to.
+    tenant_id: str | None = None
     error_message: str | None = None
     error_code: int = 422  # HTTP status code to use on rejection
 
@@ -168,6 +173,8 @@ async def validate_repo_accessibility(
     tenant_id: str,
     *,
     db: AsyncSession,
+    gateway_db: AsyncSession,
+    caller_user_id: str | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> AccessibilityResult:
     """Validate a repo's accessibility at registration time.
@@ -180,12 +187,19 @@ async def validate_repo_accessibility(
       2. Public check → accept shared (no installation needed)
       3. Resolve installation → None means App not installed
       4. Ownership check → reject if installation belongs to another tenant
+      4b. Membership fallback (Issue #3266) → if ownership check fails, check
+          if the caller is a member of any tenant that owns the installation
       5. Accept tenant-scoped with installation_id
 
     Args:
         source_ref: The GitHub URL (e.g. https://github.com/acme/my-repo)
         tenant_id: The caller's tenant ID (from session JWT)
-        db: Database session for ownership check
+        db: Agent-context database session (knowledge_assets table)
+        gateway_db: Gateway database session for ownership/membership queries
+            (users, channel_tenant_map, tenant_memberships). These tables live
+            in the bedrockgateway DB, NOT agent_context — passing the wrong
+            session causes 500s. Issue #3358.
+        caller_user_id: The caller's Cognito sub (for membership fallback)
         http_client: Optional httpx client for testing
     """
     # Step 1: Parse owner/repo
@@ -235,18 +249,74 @@ async def validate_repo_accessibility(
             error_code=422,
         )
 
-    # Step 4: Ownership check
-    owns_installation = await verify_installation_ownership(tenant_id, installation_id, db=db)
+    # Step 4: Ownership check (per-tenant connection model)
+    # Issue #3358: ownership/membership queries hit gateway tables (users,
+    # channel_tenant_map, tenant_memberships) which live in the bedrockgateway DB.
+    owns_installation = await verify_installation_ownership(tenant_id, installation_id, db=gateway_db)
     if not owns_installation:
+        # Step 4b: Membership fallback (Issue #3266)
+        # The caller's personal tenant doesn't own the installation, but they may
+        # be a member of an org-tenant that does. Check tenant_memberships.
+        if caller_user_id:
+            owning_tenant_id = await check_membership_for_installation(caller_user_id, installation_id, db=gateway_db)
+            if owning_tenant_id:
+                logger.info(
+                    "Membership fallback: user %s granted access to %s/%s via org tenant %s",
+                    caller_user_id,
+                    owner,
+                    repo,
+                    owning_tenant_id,
+                )
+                tenant_id = owning_tenant_id
+            else:
+                return AccessibilityResult(
+                    allowed=False,
+                    error_message=(f"The GitHub App installation for {owner}/{repo} does not belong to your tenant."),
+                    error_code=403,
+                )
+        else:
+            return AccessibilityResult(
+                allowed=False,
+                error_message=(f"The GitHub App installation for {owner}/{repo} does not belong to your tenant."),
+                error_code=403,
+            )
+
+    # Step 5: Resolve the ops-App installation_id for the worker (Issue #3529)
+    # channel_tenant_map stores dev-App installation ids (written by the UI connect
+    # flow), but the ingestion worker mints tokens with the ops App. We must store
+    # the OPS-App installation_id on the asset so the worker can actually mint.
+    try:
+        worker_installation_id = await resolve_worker_installation_for_repo(owner, repo, http_client=http_client)
+    except ValueError as exc:
+        # Ops App credentials unreadable (IAM not applied yet)
+        logger.warning("Cannot resolve ops-App installation for %s/%s: %s", owner, repo, exc)
         return AccessibilityResult(
             allowed=False,
-            error_message=(f"The GitHub App installation for {owner}/{repo} does not belong to your tenant."),
-            error_code=403,
+            error_message=(f"Platform ops-App credentials unavailable for {owner}/{repo}. Run Gateway Infra Apply to add the required IAM pattern."),
+            error_code=503,
+        )
+    except Exception as exc:
+        logger.warning("Ops-App installation resolution failed for %s/%s: %s", owner, repo, exc)
+        return AccessibilityResult(
+            allowed=False,
+            error_message=(f"Failed to resolve worker App access to {owner}/{repo}. Please try again later."),
+            error_code=502,
         )
 
-    # Step 5: Accept tenant-scoped
+    if worker_installation_id is None:
+        return AccessibilityResult(
+            allowed=False,
+            error_message=(
+                f"The ingestion worker's GitHub App is not installed on {owner}/{repo}. "
+                f"Install the ops App (adp-agent-ops) on this repo to enable ingestion."
+            ),
+            error_code=422,
+        )
+
+    # Step 6: Accept tenant-scoped with the WORKER's installation_id
     return AccessibilityResult(
         allowed=True,
         shared=False,
-        installation_id=installation_id,
+        installation_id=worker_installation_id,
+        tenant_id=tenant_id if not owns_installation else None,
     )

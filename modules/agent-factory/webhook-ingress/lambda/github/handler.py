@@ -469,6 +469,88 @@ def _detect_sibling_app(payload: dict, repo: str) -> None:
         logger.warning("Sibling detection failed (non-fatal): %s", exc)
 
 
+# Issue #3134: Author association hierarchy for min_author_association enforcement.
+# Higher index = higher privilege. NONE < CONTRIBUTOR < COLLABORATOR < MEMBER < OWNER.
+_AUTHOR_ASSOCIATION_LEVELS = {
+    "NONE": 0,
+    "CONTRIBUTOR": 1,
+    "COLLABORATOR": 2,
+    "MEMBER": 3,
+    "OWNER": 4,
+}
+
+
+def _check_min_author_association(
+    *,
+    payload: dict,
+    event_type: str,
+    installation_id: int,
+    tenant_item: dict | None = None,
+) -> str | None:
+    """Check author_association against the installation's min_author_association.
+
+    Issue #3134: When an installation row has min_author_association set, the
+    comment's author_association must meet or exceed that threshold. This check
+    uses the payload's comment.author_association field (present on every
+    issue_comment event) — zero extra API calls.
+
+    Issue #3134 fix: Accepts an optional tenant_item dict (the installation row
+    already fetched by the identity resolver) to avoid a duplicate DDB GetItem.
+    Falls back to a direct DDB read if tenant_item is not provided.
+
+    Returns None if the check passes (no enforcement or sufficient association),
+    or the rejection reason string if the check fails.
+    """
+    # Only applies to issue_comment events (which carry author_association)
+    if event_type != "issue_comment":
+        return None
+
+    try:
+        # Use caller-provided tenant_item, or fetch from DDB as fallback
+        if tenant_item is None:
+            resolver = _get_identity_resolver()
+            table = resolver._get_table()
+            tenant_resp = table.get_item(
+                Key={
+                    "identity_type": "github_installation_id",
+                    "identity_value": str(installation_id),
+                }
+            )
+            tenant_item = tenant_resp.get("Item")
+
+        if not tenant_item:
+            return None
+
+        min_assoc = tenant_item.get("min_author_association")
+        if not min_assoc:
+            return None  # Not configured — no enforcement
+
+        # Get the comment's author_association from the payload
+        comment = payload.get("comment", {}) or {}
+        actual_assoc = comment.get("author_association", "NONE")
+
+        # Compare levels
+        min_level = _AUTHOR_ASSOCIATION_LEVELS.get(min_assoc.upper(), 0)
+        actual_level = _AUTHOR_ASSOCIATION_LEVELS.get(actual_assoc.upper(), 0)
+
+        if actual_level < min_level:
+            logger.info(
+                "Author association insufficient: installation_id=%d "
+                "requires=%s (level=%d), actual=%s (level=%d)",
+                installation_id,
+                min_assoc,
+                min_level,
+                actual_assoc,
+                actual_level,
+            )
+            return "insufficient_association"
+    except Exception as exc:
+        # Best-effort — never block on enforcement failure
+        logger.warning("min_author_association check failed (non-fatal): %s", exc)
+
+    return None
+
+
 _correlation_store_mod = None
 
 
@@ -627,18 +709,57 @@ def determine_correlation(
         }
 
     if marker:
-        # Marker only — cross-channel first hop
-        marker_depth = marker.get("chain_depth")
-        inherited_depth = marker_depth if marker_depth is not None else 0
-        return {
-            "correlation_id": marker["correlation_id"],
-            "root_human_id": marker.get("root_human_id", resolved_identity.user_id),
-            "triggered_by": resolved_identity.user_id,
-            "is_human_rooted": marker.get("is_human_rooted", False),
-            "is_new_chain": False,
-            "parent_invocation_id": marker.get("invocation_id"),
-            "chain_depth": inherited_depth + 1,
-        }
+        # Marker only — cross-channel first hop (Rule 4).
+        # Issue #3179 (cred-binding S5): verify marker signature before trusting
+        # marker-borne root_human_id/is_human_rooted. Unsigned or forged markers
+        # in Rule-4 position confer no root-human authority → new chain.
+        from common.marker_verify import verify_marker as _verify_marker
+
+        sig_result = _verify_marker(marker)
+
+        if sig_result is False:
+            # Forged signature — do NOT trust marker authority. Log and fall
+            # through to new-chain branch (fail-closed).
+            logger.warning(
+                "Rule-4 marker signature verification FAILED (forged): "
+                "correlation_id=%s, sender=%s",
+                marker.get("correlation_id"),
+                resolved_identity.user_id,
+            )
+        elif sig_result is None and marker.get("is_human_rooted", False):
+            # Unsigned marker claiming human-rooted authority in Rule-4 position.
+            # Fail-closed: strip is_human_rooted (cannot be trusted without sig).
+            logger.warning(
+                "Rule-4 unsigned marker claims is_human_rooted=true — "
+                "stripping authority (fail-closed): correlation_id=%s, sender=%s",
+                marker.get("correlation_id"),
+                resolved_identity.user_id,
+            )
+            marker_depth = marker.get("chain_depth")
+            inherited_depth = marker_depth if marker_depth is not None else 0
+            return {
+                "correlation_id": marker["correlation_id"],
+                "root_human_id": marker.get("root_human_id", resolved_identity.user_id),
+                "triggered_by": resolved_identity.user_id,
+                "is_human_rooted": False,  # Stripped — unsigned, fail-closed
+                "is_new_chain": False,
+                "parent_invocation_id": marker.get("invocation_id"),
+                "chain_depth": inherited_depth + 1,
+            }
+        else:
+            # sig_result is True (verified) or None with is_human_rooted=False
+            # (no escalation concern) — trust the marker.
+            marker_depth = marker.get("chain_depth")
+            inherited_depth = marker_depth if marker_depth is not None else 0
+            return {
+                "correlation_id": marker["correlation_id"],
+                "root_human_id": marker.get("root_human_id", resolved_identity.user_id),
+                "triggered_by": resolved_identity.user_id,
+                "is_human_rooted": marker.get("is_human_rooted", False),
+                "is_new_chain": False,
+                "parent_invocation_id": marker.get("invocation_id"),
+                "chain_depth": inherited_depth + 1,
+            }
 
     # No pointer, no marker — bot-initiated chain (e.g. cron-like, CI-triggered)
     return {
@@ -926,6 +1047,38 @@ def handler(event: dict, context) -> dict:
 
     tenant_id = resolved.tenant_id
 
+    # 6b. Issue #3134: Enforce min_author_association from the installation row.
+    # The comment payload's comment.author_association field is checked against
+    # the installation's min_author_association threshold when set. Zero-cost:
+    # the field is already in every payload, currently ignored.
+    # Pass the already-fetched tenant_item to avoid a duplicate DDB GetItem.
+    resolver_mod = _get_identity_resolver()
+    min_assoc = _check_min_author_association(
+        payload=payload,
+        event_type=event_type,
+        installation_id=installation_id,
+        tenant_item=getattr(resolver_mod, "last_tenant_item", None),
+    )
+    if min_assoc is not None:
+        _log_outcome(
+            event_type=event_type,
+            action=action,
+            installation_id=installation_id,
+            tenant_id=tenant_id,
+            repo=repo,
+            persona=None,
+            outcome="insufficient_association",
+            start_time=start_time,
+        )
+        try:
+            _get_metrics().record_rejected(reason="insufficient_association")
+            _get_metrics().flush()
+        except Exception:
+            pass
+        return _response(
+            403, {"error": "insufficient_association", "outcome": "insufficient_association"}
+        )
+
     # 7. Check rate limit (class-based API — returns a RateLimitResult)
     rate_result = _get_rate_limiter().check_and_increment(tenant_id)
     allowed = rate_result.allowed
@@ -1068,6 +1221,26 @@ def handler(event: dict, context) -> dict:
                 model_requested,
             )
 
+    # Issue #3574: Read /aws-label from intent. Already charset-validated in
+    # intent_parser — if it passed parsing, it's [A-Za-z0-9_-]{1,64}. No further
+    # resolution needed (unlike /model, the label is passed as-is to the gateway;
+    # the gateway 404s on unknown label).
+    aws_label = intent.aws_label  # validated label or None
+    if aws_label:
+        logger.info("handler: /aws-label directive %r accepted", aws_label)
+
+    # Issue #3385 (C3): Read token_source_override from the identity-index
+    # tenant item. When the installation's row carries token_source_override="pat",
+    # the envelope gets token_source="pat" which tells the worker to resolve a
+    # PAT instead of minting an App installation token. Absent = App default.
+    resolver_mod_for_token = _get_identity_resolver()
+    tenant_item = getattr(resolver_mod_for_token, "last_tenant_item", None)
+    token_source = (
+        tenant_item.get("token_source_override")
+        if tenant_item
+        else None
+    )
+
     # Provide a default correlation_ctx if not available (e.g. issues.labeled
     # events where we didn't compute correlation above).
     effective_correlation_ctx = correlation_ctx or {
@@ -1097,6 +1270,8 @@ def handler(event: dict, context) -> dict:
         intent_label=intent.label,
         model_requested=model_requested,
         model_resolved=model_resolved,
+        aws_label=aws_label,
+        token_source=token_source,
     )
 
     print(

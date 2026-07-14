@@ -104,10 +104,12 @@ class TestQueryByUser:
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
         service.query_by_user(user_id="user-token-value")
 
-        call_kwargs = mock_dynamodb_table.query.call_args[1]
-        assert call_kwargs["IndexName"] == "user-index"
+        # Issue #3705: query_by_user now makes two calls (user-index + root-human-index).
+        # Check the FIRST call targets user-index with the correct partition key.
+        first_call_kwargs = mock_dynamodb_table.query.call_args_list[0][1]
+        assert first_call_kwargs["IndexName"] == "user-index"
         # Verify the key condition uses user_id as PK and the correct value
-        key_expr = call_kwargs["KeyConditionExpression"]
+        key_expr = first_call_kwargs["KeyConditionExpression"]
         expr_dict = key_expr.get_expression()
         # values[0] is the Key object, values[1] is the partition key value
         key_obj = expr_dict["values"][0]
@@ -215,6 +217,8 @@ class TestQueryByUser:
             page("inv-1", True),
             page("inv-2", True),
             page("inv-3", False),  # exhausted
+            # Issue #3705: root-human-index query (returns empty — no chain runs)
+            {"Items": [], "Count": 0},
         ]
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
         result = service.query_by_user(user_id="user-1", page_size=3)
@@ -248,8 +252,9 @@ class TestQueryByUser:
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
         service.query_by_user(user_id="user-1", last_key=cursor)
 
-        call_kwargs = mock_dynamodb_table.query.call_args[1]
-        assert call_kwargs["ExclusiveStartKey"] == start_key
+        # Issue #3705: First call is user-index with the cursor as ExclusiveStartKey
+        first_call_kwargs = mock_dynamodb_table.query.call_args_list[0][1]
+        assert first_call_kwargs["ExclusiveStartKey"] == start_key
 
     def test_bad_cursor_raises_value_error(self, mock_dynamodb_resource):
         """Malformed cursor raises ValueError (caught by route → 400)."""
@@ -640,6 +645,193 @@ class TestChainQuery:
         # Without parent edges, all items are roots (flat)
         assert len(result.items) == 2
         assert all(len(node.children) == 0 for node in result.items)
+
+
+class TestChainNonTriggeringFilter:
+    """Issue #3708: Chain query filters non-triggering statuses by default.
+
+    Fixtures mirror the real DDB shape from embark1: no_op rows carry a bot
+    user_id, parent_invocation_id pointing at the root event_id, and the same
+    correlation_id. Real child runs are bot-attributed but have triggering
+    statuses (in_progress, complete) and MUST survive the filter.
+    """
+
+    # Real DDB shape: 2 real runs + 5 no_op webhook echoes (bot-attributed)
+    _ROOT_USER = "650f093f-ecd9-4ce1-a5a9-368e02c449cf"
+    _BOT_USER = "edc91ba7-bot-user-id"
+    _CORRELATION = "7993bfd5-chain-correlation"
+
+    @property
+    def _fixture_items(self) -> list[dict]:
+        """Fixture mirroring real DDB shape: root + real child + 5 no_op echoes."""
+        return [
+            {
+                "invocation_id": "root-event-001",
+                "arrived_at": "2026-07-11T09:18:00Z",
+                "channel": "github",
+                "status": "in_progress",
+                "topic": "Orchestration root",
+                "user_id": self._ROOT_USER,
+                "tenant_id": "org-embark1",
+                "correlation_id": self._CORRELATION,
+                "is_human_rooted": True,
+                "root_human_id": self._ROOT_USER,
+            },
+            {
+                "invocation_id": "child-real-001",
+                "arrived_at": "2026-07-11T09:18:02Z",
+                "channel": "github",
+                "status": "in_progress",
+                "topic": "Real child agent",
+                "user_id": self._BOT_USER,
+                "tenant_id": "org-embark1",
+                "correlation_id": self._CORRELATION,
+                "parent_invocation_id": "root-event-001",
+                "is_human_rooted": True,
+                "root_human_id": self._ROOT_USER,
+            },
+            # no_op webhook echoes — bot user, parent points at root
+            *[
+                {
+                    "invocation_id": f"noop-echo-{i:03d}",
+                    "arrived_at": f"2026-07-11T09:18:{1 + i * 5:02d}Z",
+                    "channel": "github",
+                    "status": "no_op",
+                    "topic": "status-comment edit echo",
+                    "user_id": self._BOT_USER,
+                    "tenant_id": "org-embark1",
+                    "correlation_id": self._CORRELATION,
+                    "parent_invocation_id": "root-event-001",
+                    "is_human_rooted": True,
+                    "root_human_id": self._ROOT_USER,
+                }
+                for i in range(5)
+            ],
+        ]
+
+    def test_default_excludes_no_op_echoes(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Default chain (include_non_triggering=False) returns only real runs."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [item for item in self._fixture_items if item["status"] != "no_op"],
+            "Count": 2,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain(self._CORRELATION, user_id=self._ROOT_USER)
+
+        # Verify FilterExpression was used (the mock returns pre-filtered items
+        # to simulate DDB's FilterExpression behavior)
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        assert "FilterExpression" in call_kwargs
+
+        # Only 2 real runs returned
+        assert result.total_count == 2
+        # Tree: root has 1 real child
+        assert len(result.items) == 1
+        assert result.items[0].invocation_id == "root-event-001"
+        assert len(result.items[0].children) == 1
+        assert result.items[0].children[0].invocation_id == "child-real-001"
+
+    def test_include_non_triggering_returns_all(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """include_non_triggering=True returns all items including no_op echoes."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": self._fixture_items,
+            "Count": 7,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain(self._CORRELATION, user_id=self._ROOT_USER, include_non_triggering=True)
+
+        # All 7 items returned (2 real + 5 no_op)
+        assert result.total_count == 7
+
+    def test_bot_attributed_real_child_survives_filter(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Bot-attributed child with status=complete survives the filter (key constraint)."""
+        # Add a bot-attributed child with status=complete (real, not an echo)
+        items_with_complete_child = [item for item in self._fixture_items if item["status"] != "no_op"] + [
+            {
+                "invocation_id": "child-complete-bot",
+                "arrived_at": "2026-07-11T09:20:00Z",
+                "channel": "github",
+                "status": "complete",
+                "topic": "Bot child completed",
+                "user_id": self._BOT_USER,
+                "tenant_id": "org-embark1",
+                "correlation_id": self._CORRELATION,
+                "parent_invocation_id": "root-event-001",
+                "is_human_rooted": True,
+                "root_human_id": self._ROOT_USER,
+            },
+        ]
+        mock_dynamodb_table.query.return_value = {
+            "Items": items_with_complete_child,
+            "Count": 3,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain(self._CORRELATION, user_id=self._ROOT_USER)
+
+        # All 3 real items returned (bot-attributed complete child survives)
+        assert result.total_count == 3
+        # Root has 2 children (both real bot-attributed runs)
+        assert len(result.items) == 1
+        children_ids = [c.invocation_id for c in result.items[0].children]
+        assert "child-real-001" in children_ids
+        assert "child-complete-bot" in children_ids
+
+    def test_depth_cap_not_consumed_by_filtered_echoes(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """depth_cap applies after filtering — echoes don't waste cap budget.
+
+        With depth_cap=3 and 2 real runs + 5 no_op echoes, the 2 real runs
+        should all be returned (cap not reached) with depth_capped=False.
+        """
+        # Simulate DDB returning only real items (FilterExpression removed no_op)
+        real_items = [item for item in self._fixture_items if item["status"] != "no_op"]
+        mock_dynamodb_table.query.return_value = {
+            "Items": real_items,
+            "Count": 2,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain(self._CORRELATION, user_id=self._ROOT_USER, depth_cap=3)
+
+        # 2 real items fit within cap of 3 — not capped
+        assert result.total_count == 2
+        assert result.depth_capped is False
+
+    def test_webhook_received_also_filtered(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """webhook_received status is also filtered out by default."""
+        items_with_webhook = [item for item in self._fixture_items if item["status"] != "no_op"]
+        # DDB already filtered — simulate it returning only real items
+        mock_dynamodb_table.query.return_value = {
+            "Items": items_with_webhook,
+            "Count": 2,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain(self._CORRELATION, user_id=self._ROOT_USER)
+
+        # Verify the FilterExpression includes status filter
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        filter_expr = call_kwargs.get("FilterExpression")
+        assert filter_expr is not None
+        # Only real items returned
+        assert result.total_count == 2
+
+    def test_tenant_scope_combined_with_status_filter(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Tenant-scoped chain also applies status filter (combined FilterExpression)."""
+        real_items = [item for item in self._fixture_items if item["status"] != "no_op"]
+        mock_dynamodb_table.query.return_value = {
+            "Items": real_items,
+            "Count": 2,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain(self._CORRELATION, tenant_id="org-embark1")
+
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        assert "FilterExpression" in call_kwargs
+        assert result.total_count == 2
 
 
 class TestBuildChainTree:
@@ -1159,7 +1351,8 @@ class TestQueryChainsByUser:
     def test_multi_run_chain_fetches_descendants(self, mock_dynamodb_resource, mock_dynamodb_table):
         """A root with correlation_id fetches descendants from correlation-index."""
         # First call: user-index query returns root
-        # Second call: correlation-index query returns root + descendants
+        # Second call: root-human-index (Issue #3723 merged fetch — empty here)
+        # Third call: correlation-index query returns root + descendants
         mock_dynamodb_table.query.side_effect = [
             # user-index result (root)
             {
@@ -1182,6 +1375,8 @@ class TestQueryChainsByUser:
                 ],
                 "Count": 1,
             },
+            # root-human-index result (Issue #3723 — no additional roots)
+            {"Items": [], "Count": 0},
             # correlation-index result (root + 2 descendants)
             {
                 "Items": [
@@ -1255,6 +1450,8 @@ class TestQueryChainsByUser:
                 ],
                 "Count": 1,
             },
+            # root-human-index result (Issue #3723 — no additional roots)
+            {"Items": [], "Count": 0},
             # correlation-index: root + no_op + webhook_received + real child
             {
                 "Items": [
@@ -1316,6 +1513,8 @@ class TestQueryChainsByUser:
                 ],
                 "Count": 1,
             },
+            # root-human-index result (Issue #3723 — no additional roots)
+            {"Items": [], "Count": 0},
             # correlation-index: root + no_op descendant
             {
                 "Items": [
@@ -1357,6 +1556,7 @@ class TestQueryChainsByUser:
         the page cap. The final cursor reflects the last raw page's LEK.
         """
         mock_dynamodb_table.query.side_effect = [
+            # user-index page 1 (has LEK)
             {
                 "Items": [
                     {
@@ -1373,7 +1573,10 @@ class TestQueryChainsByUser:
                     "user_id": "user-1",
                 },
             },
-            {"Items": [], "Count": 0},  # index exhausted — no LastEvaluatedKey
+            # user-index page 2 (exhausted)
+            {"Items": [], "Count": 0},
+            # root-human-index result (Issue #3723 — no additional roots)
+            {"Items": [], "Count": 0},
         ]
 
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
@@ -1410,6 +1613,8 @@ class TestQueryChainsByUser:
                 ],
                 "Count": 1,
             },
+            # root-human-index result (Issue #3723 — no additional roots)
+            {"Items": [], "Count": 0},
             # correlation-index returns all 60 items
             {"Items": many_items, "Count": 60},
         ]
@@ -1418,9 +1623,9 @@ class TestQueryChainsByUser:
         result = service.query_chains_by_user(user_id="user-1")
 
         chain = result.chains[0]
-        # Descendants = capped items minus the root itself
-        # Cap is 50 items total from correlation-index, then root excluded = 49
-        assert chain.descendant_count <= 49
+        # Issue #3723: depth_cap now counts REAL descendants (post-filter).
+        # With 60 items, root excluded = 59 descendants, cap = 50 → exactly 50.
+        assert chain.descendant_count == 50
 
     def test_correlation_index_error_returns_empty_descendants(self, mock_dynamodb_resource, mock_dynamodb_table):
         """If correlation-index query fails, chain has zero descendants (graceful)."""
@@ -1438,6 +1643,8 @@ class TestQueryChainsByUser:
                 ],
                 "Count": 1,
             },
+            # root-human-index result (Issue #3723 — no additional roots)
+            {"Items": [], "Count": 0},
             # correlation-index fails
             ClientError(
                 {"Error": {"Code": "ValidationException", "Message": "Index not found"}},
@@ -1478,6 +1685,8 @@ class TestQueryChainsByUser:
                 ],
                 "Count": 2,
             },
+            # root-human-index result (Issue #3723 — no additional roots)
+            {"Items": [], "Count": 0},
             # correlation-index for corr-A (root + 1 descendant)
             {
                 "Items": [
@@ -1580,6 +1789,8 @@ class TestQueryChainsByUser:
                 ],
                 "Count": 3,
             },
+            # root-human-index result (Issue #3723 — no additional roots)
+            {"Items": [], "Count": 0},
             # correlation-index for corr-dup (root + 2 descendants)
             {
                 "Items": [
@@ -1631,3 +1842,539 @@ class TestQueryChainsByUser:
         # correlation-index queried exactly once (not once per attributed run).
         correlation_queries = [c for c in mock_dynamodb_table.query.call_args_list if c.kwargs.get("IndexName") == "correlation-index"]
         assert len(correlation_queries) == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #3705 tests: root-human-index dual-query merge (list parity)
+# ---------------------------------------------------------------------------
+
+
+class TestQueryByUserRootHumanMerge:
+    """Tests for Issue #3705: query_by_user dual-query with root-human-index.
+
+    Validates:
+    - Chain runs (root_human_id = caller) appear in the list
+    - Dedup: item with user_id = root_human_id = caller is NOT double-counted
+    - Scoping: other user's runs never appear
+    - Missing GSI fallback: returns user-index-only results without error
+    """
+
+    def test_chain_runs_included_in_list(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Bot-attributed chain runs (root_human_id = caller) appear in list results."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "event_id": "direct-1",
+                            "arrived_at": "2026-07-10T10:00:00Z",
+                            "status": "complete",
+                            "user_id": "user-1",
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                return {
+                    "Items": [
+                        {
+                            "event_id": "chain-1",
+                            "arrived_at": "2026-07-10T10:05:00Z",
+                            "status": "in_progress",
+                            "user_id": "bot-svc-account",
+                            "root_human_id": "user-1",
+                        }
+                    ],
+                    "Count": 1,
+                }
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        # Both runs should appear
+        assert result.count == 2
+        inv_ids = {i.invocation_id for i in result.items}
+        assert "direct-1" in inv_ids
+        assert "chain-1" in inv_ids
+
+    def test_dedup_no_double_count(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Item with user_id = root_human_id = caller is NOT double-counted."""
+        shared_item = {
+            "event_id": "shared-1",
+            "arrived_at": "2026-07-10T10:00:00Z",
+            "status": "complete",
+            "user_id": "user-1",
+            "root_human_id": "user-1",
+        }
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index in ("user-index", "root-human-index"):
+                return {"Items": [shared_item], "Count": 1}
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        # Only counted once
+        assert result.count == 1
+        assert result.items[0].invocation_id == "shared-1"
+
+    def test_missing_gsi_fallback(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """If root-human-index is missing, falls back to user-index only."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "event_id": "direct-1",
+                            "arrived_at": "2026-07-10T10:00:00Z",
+                            "status": "complete",
+                            "user_id": "user-1",
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                raise ClientError(
+                    {"Error": {"Code": "ValidationException", "Message": "Index not found"}},
+                    "Query",
+                )
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        # Should NOT raise; returns user-index-only results
+        assert result.count == 1
+        assert result.items[0].invocation_id == "direct-1"
+
+    def test_sorted_by_arrived_at_descending(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Merged results are sorted newest-first (arrived_at descending)."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "event_id": "old-direct",
+                            "arrived_at": "2026-07-10T08:00:00Z",
+                            "status": "complete",
+                            "user_id": "user-1",
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                return {
+                    "Items": [
+                        {
+                            "event_id": "new-chain",
+                            "arrived_at": "2026-07-10T12:00:00Z",
+                            "status": "in_progress",
+                            "user_id": "bot-svc",
+                            "root_human_id": "user-1",
+                        }
+                    ],
+                    "Count": 1,
+                }
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1")
+
+        # Newest first
+        assert result.items[0].invocation_id == "new-chain"
+        assert result.items[1].invocation_id == "old-direct"
+
+    def test_page_size_respected_after_merge(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Merged results are trimmed to page_size."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                items = [
+                    {
+                        "event_id": f"direct-{i}",
+                        "arrived_at": f"2026-07-10T{10 + i:02d}:00:00Z",
+                        "status": "complete",
+                        "user_id": "user-1",
+                    }
+                    for i in range(3)
+                ]
+                return {"Items": items, "Count": 3}
+            elif index == "root-human-index":
+                items = [
+                    {
+                        "event_id": f"chain-{i}",
+                        "arrived_at": f"2026-07-10T{13 + i:02d}:00:00Z",
+                        "status": "complete",
+                        "user_id": "bot-svc",
+                        "root_human_id": "user-1",
+                    }
+                    for i in range(3)
+                ]
+                return {"Items": items, "Count": 3}
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_by_user(user_id="user-1", page_size=4)
+
+        # 6 total items, but page_size=4 trims the result
+        assert result.count == 4
+
+
+# ---------------------------------------------------------------------------
+# Issue #3723 tests: Chain view merged fetch + depth cap + filter logic
+# ---------------------------------------------------------------------------
+
+
+class TestQueryChainsByUserMergedFetch:
+    """Issue #3723: query_chains_by_user merged fetch from root-human-index.
+
+    Validates:
+    - Bot-attributed roots (root_human_id = caller, user_id = bot) appear in
+      the chain view (same merge as query_by_user).
+    - Dedup: a run appearing in BOTH user-index and root-human-index does not
+      produce duplicate chain rows.
+    - The chain view returns the SAME run count as the flat list (consistency
+      between dashboard tile and /activity?status=in_progress).
+    """
+
+    _ROOT_USER = "650f093f-ecd9-4ce1-a5a9-368e02c449cf"
+    _BOT_USER = "edc91ba7-bot-user-id"
+
+    def test_bot_attributed_roots_included(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Bot-attributed roots (root_human_id = caller) appear in chain view.
+
+        This mirrors the live evidence: 1 direct run (developer) + 2 reviewer
+        runs (bot-attributed, root_human_id = caller). The chain view must show
+        all 3 as top-level chains, not just the 1 from user-index.
+        """
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                # Direct run only (developer — human user_id)
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "feae00a8-developer",
+                            "arrived_at": "2026-07-11T09:18:00Z",
+                            "channel": "github",
+                            "status": "in_progress",
+                            "topic": "Implement feature",
+                            "persona": "developer",
+                            "user_id": self._ROOT_USER,
+                            "correlation_id": "corr-dev",
+                            "is_human_rooted": True,
+                            "root_human_id": self._ROOT_USER,
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                # Bot-attributed roots (reviewer runs)
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "a488466e-reviewer-1",
+                            "arrived_at": "2026-07-11T09:20:00Z",
+                            "channel": "github",
+                            "status": "in_progress",
+                            "topic": "Review PR #123",
+                            "persona": "reviewer",
+                            "user_id": self._BOT_USER,
+                            "correlation_id": "corr-rev1",
+                            "is_human_rooted": True,
+                            "root_human_id": self._ROOT_USER,
+                        },
+                        {
+                            "invocation_id": "42ed0a12-reviewer-2",
+                            "arrived_at": "2026-07-11T09:22:00Z",
+                            "channel": "github",
+                            "status": "in_progress",
+                            "topic": "Review PR #124",
+                            "persona": "reviewer",
+                            "user_id": self._BOT_USER,
+                            "correlation_id": "corr-rev2",
+                            "is_human_rooted": True,
+                            "root_human_id": self._ROOT_USER,
+                        },
+                    ],
+                    "Count": 2,
+                }
+            elif index == "correlation-index":
+                # Each chain is a singleton (root only, no descendants)
+                return {"Items": [], "Count": 0}
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id=self._ROOT_USER, status="in_progress")
+
+        # Must see all 3 chains (1 direct + 2 bot-attributed)
+        assert result.count == 3
+        chain_ids = {c.root.invocation_id for c in result.chains}
+        assert chain_ids == {"feae00a8-developer", "a488466e-reviewer-1", "42ed0a12-reviewer-2"}
+
+    def test_dedup_on_invocation_id(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """A run in BOTH user-index AND root-human-index is not duplicated."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            shared_item = {
+                "invocation_id": "inv-both",
+                "arrived_at": "2026-07-11T10:00:00Z",
+                "channel": "github",
+                "status": "in_progress",
+                "user_id": self._ROOT_USER,
+                "root_human_id": self._ROOT_USER,
+                "correlation_id": "corr-both",
+                "is_human_rooted": True,
+            }
+            if index == "user-index":
+                return {"Items": [shared_item], "Count": 1}
+            elif index == "root-human-index":
+                return {"Items": [shared_item], "Count": 1}
+            elif index == "correlation-index":
+                return {"Items": [], "Count": 0}
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id=self._ROOT_USER)
+
+        # Dedup: only 1 chain, not 2
+        assert result.count == 1
+        assert result.chains[0].root.invocation_id == "inv-both"
+
+    def test_missing_root_human_index_falls_back(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """If root-human-index GSI is missing, gracefully falls back to user-index only."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-direct",
+                            "arrived_at": "2026-07-11T10:00:00Z",
+                            "status": "in_progress",
+                            "user_id": self._ROOT_USER,
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                # GSI missing — ValidationException caught by _execute_query
+                raise ClientError(
+                    {"Error": {"Code": "ValidationException", "Message": "Index root-human-index not found"}},
+                    "Query",
+                )
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id=self._ROOT_USER)
+
+        # Falls back: user-index item still shown
+        assert result.count == 1
+        assert result.chains[0].root.invocation_id == "inv-direct"
+
+
+class TestFetchChainDescendantsDepthCap:
+    """Issue #3723: depth_cap counts REAL descendants (post-filter).
+
+    Fixtures mirror the real 143-item chain shape from the live evidence:
+    a chain with 2 real children + 141 no_op webhook echoes. The old code
+    would fill the depth_cap (50) with raw items including echoes, then filter
+    them out — real descendants past item 50 were silently truncated.
+    """
+
+    _ROOT_USER = "650f093f-ecd9-4ce1-a5a9-368e02c449cf"
+    _BOT_USER = "edc91ba7-bot-user-id"
+    _CORRELATION = "7993bfd5-chain-correlation"
+
+    def _make_noisy_chain(self, real_child_count: int = 3, no_op_count: int = 140) -> list[dict]:
+        """Build a fixture mirroring the real 143-item chain shape."""
+        items = [
+            # Root
+            {
+                "invocation_id": "root-event-001",
+                "arrived_at": "2026-07-11T09:18:00Z",
+                "channel": "github",
+                "status": "in_progress",
+                "topic": "Orchestration root",
+                "user_id": self._ROOT_USER,
+                "correlation_id": self._CORRELATION,
+                "is_human_rooted": True,
+                "root_human_id": self._ROOT_USER,
+            },
+        ]
+        # Real children (in_progress/complete)
+        for i in range(real_child_count):
+            items.append(
+                {
+                    "invocation_id": f"real-child-{i:03d}",
+                    "arrived_at": f"2026-07-11T09:19:{i:02d}Z",
+                    "channel": "github",
+                    "status": "in_progress" if i % 2 == 0 else "complete",
+                    "topic": f"Real agent task {i}",
+                    "persona": "developer",
+                    "user_id": self._BOT_USER,
+                    "correlation_id": self._CORRELATION,
+                    "parent_invocation_id": "root-event-001",
+                    "is_human_rooted": True,
+                    "root_human_id": self._ROOT_USER,
+                }
+            )
+        # no_op webhook echoes
+        for i in range(no_op_count):
+            items.append(
+                {
+                    "invocation_id": f"noop-echo-{i:03d}",
+                    "arrived_at": f"2026-07-11T09:18:{(i % 60):02d}Z",
+                    "channel": "github",
+                    "status": "no_op",
+                    "topic": "status-comment edit echo",
+                    "user_id": self._BOT_USER,
+                    "correlation_id": self._CORRELATION,
+                    "parent_invocation_id": "root-event-001",
+                    "is_human_rooted": True,
+                    "root_human_id": self._ROOT_USER,
+                }
+            )
+        return items
+
+    def test_depth_cap_counts_real_descendants_not_noise(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """depth_cap=50 with 3 real + 140 no_op: all 3 real descendants survive.
+
+        Before this fix, depth_cap was applied to raw items (143 total), so the
+        first 50 raw items were kept (mix of echoes and real), then no_ops were
+        filtered → fewer than 3 real descendants returned. Now the filter runs
+        INSIDE the loop and depth_cap counts only post-filter items.
+        """
+        chain_items = self._make_noisy_chain(real_child_count=3, no_op_count=140)
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "root-event-001",
+                            "arrived_at": "2026-07-11T09:18:00Z",
+                            "status": "in_progress",
+                            "user_id": self._ROOT_USER,
+                            "correlation_id": self._CORRELATION,
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                return {"Items": [], "Count": 0}
+            elif index == "correlation-index":
+                return {"Items": chain_items, "Count": len(chain_items)}
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id=self._ROOT_USER)
+
+        chain = result.chains[0]
+        # All 3 real descendants found (not truncated by noise filling the cap)
+        assert chain.descendant_count == 3
+        assert all(d.invocation_id.startswith("real-child-") for d in chain.descendants)
+        # No no_op items leaked through
+        assert all(d.status != "no_op" for d in chain.descendants)
+
+    def test_depth_cap_still_enforced_on_real_items(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """depth_cap=5 with 10 real descendants: only 5 returned."""
+        chain_items = self._make_noisy_chain(real_child_count=10, no_op_count=0)
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "root-event-001",
+                            "arrived_at": "2026-07-11T09:18:00Z",
+                            "status": "in_progress",
+                            "user_id": self._ROOT_USER,
+                            "correlation_id": self._CORRELATION,
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                return {"Items": [], "Count": 0}
+            elif index == "correlation-index":
+                return {"Items": chain_items, "Count": len(chain_items)}
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+
+        # Use the internal _fetch_chain_descendants directly for precise cap control
+        descendants = service._fetch_chain_descendants(
+            correlation_id=self._CORRELATION,
+            root_invocation_id="root-event-001",
+            depth_cap=5,
+        )
+
+        # Exactly 5 real descendants (cap enforced)
+        assert len(descendants) == 5
+
+    def test_include_non_triggering_includes_noise_under_cap(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """include_non_triggering=True returns no_op items, still respecting depth_cap."""
+        chain_items = self._make_noisy_chain(real_child_count=2, no_op_count=10)
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "root-event-001",
+                            "arrived_at": "2026-07-11T09:18:00Z",
+                            "status": "in_progress",
+                            "user_id": self._ROOT_USER,
+                            "correlation_id": self._CORRELATION,
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                return {"Items": [], "Count": 0}
+            elif index == "correlation-index":
+                return {"Items": chain_items, "Count": len(chain_items)}
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+
+        # With include_non_triggering=True, all items (real + no_op) counted
+        descendants = service._fetch_chain_descendants(
+            correlation_id=self._CORRELATION,
+            root_invocation_id="root-event-001",
+            include_non_triggering=True,
+            depth_cap=50,
+        )
+
+        # 2 real + 10 no_op = 12 total descendants (all fit under cap of 50)
+        assert len(descendants) == 12
+        no_op_count = sum(1 for d in descendants if d.status == "no_op")
+        assert no_op_count == 10

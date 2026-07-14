@@ -101,9 +101,12 @@ Follow this loop for the issue:
    codex-bridge skill (write mode) with a single, precise instruction. Give
    Codex enough context to succeed but keep the scope tight. For a *review*
    ask, pick the right read-only mode: `review <file>` for one file, or
-   `review-diff [<base-ref>]` when you want Codex to second-opinion the whole
-   PR-level diff (`git diff <base>...`, base defaults to `origin/main`) with
-   cross-file context instead of looping files one at a time. Both review modes
+   `review-diff [<base-ref>] [<head-ref>]` when you want Codex to second-opinion
+   the whole PR-level diff (`git diff <base>...<head>`, base defaults to
+   `origin/main`, head defaults to `HEAD`) with cross-file context instead of
+   looping files one at a time. When reviewing a PR whose branch isn't checked
+   out locally, pass the branch name as the head ref so the wrapper can fetch
+   and resolve it (e.g. `review-diff main agent/issue-1234`). Both review modes
    are persona-calibrated by the distilled pack you select below.
 
 4. **Review every Codex diff before accepting.** After each delegation, run
@@ -123,6 +126,18 @@ Follow this loop for the issue:
    Codex failed or timed out. Note it, do not silently retry in a loop, and fall
    back to finishing the task yourself. **Never abandon the issue because Codex
    failed** — the whole issue must still be completed and the PR opened.
+
+   **Engine attribution is mandatory (issue #3269).** Every review verdict
+   comment you post MUST carry an explicit `**Engine**:` attribution line so
+   operators can distinguish a real Codex review from a Claude fallback:
+   - When Codex ran successfully: `**Engine**: Codex CLI <version>`
+     (e.g. `**Engine**: Codex CLI 0.142.5`).
+   - When Codex failed and you finished the review yourself:
+     `**Engine**: Claude (Codex CLI failed: <one-line reason>)`
+     (e.g. `**Engine**: Claude (Codex CLI failed: branch not fetchable, exit 2)`).
+   Never omit this line and never post a Claude-written review without the
+   fallback attribution. A review labeled "codex reviewed this" that was
+   actually Claude is a trust violation.
 
 7. **Finalize normally.** Once all tasks are implemented and reviewed, run the
    module's tests/linters, then complete the run through the normal finalize
@@ -185,14 +200,18 @@ credential the user hasn't connected, stop and tell them (point at
 
 ## Triggering other agents
 
-Two ways to dispatch another persona — both valid, use whichever fits:
+**Always use `adp-trigger` to dispatch another persona. Do NOT post an
+`@agent-<persona>` comment to trigger an agent.**
 
-- **Comment mention** (existing): post a comment containing `@agent-<persona>`
-  on the target issue.
-- **API trigger** (alternative): `adp-trigger --persona <persona> --issue <N> [--repo <owner/repo>] [--reason <text>]`.
+```
+adp-trigger --persona <persona> --issue <N> [--repo <owner/repo>] [--reason <text>]
+```
 
-**No-double-fire rule:** when triggering another persona, use ONE path — not
-both.
+`adp-trigger` calls `POST /agent/trigger`, which reads lineage from the pod
+environment and SigV4-signs with the pod's IAM role — so correlation/lineage
+always flows. A bot-authored `@agent-<persona>` comment does NOT reliably
+dispatch (loop-guarded, and blocked once enforcement is on) and breaks lineage.
+The `@agent-<persona>` mention remains the trigger path for human operators only.
 
 ## Memory Priorities
 When loading context from the `adp` branch:

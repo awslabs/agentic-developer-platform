@@ -30,10 +30,12 @@ UNIT_MODULES = [
     "src.internal.assume_role_routes",  # Issue #481: aws_role STS assume delivery path
     "src.internal.provenance_routes",  # Issue #785: action provenance write endpoint
     "src.internal.status_callback_routes",  # Issue #2049: ingestion worker status callback
+    "src.internal.admin_routes",  # Issue #3462: admin read endpoints for adversarial E2E
     "src.proxy.routes",
     "src.admin.routes",
     "src.admin.identity.router",
     "src.admin.connections.routes",  # Issue #465: GitHub App install + connections
+    "src.admin.tenants.routes",  # Issue #2954: Multi-org-to-tenant linking (rule 3)
     "src.admin.onboarding.handler",  # Issue #538: Self-serve onboarding flow
     "src.pool.routes",
     "src.budget.routes",
@@ -42,6 +44,8 @@ UNIT_MODULES = [
     "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)
     "src.knowledge.routes",  # Issue #2045: Knowledge-assets registry CRUD
     "src.knowledge.github_repos",  # Issue #2045: GitHub repo picker
+    "src.features.routes",  # Issue #3566: Feature-flag endpoint
+    "src.auth.gitlab_sso",  # Issue #3775: GitLab SSO JWT minting + JWKS
 ]
 
 

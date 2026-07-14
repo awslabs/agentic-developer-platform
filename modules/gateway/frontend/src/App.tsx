@@ -4,9 +4,12 @@ import { MainLayout } from './layouts/MainLayout';
 import { AuthLayout } from './layouts/AuthLayout';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { OnboardingGuard } from './components/OnboardingGuard';
+import { FeatureGate } from './components/FeatureGate'; // Issue #3566
 import { LoadingScreen } from './components/LoadingScreen';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { RoleBasedRedirect } from './components/RoleBasedRedirect';
+import { DashboardRedirect } from './components/DashboardRedirect';
+import { AdminGuard } from './components/AdminGuard';
 
 // Lazy load pages for code splitting
 const Login = lazy(() => import('./pages/Login'));
@@ -29,7 +32,9 @@ const Pending = lazy(() => import('./pages/onboarding/Pending')); // Issue #545
 const Denied = lazy(() => import('./pages/onboarding/Denied')); // Issue #545
 const AccessRequests = lazy(() => import('./pages/admin/AccessRequests')); // Issue #545
 const IndexingStatus = lazy(() => import('./pages/admin/IndexingStatus')); // Issue #1424
+const TenantOrgLinks = lazy(() => import('./pages/admin/TenantOrgLinks')); // Issue #2954
 const AgentActivity = lazy(() => import('./pages/AgentActivity')); // Issue #1457
+const AgentRunDashboard = lazy(() => import('./pages/AgentRunDashboard')); // Issue #3633
 const Knowledge = lazy(() => import('./pages/Knowledge')); // Issue #1794
 const NotFound = lazy(() => import('./pages/NotFound'));
 
@@ -69,23 +74,26 @@ function App() {
           >
             <Route element={<MainLayout />}>
               <Route path="/" element={<RoleBasedRedirect />} />
-              <Route path="/dashboard" element={<PlatformDashboard />} />
+              <Route path="/dashboard" element={<DashboardRedirect />} />
+              <Route path="/admin/system" element={<FeatureGate feature="system_dashboard"><AdminGuard><PlatformDashboard /></AdminGuard></FeatureGate>} />
               <Route path="/org/:orgId" element={<OrgDashboard />} />
               <Route path="/org/:orgId/department/:deptId" element={<DepartmentDashboard />} />
-              <Route path="/logs" element={<LogViewer />} />
+              <Route path="/logs" element={<FeatureGate feature="logs"><LogViewer /></FeatureGate>} /> {/* Issue #3747 */}
               <Route path="/setup" element={<ClaudeSetup />} />
               <Route path="/agents" element={<AgentManagement />} /> {/* Issue #119 */}
               <Route path="/budgets" element={<BudgetManagement />} /> {/* Issue #185 */}
               <Route path="/ratelimits" element={<RateLimitManagement />} /> {/* Issue #185 */}
-              <Route path="/my-chats" element={<MyChats />} /> {/* Issue #179 */}
-              <Route path="/chat" element={<AgentChat />} /> {/* Issue #97 */}
-              <Route path="/settings/connections" element={<Connections />} /> {/* Issue #465 */}
-              <Route path="/settings/credentials" element={<SettingsCredentials />} /> {/* Issue #562 */}
-              <Route path="/settings/credentials/aws/connect" element={<ConnectAws />} /> {/* Issue #562 */}
+              <Route path="/my-chats" element={<FeatureGate feature="chat"><MyChats /></FeatureGate>} /> {/* Issue #179 */}
+              <Route path="/chat" element={<FeatureGate feature="chat"><AgentChat /></FeatureGate>} /> {/* Issue #97 */}
+              <Route path="/settings/connections" element={<FeatureGate feature="connections"><Connections /></FeatureGate>} /> {/* Issue #465 */}
+              <Route path="/settings/credentials" element={<FeatureGate feature="credentials"><SettingsCredentials /></FeatureGate>} /> {/* Issue #562 */}
+              <Route path="/settings/credentials/aws/connect" element={<FeatureGate feature="credentials"><ConnectAws /></FeatureGate>} /> {/* Issue #562 */}
               <Route path="/admin/access-requests" element={<AccessRequests />} /> {/* Issue #545 */}
-              <Route path="/admin/indexing" element={<IndexingStatus />} /> {/* Issue #1424 */}
+              <Route path="/admin/indexing" element={<FeatureGate feature="indexing"><IndexingStatus /></FeatureGate>} /> {/* Issue #1424 */}
+              <Route path="/admin/tenant-links" element={<TenantOrgLinks />} /> {/* Issue #2954 */}
               <Route path="/activity" element={<AgentActivity />} /> {/* Issue #1457 */}
-              <Route path="/knowledge" element={<Knowledge />} /> {/* Issue #1794 */}
+              <Route path="/runs" element={<AgentRunDashboard />} /> {/* Issue #3633 */}
+              <Route path="/knowledge" element={<FeatureGate feature="knowledge"><Knowledge /></FeatureGate>} /> {/* Issue #1794 */}
             </Route>
           </Route>
 

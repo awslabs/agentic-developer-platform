@@ -36,7 +36,9 @@ log = get_logger("ingest-repo")
 # ---------------------------------------------------------------------------
 
 from config import settings
-from scope import compute_s3_prefix, parse_scope_from_env
+from lang_go import extract_go_func_name as _extract_go_func_name
+from lang_go import extract_go_type as _extract_go_type
+from scope import IngestionScope, compute_s3_prefix, parse_scope_from_env
 from scip_indexer import index_repo as scip_index_repo, detect_languages, cleanup_indexing_artifacts
 from scip_ingester import ingest_scip, merge_graphs
 from scip_neptune_csv import (
@@ -61,6 +63,7 @@ NEPTUNE_CA_BUNDLE = (
 GRAPHRAG_ENABLED = settings.graphrag_enabled
 NEPTUNE_ENDPOINT = settings.neptune_endpoint
 NEPTUNE_PORT = settings.neptune_port
+NEPTUNE_BULK_LOAD_ROLE_ARN = settings.neptune_bulk_load_role_arn
 OPENSEARCH_ENDPOINT = settings.opensearch_endpoint
 LLM_MODEL = settings.model_wiki
 LLM_BASE_URL = settings.llm_base_url
@@ -402,17 +405,28 @@ def _build_basic_code_index(clone_path: str, org_repo: str) -> dict[str, Any]:
                                 }
                             )
 
-                # Go imports
+                # Go imports, types, and functions
                 elif lang == "go":
                     if stripped.startswith("import "):
                         file_imports.append(stripped)
                     if stripped.startswith("func "):
-                        name = stripped[5:].split("(")[0].strip()
+                        name = _extract_go_func_name(stripped)
                         if name:
                             symbols.append(
                                 {
                                     "name": name,
                                     "type": "function",
+                                    "file": rel,
+                                    "line": i + 1,
+                                }
+                            )
+                    elif stripped.startswith("type "):
+                        name, kind = _extract_go_type(stripped)
+                        if name:
+                            symbols.append(
+                                {
+                                    "name": name,
+                                    "type": kind,
                                     "file": rel,
                                     "line": i + 1,
                                 }
@@ -979,6 +993,19 @@ def scip_structural_ingest(
     result["indexed_language"] = successful_results[0].language
     result["dep_resolution"] = successful_results[0].dep_resolution
 
+    # Surface per-language failures so they're visible in stage metrics (#3132)
+    failed_results = [r for r in indexing_report.results if not r.success]
+    if failed_results:
+        result["failed_languages"] = [r.language for r in failed_results]
+        result["failed_language_errors"] = {r.language: r.error for r in failed_results}
+        for r in failed_results:
+            log.error(
+                "Language indexing failed for %s (%s): %s — graph will be partial",
+                org_repo,
+                r.language,
+                r.error,
+            )
+
     # Step 3: Decode each .scip and merge into one graph
     graphs = []
     for idx_result in successful_results:
@@ -1051,19 +1078,57 @@ def scip_structural_ingest(
 
         # Step 6: Load into Neptune (if endpoint configured)
         if NEPTUNE_ENDPOINT:
-            from scip_neptune_loader import load_to_neptune
-
             neptune_ep = f"{NEPTUNE_ENDPOINT}:{NEPTUNE_PORT}"
-            load_result = load_to_neptune(csv_output, neptune_ep, AWS_REGION)
+
+            # Use Bulk Loader when IAM role is set and S3 upload succeeded (#3233)
+            if NEPTUNE_BULK_LOAD_ROLE_ARN and result.get("s3_upload"):
+                from scip_neptune_loader import load_via_bulk_loader
+
+                load_result = load_via_bulk_loader(
+                    s3_prefix=result["s3_upload"],
+                    neptune_endpoint=neptune_ep,
+                    region=AWS_REGION,
+                    iam_role_arn=NEPTUNE_BULK_LOAD_ROLE_ARN,
+                    repo=org_repo,
+                )
+            else:
+                # Fallback: openCypher UNWIND batch (no Bulk Loader IAM or S3 upload failed)
+                from scip_neptune_loader import load_to_neptune
+
+                load_result = load_to_neptune(csv_output, neptune_ep, AWS_REGION)
+
             result["neptune_load"] = load_result
             if load_result.get("success"):
                 result["status"] = "complete"
+            elif load_result.get("error_rate", 0) > 0.05:
+                # >5% error rate: fail the stage so the SHA is NOT recorded
+                # as success — next publish will retry (#3173)
+                result["status"] = "failed"
+                result["error"] = (
+                    f"Neptune load error_rate={load_result['error_rate']:.1%} exceeds 5% threshold. "
+                    f"Loaded: {load_result.get('vertices_loaded', 0)} vertices + "
+                    f"{load_result.get('edges_loaded', 0)} edges. "
+                    f"Expected: {graph.node_count} vertices + {graph.edge_count} edges. "
+                    f"Errors: {load_result.get('total_errors', 0)}"
+                )
+                log.error(
+                    "Neptune load FAILED for %s: error_rate=%.1f%% (threshold 5%%). "
+                    "Loaded %d/%d vertices, %d/%d edges, %d errors",
+                    org_repo,
+                    load_result.get("error_rate", 0) * 100,
+                    load_result.get("vertices_loaded", 0),
+                    graph.node_count,
+                    load_result.get("edges_loaded", 0),
+                    graph.edge_count,
+                    load_result.get("total_errors", 0),
+                )
             else:
                 result["status"] = "load_partial"
                 log.warning(
-                    "Neptune load had errors for %s: %s",
+                    "Neptune load had errors for %s: %s (error_rate=%.1f%%, within threshold)",
                     org_repo,
                     load_result.get("total_errors", 0),
+                    load_result.get("error_rate", 0) * 100,
                 )
         else:
             # No Neptune endpoint — CSV + S3 only
@@ -1264,6 +1329,7 @@ def _generate_source_sbom(
     org_repo: str,
     s3_store: S3ContentStore,
     sbom_s3_prefix: str | None = None,
+    scope: "IngestionScope | None" = None,
 ) -> str:
     """Run Syft against a cloned repo directory and store the CycloneDX SBOM.
 
@@ -1354,7 +1420,14 @@ def _generate_source_sbom(
                 conn = sbom_db.get_connection()
                 try:
                     git_url = f"https://github.com/{org_repo}"
-                    repo_id = sbom_db.ensure_repo_exists(conn, org_repo, git_url)
+                    # Issue #3529: propagate scope for SBOM path too
+                    repo_id = sbom_db.ensure_repo_exists(
+                        conn,
+                        org_repo,
+                        git_url,
+                        tenant_id=scope.tenant_id if scope else None,
+                        owner_sub=scope.owner_sub if scope else None,
+                    )
                     sbom_db.upsert_dependencies(conn, repo_id, records)
                     # Get current SHA for status update
                     sha = None
@@ -1508,7 +1581,16 @@ def ingest_repo(
         import db as stage_db
 
         db_conn = stage_db.get_connection()
-        repo_id = stage_db.ensure_repo_exists(db_conn, org_repo, f"https://github.com/{org_repo}")
+        # Issue #3529: propagate scope envelope's tenant_id/owner_sub into the
+        # repositories ACL row so tenant-scoped queries include this repo for
+        # the registering user (not the GitHub org name).
+        repo_id = stage_db.ensure_repo_exists(
+            db_conn,
+            org_repo,
+            f"https://github.com/{org_repo}",
+            tenant_id=scope.tenant_id,
+            owner_sub=scope.owner_sub,
+        )
     except Exception as e:
         log.warning("DB unavailable for stage tracking — legacy mode: %s", e)
         db_conn = None
@@ -1920,13 +2002,19 @@ def ingest_repo(
                             with tracker.stage("scip_structural") as ctx:
                                 edge_count = scip_result.get("edges", 0)
                                 node_count = scip_result.get("nodes", 0)
+                                metrics = {
+                                    "nodes": node_count,
+                                    "edges": edge_count,
+                                }
+                                # Include per-language failure info in metrics (#3132)
+                                failed_langs = scip_result.get("failed_languages")
+                                if failed_langs:
+                                    metrics["failed_languages"] = failed_langs
+                                    metrics["indexed_languages"] = scip_result.get(
+                                        "indexed_languages", []
+                                    )
                                 ctx.set_artifact(f"neptune:{org_repo}:edges={edge_count}")
-                                ctx.set_metrics(
-                                    {
-                                        "nodes": node_count,
-                                        "edges": edge_count,
-                                    }
-                                )
+                                ctx.set_metrics(metrics)
                                 ctx.verify(lambda: edge_count > 0)
                         elif scip_status == "no_languages":
                             tracker.mark_skipped("scip_structural", "no SCIP-supported languages")
@@ -1964,7 +2052,11 @@ def ingest_repo(
         else:
             try:
                 sbom_result = _generate_source_sbom(
-                    clone_path, org_repo, s3_store, sbom_s3_prefix=scoped_sbom_prefix
+                    clone_path,
+                    org_repo,
+                    s3_store,
+                    sbom_s3_prefix=scoped_sbom_prefix,
+                    scope=scope,
                 )
                 result["sbom_source"] = sbom_result
 

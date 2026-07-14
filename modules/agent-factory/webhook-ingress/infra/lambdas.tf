@@ -52,6 +52,9 @@ resource "aws_lambda_function" "github_webhook" {
       INTERNAL_API_KEY_ARN          = var.internal_api_key_arn
       RESOLVE_CANONICAL_VIA_GATEWAY = "true"
       CORRELATION_POINTERS_TABLE    = aws_dynamodb_table.correlation_pointers.name
+      TENANT_REGISTRY_TABLE         = aws_dynamodb_table.tenant_registry.name
+      # Issue #3179 (cred-binding S5): marker signature verification key
+      MARKER_SIGNING_KEY_SECRET_ARN = aws_secretsmanager_secret.marker_signing_key.arn
     }
   }
 

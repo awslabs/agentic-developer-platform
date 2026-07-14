@@ -125,8 +125,11 @@ class TestIdentityIndexClient:
             old_cognito_client_ids=["client-old"],
         )
 
-        # Should have: put new-1, put kept-1, put client-new, delete removed-1, delete client-old
-        assert mock_dynamodb.put_item.call_count == 3
+        # Issue #3134 fix: installation rows use UpdateItem (preserves policy attrs),
+        # cognito rows still use PutItem.
+        # Should have: update new-1, update kept-1, put client-new, delete removed-1, delete client-old
+        assert mock_dynamodb.update_item.call_count == 2
+        assert mock_dynamodb.put_item.call_count == 1
         assert mock_dynamodb.delete_item.call_count == 2
 
     @pytest.mark.asyncio

@@ -36,6 +36,13 @@ variable "gateway_deployed" {
 variable "github_app_dev_installation_id" {
   description = "GitHub App installation ID for the `dev` persona on the target org. The ARC runner scale set uses this to authenticate runner registration. Find it via: gh api /orgs/<org>/installations --jq '.installations[] | select(.app_slug==\"<org>-adp-agent-dev\") | .id'"
   type        = string
+  default     = ""
+}
+
+variable "enable_github_apps" {
+  description = "Whether GitHub Apps have been created and their secrets stored. When false, the secrets data-source lookups and ARC runner module are skipped (fresh deploy without GitHub Apps)."
+  type        = bool
+  default     = false
 }
 
 variable "runner_image" {
@@ -58,6 +65,12 @@ variable "runner_image_tag" {
 
 variable "enable_public_cfn_bucket" {
   description = "Whether to create the public S3 bucket for CloudFormation templates. Requires account-level S3 Block Public Access to be disabled. Set false in environments with account-level public access blocks."
+  type        = bool
+  default     = false
+}
+
+variable "enable_agent_context_rbac" {
+  description = "Whether to create runner RBAC resources in the agent-context namespace. Set false when agent-context module is not deployed (namespace doesn't exist)."
   type        = bool
   default     = false
 }

@@ -117,56 +117,24 @@ data "aws_iam_policy_document" "cloudwatch_kms" {
 }
 
 # =============================================================================
-# KMS Key for Secrets Manager Encryption (CKV_AWS_149)
+# KMS Key for Secrets Manager Encryption — Data Source (Issue #3789)
+# =============================================================================
+# The webhook-secrets CMK is now owned by platform infra (alias/adp-<env>-
+# webhook-secrets). Platform applies first in all deploy tracks, so the alias
+# is guaranteed to exist when this module's plan runs.
+#
+# Previously: this module created the key + alias (aws_kms_key.secrets +
+# aws_kms_alias.secrets). Migrated to platform/infra/kms.tf by #3789.
+# Use migrate-webhook-kms.sh for existing environments (state rm + import).
 # =============================================================================
 
-resource "aws_kms_key" "secrets" {
-  description             = "Customer-managed KMS key for Webhook Ingress Secrets Manager secrets"
-  deletion_window_in_days = 30
-  enable_key_rotation     = true
-
-  policy = data.aws_iam_policy_document.secrets_kms.json
-
-  tags = {
-    Component = "webhook-ingress"
-    Service   = "kms"
-    Purpose   = "secrets-encryption"
-  }
+data "aws_kms_alias" "secrets" {
+  name = "alias/${local.name_prefix}-webhook-secrets"
 }
 
-resource "aws_kms_alias" "secrets" {
-  name          = "alias/${local.name_prefix}-webhook-secrets"
-  target_key_id = aws_kms_key.secrets.id
-}
-
-data "aws_iam_policy_document" "secrets_kms" {
-  statement {
-    sid       = "AccountRoot"
-    effect    = "Allow"
-    actions   = ["kms:*"]
-    resources = ["*"]
-
-    principals {
-      type        = "AWS"
-      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
-    }
-  }
-
-  statement {
-    sid    = "SecretsManagerService"
-    effect = "Allow"
-    actions = [
-      "kms:Encrypt",
-      "kms:Decrypt",
-      "kms:GenerateDataKey*",
-      "kms:DescribeKey",
-      "kms:CreateGrant",
-    ]
-    resources = ["*"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["secretsmanager.amazonaws.com"]
-    }
-  }
+locals {
+  # Convenience — all references previously using aws_kms_key.secrets.arn now
+  # use this local. The alias data source exposes .target_key_arn which is the
+  # key ARN (not the alias ARN).
+  webhook_secrets_kms_key_arn = data.aws_kms_alias.secrets.target_key_arn
 }

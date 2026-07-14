@@ -74,6 +74,7 @@ export class ApiClient {
       config.body = JSON.stringify(body);
     }
 
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — browser-side fetch of own API base; SSRF is not a client-side vulnerability
     const response = await fetch(`${this.baseUrl}${endpoint}`, config);
     return this.handleResponse<T>(response);
   }

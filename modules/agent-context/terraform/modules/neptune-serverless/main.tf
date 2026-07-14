@@ -77,6 +77,7 @@ resource "aws_neptune_cluster" "graphrag" {
   final_snapshot_identifier           = var.skip_final_snapshot ? null : "${var.cluster_name}-graphrag-final"
   apply_immediately                   = true
   deletion_protection                 = var.deletion_protection
+  iam_roles                           = [aws_iam_role.neptune_bulk_load.arn]
 
   serverless_v2_scaling_configuration {
     min_capacity = var.min_capacity
@@ -169,3 +170,55 @@ resource "aws_iam_role_policy_attachment" "neptune_access" {
   role       = aws_iam_role.neptune_access.name
   policy_arn = aws_iam_policy.neptune_access.arn
 }
+
+# ─── IAM Role for Neptune Bulk Loader (S3 → Neptune) ────────────────────────
+# This role is assumed by Neptune itself (rds.amazonaws.com trust) to read
+# CSV files from S3 during Bulk Loader operations. The role is attached to
+# the Neptune cluster so the Bulk Loader API can use it.
+#
+# Hand-created as adp-dev-eks-cluster-neptune-bulk-load during 2026-07-07
+# incident recovery (#3173). This codifies it in Terraform for import.
+
+resource "aws_iam_role" "neptune_bulk_load" {
+  name = "${var.cluster_name}-neptune-bulk-load"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "rds.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = merge(var.tags, {
+    Name = "${var.cluster_name}-neptune-bulk-load"
+  })
+}
+
+resource "aws_iam_role_policy" "neptune_bulk_load_s3" {
+  name = "neptune-bulk-load-s3"
+  role = aws_iam_role.neptune_bulk_load.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket",
+        ]
+        Resource = [
+          "arn:${local.partition}:s3:::${var.bucket_name}",
+          "arn:${local.partition}:s3:::${var.bucket_name}/*",
+        ]
+      }
+    ]
+  })
+}
+

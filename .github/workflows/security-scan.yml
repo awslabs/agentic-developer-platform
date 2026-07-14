@@ -338,6 +338,17 @@ jobs:
             > cfn-nag-results.json \
             || true
 
+          # Fail on FATAL parse errors. cfn-nag emits a per-file "FATAL"
+          # violation (malformed deny-list, non-ASCII bytes, unparseable
+          # template) but still exits 0, so the job would otherwise report
+          # green while scanning nothing (issue #3587). Any FATAL means a
+          # template got zero coverage — treat it as a hard failure.
+          if grep -q '"type"[[:space:]]*:[[:space:]]*"FATAL"' cfn-nag-results.json; then
+            echo "::error::cfn-nag hit FATAL parse errors — templates were not scanned:"
+            grep -B2 '"type"[[:space:]]*:[[:space:]]*"FATAL"' cfn-nag-results.json || true
+            exit 1
+          fi
+
       - name: Resolve account ID
         if: always()
         run: |
@@ -504,12 +515,16 @@ jobs:
 
       - name: Diff findings against baseline
         run: |
+          # Advisory diff (never fails here) — produces summary.json for the PR
+          # comment. The hard gate runs as a separate step AFTER the comment so
+          # the author always sees the details even when the gate fails.
           python3 .github/scripts/diff_security_findings.py \
             --findings-dir findings/ \
             --baseline-dir .github/security/ \
             --output summary.json
 
       - name: Post PR comment
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -518,6 +533,19 @@ jobs:
             --summary summary.json \
             --repo "${{ github.repository }}" \
             --pr "${{ github.event.pull_request.number }}"
+
+      - name: Security gate (fail on new critical/high)
+        run: |
+          # Hard gate (issue #3587): any NEW critical/high finding fails the
+          # check. Suppressed findings are excluded by the diff script, and the
+          # baseline is 0/0 as of #3581, so this only fires on genuinely new
+          # crit/high introduced by a PR. Nightly baseline-refresh stays
+          # advisory (no --fail-on).
+          python3 .github/scripts/diff_security_findings.py \
+            --findings-dir findings/ \
+            --baseline-dir .github/security/ \
+            --output /tmp/gate-summary.json \
+            --fail-on critical,high
 
   # ---------- Baseline update (nightly only) ----------
   update-baseline:

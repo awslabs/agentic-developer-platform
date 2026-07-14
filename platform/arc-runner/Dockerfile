@@ -44,6 +44,12 @@ RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-l
     && rm /tmp/node.tar.xz \
     && node --version && npm --version
 
+# ── Fix GHSA-73rr-hfp2-rc4v: override npm's bundled diff with >=5.2.2 ────────
+RUN npm --prefix /usr/local/lib/node_modules/npm install diff@5.2.2 \
+    && node -e "const v = require('/usr/local/lib/node_modules/npm/node_modules/diff/package.json').version; \
+       if (v !== '5.2.2') { console.error('diff version mismatch: ' + v); process.exit(1); } \
+       console.log('diff=' + v);"
+
 # ── Python 3.12 + pip (for CodeBuild log parsing, yaml checks, etc.) ────────
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

@@ -3,8 +3,11 @@
 # Issue: #1346  Design: docs/design-notes/1346-zoekt-direct-replacement.md
 #
 # Serves .zoekt shard files from S3 via Mountpoint CSI (platform-data PVC,
-# subPath: zoekt-shards). Spike #2327 confirmed Mountpoint compatibility.
-# Indexing is handled by the ingestion pipeline (separate sub-issue).
+# subPath: zoekt-shards). A sidecar container syncs shards from the nested
+# S3 layout into the flat index dir every 60s. Zoekt's built-in watcher
+# detects new/changed shards automatically (also on a 60s rescan interval).
+#
+# Fix: #3287 — shards are now continuously synced, not just at pod startup.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -36,11 +39,11 @@ spec:
         command: ["sh", "-c"]
         args:
           - |
-            echo "Copying shard files from S3 to flat index dir..."
+            echo "Initial shard sync from S3 mount to flat index dir..."
             mkdir -p /data/index
             find /mnt/s3-shards -name "*.zoekt" -exec cp {} /data/index/ \;
-            echo "Shard files:"
-            ls /data/index/*.zoekt 2>/dev/null | wc -l
+            count=$(ls /data/index/*.zoekt 2>/dev/null | wc -l)
+            echo "Initial sync complete: ${count} shard files"
         volumeMounts:
         - name: scratch
           mountPath: /data
@@ -88,6 +91,52 @@ spec:
           periodSeconds: 30
           timeoutSeconds: 5
           failureThreshold: 5
+      # Sidecar: continuously syncs new .zoekt shards from the nested S3 mount
+      # into the flat /data/index dir that zoekt-webserver watches.
+      # Runs every 60s. Only copies files newer than what's already present (cp -u).
+      # Removes shards from the index that no longer exist on S3 (stale cleanup).
+      # Issue: #3287
+      - name: shard-sync
+        image: busybox:1.36
+        command: ["sh", "-c"]
+        args:
+          - |
+            echo "shard-sync: starting continuous sync (interval=60s)"
+            while true; do
+              sleep 60
+
+              # Sync new/updated shards from S3 mount to flat index dir
+              # cp -u only copies when source is newer than destination
+              find /mnt/s3-shards -name "*.zoekt" -exec cp -u {} /data/index/ \;
+
+              # Remove shards from index that no longer exist on S3
+              # (handles repo deletion or re-indexing that removes old shards)
+              for f in /data/index/*.zoekt; do
+                [ -f "$f" ] || continue
+                basename=$(basename "$f")
+                if ! find /mnt/s3-shards -name "$basename" -print -quit | grep -q .; then
+                  echo "shard-sync: removing stale shard $basename"
+                  rm -f "$f"
+                fi
+              done
+
+              count=$(ls /data/index/*.zoekt 2>/dev/null | wc -l)
+              echo "shard-sync: cycle complete, ${count} shards in index"
+            done
+        volumeMounts:
+        - name: scratch
+          mountPath: /data
+        - name: index-data
+          mountPath: /mnt/s3-shards
+          subPath: zoekt-shards
+          readOnly: true
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
       volumes:
       - name: index-data
         persistentVolumeClaim:

@@ -732,6 +732,340 @@ class TestStaleBranchHandling:
         assert not bool(result.stdout.strip())
 
 
+# --- Test: AIDLC stale-branch extend (Issue #3430) ---
+
+
+class TestAidlcBranchExtend:
+    """Verify persona-aware branch-bootstrap logic added by Issue #3430.
+
+    AIDLC stages commit artifacts sequentially on one branch without opening a PR
+    until the final stage. The stale-branch reset (case (a) in Step 6b) must NOT
+    delete the remote branch for aidlc persona; it must fetch + extend instead.
+    Developer/architect/ops personas retain the existing reset-to-main behavior.
+    """
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_aidlc_persona_existing_branch_no_pr_extends(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_create_cr,
+        mock_update_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """aidlc persona + existing remote branch + no open PR → fetch+checkout, NO delete."""
+        from entrypoint import main
+        import entrypoint
+
+        aidlc_envelope = {**SAMPLE_ENVELOPE, "persona": "aidlc"}
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(aidlc_envelope), "receipt-aidlc-1")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+
+        # Simulate: branch exists on remote, no open PR
+        def subprocess_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if cmd and cmd[0:2] == ["git", "ls-remote"]:
+                # Branch exists
+                return MagicMock(
+                    returncode=0, stdout="abc123 refs/heads/agent/issue-42\n", stderr=""
+                )
+            if cmd and cmd[0:3] == ["gh", "pr", "list"]:
+                # No open PR
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if cmd and len(cmd) >= 4 and cmd[0:2] == ["git", "push"] and "--delete" in cmd:
+                # Should NOT be called for aidlc — track it
+                raise AssertionError("git push --delete should NOT be called for aidlc persona")
+            # Final node agent execution
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_subprocess_run.side_effect = subprocess_side_effect
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Verify run_cmd was called with fetch + checkout (extend path)
+        run_cmd_calls = [str(c) for c in mock_run_cmd.call_args_list]
+        # Find the fetch and checkout calls for the branch
+        fetch_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "fetch" in str(c) and "agent/issue-42" in str(c)
+        ]
+        checkout_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "checkout" in str(c) and "agent/issue-42" in str(c) and "-b" not in str(c)
+        ]
+        assert len(fetch_calls) >= 1, f"Expected git fetch for branch, got calls: {run_cmd_calls}"
+        assert len(checkout_calls) >= 1, (
+            f"Expected git checkout (extend), got calls: {run_cmd_calls}"
+        )
+
+        # Verify git push --delete was NOT called via subprocess.run
+        subprocess_calls = mock_subprocess_run.call_args_list
+        for call in subprocess_calls:
+            cmd = call[0][0] if call[0] else call[1].get("args", [])
+            assert not (cmd[0:2] == ["git", "push"] and "--delete" in cmd), (
+                "git push --delete must NOT be called for aidlc persona"
+            )
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_developer_persona_existing_branch_no_pr_resets(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_create_cr,
+        mock_update_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """developer persona + existing remote branch + no open PR → delete + recreate (regression guard)."""
+        from entrypoint import main
+        import entrypoint
+
+        # SAMPLE_ENVELOPE already has persona="developer"
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-dev-1")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+
+        # Simulate: branch exists on remote, no open PR.
+        # Distinguish _is_already_completed (--state merged) from Step 6b (--state open).
+        delete_called = []
+
+        def subprocess_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if cmd and cmd[0:2] == ["git", "ls-remote"]:
+                return MagicMock(
+                    returncode=0, stdout="abc123 refs/heads/agent/issue-42\n", stderr=""
+                )
+            if cmd and cmd[0:3] == ["gh", "pr", "list"]:
+                # _is_already_completed passes --state merged; Step 6b passes --state open
+                # Both should return empty (no merged PR, no open PR)
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if cmd and len(cmd) >= 4 and cmd[0:2] == ["git", "push"] and "--delete" in cmd:
+                delete_called.append(cmd)
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_subprocess_run.side_effect = subprocess_side_effect
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # git push --delete MUST be called for developer persona (stale reset)
+        assert len(delete_called) == 1, (
+            f"Expected exactly one git push --delete for developer persona, got: {delete_called}"
+        )
+        assert "agent/issue-42" in delete_called[0]
+
+        # Verify checkout -b (fresh creation) was called via run_cmd
+        checkout_b_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "checkout" in str(c) and "-b" in str(c) and "agent/issue-42" in str(c)
+        ]
+        assert len(checkout_b_calls) >= 1, "Expected git checkout -b for developer reset"
+
+    @patch("entrypoint._is_already_completed")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_existing_branch_with_open_pr_extends_regardless_of_persona(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_create_cr,
+        mock_update_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_already_completed,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Any persona + existing branch + open PR → extend (no delete). Regression guard."""
+        from entrypoint import main
+        import entrypoint
+
+        # Use developer persona — even with open PR, should extend not reset
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-pr-1")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        # Skip idempotency guard (it also calls gh pr list --state merged)
+        mock_already_completed.return_value = False
+
+        # Simulate: branch exists + open PR (Step 6b's gh pr list --state open)
+        def subprocess_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if cmd and cmd[0:2] == ["git", "ls-remote"]:
+                return MagicMock(
+                    returncode=0, stdout="abc123 refs/heads/agent/issue-42\n", stderr=""
+                )
+            if cmd and cmd[0:3] == ["gh", "pr", "list"]:
+                # Open PR exists (Step 6b check)
+                return MagicMock(returncode=0, stdout="456\n", stderr="")
+            if cmd and len(cmd) >= 4 and cmd[0:2] == ["git", "push"] and "--delete" in cmd:
+                raise AssertionError("git push --delete should NOT be called when PR is open")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_subprocess_run.side_effect = subprocess_side_effect
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Verify fetch + checkout (extend) was called
+        fetch_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "fetch" in str(c) and "agent/issue-42" in str(c)
+        ]
+        checkout_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "checkout" in str(c) and "agent/issue-42" in str(c) and "-b" not in str(c)
+        ]
+        assert len(fetch_calls) >= 1, "Expected git fetch for open-PR extend"
+        assert len(checkout_calls) >= 1, "Expected git checkout (extend) for open-PR"
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_first_run_no_remote_branch_creates_fresh(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_create_cr,
+        mock_update_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """First run on issue (no remote branch) → clean creation for any persona. Regression guard."""
+        from entrypoint import main
+        import entrypoint
+
+        aidlc_envelope = {**SAMPLE_ENVELOPE, "persona": "aidlc"}
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(aidlc_envelope), "receipt-fresh-1")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+
+        # Simulate: no remote branch exists
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        # Verify checkout -b (fresh branch creation) was called
+        checkout_b_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "checkout" in str(c) and "-b" in str(c) and "agent/issue-42" in str(c)
+        ]
+        assert len(checkout_b_calls) >= 1, "Expected git checkout -b for fresh branch creation"
+
+        # Verify no fetch was done (no existing remote branch to fetch)
+        fetch_calls = [
+            c
+            for c in mock_run_cmd.call_args_list
+            if "fetch" in str(c) and "agent/issue-42" in str(c)
+        ]
+        assert len(fetch_calls) == 0, "Should not fetch when branch doesn't exist"
+
+
 # --- Test: check_run library ---
 
 
@@ -993,6 +1327,91 @@ class TestFetchAssumedAwsCredentials:
         assert call_kwargs["task_id"] == "t1"
         assert call_kwargs["service"] == "aws"
         assert call_kwargs["label"] is None
+
+    @patch("entrypoint.GatewayCredentialClient")
+    def test_calls_assume_role_with_explicit_label(self, mock_gw_cls):
+        """Issue #3574: /aws-label is forwarded as label= to assume_role."""
+        from entrypoint import _fetch_assumed_aws_credentials
+
+        mock_gw = MagicMock()
+        mock_gw_cls.return_value = mock_gw
+        mock_gw.is_configured = True
+        mock_gw.assume_role.return_value = {
+            "access_key_id": "AK",
+            "secret_access_key": "SK",
+            "session_token": "ST",
+            "expiration": "2026-07-11T22:00:00Z",
+            "region": "us-east-1",
+            "profile_name": "p",
+            "provenance_id": "prov",
+        }
+
+        _fetch_assumed_aws_credentials(
+            user_id="user-1",
+            agent_id="operations",
+            task_id="t1",
+            label="adp-integration-test",
+        )
+
+        mock_gw.assume_role.assert_called_once()
+        call_kwargs = mock_gw.assume_role.call_args.kwargs
+        assert call_kwargs["label"] == "adp-integration-test"
+
+    @patch("entrypoint.GatewayCredentialClient")
+    def test_assume_role_label_none_when_not_provided(self, mock_gw_cls):
+        """Issue #3574: Without /aws-label, label=None is passed (ranked picker)."""
+        from entrypoint import _fetch_assumed_aws_credentials
+
+        mock_gw = MagicMock()
+        mock_gw_cls.return_value = mock_gw
+        mock_gw.is_configured = True
+        mock_gw.assume_role.return_value = {
+            "access_key_id": "AK",
+            "secret_access_key": "SK",
+            "session_token": "ST",
+            "expiration": "2026-07-11T22:00:00Z",
+            "region": "us-east-1",
+            "profile_name": "p",
+            "provenance_id": "prov",
+        }
+
+        _fetch_assumed_aws_credentials(user_id="user-1", agent_id="operations", task_id="t1")
+
+        call_kwargs = mock_gw.assume_role.call_args.kwargs
+        assert call_kwargs["label"] is None
+
+
+# --- Test: assume-role fatal when aws_label is non-None (issue #3574 invariant 2) ---
+
+
+class TestAssumeRoleFatalOnLabelMiss:
+    """Issue #3574: gateway 404 + non-None label → fatal, NO fallback to label=None."""
+
+    @patch("entrypoint.GatewayCredentialClient")
+    def test_explicit_label_failure_is_fatal(self, mock_gw_cls):
+        """When aws_label is set and assume_role raises, _fetch re-raises."""
+        from entrypoint import _fetch_assumed_aws_credentials
+        from lib.gateway_credential_client import GatewayCredentialError
+
+        mock_gw = MagicMock()
+        mock_gw_cls.return_value = mock_gw
+        mock_gw.is_configured = True
+        mock_gw.assume_role.side_effect = GatewayCredentialError(
+            "Gateway returned HTTP 404: credential_not_found"
+        )
+
+        # The function itself doesn't know about fatal/non-fatal — that's
+        # the caller's responsibility (Step 7). But the function should still
+        # raise so the caller can decide.
+        import pytest
+
+        with pytest.raises(GatewayCredentialError):
+            _fetch_assumed_aws_credentials(
+                user_id="user-1",
+                agent_id="operations",
+                task_id="t1",
+                label="nonexistent-label",
+            )
 
 
 # --- Test: sts_assume user_id tag ---
@@ -2724,9 +3143,7 @@ class TestIdempotencyGuard:
         from entrypoint import _is_already_completed
 
         with patch("entrypoint.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout="1847\n", stderr=""
-            )
+            mock_run.return_value = MagicMock(returncode=0, stdout="1847\n", stderr="")
             result = _is_already_completed("acme/repo", 42, "ghs_test_token")
 
         assert result is True
@@ -2744,9 +3161,7 @@ class TestIdempotencyGuard:
         from entrypoint import _is_already_completed
 
         with patch("entrypoint.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout="", stderr=""
-            )
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             result = _is_already_completed("acme/repo", 42, "ghs_test_token")
 
         assert result is False
@@ -2766,9 +3181,7 @@ class TestIdempotencyGuard:
         from entrypoint import _is_already_completed
 
         with patch("entrypoint.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=1, stdout="", stderr="gh: error"
-            )
+            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="gh: error")
             result = _is_already_completed("acme/repo", 42, "ghs_test_token")
 
         assert result is False
@@ -3090,28 +3503,20 @@ class TestZeroTokenFailureDetection:
     def test_zero_cost_single_turn_is_failure(self):
         import entrypoint
 
-        assert entrypoint._is_zero_token_failure(
-            {"total_cost_usd": 0, "num_turns": 1}
-        )
-        assert entrypoint._is_zero_token_failure(
-            {"total_cost_usd": 0.0, "num_turns": 0}
-        )
+        assert entrypoint._is_zero_token_failure({"total_cost_usd": 0, "num_turns": 1})
+        assert entrypoint._is_zero_token_failure({"total_cost_usd": 0.0, "num_turns": 0})
 
     def test_nonzero_cost_is_not_failure(self):
         import entrypoint
 
         # Genuine "no changes needed" verdict costs >0 tokens.
-        assert not entrypoint._is_zero_token_failure(
-            {"total_cost_usd": 0.0123, "num_turns": 1}
-        )
+        assert not entrypoint._is_zero_token_failure({"total_cost_usd": 0.0123, "num_turns": 1})
 
     def test_zero_cost_multi_turn_is_not_failure(self):
         import entrypoint
 
         # Some tokens burned then died mid-run — not the zero-token signature.
-        assert not entrypoint._is_zero_token_failure(
-            {"total_cost_usd": 0, "num_turns": 5}
-        )
+        assert not entrypoint._is_zero_token_failure({"total_cost_usd": 0, "num_turns": 5})
 
     def test_missing_fields_or_none_meta_is_not_failure(self):
         import entrypoint
@@ -3192,9 +3597,7 @@ class TestZeroTokenFailureDetection:
         import entrypoint
 
         mock_run_cmd.return_value = MagicMock(stdout="", stderr="", returncode=0)
-        monkeypatch.setattr(
-            entrypoint, "RESULT_METADATA_PATH", str(tmp_path / "missing.json")
-        )
+        monkeypatch.setattr(entrypoint, "RESULT_METADATA_PATH", str(tmp_path / "missing.json"))
         monkeypatch.setattr(entrypoint, "WORK_DIR", tmp_path)
 
         rc = entrypoint._handle_success(
@@ -3236,3 +3639,653 @@ class TestZeroTokenFailureDetection:
         assert rc == 0
         assert mock_post.call_args[0][3] == "completed"
         assert "PR opened" in mock_post.call_args[0][4]
+
+
+# =============================================================================
+# GitLab Tier-A acknowledge path (Issue #3436)
+# =============================================================================
+
+SAMPLE_GITLAB_ENVELOPE = {
+    "version": "1.0",
+    "channel": "gitlab",
+    "tenant_id": "",
+    "persona": "developer",
+    "message_id": "msg-gl-456",
+    "actor": {
+        "user_id": "gitlab-user",
+        "org_id": "",
+        "github_id": 0,
+        "github_login": "",
+        "is_bot": False,
+    },
+    "source_ref": {
+        "installation_id": 0,
+        "repo": "spike-group/test-project",
+        "issue": 7,
+        "pr": None,
+        "sha": None,
+    },
+    "intent": {"trigger": "mention", "label": None, "persona": "developer"},
+    "correlation": {
+        "correlation_id": "corr-gitlab-789",
+        "root_human_id": "gitlab-user",
+        "is_human_rooted": True,
+    },
+    "payload": {
+        "provider": "gitlab",
+        "event_type": "mention",
+        "source": {
+            "project_id": 42,
+            "project_path": "spike-group/test-project",
+            "issue_iid": 7,
+            "note_id": 100,
+            "gitlab_url": "http://gitlab.dev.adp.internal",
+        },
+        "actor": {
+            "username": "gitlab-user",
+            "display_name": "GitLab User",
+        },
+        "content": {
+            "body": "@agent hello",
+            "mention_target": "developer",
+        },
+        "metadata": {
+            "timestamp": "2026-07-09T10:00:00Z",
+            "webhook_id": "wh-gl-001",
+        },
+    },
+    "arrived_at": "2026-07-09T10:00:00Z",
+    "model_requested": None,
+    "model_resolved": None,
+}
+
+
+class TestGitLabProviderDetection:
+    """Issue #3436: GitLab messages must bypass the poison guard and route to
+    the GitLab acknowledge path. GitHub messages with installation_id=0 must
+    still be deleted by the poison guard (regression guard for #2336).
+    """
+
+    @patch("entrypoint._handle_gitlab_mention")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    def test_gitlab_envelope_routes_to_gitlab_path(
+        self,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_handle_gitlab,
+        monkeypatch,
+    ):
+        """GitLab envelope with installation_id=0 must route to _handle_gitlab_mention,
+        NOT trigger the poison guard."""
+        from entrypoint import main
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_GITLAB_ENVELOPE), "receipt-gl-1")
+        mock_handle_gitlab.return_value = 0
+
+        result = main()
+
+        assert result == 0
+        mock_handle_gitlab.assert_called_once()
+        # Poison guard must NOT have fired (no direct _delete_message call)
+        mock_delete_msg.assert_not_called()
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    def test_github_envelope_installation_id_zero_still_poison_deleted(
+        self,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+    ):
+        """GitHub envelope with installation_id=0 must still trigger poison guard
+        (regression guard for issue #2336)."""
+        from entrypoint import main
+
+        # GitHub envelope: no payload.provider or provider != "gitlab"
+        github_poison = {
+            **SAMPLE_ENVELOPE,
+            "source_ref": {
+                **SAMPLE_ENVELOPE["source_ref"],
+                "installation_id": 0,
+            },
+        }
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(github_poison), "receipt-gh-poison")
+
+        result = main()
+
+        assert result == 1
+        # Poison guard deleted the message
+        mock_delete_msg.assert_called_once_with(
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gh-poison",
+        )
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    def test_github_envelope_no_payload_field_still_poison_deleted(
+        self,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+    ):
+        """GitHub envelope without a 'payload' field at all must still trigger
+        the poison guard when installation_id=0."""
+        from entrypoint import main
+
+        # Envelope with no payload field (older format)
+        no_payload_envelope = {
+            "version": "1.0",
+            "channel": "github",
+            "tenant_id": "acme-corp",
+            "persona": "developer",
+            "message_id": "msg-nopayload",
+            "source_ref": {
+                "installation_id": 0,
+                "repo": "acme/repo",
+                "issue": 1,
+            },
+        }
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        mock_receive_msg.return_value = (json.dumps(no_payload_envelope), "receipt-np")
+
+        result = main()
+
+        assert result == 1
+        mock_delete_msg.assert_called_once()
+
+
+class TestHandleGitLabMention:
+    """Issue #3436: Unit tests for the _handle_gitlab_mention function itself."""
+
+    @patch("entrypoint.boto3.client")
+    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint._delete_message")
+    def test_happy_path_ack_comment_and_branch(
+        self,
+        mock_delete_msg,
+        mock_urlopen,
+        mock_boto_client,
+        monkeypatch,
+    ):
+        """Full happy path: token read, ack posted, branch created, msg deleted.
+        URL resolved from envelope's payload.source.gitlab_url (primary).
+        Default branch resolved from project API."""
+        from entrypoint import _handle_gitlab_mention
+
+        # No GITLAB_URL env var — URL comes from the envelope's gitlab_url field
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        # Mock Secrets Manager
+        mock_sm = MagicMock()
+        mock_boto_client.return_value = mock_sm
+        mock_sm.get_secret_value.return_value = {"SecretString": "glpat-test-token"}
+
+        # Mock urllib.request.urlopen for all three calls:
+        # 1) ack comment, 2) project lookup, 3) branch create
+        mock_ack_response = MagicMock()
+        mock_ack_response.status = 201
+        mock_ack_response.__enter__ = MagicMock(return_value=mock_ack_response)
+        mock_ack_response.__exit__ = MagicMock(return_value=False)
+
+        mock_project_response = MagicMock()
+        mock_project_response.status = 200
+        mock_project_response.read.return_value = json.dumps({"default_branch": "main"}).encode(
+            "utf-8"
+        )
+        mock_project_response.__enter__ = MagicMock(return_value=mock_project_response)
+        mock_project_response.__exit__ = MagicMock(return_value=False)
+
+        mock_branch_response = MagicMock()
+        mock_branch_response.status = 201
+        mock_branch_response.__enter__ = MagicMock(return_value=mock_branch_response)
+        mock_branch_response.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [
+            mock_ack_response,
+            mock_project_response,
+            mock_branch_response,
+        ]
+
+        result = _handle_gitlab_mention(
+            SAMPLE_GITLAB_ENVELOPE,
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-happy",
+        )
+
+        assert result == 0
+        # Secrets Manager called for the token
+        mock_sm.get_secret_value.assert_called_once_with(SecretId="adp/dev/gitlab-api-token")
+        # Three urlopen calls: ack comment + project lookup + branch create
+        assert mock_urlopen.call_count == 3
+        # Message was deleted
+        mock_delete_msg.assert_called_once_with(
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-happy",
+        )
+
+    @patch("entrypoint.boto3.client")
+    @patch("entrypoint._delete_message")
+    def test_missing_api_token_deletes_message_returns_1(
+        self,
+        mock_delete_msg,
+        mock_boto_client,
+        monkeypatch,
+    ):
+        """If Secrets Manager read fails, still delete msg (no FIFO jam), return 1."""
+        from entrypoint import _handle_gitlab_mention
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        mock_sm = MagicMock()
+        mock_boto_client.return_value = mock_sm
+        mock_sm.get_secret_value.side_effect = Exception("AccessDenied")
+
+        result = _handle_gitlab_mention(
+            SAMPLE_GITLAB_ENVELOPE,
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-notoken",
+        )
+
+        assert result == 1
+        # Message still deleted to prevent FIFO jam
+        mock_delete_msg.assert_called_once()
+
+    @patch("entrypoint.boto3.client")
+    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint._delete_message")
+    def test_branch_create_400_already_exists_tolerated(
+        self,
+        mock_delete_msg,
+        mock_urlopen,
+        mock_boto_client,
+        monkeypatch,
+    ):
+        """Branch already exists (400 with 'already exists' body) tolerated — not failure."""
+        from entrypoint import _handle_gitlab_mention
+        import urllib.error
+        from io import BytesIO
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        mock_sm = MagicMock()
+        mock_boto_client.return_value = mock_sm
+        mock_sm.get_secret_value.return_value = {"SecretString": "glpat-test"}
+
+        # Calls: 1) ack comment, 2) project lookup, 3) branch create (400 already exists)
+        mock_ack_response = MagicMock()
+        mock_ack_response.status = 201
+        mock_ack_response.__enter__ = MagicMock(return_value=mock_ack_response)
+        mock_ack_response.__exit__ = MagicMock(return_value=False)
+
+        mock_project_response = MagicMock()
+        mock_project_response.status = 200
+        mock_project_response.read.return_value = json.dumps({"default_branch": "main"}).encode(
+            "utf-8"
+        )
+        mock_project_response.__enter__ = MagicMock(return_value=mock_project_response)
+        mock_project_response.__exit__ = MagicMock(return_value=False)
+
+        call_count = [0]
+
+        def urlopen_side_effect(req, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return mock_ack_response
+            if call_count[0] == 2:
+                return mock_project_response
+            # Third call: branch create returns 400 with "already exists" body
+            err = urllib.error.HTTPError(
+                url=req.full_url,
+                code=400,
+                msg="Bad Request",
+                hdrs={},
+                fp=BytesIO(b'{"message":"Branch already exists"}'),
+            )
+            raise err
+
+        mock_urlopen.side_effect = urlopen_side_effect
+
+        result = _handle_gitlab_mention(
+            SAMPLE_GITLAB_ENVELOPE,
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-400",
+        )
+
+        # 400 with "already exists" body is tolerated — still success
+        assert result == 0
+        mock_delete_msg.assert_called_once()
+
+    @patch("entrypoint.boto3.client")
+    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint._delete_message")
+    def test_ack_comment_failure_returns_1_but_still_deletes_message(
+        self,
+        mock_delete_msg,
+        mock_urlopen,
+        mock_boto_client,
+        monkeypatch,
+    ):
+        """If ack comment POST fails, return 1 but still delete msg (no FIFO jam)."""
+        from entrypoint import _handle_gitlab_mention
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        mock_sm = MagicMock()
+        mock_boto_client.return_value = mock_sm
+        mock_sm.get_secret_value.return_value = {"SecretString": "glpat-test"}
+
+        # Both API calls fail (ack comment + branch create)
+        mock_urlopen.side_effect = Exception("Connection refused")
+
+        result = _handle_gitlab_mention(
+            SAMPLE_GITLAB_ENVELOPE,
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-fail",
+        )
+
+        # Ack comment failed → return 1, but message still deleted (no FIFO jam)
+        assert result == 1
+        mock_delete_msg.assert_called_once()
+
+    @patch("entrypoint._delete_message")
+    def test_missing_required_fields_deletes_message(
+        self,
+        mock_delete_msg,
+        monkeypatch,
+    ):
+        """Missing project_id/issue_iid → delete msg and return 1."""
+        from entrypoint import _handle_gitlab_mention
+
+        monkeypatch.setenv("GITLAB_URL", "http://gitlab.dev.adp.internal")
+
+        # Envelope with empty source fields
+        bad_envelope = {
+            **SAMPLE_GITLAB_ENVELOPE,
+            "payload": {
+                **SAMPLE_GITLAB_ENVELOPE["payload"],
+                "source": {
+                    "project_id": None,
+                    "project_path": "",
+                    "issue_iid": None,
+                    "note_id": None,
+                    "gitlab_url": "",
+                },
+            },
+        }
+
+        result = _handle_gitlab_mention(
+            bad_envelope,
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-bad",
+        )
+
+        assert result == 1
+        mock_delete_msg.assert_called_once()
+
+    @patch("entrypoint.boto3.client")
+    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint._delete_message")
+    def test_envelope_gitlab_url_takes_precedence_over_env(
+        self,
+        mock_delete_msg,
+        mock_urlopen,
+        mock_boto_client,
+        monkeypatch,
+    ):
+        """Envelope's gitlab_url is primary; GITLAB_URL env var is fallback only."""
+        from entrypoint import _handle_gitlab_mention
+
+        monkeypatch.setenv("GITLAB_URL", "http://fallback-gitlab.internal")
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        mock_sm = MagicMock()
+        mock_boto_client.return_value = mock_sm
+        mock_sm.get_secret_value.return_value = {"SecretString": "glpat-test"}
+
+        mock_ack_response = MagicMock()
+        mock_ack_response.status = 201
+        mock_ack_response.__enter__ = MagicMock(return_value=mock_ack_response)
+        mock_ack_response.__exit__ = MagicMock(return_value=False)
+
+        mock_project_response = MagicMock()
+        mock_project_response.status = 200
+        mock_project_response.read.return_value = json.dumps({"default_branch": "main"}).encode(
+            "utf-8"
+        )
+        mock_project_response.__enter__ = MagicMock(return_value=mock_project_response)
+        mock_project_response.__exit__ = MagicMock(return_value=False)
+
+        mock_branch_response = MagicMock()
+        mock_branch_response.status = 201
+        mock_branch_response.__enter__ = MagicMock(return_value=mock_branch_response)
+        mock_branch_response.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [
+            mock_ack_response,
+            mock_project_response,
+            mock_branch_response,
+        ]
+
+        _handle_gitlab_mention(
+            SAMPLE_GITLAB_ENVELOPE,
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-env",
+        )
+
+        # Verify the URL used is from envelope (gitlab.dev.adp.internal), not env var
+        first_call_req = mock_urlopen.call_args_list[0][0][0]
+        assert "gitlab.dev.adp.internal" in first_call_req.full_url
+        assert "fallback-gitlab.internal" not in first_call_req.full_url
+
+    @patch("entrypoint.boto3.client")
+    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint._delete_message")
+    def test_env_var_used_when_envelope_gitlab_url_empty(
+        self,
+        mock_delete_msg,
+        mock_urlopen,
+        mock_boto_client,
+        monkeypatch,
+    ):
+        """GITLAB_URL env var is used when envelope's gitlab_url is empty."""
+        from entrypoint import _handle_gitlab_mention
+
+        monkeypatch.setenv("GITLAB_URL", "http://override-gitlab.internal")
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        mock_sm = MagicMock()
+        mock_boto_client.return_value = mock_sm
+        mock_sm.get_secret_value.return_value = {"SecretString": "glpat-test"}
+
+        mock_ack_response = MagicMock()
+        mock_ack_response.status = 201
+        mock_ack_response.__enter__ = MagicMock(return_value=mock_ack_response)
+        mock_ack_response.__exit__ = MagicMock(return_value=False)
+
+        mock_project_response = MagicMock()
+        mock_project_response.status = 200
+        mock_project_response.read.return_value = json.dumps({"default_branch": "main"}).encode(
+            "utf-8"
+        )
+        mock_project_response.__enter__ = MagicMock(return_value=mock_project_response)
+        mock_project_response.__exit__ = MagicMock(return_value=False)
+
+        mock_branch_response = MagicMock()
+        mock_branch_response.status = 201
+        mock_branch_response.__enter__ = MagicMock(return_value=mock_branch_response)
+        mock_branch_response.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [
+            mock_ack_response,
+            mock_project_response,
+            mock_branch_response,
+        ]
+
+        # Envelope with empty gitlab_url in source
+        envelope_empty_url = {
+            **SAMPLE_GITLAB_ENVELOPE,
+            "payload": {
+                **SAMPLE_GITLAB_ENVELOPE["payload"],
+                "source": {
+                    **SAMPLE_GITLAB_ENVELOPE["payload"]["source"],
+                    "gitlab_url": "",
+                },
+            },
+        }
+
+        _handle_gitlab_mention(
+            envelope_empty_url,
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-fallback",
+        )
+
+        # Verify the URL used is from env var (fallback)
+        first_call_req = mock_urlopen.call_args_list[0][0][0]
+        assert "override-gitlab.internal" in first_call_req.full_url
+
+    @patch("entrypoint.boto3.client")
+    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint._delete_message")
+    def test_branch_create_400_invalid_ref_returns_1(
+        self,
+        mock_delete_msg,
+        mock_urlopen,
+        mock_boto_client,
+        monkeypatch,
+    ):
+        """Issue #3452: branch 400 with non-'already exists' body → error, return 1."""
+        from entrypoint import _handle_gitlab_mention
+        import urllib.error
+        from io import BytesIO
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        mock_sm = MagicMock()
+        mock_boto_client.return_value = mock_sm
+        mock_sm.get_secret_value.return_value = {"SecretString": "glpat-test"}
+
+        # Calls: 1) ack comment, 2) project lookup, 3) branch create (400 invalid ref)
+        mock_ack_response = MagicMock()
+        mock_ack_response.status = 201
+        mock_ack_response.__enter__ = MagicMock(return_value=mock_ack_response)
+        mock_ack_response.__exit__ = MagicMock(return_value=False)
+
+        mock_project_response = MagicMock()
+        mock_project_response.status = 200
+        mock_project_response.read.return_value = json.dumps({"default_branch": "main"}).encode(
+            "utf-8"
+        )
+        mock_project_response.__enter__ = MagicMock(return_value=mock_project_response)
+        mock_project_response.__exit__ = MagicMock(return_value=False)
+
+        call_count = [0]
+
+        def urlopen_side_effect(req, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return mock_ack_response
+            if call_count[0] == 2:
+                return mock_project_response
+            # Third call: branch create returns 400 with invalid ref body
+            err = urllib.error.HTTPError(
+                url=req.full_url,
+                code=400,
+                msg="Bad Request",
+                hdrs={},
+                fp=BytesIO(b'{"message":"Invalid reference name"}'),
+            )
+            raise err
+
+        mock_urlopen.side_effect = urlopen_side_effect
+
+        result = _handle_gitlab_mention(
+            SAMPLE_GITLAB_ENVELOPE,
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-400-invalid",
+        )
+
+        # 400 with non-"already exists" body is a real error — return 1
+        assert result == 1
+        mock_delete_msg.assert_called_once()
+
+    @patch("entrypoint.boto3.client")
+    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint._delete_message")
+    def test_default_branch_resolved_from_project_api(
+        self,
+        mock_delete_msg,
+        mock_urlopen,
+        mock_boto_client,
+        monkeypatch,
+    ):
+        """Issue #3452: default branch resolved from project API (non-'main' works)."""
+        from entrypoint import _handle_gitlab_mention
+
+        monkeypatch.setenv("ENVIRONMENT", "dev")
+
+        mock_sm = MagicMock()
+        mock_boto_client.return_value = mock_sm
+        mock_sm.get_secret_value.return_value = {"SecretString": "glpat-test"}
+
+        # Calls: 1) ack comment, 2) project lookup (develop), 3) branch create
+        mock_ack_response = MagicMock()
+        mock_ack_response.status = 201
+        mock_ack_response.__enter__ = MagicMock(return_value=mock_ack_response)
+        mock_ack_response.__exit__ = MagicMock(return_value=False)
+
+        mock_project_response = MagicMock()
+        mock_project_response.status = 200
+        mock_project_response.read.return_value = json.dumps({"default_branch": "develop"}).encode(
+            "utf-8"
+        )
+        mock_project_response.__enter__ = MagicMock(return_value=mock_project_response)
+        mock_project_response.__exit__ = MagicMock(return_value=False)
+
+        mock_branch_response = MagicMock()
+        mock_branch_response.status = 201
+        mock_branch_response.__enter__ = MagicMock(return_value=mock_branch_response)
+        mock_branch_response.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [
+            mock_ack_response,
+            mock_project_response,
+            mock_branch_response,
+        ]
+
+        result = _handle_gitlab_mention(
+            SAMPLE_GITLAB_ENVELOPE,
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-develop",
+        )
+
+        assert result == 0
+        # Verify the branch-create request used "develop" as ref, not "main"
+        branch_create_req = mock_urlopen.call_args_list[2][0][0]
+        assert branch_create_req.data is not None
+        import json as json_mod
+
+        branch_payload = json_mod.loads(branch_create_req.data.decode("utf-8"))
+        assert branch_payload["ref"] == "develop"
+        assert branch_payload["branch"] == "agent/issue-7"

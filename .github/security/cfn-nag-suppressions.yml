@@ -1,11 +1,17 @@
 ---
-# cfn-nag suppressions for documented false-positives
-# Format: https://github.com/stelligent/cfn_nag#per-resource-rule-suppression
+# cfn-nag global deny-list (passed via --deny-list-path).
 #
-# Add suppression entries here when a cfn-nag rule fires on a resource
-# that is intentionally configured that way, with justification.
+# IMPORTANT: this file MUST contain a top-level `RuleSuppression:` key mapping
+# to a list. cfn-nag 0.8.x deserializes the deny-list into a GlobalDenyList; an
+# all-comments (or empty) file parses to `nil` and cfn-nag aborts every
+# template with "Deny list is malformed" — a FATAL that the job previously
+# swallowed (`|| true`), silently zeroing cfn-nag coverage (issue #3587).
+# Keep at least an empty `RuleSuppression: []` here.
 #
-# Example:
-# RuleSuppression:
-#   - id: W28
-#     reason: "Explicit resource name required for cross-stack reference"
+# Per-resource suppressions are preferred and live inline in each template's
+# `Metadata.cfn_nag.rules_to_suppress` (see aws/scoped-write.cfn.yaml and
+# aws/full-admin.cfn.yaml). Add a GLOBAL entry below only when a rule must be
+# waived across every scanned template, each with a justification.
+#
+# Format: https://github.com/stelligent/cfn_nag#global-rule-suppression
+RuleSuppression: []

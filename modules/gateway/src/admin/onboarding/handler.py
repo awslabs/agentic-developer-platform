@@ -252,9 +252,12 @@ async def _find_matching_tenants_for_user(
                         username=github_login,
                     )
                     if is_member:
+                        # Issue #2954: If this org is linked to a parent tenant,
+                        # resolve to the parent (attach-forward-only rule 3).
+                        resolved_org_id = org.parent_tenant_id or org.id
                         matched.append(
                             MatchedTenant(
-                                org_id=org.id,
+                                org_id=resolved_org_id,
                                 org_name=org.name,
                                 install_id=int(install_id),
                             )
@@ -271,7 +274,18 @@ async def _find_matching_tenants_for_user(
                     continue  # try next install / next org
     finally:
         await client.aclose()
-    return matched
+
+    # Issue #2954: Deduplicate by org_id — rule 3 can produce duplicates when a
+    # user belongs to both the parent org and a linked child (both resolve to the
+    # same parent_tenant_id). Without dedup, _create_memberships_for_matches
+    # would hit a UniqueConstraint violation on (user_id, tenant_id).
+    seen_ids: set[str] = set()
+    deduped: list[MatchedTenant] = []
+    for m in matched:
+        if m.org_id not in seen_ids:
+            seen_ids.add(m.org_id)
+            deduped.append(m)
+    return deduped
 
 
 async def _determine_role_for_matched_user(
@@ -508,6 +522,37 @@ async def _create_memberships_for_matches(
     # Flush to catch constraint violations within the transaction
     await db.flush()
 
+    # Issue #3134: Write-through member_org_ids to DDB after creating memberships.
+    # Best-effort — failures are logged but don't block the onboarding flow.
+    try:
+        from src.admin.identity.identity_index_writer import IdentityIndexWriter
+        from src.shared.models.vault import UserIdentity
+
+        # Collect all org_ids from existing + new memberships
+        all_stmt = select(TenantMembership.tenant_id).where(
+            TenantMembership.user_id == user_id,
+        )
+        all_org_ids = list((await db.execute(all_stmt)).scalars().all())
+
+        # Find user's GitHub identity for DDB key
+        identity_stmt = select(UserIdentity).where(
+            UserIdentity.user_id == user_id,
+            UserIdentity.provider == "github",
+        )
+        github_identity = (await db.execute(identity_stmt)).scalar_one_or_none()
+        if github_identity and github_identity.provider_user_id:
+            writer = IdentityIndexWriter()
+            await writer.update_user_membership_orgs(
+                provider_user_id=github_identity.provider_user_id,
+                member_org_ids=all_org_ids,
+                provider="github",
+            )
+    except Exception:
+        logger.exception(
+            "onboarding: failed to update member_org_ids for user=%s (non-fatal)",
+            user_id,
+        )
+
 
 async def sync_memberships_on_login(
     db: AsyncSession,
@@ -574,6 +619,14 @@ async def get_access_status(
                 github_login, _ = _fetch_github_identity_from_cognito(cognito_sub)
             if github_login:
                 await sync_memberships_on_login(db, user, github_login)
+            else:
+                # Issue #3031: greppable event for post-deploy smoke diagnostics.
+                # Silent no-op when github_login cannot be resolved — membership
+                # sync is skipped entirely.
+                logger.info(
+                    "membership_sync_skipped reason=no_github_login user=%s",
+                    cognito_sub,
+                )
         except Exception:
             # Best-effort: identity resolution or membership sync failure
             # must not break login. Non-GitHub sessions (email/password admin)
@@ -733,6 +786,32 @@ async def submit_access_request(
                 )
                 db.add(membership)
                 await db.commit()
+
+                # Issue #3134: Write-through member_org_ids after auto-approve
+                try:
+                    from src.shared.models.vault import UserIdentity
+
+                    all_stmt = select(TenantMembership.tenant_id).where(
+                        TenantMembership.user_id == user.id,
+                    )
+                    all_org_ids = list((await db.execute(all_stmt)).scalars().all())
+
+                    identity_stmt = select(UserIdentity).where(
+                        UserIdentity.user_id == user.id,
+                        UserIdentity.provider == "github",
+                    )
+                    github_identity = (await db.execute(identity_stmt)).scalar_one_or_none()
+                    if github_identity and github_identity.provider_user_id:
+                        await writer.update_user_membership_orgs(
+                            provider_user_id=github_identity.provider_user_id,
+                            member_org_ids=all_org_ids,
+                            provider="github",
+                        )
+                except Exception:
+                    logger.exception(
+                        "auto-approve: failed to update member_org_ids for user=%s (non-fatal)",
+                        user.id,
+                    )
 
         return AccessRequestResponse(
             status="approved",

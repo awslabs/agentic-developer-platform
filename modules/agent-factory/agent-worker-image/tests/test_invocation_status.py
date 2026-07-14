@@ -238,3 +238,63 @@ class TestUpdateStatus:
         expr_values = call_kwargs["ExpressionAttributeValues"]
         assert ":transcript_key" not in expr_values
         assert "transcript_key" not in call_kwargs["UpdateExpression"]
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_token_mode_written_at_in_progress(self, mock_get_client):
+        """Issue #3385 (C5): token_mode is included in DDB update when passed."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        invocation_status.update_status(
+            event_id="msg-pat-001",
+            arrived_at="2026-07-11T14:00:00Z",
+            status="in_progress",
+            run_id="agent-scaledjob-pat-test",
+            token_mode="pat",
+        )
+
+        call_kwargs = mock_client.update_item.call_args[1]
+        expr_values = call_kwargs["ExpressionAttributeValues"]
+        assert ":token_mode" in expr_values
+        assert expr_values[":token_mode"] == {"S": "pat"}
+        assert "token_mode" in call_kwargs["UpdateExpression"]
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_token_mode_omitted_when_none(self, mock_get_client):
+        """Issue #3385 (C5): token_mode is NOT included when None (back-compat)."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        invocation_status.update_status(
+            event_id="msg-123",
+            arrived_at="2026-07-11T14:00:00Z",
+            status="in_progress",
+            run_id="agent-scaledjob-xyz",
+        )
+
+        call_kwargs = mock_client.update_item.call_args[1]
+        expr_values = call_kwargs["ExpressionAttributeValues"]
+        assert ":token_mode" not in expr_values
+        assert "token_mode" not in call_kwargs["UpdateExpression"]
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_token_mode_app_written_correctly(self, mock_get_client):
+        """Issue #3385 (C5): token_mode='app' is written for App-token runs."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        invocation_status.update_status(
+            event_id="msg-app-001",
+            arrived_at="2026-07-11T14:00:00Z",
+            status="in_progress",
+            run_id="agent-scaledjob-app-test",
+            token_mode="app",
+        )
+
+        call_kwargs = mock_client.update_item.call_args[1]
+        expr_values = call_kwargs["ExpressionAttributeValues"]
+        assert ":token_mode" in expr_values
+        assert expr_values[":token_mode"] == {"S": "app"}

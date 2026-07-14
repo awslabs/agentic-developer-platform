@@ -92,6 +92,159 @@ class TestIssueLabeledEvents:
         assert result is None
 
 
+# --- Issue opened tests (Issue #3169) ---
+
+
+class TestIssueOpenedEvents:
+    """Issue #3169: issues.opened dispatches aidlc persona when aidlc-intent label present."""
+
+    def test_opened_with_aidlc_intent_label(self):
+        """issues.opened with aidlc-intent label → aidlc persona."""
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 100,
+                "labels": [{"name": "aidlc-intent"}],
+            },
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issues", payload)
+        assert result is not None
+        assert result.persona == "aidlc"
+        assert result.trigger == "issue_opened"
+        assert result.label == "aidlc-intent"
+
+    def test_opened_without_aidlc_intent_label_returns_none(self):
+        """issues.opened without aidlc-intent label → no dispatch (prevents storm)."""
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 101,
+                "labels": [{"name": "bug"}, {"name": "enhancement"}],
+            },
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issues", payload)
+        assert result is None
+
+    def test_opened_no_labels_returns_none(self):
+        """issues.opened with no labels at all → no dispatch."""
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 102,
+                "labels": [],
+            },
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issues", payload)
+        assert result is None
+
+    def test_bot_created_issue_with_aidlc_intent_dispatches(self):
+        """Issue #3245: Bot sender + issues.opened + aidlc-intent label → dispatches.
+
+        The aidlc-intent label is the authorization signal; bot-created issues
+        with this label should dispatch (enables automated orchestration flows).
+        """
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 103,
+                "labels": [{"name": "aidlc-intent"}],
+            },
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "aws-e-adp[bot]", "id": 777, "type": "Bot"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issues", payload)
+        assert result is not None
+        assert result.persona == "aidlc"
+        assert result.trigger == "issue_opened"
+        assert result.label == "aidlc-intent"
+
+    def test_bot_created_issue_without_aidlc_intent_still_blocked(self):
+        """Issue #3245: Bot sender + issues.opened + NO aidlc-intent label → blocked.
+
+        Only the aidlc-intent label grants the exception; bot-created issues
+        without it remain blocked by the bot guard.
+        """
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 104,
+                "labels": [{"name": "bug"}, {"name": "enhancement"}],
+            },
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "github-actions[bot]", "id": 777, "type": "Bot"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issues", payload)
+        assert result is None
+
+    def test_bot_created_issue_no_labels_still_blocked(self):
+        """Issue #3245: Bot sender + issues.opened + empty labels → blocked."""
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 105,
+                "labels": [],
+            },
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "github-actions[bot]", "id": 777, "type": "Bot"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issues", payload)
+        assert result is None
+
+    def test_bot_created_issue_with_aidlc_intent_among_others_dispatches(self):
+        """Issue #3245: Bot sender + aidlc-intent among multiple labels → dispatches."""
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 106,
+                "labels": [
+                    {"name": "enhancement"},
+                    {"name": "aidlc-intent"},
+                    {"name": "priority-high"},
+                ],
+            },
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "aws-e-adp[bot]", "id": 777, "type": "Bot"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issues", payload)
+        assert result is not None
+        assert result.persona == "aidlc"
+        assert result.trigger == "issue_opened"
+
+    def test_opened_with_multiple_labels_including_aidlc_intent(self):
+        """issues.opened with aidlc-intent among other labels → dispatches."""
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 104,
+                "labels": [
+                    {"name": "enhancement"},
+                    {"name": "aidlc-intent"},
+                    {"name": "priority-high"},
+                ],
+            },
+            "repository": {"full_name": "org/repo"},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issues", payload)
+        assert result is not None
+        assert result.persona == "aidlc"
+        assert result.trigger == "issue_opened"
+
+
 # --- Pull request tests ---
 
 
@@ -279,6 +432,79 @@ class TestIssueCommentEvents:
         # The order depends on MENTION_TO_PERSONA dict iteration — both are valid
         assert result.persona in ("pm", "developer")
 
+    # --- Issue #3169: aidlc persona routing ---
+
+    def test_mention_aidlc(self):
+        """@agent-aidlc mention resolves to the aidlc persona."""
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-aidlc please start inception"},
+            "issue": {"number": 3169},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issue_comment", payload)
+        assert result is not None
+        assert result.persona == "aidlc"
+        assert result.trigger == "mentioned"
+
+    def test_aidlc_does_not_shadow_architect(self):
+        """@agent-aidlc must not shadow @agent-architect (no substring collision).
+
+        'aidlc' does not appear as a substring in any other mention key, and no
+        other mention key is a substring of '@agent-aidlc'. Explicit pin.
+        """
+        payload_aidlc = {
+            "action": "created",
+            "comment": {"body": "@agent-aidlc start inception"},
+            "issue": {"number": 3169},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        payload_architect = {
+            "action": "created",
+            "comment": {"body": "@agent-architect review design"},
+            "issue": {"number": 3169},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result_aidlc = extract_intent("issue_comment", payload_aidlc)
+        result_architect = extract_intent("issue_comment", payload_architect)
+        assert result_aidlc is not None
+        assert result_aidlc.persona == "aidlc"
+        assert result_architect is not None
+        assert result_architect.persona == "architect"
+
+    def test_aidlc_dict_order_does_not_shadow_earlier_personas(self):
+        """A body mentioning both @agent-developer and @agent-aidlc routes to
+        developer (earlier in dict order). Pins first-match behavior.
+        """
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-developer and @agent-aidlc please help"},
+            "issue": {"number": 3169},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issue_comment", payload)
+        assert result is not None
+        assert result.persona == "developer"
+
+    def test_aidlc_before_codex_in_dict_order(self):
+        """@agent-aidlc precedes @agent-codex in MENTION_TO_PERSONA — when both
+        are mentioned, aidlc wins (and codex remains last).
+        """
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-aidlc and @agent-codex please"},
+            "issue": {"number": 3169},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issue_comment", payload)
+        assert result is not None
+        assert result.persona == "aidlc"
+
     # --- Issue #2706: codex supervisor persona routing ---
 
     def test_mention_codex(self):
@@ -368,10 +594,21 @@ class TestEdgeCases:
         result = extract_intent("check_run", payload)
         assert result is None
 
-    def test_issues_event_wrong_action(self):
-        """issues event with action != labeled should be no-op."""
+    def test_issues_opened_without_aidlc_label_no_op(self):
+        """issues.opened without aidlc-intent label is a no-op (issue #3169)."""
         payload = {
             "action": "opened",
+            "issue": {"number": 1},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issues", payload)
+        assert result is None
+
+    def test_issues_event_unsupported_action(self):
+        """issues event with unsupported action (e.g. closed) should be no-op."""
+        payload = {
+            "action": "closed",
             "issue": {"number": 1},
             "sender": {"login": "user", "id": 1, "type": "User"},
             "installation": {"id": 123},
@@ -579,6 +816,21 @@ class TestChainAwareBotLogic:
         result = extract_intent(
             "issue_comment", payload, correlation_ctx=ctx, resolved_identity=identity
         )
+        assert result is None
+
+    # Issue #3245 REGRESSION: Bot comment events use dispatch-marker gate, not the
+    # issues.opened exception. Verifies issue #3245 doesn't inadvertently relax comments.
+    def test_bot_comment_events_unchanged_by_issue_3245(self):
+        """Issue #3245 regression: bot comment without dispatch marker → still blocked."""
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-developer implement this"},
+            "issue": {"number": 55},
+            "sender": self._bot_sender(),
+            "installation": {"id": 123},
+        }
+        # No correlation ctx, no dispatch marker → blocked (safe default)
+        result = extract_intent("issue_comment", payload)
         assert result is None
 
     # 8. REGRESSION GUARD: Bot applies label → still blocked (top-level guard preserved)

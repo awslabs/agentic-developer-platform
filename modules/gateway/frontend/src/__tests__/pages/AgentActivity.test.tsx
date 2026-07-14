@@ -7,7 +7,7 @@
  * admin toggle visibility, error/retry UI, trigger badges, chain view.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -97,11 +97,11 @@ function createTestQueryClient() {
   });
 }
 
-function renderAgentActivity() {
+function renderAgentActivity(initialRoute = '/') {
   const queryClient = createTestQueryClient();
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialRoute]}>
         <AgentActivity />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -375,18 +375,22 @@ describe('AgentActivity Page', () => {
     });
   });
 
-  it('shows empty state "No agent activity yet" when no items and no cursor', async () => {
+  it('shows empty state with guidance when no items and no cursor', async () => {
     // In chain view (default), empty means no chains
     mockGetMyChains.mockResolvedValue({ chains: [], count: 0, last_key: null });
 
     renderAgentActivity();
 
     await waitFor(() => {
-      expect(screen.getByText('No agent activity yet')).toBeInTheDocument();
+      expect(screen.getByText('No agent runs yet')).toBeInTheDocument();
     });
+
+    // Provides concrete guidance instead of a dead end
+    expect(screen.getByText(/Mention the developer agent/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /View setup guide/ })).toHaveAttribute('href', '/setup');
   });
 
-  it('renders page title and subtitle', async () => {
+  it('renders page title with cross-link subtitle to Dashboard', async () => {
     renderAgentActivity();
 
     expect(screen.getByText('Agent Activity')).toBeInTheDocument();
@@ -395,7 +399,8 @@ describe('AgentActivity Page', () => {
       expect(mockGetMyChains).toHaveBeenCalled();
     });
 
-    expect(screen.getByText('Your agent invocations')).toBeInTheDocument();
+    expect(screen.getByText(/Every run, filterable/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Dashboard' })).toHaveAttribute('href', '/runs');
   });
 
   // ---------------------------------------------------------------------------
@@ -503,5 +508,197 @@ describe('AgentActivity Page', () => {
     expect(screen.getByTestId('trigger-badge-human')).toBeInTheDocument();
     // No "View chain" link when correlation_id is null
     expect(screen.queryByText('View chain')).not.toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue #3723: include_non_triggering derivation
+  // ---------------------------------------------------------------------------
+
+  it('status=in_progress from URL lands on flat view without include_non_triggering (Issue #3723)', async () => {
+    // Render with URL param ?status=in_progress (dashboard tile click).
+    // A status filter opens the FLAT view: chain grouping filters by root
+    // status, so counts would disagree with the tile that was clicked.
+    const queryClient = createTestQueryClient();
+    const { unmount } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/activity?status=in_progress']}>
+          <AgentActivity />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(mockGetMine).toHaveBeenCalled();
+    });
+    expect(mockGetMyChains).not.toHaveBeenCalled();
+
+    const flatCallParams = mockGetMine.mock.calls[0][0];
+    expect(flatCallParams.status).toBe('in_progress');
+    expect(flatCallParams.include_non_triggering).toBeUndefined();
+
+    unmount();
+  });
+
+  it('status=no_op lands on flat view WITH include_non_triggering (Issue #3723)', async () => {
+    // Render with URL param ?status=no_op (user explicitly filtering by no_op)
+    const queryClient = createTestQueryClient();
+    const { unmount } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/activity?status=no_op']}>
+          <AgentActivity />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(mockGetMine).toHaveBeenCalled();
+    });
+
+    const flatCallParams = mockGetMine.mock.calls[0][0];
+    expect(flatCallParams.status).toBe('no_op');
+    expect(flatCallParams.include_non_triggering).toBe(true);
+
+    unmount();
+  });
+
+  it('no URL params defaults to chain view (Issue #3723 follow-up)', async () => {
+    const queryClient = createTestQueryClient();
+    const { unmount } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/activity']}>
+          <AgentActivity />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(mockGetMyChains).toHaveBeenCalled();
+    });
+
+    unmount();
+  });
+
+  it('view=runs URL param lands on flat view (Issue #3723 follow-up)', async () => {
+    const queryClient = createTestQueryClient();
+    const { unmount } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/activity?view=runs']}>
+          <AgentActivity />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(mockGetMine).toHaveBeenCalled();
+    });
+    expect(mockGetMyChains).not.toHaveBeenCalled();
+
+    unmount();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue #3769: Keyboard accessibility for flat view table rows
+  // ---------------------------------------------------------------------------
+
+  it('flat view rows are keyboard-accessible: Enter opens detail modal', async () => {
+    const items: InvocationItem[] = [
+      makeInvocation({
+        invocation_id: 'inv-kbd-1',
+        topic: 'Keyboard test task',
+        status: 'failed',
+      }),
+    ];
+
+    mockGetMine.mockResolvedValue({ items, last_key: null });
+
+    await renderAgentActivityFlat();
+
+    // Find the row by its aria-label
+    const row = screen.getByRole('row', { name: /Run: Keyboard test task, Status: Failed/ });
+    expect(row).toHaveAttribute('tabindex', '0');
+
+    // Before keyboard activation, topic appears only in the table cell
+    expect(screen.getAllByText('Keyboard test task')).toHaveLength(1);
+
+    // Simulate Enter keypress on the row
+    fireEvent.keyDown(row, { key: 'Enter', code: 'Enter' });
+
+    // Detail modal should open — topic now appears in both table cell and detail panel
+    await waitFor(() => {
+      expect(screen.getAllByText('Keyboard test task').length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it('flat view rows are keyboard-accessible: Space opens detail modal', async () => {
+    const items: InvocationItem[] = [
+      makeInvocation({
+        invocation_id: 'inv-kbd-2',
+        topic: 'Space key task',
+        status: 'complete',
+      }),
+    ];
+
+    mockGetMine.mockResolvedValue({ items, last_key: null });
+
+    await renderAgentActivityFlat();
+
+    // Find the row by its aria-label
+    const row = screen.getByRole('row', { name: /Run: Space key task, Status: Complete/ });
+    expect(row).toHaveAttribute('tabindex', '0');
+
+    // Before keyboard activation, topic appears only in the table cell
+    expect(screen.getAllByText('Space key task')).toHaveLength(1);
+
+    // Simulate Space keypress on the row
+    fireEvent.keyDown(row, { key: ' ', code: 'Space' });
+
+    // Detail modal should open — topic now appears in both table cell and detail panel
+    await waitFor(() => {
+      expect(screen.getAllByText('Space key task').length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it('flat view rows have descriptive aria-label for screen readers', async () => {
+    const items: InvocationItem[] = [
+      makeInvocation({
+        invocation_id: 'inv-aria-1',
+        topic: 'Fix login bug',
+        status: 'failed',
+      }),
+    ];
+
+    mockGetMine.mockResolvedValue({ items, last_key: null });
+
+    await renderAgentActivityFlat();
+
+    const row = screen.getByRole('row', { name: /Run: Fix login bug, Status: Failed/ });
+    expect(row).toBeInTheDocument();
+    expect(row).toHaveAttribute('tabindex', '0');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue #3770: Responsive layout — table above 1024px, cards below
+  // ---------------------------------------------------------------------------
+
+  it('table renders correctly above 1024px (wide viewport uses table layout)', async () => {
+    // Default jsdom has no matchMedia match (window.innerWidth defaults to 1024),
+    // and our mock returns false for "(max-width: 1023px)", meaning wide viewport.
+    // The flat view should render a table element.
+    const items: InvocationItem[] = [
+      makeInvocation({
+        invocation_id: 'inv-wide-1',
+        topic: 'Wide viewport task',
+        status: 'complete',
+      }),
+    ];
+
+    mockGetMine.mockResolvedValue({ items, last_key: null });
+
+    await renderAgentActivityFlat();
+
+    // Table element should be present (wide viewport renders table layout)
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    // Cards should NOT be rendered
+    expect(screen.queryByTestId('activity-card-inv-wide-1')).not.toBeInTheDocument();
   });
 });

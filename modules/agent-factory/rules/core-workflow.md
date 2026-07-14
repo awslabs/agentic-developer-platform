@@ -69,7 +69,8 @@ Every issue includes:
 ### Labels for Filtering
 - Type: `epic`, `story`, `unit`, `task`, `spike`
 - Phase: `phase:inception`, `phase:construction`, `phase:operations`
-- Agent: `agent-product`, `agent-architect`, `agent-developer`, `agent-reviewer`, `agent-operations`
+- ~~Agent: `agent-*`~~ — DEPRECATED, never add these (they don't dispatch and
+  must not be used even as metadata; see "NEVER do this" below, bug #3626)
 
 ## Beads State Management (REQUIRED)
 
@@ -211,11 +212,11 @@ While waiting for human:
 When Inception completes:
 - Create Construction phase documents
 - Create implementation tasks on project board
-- Set each unit's `assigned_agent` field to the developer persona, then **dispatch** it by posting an `@agent-developer` comment on the unit issue (see TRIGGERS — comment, never a label)
+- Set each unit's `assigned_agent` field to the developer persona, then **dispatch** it with `adp-trigger --persona developer --issue <unit>` (see TRIGGERS — never a comment mention or a label)
 
 When Construction completes:
 - Create Operations phase documents
-- Set deployment tasks' `assigned_agent` to the operations persona, then **dispatch** via an `@agent-operations` comment on each task (see TRIGGERS)
+- Set deployment tasks' `assigned_agent` to the operations persona, then **dispatch** via `adp-trigger --persona operations --issue <task>` on each task (see TRIGGERS)
 
 ## Step 7: Push Beads State (ALWAYS LAST)
 
@@ -313,9 +314,9 @@ If ANY ambiguity found: Add follow-up questions, do NOT proceed.
 - Respect dependency order
 - Parallelize independent units
 - **CRITICAL: ONLY trigger agents for tasks with NO blockers**
-  - Check the `blocked_by` field before dispatching (posting the `@agent-<persona>` comment)
+  - Check the `blocked_by` field before dispatching (before the `adp-trigger` call)
   - If a task has blockers, wait until blockers are Done
-  - Never dispatch an agent (never post the `@agent-<persona>` comment) on a blocked task
+  - Never dispatch an agent (never call `adp-trigger`) on a blocked task
 
 **Operations Phase**:
 - Create only after construction complete
@@ -325,32 +326,33 @@ If ANY ambiguity found: Add follow-up questions, do NOT proceed.
 
 # TRIGGERS — how to dispatch an agent
 
-> **Dispatch agents by posting a comment that `@`-mentions the persona. NEVER by adding a label.**
-> Label-based triggering is deprecated: it bypasses the loop-prevention guards and causes duplicate / stuck runs. The webhook only applies the dispatch guards to **comment** events.
+> **As an agent, dispatch other agents with `adp-trigger`. NEVER by posting an `@agent-<persona>` comment, and NEVER by adding a label.**
+> The `adp-trigger` CLI calls `POST /agent/trigger`, which resolves correlation/lineage authoritatively at ingress — so the spawned run always stays connected to the originating chain. A bot-authored `@agent-<persona>` comment does not reliably dispatch (the webhook's loop-prevention guards drop or dedup it) and it breaks lineage; label-based triggering is deprecated for the same guard-bypass reasons. The `@agent-<persona>` comment path exists for **human operators only**.
 
-### The ONLY correct way to dispatch an agent
-
-Post a comment on the **target issue** that mentions exactly one persona:
+### The ONLY correct way for an agent to dispatch an agent
 
 ```bash
 # ✅ CORRECT — dispatch the developer to work issue 2151
-gh issue comment 2151 --body "@agent-developer please implement this. <one-line context>"
+adp-trigger --persona developer --issue 2151 --reason "<one-line context>"
 ```
 
 Rules:
-- **Comment, not label.** Use `gh issue comment <issue> --body "@agent-<persona> ..."`.
-- **Exactly ONE `@agent-` mention per comment.** The webhook routes to the *first* persona mention in dict order, so a second mention mis-routes. If you must *refer* to another persona in prose, write it without the `@` (e.g. "the developer persona").
-- **Dispatch on the work issue, never on an orchestrator/EPIC issue.** Triggering an agent on the orchestrator makes it try to *implement* the orchestrator.
-- You don't add the `adp-dispatch` marker yourself — the `gh` wrapper injects it automatically when you post a cross-issue `@agent-<persona>` comment. Just post the comment.
+- **`adp-trigger`, not a comment, not a label.** It reads lineage (`ADP_CORRELATION_ID`, `ADP_MESSAGE_ID`, `ADP_CHAIN_DEPTH`) from the pod env and SigV4-signs with the pod IAM role; you never handle trust values.
+- **Dispatch on the work issue, never on an orchestrator/EPIC issue** (`--issue <work-issue>`). Triggering an agent on the orchestrator makes it try to *implement* the orchestrator.
+- **Never `@`-mention a persona to trigger it.** If you must *refer* to another persona in prose (status comments, etc.), write it without the `@` (e.g. "the developer persona") so it can't be parsed as a trigger.
+- One dispatch = one `adp-trigger` call. Do not also post an `@agent` comment for the same dispatch (double-fire).
 
 ### NEVER do this
 
 ```bash
+# ❌ WRONG — bot-authored mention dispatch (loop-guarded, unreliable, breaks lineage)
+gh issue comment 2151 --body "@agent-developer please implement this"
+
 # ❌ WRONG — label-based dispatch (deprecated, bypasses guards, causes loops)
 gh issue edit 2151 --add-label "agent-developer"
 ```
 
-Do **not** run `gh issue edit --add-label "agent-<name>"` to trigger an agent, ever.
+Neither a mention comment nor a label is a valid way for an agent to trigger an agent. Use `adp-trigger`.
 
 ### Classification labels (these are fine)
 

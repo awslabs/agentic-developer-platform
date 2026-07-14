@@ -1,0 +1,22 @@
+Terraform used the selected providers to generate the following execution
+plan. Resource actions are indicated with the following symbols:
+  - destroy
+
+Terraform will perform the following actions:
+
+  # module.neptune.aws_neptune_cluster.main will be [1m[31mdestroyed[0m
+  - resource "aws_neptune_cluster" "main" {
+      - id = "adp-dev-neptune-cluster"
+    }
+
+  # module.neptune.aws_neptune_cluster_instance.main will be [1m[31mdestroyed[0m
+  - resource "aws_neptune_cluster_instance" "main" {
+      - id = "adp-dev-neptune-instance-0"
+    }
+
+  # module.gateway_kms.aws_iam_policy.kms_decrypt will be [1m[31mdestroyed[0m
+  - resource "aws_iam_policy" "kms_decrypt" {
+      - id = "arn:aws:iam::123456789012:policy/adp-dev-kms-decrypt"
+    }
+
+Plan: 0 to add, 0 to change, 3 to destroy.

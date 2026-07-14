@@ -5,8 +5,9 @@ set -euo pipefail
 # deploy-webhook-ingress.sh — Deploy the ARC-free webhook agent path
 # =============================================================================
 # The webhook-ingress stack (API Gateway → github-webhook Lambda → SQS FIFO →
-# KEDA ScaledJob → agent-worker pod) is NOT deployed by deploy-all.sh, and it
-# has two plan/runtime prerequisites that no other flow builds:
+# KEDA ScaledJob → agent-worker pod) is deployed by deploy-all.sh Step 10/11,
+# or run standalone. It has two plan/runtime prerequisites that no other flow
+# builds:
 #
 #   1. The agent-worker image (adp-agent-runtime) the KEDA ScaledJob runs.
 #      Terraform only references the :latest tag; it never validates it, so a
@@ -117,16 +118,53 @@ fi
 # [3/3] terraform apply the webhook-ingress stack
 # ---------------------------------------------------------------------------
 step "[3/3] terraform apply webhook-ingress"
+
+# Read gateway API GW URL from SSM for the resolve-installation fallback path.
+# Published by gateway-infra terraform; empty string is safe (disables fallback).
+GATEWAY_API_URL=$(aws ssm get-parameter \
+  --name "/adp/${ENVIRONMENT}/gateway/apigw-invoke-url" \
+  --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+if [ -n "$GATEWAY_API_URL" ]; then
+  ok "Gateway API URL: ${GATEWAY_API_URL}"
+else
+  warn "Gateway API URL not found in SSM — resolve-installation fallback will be disabled"
+fi
+
 BACKEND="${REPO_ROOT}/environments/${ENVIRONMENT}/modules/webhook-ingress-backend.tfvars"
+
+# Check if gitlab.zip exists in S3; if not, override gitlab_webhook_enabled to
+# false so terraform doesn't fail on the missing artifact (Issue #3488).
+GITLAB_OVERRIDE=""
+if ! aws s3api head-object --bucket "$STATE_BUCKET" --key "lambda-artifacts/webhook-ingress/gitlab.zip" --region "$AWS_REGION" &>/dev/null; then
+  warn "gitlab.zip not found in S3 — overriding gitlab_webhook_enabled=false"
+  GITLAB_OVERRIDE='-var=gitlab_webhook_enabled=false'
+fi
+
+# Check if the gateway internal-api-key secret exists; if not, override
+# enable_adversarial_e2e to false so terraform doesn't fail on the missing
+# secret. terraform.tfvars sets enable_adversarial_e2e=true for CI, but the
+# auto-loaded tfvars also applies to fresh deploys. (Issue #3488/#3490)
+ADVERSARIAL_OVERRIDE=""
+if ! aws secretsmanager describe-secret --secret-id "adp/${ENVIRONMENT}/gateway/internal-api-key" --region "$AWS_REGION" &>/dev/null; then
+  warn "internal-api-key secret not found — overriding enable_adversarial_e2e=false"
+  ADVERSARIAL_OVERRIDE='-var=enable_adversarial_e2e=false'
+fi
+
 if [ "$SKIP_TF" = true ]; then
   warn "Skipping terraform apply (--skip-terraform)."
 elif [ "$DRY_RUN" = true ]; then
   echo "  [dry-run] terraform init -backend-config=$BACKEND"
-  echo "  [dry-run] terraform apply -var=environment=$ENVIRONMENT"
+  echo "  [dry-run] terraform apply -var=environment=$ENVIRONMENT -var=gateway_api_url=$GATEWAY_API_URL${GITLAB_OVERRIDE:+ $GITLAB_OVERRIDE}"
 else
+  # shellcheck disable=SC2086
   ( cd "${MODULE_ROOT}/infra" \
     && terraform init -backend-config="$BACKEND" -input=false -reconfigure >/dev/null \
-    && terraform apply -var="environment=${ENVIRONMENT}" -input=false -auto-approve )
+    && terraform apply \
+         -var="environment=${ENVIRONMENT}" \
+         -var="gateway_api_url=${GATEWAY_API_URL}" \
+         $GITLAB_OVERRIDE \
+         $ADVERSARIAL_OVERRIDE \
+         -input=false -auto-approve )
   ok "webhook-ingress applied"
 fi
 

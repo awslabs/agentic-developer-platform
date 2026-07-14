@@ -89,6 +89,7 @@ class IdentityIndexWriter:
         org_id: str,
         provider: str = "github",
         provider_username: str | None = None,
+        member_org_ids: list[str] | None = None,
     ) -> bool:
         """Write a channel_user entry to DDB for a single identity.
 
@@ -99,8 +100,14 @@ class IdentityIndexWriter:
              write to NEW table (PK=provider, SK=provider_user_id).
              Failure of the NEW write is logged but NOT propagated.
 
-        Uses upsert semantics (PutItem overwrites) so re-creating the same
-        user does not cause DDB write errors.
+        Issue #3134: Optional member_org_ids param writes the list of org_ids
+        where the user has TenantMembership. Used by the webhook Lambda for
+        cross-tenant trigger policy enforcement.
+
+        Issue #3134 fix: When member_org_ids is NOT provided, uses UpdateItem
+        (SET semantics) to avoid wiping a previously-written member_org_ids attr.
+        When member_org_ids IS provided, uses PutItem (full overwrite) to set
+        the complete state including memberships.
 
         Returns True if the OLD-table write succeeded, False if exhausted retries.
         """
@@ -112,16 +119,27 @@ class IdentityIndexWriter:
             org_id,
         )
 
-        # Step 1: Write to OLD table (backward compat — uses github_user identity_type)
-        old_success = await self._client.put_identity(
-            identity_type=GITHUB_USER_TYPE,
-            identity_value=provider_user_id,
-            org_id=org_id,
-            extra_attrs={
+        if member_org_ids is not None:
+            # Full PutItem — caller owns member_org_ids and wants to set it explicitly
+            extra_attrs: dict[str, str | None] = {
                 "user_id": user_id,
                 "provider_username": provider_username,
-            },
-        )
+            }
+            old_success = await self._client.put_identity(
+                identity_type=GITHUB_USER_TYPE,
+                identity_value=provider_user_id,
+                org_id=org_id,
+                extra_attrs=extra_attrs,
+                member_org_ids=member_org_ids,
+            )
+        else:
+            # UpdateItem — preserve existing member_org_ids
+            old_success = await self._client.update_user_identity_core(
+                identity_value=provider_user_id,
+                user_id=user_id,
+                org_id=org_id,
+                provider_username=provider_username,
+            )
 
         if not old_success:
             return False
@@ -129,13 +147,23 @@ class IdentityIndexWriter:
         # Step 2: Write to NEW table (feature-flag gated)
         if _v2_write_enabled():
             try:
-                new_success = await self._user_identity_client.put_user_identity(
-                    provider=provider,
-                    provider_user_id=provider_user_id,
-                    user_id=user_id,
-                    org_id=org_id,
-                    provider_username=provider_username,
-                )
+                if member_org_ids is not None:
+                    new_success = await self._user_identity_client.put_user_identity(
+                        provider=provider,
+                        provider_user_id=provider_user_id,
+                        user_id=user_id,
+                        org_id=org_id,
+                        provider_username=provider_username,
+                        member_org_ids=member_org_ids,
+                    )
+                else:
+                    new_success = await self._user_identity_client.update_user_core_attrs(
+                        provider=provider,
+                        provider_user_id=provider_user_id,
+                        user_id=user_id,
+                        org_id=org_id,
+                        provider_username=provider_username,
+                    )
                 if not new_success:
                     logger.warning(
                         "user-identity-index v2 write failed (non-fatal): provider=%s provider_user_id=%s",
@@ -145,6 +173,60 @@ class IdentityIndexWriter:
             except Exception:
                 logger.exception(
                     "user-identity-index v2 write exception (non-fatal): provider=%s provider_user_id=%s",
+                    provider,
+                    provider_user_id,
+                )
+
+        return True
+
+    async def update_user_membership_orgs(
+        self,
+        provider_user_id: str,
+        member_org_ids: list[str],
+        provider: str = "github",
+    ) -> bool:
+        """Update only the member_org_ids attribute on a user's DDB rows.
+
+        Issue #3134: Targeted update for membership-change events — avoids
+        needing the full identity context (user_id, org_id, etc.) just to
+        update membership. Dual-write to both old + new tables.
+
+        Returns True if the OLD-table update succeeded, False otherwise.
+        """
+        logger.info(
+            "identity-index update_user_membership_orgs: provider=%s provider_user_id=%s member_org_ids=%s",
+            provider,
+            provider_user_id,
+            member_org_ids,
+        )
+
+        # Update OLD table
+        old_success = await self._client.update_membership_orgs(
+            identity_type=GITHUB_USER_TYPE,
+            identity_value=provider_user_id,
+            member_org_ids=member_org_ids,
+        )
+
+        if not old_success:
+            return False
+
+        # Update NEW table (feature-flag gated)
+        if _v2_write_enabled():
+            try:
+                new_success = await self._user_identity_client.update_membership_orgs(
+                    provider=provider,
+                    provider_user_id=provider_user_id,
+                    member_org_ids=member_org_ids,
+                )
+                if not new_success:
+                    logger.warning(
+                        "user-identity-index v2 update_membership_orgs failed (non-fatal): provider=%s provider_user_id=%s",
+                        provider,
+                        provider_user_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "user-identity-index v2 update_membership_orgs exception (non-fatal): provider=%s provider_user_id=%s",
                     provider,
                     provider_user_id,
                 )

@@ -23,7 +23,26 @@ export class TokenManager {
   }
 
   async initialize(): Promise<void> {
-    // Try PAT first, fall back to GitHub App
+    // Issue #3385 (A4): When ADP_TOKEN_MODE=pat, the entrypoint resolved the PAT
+    // and set GITHUB_TOKEN in the environment. Adopt it directly — do NOT attempt
+    // App-credential loading or refresh (which would overwrite the PAT mid-run).
+    if (process.env.ADP_TOKEN_MODE === 'pat') {
+      const envToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
+      if (envToken) {
+        this.patToken = envToken;
+        this.usePatMode = true;
+        this.logger.info('TokenManager initialized with entrypoint-resolved PAT (ADP_TOKEN_MODE=pat)', {
+          component: 'TokenManager',
+        });
+        return;
+      }
+      // Unexpected: PAT mode but no token in env — fall through to legacy path
+      this.logger.warn('ADP_TOKEN_MODE=pat but no GITHUB_TOKEN in env; falling back to App credentials', {
+        component: 'TokenManager',
+      });
+    }
+
+    // Try PAT first (legacy ConfigLoader path), fall back to GitHub App
     try {
       const patCreds = await this.configLoader.getSecret<PatCredentials>('github-pat');
       if (patCreds.token) {
