@@ -3144,3 +3144,12 @@ f85b163b30f4f5600319074fd9a2fef81473f71f:modules/gateway/k8s/deployment.yaml:gen
 3a0a2660e9f42660c58022d7f6877dbd7b89b2a7:modules/gateway/tests/pool/test_sts_client.py:aws-access-token:151
 3a0a2660e9f42660c58022d7f6877dbd7b89b2a7:modules/gateway/tests/pool/test_sts_client.py:aws-access-token:258
 3a0a2660e9f42660c58022d7f6877dbd7b89b2a7:modules/gateway/tests/pool/test_sts_client.py:aws-access-token:46
+
+# Reviewed 2026-07-15 (post-sync scan of 7741508a..095a2b20).
+# Synthetic PEM fixtures in the manual App-registration tests — truncated,
+# non-functional key material used to exercise _normalize_pem parsing.
+65ee7d652ed6476896797d2bed884a58eab59a12:modules/gateway/tests/admin/connections/test_register_manual.py:private-key:35
+65ee7d652ed6476896797d2bed884a58eab59a12:modules/gateway/tests/admin/connections/test_register_manual.py:private-key:38
+65ee7d652ed6476896797d2bed884a58eab59a12:modules/gateway/tests/admin/connections/test_register_manual.py:private-key:1061
+65ee7d652ed6476896797d2bed884a58eab59a12:modules/gateway/tests/admin/connections/test_register_manual.py:private-key:1075
+65ee7d652ed6476896797d2bed884a58eab59a12:modules/gateway/tests/admin/connections/test_register_manual.py:private-key:1083
