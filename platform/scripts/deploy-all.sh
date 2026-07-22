@@ -420,8 +420,9 @@ if [ "$DESTROY" = true ]; then
   [ "$confirm" = "yes" ] || { echo "Aborted."; exit 0; }
 
   # Configure kubectl for K8s cleanup steps
+  export KUBECONFIG="/tmp/adp-deploy-kubeconfig"
   if command -v kubectl >/dev/null 2>&1; then
-    aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" 2>/dev/null || true
+    aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG" 2>/dev/null || true
   fi
 
   # -------------------------------------------------------------------------
@@ -747,8 +748,9 @@ else
 fi
 
 # Configure kubectl (needed for k8s steps — local or CodeBuild deploy step)
+export KUBECONFIG="/tmp/adp-deploy-kubeconfig"
 if command -v kubectl >/dev/null 2>&1; then
-  aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" 2>/dev/null || true
+  aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG" 2>/dev/null || true
 fi
 
 refresh_credentials
@@ -945,8 +947,28 @@ else
       --secret-string "$TOKEN_SECRET" \
       --region "${AWS_REGION}"
   fi
+  # Issue #2824 gap: also create the internal-api-key used by the webhook Lambda
+  # to call /internal/v1/* endpoints on the gateway. Without this, webhook
+  # identity resolution fails with "Internal API key not available".
+  INTERNAL_API_SM="adp/${ENVIRONMENT}/gateway/internal-api-key"
+  INTERNAL_API_KEY=$(aws secretsmanager get-secret-value \
+    --secret-id "$INTERNAL_API_SM" \
+    --query SecretString --output text 2>/dev/null || echo "")
+  if [ -z "$INTERNAL_API_KEY" ] || [ "$INTERNAL_API_KEY" = "None" ]; then
+    INTERNAL_API_KEY=$(openssl rand -hex 32)
+    aws secretsmanager create-secret \
+      --name "$INTERNAL_API_SM" \
+      --secret-string "$INTERNAL_API_KEY" \
+      --description "Shared secret for /internal/v1/* webhook-to-gateway auth" \
+      --region "${AWS_REGION}" 2>/dev/null || \
+    aws secretsmanager put-secret-value \
+      --secret-id "$INTERNAL_API_SM" \
+      --secret-string "$INTERNAL_API_KEY" \
+      --region "${AWS_REGION}"
+  fi
   kubectl create secret generic bedrockgateway-secrets \
     --from-literal=token-secret-key="$TOKEN_SECRET" \
+    --from-literal=internal-api-key="$INTERNAL_API_KEY" \
     -n adp-gateway --dry-run=client -o yaml | kubectl apply -f -
   sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
       -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \

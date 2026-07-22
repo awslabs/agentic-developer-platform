@@ -95,7 +95,13 @@ class TestAutoRegisterGuard:
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")
     def test_skips_when_not_known_tenant(self, mock_resolver, mock_gw):
-        """No row + gateway 404 (not a known tenant) → no write, returns None (caller 403)."""
+        """No row + gateway 404 (not a known tenant) → registers with org_login as tenant.
+
+        Changed from original skip behavior: user-namespace installs and fresh
+        deploys where the gateway is unreachable should still register. The user
+        still needs approval before they can trigger agents — this only resolves
+        the installation, not the user.
+        """
         from handler import _auto_register_installation
 
         table = _mock_table_with()  # no existing rows
@@ -104,8 +110,13 @@ class TestAutoRegisterGuard:
 
         result = _auto_register_installation(555, "some-random-org")
 
-        assert result is None
-        table.put_item.assert_not_called()
+        # Falls back to using org_login as the tenant_id
+        assert result == "some-random-org"
+        # Forward + reverse rows written
+        assert table.put_item.call_count == 2
+        forward_item = table.put_item.call_args_list[0].kwargs["Item"]
+        assert forward_item["org_id"] == "some-random-org"
+        assert forward_item["auto_registered"] is True
 
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")

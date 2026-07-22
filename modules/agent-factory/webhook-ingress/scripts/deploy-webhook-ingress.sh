@@ -150,6 +150,20 @@ if ! aws secretsmanager describe-secret --secret-id "adp/${ENVIRONMENT}/gateway/
   ADVERSARIAL_OVERRIDE='-var=enable_adversarial_e2e=false'
 fi
 
+# Resolve the internal-api-key ARN so the webhook Lambda can call the gateway's
+# /internal/v1/* endpoints. Empty string is safe (Lambda falls back to DDB-only
+# identity resolution, but gateway-canonical resolution is disabled).
+INTERNAL_API_KEY_OVERRIDE=""
+INTERNAL_API_KEY_ARN=$(aws secretsmanager describe-secret \
+  --secret-id "adp/${ENVIRONMENT}/gateway/internal-api-key" \
+  --query 'ARN' --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+if [ -n "$INTERNAL_API_KEY_ARN" ] && [ "$INTERNAL_API_KEY_ARN" != "None" ]; then
+  ok "Internal API key: ${INTERNAL_API_KEY_ARN}"
+  INTERNAL_API_KEY_OVERRIDE="-var=internal_api_key_arn=${INTERNAL_API_KEY_ARN}"
+else
+  warn "internal-api-key secret not found — webhook→gateway identity resolution will be disabled"
+fi
+
 if [ "$SKIP_TF" = true ]; then
   warn "Skipping terraform apply (--skip-terraform)."
 elif [ "$DRY_RUN" = true ]; then
@@ -164,6 +178,7 @@ else
          -var="gateway_api_url=${GATEWAY_API_URL}" \
          $GITLAB_OVERRIDE \
          $ADVERSARIAL_OVERRIDE \
+         $INTERNAL_API_KEY_OVERRIDE \
          -input=false -auto-approve )
   ok "webhook-ingress applied"
 fi

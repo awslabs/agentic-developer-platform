@@ -183,3 +183,17 @@ data:
   # editable manually. Reads from SSM: /adp/{env}/gateway/enforce-credential-binding
   # =============================================================================
   BG_ENFORCE_CREDENTIAL_BINDING: "__ENFORCE_CREDENTIAL_BINDING__"
+
+  # =============================================================================
+  # Identity Index DynamoDB tables (Issue #375, #537)
+  # =============================================================================
+  # Write-through to DDB identity-index tables enables the webhook Lambda to
+  # resolve users via O(1) DDB lookups. Without these, user approval in the UI
+  # does not propagate to the webhook path and agents cannot be triggered.
+  #   IDENTITY_INDEX_TABLE:             Old table (always written)
+  #   USER_IDENTITY_INDEX_TABLE:        New table (written when V2_WRITE=true)
+  #   USER_IDENTITY_INDEX_V2_WRITE:     Gate for dual-write + onboarding flow
+  # =============================================================================
+  IDENTITY_INDEX_TABLE: "adp-__ENVIRONMENT__-identity-index"
+  USER_IDENTITY_INDEX_TABLE: "adp-__ENVIRONMENT__-user-identity-index"
+  USER_IDENTITY_INDEX_V2_WRITE: "true"

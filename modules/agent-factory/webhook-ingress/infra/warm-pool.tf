@@ -200,9 +200,12 @@ resource "null_resource" "agent_warm_pool" {
   }
 
   provisioner "local-exec" {
+    environment = {
+      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
+    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} >/dev/null
+      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.agent_warm_pool_yaml}
 EOF
@@ -310,9 +313,12 @@ resource "null_resource" "agent_image_prepull" {
   }
 
   provisioner "local-exec" {
+    environment = {
+      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
+    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} >/dev/null
+      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.agent_image_prepull_yaml}
 EOF
