@@ -7,7 +7,7 @@ macholib==1.16.3
 
 # Sample inspection — expanded tooling for Stage 1 + Stage 3
 lief==0.14.1
-signify==0.7.1
+signify==0.9.2
 iocextract==1.16.1
 capstone==5.0.3
 oletools==0.60.2
