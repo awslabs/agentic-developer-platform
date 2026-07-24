@@ -40,7 +40,7 @@ def sample_manifest() -> dict:
             "ppdeep": "20260221",
             "pyelftools": "0.31",
             "macholib": "1.16.3",
-            "signify": "0.7.1",
+            "signify": "0.9.2",
             "boto3": "1.35.0",
             "requests": "2.32.0",
             "pydantic": "2.9.0",
