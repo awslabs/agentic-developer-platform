@@ -93,9 +93,12 @@ resource "null_resource" "aggressive_packer_nodepool" {
   }
 
   provisioner "local-exec" {
+    environment = {
+      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
+    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region} >/dev/null
+      aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.aggressive_packer_nodepool_yaml}
 EOF
@@ -106,6 +109,9 @@ EOF
   # general-purpose rather than being orphaned.
   provisioner "local-exec" {
     when       = destroy
+    environment = {
+      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
+    }
     command    = "kubectl delete nodepool aggressive-packer --ignore-not-found || true"
     on_failure = continue
   }

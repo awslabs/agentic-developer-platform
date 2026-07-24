@@ -63,19 +63,25 @@ _PLACEHOLDER = "PLACEHOLDER"
 
 # Cached secrets
 _github_oauth_creds: dict[str, str] | None = None
+_github_oauth_creds_ts: float = 0  # epoch timestamp of last fetch
+_OAUTH_CREDS_TTL = 300  # re-read from Secrets Manager every 5 minutes
 _github_org_token: str | None = None
 
 
 def _get_github_oauth_creds() -> dict[str, str]:
-    """Retrieve the GitHub OAuth credentials dict from Secrets Manager (cached).
+    """Retrieve the GitHub OAuth credentials dict from Secrets Manager (TTL-cached).
 
     The secret at adp/<env>/cognito/github-oauth-credentials is a JSON blob with
     both ``client_id`` and ``client_secret``. Issue #2708 makes this secret the
     single source of truth for the OAuth identity so login works immediately
     after App registration (which writes both keys) without mutating Lambda env.
+
+    Cached for 5 minutes so that re-registering a GitHub App (which updates the
+    secret) takes effect without needing a manual Lambda recycle.
     """
-    global _github_oauth_creds
-    if _github_oauth_creds is not None:
+    global _github_oauth_creds, _github_oauth_creds_ts
+    now = time.time()
+    if _github_oauth_creds is not None and (now - _github_oauth_creds_ts) < _OAUTH_CREDS_TTL:
         return _github_oauth_creds
 
     if not GITHUB_CLIENT_SECRET_ARN:
@@ -88,6 +94,7 @@ def _get_github_oauth_creds() -> dict[str, str]:
         "client_id": secret_data.get("client_id", ""),
         "client_secret": secret_data.get("client_secret", ""),
     }
+    _github_oauth_creds_ts = now
     return _github_oauth_creds
 
 

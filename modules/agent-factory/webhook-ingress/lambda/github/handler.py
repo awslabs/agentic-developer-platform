@@ -64,12 +64,20 @@ def _resolve_webhook_secret() -> str:
     """Resolve the webhook secret from Secrets Manager (cached after first call).
 
     Falls back to WEBHOOK_SECRET env var for local dev/testing.
+
+    If the cached value is the Terraform placeholder, re-read from Secrets Manager
+    on each call until a real value is available. This handles the race condition
+    where the Lambda cold-starts before the gateway's manifest-callback writes
+    the real webhook secret (fresh-deploy timing issue).
     """
     global _webhook_secret
-    if _webhook_secret is not None:
+    if _webhook_secret is not None and not _webhook_secret.startswith("PLACEHOLDER"):
         return _webhook_secret
 
     if WEBHOOK_SECRET_ARN:
+        # Clear the secrets helper cache if we're re-reading (placeholder retry)
+        if _webhook_secret is not None:
+            _get_secrets().clear_cache()
         _webhook_secret = _get_secrets().get_secret(WEBHOOK_SECRET_ARN)
     else:
         # Fallback for local dev/testing: allow plaintext env var
@@ -155,13 +163,22 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
             pg = _get_gateway_client().resolve_installation_by_id(str(installation_id))
             tenant_id = pg.get("tenant_id") if pg else None
             if not tenant_id:
+                # Fallback: if the gateway is unreachable (SigV4 auth on API GW,
+                # fresh deploy) or the tenant isn't in Postgres yet (user-namespace
+                # installs, new orgs), register using the org_login directly.
+                # This covers the case where a user installs the app on their
+                # personal account — no org-tenant shell exists in Postgres, but
+                # the install is legitimate (they clicked "Install" in GitHub).
+                # The org_login becomes the tenant_id; the user will still need
+                # to be approved before they can trigger agents.
                 logger.info(
-                    "Auto-register skip: installation_id=%d (org login=%s) is not a "
-                    "known ADP tenant — caller will 403 unknown_installation",
+                    "Auto-register: gateway returned no tenant for installation_id=%d "
+                    "(org_login=%s) — registering with org_login as tenant_id "
+                    "(gateway unreachable or tenant not in Postgres)",
                     installation_id,
                     org_login,
                 )
-                return None
+                tenant_id = org_login
         else:
             # Step 4: idempotent refresh of an auto_registered row.
             tenant_id = existing.get("org_id") or org_login

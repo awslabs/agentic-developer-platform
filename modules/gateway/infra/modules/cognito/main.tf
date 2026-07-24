@@ -577,6 +577,11 @@ resource "aws_cognito_user" "test_user" {
   lifecycle {
     ignore_changes = [temporary_password]
   }
+
+  # The PreSignUp Lambda trigger must have its invoke permission granted before
+  # Cognito can create users — otherwise AdminCreateUser fails with
+  # AccessDeniedException on the PreSignUp invocation.
+  depends_on = [aws_lambda_permission.cognito_pre_signup]
 }
 
 # --- Admin test user ---------------------------------------------------------
@@ -612,6 +617,8 @@ resource "aws_cognito_user" "test_admin" {
   lifecycle {
     ignore_changes = [temporary_password]
   }
+
+  depends_on = [aws_lambda_permission.cognito_pre_signup]
 }
 
 # Add admin user to the admins group

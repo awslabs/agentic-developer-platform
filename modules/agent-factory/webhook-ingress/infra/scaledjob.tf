@@ -250,9 +250,12 @@ resource "null_resource" "keda_trigger_auth" {
   }
 
   provisioner "local-exec" {
+    environment = {
+      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
+    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} >/dev/null
+      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.keda_trigger_auth_yaml}
 EOF
@@ -289,9 +292,12 @@ resource "null_resource" "keda_scaledjob" {
   }
 
   provisioner "local-exec" {
+    environment = {
+      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
+    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} >/dev/null
+      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.keda_scaledjob_yaml}
 EOF

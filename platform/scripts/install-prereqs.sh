@@ -111,6 +111,19 @@ else
   esac
 fi
 
+# Python3 + pip (needed for Lambda packaging in deploy-broker.sh)
+if command -v pip3 &>/dev/null || command -v pip &>/dev/null; then
+  ok "pip already installed"
+else
+  echo -e "${BLUE}Installing pip...${NC}"
+  case "$PKG" in
+    brew) brew install python@3 2>/dev/null && ok "pip installed (via python@3)" || { fail "pip install failed"; FAILED=$((FAILED+1)); } ;;
+    apt)  sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip 2>/dev/null && ok "pip installed via apt" || { fail "pip install failed"; FAILED=$((FAILED+1)); } ;;
+    yum)  sudo yum install -y python3-pip 2>/dev/null && ok "pip installed via yum" || { fail "pip install failed"; FAILED=$((FAILED+1)); } ;;
+    *) fail "pip: install manually — https://pip.pypa.io/en/stable/installation/"; FAILED=$((FAILED+1)) ;;
+  esac
+fi
+
 # zip (needed for CodeBuild source packaging)
 install_tool "zip" "zip" "zip" "zip" "https://linux.die.net/man/1/zip" || FAILED=$((FAILED+1))
 
@@ -157,12 +170,11 @@ if [ "$INSTALL_ALL" = true ]; then
     esac
   fi
 
-  # Docker
+  # Docker (only needed for --local builds; CodeBuild handles images otherwise)
   if command -v docker &>/dev/null; then
     ok "Docker already installed"
   else
-    warn "Docker not installed. Install Docker Desktop: https://docs.docker.com/get-docker/"
-    FAILED=$((FAILED+1))
+    warn "Docker not installed (optional — only needed for --local image builds). Install: https://docs.docker.com/engine/install/"
   fi
 
   # Node.js
@@ -173,7 +185,12 @@ if [ "$INSTALL_ALL" = true ]; then
   fi
 
   # Helm
-  install_tool "helm" "helm" "helm" "helm" "https://helm.sh/docs/intro/install/" || true
+  if command -v helm &>/dev/null; then
+    ok "helm already installed"
+  else
+    echo -e "${BLUE}Installing Helm...${NC}"
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && ok "Helm installed" || { warn "Helm install failed — install manually: https://helm.sh/docs/intro/install/"; }
+  fi
 fi
 
 # =============================================================================

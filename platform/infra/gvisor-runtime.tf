@@ -49,9 +49,12 @@ resource "null_resource" "gvisor_runtimeclass" {
   }
 
   provisioner "local-exec" {
+    environment = {
+      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
+    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region} >/dev/null
+      aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
       echo '--- Dry-run validation ---'
       cat <<'EOF' | kubectl apply --dry-run=server -f -
 ${local.gvisor_runtimeclass_yaml}
@@ -66,6 +69,9 @@ EOF
   # Best-effort destroy — remove the RuntimeClass on terraform destroy
   provisioner "local-exec" {
     when       = destroy
+    environment = {
+      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
+    }
     command    = "kubectl delete runtimeclass gvisor --ignore-not-found || true"
     on_failure = continue
   }

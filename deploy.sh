@@ -32,6 +32,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR"
 PLATFORM_SCRIPTS="$ROOT_DIR/platform/scripts"
 
+DEPLOY_START=$(date +%s)
+echo "============================================================================="
+echo "Deploy started at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+
 ENVIRONMENT="${ENVIRONMENT:-dev}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 LOCAL_MODE=false
@@ -211,7 +215,8 @@ if [ "$DRY_RUN" = false ]; then
 
   if [ "$SKIP_AGENTS" = false ]; then
     echo ""
-    aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" 2>/dev/null || true
+    export KUBECONFIG="/tmp/adp-deploy-kubeconfig"
+    aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG" 2>/dev/null || true
     GATEWAY_PODS=$(kubectl get pods -n adp-gateway -l app=bedrockgateway --no-headers 2>/dev/null | grep -c Running || echo "0")
     echo "Gateway pods running: $GATEWAY_PODS"
     KEDA_READY=$(kubectl get scaledjobs -n adp-agents --no-headers 2>/dev/null | head -1 || echo "not found")
@@ -249,3 +254,18 @@ if [ "$SKIP_AGENTS" = false ]; then
   echo "To complete setup, log in as platform_admin and go to:"
   echo "  Settings → Connections → 'Set up GitHub App'"
 fi
+
+# Copy kubeconfig to the standard location so kubectl works without KUBECONFIG
+# being set in subsequent interactive shells (e.g. SSH into the EC2 instance).
+if [ -f /tmp/adp-deploy-kubeconfig ]; then
+  KUBE_HOME="${HOME:-/root}"
+  mkdir -p "${KUBE_HOME}/.kube"
+  cp /tmp/adp-deploy-kubeconfig "${KUBE_HOME}/.kube/config"
+  chmod 600 "${KUBE_HOME}/.kube/config"
+fi
+
+DEPLOY_END=$(date +%s)
+ELAPSED=$(( DEPLOY_END - DEPLOY_START ))
+echo ""
+echo "Deploy finished at: $(date -u '+%Y-%m-%d %H:%M:%S UTC') (elapsed: $((ELAPSED / 60))m $((ELAPSED % 60))s)"
+echo "============================================================================="

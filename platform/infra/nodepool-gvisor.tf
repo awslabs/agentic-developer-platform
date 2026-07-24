@@ -101,9 +101,12 @@ resource "null_resource" "gvisor_nodepool" {
   }
 
   provisioner "local-exec" {
+    environment = {
+      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
+    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region} >/dev/null
+      aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
       echo '--- Dry-run validation (server-side) ---'
       cat <<'EOF' | kubectl apply --dry-run=server -f -
 ${local.gvisor_nodepool_yaml}
@@ -119,6 +122,9 @@ EOF
   # to general-purpose rather than being orphaned.
   provisioner "local-exec" {
     when       = destroy
+    environment = {
+      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
+    }
     command    = "kubectl delete nodepool gvisor --ignore-not-found || true"
     on_failure = continue
   }
