@@ -264,6 +264,7 @@ if [ -f /tmp/adp-deploy-kubeconfig ]; then
   chmod 600 "${KUBE_HOME}/.kube/config"
 fi
 
+echo "============================================================================="
 DEPLOY_END=$(date +%s)
 ELAPSED=$(( DEPLOY_END - DEPLOY_START ))
 echo ""
