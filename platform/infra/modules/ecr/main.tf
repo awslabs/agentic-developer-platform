@@ -1,3 +1,23 @@
+# KMS key for ECR repository encryption. Explicitly managed so we don't depend
+# on the AWS-managed aws/ecr key, which breaks on accounts where that key was
+# previously scheduled for deletion (KmsException: Key does not exist).
+resource "aws_kms_key" "ecr" {
+  description             = "${var.name_prefix}-ecr-encryption"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+
+  tags = merge(var.common_tags, {
+    Name    = "${var.name_prefix}-ecr-encryption"
+    Service = "container-registry"
+    Purpose = "ecr-encryption"
+  })
+}
+
+resource "aws_kms_alias" "ecr" {
+  name          = "alias/${var.name_prefix}-ecr"
+  target_key_id = aws_kms_key.ecr.id
+}
+
 # ECR Repositories (one per name in var.repositories)
 resource "aws_ecr_repository" "main" {
   for_each             = toset(var.repositories)
@@ -10,6 +30,7 @@ resource "aws_ecr_repository" "main" {
 
   encryption_configuration {
     encryption_type = "KMS"
+    kms_key         = aws_kms_key.ecr.arn
   }
 
   tags = merge(var.common_tags, {
