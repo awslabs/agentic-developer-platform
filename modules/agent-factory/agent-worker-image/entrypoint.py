@@ -1235,6 +1235,11 @@ def main() -> int:
             agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = "http://127.0.0.1:9090"
             # Do NOT set ANTHROPIC_BASE_URL — that routes to the broken translator
             agent_env.pop("ANTHROPIC_BASE_URL", None)
+            # claude-agent-sdk >= ~0.3.2xx rejects streaming responses whose
+            # content-type isn't Bedrock's binary eventstream. Our gateway
+            # (API GW → gateway pod) legitimately re-emits Anthropic-style
+            # text/event-stream, so the guard is a false positive on this path.
+            agent_env["CLAUDE_CODE_DISABLE_BEDROCK_CONTENT_TYPE_GUARD"] = "1"
             logger.info("ADP_BEDROCK_VIA=gateway — routing through sigv4-proxy → API GW")
 
     if bedrock_via == "direct" or bedrock_via == "platform":
