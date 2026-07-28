@@ -25,6 +25,15 @@ model_provider = "adp-gateway"
 # `on-failure`/`on-request` would hang a KEDA-scaled pod with no terminal.
 approval_policy = "never"
 
+# Codex CLI >= ~0.145 attaches a `web_search` tool to Responses-API requests by
+# default (default mode "cached"). bedrock-mantle rejects it: HTTP 400
+# "The 'web_search' tool is not supported" — every delegation failed (#3897,
+# surfaced by the gateway error-visibility fix #3902). Disable it: the pod has
+# its own controlled egress and the supervising agent provides research
+# context; Codex on Bedrock never has OpenAI-side web access anyway.
+# Verified: with this key the request body carries no web_search tool.
+web_search = "disabled"
+
 # v2 provider: route through the sigv4-proxy sidecar → API GW → gateway pod.
 # base_url ends at `/openai/v1`; with wire_api="responses" Codex appends
 # `/responses`, producing exactly `/openai/v1/responses` at the gateway
