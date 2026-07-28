@@ -28,7 +28,10 @@ jobs:
       - name: Install dependencies
         working-directory: modules/agent-factory/webhook-ingress
         run: |
-          pip install ruff mypy
+          # Pin ruff: unpinned install broke on 0.16.0's new rules (30
+          # findings in pre-existing files, failing every PR touching this
+          # module). Bump deliberately alongside a lint-cleanup pass.
+          pip install 'ruff==0.15.20' mypy
           # Install the runtime deps directly (setuptools auto-discovery
           # conflicts with our infra/ + lambda/ flat layout; editable
           # install of the module isn't worth the setuptools config).

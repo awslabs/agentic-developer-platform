@@ -17,6 +17,47 @@ logger = get_logger(__name__)
 # Source: AWS Bedrock pricing page (https://aws.amazon.com/bedrock/pricing/)
 # Last updated: January 2024
 MODEL_PRICING: dict[str, dict[str, Decimal]] = {
+    # Claude Opus 5 ($5/$25 per MTok — platform.claude.com models overview)
+    "global.anthropic.claude-opus-5": {
+        "input": Decimal("0.005"),
+        "output": Decimal("0.025"),
+    },
+    "anthropic.claude-opus-5": {
+        "input": Decimal("0.005"),
+        "output": Decimal("0.025"),
+    },
+    # Claude Opus 4.x ($5/$25 per MTok). Previously absent from this table,
+    # so all 4.x traffic (including the agent-worker default opus-4-6) was
+    # billed at the "default" fallback ($3/$15) — a silent underprice.
+    "global.anthropic.claude-opus-4-8": {
+        "input": Decimal("0.005"),
+        "output": Decimal("0.025"),
+    },
+    "global.anthropic.claude-opus-4-7": {
+        "input": Decimal("0.005"),
+        "output": Decimal("0.025"),
+    },
+    "global.anthropic.claude-opus-4-6-v1": {
+        "input": Decimal("0.005"),
+        "output": Decimal("0.025"),
+    },
+    "global.anthropic.claude-opus-4-5-20251101-v1:0": {
+        "input": Decimal("0.005"),
+        "output": Decimal("0.025"),
+    },
+    # Claude Sonnet/Haiku 4.x ($3/$15, $1/$5 per MTok)
+    "global.anthropic.claude-sonnet-4-6": {
+        "input": Decimal("0.003"),
+        "output": Decimal("0.015"),
+    },
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+        "input": Decimal("0.003"),
+        "output": Decimal("0.015"),
+    },
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": {
+        "input": Decimal("0.001"),
+        "output": Decimal("0.005"),
+    },
     # Claude 3.5 models (latest)
     "anthropic.claude-3-5-sonnet-20241022-v2:0": {
         "input": Decimal("0.003"),
@@ -177,6 +218,14 @@ MODEL_PRICING: dict[str, dict[str, Decimal]] = {
 
 # Alias mappings for common model name variations
 MODEL_ALIASES: dict[str, str] = {
+    # Claude Opus 5 / 4.x aliases (match model_resolver.py short aliases)
+    "opus5": "global.anthropic.claude-opus-5",
+    "claude-opus-5": "global.anthropic.claude-opus-5",
+    "opus48": "global.anthropic.claude-opus-4-8",
+    "opus47": "global.anthropic.claude-opus-4-7",
+    "opus46": "global.anthropic.claude-opus-4-6-v1",
+    "sonnet46": "global.anthropic.claude-sonnet-4-6",
+    "haiku45": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     # Claude 3.5 aliases
     "claude-3-5-sonnet": "anthropic.claude-3-5-sonnet-20241022-v2:0",
     "claude-3-5-sonnet-20241022": "anthropic.claude-3-5-sonnet-20241022-v2:0",
