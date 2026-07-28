@@ -27,9 +27,11 @@ def test_config_is_valid_toml() -> None:
     assert isinstance(_load(), dict)
 
 
-def test_model_is_gpt55() -> None:
+def test_model_is_gpt56_sol() -> None:
+    # Default flipped to GPT-5.6 Sol in #3907 (same rate as gpt-5.5, stronger
+    # agentic performance; smoke-verified via gateway in #3904/#3908).
     cfg = _load()
-    assert cfg["model"] == "openai.gpt-5.5"
+    assert cfg["model"] == "openai.gpt-5.6-sol"
 
 
 def test_provider_is_gateway_after_cutover_2713() -> None:

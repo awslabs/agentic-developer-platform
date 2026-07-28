@@ -817,7 +817,7 @@ def main() -> int:
     # /model directive: explicit /model > pod ANTHROPIC_MODEL default.
     model_resolved = envelope.get("model_resolved")
     effective_model = model_resolved or os.environ.get(
-        "ANTHROPIC_MODEL", "us.anthropic.claude-opus-4-6-v1"
+        "ANTHROPIC_MODEL", "global.anthropic.claude-opus-5"
     )
 
     env_vars = {
