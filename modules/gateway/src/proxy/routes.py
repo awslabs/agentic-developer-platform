@@ -35,7 +35,7 @@ from src.auth.middleware import (
     validate_cognito_jwt,
 )
 from src.chat_logging.service import ChatLoggingService, create_streaming_logging_wrapper
-from src.proxy.mantle_service import MantlePassthroughService
+from src.proxy.mantle_service import MantlePassthroughService, MantleUpstreamError
 from src.proxy.model_resolver import ModelResolver
 from src.proxy.schemas import (
     AnthropicMessagesRequest,
@@ -833,6 +833,15 @@ async def create_openai_response(
             content=result.content,
             status_code=result.status_code,
             media_type=result.media_type,
+            headers={"X-Request-ID": request_id},
+        )
+    except MantleUpstreamError as e:
+        # Streaming path failed before any bytes reached the client — return
+        # the real upstream status/body instead of a 200 with a dead stream.
+        return Response(
+            content=e.content,
+            status_code=e.status_code,
+            media_type=e.media_type,
             headers={"X-Request-ID": request_id},
         )
     except BedrockGatewayError as e:
