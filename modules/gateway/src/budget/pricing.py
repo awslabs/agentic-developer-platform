@@ -205,6 +205,21 @@ MODEL_PRICING: dict[str, dict[str, Decimal]] = {
         "input": Decimal("0.0055"),
         "output": Decimal("0.033"),
     },
+    # GPT-5.6 family (GA 2026-07-13; smoke-verified via gateway in #3904).
+    # Rates retrieved 2026-07-28: Sol $5.50/$33.00, Terra $2.75/$16.50,
+    # Luna $1.10/$6.60 per 1M tokens (US East).
+    "openai.gpt-5.6-sol": {
+        "input": Decimal("0.0055"),
+        "output": Decimal("0.033"),
+    },
+    "openai.gpt-5.6-terra": {
+        "input": Decimal("0.00275"),
+        "output": Decimal("0.0165"),
+    },
+    "openai.gpt-5.6-luna": {
+        "input": Decimal("0.0011"),
+        "output": Decimal("0.0066"),
+    },
     "openai.gpt-oss-120b": {
         "input": Decimal("0.0001545"),
         "output": Decimal("0.000618"),
