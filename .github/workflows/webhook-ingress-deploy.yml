@@ -51,7 +51,7 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       infra: ${{ steps.filter.outputs.infra }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
       - id: filter
@@ -84,7 +84,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true' || needs.changes.outputs.infra == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -96,7 +96,7 @@ jobs:
           customer_user_id: ${{ inputs.customer_user_id }}
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -125,7 +125,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -217,7 +217,7 @@ jobs:
       needs.package.result == 'success' &&
       (needs.deploy-infra.result == 'success' || needs.deploy-infra.result == 'skipped')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -284,7 +284,7 @@ jobs:
       always() &&
       (needs.update-code.result == 'success' || needs.deploy-infra.result == 'success')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -296,7 +296,7 @@ jobs:
           customer_user_id: ${{ inputs.customer_user_id }}
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 

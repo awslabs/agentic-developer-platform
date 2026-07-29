@@ -51,7 +51,7 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       migrations: ${{ steps.filter.outputs.migrations }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
       - id: filter
@@ -94,7 +94,7 @@ jobs:
       actions: write  # Required by "Trigger gateway-infra re-apply" step (gh workflow run)
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -381,7 +381,7 @@ jobs:
       (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -393,7 +393,7 @@ jobs:
           customer_user_id: ${{ inputs.customer_user_id }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 

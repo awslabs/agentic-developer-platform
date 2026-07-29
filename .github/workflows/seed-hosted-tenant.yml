@@ -41,7 +41,7 @@ jobs:
     name: Seed tenant in Postgres
     runs-on: arc-runner-org
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install psql + jq
         run: |
