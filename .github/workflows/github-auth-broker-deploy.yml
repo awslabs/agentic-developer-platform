@@ -56,7 +56,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -68,7 +68,7 @@ jobs:
           customer_user_id: ${{ inputs.customer_user_id }}
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 

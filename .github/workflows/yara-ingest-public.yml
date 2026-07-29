@@ -45,7 +45,7 @@ jobs:
     # AWS credentials — no `configure-aws-credentials` step needed.
     runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install YARA + AWS CLI
         run: |

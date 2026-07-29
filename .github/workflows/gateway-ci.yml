@@ -34,10 +34,10 @@ jobs:
     name: Lint
     runs-on: arc-runner-org
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -59,10 +59,10 @@ jobs:
     runs-on: arc-runner-org
     needs: lint
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -86,7 +86,7 @@ jobs:
         # was failing this step and dragging the whole Test job to red even
         # when all tests passed, blocking merges across every PR.
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: modules/gateway/coverage.xml
@@ -96,10 +96,10 @@ jobs:
     runs-on: arc-runner-org
     needs: lint
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -118,7 +118,7 @@ jobs:
     runs-on: arc-runner-org
     needs: [test, frontend-test]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ARC runner pods have no Docker daemon (docker-ce-cli only, no DinD
       # sidecar) — `docker build` has failed on every run since the
@@ -159,10 +159,10 @@ jobs:
     name: Smoke Assertion Tests
     runs-on: arc-runner-org
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
