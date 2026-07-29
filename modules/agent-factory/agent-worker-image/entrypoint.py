@@ -1766,6 +1766,21 @@ def _handle_success(
         except subprocess.CalledProcessError:
             pass
 
+        # Reviewer runs deliver their output as PR comments; the transcript
+        # under data/code-review/ is an archival by-product. Opening a PR whose
+        # ONLY content is transcripts created ~20 junk PRs/day (567 open at the
+        # 2026-07-29 cleanup — the "reviewer PR queue noise" pattern). If every
+        # changed file on the branch is a transcript, push it (archival) but do
+        # NOT open a PR. Any non-transcript file keeps the normal PR flow, so a
+        # reviewer that fixes code during review still gets its PR.
+        if not pr_already_exists and _branch_changes_are_transcript_only(branch):
+            logger.info(
+                "Branch %s contains only data/code-review/ transcripts — "
+                "skipping PR creation (review was delivered as PR comments)",
+                branch,
+            )
+            pr_already_exists = True  # skip the create block below
+
         if not pr_already_exists:
             pr_body = f"Automated work by agent `{persona}` for #{issue}.\n\nRun ID: `{message_id}`"
             pr_body = prepend_correlation_marker(pr_body)
@@ -1819,6 +1834,29 @@ def _handle_success(
         )
         return 1
     return 0
+
+
+def _branch_changes_are_transcript_only(branch: str) -> bool:
+    """True if every file the branch changes vs origin/main is a review transcript.
+
+    Used by Step 11 to suppress PR creation for reviewer runs whose only
+    output is data/code-review/*.md (the review itself was delivered as PR
+    comments). Fail-soft: any error returns False so the normal PR flow runs —
+    a spurious PR is recoverable; a silently missing PR for real work is not.
+    An empty diff also returns False (that case is handled earlier in Step 11).
+    """
+    try:
+        run_cmd(["git", "fetch", "origin", "main", "--depth=1"], cwd=WORK_DIR)
+        changed = run_cmd(
+            ["git", "diff", "--name-only", "origin/main...HEAD"],
+            cwd=WORK_DIR,
+        )
+        files = [f for f in changed.stdout.strip().splitlines() if f.strip()]
+        if not files:
+            return False
+        return all(f.startswith("data/code-review/") for f in files)
+    except (subprocess.CalledProcessError, OSError):
+        return False
 
 
 def _find_open_pr(repo: str, branch: str) -> str:
