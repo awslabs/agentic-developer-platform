@@ -118,7 +118,7 @@ RUN corepack enable && \
 # Install the OpenAI Codex CLI (issue #2704, EPIC #2702). Pinned so the image
 # is reproducible and doesn't inherit a surprise "latest". Invoked headlessly
 # as `codex exec` against Bedrock (openai.gpt-5.5); config baked in below.
-ARG CODEX_VERSION=0.142.5
+ARG CODEX_VERSION=0.145.0
 RUN npm install -g "@openai/codex@${CODEX_VERSION}" && \
     codex --version
 

@@ -31,7 +31,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.proxy.mantle_service import MantlePassthroughService, MantleResponse
+from src.proxy.mantle_service import MantlePassthroughService, MantleResponse, MantleUpstreamError
 from src.proxy.model_resolver import ModelResolver
 from src.proxy.routes import get_mantle_service, get_token_context, router, set_mantle_service, set_model_resolver
 from src.shared.schemas.auth import TokenContext
@@ -474,4 +474,98 @@ class TestStreamingRoute:
         resp = client.post("/openai/v1/responses", json={"model": "openai.gpt-5.5", "input": "x", "stream": True})
         assert resp.status_code == 200
         assert resp.content == b"".join(chunks)
+        assert resp.headers.get("x-request-id")
+
+
+# ============================================================================
+# Streaming upstream errors surface as real HTTP errors (#3897)
+# ============================================================================
+
+
+class TestStreamingUpstreamErrors:
+    """A streaming request whose upstream fails must NOT return a 200.
+
+    Before the fix, the route handed StreamingResponse a generator that hadn't
+    connected upstream yet — the 200 header went out first, then the stream
+    died instantly with nothing logged (the #3897 Codex outage signature).
+    The service now connects eagerly and raises MantleUpstreamError so the
+    route can return the real status.
+    """
+
+    async def test_stream_upstream_4xx_raises_with_status_and_body(self, token_context):
+        err = b'{"error":{"type":"model_not_found","message":"no such model"}}'
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, content=err)
+
+        svc = make_service(handler, no_log=False)
+        captured = {}
+
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+            captured.update(status_code=status_code, usage=dict(usage))
+
+        svc._log_usage = spy  # type: ignore[method-assign]
+        with pytest.raises(MantleUpstreamError) as exc_info:
+            await svc.create_response(b"{}", token_context, stream=True, model="openai.gpt-5.5")
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.content == err
+        # The failed call must still be metered (error status, no usage).
+        assert captured["status_code"] == 404
+        assert captured["usage"] == {}
+
+    async def test_stream_transport_error_raises_502(self, token_context):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused")
+
+        svc = make_service(handler, no_log=False)
+        captured = {}
+
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+            captured.update(status_code=status_code)
+
+        svc._log_usage = spy  # type: ignore[method-assign]
+        with pytest.raises(MantleUpstreamError) as exc_info:
+            await svc.create_response(b"{}", token_context, stream=True, model="openai.gpt-5.5")
+        assert exc_info.value.status_code == 502
+        assert b"mantle_upstream_unreachable" in exc_info.value.content
+        assert captured["status_code"] == 502
+
+    async def test_stream_2xx_still_yields_verbatim_after_eager_connect(self, token_context):
+        # The eager-connect refactor must not change happy-path byte fidelity.
+        payload = (
+            b'data: {"type":"response.output_text.delta","delta":"hi"}\n\n'
+            b'data: {"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":7}}}\n\n'
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=httpx.ByteStream(payload))
+
+        svc = make_service(handler, no_log=False)
+        captured = {}
+
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+            captured.update(usage=dict(usage), status_code=status_code)
+
+        svc._log_usage = spy  # type: ignore[method-assign]
+        result = await svc.create_response(b"{}", token_context, stream=True, model="openai.gpt-5.5")
+        received = b"".join([chunk async for chunk in result])
+        assert received == payload
+        assert captured["usage"] == {"input_tokens": 5, "output_tokens": 7}
+        assert captured["status_code"] == 200
+
+    def test_route_maps_upstream_error_to_real_status(self, token_context):
+        # Route-level: a MantleUpstreamError from the streaming path becomes a
+        # real HTTP error response with the upstream body + request-id.
+        err = b'{"error":{"type":"access_denied"}}'
+
+        class RaisingService:
+            async def create_response(self, body, context, *, stream, model, request_id=None, agent_run_id=None):
+                raise MantleUpstreamError(403, err)
+
+        resolver = ModelResolver(allowed_models_config={"test-org-456": ["openai.*"]})
+        client = TestClient(build_app(RaisingService(), resolver, token_context))
+
+        resp = client.post("/openai/v1/responses", json={"model": "openai.gpt-5.5", "input": "x", "stream": True})
+        assert resp.status_code == 403
+        assert resp.content == err
         assert resp.headers.get("x-request-id")

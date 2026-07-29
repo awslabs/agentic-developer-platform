@@ -18,12 +18,25 @@
 # ScaledJob role); the sidecar discards the Bearer header and re-signs with pod
 # IRSA. The placeholder is set via ENV in the Dockerfile.
 
-model = "openai.gpt-5.5"
+# GPT-5.6 Sol (default since 2026-07-28): OpenAI's flagship reasoning model,
+# same $5.50/$33 rate as gpt-5.5 with stronger agentic/coding performance and
+# fewer output tokens per task. Smoke-verified through the gateway in #3904.
+# gpt-5.5 remains available per-run via `-c model=openai.gpt-5.5`.
+model = "openai.gpt-5.6-sol"
 model_provider = "adp-gateway"
 
 # Non-interactive pod: never prompt for approval and never block on a TTY.
 # `on-failure`/`on-request` would hang a KEDA-scaled pod with no terminal.
 approval_policy = "never"
+
+# Codex CLI >= ~0.145 attaches a `web_search` tool to Responses-API requests by
+# default (default mode "cached"). bedrock-mantle rejects it: HTTP 400
+# "The 'web_search' tool is not supported" — every delegation failed (#3897,
+# surfaced by the gateway error-visibility fix #3902). Disable it: the pod has
+# its own controlled egress and the supervising agent provides research
+# context; Codex on Bedrock never has OpenAI-side web access anyway.
+# Verified: with this key the request body carries no web_search tool.
+web_search = "disabled"
 
 # v2 provider: route through the sigv4-proxy sidecar → API GW → gateway pod.
 # base_url ends at `/openai/v1`; with wire_api="responses" Codex appends

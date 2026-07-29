@@ -64,6 +64,28 @@ class MantleResponse:
     usage: dict[str, int] = field(default_factory=dict)
 
 
+class MantleUpstreamError(Exception):
+    """Upstream mantle call failed before any stream bytes reached the client.
+
+    Raised only from the streaming path's eager-connect phase, where the
+    route can still map it to a real HTTP status. Without this, a
+    ``StreamingResponse`` has already sent its 200 header by the time the
+    upstream failure surfaces, so the client sees a 200 whose stream dies
+    instantly and the gateway logs nothing (the silent-failure mode behind
+    the #3897 Codex outage).
+
+    Attributes:
+        status_code: Upstream HTTP status (502 for connect/transport errors).
+        content: Upstream error body (or synthesized JSON for transport errors).
+    """
+
+    def __init__(self, status_code: int, content: bytes, media_type: str = "application/json") -> None:
+        super().__init__(f"mantle upstream error: HTTP {status_code}")
+        self.status_code = status_code
+        self.content = content
+        self.media_type = media_type
+
+
 class _StreamUsageSniffer:
     """Stateful, per-stream sniffer for the Responses-API ``usage`` block (#2828).
 
@@ -189,7 +211,7 @@ class MantlePassthroughService:
             iterator that yields upstream chunks verbatim for streaming calls.
         """
         if stream:
-            return self._stream(body, context, model=model, request_id=request_id, agent_run_id=agent_run_id)
+            return await self._stream(body, context, model=model, request_id=request_id, agent_run_id=agent_run_id)
         return await self._invoke(body, context, model=model, request_id=request_id, agent_run_id=agent_run_id)
 
     async def _invoke(
@@ -235,24 +257,85 @@ class MantlePassthroughService:
         agent_run_id: str | None,
     ) -> AsyncIterator[bytes]:
         start = time.monotonic()
-        status_code = 502
-        sniffer = _StreamUsageSniffer()
         headers = self._headers(body)
         client = self._client()
+        owns_client = self._http_client is None
+
+        # Eager connect + status check BEFORE handing a generator to the route.
+        # A StreamingResponse sends its 200 header before the generator's first
+        # iteration, so any upstream failure surfaced from inside the generator
+        # reaches the client as a 200 whose stream dies instantly — invisible in
+        # gateway logs and indistinguishable (to the caller) from a broken
+        # stream. Connecting here lets the route return the real upstream
+        # status, and guarantees the failure is logged (#3897).
         try:
-            async with client.stream("POST", self.upstream_url, content=body, headers=headers) as resp:
-                status_code = resp.status_code
+            upstream_request = client.build_request("POST", self.upstream_url, content=body, headers=headers)
+            resp = await client.send(upstream_request, stream=True)
+        except httpx.HTTPError as exc:
+            if owns_client:
+                await client.aclose()
+            latency_ms = int((time.monotonic() - start) * 1000)
+            logger.error(
+                "mantle stream connect failed: %s (model=%s request_id=%s latency_ms=%d)",
+                exc,
+                model,
+                request_id,
+                latency_ms,
+            )
+            await self._log_usage(context, model, {}, latency_ms, 502, request_id, agent_run_id)
+            raise MantleUpstreamError(
+                502,
+                json.dumps({"error": "mantle_upstream_unreachable", "message": str(exc)}).encode(),
+            ) from exc
+
+        if not (200 <= resp.status_code < 300):
+            status_code = resp.status_code
+            error_body = await resp.aread()
+            await resp.aclose()
+            if owns_client:
+                await client.aclose()
+            latency_ms = int((time.monotonic() - start) * 1000)
+            logger.error(
+                "mantle stream upstream error: HTTP %d (model=%s request_id=%s latency_ms=%d body=%s)",
+                status_code,
+                model,
+                request_id,
+                latency_ms,
+                error_body[:512].decode("utf-8", errors="replace"),
+            )
+            await self._log_usage(context, model, {}, latency_ms, status_code, request_id, agent_run_id)
+            raise MantleUpstreamError(
+                status_code,
+                error_body,
+                resp.headers.get("content-type", "application/json"),
+            )
+
+        status_code = resp.status_code
+
+        async def _passthrough() -> AsyncIterator[bytes]:
+            sniffer = _StreamUsageSniffer()
+            try:
                 async for chunk in resp.aiter_bytes():
-                    # Passthrough: yield upstream bytes verbatim, sniff usage as we go.
-                    # The sniffer buffers partial lines internally; the yielded
-                    # bytes are never modified.
+                    # Passthrough: yield upstream bytes verbatim, sniff usage as
+                    # we go. The sniffer buffers partial lines internally; the
+                    # yielded bytes are never modified.
                     sniffer.feed(chunk)
                     yield chunk
-        finally:
-            if self._http_client is None:
-                await client.aclose()
-            latency_ms = (time.monotonic() - start) * 1000
-            await self._log_usage(context, model, sniffer.usage, int(latency_ms), status_code, request_id, agent_run_id)
+            finally:
+                await resp.aclose()
+                if owns_client:
+                    await client.aclose()
+                latency_ms = (time.monotonic() - start) * 1000
+                logger.info(
+                    "mantle stream completed: HTTP %d (model=%s request_id=%s latency_ms=%d)",
+                    status_code,
+                    model,
+                    request_id,
+                    int(latency_ms),
+                )
+                await self._log_usage(context, model, sniffer.usage, int(latency_ms), status_code, request_id, agent_run_id)
+
+        return _passthrough()
 
     # ------------------------------------------------------------------
     # Usage extraction

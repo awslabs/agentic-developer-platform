@@ -30,7 +30,7 @@ def sample_manifest() -> dict:
         "generated_at": "2026-04-30T04:12:33Z",
         "python": {"version": "3.12.5", "interpreter": "/usr/local/bin/python3"},
         "python_packages": {
-            "lief": "0.14.1",
+            "lief": "0.17.2",
             "pefile": "2024.8.26",
             "yara-python": "4.5.1",
             "capstone": "5.0.3",
@@ -42,7 +42,7 @@ def sample_manifest() -> dict:
             "macholib": "1.16.3",
             "signify": "0.9.2",
             "boto3": "1.35.0",
-            "requests": "2.32.0",
+            "requests": "2.33.0",
             "pydantic": "2.9.0",
             "python-magic": "0.4.27",
         },

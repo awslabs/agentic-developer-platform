@@ -99,7 +99,7 @@ const ISSUE_NUMBER = process.env.ISSUE_NUMBER || '';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 const GH_APP_TOKEN = process.env.GH_APP_TOKEN || '';
 const CWD = process.env.WORK_DIR || process.cwd();
-const MODEL = process.env.ANTHROPIC_MODEL || 'us.anthropic.claude-sonnet-4-20250514-v1:0';
+const MODEL = process.env.ANTHROPIC_MODEL || 'global.anthropic.claude-opus-5';
 const AGENT_TYPE = process.env.AGENT_TYPE || 'developer';
 const AWS_REGION = process.env.AWS_REGION || 'us-east-1';
 

@@ -1,0 +1,133 @@
+# Dependabot configuration (issue context: #3914 non-goal promoted).
+#
+# Why: three manual alert sweeps in one week (PRs #3881, #3882, #3914's run).
+# This file turns on PROACTIVE updates — Dependabot opens the bump PRs; CI
+# (gateway suite, vitest, jest, scanners) validates them; a human or a
+# scheduled agent sweep reviews and merges. Alerts + security-update PRs fire
+# immediately on new advisories regardless of the weekly schedule below.
+#
+# Conventions:
+# - `groups`: batch all bumps per manifest into ONE weekly PR (without this,
+#   expect 10-20 PRs/week from the npm trees alone).
+# - Security-update PRs are NOT grouped by default and arrive as they fire.
+# - Majors for the riskiest direct deps are ignored — those need deliberate
+#   migration work (see per-block notes), not a bot bump.
+# - Known CI caveat for reviewers: the Security Summary gate fails on every
+#   PR (globally broken baseline); the 4 agent test suites importing vitest
+#   fail on main. Neither is a Dependabot PR's fault.
+
+version: 2
+updates:
+  # --- npm ------------------------------------------------------------
+  - package-ecosystem: npm
+    directory: /modules/gateway/frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      frontend-deps:
+        patterns: ["*"]
+    ignore:
+      # React majors are deliberate migrations (routing click-paths must be
+      # re-validated through CloudFront, not just unit tests).
+      - dependency-name: react
+        update-types: ["version-update:semver-major"]
+      - dependency-name: react-dom
+        update-types: ["version-update:semver-major"]
+      - dependency-name: react-router-dom
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: npm
+    directory: /modules/agent-factory/agent
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      agent-deps:
+        patterns: ["*"]
+    ignore:
+      # The Claude Agent SDK pin is load-bearing (model-surface compat —
+      # 0.3.181→0.3.220 needed the #3893 gateway fix). Bump deliberately.
+      - dependency-name: "@anthropic-ai/claude-agent-sdk"
+
+  - package-ecosystem: npm
+    directory: /libs/typescript/adp-ui-kit
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      ui-kit-deps:
+        patterns: ["*"]
+
+  # --- pip ------------------------------------------------------------
+  - package-ecosystem: pip
+    directory: /modules/gateway
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      gateway-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /modules/domain-apps/cyber/workers
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      cyber-deps:
+        patterns: ["*"]
+    ignore:
+      # Binary-parsing libs fed attacker-supplied samples: minors have real
+      # API drift (signify 0.7→0.9 in #3881, lief 0.14→0.17 in #3914) and a
+      # manifest-fixture test pins versions. Security-updates still fire.
+      - dependency-name: lief
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: signify
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+
+  - package-ecosystem: pip
+    directory: /modules/agent-factory/webhook-ingress
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      webhook-ingress-deps:
+        patterns: ["*"]
+
+  # --- gomod (terratest suites, test-only) ------------------------------
+  - package-ecosystem: gomod
+    directory: /modules/gateway/infra/tests
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    groups:
+      terratest-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: gomod
+    directory: /modules/gateway/infra/tests/integration
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    groups:
+      terratest-integration-deps:
+        patterns: ["*"]
+
+  # --- GitHub Actions ---------------------------------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      actions-deps:
+        patterns: ["*"]

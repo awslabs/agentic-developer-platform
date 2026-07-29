@@ -20,6 +20,7 @@ DEFAULT_MODEL_ALIASES: dict[str, str] = {
     # inference-profile ID (global. prefix), verified ACTIVE + invokable
     # (issues #2279/#2300). Bare opus/sonnet/haiku removed: a /model choice
     # must name an explicit version so it can't silently drift.
+    "opus5": "global.anthropic.claude-opus-5",
     "opus48": "global.anthropic.claude-opus-4-8",
     "opus47": "global.anthropic.claude-opus-4-7",
     "opus46": "global.anthropic.claude-opus-4-6-v1",

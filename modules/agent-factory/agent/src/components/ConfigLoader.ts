@@ -16,7 +16,7 @@ export class ConfigLoader {
       pollingInterval: parseInt(process.env.POLLING_INTERVAL || '30000', 10),
       maxRetries: parseInt(process.env.MAX_RETRIES || '5', 10),
       logLevel: (process.env.LOG_LEVEL as Config['logLevel']) || 'INFO',
-      bedrockModel: process.env.ANTHROPIC_MODEL || 'global.anthropic.claude-opus-4-5-20251101-v1:0',
+      bedrockModel: process.env.ANTHROPIC_MODEL || 'global.anthropic.claude-opus-5',
     };
 
     this.secretsClient = new SecretsManagerClient({ region: awsRegion });
