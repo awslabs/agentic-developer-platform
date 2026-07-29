@@ -6,7 +6,7 @@ pyelftools==0.31
 macholib==1.16.3
 
 # Sample inspection — expanded tooling for Stage 1 + Stage 3
-lief==0.14.1
+lief==0.17.2
 signify==0.9.2
 iocextract==1.16.1
 capstone==5.0.3
@@ -19,7 +19,7 @@ magika==0.6.1
 
 # AWS + HTTP
 boto3==1.35.0
-requests==2.32.0
+requests==2.33.0
 
 # Data modeling
 pydantic==2.9.0
