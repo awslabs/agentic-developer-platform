@@ -53,7 +53,7 @@ jobs:
   migrate:
     runs-on: arc-runner-org
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
