@@ -4,21 +4,21 @@ version = "0.1.0"
 description = "Multi-tenant SaaS proxy for Amazon Bedrock"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi==0.136.3",
-    "uvicorn==0.34.0",
-    "sqlalchemy[asyncio]==2.0.46",
-    "asyncpg==0.30.0",
-    "alembic==1.14.1",
-    "pydantic==2.12.5",
-    "pydantic-settings==2.14.2",
-    "boto3==1.36.0",
+    "fastapi==0.141.1",
+    "uvicorn==0.52.1",
+    "sqlalchemy[asyncio]==2.0.51",
+    "asyncpg==0.31.0",
+    "alembic==1.19.0",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.15.0",
+    "boto3==1.43.66",
     "httpx==0.28.1",
-    "redis==5.2.1",
-    "prometheus-client==0.22.0",
+    "redis==8.1.0",
+    "prometheus-client==0.26.0",
     "passlib[bcrypt]==1.7.4",
     "PyJWT[crypto]==2.13.0",
-    "python-json-logger==2.0.7",
-    "email-validator==2.1.1",
+    "python-json-logger==4.1.0",
+    "email-validator==2.3.0",
     "python-multipart>=0.0.9",
     # Issue #143: Chat logging uses boto3 with asyncio.to_thread for async S3/Comprehend
     # No additional deps needed; aioboto3 could be added for native async support if needed
@@ -26,13 +26,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest==9.0.3",
+    "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
-    "fakeredis==2.26.2",
-    "moto==5.0.27",
-    "ruff==0.9.6",
-    "pytest-timeout==2.3.1",
+    "fakeredis==2.37.0",
+    "moto==5.2.2",
+    "ruff==0.16.2",
+    "pytest-timeout==2.4.0",
     "aiosqlite>=0.20.0",
     "psycopg2-binary>=2.9.9",
 ]
