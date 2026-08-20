@@ -72,11 +72,16 @@ def _cognito_claims_to_context(claims: CognitoTokenClaims) -> TokenContext:
     # Determine account type from custom claim
     account_type = claims.account_type or "human"
 
-    # Determine if user is admin based on role or groups
+    # Determine if user is admin based on role or groups.
+    # NOTE: is_admin means PLATFORM admin. It must NOT include "org_admin",
+    # which is an organization-scoped role assigned to every tenant's own
+    # administrator. get_user_role() maps is_admin=True to PLATFORM_ADMIN with
+    # no org scope, so admitting org_admin here would let any tenant admin act
+    # across all organizations. This predicate is kept identical to the copies
+    # in auth/middleware.py and auth/auth_service.py.
     is_admin = (
         claims.role == "platform_admin"
         or claims.role == "admin"
-        or claims.role == "org_admin"
         or "admins" in claims.cognito_groups
         or "platform-admins" in claims.cognito_groups
     )
