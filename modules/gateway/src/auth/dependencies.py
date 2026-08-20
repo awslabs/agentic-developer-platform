@@ -80,10 +80,7 @@ def _cognito_claims_to_context(claims: CognitoTokenClaims) -> TokenContext:
     # across all organizations. This predicate is kept identical to the copies
     # in auth/middleware.py and auth/auth_service.py.
     is_admin = (
-        claims.role == "platform_admin"
-        or claims.role == "admin"
-        or "admins" in claims.cognito_groups
-        or "platform-admins" in claims.cognito_groups
+        claims.role == "platform_admin" or claims.role == "admin" or "admins" in claims.cognito_groups or "platform-admins" in claims.cognito_groups
     )
 
     # For service accounts, use client_id as user_id
