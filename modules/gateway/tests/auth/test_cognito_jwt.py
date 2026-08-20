@@ -444,6 +444,49 @@ class TestMiddlewareHelperFunctions:
 
         assert context.is_admin is True
 
+    def test_cognito_claims_to_context_platform_admins_group(self):
+        """platform-admins group grants admin — unified across all three copies.
+
+        The is_admin predicate must be identical in auth/dependencies.py,
+        auth/middleware.py and auth/auth_service.py: platform_admin/admin role
+        or the "admins"/"platform-admins" group, and NEVER the org-scoped
+        org_admin role.
+        """
+        from src.auth.middleware import _cognito_claims_to_context
+
+        claims = CognitoTokenClaims(
+            sub="user-123",
+            iss="https://test",
+            client_id="web-client",
+            token_use="access",
+            exp=1234571490,
+            iat=1234567890,
+            username="user@example.com",
+            org_id="org-456",
+            cognito_groups=["users", "platform-admins"],
+        )
+
+        assert _cognito_claims_to_context(claims).is_admin is True
+
+    def test_cognito_claims_to_context_org_admin_is_not_admin(self):
+        """org_admin is org-scoped and must NOT be treated as platform admin."""
+        from src.auth.middleware import _cognito_claims_to_context
+
+        claims = CognitoTokenClaims(
+            sub="user-123",
+            iss="https://test",
+            client_id="web-client",
+            token_use="access",
+            exp=1234571490,
+            iat=1234567890,
+            username="user@example.com",
+            org_id="org-456",
+            role="org_admin",
+            cognito_groups=["users"],
+        )
+
+        assert _cognito_claims_to_context(claims).is_admin is False
+
 
 # =============================================================================
 # Issue #1147: Regression test — tampered signature rejected
