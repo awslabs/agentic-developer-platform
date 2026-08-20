@@ -2,7 +2,7 @@
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.admin.config import ROLE_PERMISSIONS, AdminRole, Permission
+from src.admin.config import CALLER_ROLE_RANK, PLATFORM_LEVEL_ROLES, ROLE_PERMISSIONS, ROLE_RANK, AdminRole, Permission
 from src.admin.exceptions import AccessDeniedError, InvalidRoleError, InvalidScopeError
 from src.shared.schemas.auth import TokenContext
 
@@ -158,6 +158,67 @@ class AccessControl:
                 )
 
         return True
+
+    async def require_assignable_role(
+        self,
+        context: TokenContext,
+        requested_role: str,
+        target_org_id: str | None = None,
+    ) -> None:
+        """Enforce a role-assignment ceiling.
+
+        The ``role`` field on user-create/update requests is a free-form string
+        that becomes the user's ``custom:role`` claim (and hence their
+        privilege). Callers must not be able to grant a role above their own
+        privilege level. In particular, an org_admin must NOT be able to assign
+        a platform-level role (``platform_admin``/``admin``) and thereby
+        escalate a user out of their own organization.
+
+        This guards *which role* may be granted. It is complementary to — not a
+        replacement for — the ``check_permission(..., target_org_id=...)`` scope
+        check that gates *which org* the caller may write to; call this after
+        that check has passed.
+
+        Args:
+            context: The authenticated caller's token context.
+            requested_role: The role the caller wants to assign.
+            target_org_id: Organization the assignment targets (for logging).
+
+        Raises:
+            InvalidScopeError: A non-platform caller tried to assign a
+                platform-level role.
+            AccessDeniedError: The requested role outranks the caller.
+            InvalidRoleError: The requested role is not a recognized role.
+        """
+        role, _, _ = await self.get_user_role(context)
+
+        # Platform admins may assign any role.
+        if role == AdminRole.PLATFORM_ADMIN:
+            return
+
+        normalized = (requested_role or "").strip().lower()
+
+        # Platform-level roles are never assignable by a non-platform caller,
+        # regardless of the caller's own rank.
+        if normalized in PLATFORM_LEVEL_ROLES:
+            raise InvalidScopeError(
+                message="Cannot assign a platform-level role",
+                allowed_scope=f"role_rank<={CALLER_ROLE_RANK.get(role, 0)}",
+                requested_scope=f"role:{normalized}",
+            )
+
+        # Unknown roles are treated as maximally privileged: a platform admin
+        # (handled above) may set arbitrary strings, but a non-platform caller
+        # may only assign a role we recognize.
+        requested_rank = ROLE_RANK.get(normalized)
+        if requested_rank is None:
+            raise InvalidRoleError(normalized or "<empty>")
+
+        if requested_rank > CALLER_ROLE_RANK.get(role, 0):
+            raise AccessDeniedError(
+                message=f"Cannot assign role '{normalized}' above your own privilege level",
+                user_role=role.value,
+            )
 
     async def validate_resource_access(
         self,

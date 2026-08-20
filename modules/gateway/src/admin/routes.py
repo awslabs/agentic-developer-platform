@@ -798,6 +798,10 @@ async def add_user(
     Requires org admin privileges.
     """
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
+    # Guard the free-form role field: a caller may only grant a role at or below
+    # their own privilege. Without this an org_admin could create a user with
+    # role="platform_admin" and escalate out of their own organization.
+    await access.require_assignable_role(current_user, request.role, target_org_id=org_id)
     return await service.add_user(org_id, team_id, request, cognito_service)
 
 
