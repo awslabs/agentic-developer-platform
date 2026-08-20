@@ -752,7 +752,12 @@ def _cognito_claims_to_context(claims: CognitoTokenClaims) -> TokenContext:
     account_type = claims.account_type or "human"
 
     # Determine if user is admin based on role or groups
-    is_admin = claims.role == "platform_admin" or claims.role == "admin" or "admins" in claims.cognito_groups
+    is_admin = (
+        claims.role == "platform_admin"
+        or claims.role == "admin"
+        or "admins" in claims.cognito_groups
+        or "platform-admins" in claims.cognito_groups
+    )
 
     # For service accounts, use client_id as user_id
     user_id = claims.sub
