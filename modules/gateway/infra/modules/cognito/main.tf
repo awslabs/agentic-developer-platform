@@ -234,13 +234,18 @@ resource "aws_cognito_user_pool_client" "main" {
     "custom:role"
   ]
 
+  # Security: privilege and tenant-scoping attributes are DELIBERATELY excluded
+  # from the public client's writable set. custom:role, custom:org_id,
+  # custom:team_id and custom:department_id decide is_admin and tenant scope
+  # (pre_token_generation copies them verbatim into token claims). If they were
+  # writable here, any user could self-issue `cognito-idp update-user-attributes`
+  # with their own access token, set custom:role=platform_admin, and escalate to
+  # an unscoped platform admin. These attributes are managed only server-side via
+  # AdminUpdateUserAttributes (which is not governed by client write_attributes).
+  # Users may still update their own email/name.
   write_attributes = [
     "email",
-    "name",
-    "custom:org_id",
-    "custom:department_id",
-    "custom:team_id",
-    "custom:role"
+    "name"
   ]
 }
 
