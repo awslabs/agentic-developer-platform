@@ -47,8 +47,13 @@ class TestPermission:
 
     def test_permission_count(self):
         """Test Permission enum has expected number of permissions."""
-        # Should have 16 permissions based on the source file
-        assert len(Permission) == 16
+        # Should have 17 permissions based on the source file
+        # (Issue #3989 added AGENT_REGISTER for agent-registry writes)
+        assert len(Permission) == 17
+
+    def test_agent_register_permission_exists(self):
+        """Issue #3989: agent-registry writes gate on their own permission."""
+        assert Permission.AGENT_REGISTER.value == "agent:register"
 
     def test_org_permissions_exist(self):
         """Test organization management permissions exist."""

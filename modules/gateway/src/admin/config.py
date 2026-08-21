@@ -47,6 +47,13 @@ class Permission(str, Enum):
     # Metrics
     METRICS_READ = "metrics:read"
 
+    # Issue #3989: agent-registry writes. The registry is the IAM-authentication
+    # database — a row resolves a role_arn to an authenticated `service`
+    # identity in an org (src/auth/agent_registry.py). Writes therefore need a
+    # dedicated permission rather than reusing ORG_UPDATE, which is held by
+    # every role that can edit any org attribute.
+    AGENT_REGISTER = "agent:register"
+
 
 # Role to permissions mapping
 ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
@@ -67,6 +74,7 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         Permission.USER_READ,
         Permission.USER_MANAGE,
         Permission.METRICS_READ,
+        Permission.AGENT_REGISTER,
     },
     AdminRole.ORG_ADMIN: {
         Permission.ORG_READ,
@@ -80,6 +88,9 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         Permission.LOGS_EXPORT,
         Permission.USER_READ,
         Permission.USER_MANAGE,
+        # Issue #3989: an org admin may register agents into their OWN org; the
+        # target_org_id scope check in check_permission() enforces the boundary.
+        Permission.AGENT_REGISTER,
     },
     AdminRole.DEPT_ADMIN: {
         Permission.BUDGET_READ,

@@ -27,6 +27,7 @@ from .agent_registry_schemas import (
     AgentRegistryListResponse,
     AgentRegistryResponse,
     AgentRegistryUpdateRequest,
+    is_reserved_role_arn,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,16 @@ class AgentRegistryService:
         self.org_team_index = "by-org-team"
         self.owner_index = "by-owner"
 
+    @staticmethod
+    def _reject_reserved_role_arn(role_arn: str | None) -> None:
+        """Raise ValidationError if *role_arn* names a platform-reserved role.
+
+        Issue #3989: see ``is_reserved_role_arn`` for why this is unconditional.
+        """
+        if role_arn and is_reserved_role_arn(role_arn):
+            logger.warning("agent_registry_reserved_role_arn_rejected role_arn=%s", role_arn)
+            raise ValidationError(f"role_arn '{role_arn}' names a platform-reserved IAM role and cannot be registered as an agent")
+
     async def create_agent(self, request: AgentRegistryCreateRequest) -> AgentRegistryResponse:
         """
         Create a new agent in the registry.
@@ -90,6 +101,14 @@ class AgentRegistryService:
             ValidationError: If request is invalid
         """
         logger.info(f"Creating agent: {request.agent_name} for org: {request.org_id}")
+
+        # Issue #3989: reject platform-reserved role names. Enforced here rather
+        # than in the routes because this method is the single choke point for
+        # every registry write (both /admin/registry/agents and
+        # /admin/agents/onboard flow through it), and it applies regardless of
+        # caller privilege — even a platform admin has no reason to bind a
+        # platform-owned role to a tenant agent identity.
+        self._reject_reserved_role_arn(request.role_arn)
 
         # Check if role_arn already exists (must be unique)
         existing = await self.get_agent_by_role(request.role_arn)
@@ -372,6 +391,10 @@ class AgentRegistryService:
             NotFoundError: If agent not found
             ConflictError: If new role_arn already exists
         """
+        # Issue #3989: an update that repoints role_arn mints identity exactly as
+        # a create does, so the reserved-prefix denylist applies here too.
+        self._reject_reserved_role_arn(request.role_arn)
+
         # Verify agent exists
         existing = await self.get_agent(agent_id)
 

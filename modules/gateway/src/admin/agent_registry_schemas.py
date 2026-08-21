@@ -22,6 +22,45 @@ from pydantic import BaseModel, Field, field_validator
 ROLE_ARN_PATTERN = re.compile(r"^arn:aws:iam::\d{12}:role/.+$")
 
 
+def role_name_from_arn(role_arn: str) -> str:
+    """Extract the bare role NAME from an IAM role ARN.
+
+    IAM role ARNs may carry a path (``arn:aws:iam::123:role/some/path/MyRole``);
+    the role name is the last segment. Returns an empty string for anything that
+    is not a role ARN.
+    """
+    if ":role/" not in role_arn:
+        return ""
+    return role_arn.split(":role/", 1)[1].rsplit("/", 1)[-1]
+
+
+def is_reserved_role_arn(role_arn: str) -> bool:
+    """Return True if *role_arn* names a platform-reserved IAM role.
+
+    Issue #3989: an agent-registry row resolves any registered ``role_arn`` to an
+    authenticated ``service`` identity in that row's org
+    (``src/auth/agent_registry.py``), and ``role_arn`` is unique across the
+    table. Registering a platform-owned role would therefore (a) bind the
+    platform's own role — e.g. the CI runner role — into an org of the
+    registrant's choosing, and (b) squat the ARN so the legitimate row can never
+    be created.
+
+    This is a hard denylist: it is enforced on every registry write regardless of
+    caller privilege, because there is no legitimate reason to register a
+    platform-owned role as a tenant agent. Note that a same-account
+    ``iam:GetRole`` existence check would NOT catch this — platform roles are
+    precisely the same-account roles that pass it.
+    """
+    role_name = role_name_from_arn(role_arn).lower()
+    if not role_name:
+        return False
+
+    from src.shared.config import get_settings
+
+    prefixes = [p.strip().lower() for p in (get_settings().reserved_role_name_prefixes or "").split(",")]
+    return any(prefix and role_name.startswith(prefix) for prefix in prefixes)
+
+
 class AgentRegistryCreateRequest(BaseModel):
     """Request to create a new agent in the DynamoDB registry."""
 

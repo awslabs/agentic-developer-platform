@@ -138,6 +138,18 @@ class Settings(BaseSettings):
     # resolve authorized_user_id). Set via SSM in prod.
     webhook_events_table: str = "adp-dev-webhook-events"
 
+    # Issue #3989: IAM role-name prefixes reserved for platform-owned roles.
+    # An agent-registry row resolves ANY registered role_arn to an authenticated
+    # `service` identity in that row's org (src/auth/agent_registry.py), and
+    # role_arn is unique. Registering a platform-owned role (e.g.
+    # "adp-dev-agent-runner-role") would therefore bind the platform's own CI
+    # role into an attacker-chosen org AND squat the ARN so the legitimate row can
+    # never be created. Role names starting with any of these prefixes are
+    # rejected on every registry write regardless of caller privilege.
+    # Comma-separated; matched case-insensitively against the role NAME (the ARN
+    # segment after "role/", path stripped).
+    reserved_role_name_prefixes: str = "adp-,bedrockgw-"
+
     # Issue #2918: Gate Base.metadata.create_all behind this flag.
     # Default False in deployed envs (migrations are the single source of truth).
     # Set True only for docker-compose / local dev where alembic isn't run on startup.

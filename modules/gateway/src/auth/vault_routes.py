@@ -172,7 +172,10 @@ async def create_credential_endpoint(
     "/credentials/{credential_id}",
     response_model=CredentialResponse,
     summary="Update credential metadata",
-    description=("Update label, expires_at, or strict. The value cannot be changed via PATCH — delete and re-register for audit clarity."),
+    description=(
+        "Update label, expires_at, or strict. The value cannot be changed via PATCH — delete and re-register for audit clarity. "
+        "Modifying an org- or team-scoped (shared) credential requires an organization administrator role."
+    ),
 )
 async def update_credential_endpoint(
     credential_id: str = Path(..., description="Credential ID"),
@@ -186,6 +189,12 @@ async def update_credential_endpoint(
         return CredentialResponse.from_model(cred)
     except CredentialNotFoundError:
         raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Credential not found"})
+    except InsufficientPrivilegesError as exc:
+        # Issue #3989: without this mapping the shared-scope admin gate in
+        # update_credential would fall through to the bare `except Exception`
+        # below and surface as a 500 — failing closed, but not with the 403 the
+        # caller (and the tests) require.
+        raise HTTPException(status_code=403, detail={"error": "insufficient_privileges", "message": str(exc)})
     except Exception:
         logger.exception("Unexpected error updating credential %s", credential_id)
         raise HTTPException(status_code=500, detail={"error": "update_failed", "message": "Failed to update credential"})
@@ -197,7 +206,9 @@ async def update_credential_endpoint(
     response_model=None,
     summary="Delete a credential",
     description=(
-        "Synchronously deletes the database row and the AWS Secrets Manager secret. Returns 204 on success, 404 if not found or not owned by caller."
+        "Synchronously deletes the database row and the AWS Secrets Manager secret. The secret is deleted WITH AWS's recovery window "
+        "(7-30 days), not force-deleted. Returns 204 on success, 404 if not found or not owned by caller, 403 when deleting a shared "
+        "(org/team) credential without an organization administrator role."
     ),
 )
 async def delete_credential_endpoint(
@@ -211,6 +222,10 @@ async def delete_credential_endpoint(
         await delete_credential(credential_id, db, token_context, sm)
     except CredentialNotFoundError:
         raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Credential not found"})
+    except InsufficientPrivilegesError as exc:
+        # Issue #3989: see the PATCH handler — required so the shared-scope gate
+        # returns 403 rather than a 500 from the catch-all below.
+        raise HTTPException(status_code=403, detail={"error": "insufficient_privileges", "message": str(exc)})
     except Exception:
         logger.exception("Unexpected error deleting credential %s", credential_id)
         raise HTTPException(status_code=500, detail={"error": "delete_failed", "message": "Failed to delete credential"})

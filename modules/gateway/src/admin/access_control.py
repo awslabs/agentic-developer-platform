@@ -3,7 +3,7 @@
 import logging
 import time
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.config import (
@@ -42,6 +42,11 @@ _ORG_SCOPED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.USER_READ,
         Permission.USER_MANAGE,
         Permission.METRICS_READ,
+        # Issue #3989: agent-registry writes are org-scoped. Omitting this would
+        # let a principal with an empty org_id skip the membership-deny below and
+        # then short-circuit the target_org_id check (which requires a truthy
+        # allowed_org_id), passing the scope check entirely.
+        Permission.AGENT_REGISTER,
     }
 )
 
@@ -96,11 +101,20 @@ class AccessControl:
         while ``TokenContext.user_id`` is the Cognito ``sub`` claim, so this
         resolves through ``users.cognito_sub`` first — the same two-step lookup
         used for tenant resolution in ``admin/connections/routes.py``.
+
+        Issue #3989: some callers reach this with ``user_id`` ALREADY resolved to
+        ``users.id`` — ``auth/vault_routes._resolve_user_id_in_context`` rewrites
+        the context in place before the vault service runs. Matching only on
+        ``cognito_sub`` would resolve those callers to no membership at all, so a
+        genuine org admin would fall to the least-privilege default and lose
+        access to their own org's shared credentials. Accept either form.
         """
         if self.db is None:
             return None
 
-        pg_user_id = (await self.db.execute(select(User.id).where(User.cognito_sub == context.user_id))).scalar_one_or_none()
+        pg_user_id = (
+            await self.db.execute(select(User.id).where(or_(User.cognito_sub == context.user_id, User.id == context.user_id)).limit(1))
+        ).scalar_one_or_none()
         if not pg_user_id:
             return None
 

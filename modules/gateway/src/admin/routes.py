@@ -5,10 +5,12 @@ The mock get_current_user() that returned is_admin=True has been replaced with
 real Cognito JWT validation via src.auth.dependencies.get_current_user.
 """
 
+import logging
 from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
@@ -91,6 +93,8 @@ from src.shared.schemas.admin import (
     UserResponse,
 )
 from src.shared.schemas.auth import TokenContext
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -1391,9 +1395,19 @@ async def create_registry_agent(
     The agent_id is a UUID generated server-side.
     The role_arn must be unique across all agents.
 
-    Requires org admin privileges for the target organization.
+    Requires the AGENT_REGISTER permission for the target organization.
+
+    Issue #3989 (f-2c3ccdce): previously gated on ORG_UPDATE, which every role
+    able to edit any org attribute holds. Registry writes mint authenticated
+    identity, so they get their own permission.
     """
-    await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=request.org_id)
+    await access.check_permission(current_user, Permission.AGENT_REGISTER, target_org_id=request.org_id)
+    logger.info(
+        "agent_registry_create_allowed caller=%s target_org=%s role_arn=%s",
+        current_user.user_id,
+        request.org_id,
+        request.role_arn,
+    )
     return await service.create_agent(request)
 
 
@@ -1490,10 +1504,18 @@ async def update_registry_agent(
     Issue #248: Updates agent attributes. The role_arn can be updated
     if the IAM role changes, but must remain unique.
 
-    Requires org admin privileges for the agent's organization.
+    Requires the AGENT_REGISTER permission for the agent's organization
+    (Issue #3989: repointing role_arn mints identity exactly as a create does).
     """
     agent = await service.get_agent(agent_id)
-    await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=agent.org_id)
+    await access.check_permission(current_user, Permission.AGENT_REGISTER, target_org_id=agent.org_id)
+    logger.info(
+        "agent_registry_update_allowed caller=%s target_org=%s agent_id=%s new_role_arn=%s",
+        current_user.user_id,
+        agent.org_id,
+        agent_id,
+        request.role_arn,
+    )
     return await service.update_agent(agent_id, request)
 
 
@@ -1585,6 +1607,7 @@ async def onboard_agent(
     service: Annotated[AgentOnboardingService, Depends(get_agent_onboarding_service)],
     access: Annotated[AccessControl, Depends(get_access_control)],
     current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AgentOnboardResponse:
     """Onboard a new agent to the platform (Bring Your Own IAM Role).
 
@@ -1602,12 +1625,106 @@ async def onboard_agent(
     Response includes an IRSA trust policy snippet that the developer
     needs to add to their IAM role's trust policy.
 
-    Requires org admin privileges for the target organization.
+    Requires the AGENT_REGISTER permission for the target organization.
+
+    Issue #3989 (f-2c3ccdce): this endpoint previously had NO authorization check
+    at all ("self-service onboarding"), while ``request.org_id`` is a required,
+    entirely caller-supplied field. A registry row resolves its ``role_arn`` to an
+    authenticated ``service`` identity in its org
+    (``src/auth/agent_registry.py``), so an ungated write here let any
+    authenticated caller grant an arbitrary IAM role platform identity inside an
+    org of their choosing.
     """
-    # Onboarding is allowed for any authenticated caller (IAM or JWT)
-    # The caller is already authenticated — no additional permission check needed
-    # for self-service onboarding
+    # Gate on AGENT_REGISTER scoped to the target org. Deliberately NOT ORG_UPDATE:
+    # that permission is held by every role able to edit any org attribute, and
+    # minting an authenticated identity is a strictly higher-privilege operation.
+    try:
+        await access.check_permission(current_user, Permission.AGENT_REGISTER, target_org_id=request.org_id)
+    except Exception:
+        # Audit trail: this endpoint mints identity, so denials are logged too.
+        logger.warning(
+            "agent_onboard_denied caller=%s caller_org=%s target_org=%s role_arn=%s",
+            current_user.user_id,
+            current_user.org_id,
+            request.org_id,
+            request.role_arn,
+        )
+        raise
+
+    # The permission check scopes org_id, but team_id/owner/level are separately
+    # caller-controlled: without this, a caller authorized for org X could still
+    # register into an arbitrary team and claim arbitrary ownership within it.
+    await _validate_onboard_target_scope(request, current_user, access, db)
+
+    logger.info(
+        "agent_onboard_allowed caller=%s target_org=%s team=%s level=%s role_arn=%s",
+        current_user.user_id,
+        request.org_id,
+        request.team_id,
+        request.level,
+        request.role_arn,
+    )
     return await service.onboard_agent(request)
+
+
+async def _validate_onboard_target_scope(
+    request: AgentOnboardRequest,
+    current_user: TokenContext,
+    access: AccessControl,
+    db: AsyncSession,
+) -> None:
+    """Validate the caller-supplied team/owner/level on an onboard request.
+
+    Issue #3989: ``check_permission(..., target_org_id=request.org_id)`` gates the
+    org, but ``team_id``, ``owner`` and ``level`` are separate free-form fields on
+    the request. Each is validated against the *target org* so a caller cannot
+    register an agent into a team that belongs to some other tenant, attribute
+    ownership to a user outside the target org, or claim org-wide reach without
+    org-admin authority.
+
+    Raises:
+        InvalidScopeError: team_id or owner does not belong to request.org_id.
+        AccessDeniedError: level="org" requested by a non-org-admin caller.
+    """
+    from src.admin.exceptions import AccessDeniedError, InvalidScopeError
+    from src.shared.models.organization import Team, User
+
+    if request.team_id:
+        team = (await db.execute(select(Team.id).where(Team.id == request.team_id, Team.org_id == request.org_id).limit(1))).scalar_one_or_none()
+        if not team:
+            raise InvalidScopeError(
+                message="team_id does not belong to the target organization",
+                allowed_scope=f"org:{request.org_id}",
+                requested_scope=f"team:{request.team_id}",
+            )
+
+    # `owner` is a user identifier recorded on the registry row and surfaced by
+    # the by-owner GSI. Accept the Cognito sub or the users.id, but require the
+    # row to live in the target org.
+    owner_in_org = (
+        await db.execute(
+            select(User.id)
+            .where(
+                or_(User.id == request.owner, User.cognito_sub == request.owner),
+                User.org_id == request.org_id,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not owner_in_org:
+        raise InvalidScopeError(
+            message="owner is not a member of the target organization",
+            allowed_scope=f"org:{request.org_id}",
+            requested_scope=f"owner:{request.owner}",
+        )
+
+    # level="org" gives the agent org-wide reach; only an org admin (or platform
+    # admin) may grant it. team/personal stay available to any AGENT_REGISTER holder.
+    if request.level == "org" and not await access.is_org_admin(current_user, request.org_id):
+        raise AccessDeniedError(
+            message="Only an organization administrator may onboard an org-level agent",
+            required_permission=Permission.AGENT_REGISTER.value,
+        )
 
 
 # =============================================================================
