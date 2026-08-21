@@ -11,6 +11,7 @@ class AdminRole(str, Enum):
     PLATFORM_ADMIN = "platform_admin"  # Full platform access
     ORG_ADMIN = "org_admin"  # Organization-scoped access
     DEPT_ADMIN = "dept_admin"  # Department-scoped access
+    MEMBER = "member"  # Issue #3987: least-privilege default (no admin authority)
 
 
 class Permission(str, Enum):
@@ -87,6 +88,14 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         Permission.LOGS_READ,
         Permission.USER_READ,
     },
+    # Issue #3987: least-privilege role for an authenticated principal with no
+    # admin-level tenant membership. Deliberately holds a single own-scope read
+    # permission rather than the empty set: get_role_permissions() raises
+    # InvalidRoleError for an unmapped role, which surfaces as a 500 instead of
+    # the 403 an unprivileged caller must get.
+    AdminRole.MEMBER: {
+        Permission.USAGE_READ,
+    },
 }
 
 
@@ -123,7 +132,51 @@ CALLER_ROLE_RANK: dict[AdminRole, int] = {
     AdminRole.PLATFORM_ADMIN: 3,
     AdminRole.ORG_ADMIN: 2,
     AdminRole.DEPT_ADMIN: 1,
+    # Issue #3987: a member may assign no role at all.
+    AdminRole.MEMBER: 0,
 }
+
+
+# Issue #3987: mapping from a stored tenant_memberships.role string to the
+# AdminRole vocabulary used by the permission tables.
+#
+# Four role vocabularies are live in this module and they disagree: the AdminRole
+# enum, ROLE_RANK above, the strings actually written into
+# tenant_memberships.role by the onboarding paths, and whatever arbitrary
+# users.role value migration 021's backfill copied in. This is the single
+# explicit, fail-closed reconciliation point.
+#
+# Note that platform-level strings map to ORG_ADMIN, *not* PLATFORM_ADMIN: a
+# tenant membership row is scoped to one tenant by construction and must never
+# be able to confer unscoped platform authority. Platform admin comes from the
+# token's is_admin claim only (see #3981, which removed the org_admin -> platform
+# escalation bridge).
+_MEMBERSHIP_ROLE_TO_ADMIN_ROLE: dict[str, AdminRole] = {
+    "platform_admin": AdminRole.ORG_ADMIN,
+    "admin": AdminRole.ORG_ADMIN,
+    "org_admin": AdminRole.ORG_ADMIN,
+    "dept_admin": AdminRole.DEPT_ADMIN,
+    "member": AdminRole.MEMBER,
+    "user": AdminRole.MEMBER,
+    "viewer": AdminRole.MEMBER,
+}
+
+
+def membership_role_to_admin_role(stored_role: str | None) -> AdminRole:
+    """Map a stored membership role string to an AdminRole, failing closed.
+
+    Args:
+        stored_role: Value of ``tenant_memberships.role``, possibly None.
+
+    Returns:
+        The corresponding AdminRole. An unrecognized, empty, or NULL value maps
+        to ``AdminRole.MEMBER`` (least privilege) rather than raising — an
+        unmapped role reaching ``get_role_permissions`` would be a 500, and
+        defaulting to anything higher is the privilege escalation this issue
+        exists to remove.
+    """
+    normalized = (stored_role or "").strip().lower()
+    return _MEMBERSHIP_ROLE_TO_ADMIN_ROLE.get(normalized, AdminRole.MEMBER)
 
 
 class AdminConfig(BaseSettings):
@@ -138,6 +191,18 @@ class AdminConfig(BaseSettings):
 
     # Rate limiting for admin APIs
     admin_api_rate_limit: int = 100  # requests per minute
+
+    # Issue #3987 (PR 1 of 2): when False, a principal with no admin-level
+    # tenant_memberships row keeps the legacy ORG_ADMIN fallback so this PR is
+    # non-breaking; the server-side lookup still takes effect for principals who
+    # *do* have a row. PR 2 flips the default to True once the audit
+    # (scripts/audit_org_admin_memberships.py) confirms every genuine org admin
+    # has an is_active role='org_admin' membership. Settable as
+    # BG_ADMIN_RBAC_LEAST_PRIVILEGE_DEFAULT for staged rollout and rollback.
+    rbac_least_privilege_default: bool = False
+
+    # Seconds a resolved role stays cached on an AccessControl instance.
+    rbac_role_cache_ttl_seconds: float = 30.0
 
     model_config = {"env_prefix": "BG_ADMIN_"}
 

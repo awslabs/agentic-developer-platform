@@ -81,8 +81,10 @@ class TestAssignmentCeilingRaisesAccessDenied:
     """A recognized-but-too-high role raises AccessDeniedError (not scope)."""
 
     async def test_dept_admin_cannot_assign_org_admin(self, access_control: AccessControl):
-        # get_user_role currently maps is_admin=False -> ORG_ADMIN, so to exercise
-        # the DEPT_ADMIN ceiling we seed the role cache directly.
+        # There is no dept_admin membership fixture, so to exercise the
+        # DEPT_ADMIN ceiling we seed the role cache directly.
+        # Issue #3987: entries are keyed by (user_id, org_id) and carry a
+        # monotonic TTL deadline, so seed via the _cache_put helper.
         from src.admin.config import AdminRole
 
         ctx = TokenContext(
@@ -94,7 +96,7 @@ class TestAssignmentCeilingRaisesAccessDenied:
             is_admin=False,
             expires_at=org_admin_expiry(),
         )
-        access_control._role_cache[ctx.user_id] = (AdminRole.DEPT_ADMIN, "org-001", "dept-001")
+        access_control._cache_put((ctx.user_id, ctx.org_id), (AdminRole.DEPT_ADMIN, "org-001", "dept-001"))
         with pytest.raises(AccessDeniedError):
             await access_control.require_assignable_role(ctx, "org_admin", target_org_id="org-001")
 

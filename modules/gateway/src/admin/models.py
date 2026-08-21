@@ -21,18 +21,16 @@ class AdminRole(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
-class UserRole(Base):
-    """User to admin role assignment table."""
-
-    __tablename__ = "user_roles"
-
-    id: Mapped[str] = mapped_column(String(255), primary_key=True, default=new_uuid)
-    user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    role_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    org_id: Mapped[str | None] = mapped_column(String(255), index=True)  # Scope limit to organization
-    dept_id: Mapped[str | None] = mapped_column(String(255), index=True)  # Scope limit to department
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    created_by: Mapped[str | None] = mapped_column(String(255))
+# Issue #3987: the `UserRole` ORM model was removed here. It declared a
+# `user_roles` table that disagreed with the `user_roles` DDL in
+# `alembic/versions/006_user_roles_table.py` on 6 of 9 columns (it had
+# `role_id`/`dept_id`/`created_by`; the migration has `role`/`granted_by_user_id`/
+# `granted_at`). Because `app.py` runs `Base.metadata.create_all` when
+# BG_DB_AUTO_CREATE=true, test databases got the ORM shape while migrated
+# databases got the migration shape — so a `select(UserRole)` would pass CI and
+# raise UndefinedColumn in a deployed environment. It had zero read or write call
+# sites. Server-side role resolution reads `tenant_memberships.role` instead (see
+# `AccessControl.get_user_role`).
 
 
 class RequestLog(Base, TenantMixin):

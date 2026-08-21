@@ -170,16 +170,21 @@ class TestAccessControl:
         assert await access_control.is_org_admin(org_admin_context, "org-002") is False
 
     @pytest.mark.asyncio
-    async def test_role_cache(self, access_control: AccessControl, platform_admin_context: TokenContext):
-        """Test that role lookups are cached."""
-        # First call
-        role1, _, _ = await access_control.get_user_role(platform_admin_context)
+    async def test_role_cache(self, access_control: AccessControl, org_admin_context: TokenContext):
+        """Test that role lookups are cached.
 
-        # Should be cached
-        assert platform_admin_context.user_id in access_control._role_cache
+        Issue #3987: the cache is keyed by (user_id, org_id) so a role resolved
+        in one tenant is never served for another. Platform admins resolve from
+        the token claim alone and are deliberately not cached, so this exercises
+        a non-platform caller.
+        """
+        role1, _, _ = await access_control.get_user_role(org_admin_context)
+
+        cache_key = (org_admin_context.user_id, org_admin_context.org_id)
+        assert cache_key in access_control._role_cache
 
         # Second call should use cache
-        role2, _, _ = await access_control.get_user_role(platform_admin_context)
+        role2, _, _ = await access_control.get_user_role(org_admin_context)
 
         assert role1 == role2
 

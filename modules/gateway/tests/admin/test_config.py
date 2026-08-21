@@ -23,8 +23,12 @@ class TestAdminRole:
         assert AdminRole.DEPT_ADMIN.value == "dept_admin"
 
     def test_admin_role_count(self):
-        """Test AdminRole enum has exactly 3 roles."""
-        assert len(AdminRole) == 3
+        """Test AdminRole enum has exactly 4 roles.
+
+        Issue #3987 added MEMBER as the least-privilege default, replacing the
+        old behavior where an unmapped principal was given ORG_ADMIN.
+        """
+        assert len(AdminRole) == 4
 
     def test_admin_role_is_string_enum(self):
         """Test AdminRole is a string enum."""
