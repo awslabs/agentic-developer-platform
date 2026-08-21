@@ -26,6 +26,7 @@ from sqlalchemy.pool import StaticPool
 from src.internal.provenance_routes import router
 from src.shared.database import get_db
 from src.shared.models.base import Base
+from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.provenance import ActionProvenance
 
@@ -252,3 +253,143 @@ class TestCreateProvenance:
                 headers={"X-Internal-Api-Key": "wrong-key"},
             )
         assert resp.status_code == 403
+
+
+class TestActorOrgCompare:
+    """Issue #3985 (A2): the actor must belong to the org the caller asserts.
+
+    Without this compare, FK-existence of actor_user_id was the only gate, so any
+    internal-plane caller could attribute an action to an arbitrary org_id and
+    poison another tenant's audit trail.
+    """
+
+    @pytest.mark.asyncio
+    async def test_actor_in_other_org_rejected(self, db):
+        """Actor exists but belongs to a different org -> 403, and nothing is written."""
+        other_org = Organization(
+            id="org-other",
+            name="Other Org",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            github_installation_ids=[],
+            cognito_client_ids=[],
+        )
+        outsider = User(
+            id="user-outsider",
+            org_id="org-other",
+            team_id="team-eng",
+            email="outsider@other.com",
+        )
+        db.add_all([other_org, outsider])
+        await db.commit()
+
+        body = _valid_body()
+        body["actor_user_id"] = "user-outsider"  # actor is in org-other
+        body["org_id"] = "org-test"  # ...but caller claims org-test
+
+        client = _make_app(db)
+        with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
+            resp = client.post(
+                "/internal/v1/provenance",
+                json=body,
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "actor_org_mismatch"
+
+        rows = (await db.execute(select(ActionProvenance).where(ActionProvenance.actor_user_id == "user-outsider"))).scalars().all()
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_membership_row_authorizes_actor(self, db):
+        """An explicit tenant_memberships row is the authority when one exists."""
+        member_org = Organization(
+            id="org-member",
+            name="Member Org",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            github_installation_ids=[],
+            cognito_client_ids=[],
+        )
+        db.add(member_org)
+        db.add(
+            TenantMembership(
+                id="tm-bot-member",
+                user_id="user-bot",
+                tenant_id="org-member",
+                role="member",
+                is_active=True,
+            )
+        )
+        await db.commit()
+
+        body = _valid_body()
+        body["org_id"] = "org-member"
+
+        client = _make_app(db)
+        with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
+            resp = client.post(
+                "/internal/v1/provenance",
+                json=body,
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+        assert resp.status_code == 201
+
+    @pytest.mark.asyncio
+    async def test_membership_rows_override_users_org_id(self, db):
+        """Once memberships exist they are authoritative; users.org_id is not consulted.
+
+        Guards the fallback from becoming a bypass: an actor with a membership in
+        org-member must NOT be able to write provenance for their legacy
+        users.org_id value.
+        """
+        member_org = Organization(
+            id="org-member2",
+            name="Member Org 2",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            github_installation_ids=[],
+            cognito_client_ids=[],
+        )
+        db.add(member_org)
+        db.add(
+            TenantMembership(
+                id="tm-bot-member2",
+                user_id="user-bot",
+                tenant_id="org-member2",
+                role="member",
+                is_active=True,
+            )
+        )
+        await db.commit()
+
+        body = _valid_body()
+        body["org_id"] = "org-test"  # user-bot's users.org_id, but not a membership
+
+        client = _make_app(db)
+        with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
+            resp = client.post(
+                "/internal/v1/provenance",
+                json=body,
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "actor_org_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_shadow_user_without_membership_falls_back_to_users_org_id(self, db):
+        """Shadow users (POST /resolve-user) have no membership row and must still work."""
+        body = _valid_body()  # user-bot has users.org_id == org-test, no memberships
+        body["org_id"] = "org-test"
+
+        client = _make_app(db)
+        with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
+            resp = client.post(
+                "/internal/v1/provenance",
+                json=body,
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+        assert resp.status_code == 201

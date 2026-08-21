@@ -40,6 +40,7 @@ def emit_status_callback(
     status: str,
     status_detail: dict[str, Any] | None = None,
     error: str | None = None,
+    tenant_id: str | None = None,
 ) -> None:
     """Post a status update to the gateway callback endpoint.
 
@@ -51,6 +52,11 @@ def emit_status_callback(
         status: One of "indexing", "complete", "failed".
         status_detail: Optional compact projection of run-state for status_detail JSONB.
         error: Optional error message (used when status is "failed").
+        tenant_id: Owning tenant of the asset (scope.tenant_id). Issue #3985 (A2):
+                   the gateway adds this to the UPDATE's WHERE clause so an
+                   asset_id alone cannot be used to write across tenants. Omitted
+                   for legacy/shared assets whose knowledge_assets.tenant_id is
+                   NULL, which the gateway still accepts.
     """
     # Skip if no asset_id (legacy messages without registry_asset_id)
     if not asset_id:
@@ -72,6 +78,8 @@ def emit_status_callback(
             payload["status_detail"] = status_detail
         if error is not None:
             payload["error"] = error[:1000]  # Truncate to match gateway limit
+        if tenant_id:
+            payload["tenant_id"] = tenant_id
 
         headers: dict[str, str] = {
             "Content-Type": "application/json",

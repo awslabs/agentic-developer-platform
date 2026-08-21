@@ -30,3 +30,8 @@ class TokenContext(BaseModel):
     is_admin: bool = False
     expires_at: datetime
     auth_source: str = "jwt"  # "jwt" (Cognito) or "iam" (API Gateway)
+    # Issue #3985 (A2): the caller's registered plane. Sourced from the
+    # agent_registry entry for IAM callers; empty for human/JWT callers, which
+    # are never internal-plane principals. Only scopes in INTERNAL_PLANE_SCOPES
+    # may act on the internal plane.
+    scope: str = ""

@@ -882,3 +882,126 @@ class TestLookupAuthorizedUserMoto:
 
         error_code = exc_info.value.response["Error"]["Code"]
         assert error_code == "ValidationException"
+
+
+class TestOrgDerivedFromResolvedUser:
+    """Issue #3985 (A2): org must come from the resolved user, never the caller.
+
+    Routes 7-11 resolve the effective user via resolve_credential_binding (which
+    fail-softs to the caller-supplied user_id in shadow mode) and then derive
+    org_id from the *canonical user row* rather than from any request field. That
+    derivation is the control that makes shadow mode safe: even when the binding
+    falls back to a caller-supplied user, credentials are still scoped to that
+    user's real org, so a caller cannot reach another tenant's credentials.
+
+    These tests pin the invariant so a future refactor cannot reintroduce a
+    caller-supplied org.
+    """
+
+    @pytest.mark.asyncio
+    async def test_credential_scoped_to_resolved_users_org_not_caller_claim(self, db):
+        """A caller-supplied org_id field must not widen credential resolution.
+
+        Alice's credential lives in org-binding. The request additionally claims
+        org_id=org-attacker. The extra field must be ignored (not honored, and
+        not a 500), and resolution must stay scoped to alice's real org.
+        """
+        other_org = Organization(
+            id="org-attacker",
+            name="Attacker Org",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            github_installation_ids=[],
+            cognito_client_ids=[],
+        )
+        db.add(other_org)
+        await db.commit()
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret.return_value = "ghp_secret_token_value"
+        settings = _settings_mock(enforce=False)
+
+        with (
+            patch("src.internal.routes.get_settings", return_value=settings),
+            patch("src.internal.auth_deps.get_settings", return_value=settings),
+            patch("src.internal.credential_routes.get_settings", return_value=settings),
+        ):
+            client = _make_raw_read_app(db, mock_sm)
+            resp = client.post(
+                "/internal/v1/credential-raw-read",
+                json={
+                    "user_id": _USER_ALICE_ID,
+                    "agent_id": "developer",
+                    "task_id": "task-org-derive-1",
+                    "service": "github",
+                    "label": "main",
+                    "org_id": "org-attacker",  # caller-asserted org — must be ignored
+                },
+                headers={
+                    "X-Internal-Api-Key": _VALID_KEY,
+                    "X-Agent-Scopes": "credential:raw-read",
+                },
+            )
+
+        # Resolved against alice's real org, so the credential is found.
+        assert resp.status_code == 200
+        assert resp.json()["value"] == "ghp_secret_token_value"
+
+    @pytest.mark.asyncio
+    async def test_shadow_fallback_user_in_other_org_cannot_read_credential(self, db):
+        """Shadow-mode fallback to a caller-supplied user stays org-scoped.
+
+        Carol is in a different org and owns no credential. With no invocation_id
+        the binding fail-softs to the caller-supplied user_id, but org derivation
+        from carol's own row means alice's credential is not reachable -> 404.
+        """
+        other_org = Organization(
+            id="org-carol",
+            name="Carol Org",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            github_installation_ids=[],
+            cognito_client_ids=[],
+        )
+        carol_dept = Department(id="dept-carol", org_id="org-carol", name="Carol Dept")
+        carol_team = Team(id="team-carol", org_id="org-carol", department_id="dept-carol", name="Carol Team")
+        carol = User(
+            id="user-carol-binding",
+            org_id="org-carol",
+            team_id="team-carol",
+            email="carol-binding@test.com",
+        )
+        db.add_all([other_org, carol_dept, carol_team, carol])
+        await db.commit()
+
+        mock_sm = MagicMock()
+        mock_sm.get_secret.return_value = "ghp_secret_token_value"
+        settings = _settings_mock(enforce=False)
+
+        with (
+            patch("src.internal.routes.get_settings", return_value=settings),
+            patch("src.internal.auth_deps.get_settings", return_value=settings),
+            patch("src.internal.credential_routes.get_settings", return_value=settings),
+        ):
+            client = _make_raw_read_app(db, mock_sm)
+            resp = client.post(
+                "/internal/v1/credential-raw-read",
+                json={
+                    "user_id": "user-carol-binding",
+                    "agent_id": "developer",
+                    "task_id": "task-org-derive-2",
+                    "service": "github",
+                    "label": "main",
+                },
+                headers={
+                    "X-Internal-Api-Key": _VALID_KEY,
+                    "X-Agent-Scopes": "credential:raw-read",
+                },
+            )
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["error"] == "credential_not_found"
+        # The secret was never fetched — denial happened before Secrets Manager.
+        mock_sm.get_secret.assert_not_called()

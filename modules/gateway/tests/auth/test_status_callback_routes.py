@@ -289,3 +289,74 @@ class TestNoCrossDBJoin:
         assert "repositories" not in sql
         assert "index_runs" not in sql
         assert "index_run_stages" not in sql
+
+
+class TestTenantScoping:
+    """Issue #3985 (A2): the UPDATE must be tenant-scoped.
+
+    Without a tenant predicate, a leaked or guessed asset_id was sufficient to
+    write any tenant's knowledge_assets row, since asset_id was the only
+    identifying column in the WHERE clause.
+    """
+
+    def test_tenant_id_added_to_where_and_bound_as_param(self, client, db):
+        resp = client.post(
+            "/internal/v1/knowledge-assets/status-callback",
+            json={"asset_id": _ASSET_ID, "status": "complete", "tenant_id": "tenant-abc"},
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+        assert resp.status_code == 200
+
+        sql = db.last_query.lower()
+        assert "tenant_id = :tenant_id" in sql
+        # The value must be bound, never interpolated into the SQL text.
+        assert "tenant-abc" not in sql
+        assert db.last_params["tenant_id"] == "tenant-abc"
+
+    def test_tenant_predicate_tolerates_null_row_tenant(self, client, db):
+        """Legacy/shared assets have a NULL tenant_id and must stay updatable.
+
+        knowledge_assets.tenant_id is nullable (agent-context migration 007), so
+        an exact-match-only predicate would make those rows permanently stuck.
+        """
+        resp = client.post(
+            "/internal/v1/knowledge-assets/status-callback",
+            json={"asset_id": _ASSET_ID, "status": "indexing", "tenant_id": "tenant-abc"},
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+        assert resp.status_code == 200
+        assert "tenant_id is null" in db.last_query.lower()
+
+    def test_failed_branch_is_also_tenant_scoped(self, client, db):
+        """The failed branch is a separate UPDATE and must carry the same predicate."""
+        resp = client.post(
+            "/internal/v1/knowledge-assets/status-callback",
+            json={
+                "asset_id": _ASSET_ID,
+                "status": "failed",
+                "error": "boom",
+                "tenant_id": "tenant-abc",
+            },
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+        assert resp.status_code == 200
+
+        sql = db.last_query.lower()
+        assert "retry_count = retry_count + 1" in sql  # confirms the failed branch
+        assert "tenant_id = :tenant_id" in sql
+        assert db.last_params["tenant_id"] == "tenant-abc"
+
+    def test_absent_tenant_id_still_accepted_during_worker_rollout(self, client, db):
+        """Pre-rollout workers send no tenant_id; rejecting them would stall ingestion.
+
+        The gateway change ships before the worker image, so an absent tenant_id
+        must retain the previous unconstrained behavior rather than 403/404.
+        """
+        resp = client.post(
+            "/internal/v1/knowledge-assets/status-callback",
+            json={"asset_id": _ASSET_ID, "status": "complete"},
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+        assert resp.status_code == 200
+        assert "tenant_id" not in db.last_query.lower()
+        assert "tenant_id" not in (db.last_params or {})

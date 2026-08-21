@@ -25,6 +25,33 @@ from src.shared.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Issue #3985 (A2): scopes permitted to act on the internal plane.
+#
+# Two seeded principals legitimately call /internal/*:
+#   "internal" — scaledjob-worker (modules/agent-factory/infra/agent-registry-seed.tf)
+#   "platform" — deploy-runner (gateway/infra/modules/lambda-authorizer/main.tf),
+#                which calls POST /internal/v1/credential-assume-role on
+#                customer-deploy workflows via SigV4 (Issue #1108). Omitting it
+#                403s deploy-time credential assumption.
+#
+# Neither value is self-assignable: the agent_registry admin API constrains scope
+# to ^(shared|personal)$ on both the create and update schemas
+# (admin/agent_registry_schemas.py), so "internal" and "platform" are written
+# only by the Terraform seeds. A registered agent that holds valid IRSA
+# credentials for some *other* purpose therefore cannot reach the internal plane
+# just by being registered.
+#
+# Deliberately NOT allowlisted: "shared" (and "personal"). Those ARE
+# self-assignable through the admin API, so allowlisting either would defeat this
+# control entirely. The test_agent seed carries scope "shared" and stays gated by
+# design.
+#
+# This is enforced on the IRSA path only. The shared-secret path (agent-context
+# ingestion status callback, which reaches the pod via ClusterIP and never
+# transits API Gateway or the ALB) carries no registry entry and no scope, so a
+# blanket /internal/* scope check would 403 it and stop ingestion platform-wide.
+INTERNAL_PLANE_SCOPES = frozenset({"internal", "platform"})
+
 
 def _verify_internal_key(x_internal_api_key: str | None) -> None:
     """Validate the shared internal API key.
@@ -102,6 +129,23 @@ async def verify_internal_or_irsa(
                 detail={
                     "error": "invalid_caller_identity",
                     "message": "X-Caller-Identity could not be resolved to a registered identity.",
+                },
+            )
+
+        if token_context.scope not in INTERNAL_PLANE_SCOPES:
+            # Registered and correctly signed, but not an internal-plane
+            # principal. Reject rather than serve: every /internal/* route
+            # trusts its caller to assert org/tenant identity.
+            logger.warning(
+                "Rejecting internal request: agent=%s scope=%r is not an internal-plane scope",
+                token_context.user_id,
+                token_context.scope,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "not_internal_plane",
+                    "message": "Caller is not authorized for the internal plane.",
                 },
             )
 
