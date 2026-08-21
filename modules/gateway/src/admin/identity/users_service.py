@@ -11,6 +11,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin.memberships import is_admin_level_role, upsert_tenant_membership
 from src.shared.models.organization import User
 from src.shared.models.vault import UserIdentity
 
@@ -88,6 +89,19 @@ class UsersService:
             )
             if identity.provider == "github" and identity.provider_username:
                 github_username = identity.provider_username
+
+        # Step 2b (Issue #4006): if this create grants admin-level authority, the
+        # tenant_memberships row is what actually carries it (#3987/#3998) — write
+        # it in the same transaction, or the new admin is a "no-row" principal that
+        # loses its authority when the legacy fallback flips to least-privilege.
+        if is_admin_level_role(req.role):
+            await upsert_tenant_membership(
+                self._db,
+                user_id=user.id,
+                tenant_id=org_id,
+                role=req.role,
+                joined_via="admin_create",
+            )
 
         # Step 3: Commit transaction
         await self._db.commit()

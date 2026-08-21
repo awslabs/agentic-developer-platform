@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.admin.cognito_service import CognitoService, CognitoServiceError
 from src.admin.config import get_admin_config
 from src.admin.exceptions import PoolConfigurationError, ResourceConflictError, ResourceNotFoundError
+from src.admin.memberships import is_admin_level_role, upsert_tenant_membership
 from src.admin.schemas import (
     BudgetConfigResponse,
     BudgetConfigUpdateRequest,
@@ -1223,6 +1224,21 @@ class AdminService:
         )
 
         self.db.add(user)
+        await self.db.flush()
+
+        # Issue #4006: an admin-level create must also write the
+        # tenant_memberships row that now carries that authority (#3987/#3998) —
+        # same transaction as the users row. The role-assignment ceiling is
+        # enforced by the caller (routes.py::add_user -> require_assignable_role).
+        if is_admin_level_role(request.role):
+            await upsert_tenant_membership(
+                self.db,
+                user_id=user.id,
+                tenant_id=org_id,
+                role=request.role,
+                joined_via="admin_create",
+            )
+
         await self.db.commit()
         await self.db.refresh(user)
 

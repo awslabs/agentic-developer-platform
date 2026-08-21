@@ -9,6 +9,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin.access_control import AccessControl
 from src.auth.dependencies import get_current_user, require_admin
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
@@ -125,6 +126,14 @@ async def create_user(
     current_user: TokenContext = Depends(get_current_user),
 ):
     """Create a user within an organization and optionally send a Cognito invite."""
+    # Issue #4006: UserCreateRequest.role is a free-form string, so guard the
+    # role-assignment ceiling the same way the equivalent route in admin/routes.py
+    # does — a caller must not be able to grant a role above its own privilege.
+    # The router-level require_admin dependency gates *who* may call this; this
+    # gates *which role* they may grant. Raised as-is (BedrockGatewayError carries
+    # its own status code) so it is never swallowed by the 409 handler below.
+    await AccessControl(db).require_assignable_role(current_user, req.role, target_org_id=org_id)
+
     svc = UsersService(db, identity_writer=IdentityIndexWriter())
     try:
         return await svc.create_user(org_id, req)
