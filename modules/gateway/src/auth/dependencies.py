@@ -19,7 +19,7 @@ Usage:
 
 import logging
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import jwt
 from fastapi import Depends, Header, HTTPException, Request
@@ -135,12 +135,28 @@ async def get_current_user(
 
     try:
         # Issue #260: Check for IAM identity first (AWS_IAM auth via /agent/* path)
-        from src.shared.config import get_settings
-
+        # get_settings is imported at module scope (it was redundantly re-imported
+        # here, which shadowed the module attribute and made this branch untestable).
         settings = get_settings()
         if settings.trust_apigw_headers:
             caller_identity = request.headers.get("x-caller-identity", "")
             if caller_identity:
+                # Issue #3985: X-Caller-Identity presence is TERMINAL.
+                #
+                # This header is only meaningful when injected by API Gateway's
+                # AWS_IAM integration; a client-supplied value is a forgery
+                # attempt. So once it is present we either resolve it to a
+                # registered agent or reject — we never fall through to the JWT
+                # branch (which would let an attacker use a bogus ARN to reach
+                # the JWT path) and we never fabricate a context for an ARN that
+                # is absent from the registry.
+                #
+                # The previous behavior minted an authenticated `service`
+                # TokenContext with org_id="" for ANY parseable ARN, which let a
+                # caller assert an arbitrary user_id across the ~18 routers
+                # behind this dependency. This now mirrors
+                # middleware.extract_iam_identity_from_headers, which has always
+                # raised UnregisteredServiceAccountError for the same case.
                 from src.auth.agent_registry import (
                     agent_entry_to_token_context,
                     get_agent_registry_service,
@@ -148,24 +164,29 @@ async def get_current_user(
                 )
 
                 role_arn = parse_assumed_role_arn(caller_identity)
-                if role_arn:
-                    registry = get_agent_registry_service()
-                    entry = registry.get_agent_by_role_arn(role_arn)
-                    if entry:
-                        return agent_entry_to_token_context(entry)
-                    # Role not in registry — return minimal context for unregistered IAM callers
-                    # This allows the onboarding endpoint to be called by any valid IAM identity
-                    # The endpoint itself controls what operations are allowed
-                    return TokenContext(
-                        user_id=role_arn.split("/")[-1],
-                        org_id="",
-                        team_id="",
-                        department_id="",
-                        account_type="service",
-                        is_admin=False,
-                        expires_at=datetime.now(UTC) + timedelta(hours=1),
-                        auth_source="iam",
+                if not role_arn:
+                    logger.warning("Rejecting request: unparseable X-Caller-Identity ARN")
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "error": "invalid_caller_identity",
+                            "message": "X-Caller-Identity is not a valid assumed-role ARN.",
+                        },
                     )
+
+                registry = get_agent_registry_service()
+                entry = registry.get_agent_by_role_arn(role_arn)
+                if not entry:
+                    logger.warning("Rejecting request: IAM role not in agent registry")
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "error": "agent_not_registered",
+                            "message": "Agent not registered. Contact your org administrator.",
+                        },
+                    )
+
+                return agent_entry_to_token_context(entry)
 
         # Check if authorization header is present
         if not authorization:

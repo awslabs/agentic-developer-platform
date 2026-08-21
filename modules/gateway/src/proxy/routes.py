@@ -29,11 +29,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
-from src.auth.middleware import (
-    API_GATEWAY_HEADER_AUTH_SOURCE,
-    extract_api_gateway_context,
-    validate_cognito_jwt,
-)
+from src.auth.middleware import validate_cognito_jwt
 from src.chat_logging.service import ChatLoggingService, create_streaming_logging_wrapper
 from src.proxy.mantle_service import MantlePassthroughService, MantleUpstreamError
 from src.proxy.model_resolver import ModelResolver
@@ -160,13 +156,13 @@ async def get_token_context(
     Issue #119: Updated to use Cognito JWT validation.
     Issue #131: Sets token_context in request.state for enforcement middleware.
     Issue #144: Instrumented with timing for 'auth' segment.
-    Issue #240: Added dual-auth support for API Gateway headers.
+    Issue #3985: the #240 X-Auth-Source / X-Agent-* branch was removed — it built
+    a TokenContext from headers alone, so any caller able to reach this service
+    could assert an arbitrary org_id. IAM-authenticated agents are handled
+    upstream by TokenContextMiddleware (X-Caller-Identity -> agent registry) and
+    arrive here via request.state.token_context.
 
-    Supports two authentication methods:
-    1. API Gateway auth (via X-Auth-Source header) - when BG_TRUST_APIGW_HEADERS=true
-    2. Cognito JWT auth (via Authorization/X-Api-Key header) - default
-
-    Accepts token from either:
+    Authenticates via Cognito JWT, accepting the token from either:
     - Authorization: Bearer <token>  (standard)
     - X-Api-Key: <token>  (Claude Code / Anthropic SDK)
 
@@ -176,7 +172,8 @@ async def get_token_context(
         x_api_key: X-Api-Key header (Anthropic SDK sends token here)
 
     Returns:
-        TokenContext: User/service account context from JWT claims or API Gateway headers
+        TokenContext: User/service account context from JWT claims, or the
+            context already set on request.state by TokenContextMiddleware
 
     Raises:
         HTTPException: If token is missing, invalid, or expired
@@ -188,15 +185,6 @@ async def get_token_context(
     # Issue #144: Time the auth segment
     auth_start = time.monotonic()
     try:
-        # Issue #240: Check for API Gateway auth first (if enabled)
-        settings = get_settings()
-        if settings.trust_apigw_headers:
-            auth_source_header = request.headers.get(API_GATEWAY_HEADER_AUTH_SOURCE, "")
-            if auth_source_header:
-                token_context = extract_api_gateway_context(request)
-                request.state.token_context = token_context
-                return token_context
-
         # Validate Cognito JWT token from Authorization header
         if authorization:
             token_context = await validate_cognito_jwt(authorization)

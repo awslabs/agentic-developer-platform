@@ -45,9 +45,20 @@ This audit was performed from an agent pod (`adp-dev-agent-scaledjob-role`) with
 
 - **Flow**: Agent SDK → SigV4 signing → API Gateway REST API `bedrockgw-dev-api` (id `59o2rakc50`) → `/agent/{proxy+}` → VPC Link → internal ALB → gateway pod
 - **Exposed via**: API Gateway REST API endpoint
-- **Auth mechanism**: API Gateway IAM authorizer validates SigV4 signature; gateway trusts `X-Auth-Source` header from API GW when `BG_TRUST_APIGW_HEADERS=true` (see `proxy/routes.py:152-158`)
+- **Auth mechanism**: API Gateway IAM authorizer validates the SigV4 signature and injects `X-Caller-Identity` (the caller's assumed-role ARN). The gateway honors that header only when `BG_TRUST_APIGW_HEADERS=true`, and resolves it against the agent registry — an ARN that is absent from the registry is rejected 403, never given a fabricated identity.
 - **Agent-side proxy**: `modules/agent-factory/agent/src/sigv4-proxy.ts` runs at `127.0.0.1:9090`, adds SigV4 to outgoing requests
-- **Token context extraction**: `src/auth/middleware.py:extract_api_gateway_context()` reads pre-validated headers
+- **Token context extraction**: `src/auth/middleware.py:extract_iam_identity_from_headers()` → `parse_assumed_role_arn()` → agent-registry lookup
+
+> **Corrected 2026-08-21 (issue #3985).** This section previously said the gateway
+> "trusts `X-Auth-Source`" and pointed at `extract_api_gateway_context()`. That
+> function built a full `TokenContext` — arbitrary `org_id`, `user_id`,
+> `account_type` — from `X-Agent-*` request headers alone, with no signature check
+> and no registry lookup. The Lambda authorizer meant to set them has been
+> deprecated and unattached, so nothing trusted was producing them; #3985 deleted
+> the function and both call sites. Identity now comes only from a registry-backed
+> `X-Caller-Identity` or a Cognito JWT. `X-Agent-OrgId` survives solely as a
+> tenant-attribution override for callers already IAM-authenticated whose registry
+> entry has `scope == "internal"` (#747).
 
 ### CloudFront Routing Behavior
 

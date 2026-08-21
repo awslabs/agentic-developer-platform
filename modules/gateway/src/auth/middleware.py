@@ -14,7 +14,7 @@ Issue #119: Unified Cognito JWT Auth
 """
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import jwt
 from fastapi import Depends, HTTPException, Request
@@ -281,23 +281,30 @@ async def auth_middleware(request: Request, call_next):
 AGENT_PATH_PREFIX = "/agent"
 
 # =============================================================================
-# API Gateway Header-Based Authentication (Issue #240)
+# API Gateway Header-Based Authentication (Issue #240 — removed by #3985)
 # =============================================================================
-
-# Headers set by the Lambda authorizer in API Gateway
-API_GATEWAY_HEADER_AUTH_SOURCE = "X-Auth-Source"
-API_GATEWAY_HEADER_AGENT_ID = "X-Agent-Id"
+#
+# Issue #240 introduced a Lambda authorizer that validated the caller and then
+# asserted the resulting identity to this service via X-Auth-Source + X-Agent-*
+# headers, which extract_api_gateway_context() turned into a full TokenContext.
+#
+# Issue #3985 removed that function and both of its call sites. The Lambda
+# authorizer has been deprecated and unattached for some time (see
+# infra/modules/lambda-authorizer/main.tf), and /{proxy+} is authorization NONE,
+# so nothing trusted was setting these headers — but the code still believed
+# them, which let any client that could reach the pod mint an identity for an
+# arbitrary org_id/user_id by setting X-Auth-Source: iam.
+#
+# Identity now comes only from:
+#   1. AWS_IAM SigV4 via API Gateway -> X-Caller-Identity -> agent registry
+#      lookup (extract_iam_identity_from_headers below), or
+#   2. a Cognito JWT.
+#
+# Do NOT reintroduce a header that is trusted purely on presence. The only
+# remaining X-Agent-* header with any authority is X-Agent-OrgId, and it is
+# honored solely as a tenant-attribution override for callers already
+# authenticated via (1) whose registry entry has scope == "internal" (#747).
 API_GATEWAY_HEADER_ORG_ID = "X-Agent-OrgId"
-API_GATEWAY_HEADER_TEAM_ID = "X-Agent-TeamId"
-API_GATEWAY_HEADER_USER_ID = "X-Agent-UserId"
-API_GATEWAY_HEADER_ACCOUNT_TYPE = "X-Agent-AccountType"
-API_GATEWAY_HEADER_SCOPE = "X-Agent-Scope"
-API_GATEWAY_HEADER_BUDGET_CONFIG_ID = "X-Agent-BudgetConfigId"
-API_GATEWAY_HEADER_ALLOWED_MODELS = "X-Agent-AllowedModels"
-API_GATEWAY_HEADER_DEPARTMENT_ID = "X-Agent-DepartmentId"
-# Issue #1616: Agent run identity headers (set by worker sigv4-proxy, not Lambda authorizer)
-API_GATEWAY_HEADER_RUN_ID = "X-Agent-RunId"
-API_GATEWAY_HEADER_CORRELATION_ID = "X-Agent-CorrelationId"
 
 # =============================================================================
 # Issue #260: AWS_IAM Auth Headers from API Gateway
@@ -315,97 +322,6 @@ API_GATEWAY_HEADER_IAM_USER_ARN = "X-Amzn-Iam-User-Arn"
 API_GATEWAY_HEADER_REQUEST_CONTEXT = "X-Amzn-Requestcontext"
 # API Gateway also passes identity in the request context via integration request mapping
 API_GATEWAY_HEADER_CALLER_IDENTITY = "X-Caller-Identity"
-
-
-def extract_api_gateway_context(request: Request) -> TokenContext:
-    """
-    Extract user/agent context from API Gateway headers.
-
-    Issue #240: When requests come through API Gateway with a Lambda authorizer,
-    the identity is passed via X-Agent-* headers. This function extracts those
-    headers and constructs a TokenContext.
-
-    The Lambda authorizer sets these headers after validating the IAM signature:
-    - X-Auth-Source: "iam" or "jwt"
-    - X-Agent-Id: Agent name
-    - X-Agent-OrgId: Organization ID
-    - X-Agent-TeamId: Team ID
-    - X-Agent-UserId: User/owner ID
-    - X-Agent-AccountType: "service" for agents
-    - X-Agent-DepartmentId: Department ID (optional)
-
-    Args:
-        request: FastAPI Request object with headers
-
-    Returns:
-        TokenContext: Populated from API Gateway headers
-
-    Raises:
-        HTTPException: If required headers are missing
-    """
-    headers = request.headers
-
-    # Get auth source (should be "iam" or "jwt")
-    auth_source = headers.get(API_GATEWAY_HEADER_AUTH_SOURCE, "").strip().lower()
-    if auth_source not in ("iam", "jwt"):
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "error": "invalid_auth_source",
-                "message": f"Invalid X-Auth-Source header value: {auth_source}",
-            },
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # Get required identity headers
-    org_id = headers.get(API_GATEWAY_HEADER_ORG_ID, "").strip()
-    if not org_id:
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "error": "missing_org_id",
-                "message": "X-Agent-OrgId header is required for API Gateway auth",
-            },
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # Get user ID - prefer X-Agent-UserId, fallback to X-Agent-Id
-    user_id = headers.get(API_GATEWAY_HEADER_USER_ID, "").strip() or headers.get(API_GATEWAY_HEADER_AGENT_ID, "").strip()
-    if not user_id:
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "error": "missing_user_id",
-                "message": "X-Agent-UserId or X-Agent-Id header is required for API Gateway auth",
-            },
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # Get optional identity headers
-    team_id = headers.get(API_GATEWAY_HEADER_TEAM_ID, "").strip()
-    department_id = headers.get(API_GATEWAY_HEADER_DEPARTMENT_ID, "").strip()
-    account_type = headers.get(API_GATEWAY_HEADER_ACCOUNT_TYPE, "service").strip()
-
-    # Service accounts via API Gateway are not admins by default
-    # Admin privileges could be checked via additional header if needed
-    is_admin = False
-
-    # API Gateway tokens don't have explicit expiration in headers
-    # Use a far-future expiration since Lambda authorizer has already validated
-    expires_at = datetime.now(UTC) + timedelta(hours=1)
-
-    logger.debug(f"Extracted API Gateway context: user={user_id}, org={org_id}, team={team_id}, auth_source={auth_source}")
-
-    return TokenContext(
-        user_id=user_id,
-        org_id=org_id,
-        team_id=team_id,
-        department_id=department_id,
-        account_type=account_type,
-        is_admin=is_admin,
-        expires_at=expires_at,
-        auth_source=auth_source,
-    )
 
 
 def extract_iam_identity_from_headers(request: Request) -> TokenContext | None:
@@ -512,14 +428,15 @@ def extract_iam_identity_from_headers(request: Request) -> TokenContext | None:
 class TokenContextMiddleware:
     """ASGI middleware that extracts Cognito JWT and sets request.state.token_context.
 
-    Issue #240: Now supports dual-auth:
-    1. API Gateway auth (via X-Auth-Source header) - when BG_TRUST_APIGW_HEADERS=true
-    2. Cognito JWT auth (via Authorization header) - default
+    Two auth paths, tried in this order:
+    1. API Gateway IAM auth (X-Caller-Identity -> agent registry lookup), for the
+       AWS_IAM /agent/{proxy+} route — when BG_TRUST_APIGW_HEADERS=true (#260)
+    2. Cognito JWT auth (Authorization / X-Api-Key header) — default
 
-    Issue #260: Now supports triple-auth with AWS_IAM:
-    1. API Gateway IAM auth (via X-Caller-Identity header) - for /agent/* path
-    2. API Gateway Lambda auth (via X-Auth-Source header) - when BG_TRUST_APIGW_HEADERS=true
-    3. Cognito JWT auth (via Authorization header) - default
+    Issue #3985 removed a third path (#240's X-Auth-Source / X-Agent-* Lambda
+    authorizer headers). It minted a TokenContext from headers alone, with no
+    registry lookup or signature, so any client that could reach the pod could
+    assert an arbitrary org_id — including through the public CloudFront edge.
 
     This runs before BudgetEnforcementMiddleware and RateLimitEnforcementMiddleware
     so they can access the authenticated user context.
@@ -587,27 +504,9 @@ class TokenContextMiddleware:
                         )
                     logger.debug(f"IAM auth extraction failed: {e}, falling back to other auth methods")
 
-        # Issue #240: Check for API Gateway Lambda authorizer headers
-        if settings.trust_apigw_headers:
-            auth_source_header = request.headers.get(API_GATEWAY_HEADER_AUTH_SOURCE, "")
-            if auth_source_header:
-                try:
-                    from src.shared.timing import get_timings
-
-                    timings = get_timings(request)
-                    with timings.time_segment("auth"):
-                        token_context = extract_api_gateway_context(request)
-                    scope.setdefault("state", {})["token_context"] = token_context
-                    request.state.token_context = token_context
-                    await self.app(scope, receive, send)
-                    return
-                except HTTPException:
-                    # API Gateway auth failed — let the route handler deal with it
-                    logger.debug("API Gateway auth raised HTTPException, falling back to JWT")
-                    pass
-                except Exception as e:
-                    logger.debug(f"API Gateway auth extraction failed: {e}, falling back to JWT")
-                    pass
+        # Issue #240's X-Auth-Source / X-Agent-* branch was removed by #3985 —
+        # see the header-constants block above. A request that would previously
+        # have been authenticated here now falls through to Cognito JWT auth.
 
         # Fall back to Cognito JWT auth
         authorization = request.headers.get("authorization", "") or request.headers.get("x-api-key", "")

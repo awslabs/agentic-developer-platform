@@ -120,8 +120,15 @@ class TestIRSAOnly:
         assert resp.status_code in (403, 500)
 
     @patch("src.internal.auth_deps.extract_iam_identity_from_headers")
-    def test_irsa_returns_none_falls_to_shared_secret(self, mock_extract, client):
-        """If extract returns None (e.g. unparseable ARN), fall through to shared-secret."""
+    def test_irsa_returns_none_does_not_fall_to_shared_secret(self, mock_extract, client):
+        """Issue #3985: X-Caller-Identity presence is TERMINAL.
+
+        Inverted from test_irsa_returns_none_falls_to_shared_secret, which
+        asserted 200 for this case. An unresolvable identity assertion must be
+        rejected even when a valid shared secret accompanies it — otherwise a
+        malformed/forged ARN is routed to the legacy path and produces the same
+        200 as a legitimate caller, masking the attempt.
+        """
         mock_extract.return_value = None
         resp = client.get(
             "/test-endpoint",
@@ -130,7 +137,8 @@ class TestIRSAOnly:
                 "X-Internal-Api-Key": _VALID_KEY,
             },
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "invalid_caller_identity"
 
     @patch("src.internal.auth_deps.extract_iam_identity_from_headers")
     def test_irsa_returns_none_no_shared_secret_rejected(self, mock_extract, client):
@@ -141,6 +149,34 @@ class TestIRSAOnly:
             headers={"X-Caller-Identity": "bad-arn"},
         )
         assert resp.status_code == 403
+
+    def test_malformed_arn_rejected_end_to_end(self, client):
+        """Issue #3985: a malformed ARN is rejected without mocking the extractor.
+
+        Exercises the real agent_registry.parse_assumed_role_arn -> None path
+        (not a patched return value), with a valid shared secret present, to
+        prove the terminal behavior holds through the actual call chain.
+        """
+        resp = client.get(
+            "/test-endpoint",
+            headers={
+                "X-Caller-Identity": "not-an-arn-at-all",
+                "X-Internal-Api-Key": _VALID_KEY,
+            },
+        )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "invalid_caller_identity"
+
+    def test_shared_secret_alone_still_accepted(self, client):
+        """Regression: callers with NO X-Caller-Identity keep working.
+
+        The agent-context ingestion status callback reaches the pod via ClusterIP
+        (never API Gateway) and authenticates with the shared secret alone.
+        Making X-Caller-Identity terminal must not break it. Wholesale rejection
+        of /internal/* is A2, not this change.
+        """
+        resp = client.get("/test-endpoint", headers={"X-Internal-Api-Key": _VALID_KEY})
+        assert resp.status_code == 200
 
 
 class TestBothPresent:
