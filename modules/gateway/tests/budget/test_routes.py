@@ -283,10 +283,11 @@ class TestBudgetMutationRoutesRemoved:
     ``BudgetService.record_cost()`` in-process — so they were removed outright
     rather than gated.
 
-    We assert route ABSENCE rather than a 403: every principal currently resolves
-    to ``ORG_ADMIN`` (``access_control.get_user_role``), so a permission gate
-    would deny nobody and a 403 assertion is unachievable until #3987 lands
-    server-side roles.
+    We assert route ABSENCE rather than a 403 because the routes genuinely do not
+    exist — absence is the contract, independent of RBAC. (This rationale used to
+    read "every principal resolves to ORG_ADMIN so a 403 is unachievable"; #3987
+    PR 2 made no-membership principals resolve to MEMBER, so that justification no
+    longer holds, but route absence is the stronger property anyway.)
     """
 
     @pytest.mark.asyncio

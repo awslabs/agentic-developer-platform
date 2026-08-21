@@ -186,20 +186,24 @@ class AccessControl:
             role, tenant_id = resolved
             result = (role, tenant_id, None)
         else:
-            # No membership row (or no session). Issue #3987 PR 1 keeps the
-            # legacy ORG_ADMIN fallback so this change is non-breaking, and logs
-            # what PR 2 will return instead. PR 2 flips the default once the
-            # audit confirms every genuine org admin has a membership row.
+            # No membership row (or no session). Issue #3987 PR 2 made least
+            # privilege the default, so this path now demotes to MEMBER rather
+            # than granting the legacy ORG_ADMIN. Setting
+            # BG_ADMIN_RBAC_LEAST_PRIVILEGE_DEFAULT=false restores the permissive
+            # fallback as a runtime rollback lever.
+            #
+            # Logged unconditionally at WARN: post-flip the interesting event is
+            # the demotion actually happening, so an operator must be able to grep
+            # for no-row principals either way. `granted` distinguishes the two
+            # modes (member = flipped, org_admin = rolled back).
             least_privilege = get_admin_config().rbac_least_privilege_default
             role = AdminRole.MEMBER if least_privilege else AdminRole.ORG_ADMIN
-            if not least_privilege:
-                logger.warning(
-                    "rbac_role_fallback user=%s org=%s granted=%s would_grant=%s reason=no_active_membership",
-                    context.user_id,
-                    context.org_id,
-                    role.value,
-                    AdminRole.MEMBER.value,
-                )
+            logger.warning(
+                "rbac_role_fallback user=%s org=%s granted=%s reason=no_active_membership",
+                context.user_id,
+                context.org_id,
+                role.value,
+            )
             result = (role, context.org_id, None)
 
         self._cache_put(cache_key, result)

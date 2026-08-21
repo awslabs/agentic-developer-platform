@@ -570,21 +570,25 @@ class TestDeleteCredential:
         resp = client.delete(f"/auth/credentials/{cred.id}")
         assert resp.status_code == 404
 
-    def test_delete_org_cred_under_legacy_rbac_default(self, db, sm):
-        """Org-scoped delete is now admin-gated, but the gate is LATENT here.
+    def test_delete_org_cred_denied_without_org_admin_membership(self, db, sm):
+        """Org-scoped delete is admin-gated, and the gate is now EFFECTIVE.
 
         Issue #3989 added an org-admin permission gate to org/team-scoped
-        credential mutations. Resolution goes through ``AccessControl``, and with
-        #3987's ``rbac_least_privilege_default`` still False a caller with no
-        ``tenant_memberships`` row (Alice, in this fixture) resolves to ORG_ADMIN,
-        so this still succeeds. That is the documented pre-flip behaviour, not an
-        assertion that any member may delete a shared credential — see
-        tests/auth/test_vault_shared_scope_authz.py for the post-flip 403.
+        credential mutations. Resolution goes through ``AccessControl``, so before
+        #3987 PR 2 a caller with no ``tenant_memberships`` row (Alice, in this
+        fixture) resolved to ORG_ADMIN and this returned 204 — the gate was
+        latent. PR 2 flipped the no-row fallback to MEMBER, so the gate now bites:
+        Alice gets 403.
+
+        Renamed from ``test_delete_org_cred_under_legacy_rbac_default``, which
+        asserted the 204. That assertion encoded the pre-flip fallback, not an
+        intended permission — see tests/auth/test_vault_shared_scope_authz.py for
+        the same 403 asserted against an explicitly-flipped config.
         """
         cred = asyncio.get_event_loop().run_until_complete(_insert_cred(db, label="org-cred-to-delete"))
         client = _make_app(ALICE, db, sm)
         resp = client.delete(f"/auth/credentials/{cred.id}")
-        assert resp.status_code == 204
+        assert resp.status_code == 403
 
 
 # ===========================================================================

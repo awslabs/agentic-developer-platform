@@ -149,9 +149,9 @@ async def _is_org_admin(db: AsyncSession, caller: TokenContext) -> bool:
     own shared secret — a multi-tenant functional regression.
 
     Resolution goes through ``AccessControl``, so it inherits #3987's DB-backed
-    role lookup: while ``rbac_least_privilege_default`` is False every principal
-    without a membership row still resolves to ORG_ADMIN, which makes this gate
-    LATENT until that default flips. It is correct now and becomes effective then.
+    role lookup. Since #3987 PR 2 flipped ``rbac_least_privilege_default`` to
+    True, a principal with no admin-level membership row resolves to MEMBER and
+    this gate is fully effective (it was latent before the flip).
     """
     from src.admin.access_control import AccessControl
     from src.admin.config import Permission

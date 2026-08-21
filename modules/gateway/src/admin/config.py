@@ -203,14 +203,20 @@ class AdminConfig(BaseSettings):
     # Rate limiting for admin APIs
     admin_api_rate_limit: int = 100  # requests per minute
 
-    # Issue #3987 (PR 1 of 2): when False, a principal with no admin-level
-    # tenant_memberships row keeps the legacy ORG_ADMIN fallback so this PR is
-    # non-breaking; the server-side lookup still takes effect for principals who
-    # *do* have a row. PR 2 flips the default to True once the audit
-    # (scripts/audit_org_admin_memberships.py) confirms every genuine org admin
-    # has an is_active role='org_admin' membership. Settable as
-    # BG_ADMIN_RBAC_LEAST_PRIVILEGE_DEFAULT for staged rollout and rollback.
-    rbac_least_privilege_default: bool = False
+    # Issue #3987 (PR 2 of 2): least privilege is now the default. A principal
+    # with no is_active, admin-level tenant_memberships row resolves to
+    # AdminRole.MEMBER, not the legacy ORG_ADMIN — that permissive fallback was
+    # the privilege-escalation class #3987 exists to close. Principals who *do*
+    # have a row are unaffected; their role comes from the row.
+    #
+    # Rollback lever: set BG_ADMIN_RBAC_LEAST_PRIVILEGE_DEFAULT=false to restore
+    # the legacy ORG_ADMIN fallback at runtime, without a revert.
+    #
+    # Before enabling in a new environment, run
+    # scripts/audit_org_admin_memberships.py and resolve-or-accept every genuine
+    # org admin that lacks an is_active role='org_admin' membership row — they
+    # will be demoted to MEMBER by this default.
+    rbac_least_privilege_default: bool = True
 
     # Seconds a resolved role stays cached on an AccessControl instance.
     rbac_role_cache_ttl_seconds: float = 30.0

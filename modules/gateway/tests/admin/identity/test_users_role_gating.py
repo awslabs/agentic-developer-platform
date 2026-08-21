@@ -57,8 +57,13 @@ async def seeded_org(db_session: AsyncSession):
 # ---------------------------------------------------------------------------
 
 
-async def test_org_admin_caller_cannot_create_platform_admin(db_session: AsyncSession, org_admin_context: TokenContext):
-    """The escalation vector: a non-platform caller may not mint a platform role."""
+async def test_org_admin_caller_cannot_create_platform_admin(db_session: AsyncSession, org_admin_context: TokenContext, org_admin_membership):
+    """The escalation vector: a non-platform caller may not mint a platform role.
+
+    Issue #3987 PR 2: takes ``org_admin_membership`` so the caller is a genuine
+    org admin. Without it the caller resolves to MEMBER (rank 0, assigns nothing),
+    so the raise would no longer prove anything about the org_admin ceiling.
+    """
     with pytest.raises(InvalidScopeError):
         await AccessControl(db_session).require_assignable_role(org_admin_context, "platform_admin", target_org_id="gate-org")
 

@@ -73,13 +73,23 @@ class TestOrgAdminHasNoCrossOrgAccess:
     """End-to-end: an org_admin token, run through the real AccessControl,
     stays scoped to its own organization and cannot reach another tenant."""
 
-    async def test_org_admin_resolves_to_scoped_org_admin(self):
+    async def test_org_admin_token_does_not_resolve_to_platform_admin(self):
+        """The #3981 contract: an org_admin *claim* never confers platform authority.
+
+        Issue #3987 PR 2 tightened the outcome further — with no
+        ``tenant_memberships`` row (this ``AccessControl()`` has no session at
+        all) the caller now resolves to MEMBER rather than the old no-row
+        ORG_ADMIN fallback. Either way the invariant this test exists for holds:
+        not PLATFORM_ADMIN, and the scope stays pinned to the caller's own org
+        rather than widening to None (== all orgs).
+        """
         context = _cognito_claims_to_context(_claims(role="org_admin", org_id="org-attacker"))
         access = AccessControl()
 
         role, org_id, dept_id = await access.get_user_role(context)
 
-        assert role == AdminRole.ORG_ADMIN
+        assert role != AdminRole.PLATFORM_ADMIN
+        assert role == AdminRole.MEMBER
         assert org_id == "org-attacker"
         assert dept_id is None
 
@@ -91,15 +101,30 @@ class TestOrgAdminHasNoCrossOrgAccess:
         assert await access.get_accessible_organizations(context) == ["org-attacker"]
 
     async def test_org_admin_denied_cross_org_resource(self):
+        """A resolved ORG_ADMIN must still be denied another tenant's resources.
+
+        Issue #3987 PR 2: the resolved role is seeded into the cache so the caller
+        genuinely IS an org admin. Without this the caller would resolve to MEMBER
+        (no membership row) and the denial would prove nothing about the cross-org
+        boundary — a principal with no authority anywhere is denied trivially.
+        """
         context = _cognito_claims_to_context(_claims(role="org_admin", org_id="org-attacker"))
         access = AccessControl()
+        access._cache_put((context.user_id, context.org_id), (AdminRole.ORG_ADMIN, "org-attacker", None))
 
         with pytest.raises(AccessDeniedError):
             await access.validate_resource_access(context, resource_org_id="org-victim")
 
     async def test_org_admin_denied_cross_org_read_permission(self):
+        """Cross-org ORG_READ must fail on SCOPE, not on a missing permission.
+
+        Issue #3987 PR 2: seeded as above. A MEMBER would raise AccessDeniedError
+        from the permission-set check before the scope check ran, silently
+        replacing the InvalidScopeError this test exists to pin.
+        """
         context = _cognito_claims_to_context(_claims(role="org_admin", org_id="org-attacker"))
         access = AccessControl()
+        access._cache_put((context.user_id, context.org_id), (AdminRole.ORG_ADMIN, "org-attacker", None))
 
         with pytest.raises(InvalidScopeError):
             await access.check_permission(context, Permission.ORG_READ, target_org_id="org-victim")

@@ -208,6 +208,19 @@ class TestAdminConfig:
         assert config.log_retention_days == 90
         assert config.admin_api_rate_limit == 100
 
+    def test_least_privilege_default_is_enabled(self):
+        """Issue #3987 PR 2: the no-membership fallback ships least-privilege.
+
+        A one-line guard against an accidental revert of the flip. Nothing else in
+        this file pinned the flag, so flipping it back to False would previously
+        have gone unnoticed here.
+        """
+        assert AdminConfig().rbac_least_privilege_default is True
+
+    def test_least_privilege_default_is_overridable(self):
+        """The documented rollback lever must stay wired."""
+        assert AdminConfig(rbac_least_privilege_default=False).rbac_least_privilege_default is False
+
     def test_admin_config_custom_values(self):
         """Test AdminConfig accepts custom values."""
         config = AdminConfig(

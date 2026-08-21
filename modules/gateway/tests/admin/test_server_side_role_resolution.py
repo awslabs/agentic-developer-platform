@@ -6,17 +6,30 @@ principal to ORG_ADMIN for their own org. These tests pin the new authority
 model: the token establishes identity, `tenant_memberships.role` establishes
 org-level authority, and anything unresolvable fails closed.
 
+PR 1 (#3998) shipped the row lookup but kept the permissive no-row ORG_ADMIN
+fallback behind `rbac_least_privilege_default=False`. PR 2 (#4015) flipped that
+default to True, so a principal with no active admin-level row now resolves to
+MEMBER. `BG_ADMIN_RBAC_LEAST_PRIVILEGE_DEFAULT=false` is the rollback lever.
+
 Note these tests use the REAL AccessControl against a real session — the specs in
 tests/usage/ and tests/activity/ mock AccessControl and give zero coverage here.
 """
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
-from src.admin.config import AdminConfig, AdminRole, Permission, membership_role_to_admin_role, set_admin_config
+from src.admin.config import (
+    AdminConfig,
+    AdminRole,
+    Permission,
+    get_admin_config,
+    membership_role_to_admin_role,
+    set_admin_config,
+)
 from src.admin.exceptions import AccessDeniedError
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, User
@@ -73,7 +86,13 @@ async def seed_membership(db: AsyncSession, *, pg_user_id: str, tenant_id: str, 
 
 @pytest.fixture
 def least_privilege_config():
-    """Enable the PR 2 default (BG_ADMIN_RBAC_LEAST_PRIVILEGE_DEFAULT=true)."""
+    """Pin least privilege explicitly.
+
+    This is the shipped default since #3987 PR 2, so the fixture is no longer what
+    *enables* the behaviour — it keeps these specs independent of the default (and
+    of the rollback lever) rather than silently coupled to it. The default itself
+    is pinned by ``test_least_privilege_is_the_shipped_default``.
+    """
     set_admin_config(AdminConfig(rbac_least_privilege_default=True))
     yield
     set_admin_config(AdminConfig())
@@ -165,11 +184,13 @@ class TestDbBackedRoleResolution:
         assert role == AdminRole.MEMBER
         assert org_id == "org-a"
 
-    async def test_member_row_is_not_org_admin_even_before_the_flip(self, db_session: AsyncSession):
-        """A resolved 'member' row takes effect in PR 1 — only the *fallback* is staged.
+    async def test_member_row_is_not_org_admin_independent_of_the_flip(self, db_session: AsyncSession):
+        """A resolved 'member' row is authoritative regardless of the fallback flag.
 
-        This is the security value delivered by PR 1 on its own: a principal who
-        HAS a membership row is no longer auto-promoted to ORG_ADMIN.
+        Takes no config fixture on purpose: the row path must not be affected by
+        ``rbac_least_privilege_default`` in either direction. This was the security
+        value PR 1 (#3998) delivered on its own — a principal who HAS a membership
+        row is never auto-promoted to ORG_ADMIN — and PR 2 must not disturb it.
         """
         await seed_org(db_session, "org-a")
         await seed_user(db_session, pg_id="pg-user-3", cognito_sub="sub-3", org_id="org-a")
@@ -212,13 +233,56 @@ class TestFailClosedFallback:
 
         assert role == AdminRole.MEMBER
 
-    async def test_unmapped_principal_keeps_org_admin_before_flip(self, db_session: AsyncSession):
-        """PR 1 is non-breaking: the fallback is unchanged until PR 2 flips it."""
+    async def test_least_privilege_is_the_shipped_default(self, db_session: AsyncSession):
+        """#3987 PR 2: no-row -> MEMBER with NO flag set anywhere.
+
+        Deliberately takes no config fixture. Every other no-row test opts in via
+        ``least_privilege_config``, which would still pass if the shipped default
+        were False — this one proves the flip is *effective*, not merely settable,
+        and is the test that fails if someone reverts config.py.
+        """
+        ac = AccessControl(db=db_session)
+        role, org_id, _ = await ac.get_user_role(make_context("sub-nobody", "org-a"))
+
+        assert role == AdminRole.MEMBER
+        assert org_id == "org-a"
+
+    async def test_env_var_rolls_back_to_legacy_org_admin_fallback(self, db_session: AsyncSession, monkeypatch):
+        """BG_ADMIN_RBAC_LEAST_PRIVILEGE_DEFAULT=false restores ORG_ADMIN.
+
+        The documented rollback lever for #3987 PR 2 — an operator must be able to
+        undo the flip without a revert. Goes through the env var rather than the
+        kwarg so the ``BG_ADMIN_`` prefix wiring is covered too: a typo'd env
+        name would silently leave the lever dead.
+
+        Replaces the former ``test_unmapped_principal_keeps_org_admin_before_flip``,
+        which asserted the same ORG_ADMIN outcome as the *default*.
+        """
+        monkeypatch.setenv("BG_ADMIN_RBAC_LEAST_PRIVILEGE_DEFAULT", "false")
+        set_admin_config(AdminConfig())
+        assert get_admin_config().rbac_least_privilege_default is False
+
         ac = AccessControl(db=db_session)
         role, org_id, _ = await ac.get_user_role(make_context("sub-nobody", "org-a"))
 
         assert role == AdminRole.ORG_ADMIN
         assert org_id == "org-a"
+
+    async def test_no_row_demotion_is_logged(self, db_session: AsyncSession, caplog):
+        """The demotion must stay greppable post-flip.
+
+        Pre-flip the ``rbac_role_fallback`` WARN was emitted only in the
+        ``not least_privilege`` branch, so making least privilege the default
+        would have silenced it exactly when it started to matter. Operators grep
+        this line to find no-row principals.
+        """
+        ac = AccessControl(db=db_session)
+        with caplog.at_level(logging.WARNING, logger="src.admin.access_control"):
+            await ac.get_user_role(make_context("sub-nobody", "org-a"))
+
+        assert "rbac_role_fallback" in caplog.text
+        assert "reason=no_active_membership" in caplog.text
+        assert f"granted={AdminRole.MEMBER.value}" in caplog.text
 
     async def test_user_exists_but_has_no_membership_rows(self, db_session: AsyncSession, least_privilege_config):
         await seed_org(db_session, "org-a")

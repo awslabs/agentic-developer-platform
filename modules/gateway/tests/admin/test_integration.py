@@ -182,8 +182,13 @@ class TestAccessControlIntegration:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_org_admin_scoped_access(self, access_control: AccessControl, org_admin_context: TokenContext):
-        """Test org admin has scoped access."""
+    async def test_org_admin_scoped_access(self, access_control: AccessControl, org_admin_context: TokenContext, org_admin_membership):
+        """Test org admin has scoped access.
+
+        Issue #3987 PR 2: org-admin authority now requires the
+        ``tenant_memberships`` row; the no-row ORG_ADMIN fallback this previously
+        relied on is gone.
+        """
         from src.admin.exceptions import AccessDeniedError, InvalidScopeError
 
         # Should have org-level permissions
