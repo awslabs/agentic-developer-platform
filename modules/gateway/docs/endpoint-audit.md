@@ -55,13 +55,40 @@ CloudFront distribution `dp7n42m5j4pl6` has cache behaviors that route to differ
 
 | Path pattern | Origin | Server header | Notes |
 |---|---|---|---|
-| `/api/health`, `/api/ready`, `/api/v1/*`, `/api/auth/(exchange\|me\|logout\|revoke\|service-accounts)`, `/api/admin/*`, `/api/bedrock/*`, `/api/model/*`, `/api/usage/*`, `/api/budgets/*`, `/api/ratelimits/*` | VPC Origin (ALB → uvicorn) | `server: uvicorn` | Gateway API endpoints |
-| `/api/internal/*`, `/api/auth/credentials/*`, `/api/auth/identities*`, `/api/auth/link/*`, `/api/auth/vault/*`, `/api/api/admin/*`, `/api/access/*` | S3 (frontend bucket) | `server: AmazonS3` | Falls through to SPA — these paths are NOT exposed via CloudFront |
+| `/api/*` — including `/api/internal/*`, `/api/auth/credentials/*`, `/api/auth/identities*`, `/api/auth/link/*`, `/api/auth/vault/*`, `/api/access/*` | VPC Origin (ALB → uvicorn) | `server: uvicorn` | One `/api/*` behavior; the `/api` prefix is stripped and the remainder is forwarded verbatim |
+| `/.well-known/*` | VPC Origin (ALB → uvicorn) | `server: uvicorn` | No prefix stripping — backend expects the full path |
+| `/gitlab/*` | VPC Origin (GitLab ALB) | — | Separate origin, only when `gitlab_origin_*` are set |
 | `/*` (everything else) | S3 (frontend bucket) | `server: AmazonS3` | React SPA with fallback to index.html |
 
-**Security implication**: Internal endpoints (`/internal/v1/*`) and vault credential endpoints (`/auth/credentials/*`, `/auth/identities/*`) are NOT reachable via CloudFront. They are only accessible via:
-1. The API Gateway `/agent/*` path (IAM SigV4 required)
-2. Direct ALB access (currently internal-only ALB in private subnets)
+> **Corrected 2026-08-21 (issue #3985).** An earlier revision of this table
+> claimed `/api/internal/*` and the vault credential paths fell through to the S3
+> SPA and were "NOT reachable via CloudFront". That was true when written, but is
+> **false**: the `/api/*` behavior is a single wildcard match, so every `/api/…`
+> path — internal plane included — reaches the gateway pod. The SPA fallback that
+> made the original observation look right only happens for paths NOT matched by
+> a behavior. Do not use the old claim to dismiss an internal-plane finding.
+
+**Security implication**: internal endpoints (`/internal/v1/*`) and vault
+credential endpoints ARE reachable from the public edge via `/api/…`, so their
+own auth is the only thing protecting them — there is no routing-level barrier
+today. Three consequences:
+
+1. `/internal/v1/*` is reachable at `https://<cf>/api/internal/v1/…`. It is
+   guarded solely by `verify_internal_or_irsa` (shared secret or IRSA identity).
+2. Because CloudFront's `/api/*` behavior uses the `Managed-AllViewer`
+   origin-request policy, viewer headers are forwarded unstripped. The
+   `<name_prefix>-strip-api-prefix` CloudFront Function therefore **deletes the
+   identity/trust headers** (`x-caller-identity`, `x-amzn-iam-user-arn`,
+   `x-amzn-requestcontext`, `x-auth-source`, `x-internal-api-key`, `x-agent-*`)
+   on `/api/*` and `/.well-known/*` so a client cannot forge an identity the app
+   would otherwise trust under `BG_TRUST_APIGW_HEADERS=true`. `Authorization`,
+   `x-api-key` and the `anthropic-*` client headers are left intact.
+3. API Gateway (`/agent/{proxy+}`, `AWS_IAM`) is a **parallel** front door onto
+   the same internal ALB, not an upstream of CloudFront. Restricting a path at
+   API Gateway therefore does not restrict it at the edge.
+
+Routing-level enforcement of `/internal/*` (a dedicated VPC-Link listener port)
+is tracked separately as part of sub-EPIC #3984.
 
 ## Endpoint Matrix
 
