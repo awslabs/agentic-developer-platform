@@ -734,10 +734,18 @@ async def _create_installer_membership(
     repo admin (or org owner) can install an app, and the installing user is
     the authenticated session that initiated the flow.
 
+    Issue #4006: that same contract means the installer IS an org admin, so the
+    row carries role='org_admin'. It used to write 'member', which was actively
+    harmful once #3998 made tenant_memberships the read-side authority: the row
+    *exists*, so it wins over the legacy ORG_ADMIN fallback and the person who
+    installed the app could not administer their own org — a live bug independent
+    of any feature flag.
+
     Idempotent: skips if a membership for (user, tenant) already exists (D7
     pattern). Never modifies is_active of existing rows. Sets is_active=True
     on a NEW membership only if the user has no other memberships at all
-    (first-membership-active rule).
+    (first-membership-active rule). Pre-existing stale 'member' rows written
+    before this fix are healed by scripts/audit_org_admin_memberships.py --apply.
     """
     from sqlalchemy import select
 
@@ -773,7 +781,7 @@ async def _create_installer_membership(
     membership = TenantMembership(
         user_id=user_id,
         tenant_id=tenant_id,
-        role="member",
+        role="org_admin",
         is_active=is_active,
         joined_via="app_install",
         github_org_id=github_org_login,
@@ -782,7 +790,7 @@ async def _create_installer_membership(
     await db.commit()
 
     logger.info(
-        "install-callback: created tenant_membership user=%s tenant=%s role=member is_active=%s joined_via=app_install",
+        "install-callback: created tenant_membership user=%s tenant=%s role=org_admin is_active=%s joined_via=app_install",
         user_id,
         tenant_id,
         is_active,

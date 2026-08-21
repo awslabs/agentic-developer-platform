@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin.memberships import upsert_tenant_membership
 from src.auth.dependencies import get_current_user, require_admin
 from src.shared.database import get_db
 from src.shared.models.onboarding import TenantAccessRequest, TenantMembership
@@ -436,6 +437,22 @@ async def _attach_user_to_existing_tenant(
     )
     db.add(github_identity)
 
+    # Issue #4006: write the home-tenant membership in the SAME transaction as the
+    # user row. The caller (submit_access_request) also calls
+    # _create_memberships_for_matches, but that commits separately — a crash
+    # between the two commits used to leave an org_admin users row with no
+    # membership, i.e. an admin whose authority depends on the legacy fallback.
+    # _create_memberships_for_matches skips tenants that already have a row, so
+    # this is additive, not duplicative.
+    await upsert_tenant_membership(
+        db,
+        user_id=user_id,
+        tenant_id=org_id,
+        role=role,
+        joined_via="org_membership",
+        github_org_id=org.name,
+    )
+
     await db.commit()
 
     return AccessRequestResponse(
@@ -771,47 +788,45 @@ async def submit_access_request(
         result = await db.execute(stmt)
         user = result.scalar_one_or_none()
         if user is not None:
-            existing_stmt = select(TenantMembership).where(
-                TenantMembership.user_id == user.id,
-                TenantMembership.tenant_id == approved_tenant_id,
+            # Issue #4006: approve_request now writes this membership itself, so
+            # this is normally a no-op; kept (as an upsert) so the username-slug
+            # tenant still gets a row if the approval path ever stops writing one.
+            # De-nested from the old "only if absent" branch so the #3134
+            # write-through below always runs.
+            await upsert_tenant_membership(
+                db,
+                user_id=user.id,
+                tenant_id=approved_tenant_id,
+                role=user.role or "member",
+                joined_via="username_self",
             )
-            existing_result = await db.execute(existing_stmt)
-            if existing_result.scalar_one_or_none() is None:
-                membership = TenantMembership(
-                    user_id=user.id,
-                    tenant_id=approved_tenant_id,
-                    role=user.role or "member",
-                    is_active=True,
-                    joined_via="username_self",
+            await db.commit()
+
+            # Issue #3134: Write-through member_org_ids after auto-approve
+            try:
+                from src.shared.models.vault import UserIdentity
+
+                all_stmt = select(TenantMembership.tenant_id).where(
+                    TenantMembership.user_id == user.id,
                 )
-                db.add(membership)
-                await db.commit()
+                all_org_ids = list((await db.execute(all_stmt)).scalars().all())
 
-                # Issue #3134: Write-through member_org_ids after auto-approve
-                try:
-                    from src.shared.models.vault import UserIdentity
-
-                    all_stmt = select(TenantMembership.tenant_id).where(
-                        TenantMembership.user_id == user.id,
+                identity_stmt = select(UserIdentity).where(
+                    UserIdentity.user_id == user.id,
+                    UserIdentity.provider == "github",
+                )
+                github_identity = (await db.execute(identity_stmt)).scalar_one_or_none()
+                if github_identity and github_identity.provider_user_id:
+                    await writer.update_user_membership_orgs(
+                        provider_user_id=github_identity.provider_user_id,
+                        member_org_ids=all_org_ids,
+                        provider="github",
                     )
-                    all_org_ids = list((await db.execute(all_stmt)).scalars().all())
-
-                    identity_stmt = select(UserIdentity).where(
-                        UserIdentity.user_id == user.id,
-                        UserIdentity.provider == "github",
-                    )
-                    github_identity = (await db.execute(identity_stmt)).scalar_one_or_none()
-                    if github_identity and github_identity.provider_user_id:
-                        await writer.update_user_membership_orgs(
-                            provider_user_id=github_identity.provider_user_id,
-                            member_org_ids=all_org_ids,
-                            provider="github",
-                        )
-                except Exception:
-                    logger.exception(
-                        "auto-approve: failed to update member_org_ids for user=%s (non-fatal)",
-                        user.id,
-                    )
+            except Exception:
+                logger.exception(
+                    "auto-approve: failed to update member_org_ids for user=%s (non-fatal)",
+                    user.id,
+                )
 
         return AccessRequestResponse(
             status="approved",

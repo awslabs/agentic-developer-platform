@@ -45,9 +45,20 @@ This audit was performed from an agent pod (`adp-dev-agent-scaledjob-role`) with
 
 - **Flow**: Agent SDK → SigV4 signing → API Gateway REST API `bedrockgw-dev-api` (id `59o2rakc50`) → `/agent/{proxy+}` → VPC Link → internal ALB → gateway pod
 - **Exposed via**: API Gateway REST API endpoint
-- **Auth mechanism**: API Gateway IAM authorizer validates SigV4 signature; gateway trusts `X-Auth-Source` header from API GW when `BG_TRUST_APIGW_HEADERS=true` (see `proxy/routes.py:152-158`)
+- **Auth mechanism**: API Gateway IAM authorizer validates the SigV4 signature and injects `X-Caller-Identity` (the caller's assumed-role ARN). The gateway honors that header only when `BG_TRUST_APIGW_HEADERS=true`, and resolves it against the agent registry — an ARN that is absent from the registry is rejected 403, never given a fabricated identity.
 - **Agent-side proxy**: `modules/agent-factory/agent/src/sigv4-proxy.ts` runs at `127.0.0.1:9090`, adds SigV4 to outgoing requests
-- **Token context extraction**: `src/auth/middleware.py:extract_api_gateway_context()` reads pre-validated headers
+- **Token context extraction**: `src/auth/middleware.py:extract_iam_identity_from_headers()` → `parse_assumed_role_arn()` → agent-registry lookup
+
+> **Corrected 2026-08-21 (issue #3985).** This section previously said the gateway
+> "trusts `X-Auth-Source`" and pointed at `extract_api_gateway_context()`. That
+> function built a full `TokenContext` — arbitrary `org_id`, `user_id`,
+> `account_type` — from `X-Agent-*` request headers alone, with no signature check
+> and no registry lookup. The Lambda authorizer meant to set them has been
+> deprecated and unattached, so nothing trusted was producing them; #3985 deleted
+> the function and both call sites. Identity now comes only from a registry-backed
+> `X-Caller-Identity` or a Cognito JWT. `X-Agent-OrgId` survives solely as a
+> tenant-attribution override for callers already IAM-authenticated whose registry
+> entry has `scope == "internal"` (#747).
 
 ### CloudFront Routing Behavior
 
@@ -55,13 +66,40 @@ CloudFront distribution `dp7n42m5j4pl6` has cache behaviors that route to differ
 
 | Path pattern | Origin | Server header | Notes |
 |---|---|---|---|
-| `/api/health`, `/api/ready`, `/api/v1/*`, `/api/auth/(exchange\|me\|logout\|revoke\|service-accounts)`, `/api/admin/*`, `/api/bedrock/*`, `/api/model/*`, `/api/usage/*`, `/api/budgets/*`, `/api/ratelimits/*` | VPC Origin (ALB → uvicorn) | `server: uvicorn` | Gateway API endpoints |
-| `/api/internal/*`, `/api/auth/credentials/*`, `/api/auth/identities*`, `/api/auth/link/*`, `/api/auth/vault/*`, `/api/api/admin/*`, `/api/access/*` | S3 (frontend bucket) | `server: AmazonS3` | Falls through to SPA — these paths are NOT exposed via CloudFront |
+| `/api/*` — including `/api/internal/*`, `/api/auth/credentials/*`, `/api/auth/identities*`, `/api/auth/link/*`, `/api/auth/vault/*`, `/api/access/*` | VPC Origin (ALB → uvicorn) | `server: uvicorn` | One `/api/*` behavior; the `/api` prefix is stripped and the remainder is forwarded verbatim |
+| `/.well-known/*` | VPC Origin (ALB → uvicorn) | `server: uvicorn` | No prefix stripping — backend expects the full path |
+| `/gitlab/*` | VPC Origin (GitLab ALB) | — | Separate origin, only when `gitlab_origin_*` are set |
 | `/*` (everything else) | S3 (frontend bucket) | `server: AmazonS3` | React SPA with fallback to index.html |
 
-**Security implication**: Internal endpoints (`/internal/v1/*`) and vault credential endpoints (`/auth/credentials/*`, `/auth/identities/*`) are NOT reachable via CloudFront. They are only accessible via:
-1. The API Gateway `/agent/*` path (IAM SigV4 required)
-2. Direct ALB access (currently internal-only ALB in private subnets)
+> **Corrected 2026-08-21 (issue #3985).** An earlier revision of this table
+> claimed `/api/internal/*` and the vault credential paths fell through to the S3
+> SPA and were "NOT reachable via CloudFront". That was true when written, but is
+> **false**: the `/api/*` behavior is a single wildcard match, so every `/api/…`
+> path — internal plane included — reaches the gateway pod. The SPA fallback that
+> made the original observation look right only happens for paths NOT matched by
+> a behavior. Do not use the old claim to dismiss an internal-plane finding.
+
+**Security implication**: internal endpoints (`/internal/v1/*`) and vault
+credential endpoints ARE reachable from the public edge via `/api/…`, so their
+own auth is the only thing protecting them — there is no routing-level barrier
+today. Three consequences:
+
+1. `/internal/v1/*` is reachable at `https://<cf>/api/internal/v1/…`. It is
+   guarded solely by `verify_internal_or_irsa` (shared secret or IRSA identity).
+2. Because CloudFront's `/api/*` behavior uses the `Managed-AllViewer`
+   origin-request policy, viewer headers are forwarded unstripped. The
+   `<name_prefix>-strip-api-prefix` CloudFront Function therefore **deletes the
+   identity/trust headers** (`x-caller-identity`, `x-amzn-iam-user-arn`,
+   `x-amzn-requestcontext`, `x-auth-source`, `x-internal-api-key`, `x-agent-*`)
+   on `/api/*` and `/.well-known/*` so a client cannot forge an identity the app
+   would otherwise trust under `BG_TRUST_APIGW_HEADERS=true`. `Authorization`,
+   `x-api-key` and the `anthropic-*` client headers are left intact.
+3. API Gateway (`/agent/{proxy+}`, `AWS_IAM`) is a **parallel** front door onto
+   the same internal ALB, not an upstream of CloudFront. Restricting a path at
+   API Gateway therefore does not restrict it at the edge.
+
+Routing-level enforcement of `/internal/*` (a dedicated VPC-Link listener port)
+is tracked separately as part of sub-EPIC #3984.
 
 ## Endpoint Matrix
 
@@ -289,17 +327,19 @@ Prefix: `/usage`
 
 Prefix: `/budgets`
 
+> Issue #3988: the four mutating routes (POST `/budgets/`, PUT/DELETE
+> `/budgets/{budget_id}`, POST `/budgets/record-cost`) were **removed**. They had no
+> role gate and no caller; budget mutations go through the gated
+> `/admin/organizations/{org_id}/budgets` surface. This router is now read-only
+> apart from the side-effect-free POST `/budgets/calculate-cost`.
+
 | # | Method | Path | Line | Auth | CF Routed | Status (unauth) | Notes |
 |---|--------|------|------|------|-----------|-----------------|-------|
-| 133 | POST | `/budgets/` | routes.py:47 | Cognito JWT | yes | 401 | Create budget |
 | 134 | GET | `/budgets/{budget_id}` | routes.py:62 | Cognito JWT | yes | 401 | Get budget |
 | 135 | GET | `/budgets/entity/{entity_type}/{entity_id}` | routes.py:75 | Cognito JWT | yes | 401 | Get budgets by entity |
-| 136 | PUT | `/budgets/{budget_id}` | routes.py:86 | Cognito JWT | yes | 401 | Update budget |
-| 137 | DELETE | `/budgets/{budget_id}` | routes.py:107 | Cognito JWT | yes | 401 | Delete budget |
 | 138 | GET | `/budgets/status/{entity_type}/{entity_id}` | routes.py:122 | Cognito JWT | yes | 401 | Budget status |
 | 139 | GET | `/budgets/usage/{entity_type}/{entity_id}` | routes.py:139 | Cognito JWT | yes | 401 | Budget usage |
 | 140 | POST | `/budgets/calculate-cost` | routes.py:159 | Cognito JWT | yes | 401 | Calculate cost |
-| 141 | POST | `/budgets/record-cost` | routes.py:168 | Cognito JWT | yes | 401 | Record cost |
 | 142 | GET | `/budgets/summary/{entity_type}/{entity_id}` | routes.py:184 | Cognito JWT | yes | 401 | Budget summary |
 | 143 | GET | `/budgets/organization/overview` | routes.py:195 | Cognito JWT | yes | 401 | Org overview |
 | 144 | GET | `/budgets/organization/alerts` | routes.py:204 | Cognito JWT | yes | 401 | Org alerts |

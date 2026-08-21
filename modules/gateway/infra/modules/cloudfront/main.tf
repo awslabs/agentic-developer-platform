@@ -87,24 +87,38 @@ resource "aws_cloudfront_response_headers_policy" "security_headers" {
   }
 }
 
-# CloudFront Function to strip /api prefix before forwarding to ALB origin
+# CloudFront Function attached to every behavior that targets the API origin.
+#
+# Two jobs, in this order:
+#   1. Strip the /api prefix so the ALB origin sees the path the gateway expects.
+#   2. Delete client-supplied identity/trust headers before they reach the origin.
+#
+# Shared by the /api/* AND /.well-known/* behaviors (issue #3985). Both target the
+# same API origin, so both need job 2; only /api/* needs job 1. Sharing one
+# function is safe because the prefix match is segment-anchored — a /.well-known/*
+# URI can never match it — which keeps the two behaviors from needing two
+# near-identical functions that could drift apart.
 resource "aws_cloudfront_function" "strip_api_prefix" {
   name    = "${var.name_prefix}-strip-api-prefix"
   runtime = "cloudfront-js-2.0"
-  comment = "Strips /api prefix from URI before forwarding to ALB"
+  comment = "Strips /api prefix and drops client-supplied identity headers before the ALB origin"
   publish = true
 
   code = <<-EOF
     function handler(event) {
       var request = event.request;
-      request.uri = request.uri.replace(/^\/api/, '');
+      // Segment-anchored: only strip /api when it is a whole path segment.
+      // An unanchored /^\/api/ would rewrite /apifoo -> /foo, and would also
+      // corrupt URIs on any other behavior this function is attached to.
+      request.uri = request.uri.replace(/^\/api(?=\/|$)/, '');
       if (request.uri === '') request.uri = '/';
 
       // Do not forward client-supplied identity/trust headers to the origin.
-      // On the /api/* path these are set only by trusted upstream infrastructure,
-      // never by the viewer, so any inbound value is dropped here before the
-      // origin-request policy forwards headers. The Authorization header (the
-      // viewer's bearer token) is intentionally left intact.
+      // On the paths that reach the API origin these are set only by trusted
+      // upstream infrastructure, never by the viewer, so any inbound value is
+      // dropped here before the origin-request policy forwards headers. The
+      // Authorization header (the viewer's bearer token) is intentionally left
+      // intact, as are x-api-key and the anthropic-* client headers.
       var h = request.headers;
       delete h['x-caller-identity'];
       delete h['x-amzn-iam-user-arn'];
@@ -319,6 +333,16 @@ resource "aws_cloudfront_distribution" "frontend" {
       # Disable caching — well-known responses may change (key rotation, etc.)
       cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
       origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+
+      # Issue #3985: this behavior targets the same API origin as /api/* and uses
+      # the same all-viewer origin-request policy, so without the function a
+      # client-supplied identity header reaches the pod here too. The function's
+      # prefix rewrite is segment-anchored and cannot match a /.well-known/* URI,
+      # so attaching it strips headers without touching the path.
+      function_association {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.strip_api_prefix.arn
+      }
 
       compress = true
     }

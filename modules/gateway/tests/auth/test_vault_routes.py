@@ -549,7 +549,9 @@ class TestDeleteCredential:
         client = _make_app(ALICE, db, sm)
         resp = client.delete(f"/auth/credentials/{cred.id}")
         assert resp.status_code == 204
-        sm.delete_secret.assert_called_once_with("arn:aws:secretsmanager:us-east-1:123:secret:del-test")
+        # Issue #3989: user-driven deletes pass force=False so AWS's recovery
+        # window applies (the helper default is force=True → no recovery).
+        sm.delete_secret.assert_called_once_with("arn:aws:secretsmanager:us-east-1:123:secret:del-test", force=False)
 
     def test_delete_non_owned_returns_404(self, db, sm):
         cred = asyncio.get_event_loop().run_until_complete(_insert_cred(db, user_id="user-bob", label="bobs-private"))
@@ -568,12 +570,25 @@ class TestDeleteCredential:
         resp = client.delete(f"/auth/credentials/{cred.id}")
         assert resp.status_code == 404
 
-    def test_delete_org_cred_as_non_admin(self, db, sm):
-        """Org-scoped creds are visible to all members; any member can delete them."""
+    def test_delete_org_cred_denied_without_org_admin_membership(self, db, sm):
+        """Org-scoped delete is admin-gated, and the gate is now EFFECTIVE.
+
+        Issue #3989 added an org-admin permission gate to org/team-scoped
+        credential mutations. Resolution goes through ``AccessControl``, so before
+        #3987 PR 2 a caller with no ``tenant_memberships`` row (Alice, in this
+        fixture) resolved to ORG_ADMIN and this returned 204 — the gate was
+        latent. PR 2 flipped the no-row fallback to MEMBER, so the gate now bites:
+        Alice gets 403.
+
+        Renamed from ``test_delete_org_cred_under_legacy_rbac_default``, which
+        asserted the 204. That assertion encoded the pre-flip fallback, not an
+        intended permission — see tests/auth/test_vault_shared_scope_authz.py for
+        the same 403 asserted against an explicitly-flipped config.
+        """
         cred = asyncio.get_event_loop().run_until_complete(_insert_cred(db, label="org-cred-to-delete"))
         client = _make_app(ALICE, db, sm)
         resp = client.delete(f"/auth/credentials/{cred.id}")
-        assert resp.status_code == 204
+        assert resp.status_code == 403
 
 
 # ===========================================================================
@@ -761,7 +776,8 @@ class TestAcceptanceCriteria:
         sm.delete_secret.reset_mock()
         resp = client.delete(f"/auth/credentials/{cred.id}")
         assert resp.status_code == 204
-        sm.delete_secret.assert_called_once_with(test_arn)
+        # Issue #3989: force=False — recovery window applies to user deletes.
+        sm.delete_secret.assert_called_once_with(test_arn, force=False)
 
     def test_ac_non_admin_team_cred_returns_403(self, db, sm):
         """AC: Non-admin writing team/org cred returns 403."""

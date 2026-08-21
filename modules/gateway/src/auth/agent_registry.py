@@ -254,4 +254,9 @@ def agent_entry_to_token_context(entry: AgentRegistryEntry) -> TokenContext:
         is_admin=False,  # Agents are never admins
         expires_at=datetime.now(UTC) + timedelta(hours=1),  # Token context valid for 1 hour
         auth_source="iam",
+        # Issue #3985 (A2): carry the registered plane through so internal-plane
+        # routes can authorize on it. Previously dropped here, which left the
+        # internal plane with no way to distinguish an internal principal from
+        # any other registered agent.
+        scope=entry.get("scope", ""),
     )

@@ -10,6 +10,12 @@ Ownership scoping rules:
 
 Enumeration protection: non-owned resources return 404, never 403.
 Cross-tenant access: hard 404 via org_id filter on every query.
+
+Issue #3989: shared scopes (org, team, domain_app) are admin-gated for WRITES —
+create, update and delete. Visibility is not authority to mutate. For org/team the
+denial is 403 (the row is already visible to the caller via list_credentials, so
+the status leaks nothing); domain_app keeps 404 because its visibility is
+admin-only and a 403 there would newly confirm existence.
 """
 
 from __future__ import annotations
@@ -132,16 +138,48 @@ async def list_credentials(
     return list(result.scalars().all())
 
 
+async def _is_org_admin(db: AsyncSession, caller: TokenContext) -> bool:
+    """Return True if *caller* holds org-admin authority in their own org.
+
+    Issue #3989: shared-scope credential MUTATIONS need an admin gate, and the
+    gate must be the org-admin *permission*, not ``caller.is_admin``.
+    ``TokenContext.is_admin`` means PLATFORM admin and deliberately excludes
+    ``org_admin`` (see the warning in ``auth/dependencies.py``), so gating on it
+    would mean only a platform operator could ever rotate or retire a tenant's
+    own shared secret — a multi-tenant functional regression.
+
+    Resolution goes through ``AccessControl``, so it inherits #3987's DB-backed
+    role lookup. Since #3987 PR 2 flipped ``rbac_least_privilege_default`` to
+    True, a principal with no admin-level membership row resolves to MEMBER and
+    this gate is fully effective (it was latent before the flip).
+    """
+    from src.admin.access_control import AccessControl
+    from src.admin.config import Permission
+
+    try:
+        await AccessControl(db).check_permission(caller, Permission.ORG_UPDATE, target_org_id=caller.org_id)
+        return True
+    except Exception:
+        return False
+
+
 async def _get_owned_credential(
     cred_id: str,
     db: AsyncSession,
     caller: TokenContext,
 ) -> UserCredential:
-    """Fetch a credential by ID for the given caller.
+    """Fetch a credential by ID for the given caller, for MUTATION.
+
+    Both call sites (``update_credential``, ``delete_credential``) are mutations,
+    so this helper applies the shared-scope admin gate. It must NOT be reused for
+    read paths without revisiting that.
 
     Raises CredentialNotFound (→ 404) if:
     - The ID does not exist in this org (cross-tenant protection)
     - The credential exists but the caller does not own / see it
+
+    Raises InsufficientPrivilegesError (→ 403) if the credential is org- or
+    team-scoped and the caller is not an org admin (Issue #3989).
     """
     # Tenant-scoped fetch first
     stmt = select(UserCredential).where(
@@ -162,10 +200,23 @@ async def _get_owned_credential(
     scope = cred.owner_scope
     if scope == "user" and cred.user_id == caller.user_id:
         return cred
-    if scope == "team" and cred.team_id == caller.team_id and caller.team_id:
-        return cred
-    if scope == "org":
-        return cred  # any org member can see/manage org-scoped creds
+
+    # Issue #3989 (f-7800b0cc): org- and team-scoped credentials are SHARED, so
+    # visibility is not authority to mutate. Creation of these scopes was already
+    # admin-gated (create_credential below); update/delete were not, which let any
+    # org member rewrite or irrecoverably destroy a shared credential.
+    #
+    # 403 (not the usual 404) is correct for these two scopes: a non-admin org
+    # member can already see the row via list_credentials, so the status code
+    # leaks nothing and tells the caller the truth. domain_app stays 404 below —
+    # its visibility is admin-only, so 403 there would newly confirm existence.
+    if scope in ("team", "org"):
+        in_scope = scope == "org" or (cred.team_id == caller.team_id and bool(caller.team_id))
+        if in_scope:
+            if await _is_org_admin(db, caller):
+                return cred
+            raise InsufficientPrivilegesError(f"Organization administrator role required to modify {scope!r}-scoped credentials")
+
     if scope == "domain_app" and caller.is_admin:
         return cred
 
@@ -244,6 +295,13 @@ async def create_credential(
     except IntegrityError:
         await db.rollback()
         # SM secret was already created — delete it to prevent orphaned secrets (F2)
+        #
+        # Issue #3989: this call intentionally keeps the force=True default. It is
+        # NOT a user-driven deletion — the credential was never successfully
+        # created, so the value the user just submitted must be destroyed
+        # immediately. Switching it to force=False would park that value in a
+        # 7-30 day pending-deletion window for a row that never existed.
+        # Only the delete_credential path below changes.
         try:
             await asyncio.to_thread(sm.delete_secret, secret_arn)
         except Exception:
@@ -305,8 +363,14 @@ async def delete_credential(
 
     # Delete the SM secret (best-effort; log failures but don't re-raise
     # because the DB row is already gone and the caller expects success).
+    #
+    # Issue #3989: force=False so AWS's 7-30 day recovery window applies to
+    # user-driven deletes — the default (force=True) sets
+    # ForceDeleteWithoutRecovery, making a delete unrecoverable. Secret names carry
+    # a random uuid suffix (SecretsManagerHelper._build_secret_name), so a
+    # pending-deletion secret can never collide with a re-register.
     try:
-        await asyncio.to_thread(sm.delete_secret, secret_arn)
+        await asyncio.to_thread(sm.delete_secret, secret_arn, force=False)
     except Exception:
         logger.exception("Failed to delete SM secret %s for credential %s; DB row already removed", secret_arn, cred_id)
 

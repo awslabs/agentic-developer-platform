@@ -132,6 +132,7 @@ resource "aws_lambda_function" "broker" {
       FRONTEND_URL             = var.frontend_url
       ALLOWLIST_MODE           = var.allowlist_mode
       ALLOWED_ORGS             = var.allowed_orgs
+      ALLOW_OPEN_SIGNUP        = var.allow_open_signup ? "true" : "false"
       GITHUB_TOKEN_SECRET_ARN  = var.github_token_secret_arn
       LOG_LEVEL                = "INFO"
     }
