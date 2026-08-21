@@ -99,6 +99,21 @@ resource "aws_cloudfront_function" "strip_api_prefix" {
       var request = event.request;
       request.uri = request.uri.replace(/^\/api/, '');
       if (request.uri === '') request.uri = '/';
+
+      // Do not forward client-supplied identity/trust headers to the origin.
+      // On the /api/* path these are set only by trusted upstream infrastructure,
+      // never by the viewer, so any inbound value is dropped here before the
+      // origin-request policy forwards headers. The Authorization header (the
+      // viewer's bearer token) is intentionally left intact.
+      var h = request.headers;
+      delete h['x-caller-identity'];
+      delete h['x-amzn-iam-user-arn'];
+      delete h['x-amzn-requestcontext'];
+      delete h['x-auth-source'];
+      delete h['x-internal-api-key'];
+      for (var name in h) {
+        if (name.indexOf('x-agent-') === 0) delete h[name];
+      }
       return request;
     }
   EOF
