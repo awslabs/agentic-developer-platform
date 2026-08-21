@@ -327,17 +327,19 @@ Prefix: `/usage`
 
 Prefix: `/budgets`
 
+> Issue #3988: the four mutating routes (POST `/budgets/`, PUT/DELETE
+> `/budgets/{budget_id}`, POST `/budgets/record-cost`) were **removed**. They had no
+> role gate and no caller; budget mutations go through the gated
+> `/admin/organizations/{org_id}/budgets` surface. This router is now read-only
+> apart from the side-effect-free POST `/budgets/calculate-cost`.
+
 | # | Method | Path | Line | Auth | CF Routed | Status (unauth) | Notes |
 |---|--------|------|------|------|-----------|-----------------|-------|
-| 133 | POST | `/budgets/` | routes.py:47 | Cognito JWT | yes | 401 | Create budget |
 | 134 | GET | `/budgets/{budget_id}` | routes.py:62 | Cognito JWT | yes | 401 | Get budget |
 | 135 | GET | `/budgets/entity/{entity_type}/{entity_id}` | routes.py:75 | Cognito JWT | yes | 401 | Get budgets by entity |
-| 136 | PUT | `/budgets/{budget_id}` | routes.py:86 | Cognito JWT | yes | 401 | Update budget |
-| 137 | DELETE | `/budgets/{budget_id}` | routes.py:107 | Cognito JWT | yes | 401 | Delete budget |
 | 138 | GET | `/budgets/status/{entity_type}/{entity_id}` | routes.py:122 | Cognito JWT | yes | 401 | Budget status |
 | 139 | GET | `/budgets/usage/{entity_type}/{entity_id}` | routes.py:139 | Cognito JWT | yes | 401 | Budget usage |
 | 140 | POST | `/budgets/calculate-cost` | routes.py:159 | Cognito JWT | yes | 401 | Calculate cost |
-| 141 | POST | `/budgets/record-cost` | routes.py:168 | Cognito JWT | yes | 401 | Record cost |
 | 142 | GET | `/budgets/summary/{entity_type}/{entity_id}` | routes.py:184 | Cognito JWT | yes | 401 | Budget summary |
 | 143 | GET | `/budgets/organization/overview` | routes.py:195 | Cognito JWT | yes | 401 | Org overview |
 | 144 | GET | `/budgets/organization/alerts` | routes.py:204 | Cognito JWT | yes | 401 | Org alerts |

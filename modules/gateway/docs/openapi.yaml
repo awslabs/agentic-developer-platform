@@ -889,25 +889,9 @@ paths:
   # ==========================================================================
   # Budget Endpoints
   # ==========================================================================
-  /budgets:
-    post:
-      tags: [budgets]
-      summary: Create budget configuration
-      operationId: createBudget
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BudgetCreateRequest'
-      responses:
-        '201':
-          description: Budget created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BudgetResponse'
-
+  # Issue #3988: POST /budgets, PUT/DELETE /budgets/{budget_id} and
+  # POST /budgets/record-cost were removed — ungated mutations with no caller.
+  # Budget mutations go through /admin/organizations/{org_id}/budgets.
   /budgets/{budget_id}:
     get:
       tags: [budgets]
@@ -922,38 +906,6 @@ paths:
       responses:
         '200':
           description: Budget configuration
-    put:
-      tags: [budgets]
-      summary: Update budget configuration
-      operationId: updateBudget
-      parameters:
-        - name: budget_id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BudgetUpdateRequest'
-      responses:
-        '200':
-          description: Budget updated
-    delete:
-      tags: [budgets]
-      summary: Delete budget configuration
-      operationId: deleteBudget
-      parameters:
-        - name: budget_id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '204':
-          description: Budget deleted
 
   /budgets/entity/{entity_type}/{entity_id}:
     get:
@@ -1039,21 +991,6 @@ paths:
       responses:
         '200':
           description: Cost calculation
-
-  /budgets/record-cost:
-    post:
-      tags: [budgets]
-      summary: Record cost against budgets
-      operationId: recordCost
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CostRecordRequest'
-      responses:
-        '204':
-          description: Cost recorded
 
   /budgets/organization/overview:
     get:

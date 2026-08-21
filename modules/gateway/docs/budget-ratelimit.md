@@ -191,9 +191,13 @@ ENFORCEMENT_FAIL_OPEN=true  # Allow requests if enforcement check fails
 ### Admin API Endpoints
 
 #### Configure Budget
+
+Budget mutations go through the role-gated admin surface. Issue #3988 removed the
+ungated `/budgets/**` mutation routes, so `/api/budgets` is read-only.
+
 ```bash
 # Set user budget
-curl -X PUT /api/budgets \
+curl -X POST /api/admin/organizations/$ORG_ID/budgets \
   -H "Authorization: Bearer $TOKEN" \
   -d '{
     "entity_type": "user",

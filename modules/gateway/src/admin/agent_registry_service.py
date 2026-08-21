@@ -284,6 +284,7 @@ class AgentRegistryService:
         owner: str | None = None,
         page_size: int = 50,
         last_key: str | None = None,
+        allow_scan: bool = False,
     ) -> AgentRegistryListResponse:
         """
         List agents with optional filtering and pagination.
@@ -294,9 +295,18 @@ class AgentRegistryService:
             owner: Filter by owner (uses by-owner GSI)
             page_size: Maximum items per page
             last_key: Pagination token from previous response
+            allow_scan: Opt-in to the unfiltered cross-tenant scan. Issue #3988:
+                callers MUST pass allow_scan=True explicitly to reach _scan_all,
+                which returns every tenant's agents. Without it, an unfiltered
+                call raises instead of silently leaking cross-tenant data — the
+                original finding was an un-awaited is_platform_admin() that let
+                org_id fall through as None.
 
         Returns:
             AgentRegistryListResponse: List of agents with pagination
+
+        Raises:
+            ValidationError: If no filter is supplied and allow_scan is False
         """
         # Decode pagination token if provided
         exclusive_start_key = None
@@ -316,9 +326,14 @@ class AgentRegistryService:
             elif owner:
                 # Query by owner (GSI)
                 response = await self._query_by_owner(owner, page_size, exclusive_start_key)
-            else:
-                # Scan all (not recommended for large tables)
+            elif allow_scan:
+                # Scan all (not recommended for large tables). Issue #3988:
+                # cross-tenant — reachable only via explicit allow_scan opt-in.
                 response = await self._scan_all(page_size, exclusive_start_key)
+            else:
+                raise ValidationError(
+                    "A filter (org_id, team_id or owner) is required to list agents",
+                )
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")

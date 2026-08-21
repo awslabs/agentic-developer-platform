@@ -1421,11 +1421,26 @@ async def list_registry_agents(
     Org admins can only list agents for their own organization.
     """
     # Determine which org to query
+    is_platform_admin = False
     if org_id:
         await access.check_permission(current_user, Permission.ORG_READ, target_org_id=org_id)
-    elif not access.is_platform_admin(current_user):
-        # Non-platform admins default to their own org
-        org_id = current_user.org_id
+    else:
+        # Issue #3988: is_platform_admin is async — the missing `await` made this
+        # branch dead code (a coroutine is always truthy), so a non-platform
+        # caller fell through with org_id=None into an unfiltered cross-tenant scan.
+        is_platform_admin = await access.is_platform_admin(current_user)
+        if not is_platform_admin:
+            # Non-platform admins are pinned to their own org. TokenContext.org_id
+            # is populated as `claims.org_id or ""`, so an empty string must be
+            # rejected rather than left falsy — otherwise it reaches _scan_all.
+            if not current_user.org_id:
+                from src.admin.exceptions import AccessDeniedError
+
+                raise AccessDeniedError(
+                    message="No organization membership — cannot list registered agents",
+                    required_permission=Permission.ORG_READ.value,
+                )
+            org_id = current_user.org_id
 
     return await service.list_agents(
         org_id=org_id,
@@ -1433,6 +1448,8 @@ async def list_registry_agents(
         owner=owner,
         page_size=page_size,
         last_key=last_key,
+        # Only a verified platform admin may reach the cross-tenant scan.
+        allow_scan=is_platform_admin,
     )
 
 
@@ -1631,7 +1648,9 @@ async def preview_policies(
 
     # Platform admins can preview any policy
     # Org admins can preview policies for their org hierarchy
-    if not access.is_platform_admin(current_user):
+    # Issue #3988: is_platform_admin is async — without `await` the coroutine is
+    # always truthy, so this whole scope check was dead code.
+    if not await access.is_platform_admin(current_user):
         # Check that the org in hierarchy matches the user's org
         hierarchy_org = request.hierarchy.get("org")
         if hierarchy_org and hierarchy_org != current_user.org_id:
