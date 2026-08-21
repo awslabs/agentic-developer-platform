@@ -26,6 +26,23 @@ create_test_users = true
 # (pre-provisioned out-of-band).
 enable_github_auth_broker = true
 
+# Issue #3986: the broker allowlist now fails closed (mode defaults to "org" and
+# an empty org list denies). Dev previously relied on the implicit "open" default,
+# which let ANY GitHub user provision a Cognito account, so these must be set
+# explicitly or GitHub login returns not_authorized.
+github_auth_allowlist_mode = "org"
+github_auth_allowed_orgs   = "aws-e"
+
+# github_auth_token_secret_arn is intentionally unset: no org-check token secret
+# exists in this account yet. The broker falls back to the signing-in user's own
+# OAuth token (scope read:org is requested at /start), which verifies membership
+# only while the OAuth App is org-approved for aws-e; when it isn't, the broker
+# logs the fallback and redirects with error=org_check_unavailable rather than
+# silently denying. To make org checks robust, create a Secrets Manager secret
+# holding a GitHub token with read:org (suggested name
+# adp/dev/gateway/github-org-token) and set its ARN here.
+# github_auth_token_secret_arn = "arn:aws:secretsmanager:us-east-1:<account>:secret:adp/dev/gateway/github-org-token-XXXXXX"
+
 # Issue #1013: Enable chat logging pipeline (cost-tracking EPIC).
 # Provisions S3 chat-log bucket, usage_tracker + pricing_refresh Lambdas,
 # EventBridge schedule, and S3→Lambda event notification.

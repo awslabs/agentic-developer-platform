@@ -12,7 +12,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Patch environment before importing handler
+# Patch environment before importing handler.
+# Issue #3986: the fixture used to pin ALLOWLIST_MODE="open", which would have
+# masked the fail-closed default flip. It now mirrors the shipped default ("org").
 ENV_VARS = {
     "GITHUB_CLIENT_ID": "test-client-id",
     "GITHUB_CLIENT_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123456:secret:test",
@@ -20,8 +22,9 @@ ENV_VARS = {
     "COGNITO_CLIENT_ID": "test-cognito-client-id",
     "CALLBACK_URL": "https://example.com/api/auth/github/callback",
     "FRONTEND_URL": "https://example.com",
-    "ALLOWLIST_MODE": "open",
+    "ALLOWLIST_MODE": "org",
     "ALLOWED_ORGS": "my-org",
+    "ALLOW_OPEN_SIGNUP": "false",
     "GITHUB_TOKEN_SECRET_ARN": "",
     "LOG_LEVEL": "DEBUG",
 }
@@ -37,7 +40,9 @@ def env_setup(monkeypatch):
 
     h._github_oauth_creds = None
     h._github_org_token = None
-    h.ALLOWLIST_MODE = "open"
+    h.ALLOWLIST_MODE = "org"
+    h.ALLOWED_ORGS = "my-org"
+    h.ALLOW_OPEN_SIGNUP = False
 
 
 @pytest.fixture
@@ -174,11 +179,12 @@ class TestCallbackEndpoint:
         assert response["statusCode"] == 302
         assert "error=" in response["headers"]["Location"]
 
+    @patch("handler.check_org_membership", return_value="allowed")
     @patch("handler.exchange_code_for_token")
     @patch("handler.get_github_user")
     @patch("handler.provision_and_authenticate")
-    def test_exchange_code_happy_path(self, mock_provision, mock_get_user, mock_exchange, mock_secrets):
-        """Happy path: valid state + code → tokens returned via redirect."""
+    def test_exchange_code_happy_path(self, mock_provision, mock_get_user, mock_exchange, mock_check_org, mock_secrets):
+        """Happy path: valid state + code + in-org user → tokens returned via redirect."""
         import handler
 
         # Set up the cached secret so state verification works
@@ -230,10 +236,11 @@ class TestCallbackEndpoint:
             avatar_url="https://avatars.githubusercontent.com/u/12345",
         )
 
+    @patch("handler.provision_and_authenticate")
     @patch("handler.exchange_code_for_token")
     @patch("handler.get_github_user")
     @patch("handler.check_org_membership")
-    def test_allowlist_denies_non_org_member(self, mock_check_org, mock_get_user, mock_exchange, mock_secrets, monkeypatch):
+    def test_allowlist_denies_non_org_member(self, mock_check_org, mock_get_user, mock_exchange, mock_provision, mock_secrets, monkeypatch):
         """User not in allowed org returns error redirect, no Cognito provision."""
         import handler
 
@@ -252,7 +259,7 @@ class TestCallbackEndpoint:
             "name": "Outsider",
             "avatar_url": "",
         }
-        mock_check_org.return_value = False
+        mock_check_org.return_value = "denied"
 
         event = {
             "rawPath": "/callback",
@@ -264,11 +271,15 @@ class TestCallbackEndpoint:
 
         assert response["statusCode"] == 302
         assert "error=not_authorized" in response["headers"]["Location"]
+        # The gate must run BEFORE provisioning: admin_create_user does not fire
+        # PreSignUp_ExternalProvider, so a denied user must never reach Cognito.
+        mock_provision.assert_not_called()
 
+    @patch("handler.check_org_membership", return_value="allowed")
     @patch("handler.exchange_code_for_token")
     @patch("handler.get_github_user")
     @patch("handler.provision_and_authenticate")
-    def test_idempotent_for_existing_user(self, mock_provision, mock_get_user, mock_exchange, mock_secrets):
+    def test_idempotent_for_existing_user(self, mock_provision, mock_get_user, mock_exchange, mock_check_org, mock_secrets):
         """Existing user still gets tokens (provision is idempotent)."""
         import handler
 
@@ -301,6 +312,112 @@ class TestCallbackEndpoint:
         assert response["statusCode"] == 302
         assert "access_token=access-tok" in response["headers"]["Location"]
         mock_provision.assert_called_once()
+
+
+class TestAllowlistGate:
+    """Issue #3986: the broker allowlist must fail closed.
+
+    Exercises _check_allowlist directly — it is the single decision point the
+    callback consults before provisioning, so mode handling is tested here and
+    the callback wiring is covered by TestCallbackEndpoint.
+    """
+
+    def test_default_mode_is_org_when_env_unset(self, monkeypatch):
+        """An unset ALLOWLIST_MODE must enforce org membership, not allow everyone.
+
+        Reloads the module with the env var absent so the assertion covers the
+        real module-level default rather than the test fixture's value.
+        """
+        import importlib
+
+        import handler
+
+        monkeypatch.delenv("ALLOWLIST_MODE", raising=False)
+        monkeypatch.delenv("ALLOW_OPEN_SIGNUP", raising=False)
+        reloaded = importlib.reload(handler)
+        try:
+            assert reloaded.ALLOWLIST_MODE == "org"
+            assert reloaded.ALLOW_OPEN_SIGNUP is False
+        finally:
+            # Restore the fixture's env for subsequent tests in this session.
+            monkeypatch.setenv("ALLOWLIST_MODE", "org")
+            monkeypatch.setenv("ALLOW_OPEN_SIGNUP", "false")
+            importlib.reload(handler)
+
+    @patch("handler.check_org_membership", return_value="allowed")
+    def test_org_mode_allows_member(self, mock_check_org):
+        """In-org user is allowed (regression: in-org login must keep working)."""
+        import handler
+
+        assert handler._check_allowlist("insider", "gh-token") is None
+
+    @patch("handler.check_org_membership", return_value="denied")
+    def test_org_mode_denies_non_member(self, mock_check_org):
+        """Verified non-member gets not_authorized."""
+        import handler
+
+        assert handler._check_allowlist("outsider", "gh-token") == "not_authorized"
+
+    @patch("handler.check_org_membership", return_value="unverified")
+    def test_org_mode_unverifiable_is_distinct(self, mock_check_org):
+        """A failed check is reported distinctly from a real denial."""
+        import handler
+
+        assert handler._check_allowlist("someone", "gh-token") == "org_check_unavailable"
+
+    @patch("handler.check_org_membership", return_value="allowed")
+    def test_org_mode_falls_back_to_user_token(self, mock_check_org):
+        """With no org-token secret, the user's own OAuth token is used for the check."""
+        import handler
+
+        handler._github_org_token = None
+        handler._check_allowlist("insider", "user-oauth-token")
+        assert mock_check_org.call_args.args[2] == "user-oauth-token"
+
+    def test_open_mode_denies_without_escape_hatch(self):
+        """mode=open alone is a misconfiguration and must deny."""
+        import handler
+
+        handler.ALLOWLIST_MODE = "open"
+        handler.ALLOW_OPEN_SIGNUP = False
+        assert handler._check_allowlist("anyone", "gh-token") == "not_authorized"
+
+    def test_open_mode_allows_with_escape_hatch(self):
+        """ALLOW_OPEN_SIGNUP=true is the documented, explicit opt-in."""
+        import handler
+
+        handler.ALLOWLIST_MODE = "open"
+        handler.ALLOW_OPEN_SIGNUP = True
+        assert handler._check_allowlist("anyone", "gh-token") is None
+
+    def test_explicit_mode_denies(self):
+        """explicit mode is unimplemented in the broker; it must deny, not allow."""
+        import handler
+
+        handler.ALLOWLIST_MODE = "explicit"
+        assert handler._check_allowlist("anyone", "gh-token") == "not_authorized"
+
+    def test_unknown_mode_denies(self):
+        """A typo'd mode must deny (mirrors pre-signup's unknown-mode→deny)."""
+        import handler
+
+        handler.ALLOWLIST_MODE = "orgg"
+        assert handler._check_allowlist("anyone", "gh-token") == "not_authorized"
+
+    def test_empty_mode_denies(self):
+        """An explicitly blank mode must deny rather than fall through."""
+        import handler
+
+        handler.ALLOWLIST_MODE = ""
+        assert handler._check_allowlist("anyone", "gh-token") == "not_authorized"
+
+    @patch("handler.check_org_membership", return_value="allowed")
+    def test_mode_is_case_and_space_insensitive(self, mock_check_org):
+        """Operator-supplied ' ORG ' still resolves to org enforcement."""
+        import handler
+
+        handler.ALLOWLIST_MODE = " ORG "
+        assert handler._check_allowlist("insider", "gh-token") is None
 
 
 class TestUsernameFormat:
@@ -390,6 +507,7 @@ class TestAPIGatewayV1EventShape:
             patch("handler.exchange_code_for_token") as mock_exchange,
             patch("handler.get_github_user") as mock_get_user,
             patch("handler.provision_and_authenticate") as mock_provision,
+            patch("handler.check_org_membership", return_value="allowed"),
         ):
             mock_exchange.return_value = "gh-token"
             mock_get_user.return_value = {
@@ -449,10 +567,11 @@ class TestCookieParsing:
 class TestRefreshTokenInResponse:
     """Test that refresh token is included in the redirect."""
 
+    @patch("handler.check_org_membership", return_value="allowed")
     @patch("handler.exchange_code_for_token")
     @patch("handler.get_github_user")
     @patch("handler.provision_and_authenticate")
-    def test_refresh_token_in_redirect(self, mock_provision, mock_get_user, mock_exchange, mock_secrets):
+    def test_refresh_token_in_redirect(self, mock_provision, mock_get_user, mock_exchange, mock_check_org, mock_secrets):
         """Response redirect includes refresh_token parameter."""
         import handler
 

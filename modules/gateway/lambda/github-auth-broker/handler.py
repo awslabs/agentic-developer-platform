@@ -18,8 +18,12 @@ Environment variables:
                             when unset it is derived from the request context
                             (domainName + stage) at runtime (#2708).
   FRONTEND_URL            — Frontend origin (e.g., https://d1g6cal2ts4iis.cloudfront.net)
-  ALLOWLIST_MODE          — "open", "org", or "explicit"
-  ALLOWED_ORGS            — Comma-separated list of allowed GitHub orgs
+  ALLOWLIST_MODE          — "org" (default), "open", or "explicit". Anything
+                            other than "org" denies sign-in; see #3986.
+  ALLOWED_ORGS            — Comma-separated list of allowed GitHub orgs.
+                            Required for ALLOWLIST_MODE=org; empty denies.
+  ALLOW_OPEN_SIGNUP       — "true" to honour ALLOWLIST_MODE=open. Without it,
+                            "open" is treated as a misconfiguration and denied.
   GITHUB_TOKEN_SECRET_ARN — Secrets Manager ARN for org-check GitHub token
   LOG_LEVEL               — Logging level (default: INFO)
 """
@@ -34,7 +38,7 @@ import time
 import urllib.parse
 
 import boto3
-from allowlist import check_org_membership
+from allowlist import ALLOWED, UNVERIFIED, check_org_membership
 from cognito_provisioner import provision_and_authenticate
 from github_oauth import exchange_code_for_token, get_github_user
 
@@ -50,8 +54,12 @@ COGNITO_USER_POOL_ID = os.environ.get("COGNITO_USER_POOL_ID", "")
 COGNITO_CLIENT_ID = os.environ.get("COGNITO_CLIENT_ID", "")
 CALLBACK_URL = os.environ.get("CALLBACK_URL", "")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "")
-ALLOWLIST_MODE = os.environ.get("ALLOWLIST_MODE", "open")
+# Issue #3986: default fail-closed. An unset ALLOWLIST_MODE used to mean "open"
+# (any GitHub user gets a provisioned Cognito user), so the shipped default
+# provisioned accounts for the entire internet.
+ALLOWLIST_MODE = os.environ.get("ALLOWLIST_MODE", "org")
 ALLOWED_ORGS = os.environ.get("ALLOWED_ORGS", "")
+ALLOW_OPEN_SIGNUP = os.environ.get("ALLOW_OPEN_SIGNUP", "").lower() == "true"
 GITHUB_TOKEN_SECRET_ARN = os.environ.get("GITHUB_TOKEN_SECRET_ARN", "")
 
 # State signing key (derived from client secret for HMAC)
@@ -262,6 +270,53 @@ def _handle_start(event: dict) -> dict:
     }
 
 
+def _check_allowlist(github_login: str, github_token: str) -> str | None:
+    """Decide whether a GitHub user may sign in.
+
+    Issue #3986: fail closed. Only ``org`` mode grants access; every other mode
+    — including an unset, typo'd, or explicitly ``open`` ALLOWLIST_MODE — denies,
+    mirroring the pre-signup trigger's unknown-mode→deny behaviour.
+
+    Returns None when the user is allowed, otherwise the error code to redirect
+    with. ``org_check_unavailable`` distinguishes "we could not verify" from
+    ``not_authorized`` ("verified, not a member") so a missing org token or an
+    unapproved OAuth App doesn't look like a legitimate denial.
+    """
+    mode = ALLOWLIST_MODE.strip().lower()
+
+    if mode == "org":
+        orgs = [o.strip() for o in ALLOWED_ORGS.split(",") if o.strip()]
+        org_token = _get_github_org_token()
+        if not org_token:
+            # Falling back to the user's own OAuth token works only when the
+            # OAuth App is org-approved; log it so a 302/404 from GitHub is
+            # attributable (#3986).
+            logger.warning("GITHUB_TOKEN_SECRET_ARN is not configured; falling back to the user's OAuth token for the org check")
+            org_token = github_token
+        result = check_org_membership(github_login, orgs, org_token)
+        if result == ALLOWED:
+            return None
+        if result == UNVERIFIED:
+            return "org_check_unavailable"
+        return "not_authorized"
+
+    if mode == "open":
+        if ALLOW_OPEN_SIGNUP:
+            logger.warning("ALLOWLIST_MODE=open with ALLOW_OPEN_SIGNUP=true: allowing %s with NO allowlist enforcement", github_login)
+            return None
+        logger.error("ALLOWLIST_MODE=open without ALLOW_OPEN_SIGNUP=true is a misconfiguration; denying sign-in")
+        return "not_authorized"
+
+    if mode == "explicit":
+        # Out of scope for #3986; the DynamoDB allowlist reuse path is documented
+        # in the issue for whoever implements it. Deny until then.
+        logger.error("ALLOWLIST_MODE=explicit is not implemented in the broker; denying sign-in")
+        return "not_authorized"
+
+    logger.error("Unknown ALLOWLIST_MODE %r; denying sign-in", ALLOWLIST_MODE)
+    return "not_authorized"
+
+
 def _handle_callback(event: dict) -> dict:
     """
     Handle GitHub OAuth callback:
@@ -310,18 +365,13 @@ def _handle_callback(event: dict) -> dict:
         github_user = get_github_user(github_token)
         logger.info("GitHub user: id=%s login=%s", github_user["id"], github_user["login"])
 
-        # Allowlist check
-        if ALLOWLIST_MODE.lower() == "org":
-            orgs = [o.strip() for o in ALLOWED_ORGS.split(",") if o.strip()]
-            org_token = _get_github_org_token() or github_token
-            if not check_org_membership(github_user["login"], orgs, org_token):
-                return _redirect_with_error("not_authorized")
-        elif ALLOWLIST_MODE.lower() == "explicit":
-            # For explicit mode, deny by default in the broker
-            # (would need DynamoDB allowlist check — same as pre-signup)
-            logger.warning("Explicit allowlist mode not yet implemented in broker")
-            return _redirect_with_error("not_authorized")
-        # mode == "open" allows everyone
+        # Allowlist check — must run before provisioning. admin_create_user does
+        # not fire PreSignUp_ExternalProvider, and the pre-signup trigger
+        # deliberately passes PreSignUp_AdminCreateUser through, so the broker is
+        # the only enforcement point for GitHub sign-in (#3986).
+        denial = _check_allowlist(github_user["login"], github_token)
+        if denial:
+            return _redirect_with_error(denial)
 
         # Provision Cognito user and get tokens
         tokens = provision_and_authenticate(

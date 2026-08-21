@@ -225,19 +225,40 @@ variable "enable_github_auth_broker" {
 
 variable "github_auth_allowlist_mode" {
   type        = string
-  description = "Allowlist mode for GitHub auth broker: open, org, or explicit"
-  default     = "open"
+  description = "Allowlist mode for GitHub auth broker: 'org' (GitHub org membership), 'explicit' (not implemented in the broker; denies), or 'open' (no enforcement — requires github_auth_allow_open_signup). Issue #3986: defaults to 'org' so the shipped default fails closed."
+  default     = "org"
+  validation {
+    condition     = contains(["org", "explicit", "open"], var.github_auth_allowlist_mode)
+    error_message = "Allowlist mode must be 'org', 'explicit', or 'open'."
+  }
+  # Cross-variable checks are gated on enable_github_auth_broker so that
+  # deployments with the broker disabled (the default) are unaffected by the
+  # fail-closed defaults.
+  validation {
+    condition     = !var.enable_github_auth_broker || var.github_auth_allowlist_mode != "org" || trimspace(var.github_auth_allowed_orgs) != ""
+    error_message = "github_auth_allowed_orgs must be set when github_auth_allowlist_mode is 'org' (an empty org list denies every sign-in)."
+  }
+  validation {
+    condition     = !var.enable_github_auth_broker || var.github_auth_allowlist_mode != "open" || var.github_auth_allow_open_signup
+    error_message = "github_auth_allowlist_mode = 'open' disables allowlist enforcement entirely; set github_auth_allow_open_signup = true to acknowledge this."
+  }
 }
 
 variable "github_auth_allowed_orgs" {
   type        = string
-  description = "Comma-separated GitHub orgs for allowlist_mode=org"
+  description = "Comma-separated GitHub orgs for allowlist_mode=org. Required when mode is 'org'."
   default     = ""
+}
+
+variable "github_auth_allow_open_signup" {
+  type        = bool
+  description = "Escape hatch (#3986): honour github_auth_allowlist_mode = 'open', which lets ANY GitHub user provision a Cognito account. Leave false unless open signup is intentional."
+  default     = false
 }
 
 variable "github_auth_token_secret_arn" {
   type        = string
-  description = "Secrets Manager ARN for GitHub API token used in org membership checks"
+  description = "Secrets Manager ARN for GitHub API token used in org membership checks. Strongly recommended when allowlist_mode is 'org': without it the broker falls back to the signing-in user's own OAuth token, which cannot verify membership unless the OAuth App is org-approved."
   default     = ""
 }
 
