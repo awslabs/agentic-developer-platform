@@ -28,10 +28,10 @@ jobs:
     name: Lint
     runs-on: arc-runner-org
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -40,7 +40,12 @@ jobs:
       - name: Install dependencies
         working-directory: modules/agent-context
         run: |
-          pip install ruff
+          # Pinned: pyproject.toml sets no [tool.ruff.lint] select, so an
+          # unpinned install inherits whatever rule set the newest ruff enables
+          # by default. ruff 0.16.0 (2026-07-23) broadened that set and turned
+          # 638 pre-existing findings across ~141 untouched files into CI
+          # failures. Matches the pin already used in webhook-ingress-ci.yml.
+          pip install 'ruff==0.15.20'
 
       - name: Run Ruff
         working-directory: modules/agent-context
@@ -52,10 +57,10 @@ jobs:
     runs-on: arc-runner-org
     needs: lint
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -64,8 +69,13 @@ jobs:
       - name: Install dependencies
         working-directory: modules/agent-context
         run: |
+          # mcp pinned <2: mcp 2.0.0 (2026-07-28) is a breaking major that removed
+          # mcp.server.FastMCP, which door/mcp_app.py imports — an unpinned install
+          # now resolves to it and breaks collection of every test that imports
+          # door.server. This job was previously gated (skipped) by a red lint job,
+          # so the drift was invisible. 1.29.0 is the last release exporting it.
           pip install pytest pytest-asyncio httpx respx pydantic pydantic-settings asgi-lifespan \
-            boto3 sqlalchemy fastapi mcp requests pyyaml uvicorn \
+            boto3 sqlalchemy fastapi 'mcp<2' requests pyyaml uvicorn \
             psycopg2-binary python-hcl2 neo4j python-ulid \
             opentelemetry-sdk opentelemetry-exporter-otlp
 

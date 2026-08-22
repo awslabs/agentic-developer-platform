@@ -1,8 +1,13 @@
 """Activity service — DynamoDB query logic for agent invocations.
 
-Reads from the `webhook-events` table (owned by agent-factory) via its
-`user-index` (PK=user_id, SK=arrived_at) and `tenant-index`
-(PK=tenant_id, SK=arrived_at) GSIs.
+Reads from the `webhook-events` table (owned by agent-factory) via its GSIs:
+- `user-index` (PK=user_id, SK=arrived_at)
+- `tenant-index` (PK=tenant_id, SK=arrived_at)
+- `root-human-index` (PK=root_human_id, SK=arrived_at) — sparse, chain-attributed
+- `correlation-index` (PK=correlation_id, SK=arrived_at) — chain assembly
+
+Also queries the base table directly (PK=event_id, SK=arrived_at) for O(1)
+single-invocation lookups.
 
 Key design decisions:
 - Table name resolved from env var WEBHOOK_EVENTS_TABLE (set via SSM in prod).
@@ -398,15 +403,20 @@ class ActivityService:
     ) -> InvocationChainResponse:
         """Retrieve all invocations sharing a correlation_id and build a tree.
 
-        Scoping: filters by user_id (for /me/) or tenant_id (for /admin/).
-        If both are None, returns empty (safety: never return unscoped data).
+        Authorization (membership-based, Issue #3949):
+        - For /me/ (user_id): authorize the CHAIN, not each row. The caller may
+          read the chain if ANY member has user_id == caller or root_human_id ==
+          caller. Once authorized, return ALL members unfiltered. This prevents
+          mid-chain row drops from sparse root_human_id (pre-#2042 rows lack it)
+          which would cause _build_chain_tree to promote orphans to roots.
+        - For /admin/ (tenant_id): authorize by tenant_id on any member.
+        - If both are None, returns empty (safety: never return unscoped data).
 
         Issue #3708: When include_non_triggering is False (default), excludes
         no_op and webhook_received statuses — the same convention as the flat
         list endpoints (Issue #1658). This prevents webhook echoes from
         appearing as phantom child runs in the chain view. The depth_cap is
-        applied AFTER filtering (DynamoDB FilterExpression removes items before
-        they enter all_items), so cap budget is not wasted on echoes.
+        applied AFTER filtering, so cap budget is not wasted on echoes.
 
         Depth cap: returns at most `depth_cap` items. If more exist, sets
         `depth_capped=True` in the response.
@@ -424,26 +434,25 @@ class ActivityService:
             )
 
         # Query all items sharing this correlation_id via the correlation-index
-        # GSI (PK=correlation_id, SK=arrived_at). A Query is bounded and cheap;
-        # the previous full-table Scan was costly and required a dynamodb:Scan
-        # grant the gateway role does not (and should not) have — which surfaced
-        # as a 500 "failed to load chain" in the UI. Scoping (user_id/tenant_id)
-        # is applied as a post-query FilterExpression; a single chain is small,
-        # so post-filtering a Query page is fine.
-        scope_filter = None
-        if user_id:
-            scope_filter = Attr("user_id").eq(user_id)
-        elif tenant_id:
-            scope_filter = Attr("tenant_id").eq(tenant_id)
-
-        # Issue #3708: Exclude non-triggering statuses (no_op, webhook_received)
-        # by default — same convention as the flat list endpoints (Issue #1658).
-        # Filter is on STATUS only (never user_id/is_bot — real child runs are
-        # bot-attributed and must survive).
+        # GSI (PK=correlation_id, SK=arrived_at). A Query is bounded and cheap.
+        # Issue #3949: membership-based scoping — fetch ALL items, then authorize
+        # the chain as a whole. No per-row user_id filter (root_human_id is sparse;
+        # per-row filtering drops mid-chain members and restructures the tree).
+        # Status filtering (non-triggering) is still applied at the DDB level.
+        status_filter = None
         if not include_non_triggering:
             _non_triggering = ["no_op", "webhook_received"]
             status_filter = ~Attr("status").is_in(_non_triggering)
-            scope_filter = (scope_filter & status_filter) if scope_filter else status_filter
+
+        # Tenant scoping is still applied as a FilterExpression (tenant_id is
+        # always present on every row, so it's safe as a per-row filter).
+        filter_expr = None
+        if tenant_id:
+            filter_expr = Attr("tenant_id").eq(tenant_id)
+            if status_filter:
+                filter_expr = filter_expr & status_filter
+        elif status_filter:
+            filter_expr = status_filter
 
         all_items: list[dict] = []
         depth_capped = False
@@ -454,8 +463,8 @@ class ActivityService:
                 "KeyConditionExpression": Key("correlation_id").eq(correlation_id),
                 "ScanIndexForward": True,  # ascending arrived_at = chain order
             }
-            if scope_filter is not None:
-                query_kwargs["FilterExpression"] = scope_filter
+            if filter_expr is not None:
+                query_kwargs["FilterExpression"] = filter_expr
 
             while True:
                 response = self._table.query(**query_kwargs)
@@ -491,6 +500,20 @@ class ActivityService:
                     depth_capped=False,
                 )
             raise
+
+        # Issue #3949: Membership-based authorization for user-scoped chains.
+        # Authorize the chain as a whole: the caller may read it if ANY member
+        # has user_id == caller or root_human_id == caller. If none match,
+        # return empty (existence-hiding 404 semantics preserved).
+        if user_id:
+            authorized = any(item.get("user_id") == user_id or item.get("root_human_id") == user_id for item in all_items)
+            if not authorized:
+                return InvocationChainResponse(
+                    correlation_id=correlation_id,
+                    items=[],
+                    total_count=0,
+                    depth_capped=False,
+                )
 
         # Sort by arrived_at ascending (chain order)
         all_items.sort(key=lambda x: x.get("arrived_at", ""))
@@ -614,21 +637,29 @@ class ActivityService:
         # agent-triggered child runs appeared as top-level "roots". Fix: emit one
         # row per correlation_id, rooted at the actual root run (no parent), with
         # everything else nested as descendants.
+        # Issue #3949: TWO-PASS emission. The page is ordered newest-first, so a
+        # descendant is frequently visited BEFORE its own root. A single pass
+        # would then fire a backfill query for a chain whose root is already on
+        # the page, and anchor the row on the backfilled copy instead of the
+        # on-page root — and if that backfill query degrades (TTL/IAM error), the
+        # chain would be dropped entirely even though its root was right there.
+        # Pass 1 emits every true root; pass 2 backfills only chains pass 1 did
+        # not cover. This makes the cost bound (≤ page_size extra queries) and
+        # the "root + child on one page → zero backfills" guarantee hold
+        # independent of page order.
         chains: list[ChainSummary] = []
         _seen_correlations: set[str] = set()
+        _pending_backfill: list[str] = []
+
+        # ---- Pass 1: emit true roots (and singletons) in page order ----
         for root_item in flat_result.items:
             correlation_id = root_item.correlation_id
 
-            # Skip descendants masquerading as roots: a run WITH a parent is not a
-            # chain root — it belongs nested under its parent's chain row.
+            # A run WITH a parent is not a chain root — defer it to pass 2, which
+            # backfills the real root only if no root for this chain is on-page.
             if correlation_id and root_item.triggered_by_invocation_id:
+                _pending_backfill.append(correlation_id)
                 continue
-            # One top-level row per chain: if we've already emitted this chain
-            # (from its true root), don't add it again.
-            if correlation_id and correlation_id in _seen_correlations:
-                continue
-            if correlation_id:
-                _seen_correlations.add(correlation_id)
 
             if not correlation_id:
                 # No correlation_id → singleton chain (no descendants possible)
@@ -642,6 +673,12 @@ class ActivityService:
                 )
                 continue
 
+            # One top-level row per chain: if we've already emitted this chain
+            # (from its true root), don't add it again.
+            if correlation_id in _seen_correlations:
+                continue
+            _seen_correlations.add(correlation_id)
+
             # Fetch chain members via correlation-index
             descendants = self._fetch_chain_descendants(
                 correlation_id=correlation_id,
@@ -653,6 +690,35 @@ class ActivityService:
                 ChainSummary(
                     chain_id=correlation_id,
                     root=root_item,
+                    descendant_count=len(descendants),
+                    descendants=descendants,
+                )
+            )
+
+        # ---- Pass 2: backfill roots for chains with no root on this page ----
+        # Cost bound: at most one correlation-index root fetch per DISTINCT
+        # un-emitted correlation_id, so ≤ page_size extra queries per page, and
+        # zero in the common case where every chain's root is on-page.
+        for correlation_id in _pending_backfill:
+            if correlation_id in _seen_correlations:
+                continue
+            _seen_correlations.add(correlation_id)
+
+            backfilled_root = self._backfill_chain_root(correlation_id)
+            if backfilled_root is None:
+                # Root fetch degraded (query error, or the whole chain expired) —
+                # skip rather than emitting a rootless chain row.
+                continue
+
+            descendants = self._fetch_chain_descendants(
+                correlation_id=correlation_id,
+                root_invocation_id=backfilled_root.invocation_id,
+                include_non_triggering=include_non_triggering,
+            )
+            chains.append(
+                ChainSummary(
+                    chain_id=correlation_id,
+                    root=backfilled_root,
                     descendant_count=len(descendants),
                     descendants=descendants,
                 )
@@ -749,6 +815,51 @@ class ActivityService:
 
         return descendants
 
+    def _backfill_chain_root(self, correlation_id: str) -> InvocationItem | None:
+        """Fetch the chain root for a correlation_id via correlation-index.
+
+        Issue #3949: When page 1 of query_chains_by_user contains only descendants
+        (all have parent_invocation_id), the emission loop has no root to anchor
+        the chain. This helper fetches the earliest item in the correlation (the
+        root, which has no parent_invocation_id) and returns it as an InvocationItem.
+
+        If the true root is TTL-expired or missing (all items have
+        parent_invocation_id), falls back to the earliest member as the chain
+        representative — a chain row anchored on a surviving descendant beats an
+        empty view.
+
+        Returns None if:
+        - correlation-index query fails (graceful degradation)
+        - no items found at all (chain fully expired)
+
+        Cost: one correlation-index query (ScanIndexForward=True, first page only).
+        """
+        try:
+            response = self._table.query(
+                IndexName="correlation-index",
+                KeyConditionExpression=Key("correlation_id").eq(correlation_id),
+                ScanIndexForward=True,  # ascending arrived_at → root is first
+            )
+            items = response.get("Items", [])
+            # Find the true root (no parent_invocation_id)
+            for item in items:
+                if not item.get("parent_invocation_id"):
+                    return self._map_item(item)
+            # TTL-expired root: fall back to the earliest member
+            if items:
+                return self._map_item(items[0])
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code in ("ValidationException", "ResourceNotFoundException", "AccessDeniedException"):
+                logger.warning(
+                    "DynamoDB query failed (backfill chain root) — skipping",
+                    extra={"correlation_id": correlation_id, "error_code": error_code},
+                )
+                return None
+            raise
+
+        return None
+
     def get_invocation(
         self,
         invocation_id: str,
@@ -756,60 +867,57 @@ class ActivityService:
         user_id: str | None = None,
         tenant_id: str | None = None,
     ) -> InvocationItem | None:
-        """Fetch a single invocation by event_id, scoped to user or tenant.
+        """Fetch a single invocation by event_id, with authorize-after-fetch.
 
-        Uses a Query on the user-index or tenant-index GSI with a FilterExpression
-        on event_id (the DDB PK). This is necessary because GetItem would require
-        both event_id (PK) AND arrived_at (SK), but the detail endpoint only has
-        the invocation_id.
+        Issue #3949: Uses a base-table Query on event_id (the DDB hash key) for
+        an O(1) lookup — strictly cheaper than the previous GSI-based approach
+        and eliminates false-404s for items beyond a pagination cap.
 
-        Returns None if not found (caller should return 404 — existence-hiding).
+        Authorization (post-fetch):
+        - user_id provided: allow if item.user_id == caller OR
+          item.root_human_id == caller. This covers both direct runs and
+          chain-attributed runs (bot user_id, human root_human_id).
+        - tenant_id provided: allow if item.tenant_id == caller_tenant.
+        - Neither provided: return None (safety).
 
-        Paginates internally (up to 5 pages / ~5 MB read) to find the item in the
-        user's partition. This is acceptable for a user-initiated detail page load.
+        Returns None if not found or not authorized (existence-hiding 404).
         """
         if not user_id and not tenant_id:
             return None
 
-        if user_id:
-            index_name = "user-index"
-            pk_name = "user_id"
-            pk_value = user_id
-        else:
-            index_name = "tenant-index"
-            pk_name = "tenant_id"
-            pk_value = tenant_id
-
-        filter_expr = Attr("event_id").eq(invocation_id)
-
-        query_kwargs: dict = {
-            "IndexName": index_name,
-            "KeyConditionExpression": Key(pk_name).eq(pk_value),
-            "FilterExpression": filter_expr,
-            "ScanIndexForward": False,
-        }
-
-        max_pages = 5
         try:
-            for _ in range(max_pages):
-                response = self._table.query(**query_kwargs)
-                items = response.get("Items", [])
-                if items:
-                    return self._map_item(items[0])
-                if "LastEvaluatedKey" not in response:
-                    break
-                query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+            response = self._table.query(
+                KeyConditionExpression=Key("event_id").eq(invocation_id),
+                ScanIndexForward=False,
+            )
         except ClientError as exc:
             error_code = exc.response.get("Error", {}).get("Code", "")
             if error_code in ("ValidationException", "ResourceNotFoundException", "AccessDeniedException"):
                 logger.warning(
                     "DynamoDB query failed (get_invocation) — returning None",
-                    extra={"invocation_id": invocation_id, "error_code": error_code},
+                    extra={
+                        "invocation_id": invocation_id,
+                        "error_code": error_code,
+                    },
                 )
                 return None
             raise
 
-        return None
+        items = response.get("Items", [])
+        if not items:
+            return None
+
+        row = items[0]
+
+        # Authorize after fetch — existence-hiding 404 preserved
+        if user_id:
+            if row.get("user_id") != user_id and row.get("root_human_id") != user_id:
+                return None
+        elif tenant_id:
+            if row.get("tenant_id") != tenant_id:
+                return None
+
+        return self._map_item(row)
 
 
 def _derive_trigger_kind(item: dict) -> TriggerKind:

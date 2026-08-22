@@ -12,6 +12,7 @@ Tests cover:
 6. Agent usage endpoint aggregation
 """
 
+import inspect
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -412,41 +413,28 @@ async def test_check_agent_budget_disabled():
 # ==============================================================================
 
 
-def test_middleware_get_agent_budget_config_id_with_trust():
-    """Test middleware extracts agent budget config ID when trust is enabled."""
+def test_middleware_does_not_read_agent_budget_config_header():
+    """Issue #3985: X-Agent-BudgetConfigId is no longer trusted.
+
+    Replaces test_middleware_get_agent_budget_config_id_{with,without}_trust,
+    which asserted the header WAS read when BG_TRUST_APIGW_HEADERS=true. The
+    header was trusted on presence alone, so a caller could name any budget
+    config — including a fresh, unspent one — and bypass its own agent budget.
+    The org/team hierarchy check (derived from the authenticated token_context)
+    is unaffected.
+
+    Re-adding per-agent enforcement must resolve the config id server-side from
+    the agent registry entry, keyed off the authenticated identity.
+    """
     from src.budget.enforcement_middleware import BudgetEnforcementMiddleware
 
-    mock_app = MagicMock()
-    middleware = BudgetEnforcementMiddleware(mock_app)
+    assert not hasattr(BudgetEnforcementMiddleware, "_get_agent_budget_config_id")
 
-    # Create mock request with header
-    mock_request = MagicMock()
-    mock_request.headers.get.return_value = "budget-config-123"
-
-    with patch("src.shared.config.get_settings") as mock_settings:
-        mock_settings.return_value.trust_apigw_headers = True
-
-        result = middleware._get_agent_budget_config_id(mock_request)
-
-    assert result == "budget-config-123"
-
-
-def test_middleware_get_agent_budget_config_id_without_trust():
-    """Test middleware returns None when trust is disabled."""
-    from src.budget.enforcement_middleware import BudgetEnforcementMiddleware
-
-    mock_app = MagicMock()
-    middleware = BudgetEnforcementMiddleware(mock_app)
-
-    mock_request = MagicMock()
-    mock_request.headers.get.return_value = "budget-config-123"
-
-    with patch("src.shared.config.get_settings") as mock_settings:
-        mock_settings.return_value.trust_apigw_headers = False
-
-        result = middleware._get_agent_budget_config_id(mock_request)
-
-    assert result is None
+    # Strip comments before scanning: the removal is documented in a comment that
+    # names the header, and the point of this assertion is that no *code* reads it.
+    code_lines = [line.split("#", 1)[0] for line in inspect.getsource(BudgetEnforcementMiddleware).splitlines()]
+    code = "\n".join(code_lines).lower()
+    assert "budgetconfigid" not in code, "BudgetEnforcementMiddleware must not read the X-Agent-BudgetConfigId header"
 
 
 # ==============================================================================

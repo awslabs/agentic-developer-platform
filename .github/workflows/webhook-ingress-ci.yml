@@ -16,10 +16,10 @@ jobs:
     name: Lint
     runs-on: arc-runner-org
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -58,10 +58,10 @@ jobs:
     runs-on: arc-runner-org
     needs: lint
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -88,7 +88,7 @@ jobs:
             --cov=lambda --cov-report=xml
 
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: webhook-ingress-coverage
           path: modules/agent-factory/webhook-ingress/coverage.xml
@@ -98,10 +98,10 @@ jobs:
     runs-on: arc-runner-org
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -120,7 +120,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install required CLI tools
         run: |
@@ -172,7 +172,7 @@ jobs:
           terraform plan -var-file="terraform.tfvars" -out=tfplan -no-color 2>&1 | tee /tmp/plan-output.txt
 
       - name: Post or update PR comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         if: always() && github.event_name == 'pull_request'
         env:
           PLAN_OUTPUT: ${{ steps.plan.outcome }}

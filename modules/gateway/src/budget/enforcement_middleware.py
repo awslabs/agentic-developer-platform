@@ -87,19 +87,18 @@ class BudgetEnforcementMiddleware:
         with timings.time_segment("budget_check"):
             estimated_cost = _DEFAULT_ESTIMATE_USD
 
-            # Issue #249: Check agent-level budget first (most specific wins)
-            # The X-Agent-BudgetConfigId header is set by the Lambda authorizer
-            agent_budget_config_id = self._get_agent_budget_config_id(request)
-
-            if agent_budget_config_id:
-                # Agent has a budget config - check it first
-                result = await self.enforcement_service.check_agent_budget(agent_budget_config_id, estimated_cost)
-                if not result.allowed:
-                    # Agent budget exceeded - block immediately
-                    await self._drain_and_respond_budget_exceeded(receive, send, result)
-                    return
-
-            # Fall through to team/org hierarchy check
+            # Issue #249 read the agent-level budget config id from the
+            # X-Agent-BudgetConfigId header, which the (now deprecated and
+            # unattached) Lambda authorizer was meant to set. Issue #3985
+            # removed that: the header was trusted on presence alone under
+            # BG_TRUST_APIGW_HEADERS, so a client could name any budget config
+            # — including a fresh/unspent one — and dodge its own agent budget.
+            # Only the org/team hierarchy check remains, and it derives entirely
+            # from the authenticated token_context.
+            #
+            # Re-adding per-agent budget enforcement requires resolving the
+            # config id from the agent registry entry (server-side, keyed off
+            # the authenticated identity), not from a request header.
             result = await self.enforcement_service.check_budget_hierarchy(token_context, estimated_cost)
 
         if not result.allowed:
@@ -129,35 +128,6 @@ class BudgetEnforcementMiddleware:
 
     def _should_enforce(self, path: str) -> bool:
         return any(path.startswith(p) for p in ENFORCED_PATHS)
-
-    def _get_agent_budget_config_id(self, request: Request) -> str | None:
-        """Get agent budget config ID from request headers.
-
-        Issue #249: The Lambda authorizer passes X-Agent-BudgetConfigId header
-        for IAM-authenticated agents. We only trust this header when
-        BG_TRUST_APIGW_HEADERS=true (i.e., behind API Gateway).
-        """
-        from src.shared.config import get_settings
-
-        settings = get_settings()
-        if not settings.trust_apigw_headers:
-            return None
-
-        return request.headers.get("x-agent-budgetconfigid")
-
-    async def _drain_and_respond_budget_exceeded(self, receive: Receive, send: Send, result: EnforcementResult) -> None:
-        """Drain request body and send 402 response for budget exceeded."""
-        # Drain the request body
-        while True:
-            msg = await receive()
-            if msg.get("type") == "http.disconnect":
-                return
-            if not msg.get("more_body", False):
-                break
-
-        # Send 402 response
-        await self._send_budget_exceeded(send, result)
-        logger.info("Agent budget exceeded response sent successfully")
 
     def _extract_model_id_from_path(self, path: str) -> str | None:
         """Extract model ID from /model/{model_id}/invoke style paths.

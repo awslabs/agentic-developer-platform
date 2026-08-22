@@ -23,8 +23,12 @@ class TestAdminRole:
         assert AdminRole.DEPT_ADMIN.value == "dept_admin"
 
     def test_admin_role_count(self):
-        """Test AdminRole enum has exactly 3 roles."""
-        assert len(AdminRole) == 3
+        """Test AdminRole enum has exactly 4 roles.
+
+        Issue #3987 added MEMBER as the least-privilege default, replacing the
+        old behavior where an unmapped principal was given ORG_ADMIN.
+        """
+        assert len(AdminRole) == 4
 
     def test_admin_role_is_string_enum(self):
         """Test AdminRole is a string enum."""
@@ -43,8 +47,13 @@ class TestPermission:
 
     def test_permission_count(self):
         """Test Permission enum has expected number of permissions."""
-        # Should have 16 permissions based on the source file
-        assert len(Permission) == 16
+        # Should have 17 permissions based on the source file
+        # (Issue #3989 added AGENT_REGISTER for agent-registry writes)
+        assert len(Permission) == 17
+
+    def test_agent_register_permission_exists(self):
+        """Issue #3989: agent-registry writes gate on their own permission."""
+        assert Permission.AGENT_REGISTER.value == "agent:register"
 
     def test_org_permissions_exist(self):
         """Test organization management permissions exist."""
@@ -198,6 +207,19 @@ class TestAdminConfig:
         assert config.max_page_size == 1000
         assert config.log_retention_days == 90
         assert config.admin_api_rate_limit == 100
+
+    def test_least_privilege_default_is_enabled(self):
+        """Issue #3987 PR 2: the no-membership fallback ships least-privilege.
+
+        A one-line guard against an accidental revert of the flip. Nothing else in
+        this file pinned the flag, so flipping it back to False would previously
+        have gone unnoticed here.
+        """
+        assert AdminConfig().rbac_least_privilege_default is True
+
+    def test_least_privilege_default_is_overridable(self):
+        """The documented rollback lever must stay wired."""
+        assert AdminConfig(rbac_least_privilege_default=False).rbac_least_privilege_default is False
 
     def test_admin_config_custom_values(self):
         """Test AdminConfig accepts custom values."""
