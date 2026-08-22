@@ -213,11 +213,15 @@ class TestResolveTrustsPostgresOnDrift:
         assert reason == "ok"
         assert result is not None
         assert result.user_id == CANONICAL_USER_ID  # Postgres wins
-        # Drift metric emitted
-        mock_cw.put_metric_data.assert_called_once()
-        call_args = mock_cw.put_metric_data.call_args
-        metric_name = call_args[1]["MetricData"][0]["MetricName"]
-        assert metric_name == "IdentityIndexDrift"
+        # Drift metric emitted. Asserted by membership, not call_count: this test
+        # does not stub resolve_installation_by_id, so the #2769 drift safety-net
+        # also fires and (since #4046) emits InstallationResolveError on the same
+        # mocked CloudWatch client when that call fails.
+        metric_names = [
+            c[1]["MetricData"][0]["MetricName"]
+            for c in mock_cw.put_metric_data.call_args_list
+        ]
+        assert "IdentityIndexDrift" in metric_names
 
 
 class TestKillSwitchDisablesGatewayCall:
@@ -420,7 +424,7 @@ class TestInstallationPostgresFallback:
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
                 "common.gateway_client.resolve_installation_by_id",
-                return_value={"tenant_id": "pranavsharma1000"},
+                return_value={"state": "resolved", "tenant_id": "pranavsharma1000"},
             ):
                 with patch(
                     "common.gateway_client.resolve_user_by_identity",
@@ -442,8 +446,23 @@ class TestInstallationPostgresFallback:
         assert backfill_calls[0]["identity_value"] == str(INSTALLATION_ID)
         assert backfill_calls[0]["org_id"] == "pranavsharma1000"
 
-    def test_returns_unknown_when_both_ddb_and_postgres_miss(self, monkeypatch):
-        """DDB miss + Postgres miss → unknown_installation."""
+    @pytest.mark.parametrize(
+        "pg_result",
+        [
+            {"state": "not_found"},
+            {"state": "error", "reason": "http_500"},
+            {"state": "error", "reason": "gateway_url_not_configured"},
+        ],
+        ids=["not_found", "error_5xx", "error_config"],
+    )
+    def test_returns_unknown_when_both_ddb_and_postgres_miss(
+        self, monkeypatch, pg_result
+    ):
+        """DDB miss + Postgres non-resolved → unknown_installation.
+
+        Issue #4046 (#2724 slice A): parametrized over every non-resolved state —
+        both not_found and error keep today's outcome on this path.
+        """
         from common import identity_resolver
 
         identity_resolver._dynamodb = None
@@ -460,7 +479,7 @@ class TestInstallationPostgresFallback:
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
                 "common.gateway_client.resolve_installation_by_id",
-                return_value=None,  # Postgres also misses
+                return_value=pg_result,  # Postgres also misses / is unreachable
             ):
                 result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
 
@@ -530,7 +549,7 @@ class TestInstallationPostgresFallback:
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
                 "common.gateway_client.resolve_installation_by_id",
-                return_value={"tenant_id": "pranavsharma1000"},
+                return_value={"state": "resolved", "tenant_id": "pranavsharma1000"},
             ):
                 with patch(
                     "common.gateway_client.resolve_user_by_identity",
@@ -582,7 +601,7 @@ class TestInstallationTenantDriftSafetyNet:
         mock_cw = MagicMock()
 
         def _resolve_installation(installation_id):
-            return {"tenant_id": "pranavsharma1000"}
+            return {"state": "resolved", "tenant_id": "pranavsharma1000"}
 
         with patch("boto3.resource", return_value=mock_ddb):
             with patch("boto3.client", return_value=mock_cw):
@@ -615,8 +634,23 @@ class TestInstallationTenantDriftSafetyNet:
         ]
         assert "InstallationTenantDrift" in metric_names
 
-    def test_fail_open_keeps_ddb_answer_on_gateway_error(self, monkeypatch):
-        """Gateway miss/error → keep the DDB tenant (no hard RDS dependency)."""
+    @pytest.mark.parametrize(
+        "pg_result",
+        [
+            {"state": "not_found"},
+            {"state": "error", "reason": "http_500"},
+            {"state": "error", "reason": "transport_error"},
+        ],
+        ids=["not_found", "error_5xx", "error_transport"],
+    )
+    def test_fail_open_keeps_ddb_answer_on_gateway_error(self, monkeypatch, pg_result):
+        """Gateway miss/error → keep the DDB tenant (no hard RDS dependency).
+
+        Issue #4046 (#2724 slice A): parametrized over every non-resolved state to
+        prove the call-site mapping is behavior-neutral — a ``not_found`` and an
+        ``error`` both keep the DDB answer here, exactly as the collapsed ``None``
+        did before.
+        """
         from common import identity_resolver
 
         identity_resolver._dynamodb = None
@@ -635,7 +669,7 @@ class TestInstallationTenantDriftSafetyNet:
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
                 "common.gateway_client.resolve_installation_by_id",
-                return_value=None,  # gateway miss/error
+                return_value=pg_result,
             ):
                 with patch(
                     "common.gateway_client.resolve_user_by_identity",

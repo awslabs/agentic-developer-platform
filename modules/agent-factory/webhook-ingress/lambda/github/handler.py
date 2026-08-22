@@ -161,22 +161,36 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
         # already-stored tenant to stay idempotent.
         if existing is None:
             pg = _get_gateway_client().resolve_installation_by_id(str(installation_id))
-            tenant_id = pg.get("tenant_id") if pg else None
-            if not tenant_id:
-                # Fallback: if the gateway is unreachable (SigV4 auth on API GW,
-                # fresh deploy) or the tenant isn't in Postgres yet (user-namespace
-                # installs, new orgs), register using the org_login directly.
-                # This covers the case where a user installs the app on their
-                # personal account — no org-tenant shell exists in Postgres, but
-                # the install is legitimate (they clicked "Install" in GitHub).
-                # The org_login becomes the tenant_id; the user will still need
-                # to be approved before they can trigger agents.
+            state = pg.get("state") if pg else None
+            # `and pg.get("tenant_id")` is belt-and-braces: the client guarantees a
+            # non-empty tenant on "resolved", but an empty one must fall back
+            # rather than write an empty org_id, exactly as before this slice.
+            if state == "resolved" and pg.get("tenant_id"):
+                tenant_id = pg["tenant_id"]
+            else:
+                # Issue #4046 (#2724 slice A): the client now distinguishes an
+                # authoritative gateway 404 ("not_found") from "we could not find
+                # out" ("error"). This slice is behavior-neutral — BOTH still fall
+                # back to the org_login, exactly as before. Slice B splits them:
+                # not_found → deny; error → fail open but loud.
+                #
+                # Fallback rationale (unchanged): if the gateway is unreachable
+                # (SigV4 auth on API GW, fresh deploy) or the tenant isn't in
+                # Postgres yet (user-namespace installs, new orgs), register using
+                # the org_login directly. This covers the case where a user
+                # installs the app on their personal account — no org-tenant shell
+                # exists in Postgres, but the install is legitimate (they clicked
+                # "Install" in GitHub). The org_login becomes the tenant_id; the
+                # user will still need to be approved before they can trigger
+                # agents.
                 logger.info(
                     "Auto-register: gateway returned no tenant for installation_id=%d "
-                    "(org_login=%s) — registering with org_login as tenant_id "
-                    "(gateway unreachable or tenant not in Postgres)",
+                    "(org_login=%s, state=%s, reason=%s) — registering with org_login "
+                    "as tenant_id",
                     installation_id,
                     org_login,
+                    state or "unknown",
+                    (pg or {}).get("reason", ""),
                 )
                 tenant_id = org_login
         else:

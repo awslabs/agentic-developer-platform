@@ -287,8 +287,12 @@ def resolve(
             if _resolve_canonical_via_gateway_enabled():
                 from common.gateway_client import resolve_installation_by_id
 
-                pg_install = resolve_installation_by_id(str(installation_id))
-                if pg_install and pg_install.get("tenant_id"):
+                pg_install = resolve_installation_by_id(str(installation_id)) or {}
+                # Issue #4046 (#2724 slice A): pg_install now carries a "state" of
+                # resolved / not_found / error. Behavior-neutral here — both
+                # non-resolved states keep today's outcome (unknown_installation).
+                # A resolved result always carries a non-empty tenant_id.
+                if pg_install.get("tenant_id"):
                     pg_tenant = pg_install["tenant_id"]
                     logger.info(
                         "installation_id=%d resolved via Postgres fallback "
@@ -324,11 +328,15 @@ def resolve(
         # both tenants. On gateway miss/error: keep the DDB answer (fail-open —
         # no hard RDS dependency on the webhook path). Flag-gated by the same
         # RESOLVE_CANONICAL_VIA_GATEWAY switch as the user safety-net (#702).
+        #
+        # Issue #4046 (#2724 slice A): the client distinguishes not_found from
+        # error; this drift check is behavior-neutral and keeps the DDB answer for
+        # both (only a "resolved" result carries a tenant_id).
         if _resolve_canonical_via_gateway_enabled():
             from common.gateway_client import resolve_installation_by_id
 
-            pg_install = resolve_installation_by_id(str(installation_id))
-            if pg_install and pg_install.get("tenant_id"):
+            pg_install = resolve_installation_by_id(str(installation_id)) or {}
+            if pg_install.get("tenant_id"):
                 pg_tenant = pg_install["tenant_id"]
                 if pg_tenant != org_id:
                     logger.warning(

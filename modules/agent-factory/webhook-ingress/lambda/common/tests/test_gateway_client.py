@@ -195,27 +195,57 @@ class TestResolveUserByIdentity:
         mock_urlopen.assert_not_called()
 
 
-class TestResolveInstallationById:
-    """Tests for resolve_installation_by_id() — /internal/v1/resolve-installation."""
+def _mock_200(body: dict, status: int = 200) -> MagicMock:
+    """Build a mock urlopen context manager returning ``body`` as JSON."""
+    mock_resp = MagicMock()
+    mock_resp.status = status
+    mock_resp.read.return_value = json.dumps(body).encode("utf-8")
+    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
 
-    def test_returns_tenant_on_200(self):
+
+class TestResolveInstallationById:
+    """Three-state contract for resolve_installation_by_id() (Issue #4046 / #2724).
+
+    The client must distinguish:
+      - ``resolved``   — gateway 200 with a tenant
+      - ``not_found``  — gateway 404 ONLY; the one authoritative "not a tenant"
+      - ``error``      — anything that means "we could not find out"
+
+    Collapsing error into not_found is the bug this contract prevents: a gate
+    built on the collapsed signal would deny every install during an outage.
+    """
+
+    @pytest.fixture
+    def no_cloudwatch(self):
+        """Stub the metric emitter so error-path tests never touch CloudWatch.
+
+        Not autouse: the two metric tests below exercise the real emitter.
+        """
+        from common import gateway_client
+
+        with patch.object(
+            gateway_client, "_emit_installation_resolve_error_metric"
+        ) as mock_emit:
+            yield mock_emit
+
+    def test_state_resolved_on_200_with_tenant(self, no_cloudwatch):
         from common import gateway_client
 
         gateway_client._internal_api_key = None
 
-        response_body = json.dumps({"tenant_id": "pranavsharma1000"}).encode("utf-8")
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.read.return_value = response_body
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_mock_200({"tenant_id": "pranavsharma1000"}),
+        ):
             result = gateway_client.resolve_installation_by_id("144082554")
 
-        assert result == {"tenant_id": "pranavsharma1000"}
+        assert result == {"state": "resolved", "tenant_id": "pranavsharma1000"}
+        no_cloudwatch.assert_not_called()
 
-    def test_returns_none_on_404(self):
+    def test_state_not_found_on_404(self, no_cloudwatch):
+        """A gateway 404 is the ONLY authoritative 'not a known tenant' answer."""
         import urllib.error
 
         from common import gateway_client
@@ -232,35 +262,139 @@ class TestResolveInstallationById:
         with patch("urllib.request.urlopen", side_effect=http_error):
             result = gateway_client.resolve_installation_by_id("999999")
 
-        assert result is None
+        assert result == {"state": "not_found"}
+        # not_found is a real answer, not an outage — no error metric.
+        no_cloudwatch.assert_not_called()
 
-    def test_returns_none_on_network_error(self):
+    def test_state_error_on_500(self, no_cloudwatch):
+        """A 5xx means the gateway could not answer — error, NOT not_found."""
+        import urllib.error
+
         from common import gateway_client
 
         gateway_client._internal_api_key = None
 
-        with patch("urllib.request.urlopen", side_effect=ConnectionError("timeout")):
+        http_error = urllib.error.HTTPError(
+            url="http://gateway.internal:8080/internal/v1/resolve-installation",
+            code=500,
+            msg="Internal Server Error",
+            hdrs={},
+            fp=None,
+        )
+        with patch("urllib.request.urlopen", side_effect=http_error):
             result = gateway_client.resolve_installation_by_id("144082554")
 
-        assert result is None
+        assert result["state"] == "error"
+        assert result["reason"] == "http_500"
+        no_cloudwatch.assert_called_once_with("http_500")
 
-    def test_returns_none_on_empty_tenant(self):
-        """A 200 with an empty tenant_id is treated as a miss."""
+    def test_state_error_on_timeout(self, no_cloudwatch):
         from common import gateway_client
 
         gateway_client._internal_api_key = None
 
-        response_body = json.dumps({"tenant_id": ""}).encode("utf-8")
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.read.return_value = response_body
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
             result = gateway_client.resolve_installation_by_id("144082554")
 
-        assert result is None
+        assert result["state"] == "error"
+        assert result["reason"] == "transport_error"
+        no_cloudwatch.assert_called_once_with("transport_error")
+
+    def test_state_error_on_network_error(self, no_cloudwatch):
+        from common import gateway_client
+
+        gateway_client._internal_api_key = None
+
+        with patch("urllib.request.urlopen", side_effect=ConnectionError("refused")):
+            result = gateway_client.resolve_installation_by_id("144082554")
+
+        assert result["state"] == "error"
+        assert result["reason"] == "transport_error"
+
+    def test_state_error_when_gateway_url_missing(self, monkeypatch, no_cloudwatch):
+        """Missing config is an error state — and never issues a request.
+
+        GATEWAY_API_URL is captured at import time, so patch the module attribute
+        rather than the env var (``from common import gateway_client`` returns the
+        already-imported module object).
+        """
+        from common import gateway_client
+
+        monkeypatch.setattr(gateway_client, "GATEWAY_API_URL", "")
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            result = gateway_client.resolve_installation_by_id("144082554")
+
+        assert result["state"] == "error"
+        assert result["reason"] == "gateway_url_not_configured"
+        mock_urlopen.assert_not_called()
+
+    def test_state_error_when_api_key_missing(self, monkeypatch, no_cloudwatch):
+        """Missing internal API key is an error state — and never issues a request."""
+        monkeypatch.setenv("INTERNAL_API_KEY_ARN", "")
+        monkeypatch.setenv("BG_INTERNAL_API_KEY", "")
+
+        from common import gateway_client
+
+        gateway_client._internal_api_key = None
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            result = gateway_client.resolve_installation_by_id("144082554")
+
+        assert result["state"] == "error"
+        assert result["reason"] == "internal_api_key_unavailable"
+        mock_urlopen.assert_not_called()
+
+    def test_state_error_on_empty_tenant(self, no_cloudwatch):
+        """A 200 with an empty tenant_id is malformed → error, not not_found.
+
+        The gateway signals 'not a known tenant' with a 404. A 200 carrying no
+        tenant is a bug on the other side; treating it as authoritative would let
+        a broken gateway response deny installs (#2724).
+        """
+        from common import gateway_client
+
+        gateway_client._internal_api_key = None
+
+        with patch("urllib.request.urlopen", return_value=_mock_200({"tenant_id": ""})):
+            result = gateway_client.resolve_installation_by_id("144082554")
+
+        assert result["state"] == "error"
+        assert result["reason"] == "empty_tenant_id"
+
+    def test_state_error_on_unexpected_status(self, no_cloudwatch):
+        """A non-2xx status delivered as a normal response (not HTTPError) → error."""
+        from common import gateway_client
+
+        gateway_client._internal_api_key = None
+
+        with patch("urllib.request.urlopen", return_value=_mock_200({}, status=204)):
+            result = gateway_client.resolve_installation_by_id("144082554")
+
+        assert result["state"] == "error"
+        assert result["reason"] == "unexpected_status"
+
+    def test_error_metric_emitted_with_reason_dimension(self):
+        """The 'loud' half of fail-open-but-loud: reason lands as a CW dimension."""
+        from common import gateway_client
+
+        mock_cw = MagicMock()
+        with patch("boto3.client", return_value=mock_cw):
+            gateway_client._emit_installation_resolve_error_metric("http_500")
+
+        kwargs = mock_cw.put_metric_data.call_args.kwargs
+        assert kwargs["Namespace"] == "WebhookIngress"
+        assert kwargs["MetricData"][0]["MetricName"] == "InstallationResolveError"
+        assert kwargs["MetricData"][0]["Dimensions"] == [
+            {"Name": "Reason", "Value": "http_500"}
+        ]
+
+    def test_metric_failure_never_propagates(self):
+        """CloudWatch being down must not break installation resolution."""
+        from common import gateway_client
+
+        with patch("boto3.client", side_effect=RuntimeError("no creds")):
+            gateway_client._emit_installation_resolve_error_metric("http_500")
 
     def test_sends_correct_headers_and_body(self):
         from common import gateway_client

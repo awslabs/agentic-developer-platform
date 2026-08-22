@@ -8,6 +8,10 @@ Issue #702: Added resolve_user_by_identity() to call the existing
 POST /internal/v1/resolve-user endpoint as a Postgres safety-net for
 canonical user_id resolution.
 
+Issue #4046 (#2724 slice A): resolve_installation_by_id() returns three distinct
+states (resolved / not_found / error) so callers can tell "this installation is
+authoritatively not a known tenant" from "we could not reach the gateway".
+
 Only invoked from the webhook Lambda when:
   1. Tenant is resolved (installation is known)
   2. Sender is NOT resolved (unknown_user)
@@ -30,6 +34,13 @@ INTERNAL_API_KEY_ARN = os.environ.get("INTERNAL_API_KEY_ARN", "")
 
 _admin_token: str | None = None
 _internal_api_key: str | None = None
+
+# resolve_installation_by_id() result states (Issue #4046 / #2724 slice A).
+# INSTALLATION_NOT_FOUND is authoritative (gateway 404); INSTALLATION_ERROR means
+# "we could not find out" and must never be treated as "not a tenant".
+INSTALLATION_RESOLVED = "resolved"
+INSTALLATION_NOT_FOUND = "not_found"
+INSTALLATION_ERROR = "error"
 
 
 def _resolve_admin_token() -> str:
@@ -146,28 +157,81 @@ def resolve_user_by_identity(provider: str, provider_user_id: str) -> dict | Non
         return None
 
 
-def resolve_installation_by_id(installation_id: str) -> dict | None:
+def _emit_installation_resolve_error_metric(reason: str) -> None:
+    """Emit ``InstallationResolveError`` when the gateway could not be consulted.
+
+    Issue #4046: the "loud" half of fail-open-but-loud. An ``error`` state means
+    we do NOT know whether the installation is a known tenant — a future gate
+    (#2724 slice B) fails open on this state, so it must be visible.
+
+    Best-effort: never raises, never blocks the caller.
+    """
+    try:
+        import boto3
+
+        cw = boto3.client(
+            "cloudwatch", region_name=os.environ.get("AWS_REGION", "us-east-1")
+        )
+        cw.put_metric_data(
+            Namespace="WebhookIngress",
+            MetricData=[
+                {
+                    "MetricName": "InstallationResolveError",
+                    "Dimensions": [{"Name": "Reason", "Value": reason}],
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Failed to emit InstallationResolveError metric: %s", e)
+
+
+def _installation_error(installation_id: str, reason: str, detail: str = "") -> dict:
+    """Build the ``error`` result, logging at WARN and emitting the metric."""
+    logger.warning(
+        "resolve_installation_by_id UNAVAILABLE for installation_id=%s "
+        "reason=%s%s — caller must treat this as 'unknown', NOT as 'not a tenant'",
+        installation_id,
+        reason,
+        f" detail={detail}" if detail else "",
+    )
+    _emit_installation_resolve_error_metric(reason)
+    return {"state": INSTALLATION_ERROR, "reason": reason}
+
+
+def resolve_installation_by_id(installation_id: str) -> dict:
     """Call POST /internal/v1/resolve-installation to resolve the owning tenant.
 
     Issue #2769: Postgres is authoritative for the installation_id → tenant
-    mapping. Returns dict {"tenant_id": <org_id>} on a 200 hit, or None on
-    404 / error (fail-open: callers keep their DDB answer on None).
+    mapping.
+
+    Issue #4046 (#2724 slice A): returns one of three distinct states instead of
+    collapsing everything except success into ``None``::
+
+        {"state": "resolved",  "tenant_id": <org_id>}   # 200 + non-empty tenant
+        {"state": "not_found"}                          # authoritative gateway 404
+        {"state": "error", "reason": <str>}             # we could not find out
+
+    ``not_found`` is returned ONLY for a gateway 404 — the one answer that
+    authoritatively means "this installation is not a known ADP tenant".
+    Everything else (missing config, missing internal API key, non-404 HTTP
+    status, timeout, malformed body) is ``error``: we do not know. Callers that
+    gate on "known tenant" must deny on ``not_found`` and fail open (loudly) on
+    ``error``, otherwise a gateway outage becomes a platform-wide deny.
+
+    Callers must branch on ``state``. Truthiness is NOT a success check — all
+    three results are truthy dicts.
     """
     if not GATEWAY_API_URL:
-        logger.warning(
-            "GATEWAY_API_URL not set — cannot resolve installation via gateway"
-        )
-        return None
+        return _installation_error(installation_id, "gateway_url_not_configured")
 
     url = f"{GATEWAY_API_URL}/internal/v1/resolve-installation"
     body = {"installation_id": str(installation_id)}
 
     api_key = _resolve_internal_api_key()
     if not api_key:
-        logger.warning(
-            "Internal API key not available — cannot resolve installation via gateway"
-        )
-        return None
+        return _installation_error(installation_id, "internal_api_key_unavailable")
 
     headers = {
         "Content-Type": "application/json",
@@ -186,29 +250,24 @@ def resolve_installation_by_id(installation_id: str) -> dict | None:
                 data = json.loads(resp.read().decode("utf-8"))
                 tenant_id = data.get("tenant_id", "")
                 if tenant_id:
-                    return {"tenant_id": tenant_id}
-            return None
+                    return {"state": INSTALLATION_RESOLVED, "tenant_id": tenant_id}
+                # A 200 with no tenant_id is a malformed response, not an
+                # authoritative "not a tenant" — the gateway signals that with 404.
+                return _installation_error(installation_id, "empty_tenant_id")
+            return _installation_error(
+                installation_id, "unexpected_status", str(resp.status)
+            )
     except urllib.error.HTTPError as e:
         if e.code == 404:
             logger.info(
-                "resolve_installation_by_id: 404 for installation_id=%s",
+                "resolve_installation_by_id: 404 for installation_id=%s "
+                "(authoritatively not a known tenant)",
                 installation_id,
             )
-            return None
-        logger.error(
-            "resolve_installation_by_id HTTP error %d for installation_id=%s: %s",
-            e.code,
-            installation_id,
-            e.reason,
-        )
-        return None
-    except Exception as e:
-        logger.error(
-            "resolve_installation_by_id failed for installation_id=%s: %s",
-            installation_id,
-            e,
-        )
-        return None
+            return {"state": INSTALLATION_NOT_FOUND}
+        return _installation_error(installation_id, f"http_{e.code}", str(e.reason))
+    except Exception as e:  # noqa: BLE001
+        return _installation_error(installation_id, "transport_error", str(e))
 
 
 def post_provenance(

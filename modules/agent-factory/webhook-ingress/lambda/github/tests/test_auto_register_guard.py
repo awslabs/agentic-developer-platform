@@ -3,11 +3,19 @@
 Postgres is the single source of truth for the installation → tenant mapping.
 _auto_register_installation() must:
   1. No-op when a Postgres-owned row (no auto_registered flag) exists.
-  2. Skip (no write, caller 403) when the installation is not a known ADP tenant.
-  3. Write + tag auto_registered when no row exists and the installation resolves
+  2. Write + tag auto_registered when no row exists and the installation resolves
      to a known Postgres tenant — writing the POSTGRES tenant, not the raw login.
-  4. Emit InstallationTenantDrift when a Postgres-owned row's org differs from
+  3. Emit InstallationTenantDrift when a Postgres-owned row's org differs from
      the webhook org login.
+
+Issue #4046 (#2724 slice A): the gateway client now returns three states
+(resolved / not_found / error) instead of ``None`` for every non-success. The
+call-site mapping is behavior-neutral in this slice — BOTH not_found and error
+still fall back to the org_login, which the two
+``test_falls_back_to_org_login_*`` tests pin explicitly. There is deliberately
+NO "skips when not a known tenant" test here: the handler does not skip today.
+The old ``test_skips_when_not_known_tenant`` name asserted a behavior the code
+never had; slice B is where the deny actually lands.
 """
 
 import os
@@ -94,25 +102,56 @@ class TestAutoRegisterGuard:
 
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")
-    def test_skips_when_not_known_tenant(self, mock_resolver, mock_gw):
-        """No row + gateway 404 (not a known tenant) → registers with org_login as tenant.
+    def test_falls_back_to_org_login_when_gateway_unknown(self, mock_resolver, mock_gw):
+        """DOCUMENTS (does not endorse) today's fallthrough: an unknown installation
+        is still registered, using the raw org_login as the tenant_id.
 
-        Changed from original skip behavior: user-namespace installs and fresh
-        deploys where the gateway is unreachable should still register. The user
-        still needs approval before they can trigger agents — this only resolves
-        the installation, not the user.
+        Renamed from ``test_skips_when_not_known_tenant`` (Issue #4046). The old
+        name claimed a skip while the body asserted the opposite — a webhook from
+        an installation the gateway does not know still gets a tenant row written.
+        That mismatch is how the gap survived a security review; see #2724.
+
+        This test pins CURRENT behavior so slice A stays provably behavior-neutral.
+        Slice B (#2724) is where an authoritative ``not_found`` starts denying —
+        at which point this test's expectations change deliberately, not silently.
         """
         from handler import _auto_register_installation
 
         table = _mock_table_with()  # no existing rows
         mock_resolver.return_value._get_table.return_value = table
-        mock_gw.return_value.resolve_installation_by_id.return_value = None
+        mock_gw.return_value.resolve_installation_by_id.return_value = {"state": "not_found"}
 
         result = _auto_register_installation(555, "some-random-org")
 
         # Falls back to using org_login as the tenant_id
         assert result == "some-random-org"
         # Forward + reverse rows written
+        assert table.put_item.call_count == 2
+        forward_item = table.put_item.call_args_list[0].kwargs["Item"]
+        assert forward_item["org_id"] == "some-random-org"
+        assert forward_item["auto_registered"] is True
+
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_falls_back_to_org_login_when_gateway_errors(self, mock_resolver, mock_gw):
+        """Issue #4046: an ``error`` state (gateway down) keeps today's fallthrough.
+
+        This is the half slice B must NOT deny on — a gateway outage cannot become
+        a platform-wide "reject all new installations".
+        """
+        from handler import _auto_register_installation
+
+        table = _mock_table_with()  # no existing rows
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "state": "error",
+            "reason": "http_500",
+        }
+
+        result = _auto_register_installation(555, "some-random-org")
+
+        # Identical outcome to the not_found case today (slice A is neutral).
+        assert result == "some-random-org"
         assert table.put_item.call_count == 2
         forward_item = table.put_item.call_args_list[0].kwargs["Item"]
         assert forward_item["org_id"] == "some-random-org"
@@ -128,7 +167,8 @@ class TestAutoRegisterGuard:
         mock_resolver.return_value._get_table.return_value = table
         # Gateway maps installation → Postgres tenant (which differs from the login)
         mock_gw.return_value.resolve_installation_by_id.return_value = {
-            "tenant_id": "pranavsharma1000"
+            "state": "resolved",
+            "tenant_id": "pranavsharma1000",
         }
 
         result = _auto_register_installation(144082554, "pranav-login")
