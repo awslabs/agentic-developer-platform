@@ -298,3 +298,97 @@ class TestUpdateStatus:
         expr_values = call_kwargs["ExpressionAttributeValues"]
         assert ":token_mode" in expr_values
         assert expr_values[":token_mode"] == {"S": "app"}
+
+
+class TestErrorMessage:
+    """error_message support (Issue #4030).
+
+    Before this, error_message was written only by the ingress Lambda on its
+    initial PutItem, so the worker had no way to record WHY a run failed. The
+    gateway already reads the field (activity/service.py, schemas.py) — this
+    just gives the worker a way to fill it in.
+    """
+
+    def setup_method(self):
+        invocation_status._ddb = None
+        invocation_status._table_name = ""
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_error_message_written_when_provided(self, mock_get_client):
+        """error_message lands in the update expression."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        invocation_status.update_status(
+            event_id="msg-123",
+            arrived_at="2026-06-13T22:00:00Z",
+            status="failed",
+            error_message="tenant secret missing: adp/dev/tenants/sophos-internal/github-app",
+        )
+
+        call_kwargs = mock_client.update_item.call_args[1]
+        expr_values = call_kwargs["ExpressionAttributeValues"]
+        assert expr_values[":error_message"] == {
+            "S": "tenant secret missing: adp/dev/tenants/sophos-internal/github-app"
+        }
+        assert "error_message" in call_kwargs["ExpressionAttributeNames"].values()
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_error_message_omitted_when_absent(self, mock_get_client):
+        """Back-compat: existing callers that pass no error_message are unchanged."""
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        invocation_status.update_status(
+            event_id="msg-123",
+            arrived_at="2026-06-13T22:00:00Z",
+            status="in_progress",
+            run_id="agent-scaledjob-xyz",
+        )
+
+        call_kwargs = mock_client.update_item.call_args[1]
+        assert ":error_message" not in call_kwargs["ExpressionAttributeValues"]
+        assert "error_message" not in call_kwargs["UpdateExpression"]
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_error_message_truncated(self, mock_get_client):
+        """A stack-trace-sized message is truncated, not rejected.
+
+        An oversized item would fail the whole UpdateItem and lose the status
+        transition as well — reintroducing the invisibility this fixes.
+        """
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        invocation_status.update_status(
+            event_id="msg-123",
+            arrived_at="2026-06-13T22:00:00Z",
+            status="failed",
+            error_message="x" * 5000,
+        )
+
+        call_kwargs = mock_client.update_item.call_args[1]
+        written = call_kwargs["ExpressionAttributeValues"][":error_message"]["S"]
+        assert len(written) == invocation_status._MAX_ERROR_MESSAGE_CHARS
+
+    @patch("lib.invocation_status._get_client")
+    @patch.dict(os.environ, {"WEBHOOK_EVENTS_TABLE": "test-table"})
+    def test_error_message_write_is_fail_soft(self, mock_get_client):
+        """A DDB failure while reporting an error must not raise.
+
+        The caller is already handling a fatal bootstrap error and is about to
+        re-raise it; masking that traceback would make diagnosis worse.
+        """
+        mock_client = MagicMock()
+        mock_client.update_item.side_effect = RuntimeError("DDB down")
+        mock_get_client.return_value = mock_client
+
+        invocation_status.update_status(
+            event_id="msg-123",
+            arrived_at="2026-06-13T22:00:00Z",
+            status="failed",
+            error_message="tenant secret missing",
+        )

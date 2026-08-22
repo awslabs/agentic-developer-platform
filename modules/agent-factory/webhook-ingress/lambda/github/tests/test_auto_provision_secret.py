@@ -214,10 +214,20 @@ class TestAutoRegisterCallsProvision:
     @patch("handler._auto_provision_tenant_github_app_secret")
     @patch("handler._get_events_log")
     @patch("handler._get_signature")
-    def test_installation_created_no_provision_when_register_fails(
+    def test_installation_created_no_provision_when_register_returns_none(
         self, mock_sig, mock_log, mock_provision
     ):
-        """When DDB auto-register returns None, SM provision is NOT called."""
+        """A None return from auto-register must NOT provision a secret.
+
+        Issue #4030 narrowed what None *means*: it now signals "no routable
+        forward row was persisted" rather than "something, anything, threw."
+        With that narrowing the guard is exactly right — provisioning a secret
+        for a tenant nothing dispatches to would be the inverse of the bug.
+
+        The complementary case (forward row written, reverse row failed → tenant
+        IS returned, so provisioning DOES run) is covered by
+        ``test_auto_register_guard.py::TestPartialWriteSplit``.
+        """
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_log.return_value.log_event = MagicMock()
 

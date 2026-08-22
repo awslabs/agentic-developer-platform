@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 _table_name = os.environ.get("WEBHOOK_EVENTS_TABLE", "")
 _ddb: "boto3.client" | None = None
 
+# Truncation bound for error_message. A stack-trace-shaped string could
+# otherwise push the item toward the 400KB DDB limit and fail the whole update,
+# losing the status transition too — the exact failure mode we're fixing.
+_MAX_ERROR_MESSAGE_CHARS = 1024
+
 
 def _get_client():
     global _ddb
@@ -37,6 +42,7 @@ def update_status(
     summary: str | None = None,
     transcript_key: str | None = None,
     token_mode: str | None = None,
+    error_message: str | None = None,
 ) -> None:
     """Update the invocation row's status. Fail-soft: logs and returns on error.
 
@@ -48,6 +54,12 @@ def update_status(
         summary: Outcome summary (set at terminal status).
         transcript_key: S3 object key for the full run transcript (set at terminal status).
         token_mode: Issue #3385 (C5) — "app" or "pat" provenance (set at in_progress).
+        error_message: Issue #4030 — concrete failure cause, surfaced in the
+            Agent Activity detail view. Previously only the ingress Lambda wrote
+            this field (on its initial PutItem), so a worker that died during
+            bootstrap left the row at ``webhook_received`` with no reason — and
+            that status is filtered out of Activity entirely, which is why such
+            failures looked like total silence rather than a failed run.
     """
     table = _table_name or os.environ.get("WEBHOOK_EVENTS_TABLE", "")
     if not table:
@@ -88,6 +100,11 @@ def update_status(
             expr_parts.append("#tm = :token_mode")
             expr_names["#tm"] = "token_mode"
             expr_values[":token_mode"] = {"S": token_mode}
+
+        if error_message:
+            expr_parts.append("#em = :error_message")
+            expr_names["#em"] = "error_message"
+            expr_values[":error_message"] = {"S": error_message[:_MAX_ERROR_MESSAGE_CHARS]}
 
         update_expr = "SET " + ", ".join(expr_parts)
 

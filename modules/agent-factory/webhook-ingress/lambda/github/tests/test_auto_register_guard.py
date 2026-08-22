@@ -260,3 +260,153 @@ class TestAutoRegisterGuard:
         # Forward write has no ConditionExpression (idempotent overwrite)
         forward_call = table.put_item.call_args_list[0]
         assert "ConditionExpression" not in forward_call.kwargs
+
+
+class TestPartialWriteSplit:
+    """Forward/reverse error-scope split (Issue #4030).
+
+    The two identity-index writes are not equivalent. Dispatch routes on the
+    FORWARD row; the reverse row only serves ``adp-trigger`` resolution (#3860).
+    A single ``except`` used to cover both, so a reverse-row failure returned
+    None *after* the forward row was already persisted — and a None return makes
+    the caller skip secret provisioning. Because the mapping now exists, every
+    later webhook resolves fine and the ``unknown_installation`` self-heal branch
+    never fires again, so the seed is never retried. That is the self-sustaining
+    state the SOPHOS PoV hit: dispatch worked, workers died on a missing secret.
+    """
+
+    @staticmethod
+    def _table_failing_on(identity_type: str):
+        """Mock table whose put_item raises only for the given identity_type."""
+        table = MagicMock()
+
+        def get_item(Key=None):
+            return {}
+
+        def put_item(Item=None, **kwargs):
+            if Item["identity_type"] == identity_type:
+                raise RuntimeError(f"DDB unavailable writing {identity_type}")
+            return {}
+
+        table.get_item = get_item
+        table.put_item = MagicMock(side_effect=put_item)
+        return table
+
+    @patch("handler._emit_metric")
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_reverse_write_failure_returns_tenant_and_emits_metric(
+        self, mock_resolver, mock_gw, mock_metric
+    ):
+        """Reverse-row failure → tenant STILL returned + PartialWrite metric.
+
+        This is the regression guard for the swallow gap. The forward row is
+        persisted, so the tenant genuinely routes and the caller must be allowed
+        to continue with its provisioning.
+        """
+        from handler import _auto_register_installation
+
+        table = self._table_failing_on("org_installation")
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "tenant_id": "sophos-internal"
+        }
+
+        result = _auto_register_installation(144082554, "sophos-internal")
+
+        # The key assertion: NOT None. Pre-#4030 this returned None.
+        assert result == "sophos-internal"
+        mock_metric.assert_called_once_with("AutoRegister.PartialWrite")
+        # Forward row was written before the reverse row blew up.
+        forward_item = table.put_item.call_args_list[0].kwargs["Item"]
+        assert forward_item["identity_type"] == "github_installation_id"
+        assert forward_item["org_id"] == "sophos-internal"
+
+    @patch("handler._emit_metric")
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_forward_write_failure_returns_none(self, mock_resolver, mock_gw, mock_metric):
+        """Forward-row failure → None, and NO PartialWrite metric.
+
+        Nothing routes to this installation, so returning a tenant would invert
+        the bug: the caller would provision a secret for a tenant that cannot
+        receive dispatch.
+        """
+        from handler import _auto_register_installation
+
+        table = self._table_failing_on("github_installation_id")
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "tenant_id": "sophos-internal"
+        }
+
+        result = _auto_register_installation(144082554, "sophos-internal")
+
+        assert result is None
+        # PartialWrite is specifically "forward succeeded, reverse didn't".
+        assert "AutoRegister.PartialWrite" not in [
+            c.args[0] for c in mock_metric.call_args_list
+        ]
+        # Reverse write never attempted.
+        assert table.put_item.call_count == 1
+
+    @patch("handler._emit_metric")
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_reverse_get_item_failure_also_returns_tenant(
+        self, mock_resolver, mock_gw, mock_metric
+    ):
+        """The reverse-row READ is inside the partial-write scope too.
+
+        The original bug report pointed at the reverse put_item, but the guard
+        read that precedes it is equally past the point of no return — it must
+        not be able to discard an already-persisted mapping either.
+        """
+        from handler import _auto_register_installation
+
+        table = MagicMock()
+        calls = {"n": 0}
+
+        def get_item(Key=None):
+            calls["n"] += 1
+            if Key["identity_type"] == "org_installation":
+                raise RuntimeError("DDB throttled on reverse read")
+            return {}
+
+        table.get_item = get_item
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {"tenant_id": "acme"}
+
+        result = _auto_register_installation(999, "acme")
+
+        assert result == "acme"
+        mock_metric.assert_called_once_with("AutoRegister.PartialWrite")
+
+    @patch("handler._emit_metric")
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_conditional_check_failure_still_no_ops(self, mock_resolver, mock_gw, mock_metric):
+        """Regression: the ConditionalCheckFailed race path is unchanged.
+
+        A Postgres-owned row winning the read→write race returns the tenant and
+        writes nothing further. Restructuring the error scopes must not turn this
+        into a PartialWrite.
+        """
+        from handler import _auto_register_installation
+
+        table = MagicMock()
+        table.get_item = MagicMock(return_value={})
+
+        class ConditionalCheckFailedException(Exception):
+            pass
+
+        table.put_item = MagicMock(side_effect=ConditionalCheckFailedException("race lost"))
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {"tenant_id": "acme"}
+
+        result = _auto_register_installation(999, "acme")
+
+        assert result == "acme"
+        mock_metric.assert_not_called()
+        # Only the forward attempt; the reverse row is not written on a lost race.
+        assert table.put_item.call_count == 1

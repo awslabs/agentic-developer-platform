@@ -587,6 +587,80 @@ def _handle_gitlab_mention(
     return 1 if ack_failed else 0
 
 
+def _fail_bootstrap_status(message_id: str, arrived_at: str, error_message: str) -> None:
+    """Mark the webhook-events row failed with a concrete reason. Issue #4030.
+
+    Bootstrap failures used to write no status at all — the first status write
+    was the ``in_progress`` transition at the END of bootstrap. So a pod that
+    died fetching credentials or cloning left its row at ``webhook_received``,
+    which Agent Activity excludes from its default view. The run was not shown
+    as failed; it was not shown at all. Operators saw their `@agent-...` comment
+    vanish into silence and had to trace Lambda → SQS → KEDA → pod logs by hand.
+
+    Fail-soft by construction: ``update_status`` never raises, and we swallow
+    anything it somehow lets through. Reporting a failure must never mask the
+    original one, whose traceback is the thing worth propagating.
+    """
+    if not message_id or not arrived_at:
+        # Pre-parse could not recover the row key (PK/SK) — nothing to update.
+        logger.warning(
+            "Cannot record bootstrap failure status (message_id=%r arrived_at=%r): %s",
+            message_id,
+            arrived_at,
+            error_message,
+        )
+        return
+    try:
+        update_invocation_status(
+            message_id,
+            arrived_at,
+            "failed",
+            summary=error_message,
+            error_message=error_message,
+        )
+    except Exception as exc:  # noqa: BLE001  # pragma: no cover - defensive
+        # Intentionally blind: the caller is mid-failure and about to re-raise.
+        # Any exception escaping here would replace a real, diagnosable bootstrap
+        # traceback with a bookkeeping error.
+        logger.warning("Failed to record bootstrap failure status (non-fatal): %s", exc)
+
+
+def _describe_vault_fetch_failure(exc: Exception, secret_path: str) -> str:
+    """Turn a vault_fetch exception into an operator-actionable reason. #4030.
+
+    Discriminates on the botocore error *code*, not the exception class:
+    ``VaultClient.get_secret`` does not wrap anything, so every failure arrives
+    as a generic ``ClientError``. Catching them all as "secret missing" would
+    send an operator to create a secret that already exists when the real
+    problem is an IAM denial.
+    """
+    code = ""
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        code = (response.get("Error") or {}).get("Code", "")
+
+    if code == "ResourceNotFoundException":
+        return (
+            f"tenant secret missing: {secret_path} — the tenant's GitHub App "
+            f"credentials were never provisioned. Repair: aws secretsmanager "
+            f"create-secret --name {secret_path} --secret-string "
+            f'\'{{"app_id":"<id>","private_key":"<pem>"}}\''
+        )
+    if code in ("AccessDeniedException", "AccessDenied"):
+        return (
+            f"access denied reading tenant secret {secret_path} — the secret may "
+            f"exist but the worker role cannot read it (check the ScaledJob role's "
+            f"secretsmanager:GetSecretValue grant and the secret's KMS key policy)"
+        )
+    if code == "DecryptionFailure":
+        return (
+            f"cannot decrypt tenant secret {secret_path} — the worker role lacks "
+            f"kms:Decrypt on the secret's KMS key"
+        )
+    detail = f"{code}: {exc}" if code else str(exc)
+    return f"failed to read tenant secret {secret_path} — {detail}"
+
+
 def main() -> int:
     queue_url = os.environ.get("QUEUE_URL")
     if not queue_url:
@@ -611,6 +685,10 @@ def main() -> int:
         pass
     _corr_pre = (_pre.get("correlation") or {}).get("correlation_id", "")
     _msg_id_pre = _pre.get("message_id", "")
+    # Issue #4030: the webhook-events row key (PK=message_id, SK=arrived_at) has
+    # to come from the pre-parse too — a parse_envelope failure needs to mark the
+    # row failed, and by definition cannot read the parsed envelope to do it.
+    _arrived_at_pre = _pre.get("arrived_at", "")
     _env_name = os.environ.get("ENVIRONMENT", os.environ.get("ENV", "dev"))
 
     bootstrap_log = BootstrapLogger(
@@ -626,6 +704,7 @@ def main() -> int:
         envelope = parse_envelope(raw_message)
     except Exception as exc:
         bootstrap_log.step_error(1, "parse_envelope", exc)
+        _fail_bootstrap_status(_msg_id_pre, _arrived_at_pre, f"malformed SQS envelope: {exc}")
         bootstrap_log.close()
         raise
     tenant_id = envelope["tenant_id"]
@@ -671,6 +750,13 @@ def main() -> int:
         )
         bootstrap_log.step_error(
             1, "parse_envelope", RuntimeError(f"invalid installation_id={installation_id}")
+        )
+        _fail_bootstrap_status(
+            message_id,
+            arrived_at,
+            f"invalid installation_id={installation_id!r} in envelope — the GitHub App "
+            "installation could not be resolved when the webhook was dispatched, so no "
+            "token can be minted for this run",
         )
         bootstrap_log.close()
         try:
@@ -765,14 +851,25 @@ def main() -> int:
         app_id = ""
         private_key = ""
     else:
-        bootstrap_log.step_start(2, "vault_fetch", secret=f"tenants/{tenant_id}/github-app")
+        _secret_rel_path = f"tenants/{tenant_id}/github-app"
+        bootstrap_log.step_start(2, "vault_fetch", secret=_secret_rel_path)
         try:
-            vault = VaultClient(region=os.environ.get("AWS_REGION", "us-east-1"))
-            app_creds = vault.get_secret(f"tenants/{tenant_id}/github-app")
+            # Issue #4030: pass the pod's ENVIRONMENT through. VaultClient
+            # defaults its prefix from ADP_ENV, which is set nowhere in the
+            # ScaledJob pod spec — so it silently resolved adp/dev/... in every
+            # environment. Benign in dev, wrong everywhere else, and it would
+            # have made the repair hint below name a secret we never tried.
+            vault = VaultClient(region=os.environ.get("AWS_REGION", "us-east-1"), env=_env_name)
+            app_creds = vault.get_secret(_secret_rel_path)
             app_id = app_creds["app_id"]
             private_key = app_creds["private_key"]
         except Exception as exc:
             bootstrap_log.step_error(2, "vault_fetch", exc)
+            _fail_bootstrap_status(
+                message_id,
+                arrived_at,
+                _describe_vault_fetch_failure(exc, f"adp/{_env_name}/{_secret_rel_path}"),
+            )
             bootstrap_log.close()
             raise
         bootstrap_log.step_success(2, "vault_fetch", app_id=app_id)
@@ -783,6 +880,13 @@ def main() -> int:
             token = mint_installation_token(str(app_id), private_key, installation_id)
         except Exception as exc:
             bootstrap_log.step_error(3, "mint_token", exc)
+            _fail_bootstrap_status(
+                message_id,
+                arrived_at,
+                f"could not mint a GitHub installation token for app_id={app_id} "
+                f"installation_id={installation_id} — the App may be uninstalled, or its "
+                f"stored credentials may not match the installation: {exc}",
+            )
             bootstrap_log.close()
             raise
         bootstrap_log.step_success(3, "mint_token")
@@ -933,6 +1037,12 @@ def main() -> int:
         run_cmd(["git", "clone", "--depth=20", clone_url, str(WORK_DIR)])
     except Exception as exc:
         bootstrap_log.step_error(5, "clone", exc)
+        _fail_bootstrap_status(
+            message_id,
+            arrived_at,
+            f"could not clone {repo} — check that the GitHub App installation grants "
+            f"Contents access to this repository: {exc}",
+        )
         bootstrap_log.close()
         raise
     bootstrap_log.step_success(5, "clone", target=str(WORK_DIR))
@@ -1065,6 +1175,10 @@ def main() -> int:
         logger.info("WIP branch %s created; sha=%s", branch_name, wip_sha[:7])
     except Exception as exc:
         bootstrap_log.step_error(7, "wip_branch", exc)
+        # Issue #4030 deliberately does NOT write status=failed here. Unlike the
+        # other bootstrap error exits this one does not re-raise: it falls back
+        # to the default-branch sha and the run continues to in_progress. Marking
+        # the row failed would be a lie, and would be overwritten moments later.
         logger.warning("WIP branch creation failed (non-fatal): %s", exc)
         # Fall back to default-branch HEAD sha for the Check Run
         try:

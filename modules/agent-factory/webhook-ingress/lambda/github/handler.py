@@ -120,8 +120,25 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
     The same guard is applied to the reverse-lookup ``org_installation`` row
     (#2336).
 
+    **Partial writes (#4030).** The forward ``github_installation_id`` row is
+    what dispatch routes on, so the two writes are not equivalent and their
+    failures must not be handled the same way:
+
+      * **Forward write fails** (or anything before it) → return ``None``.
+        Nothing routes to this installation, so the caller must not treat it as
+        registered.
+      * **Reverse write fails** → log ERROR, emit ``AutoRegister.PartialWrite``,
+        and still return the tenant. The mapping is live and usable; only
+        ``adp-trigger`` resolution is degraded (#3860).
+
+    Previously a single ``except`` wrapped both writes, so a reverse-row failure
+    returned ``None`` *after* the forward row was already persisted. That made
+    the caller skip downstream provisioning forever: every later webhook
+    resolves successfully, so the ``unknown_installation`` self-heal branch
+    never fires again. That is the state the SOPHOS PoV hit.
+
     Returns the tenant/org_id owning the installation, or None if we couldn't
-    determine a known tenant.
+    determine a known tenant / never persisted a routable mapping.
     """
     if not org_login:
         return None
@@ -233,26 +250,50 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
         else:
             table.put_item(Item=forward_item)
 
+        # The forward row is now persisted, so the mapping is live: dispatch
+        # reads it and routes on it. From here on a failure is PARTIAL, not
+        # total — see the "Partial writes" note in the docstring. Issue #4030.
+        #
         # Issue #2336: Write reverse-lookup row (org_id → installation_id) so
         # EventBridge/agent-trigger handlers can resolve a real installation_id
         # without calling the GitHub API. Guard it the same way: never clobber a
         # Postgres-owned reverse row.
-        reverse_existing = table.get_item(
-            Key={
-                "identity_type": "org_installation",
-                "identity_value": tenant_id,
-            }
-        ).get("Item")
-        if reverse_existing is None or reverse_existing.get("auto_registered"):
-            table.put_item(
-                Item={
+        try:
+            reverse_existing = table.get_item(
+                Key={
                     "identity_type": "org_installation",
                     "identity_value": tenant_id,
-                    "installation_id": installation_id,
-                    "updated_at": now,
-                    "auto_registered": True,
                 }
+            ).get("Item")
+            if reverse_existing is None or reverse_existing.get("auto_registered"):
+                table.put_item(
+                    Item={
+                        "identity_type": "org_installation",
+                        "identity_value": tenant_id,
+                        "installation_id": installation_id,
+                        "updated_at": now,
+                        "auto_registered": True,
+                    }
+                )
+        except Exception as rev_exc:  # noqa: BLE001
+            # Issue #4030: do NOT swallow this into a None return. The forward
+            # row is already written, so the tenant genuinely routes — dropping
+            # it here is what left SOPHOS with a mapping whose downstream
+            # provisioning never ran, permanently (all later events resolve, so
+            # the caller's `unknown_installation` self-heal branch never fires
+            # again). #3860 documents forward-row-only as degraded-but-usable:
+            # reverse-row absence breaks `adp-trigger`, not webhook routing.
+            logger.error(
+                "AutoRegister.PartialWrite: installation_id=%d → tenant=%s forward row "
+                "WRITTEN but reverse (org_installation) row failed — %s. Webhook routing "
+                "works; agent-trigger resolution for this org will not until healed "
+                "(see #3453 reconcile).",
+                installation_id,
+                tenant_id,
+                rev_exc,
             )
+            _emit_metric("AutoRegister.PartialWrite")
+            return tenant_id
 
         logger.info(
             "Auto-registered installation_id=%d → tenant=%s (forward + reverse)",
@@ -261,6 +302,10 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
         )
         return tenant_id
     except Exception as exc:  # noqa: BLE001
+        # Reaching here means we never persisted a usable forward row (read,
+        # gateway resolve, or the forward put_item itself failed). Returning
+        # None is correct: the caller must NOT treat this installation as
+        # registered, because nothing routes to it. Issue #4030.
         logger.warning("Failed to auto-register installation_id=%d: %s", installation_id, exc)
         return None
 
@@ -332,9 +377,19 @@ def _auto_provision_tenant_github_app_secret(tenant_id: str, installation_id: in
     Reads platform App credentials from the module's adp-agent-platform-* secrets,
     composes the JSON the worker pod expects, writes to adp/<env>/tenants/<tenant>/github-app.
 
-    Failures are logged and swallowed — auto-register's DDB write has already
-    succeeded; first-task crash is recoverable manually. Emits CloudWatch metric
-    on failure for operator visibility.
+    Failures are logged and swallowed, and emit a CloudWatch metric for operator
+    visibility.
+
+    Issue #4030 — a caveat on that swallow: "recoverable manually" was doing a
+    lot of work in the original note here. A tenant whose mapping exists but
+    whose secret does not is NOT self-healing: every worker pod dies at
+    bootstrap ``vault_fetch``, and because this seeder only runs on a *fresh*
+    registration, nothing retries it. Recovery is a human copying a secret by
+    hand. Retrying the seed on later installation events is deliberately NOT
+    done here — with the unconditional ``org_login`` fallback above it would
+    copy the platform App key for any org that installs the App. It returns as a
+    follow-up once #2724 slice B lands a real tenant-existence gate. The
+    systemic heal is #3453.
     """
     sm = _get_sm_client()
     env = os.environ.get("ENVIRONMENT", "dev")
