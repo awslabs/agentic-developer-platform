@@ -9,7 +9,10 @@ data/versioning model the monitoring (#1140) and upgrade (#1141) pillars build o
 **Scope of this doc:** the API-first contract, the multi-tenant data model, the
 version model, progress streaming, and how all of it composes with pipelines
 that **already exist** today. It does *not* re-specify the per-phase verification
-checks — those live in [`phase-verification.md`](./phase-verification.md).
+checks. Those live in code — `modules/platform-deploy-mgmt/platform_deploy_mgmt/checks/`
+(Phase 1 implemented today) — plus the per-phase `Verify` blocks in
+[`deploy-quickstart.md`](./deploy-quickstart.md). A consolidated whole-lifecycle
+check spec is tracked by #1138.
 
 ---
 
@@ -692,7 +695,8 @@ The run history (`deployment_runs` ordered by `started_at`, each with
   #1137/#1138 (phase checks), #1139 (orchestrator rules), #1140 (monitor),
   #1141 (upgrade), #1142 (module + admin SPA), #1143 (one-click SPA), #1125
   (GitHub App orchestration).
-- [`phase-verification.md`](./phase-verification.md) — per-phase check spec.
+- `modules/platform-deploy-mgmt/platform_deploy_mgmt/checks/` — per-phase checks as
+  code (Phase 1 today); consolidated spec tracked by #1138.
 - Connect-AWS: `modules/gateway/src/auth/aws_connect_routes.py`, `ConnectAws.tsx` (#562).
 - Spawn + cross-account assume: `.github/workflows/spawn-deploy-instance.yml`,
   `.github/actions/load-deploy-config`, `platform/scripts/assume-customer-creds.py`.

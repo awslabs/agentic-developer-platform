@@ -723,8 +723,11 @@ Install the App on the repo(s) you'll trigger agents from (the UI flow prompts
 for this; for CLI use `https://github.com/apps/<app-slug>/installations/new` —
 repo-admin only).
 
-**Verify:** comment `@agent-developer say hello` on an issue in an installed repo
-→ a worker pod spawns (`kubectl get pods -n adp-agents`) and the agent replies.
+**Verify:** run `./platform/scripts/verify-github-wiring.sh --installation-id <id>
+--repo <owner/name> --issue <n>` — it checks the secrets and identity rows, then
+comments `@agent-developer say hello` and asserts a **reply** arrives. A pod
+spawning is not sufficient (it spawns and crash-loops when the per-tenant secret
+is missing); see [Phase 9 → Verify](#verify-1) for what each check proves.
 
 ### End-to-end checklist — full ordered script sequence (working agent)
 The complete stage-by-stage path, each step backed by a re-runnable script:
@@ -828,11 +831,53 @@ same run. See the script's `--help` for all non-interactive flags (`--app-id`,
 
 ### Verify
 
-After either path, confirm the App is wired:
+**Run this after installing the App on at least one repo** — several of the
+artifacts it checks are created by the `installation` webhook, so it will
+legitimately fail if run before the install completes.
+
 ```bash
-aws secretsmanager get-secret-value --secret-id adp/gh-app-id --query SecretString --output text   # non-empty App ID
-# Then: install the App on a repo and post @agent-developer in an issue → webhook fires
+# Wiring only (read-only, no side effects):
+./platform/scripts/verify-github-wiring.sh --installation-id <id>
+
+# Wiring + a real end-to-end round trip (posts a comment, spends Bedrock tokens):
+./platform/scripts/verify-github-wiring.sh --installation-id <id> \
+  --repo <owner/name> --issue <n>
 ```
+
+Get `<id>` from <https://github.com/settings/installations> (or the URL you
+landed on after installing). Exit 0 = pass, 1 = a hard check failed.
+
+What it asserts, and why each one matters:
+
+| # | Check | Severity |
+|---|---|---|
+| 1 | Platform App secrets `adp/<env>/github-app/adp-agent-platform-{id,key}` exist, App ID numeric, key PEM-armoured | **HARD** |
+| 2 | Forward identity row `github_installation_id` → `org_id` in `adp-<env>-identity-index` (also *derives* the tenant ID for step 4) | **HARD** |
+| 3 | Reverse row `org_installation` → `installation_id` | WARN |
+| 4 | Per-tenant secret `adp/<env>/tenants/<tenant>/github-app` exists **and parses** (`app_id` + PEM `private_key`) | **HARD** |
+| 5 | `@agent-developer say hello` receives an actual **reply comment** | HARD when run |
+
+> **Why the script instead of a couple of inline commands.** A deployment can
+> pass "the App ID secret is non-empty" and "a worker pod spawned" while dispatch
+> is 100% broken — that is exactly what happened in the SOPHOS PoV. The worker
+> hard-requires the **per-tenant** secret (step 4) with no fallback; when it is
+> missing, pods spawn, die in bootstrap, and crash-loop. Step 5 asserts a reply
+> *landed*, because a pod spawning proves only that the webhook path works, not
+> that the agent can run. Step 5 also ignores the `<!-- adp-run: -->` "started"
+> comment the worker posts before it does any real work — otherwise a Phase 8
+> Bedrock failure (the gotcha immediately above) would still look like a pass.
+
+> **Non-dev environments:** the block is pinned to `dev` on purpose. The worker's
+> vault client keys the secret path off `ADP_ENV`, which is currently injected
+> nowhere and therefore resolves `dev` regardless of the deployment's real
+> environment. On a non-dev deploy, verify against the path the worker *actually*
+> reads. Tracked separately as a code fix (#4042).
+
+On failure the script prints the discriminator log searches that tell the failure
+modes apart — the durable webhook-Lambda queries in
+`/aws/lambda/adp-<env>-github-webhook` (`Auto-registered installation_id=`,
+`Auto-provision:`) plus the `kubectl logs -n adp-agents` search for
+`vault_fetch`, which must be run **while the pod still exists**.
 
 ## Phase 10 — End-to-end smoke test
 
