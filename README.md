@@ -15,7 +15,9 @@ Concretely: you bring the agent's job, and ADP handles everything around it — 
   - **@agent-reviewer** — the quality gate: reviews for correctness/security, blocks on real issues
   - **@agent-operations** — deploys, monitors, and maintains infrastructure
 
-  Domains add their own (e.g. **@malware-analysis-agent** in the cyber pack), and new personas are a five-file declaration — no platform changes.
+  Domains add their own (e.g. **@agent-malware-analysis-agent** in the cyber pack), and new personas are a five-file declaration — no platform changes.
+
+  The list above is a highlight, not the full set. **See [`docs/agent-catalogue.md`](docs/agent-catalogue.md) for the authoritative catalogue** of all 10 personas with their exact trigger strings.
 - **Code intelligence** — one MCP endpoint giving agents semantic search, code search, wikis, and persistent memory across your codebases.
 - **A shared harness** — tool routing, jobs, events, artifacts, and human-in-the-loop approvals, so every agent gets the same plumbing instead of reinventing it. *(In progress — see `ARCHITECTURE.md`.)*
 

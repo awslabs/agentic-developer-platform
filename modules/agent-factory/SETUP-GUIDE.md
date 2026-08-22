@@ -48,6 +48,11 @@ You need three apps:
 | PM app | @agent-pm | `adp/gh-app-pm-id`, `adp/gh-app-pm-key` |
 | OPS app | @agent-reviewer, @agent-operations | `adp/gh-app-ops-id`, `adp/gh-app-ops-key` |
 
+> This table is a credential grouping, not a persona list — it maps the three
+> GitHub Apps to the personas that share each one's rate limit. For the full set
+> of personas and their trigger strings, see
+> [`docs/agent-catalogue.md`](../../docs/agent-catalogue.md).
+
 For each app, go to **GitHub Org Settings → Developer Settings → GitHub Apps → New GitHub App**:
 
 - Homepage URL: `https://github.com/aws-e/adp`

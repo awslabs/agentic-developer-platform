@@ -4,6 +4,13 @@ on:
   pull_request:
     paths:
       - 'modules/agent-factory/webhook-ingress/**'
+      # Issue #4021: the persona catalogue is guarded by a parity test in
+      # lambda/common/tests/test_persona_catalogue_parity.py. Without this path
+      # a docs-only PR editing the catalogue runs no CI at all, and the drift
+      # the gate exists to catch sails through green. Deliberately NOT added to
+      # webhook-ingress-deploy.yml — a docs-only commit must not trigger a
+      # Lambda deploy.
+      - 'docs/agent-catalogue.md'
     branches:
       - main
 
