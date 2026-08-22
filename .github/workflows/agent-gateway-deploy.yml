@@ -32,7 +32,7 @@ jobs:
     outputs:
       lambdas: ${{ steps.filter.outputs.lambdas }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
       - id: filter
@@ -58,13 +58,13 @@ jobs:
     # Runner has AWS creds via IRSA (adp-dev-agent-runner-role).
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.9.0'
           terraform_wrapper: false
@@ -127,7 +127,7 @@ jobs:
 #   name: Build Python Worker Image and Update ScaledJob
 #   runs-on: arc-runner-org
 #   steps:
-#     - uses: actions/checkout@v4
+#     - uses: actions/checkout@v7
 #     - name: Package source and upload to S3
 #       run: |
 #         bash platform/scripts/zip-source.sh . /tmp/adp-source.zip

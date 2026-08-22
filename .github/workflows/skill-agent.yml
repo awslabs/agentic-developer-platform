@@ -65,7 +65,7 @@ jobs:
 
       - name: Generate GitHub App Token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ steps.aws-secrets.outputs.app_id }}
           private-key: ${{ steps.aws-secrets.outputs.app_key }}
@@ -80,14 +80,14 @@ jobs:
             "https://api.github.com/repos/${{ env.TARGET_REPO }}/issues/${{ env.ISSUE_NUMBER }}/labels/skill-agent" || true
 
       - name: Checkout ADP repository (for agent code)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ vars.AGENT_SOURCE_REPO || 'aws-e/adp' }}
           token: ${{ steps.app-token.outputs.token }}
           path: adp-agent-src
 
       - name: Checkout target repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ env.TARGET_REPO }}
           token: ${{ steps.app-token.outputs.token }}
@@ -137,7 +137,7 @@ jobs:
           aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" || true
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'

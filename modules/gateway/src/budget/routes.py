@@ -10,17 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.dependencies import get_current_user  # Issue #133: Real Cognito JWT auth
 from src.shared.database import get_db
-from src.shared.exceptions import ValidationError
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.budget import (
-    BudgetCreateRequest,
     BudgetResponse,
     BudgetStatusResponse,
-    BudgetUpdateRequest,
     BudgetUsageResponse,
     CostCalculationRequest,
     CostCalculationResponse,
-    CostRecordRequest,
     EntityType,
     PeriodType,
 )
@@ -41,22 +37,26 @@ def get_budget_service(session: AsyncSession = Depends(get_db)) -> BudgetService
 # validates Cognito JWT tokens and extracts real user context from claims.
 
 
-# Budget Management Routes
+# Issue #3988 (finding f-d7c2e66a): the four mutating routes that used to live on
+# this router — POST "/" (create), PUT "/{budget_id}" (update),
+# DELETE "/{budget_id}" (delete) and POST "/record-cost" — have been REMOVED.
+#
+# They depended only on get_current_user with no role gate, so any authenticated
+# org member could delete their org's spend caps or write arbitrary rows into the
+# cost ledger. They also had no legitimate caller:
+#   * the SPA mutates budgets exclusively through the already-gated admin surface
+#     /admin/organizations/{org_id}/budgets (frontend/src/services/budget.ts), and
+#   * internal metering calls BudgetService.record_cost() in-process from
+#     record_usage() (budget/service.py), never over HTTP.
+# Removing the routes eliminates the vulnerability class outright rather than
+# gating it. The BudgetService methods themselves are unchanged and still back
+# the admin routes.
+#
+# Read-only routes below are retained, as is POST /calculate-cost (a pure
+# pricing calculation with no side effects and no tenant data).
 
 
-@router.post("/", response_model=BudgetResponse, status_code=status.HTTP_201_CREATED)
-async def create_budget(
-    request: BudgetCreateRequest,
-    current_user: TokenContext = Depends(get_current_user),
-    budget_service: BudgetService = Depends(get_budget_service),
-):
-    """Create a new budget configuration."""
-    try:
-        return await budget_service.create_budget(request, current_user.org_id)
-    except ValidationError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+# Budget Read Routes
 
 
 @router.get("/{budget_id}", response_model=BudgetResponse)
@@ -81,39 +81,6 @@ async def get_budgets_for_entity(
 ):
     """Get all budget configurations for a specific entity."""
     return await budget_service.get_budgets_for_entity(entity_type, entity_id, current_user.org_id)
-
-
-@router.put("/{budget_id}", response_model=BudgetResponse)
-async def update_budget(
-    budget_id: str,
-    request: BudgetUpdateRequest,
-    current_user: TokenContext = Depends(get_current_user),
-    budget_service: BudgetService = Depends(get_budget_service),
-):
-    """Update an existing budget configuration."""
-    try:
-        budget = await budget_service.update_budget(budget_id, request, current_user.org_id)
-        if not budget:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Budget not found")
-        return budget
-    except HTTPException:
-        raise
-    except ValidationError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
-
-
-@router.delete("/{budget_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_budget(
-    budget_id: str,
-    current_user: TokenContext = Depends(get_current_user),
-    budget_service: BudgetService = Depends(get_budget_service),
-):
-    """Delete a budget configuration."""
-    success = await budget_service.delete_budget(budget_id, current_user.org_id)
-    if not success:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Budget not found")
 
 
 # Budget Status and Usage Routes
@@ -163,19 +130,6 @@ async def calculate_cost(
 ):
     """Calculate the cost for a given model and token usage."""
     return await budget_service.calculate_cost(request)
-
-
-@router.post("/record-cost", status_code=status.HTTP_204_NO_CONTENT)
-async def record_cost(
-    request: CostRecordRequest,
-    current_user: TokenContext = Depends(get_current_user),
-    budget_service: BudgetService = Depends(get_budget_service),
-):
-    """Record a cost entry against entity budgets."""
-    try:
-        await budget_service.record_cost(request, current_user.org_id)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
 # Admin and Reporting Routes

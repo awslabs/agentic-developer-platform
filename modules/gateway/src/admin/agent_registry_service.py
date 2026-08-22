@@ -27,6 +27,7 @@ from .agent_registry_schemas import (
     AgentRegistryListResponse,
     AgentRegistryResponse,
     AgentRegistryUpdateRequest,
+    is_reserved_role_arn,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,16 @@ class AgentRegistryService:
         self.org_team_index = "by-org-team"
         self.owner_index = "by-owner"
 
+    @staticmethod
+    def _reject_reserved_role_arn(role_arn: str | None) -> None:
+        """Raise ValidationError if *role_arn* names a platform-reserved role.
+
+        Issue #3989: see ``is_reserved_role_arn`` for why this is unconditional.
+        """
+        if role_arn and is_reserved_role_arn(role_arn):
+            logger.warning("agent_registry_reserved_role_arn_rejected role_arn=%s", role_arn)
+            raise ValidationError(f"role_arn '{role_arn}' names a platform-reserved IAM role and cannot be registered as an agent")
+
     async def create_agent(self, request: AgentRegistryCreateRequest) -> AgentRegistryResponse:
         """
         Create a new agent in the registry.
@@ -90,6 +101,14 @@ class AgentRegistryService:
             ValidationError: If request is invalid
         """
         logger.info(f"Creating agent: {request.agent_name} for org: {request.org_id}")
+
+        # Issue #3989: reject platform-reserved role names. Enforced here rather
+        # than in the routes because this method is the single choke point for
+        # every registry write (both /admin/registry/agents and
+        # /admin/agents/onboard flow through it), and it applies regardless of
+        # caller privilege — even a platform admin has no reason to bind a
+        # platform-owned role to a tenant agent identity.
+        self._reject_reserved_role_arn(request.role_arn)
 
         # Check if role_arn already exists (must be unique)
         existing = await self.get_agent_by_role(request.role_arn)
@@ -284,6 +303,7 @@ class AgentRegistryService:
         owner: str | None = None,
         page_size: int = 50,
         last_key: str | None = None,
+        allow_scan: bool = False,
     ) -> AgentRegistryListResponse:
         """
         List agents with optional filtering and pagination.
@@ -294,9 +314,18 @@ class AgentRegistryService:
             owner: Filter by owner (uses by-owner GSI)
             page_size: Maximum items per page
             last_key: Pagination token from previous response
+            allow_scan: Opt-in to the unfiltered cross-tenant scan. Issue #3988:
+                callers MUST pass allow_scan=True explicitly to reach _scan_all,
+                which returns every tenant's agents. Without it, an unfiltered
+                call raises instead of silently leaking cross-tenant data — the
+                original finding was an un-awaited is_platform_admin() that let
+                org_id fall through as None.
 
         Returns:
             AgentRegistryListResponse: List of agents with pagination
+
+        Raises:
+            ValidationError: If no filter is supplied and allow_scan is False
         """
         # Decode pagination token if provided
         exclusive_start_key = None
@@ -316,9 +345,14 @@ class AgentRegistryService:
             elif owner:
                 # Query by owner (GSI)
                 response = await self._query_by_owner(owner, page_size, exclusive_start_key)
-            else:
-                # Scan all (not recommended for large tables)
+            elif allow_scan:
+                # Scan all (not recommended for large tables). Issue #3988:
+                # cross-tenant — reachable only via explicit allow_scan opt-in.
                 response = await self._scan_all(page_size, exclusive_start_key)
+            else:
+                raise ValidationError(
+                    "A filter (org_id, team_id or owner) is required to list agents",
+                )
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
@@ -357,6 +391,10 @@ class AgentRegistryService:
             NotFoundError: If agent not found
             ConflictError: If new role_arn already exists
         """
+        # Issue #3989: an update that repoints role_arn mints identity exactly as
+        # a create does, so the reserved-prefix denylist applies here too.
+        self._reject_reserved_role_arn(request.role_arn)
+
         # Verify agent exists
         existing = await self.get_agent(agent_id)
 

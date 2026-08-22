@@ -50,28 +50,29 @@ async def get_tenant_config(
 @router.get("/admin/audit-entries")
 async def get_audit_entries(
     provenance_id: str = Query(..., description="Filter audit entries by provenance_id (stored in details JSON)"),
-    org_id: str | None = Query(default=None, description="Optional tenant/org_id filter — when provided, only returns entries for this org"),
+    org_id: str = Query(..., min_length=1, description="Tenant/org_id to scope results to (required)"),
     limit: int = Query(default=100, ge=1, le=500, description="Maximum entries to return"),
     _: None = Depends(verify_internal_or_irsa),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Query security_audit_logs filtered by provenance_id.
+    """Query security_audit_logs filtered by provenance_id, scoped to one tenant.
 
     The adversarial E2E script collects audit entries for a specific agent run
     (identified by provenance_id) to assert the credential boundary held.
 
     provenance_id is stored in the details JSON column by credential endpoints.
-    org_id is optional — when provided, scopes results to a single tenant to
-    prevent cross-tenant evidence leaking into harness artifacts.
+
+    Issue #3985: org_id is REQUIRED. It was previously optional, and omitting it
+    returned audit rows across every tenant — so a single caller on this endpoint
+    could read other orgs' security audit trail, and cross-tenant evidence could
+    leak into harness artifacts. There is no legitimate caller that wants
+    unscoped results; the E2E harness always knows its own sandbox tenant.
     """
-    # Query audit logs where details->provenance_id matches.
+    # Query audit logs where details->provenance_id matches, always scoped to
+    # the requested tenant.
     # SQLAlchemy JSON column access varies by dialect; use the generic JSON
     # path accessor which works on PostgreSQL (->>) and SQLite (json_extract).
-    stmt = select(AuditLog).where(AuditLog.details["provenance_id"].as_string() == provenance_id)
-
-    # Optional tenant scoping — prevents cross-tenant audit evidence ingestion.
-    if org_id is not None:
-        stmt = stmt.where(AuditLog.org_id == org_id)
+    stmt = select(AuditLog).where(AuditLog.details["provenance_id"].as_string() == provenance_id).where(AuditLog.org_id == org_id)
 
     stmt = stmt.order_by(AuditLog.created_at.desc()).limit(limit)
     result = await db.execute(stmt)

@@ -1250,6 +1250,7 @@ module "github_auth_broker" {
   frontend_url            = "https://${module.cloudfront.distribution_domain_name}"
   allowlist_mode          = var.github_auth_allowlist_mode
   allowed_orgs            = var.github_auth_allowed_orgs
+  allow_open_signup       = var.github_auth_allow_open_signup
   github_token_secret_arn = var.github_auth_token_secret_arn
   lambda_artifact_bucket  = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
 

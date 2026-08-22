@@ -21,11 +21,29 @@ class TestAccessControl:
         assert dept_id is None
 
     @pytest.mark.asyncio
-    async def test_get_user_role_org_admin(self, access_control: AccessControl, org_admin_context: TokenContext):
-        """Test that org admin role is correctly identified."""
+    async def test_get_user_role_org_admin(self, access_control: AccessControl, org_admin_context: TokenContext, org_admin_membership):
+        """Test that org admin role is correctly identified.
+
+        Issue #3987 PR 2: authority comes from the ``tenant_memberships`` row, so
+        this now takes the ``org_admin_membership`` fixture. Previously it passed
+        on the no-row ORG_ADMIN fallback, which no longer exists by default.
+        """
         role, org_id, dept_id = await access_control.get_user_role(org_admin_context)
 
         assert role == AdminRole.ORG_ADMIN
+        assert org_id == "org-001"
+        assert dept_id is None
+
+    @pytest.mark.asyncio
+    async def test_get_user_role_no_membership_is_member(self, access_control: AccessControl, org_admin_context: TokenContext):
+        """Issue #3987 PR 2: the same token with NO membership row is a MEMBER.
+
+        The counterpart to the test above, and the whole point of the flip: an
+        org-admin-looking token confers no org-admin authority on its own.
+        """
+        role, org_id, dept_id = await access_control.get_user_role(org_admin_context)
+
+        assert role == AdminRole.MEMBER
         assert org_id == "org-001"
         assert dept_id is None
 
@@ -85,8 +103,13 @@ class TestAccessControl:
         assert "org:create" in str(exc_info.value.message)
 
     @pytest.mark.asyncio
-    async def test_check_permission_scope_violation(self, access_control: AccessControl, org_admin_context: TokenContext):
-        """Test permission check fails when accessing another org's resources."""
+    async def test_check_permission_scope_violation(self, access_control: AccessControl, org_admin_context: TokenContext, org_admin_membership):
+        """Test permission check fails when accessing another org's resources.
+
+        Issue #3987 PR 2: needs the membership row so the caller actually HOLDS
+        ORG_READ — otherwise the denial would come from the permission check
+        rather than the scope check this test is pinning.
+        """
         with pytest.raises(InvalidScopeError):
             await access_control.check_permission(
                 org_admin_context,
@@ -112,8 +135,12 @@ class TestAccessControl:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_validate_resource_access_org_admin(self, access_control: AccessControl, org_admin_context: TokenContext):
-        """Test org admin can only access own org's resources."""
+    async def test_validate_resource_access_org_admin(self, access_control: AccessControl, org_admin_context: TokenContext, org_admin_membership):
+        """Test org admin can only access own org's resources.
+
+        Issue #3987 PR 2: membership row required for the caller to be an org
+        admin at all.
+        """
         # Can access own org
         result = await access_control.validate_resource_access(
             org_admin_context,
@@ -159,8 +186,17 @@ class TestAccessControl:
         assert await access_control.is_platform_admin(org_admin_context) is False
 
     @pytest.mark.asyncio
-    async def test_is_org_admin(self, access_control: AccessControl, platform_admin_context: TokenContext, org_admin_context: TokenContext):
-        """Test is_org_admin helper."""
+    async def test_is_org_admin(
+        self,
+        access_control: AccessControl,
+        platform_admin_context: TokenContext,
+        org_admin_context: TokenContext,
+        org_admin_membership,
+    ):
+        """Test is_org_admin helper.
+
+        Issue #3987 PR 2: membership row required for the org-admin assertions.
+        """
         # Platform admin is admin for any org
         assert await access_control.is_org_admin(platform_admin_context, "org-001") is True
         assert await access_control.is_org_admin(platform_admin_context, "org-002") is True
@@ -170,16 +206,21 @@ class TestAccessControl:
         assert await access_control.is_org_admin(org_admin_context, "org-002") is False
 
     @pytest.mark.asyncio
-    async def test_role_cache(self, access_control: AccessControl, platform_admin_context: TokenContext):
-        """Test that role lookups are cached."""
-        # First call
-        role1, _, _ = await access_control.get_user_role(platform_admin_context)
+    async def test_role_cache(self, access_control: AccessControl, org_admin_context: TokenContext):
+        """Test that role lookups are cached.
 
-        # Should be cached
-        assert platform_admin_context.user_id in access_control._role_cache
+        Issue #3987: the cache is keyed by (user_id, org_id) so a role resolved
+        in one tenant is never served for another. Platform admins resolve from
+        the token claim alone and are deliberately not cached, so this exercises
+        a non-platform caller.
+        """
+        role1, _, _ = await access_control.get_user_role(org_admin_context)
+
+        cache_key = (org_admin_context.user_id, org_admin_context.org_id)
+        assert cache_key in access_control._role_cache
 
         # Second call should use cache
-        role2, _, _ = await access_control.get_user_role(platform_admin_context)
+        role2, _, _ = await access_control.get_user_role(org_admin_context)
 
         assert role1 == role2
 
@@ -208,7 +249,16 @@ class TestRBACNoOrgRejection:
 
     @pytest.mark.asyncio
     async def test_non_admin_no_org_gets_403_on_org_read(self, access_control: AccessControl):
-        """Non-admin with no org_id should be rejected for ORG_READ."""
+        """Non-admin with no org_id should be rejected for ORG_READ.
+
+        Issue #60's contract is the 403 itself (not an empty 200). Issue #3987
+        PR 2 changed which guard produces it: a no-membership caller now resolves
+        to MEMBER, which lacks ORG_READ outright, so the denial comes from the
+        permission check before the no-org scope check is reached. Asserting the
+        403 rather than the old message keeps this pinning #60's contract; the
+        no-org scope guard itself is pinned by
+        ``test_org_scoped_permission_without_org_scope_is_denied`` below.
+        """
         from datetime import UTC, datetime, timedelta
 
         no_org_context = TokenContext(
@@ -220,6 +270,35 @@ class TestRBACNoOrgRejection:
             is_admin=False,
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
+        with pytest.raises(AccessDeniedError) as exc_info:
+            await access_control.check_permission(no_org_context, Permission.ORG_READ)
+
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.details["user_role"] == AdminRole.MEMBER.value
+
+    @pytest.mark.asyncio
+    async def test_org_scoped_permission_without_org_scope_is_denied(self, access_control: AccessControl):
+        """Issue #60's no-org scope guard, pinned directly.
+
+        A role that DOES hold an org-scoped permission but resolves to no org
+        scope must still be denied — the silent-RBAC-bypass case #60 fixed. After
+        #3987 PR 2 no fallback produces that combination on its own, so the
+        resolved role is seeded into the cache (same approach as
+        test_role_assignment_ceiling.py) to reach the branch.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        no_org_context = TokenContext(
+            user_id="orphan-admin-001",
+            org_id="",
+            team_id="",
+            department_id="",
+            account_type="human",
+            is_admin=False,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        access_control._cache_put((no_org_context.user_id, no_org_context.org_id), (AdminRole.ORG_ADMIN, "", None))
+
         with pytest.raises(AccessDeniedError) as exc_info:
             await access_control.check_permission(no_org_context, Permission.ORG_READ)
 
@@ -249,8 +328,14 @@ class TestRBACNoOrgRejection:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_non_admin_with_org_allowed(self, access_control: AccessControl, org_admin_context: TokenContext):
-        """Non-admin with a valid org_id should pass ORG_READ."""
+    async def test_non_admin_with_org_allowed(self, access_control: AccessControl, org_admin_context: TokenContext, org_admin_membership):
+        """Non-admin with a valid org_id should pass ORG_READ.
+
+        Issue #3987 PR 2: an org_id alone is no longer sufficient — ORG_READ comes
+        from the org-admin membership row. Seeded here so this keeps testing what
+        it was written to test (a valid org scope is not rejected) rather than
+        passing on the removed no-row fallback.
+        """
         result = await access_control.check_permission(org_admin_context, Permission.ORG_READ)
         assert result is True
 

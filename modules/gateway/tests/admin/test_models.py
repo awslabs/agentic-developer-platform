@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.admin.models import AdminRole, AuditLog, RequestLog, UserRole
+from src.admin.models import AdminRole, AuditLog, RequestLog
 from src.shared.models.base import Base, TenantMixin
 
 
@@ -96,114 +96,6 @@ class TestAdminRoleModel:
         role = AdminRole(id="test", name="test")
         # The default factory should produce an empty list
         assert role.permissions is not None or hasattr(AdminRole.permissions, "default")
-
-
-class TestUserRoleModel:
-    """Tests for UserRole SQLAlchemy model."""
-
-    def test_tablename(self):
-        """Test UserRole has correct table name."""
-        assert UserRole.__tablename__ == "user_roles"
-
-    def test_inherits_from_base(self):
-        """Test UserRole inherits from Base."""
-        assert issubclass(UserRole, Base)
-
-    def test_primary_key(self):
-        """Test UserRole has id as primary key."""
-        mapper = inspect(UserRole)
-        pk_columns = [col.name for col in mapper.primary_key]
-        assert "id" in pk_columns
-
-    def test_columns_exist(self):
-        """Test UserRole has all expected columns."""
-        mapper = inspect(UserRole)
-        column_names = [col.key for col in mapper.column_attrs]
-
-        assert "id" in column_names
-        assert "user_id" in column_names
-        assert "role_id" in column_names
-        assert "org_id" in column_names
-        assert "dept_id" in column_names
-        assert "created_at" in column_names
-        assert "created_by" in column_names
-
-    def test_instantiation(self):
-        """Test UserRole can be instantiated with valid data."""
-        user_role = UserRole(
-            id="ur-001",
-            user_id="user-001",
-            role_id="role-001",
-            org_id="org-001",
-            dept_id="dept-001",
-            created_by="admin-001",
-        )
-
-        assert user_role.id == "ur-001"
-        assert user_role.user_id == "user-001"
-        assert user_role.role_id == "role-001"
-        assert user_role.org_id == "org-001"
-        assert user_role.dept_id == "dept-001"
-        assert user_role.created_by == "admin-001"
-
-    def test_instantiation_minimal(self):
-        """Test UserRole can be instantiated with minimal required data."""
-        user_role = UserRole(
-            user_id="user-001",
-            role_id="role-001",
-        )
-
-        assert user_role.user_id == "user-001"
-        assert user_role.role_id == "role-001"
-        # Optional fields
-        assert user_role.org_id is None
-        assert user_role.dept_id is None
-
-    def test_user_id_is_required(self):
-        """Test UserRole user_id field is non-nullable."""
-        mapper = inspect(UserRole)
-        user_id_col = mapper.columns["user_id"]
-        assert user_id_col.nullable is False
-
-    def test_role_id_is_required(self):
-        """Test UserRole role_id field is non-nullable."""
-        mapper = inspect(UserRole)
-        role_id_col = mapper.columns["role_id"]
-        assert role_id_col.nullable is False
-
-    def test_indexed_columns(self):
-        """Test UserRole has correct indexes."""
-        mapper = inspect(UserRole)
-
-        user_id_col = mapper.columns["user_id"]
-        assert user_id_col.index is True
-
-        role_id_col = mapper.columns["role_id"]
-        assert role_id_col.index is True
-
-        org_id_col = mapper.columns["org_id"]
-        assert org_id_col.index is True
-
-        dept_id_col = mapper.columns["dept_id"]
-        assert dept_id_col.index is True
-
-    @pytest.mark.asyncio
-    async def test_create_in_database(self, db_session: AsyncSession):
-        """Test UserRole can be persisted to database."""
-        user_role = UserRole(
-            id="ur-test-001",
-            user_id="user-test-001",
-            role_id="role-test-001",
-            org_id="org-test-001",
-        )
-
-        db_session.add(user_role)
-        await db_session.commit()
-
-        await db_session.refresh(user_role)
-
-        assert user_role.id == "ur-test-001"
-        assert user_role.created_at is not None
 
 
 class TestRequestLogModel:
@@ -511,14 +403,6 @@ class TestModelStringLengths:
         mapper = inspect(AdminRole)
         id_col = mapper.columns["id"]
         assert id_col.type.length == 255
-
-    def test_user_role_id_lengths(self):
-        """Test UserRole string columns have correct max lengths."""
-        mapper = inspect(UserRole)
-
-        assert mapper.columns["id"].type.length == 255
-        assert mapper.columns["user_id"].type.length == 255
-        assert mapper.columns["role_id"].type.length == 255
 
     def test_request_log_method_length(self):
         """Test RequestLog method has max length of 10."""

@@ -163,7 +163,8 @@ class TestInstallCallbackMembership:
 
     async def test_org_install_creates_membership(self, db_session: AsyncSession, org_in_db):
         """Org install with authenticated user → membership row created with
-        role=member, joined_via=app_install."""
+        role=org_admin (#4006 — the installer must be an org admin by the
+        path's own contract), joined_via=app_install."""
         await _seed_user_and_nonce(db_session)
         gh = _mock_github_client()
 
@@ -184,7 +185,7 @@ class TestInstallCallbackMembership:
         )
         membership = (await db_session.execute(stmt)).scalar_one_or_none()
         assert membership is not None
-        assert membership.role == "member"
+        assert membership.role == "org_admin"
         assert membership.joined_via == "app_install"
         assert membership.github_org_id == "sophos-test"
 
@@ -301,7 +302,7 @@ class TestInstallCallbackMembership:
         )
         new_membership = (await db_session.execute(stmt)).scalar_one()
         assert new_membership.is_active is True
-        assert new_membership.role == "member"
+        assert new_membership.role == "org_admin"
         assert new_membership.joined_via == "app_install"
 
         # The existing membership's is_active is now False (switched away)
@@ -360,7 +361,7 @@ class TestInstallCallbackMembership:
         )
         membership = (await db_session.execute(stmt)).scalar_one_or_none()
         assert membership is not None
-        assert membership.role == "member"
+        assert membership.role == "org_admin"
 
 
 # ---------------------------------------------------------------------------

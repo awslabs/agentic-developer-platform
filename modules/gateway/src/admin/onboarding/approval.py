@@ -9,9 +9,11 @@ from __future__ import annotations
 import logging
 import os
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.identity.identity_index_writer import IdentityIndexWriter
+from src.admin.memberships import upsert_tenant_membership
 from src.shared.models.base import new_uuid, utcnow
 from src.shared.models.onboarding import Tenant, TenantAccessRequest
 from src.shared.models.organization import Department, Organization, Team, User
@@ -182,6 +184,19 @@ async def approve_request(
         request.status = "approved"
         request.decided_by = admin_sub
         request.decided_at = now
+        # Issue #4006: upsert the org-admin membership on re-approve too. Approvals
+        # that predate this fix left the admin with no membership row at all, so
+        # this branch is what heals them; the upsert is a no-op once the row is
+        # correct. Same transaction as the request-status write.
+        existing_user = await db.scalar(select(User).where(User.cognito_sub == request.cognito_sub))
+        if existing_user is not None:
+            await upsert_tenant_membership(
+                db,
+                user_id=existing_user.id,
+                tenant_id=tenant_id,
+                role="org_admin",
+                joined_via="onboarding_approval",
+            )
         await db.commit()
         # Re-sync Cognito claims in case a prior approval predated this step or
         # the attributes were cleared — cheap + idempotent. (team_id is omitted
@@ -269,6 +284,19 @@ async def approve_request(
     )
     db.add(github_identity)
 
+    # Issue #4006: the org creator's tenant_memberships row — in the SAME
+    # transaction as the User row. `tenant_memberships.role` is the authority the
+    # read side resolves org role from (#3987/#3998); without this row the admin
+    # we just created only holds authority via the legacy ORG_ADMIN fallback, and
+    # loses it entirely once that fallback flips to least-privilege.
+    await upsert_tenant_membership(
+        db,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        role="org_admin",
+        joined_via="onboarding_approval",
+    )
+
     # Mark request as approved
     request.status = "approved"
     request.decided_by = admin_sub
@@ -291,8 +319,10 @@ async def approve_request(
                 TenantMembership.user_id == user_id,
             )
             all_org_ids = list((await db.execute(all_memberships_stmt)).scalars().all())
-            # Ensure the current tenant is included (may not have a TenantMembership yet
-            # if approval creates the user but membership is created separately)
+            # Belt-and-braces: since #4006 the membership above is written in the
+            # same transaction, so the current tenant is always in this list. Kept
+            # as a cheap guard so a future refactor of the write order can't
+            # silently shrink member_org_ids.
             if tenant_id not in all_org_ids:
                 all_org_ids.append(tenant_id)
         except Exception:

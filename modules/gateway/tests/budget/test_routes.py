@@ -83,51 +83,6 @@ class TestBudgetRoutes:
     """Test suite for budget routes."""
 
     @pytest.mark.asyncio
-    async def test_create_budget_success(self, app, mock_budget_service, sample_budget_response):
-        """Test successful budget creation via API."""
-        mock_budget_service.create_budget.return_value = sample_budget_response
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.post(
-                "/budgets/",
-                json={
-                    "entity_type": "user",
-                    "entity_id": "user-123",
-                    "period_type": "monthly",
-                    "budget_amount_usd": "100.00",
-                    "enforcement_mode": "hard",
-                },
-            )
-
-        assert response.status_code == 201
-        data = response.json()
-        assert data["id"] == "budget-123"
-        assert data["entity_type"] == "user"
-        assert Decimal(str(data["budget_amount_usd"])) == Decimal("100.00")
-
-    @pytest.mark.asyncio
-    async def test_create_budget_validation_error(self, app, mock_budget_service):
-        """Test budget creation with validation error."""
-        from src.shared.exceptions import ValidationError
-
-        mock_budget_service.create_budget.side_effect = ValidationError("Budget already exists")
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.post(
-                "/budgets/",
-                json={
-                    "entity_type": "user",
-                    "entity_id": "user-123",
-                    "period_type": "monthly",
-                    "budget_amount_usd": "100.00",
-                    "enforcement_mode": "hard",
-                },
-            )
-
-        assert response.status_code == 400
-        assert "Budget already exists" in response.json()["detail"]
-
-    @pytest.mark.asyncio
     async def test_get_budget_success(self, app, mock_budget_service, sample_budget_response):
         """Test successful budget retrieval via API."""
         mock_budget_service.get_budget.return_value = sample_budget_response
@@ -163,58 +118,6 @@ class TestBudgetRoutes:
         data = response.json()
         assert len(data) == 1
         assert data[0]["id"] == "budget-123"
-
-    @pytest.mark.asyncio
-    async def test_update_budget_success(self, app, mock_budget_service, sample_budget_response):
-        """Test successful budget update via API."""
-        updated_budget = sample_budget_response.model_copy()
-        updated_budget.budget_amount_usd = Decimal("200.00")
-        mock_budget_service.update_budget.return_value = updated_budget
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.put(
-                "/budgets/budget-123",
-                json={
-                    "budget_amount_usd": "200.00",
-                    "enforcement_mode": "soft",
-                },
-            )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert Decimal(str(data["budget_amount_usd"])) == Decimal("200.00")
-
-    @pytest.mark.asyncio
-    async def test_update_budget_not_found(self, app, mock_budget_service):
-        """Test budget update when budget doesn't exist."""
-        mock_budget_service.update_budget.return_value = None
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.put("/budgets/non-existent", json={"budget_amount_usd": "200.00"})
-
-        assert response.status_code == 404
-        assert "Budget not found" in response.json()["detail"]
-
-    @pytest.mark.asyncio
-    async def test_delete_budget_success(self, app, mock_budget_service):
-        """Test successful budget deletion via API."""
-        mock_budget_service.delete_budget.return_value = True
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.delete("/budgets/budget-123")
-
-        assert response.status_code == 204
-
-    @pytest.mark.asyncio
-    async def test_delete_budget_not_found(self, app, mock_budget_service):
-        """Test budget deletion when budget doesn't exist."""
-        mock_budget_service.delete_budget.return_value = False
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.delete("/budgets/non-existent")
-
-        assert response.status_code == 404
-        assert "Budget not found" in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_get_budget_status(self, app, mock_budget_service):
@@ -280,26 +183,6 @@ class TestBudgetRoutes:
         data = response.json()
         assert data["model_name"] == "claude-3-5-sonnet-20241022"
         assert Decimal(str(data["cost_usd"])) == Decimal("0.0105")
-
-    @pytest.mark.asyncio
-    async def test_record_cost(self, app, mock_budget_service):
-        """Test cost recording via API."""
-        mock_budget_service.record_cost.return_value = None
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.post(
-                "/budgets/record-cost",
-                json={
-                    "entity_type": "user",
-                    "entity_id": "user-123",
-                    "model_name": "claude-3-5-sonnet-20241022",
-                    "tokens_in": 1000,
-                    "tokens_out": 500,
-                    "request_cost_usd": "10.50",
-                },
-            )
-
-        assert response.status_code == 204
 
     @pytest.mark.asyncio
     async def test_get_budget_summary(self, app, mock_budget_service):
@@ -387,3 +270,103 @@ class TestBudgetRoutes:
             response = await client.get("/budgets/status/user/user-123?period_type=invalid_period")
 
         assert response.status_code == 422  # Validation error
+
+
+class TestBudgetMutationRoutesRemoved:
+    """Issue #3988 (f-d7c2e66a): the ungated mutation routes must stay gone.
+
+    These four routes depended only on ``get_current_user`` with no role gate, so
+    any authenticated org member could delete their org's spend caps or write
+    arbitrary rows into the cost ledger. They had no legitimate caller — the SPA
+    mutates budgets through the already-gated
+    ``/admin/organizations/{org_id}/budgets`` surface, and internal metering calls
+    ``BudgetService.record_cost()`` in-process — so they were removed outright
+    rather than gated.
+
+    We assert route ABSENCE rather than a 403 because the routes genuinely do not
+    exist — absence is the contract, independent of RBAC. (This rationale used to
+    read "every principal resolves to ORG_ADMIN so a 403 is unachievable"; #3987
+    PR 2 made no-membership principals resolve to MEMBER, so that justification no
+    longer holds, but route absence is the stronger property anyway.)
+    """
+
+    @pytest.mark.asyncio
+    async def test_create_budget_route_removed(self, app):
+        """POST /budgets/ must no longer be routable."""
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/budgets/",
+                json={
+                    "entity_type": "user",
+                    "entity_id": "user-123",
+                    "period_type": "monthly",
+                    "budget_amount_usd": "100.00",
+                    "enforcement_mode": "hard",
+                },
+            )
+
+        assert response.status_code in (404, 405)
+
+    @pytest.mark.asyncio
+    async def test_update_budget_route_removed(self, app):
+        """PUT /budgets/{budget_id} must no longer be routable."""
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.put("/budgets/budget-123", json={"budget_amount_usd": "200.00"})
+
+        assert response.status_code in (404, 405)
+
+    @pytest.mark.asyncio
+    async def test_delete_budget_route_removed(self, app):
+        """DELETE /budgets/{budget_id} must no longer be routable."""
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.delete("/budgets/budget-123")
+
+        assert response.status_code in (404, 405)
+
+    @pytest.mark.asyncio
+    async def test_record_cost_route_removed(self, app):
+        """POST /budgets/record-cost must no longer be routable."""
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/budgets/record-cost",
+                json={
+                    "entity_type": "user",
+                    "entity_id": "user-123",
+                    "model_name": "claude-3-5-sonnet-20241022",
+                    "tokens_in": 1000,
+                    "tokens_out": 500,
+                    "request_cost_usd": "10.50",
+                },
+            )
+
+        assert response.status_code in (404, 405)
+
+    def test_no_mutating_methods_remain_on_the_router(self):
+        """Belt-and-braces: the router exposes no write verb at all.
+
+        A future route added to this router would be ungated by default (the
+        router has no router-level dependency), so assert the whole surface stays
+        read-only. POST /calculate-cost is the one allowed exception: a pure
+        pricing calculation with no side effects and no tenant data.
+        """
+        write_routes = {
+            (path, method)
+            for route in budget_router.routes
+            for path in [route.path]
+            for method in getattr(route, "methods", set())
+            if method in {"POST", "PUT", "PATCH", "DELETE"}
+        }
+
+        assert write_routes == {("/budgets/calculate-cost", "POST")}
+
+    @pytest.mark.asyncio
+    async def test_service_layer_record_cost_is_untouched(self, mock_budget_service):
+        """Removing the HTTP route must not affect in-process metering.
+
+        ``BudgetService.record_usage`` calls ``self.record_cost(...)`` directly,
+        so the proxy hot path never went through the deleted route.
+        """
+        assert hasattr(BudgetService, "record_cost")
+        assert hasattr(BudgetService, "create_budget")
+        assert hasattr(BudgetService, "update_budget")
+        assert hasattr(BudgetService, "delete_budget")

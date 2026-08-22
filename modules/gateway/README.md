@@ -159,7 +159,7 @@ bg-cognito-auth.sh login --gateway-url https://<cloudfront-domain>/api
 | Area | Key Endpoints |
 |------|---------------|
 | Admin | `POST /admin/organizations`, `POST /admin/agents`, `GET /admin/pool/status` |
-| Budgets | `POST /budgets`, `GET /budgets/status/{entity_type}/{entity_id}` |
+| Budgets | `POST /admin/organizations/{org_id}/budgets`, `GET /budgets/status/{entity_type}/{entity_id}` |
 | Rate Limits | `PUT /ratelimits/{entity_type}/{entity_id}`, `GET /ratelimits/{entity_type}/{entity_id}/status` |
 | Auth | `GET /auth/me`, `POST /auth/service-accounts` |
 | Health | `GET /health` |

@@ -12,7 +12,7 @@ This test exercises the REAL lifecycle:
   2. Run install_callback inside a second session, then CLOSE that session
      WITHOUT committing (mirrors get_db teardown behavior).
   3. Open a THIRD fresh session and assert the TenantMembership row for
-     (user, tenant) exists with role=member, joined_via=app_install.
+     (user, tenant) exists with role=org_admin (#4006), joined_via=app_install.
 
 This test MUST fail if db.commit() is reverted to db.flush() in
 _create_installer_membership.
@@ -197,6 +197,6 @@ class TestMembershipPersistenceAcrossSessions:
                 "likely db.flush() instead of db.commit() in "
                 "_create_installer_membership (issue #3058)"
             )
-            assert membership.role == "member"
+            assert membership.role == "org_admin"
             assert membership.joined_via == "app_install"
             assert membership.github_org_id == "sophos-test"

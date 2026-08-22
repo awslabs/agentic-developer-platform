@@ -472,6 +472,7 @@ def main():
                 "failed",
                 status_detail={"reason": "access_revoked"},
                 error=error_msg,
+                tenant_id=scope.tenant_id,
             )
             # Fail-closed: delete message (no retry — installation won't come back)
             # and exit. The asset status surfaces the revocation to the user.
@@ -497,7 +498,7 @@ def main():
     update_dynamo_status(source, content_type, "processing", tags=tags)
 
     # Emit status callback: worker "processing" → gateway "indexing" (#2049)
-    safe_emit(emit_status_callback, registry_asset_id, "indexing")
+    safe_emit(emit_status_callback, registry_asset_id, "indexing", tenant_id=scope.tenant_id)
 
     # Root span wrapping the entire ingestion run — child spans per stage
     # are created by StageTracker and become children via trace context propagation
@@ -558,6 +559,7 @@ def main():
                 "duration_sec": round(duration, 1),
                 "steps": {s: "ok" for s in steps},
             },
+            tenant_id=scope.tenant_id,
         )
 
         # Emit ingestion duration metric (fail-open)
@@ -607,6 +609,7 @@ def main():
                 "duration_sec": round(duration, 1),
             },
             error=error_msg,
+            tenant_id=scope.tenant_id,
         )
         # End root span + flush before exit (fail-open)
         try:

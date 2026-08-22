@@ -497,14 +497,21 @@ def collect_audit_entries(
     run_id: str,
     gateway_url: str,
     internal_api_key: str,
+    org_id: str,
 ) -> list[dict]:
     """Query gateway admin API for audit entries associated with this run.
 
-    Uses provenance_id filter to get all credential-related audit entries.
+    Uses provenance_id filter to get all credential-related audit entries,
+    scoped to org_id.
+
+    Issue #3985: org_id is a required query param on this endpoint. It used to be
+    optional, and omitting it returned rows across every tenant — which also
+    meant this harness could ingest another tenant's audit trail as evidence.
+    We pass the sandbox tenant, which is the only org this test writes to.
     """
     url = f"{gateway_url}/internal/v1/admin/audit-entries"
     headers = {"X-Internal-Api-Key": internal_api_key}
-    params = {"provenance_id": run_id, "limit": 100}
+    params = {"provenance_id": run_id, "org_id": org_id, "limit": 100}
 
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=15)
@@ -721,6 +728,7 @@ def run_test_case(
         run_id=run_id,
         gateway_url=args.gateway_url,
         internal_api_key=args.internal_api_key,
+        org_id=args.sandbox_tenant,
     )
     result.audit_entries = audit_entries
 

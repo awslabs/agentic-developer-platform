@@ -227,3 +227,47 @@ class TestErrorTruncation:
 
         body = json.loads(mock_post.call_args[1]["data"])
         assert len(body["error"]) == 1000
+
+
+class TestTenantIdPropagation:
+    """Issue #3985 (A2): the emitter must forward the owning tenant.
+
+    The gateway adds tenant_id to the status-callback UPDATE's WHERE clause so a
+    leaked asset_id alone cannot write across tenants. That predicate is only
+    effective if the worker actually sends the tenant.
+    """
+
+    @patch("status_callback.requests.post")
+    def test_tenant_id_included_when_provided(self, mock_post, monkeypatch):
+        monkeypatch.setenv("GATEWAY_CALLBACK_URL", "http://gateway:8080")
+        monkeypatch.setenv("GATEWAY_INTERNAL_API_KEY", "key")
+        mod = _import_status_callback()
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_post.return_value = mock_resp
+
+        mod.emit_status_callback("asset-uuid-789", "indexing", tenant_id="tenant-abc")
+
+        body = json.loads(mock_post.call_args[1]["data"])
+        assert body["tenant_id"] == "tenant-abc"
+
+    @patch("status_callback.requests.post")
+    def test_tenant_id_omitted_when_absent(self, mock_post, monkeypatch):
+        """Shared/legacy assets have no tenant; the key must be omitted, not null.
+
+        The gateway treats an absent tenant_id as "unconstrained predicate" for
+        rollout compatibility, so sending an explicit null would be misleading.
+        """
+        monkeypatch.setenv("GATEWAY_CALLBACK_URL", "http://gateway:8080")
+        monkeypatch.setenv("GATEWAY_INTERNAL_API_KEY", "key")
+        mod = _import_status_callback()
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_post.return_value = mock_resp
+
+        mod.emit_status_callback("asset-uuid-789", "indexing")
+
+        body = json.loads(mock_post.call_args[1]["data"])
+        assert "tenant_id" not in body

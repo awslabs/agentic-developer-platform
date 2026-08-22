@@ -157,6 +157,7 @@ class TestCollectAuditEntriesJsonSafety:
             run_id="test-run-123",
             gateway_url="https://gateway.example.com",
             internal_api_key="key",
+            org_id="adp-security-test",
         )
 
         assert entries == []
@@ -174,6 +175,7 @@ class TestCollectAuditEntriesJsonSafety:
             run_id="test-run-123",
             gateway_url="https://gateway.example.com",
             internal_api_key="key",
+            org_id="adp-security-test",
         )
 
         assert len(entries) == 1
@@ -192,6 +194,44 @@ class TestCollectAuditEntriesJsonSafety:
             run_id="test-run-123",
             gateway_url="https://gateway.example.com",
             internal_api_key="key",
+            org_id="adp-security-test",
         )
 
         assert entries == []
+
+
+class TestCollectAuditEntriesOrgScoping:
+    """Issue #3985: org_id is a required query param on the audit-entries endpoint."""
+
+    @patch("adversarial_test_assert.requests.get")
+    def test_org_id_is_forwarded_as_query_param(self, mock_get):
+        """The harness must send org_id or the endpoint 422s.
+
+        org_id used to be optional server-side, and omitting it returned rows for
+        every tenant — so this harness could ingest another tenant's audit trail
+        as evidence for its own run. Passing the sandbox tenant (the only org this
+        test writes to) is both the fix and the correctness guarantee.
+        """
+        mock_get.return_value = _mock_response(
+            status_code=200,
+            content_type="application/json",
+            body='{"entries": []}',
+        )
+
+        collect_audit_entries(
+            run_id="test-run-123",
+            gateway_url="https://gateway.example.com",
+            internal_api_key="key",
+            org_id="adp-security-test",
+        )
+
+        params = mock_get.call_args.kwargs["params"]
+        assert params["org_id"] == "adp-security-test"
+        assert params["provenance_id"] == "test-run-123"
+
+    def test_org_id_is_a_required_argument(self):
+        """Guards against the kwarg being made optional again with a default."""
+        import inspect
+
+        param = inspect.signature(collect_audit_entries).parameters["org_id"]
+        assert param.default is inspect.Parameter.empty

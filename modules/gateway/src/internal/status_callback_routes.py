@@ -50,6 +50,14 @@ class StatusCallbackRequest(BaseModel):
         description="Compact projection of run-state (stage, summary counts, etc.)",
     )
     error: str | None = Field(None, description="Error message on failure")
+    tenant_id: str | None = Field(
+        None,
+        description=(
+            "Owning tenant of the asset. Issue #3985 (A2): added to the UPDATE's "
+            "WHERE clause so a leaked/guessed asset_id alone cannot write across "
+            "tenants. Optional for legacy assets whose row has a NULL tenant_id."
+        ),
+    )
 
 
 class StatusCallbackResponse(BaseModel):
@@ -102,10 +110,41 @@ async def status_callback(
     # No read of repositories/index_runs/index_run_stages (cross-DB join forbidden)
     now = datetime.now(UTC)
 
+    # Issue #3985 (A2): scope the UPDATE by tenant so a leaked or guessed
+    # asset_id cannot be used to write another tenant's row.
+    #
+    # Two compatibility constraints shape this predicate:
+    #   1. knowledge_assets.tenant_id is NULLABLE (agent-context migration 007),
+    #      and pre-existing/shared assets have NULL. Requiring an exact match
+    #      would make those rows permanently un-updatable, so a NULL row tenant
+    #      is still accepted.
+    #   2. The worker image that sends tenant_id ships separately from this
+    #      gateway change. Until it rolls out, callbacks arrive with no
+    #      tenant_id; rejecting those would stall ingestion for every
+    #      tenant-scoped asset. So an absent tenant_id leaves the predicate
+    #      unconstrained (previous behavior) and is logged for observability.
+    #
+    # Once the worker image is fully rolled out, the `else` branch below should
+    # be tightened to reject an absent tenant_id — tracked as a follow-up.
+    # NOTE: tenant_clause is interpolated into the SQL below, but it is one of
+    # two fixed literals chosen by a boolean — never caller-controlled text. The
+    # tenant value itself is passed as a bound parameter.
+    tenant_clause = ""
+    tenant_params: dict[str, str] = {}
+    if body.tenant_id:
+        tenant_clause = "AND (tenant_id = :tenant_id OR tenant_id IS NULL)"
+        tenant_params["tenant_id"] = body.tenant_id
+    else:
+        logger.info(
+            "status_callback_untenanted asset=%s status=%s — tenant predicate skipped (pre-rollout worker)",
+            body.asset_id,
+            body.status,
+        )
+
     if body.status == "failed":
         # On failure: update status, status_detail, last_error, increment retry_count
         result = await db.execute(
-            text("""
+            text(f"""
                 UPDATE knowledge_assets
                 SET status = :status,
                     status_detail = CAST(:status_detail AS jsonb),
@@ -114,6 +153,7 @@ async def status_callback(
                     updated_at = :now
                 WHERE id = :asset_id
                   AND status != 'removed'
+                  {tenant_clause}
                 RETURNING id
             """),
             {
@@ -122,12 +162,13 @@ async def status_callback(
                 "error": body.error[:1000] if body.error else None,
                 "asset_id": body.asset_id,
                 "now": now,
+                **tenant_params,
             },
         )
     else:
         # indexing or complete: update status + status_detail, clear last_error
         result = await db.execute(
-            text("""
+            text(f"""
                 UPDATE knowledge_assets
                 SET status = :status,
                     status_detail = CAST(:status_detail AS jsonb),
@@ -135,6 +176,7 @@ async def status_callback(
                     updated_at = :now
                 WHERE id = :asset_id
                   AND status != 'removed'
+                  {tenant_clause}
                 RETURNING id
             """),
             {
@@ -142,6 +184,7 @@ async def status_callback(
                 "status_detail": _json_dumps(body.status_detail),
                 "asset_id": body.asset_id,
                 "now": now,
+                **tenant_params,
             },
         )
 

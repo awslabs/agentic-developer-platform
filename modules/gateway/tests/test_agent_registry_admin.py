@@ -32,6 +32,7 @@ from src.admin.agent_registry_schemas import (
 )
 from src.admin.agent_registry_service import AgentRegistryService
 from src.shared.exceptions import ConflictError, NotFoundError
+from src.shared.exceptions import ValidationError as GatewayValidationError
 
 # =============================================================================
 # Test Fixtures
@@ -372,13 +373,27 @@ class TestAgentRegistryServiceList:
 
     @pytest.mark.asyncio
     async def test_list_agents_scan_all(self, agent_registry_service, mock_dynamodb_client, sample_dynamodb_item):
-        """Test scanning all agents (no filters)."""
+        """Test scanning all agents (no filters) with the explicit opt-in."""
         mock_dynamodb_client.scan.return_value = {"Items": [sample_dynamodb_item]}
 
-        result = await agent_registry_service.list_agents()
+        result = await agent_registry_service.list_agents(allow_scan=True)
 
         mock_dynamodb_client.scan.assert_called_once()
         assert len(result.items) == 1
+
+    @pytest.mark.asyncio
+    async def test_list_agents_unfiltered_without_allow_scan_raises(self, agent_registry_service, mock_dynamodb_client):
+        """Issue #3988: an unfiltered list must not silently scan every tenant.
+
+        Structural guard — _scan_all is only reachable via allow_scan=True, so a
+        future authorization bug (like the un-awaited is_platform_admin) cannot
+        reach a cross-tenant scan by accident.
+        """
+        with pytest.raises(GatewayValidationError):
+            await agent_registry_service.list_agents()
+
+        mock_dynamodb_client.scan.assert_not_called()
+        mock_dynamodb_client.query.assert_not_called()
 
 
 class TestAgentRegistryServiceUpdate:

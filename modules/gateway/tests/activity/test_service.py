@@ -745,9 +745,15 @@ class TestChainNonTriggeringFilter:
         # All 7 items returned (2 real + 5 no_op)
         assert result.total_count == 7
 
-    def test_bot_attributed_real_child_survives_filter(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """Bot-attributed child with status=complete survives the filter (key constraint)."""
-        # Add a bot-attributed child with status=complete (real, not an echo)
+    def test_bot_attributed_real_child_survives_membership_scoping(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Issue #3949: Bot-attributed child survives because membership-based scoping
+        authorizes the chain as a whole (any member has user_id or root_human_id =
+        caller), then returns ALL members unfiltered. No per-row user_id filter.
+
+        This test asserts on the query args: FilterExpression contains ONLY the
+        status filter (no user_id condition), proving membership-based scoping.
+        """
+        # Chain: root (owned by human) + bot-owned child with root_human_id
         items_with_complete_child = [item for item in self._fixture_items if item["status"] != "no_op"] + [
             {
                 "invocation_id": "child-complete-bot",
@@ -771,9 +777,17 @@ class TestChainNonTriggeringFilter:
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
         result = service.get_chain(self._CORRELATION, user_id=self._ROOT_USER)
 
-        # All 3 real items returned (bot-attributed complete child survives)
+        # Assert: FilterExpression does NOT contain user_id scoping
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        filter_expr = call_kwargs.get("FilterExpression")
+        # The filter should only be the status exclusion (no user_id/root_human_id)
+        if filter_expr is not None:
+            expr_str = str(filter_expr.get_expression())
+            assert "user_id" not in expr_str
+
+        # All 3 real items returned (bot-attributed child survives membership auth)
         assert result.total_count == 3
-        # Root has 2 children (both real bot-attributed runs)
+        # Root has 2 children
         assert len(result.items) == 1
         children_ids = [c.invocation_id for c in result.items[0].children]
         assert "child-real-001" in children_ids
@@ -1072,15 +1086,18 @@ class TestRunLogUrlMapping:
 
 
 class TestGetInvocation:
-    """Tests for get_invocation — single-item lookup by event_id."""
+    """Tests for get_invocation — base-table Query + authorize-after-fetch (Issue #3949).
 
-    def test_returns_item_when_found(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """get_invocation returns InvocationItem when event_id matches."""
+    The new implementation queries the base table by event_id (hash key) for
+    O(1) lookup, then authorizes in code. No GSI, no pagination loop.
+    """
+
+    def test_returns_item_when_found_user_scope(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """get_invocation returns InvocationItem when event_id matches and user owns it."""
         mock_dynamodb_table.query.return_value = {
             "Items": [
                 {
                     "event_id": "inv-target",
-                    "invocation_id": "inv-target",
                     "arrived_at": "2026-06-20T10:00:00Z",
                     "channel": "github",
                     "status": "complete",
@@ -1099,8 +1116,35 @@ class TestGetInvocation:
         assert item.topic == "Deploy service"
         assert item.completed_at == "2026-06-20T10:02:00Z"
 
+    def test_base_table_query_no_index(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Issue #3949: get_invocation uses base-table Query (no IndexName), single call."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-123",
+                    "arrived_at": "2026-07-29T10:00:00Z",
+                    "status": "complete",
+                    "user_id": "user-1",
+                }
+            ],
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        service.get_invocation("inv-123", user_id="user-1")
+
+        # Single query, no IndexName (base table), KeyCondition on event_id
+        assert mock_dynamodb_table.query.call_count == 1
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        assert "IndexName" not in call_kwargs
+        # Verify KeyConditionExpression uses event_id
+        key_expr = call_kwargs["KeyConditionExpression"]
+        expr_dict = key_expr.get_expression()
+        key_obj = expr_dict["values"][0]
+        assert key_obj.name == "event_id"
+        assert expr_dict["values"][1] == "inv-123"
+
     def test_returns_none_when_not_found(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """get_invocation returns None when no item matches (user doesn't own it)."""
+        """get_invocation returns None when no item exists with that event_id."""
         mock_dynamodb_table.query.return_value = {"Items": []}
 
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
@@ -1116,57 +1160,102 @@ class TestGetInvocation:
         assert item is None
         mock_dynamodb_table.query.assert_not_called()
 
-    def test_uses_user_index_for_user_scope(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """get_invocation queries user-index when user_id is provided."""
-        mock_dynamodb_table.query.return_value = {"Items": []}
+    def test_chain_attributed_authorized_via_root_human_id(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Issue #3949: chain-attributed row (user_id=bot, root_human_id=caller) is authorized."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-chain-bot",
+                    "arrived_at": "2026-07-29T10:21:00Z",
+                    "channel": "github",
+                    "status": "complete",
+                    "status_updated_at": "2026-07-29T10:25:00Z",
+                    "user_id": "aws-e-adp-agent-dev[bot]",
+                    "root_human_id": "user-human-1",
+                    "transcript_key": "developer/org/repo/issue-42/transcript.md",
+                    "correlation_id": "corr-abc",
+                }
+            ],
+        }
 
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
-        service.get_invocation("inv-123", user_id="user-abc")
-
-        call_kwargs = mock_dynamodb_table.query.call_args[1]
-        assert call_kwargs["IndexName"] == "user-index"
-
-    def test_uses_tenant_index_for_admin_scope(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """get_invocation queries tenant-index when tenant_id is provided."""
-        mock_dynamodb_table.query.return_value = {"Items": []}
-
-        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
-        service.get_invocation("inv-123", tenant_id="org-001")
-
-        call_kwargs = mock_dynamodb_table.query.call_args[1]
-        assert call_kwargs["IndexName"] == "tenant-index"
-
-    def test_paginates_when_not_found_on_first_page(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """get_invocation paginates internally (up to 5 pages) to find the item."""
-        # First page: no match, has more pages
-        # Second page: match found
-        mock_dynamodb_table.query.side_effect = [
-            {"Items": [], "LastEvaluatedKey": {"pk": "x", "arrived_at": "y", "user_id": "z"}},
-            {
-                "Items": [
-                    {
-                        "event_id": "inv-deep",
-                        "invocation_id": "inv-deep",
-                        "arrived_at": "2026-06-01T00:00:00Z",
-                        "status": "complete",
-                        "status_updated_at": "2026-06-01T00:05:00Z",
-                        "user_id": "user-1",
-                    }
-                ],
-            },
-        ]
-
-        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
-        item = service.get_invocation("inv-deep", user_id="user-1")
+        item = service.get_invocation("inv-chain-bot", user_id="user-human-1")
 
         assert item is not None
-        assert item.invocation_id == "inv-deep"
-        assert mock_dynamodb_table.query.call_count == 2
+        assert item.invocation_id == "inv-chain-bot"
+        assert item.transcript_key == "developer/org/repo/issue-42/transcript.md"
+        assert item.root_human_id == "user-human-1"
+
+    def test_cross_user_disclosure_blocked(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Issue #3949: row with user_id=bot, root_human_id=other-user → None for attacker.
+
+        Asserts on the authorization path: the row IS returned by DDB, but the
+        code rejects it because neither user_id nor root_human_id match the caller.
+        """
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-victim-run",
+                    "arrived_at": "2026-07-29T10:00:00Z",
+                    "status": "complete",
+                    "user_id": "aws-e-adp-agent-dev[bot]",
+                    "root_human_id": "user-victim",
+                    "tenant_id": "org-shared",
+                }
+            ],
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.get_invocation("inv-victim-run", user_id="user-attacker")
+
+        # Row exists in DDB but authorization rejects it
+        assert item is None
+        # The query DID execute (it's the authorization that blocks, not a miss)
+        assert mock_dynamodb_table.query.call_count == 1
+
+    def test_tenant_scope_authorized(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """get_invocation with tenant_id authorizes by tenant_id match."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-123",
+                    "arrived_at": "2026-07-29T10:00:00Z",
+                    "status": "complete",
+                    "user_id": "bot-user",
+                    "tenant_id": "org-001",
+                }
+            ],
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.get_invocation("inv-123", tenant_id="org-001")
+
+        assert item is not None
+        assert item.invocation_id == "inv-123"
+
+    def test_tenant_scope_rejected(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """get_invocation with wrong tenant_id returns None."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-123",
+                    "arrived_at": "2026-07-29T10:00:00Z",
+                    "status": "complete",
+                    "user_id": "bot-user",
+                    "tenant_id": "org-other",
+                }
+            ],
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.get_invocation("inv-123", tenant_id="org-attacker")
+
+        assert item is None
 
     def test_graceful_degradation_on_error(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """get_invocation returns None on ValidationException (missing GSI)."""
+        """get_invocation returns None on ValidationException (table error)."""
         mock_dynamodb_table.query.side_effect = ClientError(
-            {"Error": {"Code": "ValidationException", "Message": "Index not found"}},
+            {"Error": {"Code": "ValidationException", "Message": "Table not found"}},
             "Query",
         )
 
@@ -2378,3 +2467,841 @@ class TestFetchChainDescendantsDepthCap:
         assert len(descendants) == 12
         no_op_count = sum(1 for d in descendants if d.status == "no_op")
         assert no_op_count == 10
+
+
+# ---------------------------------------------------------------------------
+# Issue #3949 tests: get_invocation base-table Query + authorize-after-fetch
+# ---------------------------------------------------------------------------
+
+
+class TestGetInvocationBaseTableQuery:
+    """Issue #3949: get_invocation uses base-table Query + authorize-after-fetch.
+
+    Tests assert on query call args and the authorization path — not canned
+    mock returns — to prove the scoping logic works correctly.
+    """
+
+    def test_direct_run_authorized_via_user_id(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Direct run (user_id = caller) is authorized. Single base-table query."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-direct",
+                    "arrived_at": "2026-07-29T09:00:00Z",
+                    "channel": "github",
+                    "status": "complete",
+                    "user_id": "user-1",
+                }
+            ],
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.get_invocation("inv-direct", user_id="user-1")
+
+        assert item is not None
+        assert item.invocation_id == "inv-direct"
+        # Single query, no IndexName (base table)
+        assert mock_dynamodb_table.query.call_count == 1
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        assert "IndexName" not in call_kwargs
+
+    def test_chain_attributed_authorized_via_root_human_id(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Chain-attributed row (user_id=bot, root_human_id=caller) → authorized."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-chain-bot",
+                    "arrived_at": "2026-07-29T10:21:00Z",
+                    "status": "complete",
+                    "status_updated_at": "2026-07-29T10:25:00Z",
+                    "user_id": "aws-e-adp-agent-dev[bot]",
+                    "root_human_id": "user-human-1",
+                    "transcript_key": "dev/org/repo/issue-42/transcript.md",
+                }
+            ],
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.get_invocation("inv-chain-bot", user_id="user-human-1")
+
+        assert item is not None
+        assert item.transcript_key == "dev/org/repo/issue-42/transcript.md"
+
+    def test_cross_user_disclosure_blocked_assert_on_auth_path(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Row exists but neither user_id nor root_human_id match caller → None.
+
+        Asserts on the authorization path: DDB returns the row, code rejects.
+        """
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-victim",
+                    "arrived_at": "2026-07-29T10:00:00Z",
+                    "status": "complete",
+                    "user_id": "aws-e-adp-agent-dev[bot]",
+                    "root_human_id": "user-victim",
+                }
+            ],
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.get_invocation("inv-victim", user_id="user-attacker")
+
+        # DDB returned the row (query executed), but authorization blocked it
+        assert item is None
+        assert mock_dynamodb_table.query.call_count == 1
+
+    def test_graceful_degradation_validation_exception(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """ValidationException → None, no 500 (environments without table/key schema)."""
+        mock_dynamodb_table.query.side_effect = ClientError(
+            {"Error": {"Code": "ValidationException", "Message": "Table error"}},
+            "Query",
+        )
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.get_invocation("inv-123", user_id="user-1")
+
+        assert item is None
+
+    def test_tenant_scope_unchanged(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Tenant-scoped lookup authorizes by tenant_id; no user_id/root_human_id check."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "inv-admin",
+                    "arrived_at": "2026-07-29T10:00:00Z",
+                    "status": "complete",
+                    "user_id": "bot-user",
+                    "tenant_id": "org-001",
+                }
+            ],
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        item = service.get_invocation("inv-admin", tenant_id="org-001")
+
+        assert item is not None
+        assert mock_dynamodb_table.query.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #3949 tests: get_chain membership-based scoping
+# ---------------------------------------------------------------------------
+
+
+class TestGetChainMembershipScoping:
+    """Issue #3949: get_chain uses membership-based authorization.
+
+    Authorize the CHAIN (any member has user_id or root_human_id = caller),
+    then return ALL members unfiltered. No per-row user_id filter.
+    """
+
+    def test_bot_owned_member_survives_membership_auth(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Chain with bot-owned members: all survive because root has root_human_id = caller."""
+        chain_items = [
+            {
+                "event_id": "root-001",
+                "arrived_at": "2026-07-29T10:00:00Z",
+                "status": "complete",
+                "user_id": "user-human",
+                "root_human_id": "user-human",
+                "correlation_id": "corr-test",
+            },
+            {
+                "event_id": "child-bot-001",
+                "arrived_at": "2026-07-29T10:01:00Z",
+                "status": "complete",
+                "user_id": "bot-user",  # bot-owned
+                "root_human_id": "user-human",
+                "correlation_id": "corr-test",
+                "parent_invocation_id": "root-001",
+            },
+            {
+                "event_id": "child-bot-002",
+                "arrived_at": "2026-07-29T10:02:00Z",
+                "status": "complete",
+                "user_id": "bot-user",
+                # NO root_human_id (sparse — pre-#2042 row)
+                "correlation_id": "corr-test",
+                "parent_invocation_id": "child-bot-001",
+            },
+        ]
+        mock_dynamodb_table.query.return_value = {"Items": chain_items, "Count": 3}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain("corr-test", user_id="user-human")
+
+        # All 3 items returned (including sparse-root_human_id row)
+        assert result.total_count == 3
+        assert len(result.items) == 1  # one root
+        assert result.items[0].invocation_id == "root-001"
+        # Root has 1 direct child, which has 1 grandchild
+        assert len(result.items[0].children) == 1
+        assert result.items[0].children[0].invocation_id == "child-bot-001"
+
+    def test_foreign_chain_returns_empty(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Chain where NO member has user_id or root_human_id = caller → empty."""
+        chain_items = [
+            {
+                "event_id": "foreign-root",
+                "arrived_at": "2026-07-29T10:00:00Z",
+                "status": "complete",
+                "user_id": "other-user",
+                "root_human_id": "other-user",
+                "correlation_id": "corr-foreign",
+            },
+        ]
+        mock_dynamodb_table.query.return_value = {"Items": chain_items, "Count": 1}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain("corr-foreign", user_id="user-attacker")
+
+        # Authorization fails — empty response (existence-hiding)
+        assert result.total_count == 0
+        assert result.items == []
+
+    def test_no_per_row_user_filter_in_query_args(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Assert FilterExpression does NOT contain user_id condition (membership-based)."""
+        mock_dynamodb_table.query.return_value = {
+            "Items": [
+                {
+                    "event_id": "r1",
+                    "arrived_at": "2026-07-29T10:00:00Z",
+                    "status": "complete",
+                    "user_id": "user-1",
+                    "correlation_id": "corr-x",
+                }
+            ],
+            "Count": 1,
+        }
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        service.get_chain("corr-x", user_id="user-1")
+
+        call_kwargs = mock_dynamodb_table.query.call_args[1]
+        # FilterExpression should NOT have user_id scoping
+        filter_expr = call_kwargs.get("FilterExpression")
+        if filter_expr is not None:
+            expr_str = str(filter_expr.get_expression())
+            assert "user_id" not in expr_str
+
+    def test_sparse_root_human_id_no_orphan_promotion(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Pre-#2042 mid-chain row (no root_human_id) is NOT dropped — no tree restructure."""
+        chain_items = [
+            {
+                "event_id": "root-001",
+                "arrived_at": "2026-07-29T10:00:00Z",
+                "status": "complete",
+                "user_id": "user-human",
+                "correlation_id": "corr-sparse",
+            },
+            {
+                "event_id": "mid-001",
+                "arrived_at": "2026-07-29T10:01:00Z",
+                "status": "complete",
+                "user_id": "bot-user",
+                # No root_human_id — sparse
+                "correlation_id": "corr-sparse",
+                "parent_invocation_id": "root-001",
+            },
+            {
+                "event_id": "leaf-001",
+                "arrived_at": "2026-07-29T10:02:00Z",
+                "status": "complete",
+                "user_id": "bot-user",
+                "root_human_id": "user-human",
+                "correlation_id": "corr-sparse",
+                "parent_invocation_id": "mid-001",
+            },
+        ]
+        mock_dynamodb_table.query.return_value = {"Items": chain_items, "Count": 3}
+
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.get_chain("corr-sparse", user_id="user-human")
+
+        # All 3 items returned — mid-chain row NOT dropped
+        assert result.total_count == 3
+        # Tree structure preserved: root → mid → leaf (not: root + orphan mid + orphan leaf)
+        assert len(result.items) == 1  # single root
+        root = result.items[0]
+        assert root.invocation_id == "root-001"
+        assert len(root.children) == 1
+        mid = root.children[0]
+        assert mid.invocation_id == "mid-001"
+        assert len(mid.children) == 1
+        assert mid.children[0].invocation_id == "leaf-001"
+
+
+# ---------------------------------------------------------------------------
+# Issue #3949 tests: query_chains_by_user chain-root backfill
+# ---------------------------------------------------------------------------
+
+
+class TestQueryChainsByUserRootBackfill:
+    """Issue #3949: query_chains_by_user backfills chain root when page 1 has only descendants.
+
+    When all items on the merged page are descendants (have parent_invocation_id),
+    the chain view would previously render 0 rows. Now it fetches the chain root
+    via correlation-index and emits the chain.
+    """
+
+    _ROOT_USER = "650f093f-ecd9-4ce1-a5a9-368e02c449cf"
+    _BOT_USER = "edc91ba7-bot-user-id"
+
+    def test_descendants_only_page_emits_chain(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Page 1 with only descendants → chain root backfilled, chain rendered."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                # Only a descendant item on page 1 (has parent_invocation_id)
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-child-only",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "channel": "github",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-orphan",
+                            "parent_invocation_id": "inv-true-root",
+                            "is_human_rooted": True,
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                return {"Items": [], "Count": 0}
+            elif index == "correlation-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-true-root",
+                            "arrived_at": "2026-07-29T10:00:00Z",
+                            "channel": "github",
+                            "status": "complete",
+                            "topic": "The real root",
+                            "user_id": self._ROOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-orphan",
+                            "is_human_rooted": True,
+                        },
+                        {
+                            "invocation_id": "inv-child-only",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "channel": "github",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-orphan",
+                            "parent_invocation_id": "inv-true-root",
+                            "is_human_rooted": True,
+                        },
+                    ],
+                    "Count": 2,
+                }
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id=self._ROOT_USER)
+
+        # Chain is emitted (not empty view)
+        assert result.count == 1
+        chain = result.chains[0]
+        assert chain.chain_id == "corr-orphan"
+        assert chain.root.invocation_id == "inv-true-root"
+        assert chain.root.topic == "The real root"
+        assert chain.descendant_count == 1
+        assert chain.descendants[0].invocation_id == "inv-child-only"
+
+    def test_two_descendants_same_chain_one_backfill(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Two descendants of one chain trigger exactly one backfill query (dedupe)."""
+        backfill_count = [0]
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-child-1",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-shared",
+                            "parent_invocation_id": "inv-root",
+                            "is_human_rooted": True,
+                        },
+                        {
+                            "invocation_id": "inv-child-2",
+                            "arrived_at": "2026-07-29T10:06:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-shared",
+                            "parent_invocation_id": "inv-root",
+                            "is_human_rooted": True,
+                        },
+                    ],
+                    "Count": 2,
+                }
+            elif index == "root-human-index":
+                return {"Items": [], "Count": 0}
+            elif index == "correlation-index":
+                backfill_count[0] += 1
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-root",
+                            "arrived_at": "2026-07-29T10:00:00Z",
+                            "status": "complete",
+                            "user_id": self._ROOT_USER,
+                            "correlation_id": "corr-shared",
+                        },
+                        {
+                            "invocation_id": "inv-child-1",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "correlation_id": "corr-shared",
+                            "parent_invocation_id": "inv-root",
+                        },
+                        {
+                            "invocation_id": "inv-child-2",
+                            "arrived_at": "2026-07-29T10:06:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "correlation_id": "corr-shared",
+                            "parent_invocation_id": "inv-root",
+                        },
+                    ],
+                    "Count": 3,
+                }
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id=self._ROOT_USER)
+
+        # One chain emitted
+        assert result.count == 1
+        # Backfill called only TWICE: once for _backfill_chain_root, once for
+        # _fetch_chain_descendants — NOT once per descendant
+        # (correlation-index queries = backfill + descendants fetch = 2)
+        assert backfill_count[0] == 2
+
+    def test_root_plus_child_on_page_zero_backfills(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Root + child on the same page → zero backfill queries (root emitted directly).
+
+        Issue #3949: the page is deliberately ordered NEWEST-FIRST (child before
+        its root), which is what production actually produces — `_execute_query`
+        queries with `ScanIndexForward=False` and `query_chains_by_user` sorts the
+        merged page by `invoked_at` descending. A single-pass emission loop visits
+        the child first and fires a backfill for a chain whose root is right there
+        on the page. The two-pass loop must emit the on-page root regardless of
+        page order, so this fixture order is the actual regression guard.
+        """
+        correlation_queries = [0]
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                # Both root AND child on page, newest-first (child precedes root)
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-child",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-direct",
+                            "parent_invocation_id": "inv-root",
+                            "is_human_rooted": True,
+                        },
+                        {
+                            "invocation_id": "inv-root",
+                            "arrived_at": "2026-07-29T10:00:00Z",
+                            "status": "complete",
+                            "user_id": self._ROOT_USER,
+                            "correlation_id": "corr-direct",
+                            "is_human_rooted": True,
+                            "root_human_id": self._ROOT_USER,
+                        },
+                    ],
+                    "Count": 2,
+                }
+            elif index == "root-human-index":
+                return {"Items": [], "Count": 0}
+            elif index == "correlation-index":
+                correlation_queries[0] += 1
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-root",
+                            "arrived_at": "2026-07-29T10:00:00Z",
+                            "status": "complete",
+                            "user_id": self._ROOT_USER,
+                            "correlation_id": "corr-direct",
+                        },
+                        {
+                            "invocation_id": "inv-child",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "correlation_id": "corr-direct",
+                            "parent_invocation_id": "inv-root",
+                        },
+                    ],
+                    "Count": 2,
+                }
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id=self._ROOT_USER)
+
+        assert result.count == 1
+        # Only _fetch_chain_descendants queries correlation-index (1 call).
+        # Pass 1 emits the on-page root and records corr-direct, so pass 2 finds
+        # nothing to backfill — zero backfill queries, even though the child was
+        # first in page order.
+        assert correlation_queries[0] == 1
+        # The chain is anchored on the ON-PAGE root, not a backfilled copy.
+        assert result.chains[0].root.invocation_id == "inv-root"
+
+    def test_root_on_page_survives_backfill_query_error(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Issue #3949: a chain whose root is ON the page must not depend on backfill.
+
+        Regression guard for the two-pass ordering. With a newest-first page (child
+        before root) and a correlation-index that errors, a single-pass loop fires a
+        backfill for the child, gets None from the degraded query, and drops the
+        chain — losing a chain whose root was already on the page. Under the
+        two-pass loop the root is emitted in pass 1, so the chain survives with an
+        empty descendant list.
+        """
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-child",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-degraded",
+                            "parent_invocation_id": "inv-root",
+                            "is_human_rooted": True,
+                        },
+                        {
+                            "invocation_id": "inv-root",
+                            "arrived_at": "2026-07-29T10:00:00Z",
+                            "status": "complete",
+                            "topic": "On-page root",
+                            "user_id": self._ROOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-degraded",
+                            "is_human_rooted": True,
+                        },
+                    ],
+                    "Count": 2,
+                }
+            elif index == "root-human-index":
+                return {"Items": [], "Count": 0}
+            elif index == "correlation-index":
+                raise ClientError(
+                    {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
+                    "Query",
+                )
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id=self._ROOT_USER)
+
+        # The chain survives, anchored on the on-page root
+        assert result.count == 1
+        assert result.chains[0].chain_id == "corr-degraded"
+        assert result.chains[0].root.invocation_id == "inv-root"
+        assert result.chains[0].root.topic == "On-page root"
+        # Descendants degraded to empty (correlation-index unavailable), not a 500
+        assert result.chains[0].descendant_count == 0
+
+    def test_backfilled_root_carries_transcript_key(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Backfilled root preserves transcript_key (uses _map_item, not hand-construct)."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-descendant",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-transcript",
+                            "parent_invocation_id": "inv-root-with-key",
+                            "is_human_rooted": True,
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                return {"Items": [], "Count": 0}
+            elif index == "correlation-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-root-with-key",
+                            "arrived_at": "2026-07-29T10:00:00Z",
+                            "status": "complete",
+                            "user_id": self._ROOT_USER,
+                            "correlation_id": "corr-transcript",
+                            "transcript_key": "developer/org/repo/42/transcript.md",
+                            "status_updated_at": "2026-07-29T10:03:00Z",
+                        },
+                        {
+                            "invocation_id": "inv-descendant",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "correlation_id": "corr-transcript",
+                            "parent_invocation_id": "inv-root-with-key",
+                        },
+                    ],
+                    "Count": 2,
+                }
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id=self._ROOT_USER)
+
+        assert result.count == 1
+        root = result.chains[0].root
+        assert root.transcript_key == "developer/org/repo/42/transcript.md"
+        assert root.completed_at == "2026-07-29T10:03:00Z"
+
+    def test_ttl_expired_root_falls_back_to_earliest_member(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Root TTL-expired (all items have parent_invocation_id) → earliest member used."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-orphan-child",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-expired",
+                            "parent_invocation_id": "inv-expired-root",
+                            "is_human_rooted": True,
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                return {"Items": [], "Count": 0}
+            elif index == "correlation-index":
+                # Root is gone (TTL-expired); only descendants remain
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-orphan-child",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-expired",
+                            "parent_invocation_id": "inv-expired-root",
+                        },
+                    ],
+                    "Count": 1,
+                }
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id=self._ROOT_USER)
+
+        # Chain emitted even though root is TTL-expired — earliest member used
+        assert result.count == 1
+        chain = result.chains[0]
+        assert chain.root.invocation_id == "inv-orphan-child"
+
+    def test_backfill_dedup_with_direct_root(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Same correlation_id from both a direct root and a descendant → only one chain row.
+
+        Page order is newest-first (descendant before its root), matching production.
+        """
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-child",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "channel": "github",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-dedup",
+                            "parent_invocation_id": "inv-root",
+                            "is_human_rooted": True,
+                        },
+                        {
+                            "invocation_id": "inv-root",
+                            "arrived_at": "2026-07-29T10:00:00Z",
+                            "channel": "github",
+                            "status": "complete",
+                            "user_id": self._ROOT_USER,
+                            "correlation_id": "corr-dedup",
+                            "is_human_rooted": True,
+                            "root_human_id": self._ROOT_USER,
+                        },
+                    ],
+                    "Count": 2,
+                }
+            elif index == "root-human-index":
+                return {"Items": [], "Count": 0}
+            elif index == "correlation-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-root",
+                            "arrived_at": "2026-07-29T10:00:00Z",
+                            "status": "complete",
+                            "user_id": self._ROOT_USER,
+                            "correlation_id": "corr-dedup",
+                        },
+                        {
+                            "invocation_id": "inv-child",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "correlation_id": "corr-dedup",
+                            "parent_invocation_id": "inv-root",
+                        },
+                    ],
+                    "Count": 2,
+                }
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id=self._ROOT_USER)
+
+        # Only one chain row (not duplicated)
+        assert result.count == 1
+        assert result.chains[0].chain_id == "corr-dedup"
+        assert result.chains[0].root.invocation_id == "inv-root"
+
+    def test_backfill_correlation_index_error_degrades(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Error during root backfill → descendant skipped silently, no crash."""
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-orphan",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "channel": "github",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-broken",
+                            "parent_invocation_id": "inv-missing-root",
+                            "is_human_rooted": True,
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                return {"Items": [], "Count": 0}
+            elif index == "correlation-index":
+                raise ClientError(
+                    {"Error": {"Code": "ValidationException", "Message": "Index not found"}},
+                    "Query",
+                )
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        result = service.query_chains_by_user(user_id=self._ROOT_USER)
+
+        # No crash; chain not emitted (root backfill failed)
+        assert result.count == 0
+
+    def test_status_filter_backfilled_root_bypasses(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Backfilled chain root bypasses the status filter (intended semantic).
+
+        With status=complete, a chain whose root is 'failed' but contains a
+        matching 'complete' descendant IS emitted — the root is the chain anchor.
+        """
+
+        def query_side_effect(**kwargs):
+            index = kwargs.get("IndexName", "")
+            if index == "user-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-complete-child",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "root_human_id": self._ROOT_USER,
+                            "correlation_id": "corr-mixed-status",
+                            "parent_invocation_id": "inv-failed-root",
+                            "is_human_rooted": True,
+                        }
+                    ],
+                    "Count": 1,
+                }
+            elif index == "root-human-index":
+                return {"Items": [], "Count": 0}
+            elif index == "correlation-index":
+                return {
+                    "Items": [
+                        {
+                            "invocation_id": "inv-failed-root",
+                            "arrived_at": "2026-07-29T10:00:00Z",
+                            "status": "failed",  # Root is failed, not complete
+                            "user_id": self._ROOT_USER,
+                            "correlation_id": "corr-mixed-status",
+                        },
+                        {
+                            "invocation_id": "inv-complete-child",
+                            "arrived_at": "2026-07-29T10:05:00Z",
+                            "status": "complete",
+                            "user_id": self._BOT_USER,
+                            "correlation_id": "corr-mixed-status",
+                            "parent_invocation_id": "inv-failed-root",
+                        },
+                    ],
+                    "Count": 2,
+                }
+            return {"Items": [], "Count": 0}
+
+        mock_dynamodb_table.query.side_effect = query_side_effect
+        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
+        # Note: status filter is applied to the flat query (user-index), not backfill
+        result = service.query_chains_by_user(user_id=self._ROOT_USER, status="complete")
+
+        # Chain IS emitted — the backfilled root (status=failed) bypasses the filter
+        assert result.count == 1
+        assert result.chains[0].root.invocation_id == "inv-failed-root"

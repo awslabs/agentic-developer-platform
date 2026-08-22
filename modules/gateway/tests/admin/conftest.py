@@ -12,7 +12,8 @@ from src.admin.service import AdminService
 from src.shared.interfaces.budget import IBudgetService
 from src.shared.interfaces.ratelimit import IRateLimitService
 from src.shared.models.base import Base
-from src.shared.models.organization import Organization
+from src.shared.models.onboarding import TenantMembership
+from src.shared.models.organization import Organization, User
 from src.shared.models.usage import BedrockPoolAccount
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.common import BudgetCheckResult, RateLimitCheckResult
@@ -222,6 +223,44 @@ async def admin_service(
 async def access_control(db_session: AsyncSession) -> AccessControl:
     """Create an access control instance."""
     return AccessControl(db=db_session)
+
+
+@pytest.fixture
+async def org_admin_membership(db_session: AsyncSession, org_admin_context: TokenContext) -> None:
+    """Give ``org_admin_context`` the membership row that makes it a real org admin.
+
+    Issue #3987: ``tenant_memberships.role`` — not a token claim — is the authority
+    for org-level role, and PR 2 flipped the no-row fallback from ORG_ADMIN to
+    MEMBER. A token that merely *says* org admin no longer resolves to one, so any
+    spec asserting org-admin authority for this context must seed the row.
+
+    ``TenantMembership.user_id`` is ``users.id``, while the token carries the
+    Cognito sub, so a ``users`` row bridging the two is required as well.
+    """
+    db_session.add(Organization(id="org-001", name="org-001-name"))
+    await db_session.flush()
+    db_session.add(
+        User(
+            id="pg-org-admin-001",
+            org_id="org-001",
+            team_id="team-001",
+            email="org-admin-001@example.test",
+            name="org-admin-001",
+            cognito_sub=org_admin_context.user_id,
+            role="org_admin",
+        )
+    )
+    await db_session.flush()
+    db_session.add(
+        TenantMembership(
+            user_id="pg-org-admin-001",
+            tenant_id="org-001",
+            role="org_admin",
+            is_active=True,
+            joined_via="org_membership",
+        )
+    )
+    await db_session.commit()
 
 
 # Issue #133: Auth override fixtures for testing with real routes

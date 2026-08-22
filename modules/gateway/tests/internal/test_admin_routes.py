@@ -9,6 +9,7 @@ Coverage:
   - audit-entries filters by provenance_id and returns matching rows
   - both endpoints reject requests without valid auth (403)
   - audit-entries requires provenance_id query param (422)
+  - audit-entries requires org_id and always scopes by it (#3985)
 """
 
 from __future__ import annotations
@@ -161,7 +162,7 @@ class TestAuditEntries:
             client = TestClient(app)
             resp = client.get(
                 "/internal/v1/admin/audit-entries",
-                params={"provenance_id": "run-abc"},
+                params={"provenance_id": "run-abc", "org_id": "test-org"},
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
             assert resp.status_code == 200
@@ -189,7 +190,7 @@ class TestAuditEntries:
             client = TestClient(app)
             resp = client.get(
                 "/internal/v1/admin/audit-entries",
-                params={"provenance_id": "no-such-run"},
+                params={"provenance_id": "no-such-run", "org_id": "test-org"},
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
             assert resp.status_code == 200
@@ -238,14 +239,56 @@ class TestAuditEntries:
         finally:
             app.dependency_overrides.pop(get_db, None)
 
-    def test_no_org_id_returns_all_tenants(self, _mock_settings):
-        """When org_id is omitted, results are not tenant-scoped."""
-        mock_row_a = _make_audit_log(provenance_id="run-xyz", org_id="org-a")
-        mock_row_b = _make_audit_log(provenance_id="run-xyz", org_id="org-b")
-        mock_row_b.id = "audit-id-2"
+    def test_no_org_id_rejected(self, _mock_settings):
+        """Issue #3985: omitting org_id is now a 422 — it was a cross-tenant read.
+
+        Inverted from test_no_org_id_returns_all_tenants, which asserted 200 and
+        that the WHERE clause did NOT mention org_id. Unscoped results let one
+        caller on this endpoint read every tenant's security audit trail.
+        """
+        mock_session = AsyncMock()
+        app.dependency_overrides[get_db] = lambda: mock_session
+
+        try:
+            client = TestClient(app)
+            resp = client.get(
+                "/internal/v1/admin/audit-entries",
+                params={"provenance_id": "run-xyz"},
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+            assert resp.status_code == 422
+            # The query must never have run.
+            mock_session.execute.assert_not_called()
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+    def test_empty_org_id_rejected(self, _mock_settings):
+        """Issue #3985: org_id="" must not be accepted as a wildcard either.
+
+        Without min_length=1 an empty string would satisfy a required str param
+        and reach the query, matching only rows whose org_id is literally "".
+        """
+        mock_session = AsyncMock()
+        app.dependency_overrides[get_db] = lambda: mock_session
+
+        try:
+            client = TestClient(app)
+            resp = client.get(
+                "/internal/v1/admin/audit-entries",
+                params={"provenance_id": "run-xyz", "org_id": ""},
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+            assert resp.status_code == 422
+            mock_session.execute.assert_not_called()
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+    def test_org_id_always_in_where_clause(self, _mock_settings):
+        """Issue #3985: the tenant filter is unconditional, not opt-in."""
+        mock_row = _make_audit_log(provenance_id="run-xyz", org_id="org-a")
 
         mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [mock_row_a, mock_row_b]
+        mock_result.scalars.return_value.all.return_value = [mock_row]
 
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -256,22 +299,16 @@ class TestAuditEntries:
             client = TestClient(app)
             resp = client.get(
                 "/internal/v1/admin/audit-entries",
-                params={"provenance_id": "run-xyz"},
+                params={"provenance_id": "run-xyz", "org_id": "org-a"},
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
             assert resp.status_code == 200
-            data = resp.json()
-            assert len(data["entries"]) == 2
 
-            # Verify the SQL WHERE clause does NOT filter on org_id.
-            # The column appears in SELECT (it's returned), but should not
-            # appear in the WHERE clause when org_id param is omitted.
             call_args = mock_session.execute.call_args
             stmt = call_args[0][0]
             compiled = str(stmt.compile(compile_kwargs={"literal_binds": False}))
-            # Extract the WHERE clause portion
             where_clause = compiled.split("WHERE")[1] if "WHERE" in compiled else ""
-            assert "org_id" not in where_clause
+            assert "org_id" in where_clause
         finally:
             app.dependency_overrides.pop(get_db, None)
 
