@@ -34,6 +34,15 @@ operator has them; they are also in SSM / the deploy-instance issue):
 | `<DASHBOARD_URL>` | CloudFront domain of the admin dashboard, e.g. `https://dxxxxxxxxxxxx.cloudfront.net` | SSM `/adp/<env>/gateway/cloudfront-domain` |
 | `<AUTH_BROKER_URL>` | GitHub auth-broker endpoint, e.g. `https://<api-id>.execute-api.<region>.amazonaws.com/<env>/auth/github` | Gateway API GW (`/auth/github/{proxy+}` route) |
 
+The API GW invoke URL that `<AUTH_BROKER_URL>` and §2.4's Callback URL are built
+from is in SSM — this is the same value the manifest flow reads, so it is the
+authoritative source for both:
+
+```bash
+aws ssm get-parameter --name /adp/<env>/gateway/apigw-invoke-url \
+  --query Parameter.Value --output text
+```
+
 ## 2. Create the App (or open your existing one)
 
 Create at **your org** → Settings → Developer settings → GitHub Apps → New
@@ -59,7 +68,7 @@ across tabs in the left sidebar:
 | Webhook → Active | ✅ checked |
 | Webhook URL | `<WEBHOOK_URL>` |
 | Webhook secret | generate one (`openssl rand -hex 32`) and keep it — ADP needs the same value (§4) |
-| Setup URL | `<DASHBOARD_URL>/api/admin/connections/github/install-callback` |
+| Setup URL | `https://dxxxxxxxxxxxx.cloudfront.net/api/admin/connections/github/install-callback` — your `<DASHBOARD_URL>` followed by **exactly** `/api/admin/connections/github/install-callback` |
 | "Redirect on update" | ✅ checked (GitHub calls this *Setup on update*) |
 
 Without the Setup URL + redirect-on-update, GitHub leaves the browser on
@@ -151,9 +160,48 @@ On the same App settings page:
 
 | Field | Value |
 |---|---|
-| Callback URL | `<AUTH_BROKER_URL>/callback` |
+| Callback URL | `https://<api-id>.execute-api.<region>.amazonaws.com/<env>/auth/github/callback` |
 | "Request user authorization (OAuth) during installation" | ❌ **unchecked** |
 | "Expire user authorization tokens" | leave default |
+
+Substitute only `<api-id>`, `<region>`, and `<env>` (from the SSM invoke URL in
+§1) — **the path is written out in full above; do not assemble it from other
+values on this page.** Every segment is required, and `/github` is the one
+readers drop: `.../<env>/auth/callback` is a different, wrong URL. GitHub's
+field is labelled **Callback URL** (under *Identifying and authorizing users*);
+some UIs and readers call the same field the **Redirect URI** — they are the
+same field.
+
+If this URL is wrong, **ADP shows you nothing.** The broker only sends the
+callback at the GitHub *authorize* step, so GitHub rejects the redirect before
+ADP is ever invoked — there are no broker logs and no ADP error page to check.
+The error appears **on github.com**, on the authorize page itself.
+
+#### Which callback goes where
+
+Two different URLs in this system end in `callback`, and only one of them is
+ever typed into GitHub. Getting these backwards is the most common BYO login
+failure.
+
+| URL | Who uses it | Do you type it into GitHub? |
+|---|---|---|
+| `https://<api-id>.execute-api.<region>.amazonaws.com/<env>/auth/github/callback` | the auth broker, on API Gateway — GitHub redirects here after the user authorizes | ✅ **yes — this, and only this, goes in the Callback URL field above** |
+| `https://<cloudfront-domain>/auth/callback` | the dashboard SPA route the broker redirects the browser to, once it has minted a session | ❌ never — it is not a GitHub setting at all |
+
+The second row is a **single** SPA route with two producers (the broker, and
+Cognito's hosted UI when that path is enabled), which is why you may see it in
+two different places in the infrastructure. It is one URL, and it is not
+something you configure on your App.
+
+> ⚠️ **Do not use `/oauth2/idpresponse` here.** `docs/admin/github-sign-in.md`
+> tells you to put a
+> `https://<cognito-domain>.auth.<region>.amazoncognito.com/oauth2/idpresponse`
+> URL into a callback field. That belongs to the **separate, superseded OAuth
+> App + Cognito-IdP flow** (off by default: `enable_github_oauth = false`), not
+> to the GitHub App flow on this page. It is the only other URL in ADP's docs
+> that a reader pastes into a GitHub callback field, so it is the easiest one to
+> paste into the wrong one. If you are following this page, your Callback URL is
+> the API Gateway URL above.
 
 Notes:
 
@@ -266,9 +314,12 @@ Open `<DASHBOARD_URL>`, click *Log in with GitHub*, complete the GitHub
 authorize page, and confirm you land back on the dashboard authenticated (a
 brand-new user lands on a pending-approval page — that's correct; a platform
 admin approves the request). A GitHub 404 on the authorize page means the App
-is private and you're not an owner-org member (§2.5). Bouncing back to the
-ADP login page with no session means the broker callback URL doesn't match
-§2.4.
+is private and you're not an owner-org member (§2.5). An error **on the GitHub
+authorize page** about the redirect URI — never reaching ADP at all — means the
+App's Callback URL doesn't match §2.4; check it on GitHub, not in the ADP logs.
+Bouncing back to the ADP login page with `?error=` in the URL is a *different*
+failure: the callback reached the broker, but state verification, the token
+exchange, or the org allowlist rejected it.
 
 ## 6. Quick reference — what breaks when something's missing
 
@@ -282,7 +333,7 @@ ADP login page with no session means the broker callback URL doesn't match
 | Workflows permission missing | agent pushes touching `.github/workflows/**` rejected with "refusing to allow a GitHub App to create or update workflow" |
 | Issues/PR permission removed after setup | matching event subscriptions silently dropped; mentions do nothing (see §2.3) |
 | Setup URL missing | install "succeeds" on GitHub but never appears in ADP Connections (#2823) |
-| OAuth callback URL wrong/missing | GitHub login bounces to the ADP login page with no session |
+| OAuth callback URL wrong/missing | GitHub's authorize page shows a redirect-URI error; the request never reaches ADP, so there are no broker logs (§2.4) |
 | Client ID/secret not seeded | login button errors or Cognito rejects the identity |
 | App private + outside user | GitHub 404 on the sign-in authorize page |
 | Repo not in installation | agents work in covered repos, silent no-op in this one |
