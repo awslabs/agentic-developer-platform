@@ -21,13 +21,35 @@ enable_container_insights = true
 
 # Human operator role(s) that need EKS cluster-admin, beyond the deploying
 # caller and the CI runner (those two are added automatically in main.tf).
-# "Admin" is this account's human-operator role; without it here, a CI apply
-# (running as agent-runner-role) would destroy Admin's access entry and lock
-# human operators out of kubectl. Account-specific by nature, hence in tfvars
-# rather than derived. distinct() dedupes if a future deployer IS Admin.
-extra_cluster_admin_principal_arns = [
-  "arn:aws:iam::879318057152:role/Admin",
-]
+# Without an entry here, a CI apply (running as agent-runner-role) can destroy a
+# human operator's access entry and lock them out of kubectl.
+#
+# Intentionally EMPTY in the shipped repo (issue #4027). This previously
+# hardcoded ADP's own dev-account role ARN, which broke every self-managed
+# deploy: applied as-is it grants a *foreign* account's role cluster-admin on
+# the customer's cluster, and rewritten to the local account by deploy.sh it
+# names a role that doesn't exist in an IAM Identity Center account — the same
+# `InvalidParameterException: invalid principal` this issue fixes for the
+# deployer. Account-specific by nature, so it can't be derived or shipped.
+#
+# Operators: set your own durable operator ARN(s) per-invocation via
+#   export TF_VAR_extra_cluster_admin_principal_arns='["arn:aws:iam::<acct>:role/<Role>"]'
+# Prefer a stable IAM role over an Identity Center permission-set role: the
+# AWSReservedSSO_<PermissionSet>_<suffix> name changes if the permission set is
+# re-provisioned, and it differs per permission set — so an access entry derived
+# from an SSO session is not durable. principal_arn is ForceNew, so a changed
+# name means destroy+create of the access entry on the next apply.
+# distinct() in main.tf dedupes if the deployer is already listed here.
+#
+# NOT assigned here, deliberately — same reason as eks_public_access_cidrs
+# below. A `-var-file` assignment OVERRIDES TF_VAR_ environment variables, so
+# an explicit `= []` on this line would silently defeat every TF_VAR_ override:
+# CI's passthrough (platform-infra-apply.yml reads the EXTRA_CLUSTER_ADMIN_ARNS
+# repository variable) and the operator export above would both be ignored, and
+# the apply would destroy the operator's access entry anyway. The variable's
+# declared default in platform/infra/variables.tf is already [], so leaving it
+# unassigned keeps the shipped repo portable AND keeps the override working.
+# Set EXTRA_CLUSTER_ADMIN_ARNS (repo variable) to this account's operator ARNs.
 
 # `eks_public_access_cidrs` is intentionally NOT set here so the repo stays
 # portable. Set it per-invocation via:

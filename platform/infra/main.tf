@@ -47,6 +47,29 @@ data "aws_iam_roles" "ci_runner" {
   path_prefix = "/"
 }
 
+# Issue #4027: Resolve the deployer's real IAM role ARN instead of reconstructing
+# it from the STS assumed-role ARN. STS ARNs never carry the IAM path, so the old
+# string rewrite (`assumed-role/NAME/session` → `role/NAME`) produced a
+# nonexistent principal for AWS IAM Identity Center permission-set roles, which
+# live under /aws-reserved/sso.amazonaws.com/<region>/ — and
+# aws_eks_access_entry fails with InvalidParameterException "invalid principal"
+# on a principal that doesn't exist. GetRole's RoleName pattern ([\w+=,.@-]+)
+# can't contain "/", so lookup is by friendly name only; the returned arn is
+# path-qualified. Note EKS access entries *accept* an IAM path (unlike aws-auth
+# ConfigMap entries, which forbid it) — so the path must be preserved, not
+# stripped.
+#
+# count-guarded because this singular data source hard-errors at plan time when
+# the role isn't found, unlike the plural data.aws_iam_roles.ci_runner above
+# (which returns an empty list — exactly the tolerance #2563 relies on). Here
+# absence *should* be loud, but only for assumed-role callers: a plain IAM user
+# caller has no role to look up and must not fail the plan.
+data "aws_iam_role" "deployer" {
+  count = length(regexall("^arn:[^:]+:sts::[0-9]+:assumed-role/", local.caller_arn)) > 0 ? 1 : 0
+
+  name = regex("^arn:[^:]+:sts::[0-9]+:assumed-role/([^/]+)/", local.caller_arn)[0]
+}
+
 locals {
   name_prefix  = coalesce(var.name_prefix, "adp-${var.environment}")
   state_bucket = coalesce(var.state_bucket, "adp-terraform-state-${data.aws_caller_identity.current.account_id}")
@@ -61,15 +84,15 @@ locals {
 
   # Deployer principal that should get EKS cluster-admin.
   # If the caller is an assumed role (e.g. arn:aws:sts::<acct>:assumed-role/Admin/session),
-  # reduce it to the underlying IAM role ARN so the access entry is stable.
+  # resolve the underlying IAM role ARN so the access entry is stable. See the
+  # data.aws_iam_role.deployer comment above for why this is a lookup, not a
+  # string rewrite (issue #4027). Non-assumed-role callers (plain IAM users)
+  # pass through unchanged — the data source isn't created for them, so the [0]
+  # index is only ever evaluated on the assumed-role branch.
   caller_arn = data.aws_caller_identity.current.arn
   deployer_role_arn = (
-    length(regexall("^arn:aws:sts::[0-9]+:assumed-role/", local.caller_arn)) > 0
-    ? replace(
-      replace(local.caller_arn, "/^arn:aws:sts::/", "arn:aws:iam::"),
-      "/:assumed-role/([^/]+)/.*$/",
-      ":role/$1"
-    )
+    length(data.aws_iam_role.deployer) > 0
+    ? data.aws_iam_role.deployer[0].arn
     : local.caller_arn
   )
 

@@ -120,6 +120,48 @@ jobs:
             echo "Auto-detected runner IP: ${MY_IP}/32"
           fi
 
+      # Durable operator ARN(s) that must keep EKS cluster-admin. The shipped
+      # environments/dev/platform.tfvars deliberately leaves
+      # extra_cluster_admin_principal_arns unassigned so the repo stays portable
+      # (#4027: a hardcoded ARN either grants a foreign account cluster-admin on a
+      # customer cluster, or names a role that doesn't exist in an IAM Identity
+      # Center account) — and so this TF_VAR_ override is not overridden by the
+      # -var-file. This step supplies the account's own value from the
+      # EXTRA_CLUSTER_ADMIN_ARNS repository variable, so a CI apply doesn't destroy
+      # a human operator's access entry and lock them out of kubectl (principal_arn
+      # is ForceNew, so a dropped entry is a real destroy, not a cosmetic diff).
+      # Unset/blank variable = no-op: the variable's declared default ([]) applies.
+      - name: Set extra cluster admin principal ARNs
+        env:
+          EXTRA_CLUSTER_ADMIN_ARNS: ${{ vars.EXTRA_CLUSTER_ADMIN_ARNS }}
+        run: |
+          set -euo pipefail
+          RAW=$(printf '%s' "${EXTRA_CLUSTER_ADMIN_ARNS:-}" | tr -d '[:space:]')
+          if [ -z "$RAW" ]; then
+            echo "EXTRA_CLUSTER_ADMIN_ARNS not set — using the declared default ([])."
+            exit 0
+          fi
+          # Accept either a JSON list (passed through verbatim) or a bare /
+          # comma-separated ARN list, which is wrapped here. A bare ARN handed
+          # straight to a list(string) TF_VAR is a plan-time type error, so
+          # normalising is what makes the plain-ARN form safe to configure.
+          case "$RAW" in
+            \[*\])
+              TFVAR="$RAW"
+              ;;
+            *)
+              IFS=',' read -ra ARNS <<< "$RAW"
+              ITEMS=""
+              for arn in "${ARNS[@]}"; do
+                [ -n "$arn" ] || continue
+                ITEMS="${ITEMS}${ITEMS:+,}\"${arn}\""
+              done
+              TFVAR="[${ITEMS}]"
+              ;;
+          esac
+          echo "TF_VAR_extra_cluster_admin_principal_arns=${TFVAR}" >> "$GITHUB_ENV"
+          echo "Extra cluster-admin principals: ${TFVAR}"
+
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
