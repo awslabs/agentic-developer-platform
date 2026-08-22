@@ -268,6 +268,16 @@ Always use non-interactive flags to avoid hanging:
 
 Every issue you file (or edit to complete) **must** include these five top-level sections, in this order, before any secondary content:
 
+### 0. `## The problem in plain terms` (REQUIRED opening, before everything else)
+2–4 sentences describing what a user, customer, or operator **experiences**: what they did, what they expected, what actually happened, and what it cost them. Written so someone who has never opened this codebase understands it on first read. Follow with a single `**The fix in one line:**` sentence.
+
+Hard rules for this section:
+- **No file paths, no line numbers, no function names, no ARNs, no table names.** Name the symptom, not the mechanism. All of that belongs in `## Design`.
+- For **features** (no incident to describe): who wants what outcome, why it matters to them, and the approach in one line.
+- If you cannot write this section, you do not understand the issue well enough to file it yet.
+
+Why it exists: the technical sections below are for the agent that implements; this section is for the humans who triage, prioritize, review, and report to customers. Dense openings meant nobody could digest the backlog without re-reading code — an Aug 2026 batch of incident-report issues (#4021–#4032) had to be retrofitted with these sections after the fact. The layering is deliberate: plain terms on top for people, full file-level detail below for agents. One does not replace the other.
+
 ### 1. `## Description`
 What we're trying to achieve and why. One paragraph stating the goal in plain language, one paragraph on motivation (the problem this solves or the gap it closes). No implementation detail here — a product manager should be able to understand this section without reading the rest.
 
@@ -309,8 +319,8 @@ After the five mandatory sections, the issue may include: `## Scope`, `## Non-go
 
 ### Enforcement
 
-- **When filing an issue**: include all five sections from the first draft. Empty/placeholder sections are a code smell — if you don't know the design yet, file the issue as a *spike* (label: `architect`) and the design section explicitly says "spike — produces design note."
-- **When reviewing an existing issue** (before labeling it to trigger an agent): if Description / Impact analysis / Design / Deployment / Validation are missing, add them before labeling. An agent without a Design section will invent one; without a Deployment section will not know whether Terraform must apply; without a Validation section will skip writing meaningful tests; without Impact analysis it will miss failure modes that should have been surfaced as test cases.
+- **When filing an issue**: include the plain-terms opening plus all five sections from the first draft. Empty/placeholder sections are a code smell — if you don't know the design yet, file the issue as a *spike* (label: `architect`) and the design section explicitly says "spike — produces design note."
+- **When reviewing an existing issue** (before labeling it to trigger an agent): if the plain-terms opening / Description / Impact analysis / Design / Deployment / Validation are missing, add them before labeling. An agent without a Design section will invent one; without a Deployment section will not know whether Terraform must apply; without a Validation section will skip writing meaningful tests; without Impact analysis it will miss failure modes that should have been surfaced as test cases.
 - **For EPIC-level issues** that aren't directly implementable: the five-section rule still applies but Deployment/Validation can be "see child issues."
 - **For doc-only issues**: Deployment is "merge the PR, no service redeploys"; Validation is "PR review confirms the doc reads correctly."
 - **For test-coverage issues** (adding tests for a feature that already shipped): use the template below instead of the five-section rule — the generic template doesn't fit because Deployment is trivial and Validation IS the work.
