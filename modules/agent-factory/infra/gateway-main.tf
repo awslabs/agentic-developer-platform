@@ -456,6 +456,14 @@ resource "kubernetes_config_map" "agent_gateway_config" {
 # =============================================================================
 # The entrypoint writes step-level bootstrap logs directly to CloudWatch so
 # Setup failures are diagnosable after the pod is GC'd by KEDA.
+#
+# SCOPE: this grant covers aws_iam_role.gateway_agent only — service account
+# "adp-agent" in the gateway namespace. It does NOT cover the KEDA agent-worker
+# (SA "agent-scaledjob-sa" in adp-agents), which assumes a separate role defined
+# in webhook-ingress/infra/scaledjob-iam.tf. #1690 landed this grant on this role
+# alone, so the KEDA worker's bootstrap logging was silently denied until #4028
+# added the equivalent BootstrapLogging statement there. Two roles, two grants —
+# when changing one, check the other.
 # =============================================================================
 
 resource "aws_iam_role_policy" "gateway_agent_bootstrap_logs" {

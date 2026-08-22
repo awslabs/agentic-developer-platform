@@ -12,12 +12,13 @@
 #   - Secrets Manager: read GitHub App keys, tenant credentials
 #   - STS: assume customer AWS roles for operations-persona tasks
 #   - Execute API: invoke internal gateway endpoints via SigV4
-#   - DynamoDB: write correlation pointers
-#   - CloudWatch Logs: agent execution logging
+#   - DynamoDB: update correlation pointers (UpdateItem, not PutItem — #1716)
+#   - KMS: decrypt the marker-signing key only (condition-scoped — #4028)
+#   - CloudWatch Logs: agent execution + bootstrap logging
 #   - S3: beads state + url-analysis evidence + agent-run-logs
 #   - Preflight: read-only checks (multiple services)
 #
-# Issue: #346, #1204
+# Issue: #346, #1204, #4028
 # =============================================================================
 
 resource "aws_iam_role" "agent_scaledjob" {
@@ -104,10 +105,17 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
         }
       },
       {
+        # UpdateItem, NOT PutItem (issue #4028). The worker's write_pointer()
+        # switched to update_item in #1716 so it only SETs the attributes it
+        # owns, leaving webhook-managed fields (e.g. last_triggered_persona)
+        # intact — a PutItem would wipe them. PutItem is therefore deliberately
+        # NOT granted: it is dead for this role and re-granting it would let the
+        # worker reintroduce the #1716 bug.
+        # See agent-worker-image/lib/correlation_store.py:77-112.
         Sid    = "DynamoDBTableMgmt"
         Effect = "Allow"
         Action = [
-          "dynamodb:PutItem"
+          "dynamodb:UpdateItem"
         ]
         Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-correlation-pointers"
       },
@@ -160,6 +168,44 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
         ]
       },
       {
+        # Durable bootstrap logging (issue #4028). The worker writes step-level
+        # Setup logs to /adp/<env>/agent-factory/bootstrap so bootstrap failures
+        # stay diagnosable after KEDA GCs the pod — the CloudWatchLogGroups grant
+        # above only covers /github-ccsdk-agent/logs, so every bootstrap write
+        # was denied and the logs existed on pod stdout only.
+        #
+        # An identical grant exists at agent-factory/infra/gateway-main.tf
+        # (#1690) but is attached to aws_iam_role.gateway_agent (SA "adp-agent"
+        # in the gateway namespace) — a different worker path. It has no effect
+        # on agent-scaledjob-sa, which is why this drifted unnoticed.
+        #
+        # CreateLogGroup is required even though the group is TF-managed
+        # (aws_cloudwatch_log_group.agent_bootstrap in cloudwatch.tf):
+        # bootstrap_logger.py:62-66 calls it unconditionally and re-raises
+        # anything other than ResourceAlreadyExistsException, which trips the
+        # outer handler at :85-88 and disables CloudWatch logging for the whole
+        # run. With the group present the call returns AlreadyExists, which the
+        # code swallows correctly.
+        #
+        # PutRetentionPolicy is deliberately NOT granted: the worker would force
+        # retentionInDays=7 on every run while TF declares 14 (this module's
+        # convention), producing permanent drift on retention_in_days. The
+        # worker's put_retention_policy call is individually wrapped in
+        # try/except ClientError: pass (bootstrap_logger.py:68-71), so denying
+        # it is a genuine no-op. TF owns retention.
+        Sid    = "BootstrapLogging"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = [
+          "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:/adp/*/agent-factory/bootstrap",
+          "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:/adp/*/agent-factory/bootstrap:*"
+        ]
+      },
+      {
         Sid    = "Multiple"
         Effect = "Allow"
         Action = [
@@ -197,6 +243,45 @@ resource "aws_iam_role_policy" "agent_scaledjob_permissions" {
           "secretsmanager:GetSecretValue"
         ]
         Resource = "arn:aws:secretsmanager:us-east-1:*:secret:adp/*"
+      },
+      {
+        # Marker-signing key decrypt (issue #4028, for #3178 marker signing).
+        # aws_secretsmanager_secret.marker_signing_key is encrypted with the
+        # platform webhook-secrets CMK (secrets.tf:77), but the only KMS grant on
+        # this role was the DynamoDB key — so GetSecretValue returned
+        # AccessDeniedException and marker_signing.py degraded to unsigned
+        # markers ("Markers will be unsigned", marker_signing.py:67).
+        #
+        # SCOPING IS LOAD-BEARING — do NOT relax this to a bare kms:Decrypt on
+        # the CMK, and do NOT mirror the Lambda-role statement at iam.tf:172-184
+        # (#2567) verbatim. That CMK also encrypts the platform GitHub App
+        # private key (adp/<env>/github-app/adp-agent-platform-key, org-wide
+        # impersonation), the webhook HMAC secret, and the GitLab webhook secret.
+        # SecretsManagerOps above already grants GetSecretValue on secret:adp/*,
+        # so the absence of kms:Decrypt is the ONLY control stopping this role
+        # from reading those. This role runs semi-trusted, agent-authored code,
+        # so an unconditioned grant would be a privilege escalation.
+        #
+        # #2567 is not a precedent here: that role is the webhook Lambda, which
+        # legitimately needs all five secrets and runs no untrusted code. Same
+        # statement shape, different threat model.
+        #
+        # Secrets Manager passes SecretARN in the KMS encryption context on every
+        # GetSecretValue, so ViaService + EncryptionContext:SecretARN permits
+        # exactly the marker-signing-key read and nothing else on this key.
+        Sid    = "MarkerSigningKeyKMSDecrypt"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource = local.webhook_secrets_kms_key_arn
+        Condition = {
+          StringEquals = {
+            "kms:ViaService"                  = "secretsmanager.${var.aws_region}.amazonaws.com"
+            "kms:EncryptionContext:SecretARN" = aws_secretsmanager_secret.marker_signing_key.arn
+          }
+        }
       },
       {
         Sid    = "SQSQueueMgmt"

@@ -171,6 +171,15 @@ locals {
                 env:
                   - name: AWS_REGION
                     value: ${var.aws_region}
+                  # Issue #4028: without this the worker falls back to "dev" in
+                  # EVERY environment (entrypoint.py: os.environ.get("ENVIRONMENT",
+                  # os.environ.get("ENV", "dev")); no Dockerfile default), so
+                  # staging/prod bootstrap logs were written to the dev log group
+                  # /adp/dev/agent-factory/bootstrap — cross-environment
+                  # commingling, and env-scoped IAM/log-group resources would
+                  # silently deny outside dev.
+                  - name: ENVIRONMENT
+                    value: ${var.environment}
                   - name: QUEUE_URL
                     value: ${aws_sqs_queue.agent_submit.url}
                   - name: URL_ANALYSIS_EVIDENCE_BUCKET
@@ -202,8 +211,9 @@ locals {
                   # Issue #1679/#1460: without this the worker's write_pointer()
                   # silently no-ops (correlation_store.py guards on this env var),
                   # so triggering_invocation_id / parent_invocation_id never persist
-                  # and agent-to-agent lineage is null. The IRSA role already has
-                  # PutItem on this table (scaledjob-iam.tf).
+                  # and agent-to-agent lineage is null. The IRSA role has
+                  # UpdateItem on this table (scaledjob-iam.tf) — UpdateItem, not
+                  # PutItem, per #1716/#4028.
                   - name: CORRELATION_POINTERS_TABLE
                     value: ${aws_dynamodb_table.correlation_pointers.name}
                   # Issue #3178: correlation marker HMAC signing key (cred-binding S4).
