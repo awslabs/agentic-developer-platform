@@ -963,6 +963,21 @@ async def _write_installation_identity_index(
             org_id,
         )
 
+    # Issue #3860: Write reverse row (org_installation/<org> → installation_id)
+    # so that resolve_installation_for_tenant() (used by adp-trigger) can resolve
+    # the installation_id from the org_id. Without this, UI-installed tenants
+    # permanently 422 on agent-to-agent dispatch.
+    reverse_success = await client.write_reverse_installation_identity(
+        org_id=org_id,
+        installation_id=installation_id,
+    )
+    if not reverse_success:
+        logger.warning(
+            "identity-index: failed to write reverse row org_installation/%s → %d (adp-trigger will fail until self-healed or backfilled)",
+            org_id,
+            installation_id,
+        )
+
 
 async def list_connections(
     *,

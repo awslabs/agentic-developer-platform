@@ -307,6 +307,108 @@ class IdentityIndexClient:
         )
         return False
 
+    async def write_reverse_installation_identity(
+        self,
+        org_id: str,
+        installation_id: int,
+    ) -> bool:
+        """Write the reverse org_installation row (org_id → installation_id).
+
+        Issue #3860: The UI install-callback path only wrote the forward row
+        (github_installation_id → org). This method writes the reverse row so
+        that resolve_installation_for_tenant() (used by adp-trigger) can look
+        up the installation_id from the org_id.
+
+        Guard semantics (same as _auto_register_installation in webhook-ingress):
+        - If no row exists → write it (with auto_registered=True).
+        - If row exists with auto_registered=True → overwrite (idempotent refresh).
+        - If row exists WITHOUT auto_registered → Postgres-owned, do NOT clobber.
+
+        Returns True if write succeeded or was a no-op (guard respected),
+        False if all retries exhausted.
+        """
+        key = {
+            "identity_type": {"S": "org_installation"},
+            "identity_value": {"S": org_id},
+        }
+
+        # First, read the existing row to check the guard
+        for attempt in range(MAX_RETRIES):
+            try:
+                resp = await asyncio.to_thread(
+                    self._client.get_item,
+                    TableName=self._table_name,
+                    Key=key,
+                )
+                break
+            except ClientError as e:
+                wait = BASE_BACKOFF_SECONDS * (2**attempt)
+                logger.warning(
+                    "identity-index get_item (reverse guard) failed (attempt %d/%d): %s. Retrying in %.1fs",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    e.response["Error"]["Message"],
+                    wait,
+                )
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(wait)
+        else:
+            logger.error(
+                "identity-index write_reverse_installation_identity: exhausted retries on get_item for org=%s",
+                org_id,
+            )
+            return False
+
+        existing = resp.get("Item")
+        if existing is not None and not existing.get("auto_registered", {}).get("BOOL", False):
+            # Postgres-owned row — do not clobber
+            logger.info(
+                "identity-index: reverse row for org=%s exists without auto_registered — not clobbering (Postgres-owned)",
+                org_id,
+            )
+            return True  # No-op is success (guard respected)
+
+        # Write (or overwrite) the reverse row
+        item = {
+            "identity_type": {"S": "org_installation"},
+            "identity_value": {"S": org_id},
+            "installation_id": {"N": str(installation_id)},
+            "updated_at": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+            "auto_registered": {"BOOL": True},
+        }
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                await asyncio.to_thread(
+                    self._client.put_item,
+                    TableName=self._table_name,
+                    Item=item,
+                )
+                logger.info(
+                    "identity-index: wrote reverse row org_installation/%s → installation_id=%d",
+                    org_id,
+                    installation_id,
+                )
+                return True
+            except ClientError as e:
+                wait = BASE_BACKOFF_SECONDS * (2**attempt)
+                logger.warning(
+                    "identity-index write_reverse put_item failed (attempt %d/%d): %s. Retrying in %.1fs",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    e.response["Error"]["Message"],
+                    wait,
+                )
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(wait)
+
+        logger.error(
+            "identity-index write_reverse_installation_identity exhausted retries: org=%s installation_id=%d",
+            org_id,
+            installation_id,
+        )
+        return False
+
     async def delete_identity(
         self,
         identity_type: IdentityType,

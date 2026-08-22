@@ -875,6 +875,152 @@ class TestInstallCallbackWritesDDB:
 
 
 # ---------------------------------------------------------------------------
+# Reverse row write (Issue #3860)
+# ---------------------------------------------------------------------------
+
+
+class TestInstallCallbackWritesReverseRow:
+    """Issue #3860: install_callback must write the REVERSE row (org_installation)
+    so that resolve_installation_for_tenant() (used by adp-trigger) works for
+    UI-installed tenants."""
+
+    async def test_write_function_writes_reverse_row(self, monkeypatch):
+        """_write_installation_identity_index writes both forward AND reverse rows."""
+        import importlib
+
+        import src.admin.connections.service as svc_mod
+
+        importlib.reload(svc_mod)
+        real_fn = svc_mod._write_installation_identity_index
+
+        mock_ddb_client = MagicMock()
+        # get_item for the reverse-row guard returns empty (no existing row)
+        mock_ddb_client.get_item.return_value = {}
+
+        with patch(
+            "src.admin.identity_index.boto3.client",
+            return_value=mock_ddb_client,
+        ):
+            await real_fn(
+                installation_id=146123525,
+                org_id="sophos-hackathon",
+            )
+
+        # Forward row: update_item call
+        mock_ddb_client.update_item.assert_called_once()
+        update_kwargs = mock_ddb_client.update_item.call_args[1]
+        assert update_kwargs["Key"]["identity_type"] == {"S": "github_installation_id"}
+        assert update_kwargs["Key"]["identity_value"] == {"S": "146123525"}
+
+        # Reverse row: put_item call (org_installation)
+        put_calls = mock_ddb_client.put_item.call_args_list
+        assert len(put_calls) == 1
+        put_kwargs = put_calls[0][1]
+        assert put_kwargs["Item"]["identity_type"] == {"S": "org_installation"}
+        assert put_kwargs["Item"]["identity_value"] == {"S": "sophos-hackathon"}
+        assert put_kwargs["Item"]["installation_id"] == {"N": "146123525"}
+        assert put_kwargs["Item"]["auto_registered"] == {"BOOL": True}
+
+    async def test_reverse_row_guard_respects_postgres_owned(self, monkeypatch):
+        """If a non-auto_registered reverse row exists, do NOT clobber it."""
+        import importlib
+
+        import src.admin.connections.service as svc_mod
+
+        importlib.reload(svc_mod)
+        real_fn = svc_mod._write_installation_identity_index
+
+        mock_ddb_client = MagicMock()
+        # get_item returns a Postgres-owned row (no auto_registered flag)
+        mock_ddb_client.get_item.return_value = {
+            "Item": {
+                "identity_type": {"S": "org_installation"},
+                "identity_value": {"S": "managed-tenant"},
+                "installation_id": {"N": "999999"},
+                "updated_at": {"S": "2026-07-01T00:00:00Z"},
+            }
+        }
+
+        with patch(
+            "src.admin.identity_index.boto3.client",
+            return_value=mock_ddb_client,
+        ):
+            await real_fn(
+                installation_id=146123525,
+                org_id="managed-tenant",
+            )
+
+        # Forward row update_item should still fire
+        mock_ddb_client.update_item.assert_called_once()
+        # Reverse row put_item should NOT fire (guard respected)
+        mock_ddb_client.put_item.assert_not_called()
+
+    async def test_reverse_row_overwrites_auto_registered(self, monkeypatch):
+        """If an auto_registered reverse row exists, overwrite it (idempotent refresh)."""
+        import importlib
+
+        import src.admin.connections.service as svc_mod
+
+        importlib.reload(svc_mod)
+        real_fn = svc_mod._write_installation_identity_index
+
+        mock_ddb_client = MagicMock()
+        # get_item returns an auto_registered row → safe to overwrite
+        mock_ddb_client.get_item.return_value = {
+            "Item": {
+                "identity_type": {"S": "org_installation"},
+                "identity_value": {"S": "sophos-hackathon"},
+                "installation_id": {"N": "146123525"},
+                "updated_at": {"S": "2026-07-12T00:00:00Z"},
+                "auto_registered": {"BOOL": True},
+            }
+        }
+
+        with patch(
+            "src.admin.identity_index.boto3.client",
+            return_value=mock_ddb_client,
+        ):
+            await real_fn(
+                installation_id=146123525,
+                org_id="sophos-hackathon",
+            )
+
+        # Both forward and reverse writes should fire
+        mock_ddb_client.update_item.assert_called_once()
+        mock_ddb_client.put_item.assert_called_once()
+
+    async def test_reverse_row_failure_does_not_propagate(self, monkeypatch):
+        """Reverse-row write failure is best-effort — does not raise."""
+        import importlib
+
+        from botocore.exceptions import ClientError
+
+        import src.admin.connections.service as svc_mod
+
+        importlib.reload(svc_mod)
+        real_fn = svc_mod._write_installation_identity_index
+
+        mock_ddb_client = MagicMock()
+        # get_item succeeds (no existing row)
+        mock_ddb_client.get_item.return_value = {}
+        # update_item (forward row) succeeds
+        mock_ddb_client.update_item.return_value = {}
+        # put_item (reverse row) fails
+        error_response = {"Error": {"Code": "InternalServerError", "Message": "boom"}}
+        mock_ddb_client.put_item.side_effect = ClientError(error_response, "PutItem")
+
+        with patch(
+            "src.admin.identity_index.boto3.client",
+            return_value=mock_ddb_client,
+        ):
+            # Should not raise — best-effort
+            await real_fn(
+                installation_id=146123525,
+                org_id="sophos-hackathon",
+            )
+
+
+# ---------------------------------------------------------------------------
 # Placeholder sentinel handling (Issue #2659)
 # ---------------------------------------------------------------------------
 

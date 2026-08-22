@@ -46,10 +46,12 @@ class TestResolveInstallationForTenant:
 
     @patch("common.installation_resolver._get_table")
     def test_unknown_org_returns_none(self, mock_table):
-        """Unknown org returns None."""
+        """Unknown org returns None (no reverse row AND no forward rows)."""
         from common.installation_resolver import resolve_installation_for_tenant
 
         mock_table.return_value.get_item.return_value = {}
+        # Issue #3860: forward-scan fallback also finds nothing
+        mock_table.return_value.query.return_value = {"Items": []}
 
         result = resolve_installation_for_tenant("unknown-org")
 
@@ -130,3 +132,127 @@ class TestResolveInstallationForTenant:
 
         assert result == 124731274
         assert isinstance(result, int)
+
+
+class TestForwardScanFallback:
+    """Issue #3860: When the reverse row is missing, the resolver should
+    attempt a forward-scan fallback to find the installation_id from
+    forward rows (github_installation_id → org_id)."""
+
+    @patch("common.installation_resolver._get_table")
+    def test_single_match_returns_installation_id(self, mock_table):
+        """Forward-scan with exactly one match returns installation_id."""
+        from common.installation_resolver import resolve_installation_for_tenant
+
+        table = mock_table.return_value
+        # Reverse row miss
+        table.get_item.return_value = {}
+        # Forward-scan returns exactly one match
+        table.query.return_value = {
+            "Items": [
+                {
+                    "identity_type": "github_installation_id",
+                    "identity_value": "146123525",
+                    "org_id": "sophos-hackathon",
+                    "updated_at": "2026-07-12T00:00:00Z",
+                }
+            ]
+        }
+
+        result = resolve_installation_for_tenant("sophos-hackathon")
+
+        assert result == 146123525
+        # Verify write-through was attempted
+        table.put_item.assert_called_once()
+        put_kwargs = table.put_item.call_args[1]
+        assert put_kwargs["Item"]["identity_type"] == "org_installation"
+        assert put_kwargs["Item"]["identity_value"] == "sophos-hackathon"
+        assert put_kwargs["Item"]["installation_id"] == 146123525
+        assert put_kwargs["Item"]["auto_registered"] is True
+
+    @patch("common.installation_resolver._get_table")
+    def test_multiple_matches_refuses_ambiguous(self, mock_table):
+        """Forward-scan with multiple matches refuses (returns None)."""
+        from common.installation_resolver import resolve_installation_for_tenant
+
+        table = mock_table.return_value
+        # Reverse row miss
+        table.get_item.return_value = {}
+        # Forward-scan returns multiple matches → ambiguous
+        table.query.return_value = {
+            "Items": [
+                {
+                    "identity_type": "github_installation_id",
+                    "identity_value": "111111111",
+                    "org_id": "ambiguous-org",
+                },
+                {
+                    "identity_type": "github_installation_id",
+                    "identity_value": "222222222",
+                    "org_id": "ambiguous-org",
+                },
+            ]
+        }
+
+        result = resolve_installation_for_tenant("ambiguous-org")
+
+        assert result is None
+        # No write-through on ambiguous
+        table.put_item.assert_not_called()
+
+    @patch("common.installation_resolver._get_table")
+    def test_no_forward_matches_returns_none(self, mock_table):
+        """Forward-scan with zero matches returns None."""
+        from common.installation_resolver import resolve_installation_for_tenant
+
+        table = mock_table.return_value
+        # Reverse row miss
+        table.get_item.return_value = {}
+        # Forward-scan returns nothing
+        table.query.return_value = {"Items": []}
+
+        result = resolve_installation_for_tenant("ghost-org")
+
+        assert result is None
+        table.put_item.assert_not_called()
+
+    @patch("common.installation_resolver._get_table")
+    def test_write_through_failure_still_returns_id(self, mock_table):
+        """If write-through fails, the resolution still succeeds."""
+        from common.installation_resolver import resolve_installation_for_tenant
+
+        table = mock_table.return_value
+        # Reverse row miss
+        table.get_item.return_value = {}
+        # Forward-scan returns one match
+        table.query.return_value = {
+            "Items": [
+                {
+                    "identity_type": "github_installation_id",
+                    "identity_value": "146123525",
+                    "org_id": "sophos-hackathon",
+                }
+            ]
+        }
+        # Write-through fails
+        table.put_item.side_effect = Exception("DDB write error")
+
+        result = resolve_installation_for_tenant("sophos-hackathon")
+
+        # Resolution still succeeds even though write-through failed
+        assert result == 146123525
+
+    @patch("common.installation_resolver._get_table")
+    def test_forward_scan_query_error_returns_none(self, mock_table):
+        """If the forward-scan query itself fails, returns None."""
+        from common.installation_resolver import resolve_installation_for_tenant
+
+        table = mock_table.return_value
+        # Reverse row miss
+        table.get_item.return_value = {}
+        # Forward-scan query errors
+        table.query.side_effect = Exception("DDB query timeout")
+
+        result = resolve_installation_for_tenant("error-org")
+
+        assert result is None
