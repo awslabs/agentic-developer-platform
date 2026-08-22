@@ -7,7 +7,7 @@
  * admin toggle visibility, error/retry UI, trigger badges, chain view.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, within, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -114,9 +114,12 @@ function renderAgentActivity(initialRoute = '/') {
  * The component defaults to "By chain" view (issue #1662), which disables the
  * flat query (getMyInvocations). Tests that assert on flat-table rows, status
  * badges, trigger columns, etc. need the "By run" view active.
+ *
+ * Issue #4022: accepts an optional pre-built `user` so fake-timer tests can
+ * pass a session configured with `advanceTimers` (a default `userEvent.setup()`
+ * waits on real timers and would hang under `vi.useFakeTimers()`).
  */
-async function renderAgentActivityFlat() {
-  const user = userEvent.setup();
+async function renderAgentActivityFlat(user = userEvent.setup()) {
   const result = renderAgentActivity();
 
   // Wait for the default chain view to load
@@ -700,5 +703,189 @@ describe('AgentActivity Page', () => {
     expect(screen.getByRole('table')).toBeInTheDocument();
     // Cards should NOT be rendered
     expect(screen.queryByTestId('activity-card-inv-wide-1')).not.toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue #4022: auto-refresh (30 s poll) + freshness caption
+  //
+  // These are behavioural, not option-shape, assertions: asserting that the
+  // query options object "contains refetchInterval" would pass against a poll
+  // that never fires. Fake timers are net-new harness work in this file, so
+  // each timer test owns its own setup/teardown rather than a shared
+  // beforeEach — the rest of the suite runs on real timers.
+  // ---------------------------------------------------------------------------
+
+  it('refetches the flat list on the 30 s poll interval without user action', async () => {
+    // `shouldAdvanceTime` is load-bearing: RTL's `waitFor` only auto-advances
+    // *Jest* fake timers, so under a plain `vi.useFakeTimers()` every
+    // `waitFor`/`userEvent` await polls against a frozen clock and hangs.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await renderAgentActivityFlat(user);
+
+      const callsBeforePoll = mockGetMine.mock.calls.length;
+      expect(callsBeforePoll).toBe(1);
+
+      // Just short of the interval — still no extra fetch.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(29_000);
+      });
+      expect(mockGetMine).toHaveBeenCalledTimes(callsBeforePoll);
+
+      // Cross 30 s → one more fetch, with the same params (no cursor reset).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(mockGetMine).toHaveBeenCalledTimes(callsBeforePoll + 1);
+      expect(mockGetMine.mock.calls[1][0].last_key).toBeUndefined();
+
+      // And it keeps polling, rather than firing once.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(mockGetMine).toHaveBeenCalledTimes(callsBeforePoll + 2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('poll tick preserves the active filter and does not reset pagination', async () => {
+    // `shouldAdvanceTime` is load-bearing: RTL's `waitFor` only auto-advances
+    // *Jest* fake timers, so under a plain `vi.useFakeTimers()` every
+    // `waitFor`/`userEvent` await polls against a frozen clock and hangs.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await renderAgentActivityFlat(user);
+
+      await user.selectOptions(screen.getByLabelText('Filter by status'), 'failed');
+      await waitFor(() => {
+        expect(mockGetMine.mock.calls.at(-1)![0].status).toBe('failed');
+      });
+      const callsAfterFilter = mockGetMine.mock.calls.length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+
+      expect(mockGetMine.mock.calls.length).toBe(callsAfterFilter + 1);
+      // The poll refetches the CURRENT key — filter intact, still page 1.
+      expect(mockGetMine.mock.calls.at(-1)![0].status).toBe('failed');
+      expect(mockGetMine.mock.calls.at(-1)![0].last_key).toBeUndefined();
+      expect(screen.getByText('Page 1')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the previous page on screen while the next page is in flight', async () => {
+    const user = userEvent.setup();
+
+    mockGetMine.mockResolvedValueOnce(mockResponseWithCursor);
+    await renderAgentActivityFlat(user);
+
+    expect(screen.getByText('Implement Agent Activity page')).toBeInTheDocument();
+
+    // Hold page 2 in flight so we can observe the transition state.
+    let releasePage2: (value: InvocationListResponse) => void = () => {};
+    mockGetMine.mockImplementationOnce(
+      () => new Promise<InvocationListResponse>((resolve) => { releasePage2 = resolve; }),
+    );
+
+    await user.click(screen.getByRole('button', { name: /^next$/i }));
+    await waitFor(() => {
+      expect(mockGetMine).toHaveBeenCalledTimes(2);
+    });
+
+    // placeholderData: keepPreviousData — the table shows the old rows rather
+    // than blanking to a skeleton.
+    expect(screen.getByText('Implement Agent Activity page')).toBeInTheDocument();
+
+    releasePage2({
+      items: [makeInvocation({ invocation_id: 'inv-page2', topic: 'Second page run' })],
+      last_key: null,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Second page run')).toBeInTheDocument();
+    });
+  });
+
+  it('disables both paginator buttons while a page transition is in flight', async () => {
+    const user = userEvent.setup();
+
+    // Page 1 with a cursor, so Next starts enabled.
+    mockGetMine.mockResolvedValueOnce(mockResponseWithCursor);
+    await renderAgentActivityFlat(user);
+    expect(screen.getByRole('button', { name: /^next$/i })).not.toBeDisabled();
+
+    let releasePage2: (value: InvocationListResponse) => void = () => {};
+    mockGetMine.mockImplementationOnce(
+      () => new Promise<InvocationListResponse>((resolve) => { releasePage2 = resolve; }),
+    );
+
+    await user.click(screen.getByRole('button', { name: /^next$/i }));
+
+    // With placeholder data, `data` is never undefined mid-fetch, so
+    // `hasNextPage` no longer falls to false on its own — isPlaceholderData is
+    // what keeps the controls inert during the transition.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^next$/i })).toBeDisabled();
+    });
+    expect(screen.getByRole('button', { name: /previous/i })).toBeDisabled();
+
+    releasePage2({ items: mockItems.slice(3), last_key: null });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /previous/i })).not.toBeDisabled();
+    });
+  });
+
+  it('two Next clicks inside one fetch window advance exactly one page', async () => {
+    const user = userEvent.setup();
+
+    mockGetMine.mockResolvedValueOnce(mockResponseWithCursor);
+    await renderAgentActivityFlat(user);
+
+    let releasePage2: (value: InvocationListResponse) => void = () => {};
+    mockGetMine.mockImplementationOnce(
+      () => new Promise<InvocationListResponse>((resolve) => { releasePage2 = resolve; }),
+    );
+
+    const nextBtn = screen.getByRole('button', { name: /^next$/i });
+    await user.click(nextBtn);
+    await waitFor(() => {
+      expect(mockGetMine).toHaveBeenCalledTimes(2);
+    });
+
+    // Second click lands inside the fetch window. Without the
+    // isPlaceholderData gate this would push a second entry onto cursorStack
+    // using the STALE last_key — duplicating a page and requiring two Back
+    // presses to move one page.
+    await user.click(nextBtn);
+
+    releasePage2({ items: mockItems.slice(3), last_key: null });
+
+    await waitFor(() => {
+      expect(screen.getByText('Page 2')).toBeInTheDocument();
+    });
+    expect(mockGetMine).toHaveBeenCalledTimes(2);
+    expect(mockGetMine.mock.calls[1][0].last_key).toBe('inv-003');
+
+    // One Back press returns to page 1 — the cursor stack advanced once, not twice.
+    await user.click(screen.getByRole('button', { name: /previous/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Page 1')).toBeInTheDocument();
+    });
+  });
+
+  it('renders the last-updated caption once data has loaded', async () => {
+    await renderAgentActivityFlat();
+
+    const caption = screen.getByTestId('last-updated');
+    await waitFor(() => {
+      expect(caption).toHaveTextContent(/Updated/);
+    });
   });
 });

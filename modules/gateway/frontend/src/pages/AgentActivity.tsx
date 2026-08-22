@@ -17,7 +17,7 @@
  */
 
 import { useState, useCallback, useEffect, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Input, Select } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
@@ -27,6 +27,7 @@ import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { ActiveFilter } from '@/components/activity/FilterChips';
 import InvocationChain from '@/components/InvocationChain';
 import { InvocationDetail } from '@/components/InvocationDetail';
+import { LastUpdated } from '@/components/LastUpdated';
 import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { usePermissions } from '@/hooks/usePermissions';
 import { getMyInvocations, getMyChains, getAllInvocations, getMyInvocationDetail } from '@/services/activity';
@@ -509,11 +510,34 @@ export default function AgentActivity() {
   const isChainView = groupBy === 'chain' && viewMode === 'mine';
   const flatFetchFn = viewMode === 'all' && isAdmin ? getAllInvocations : getMyInvocations;
 
+  // Issue #4022: shared polling options. This page was the only list view in
+  // the app with no refresh path, so users watching a live run saw a static
+  // page and assumed the workflow had stalled.
+  // - 30 s matches PlatformDashboard's fastest tile.
+  // - `refetchIntervalInBackground` is left at its `false` default, so hidden
+  //   tabs do not poll.
+  // - `refetchOnWindowFocus: 'always'` rather than a per-page `staleTime: 0`:
+  //   the global 5-minute staleTime (main.tsx) would otherwise suppress
+  //   focus-refetch, and `'always'` expresses that intent without making
+  //   every remount/key-change a guaranteed network hit.
+  // - `placeholderData` keeps the previous page on screen across a tick
+  //   instead of blanking the table. NOTE: `keepPreviousData` must be the
+  //   named v5 import — the v4 `keepPreviousData: true` boolean is a silent
+  //   no-op on the pinned 5.62.0. It also makes `data` never `undefined`
+  //   mid-fetch, which is why the paginators gate on `isPlaceholderData`
+  //   below (see `isPageTransitioning`).
+  const POLL_OPTIONS = {
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: 'always',
+    placeholderData: keepPreviousData,
+  } as const;
+
   // Flat list query (active when NOT in chain view)
   const flatQuery = useQuery({
     queryKey: ['agent-activity', viewMode, 'runs', queryParams],
     queryFn: () => flatFetchFn(queryParams),
     enabled: !isChainView,
+    ...POLL_OPTIONS,
   });
 
   // Chain list query (active when in chain view)
@@ -521,6 +545,7 @@ export default function AgentActivity() {
     queryKey: ['agent-activity', viewMode, 'chains', queryParams],
     queryFn: () => getMyChains(queryParams),
     enabled: isChainView,
+    ...POLL_OPTIONS,
   });
 
   // Unified state from whichever query is active
@@ -528,6 +553,19 @@ export default function AgentActivity() {
   const isLoading = isChainView ? chainQuery.isLoading : flatQuery.isLoading;
   const error = isChainView ? chainQuery.error : flatQuery.error;
   const refetch = isChainView ? chainQuery.refetch : flatQuery.refetch;
+  const isFetching = isChainView ? chainQuery.isFetching : flatQuery.isFetching;
+  const dataUpdatedAt = isChainView ? chainQuery.dataUpdatedAt : flatQuery.dataUpdatedAt;
+
+  // Issue #4022: with `placeholderData` in play, `data` is never `undefined`
+  // during a cursor change — it holds the PREVIOUS page, so `data.last_key` is
+  // a stale cursor until the new page lands. Before this flag, `hasNextPage`
+  // being false mid-fetch (because `data` was undefined) was the only thing
+  // stopping a double-click on Next from pushing two entries onto
+  // `cursorStack` while advancing a single page. Every paginator control gates
+  // on this so that guard survives.
+  const isPageTransitioning = isChainView
+    ? chainQuery.isPlaceholderData
+    : flatQuery.isPlaceholderData;
 
   // Pagination handlers
   const handleNextPage = useCallback(() => {
@@ -733,6 +771,9 @@ export default function AgentActivity() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Issue #4022: freshness caption — makes the 30 s poll visible */}
+          <LastUpdated dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
+
           {/* Issue #1662: Group-by toggle (by run / by chain) */}
           {viewMode === 'mine' && (
             <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1" role="tablist" aria-label="Group by">
@@ -973,7 +1014,7 @@ export default function AgentActivity() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!hasPrevPage}
+                    disabled={!hasPrevPage || isPageTransitioning}
                     onClick={handlePrevPage}
                   >
                     Previous
@@ -981,7 +1022,7 @@ export default function AgentActivity() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!hasNextPage}
+                    disabled={!hasNextPage || isPageTransitioning}
                     onClick={handleNextPage}
                   >
                     Next
@@ -1117,7 +1158,7 @@ export default function AgentActivity() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!hasPrevPage}
+                    disabled={!hasPrevPage || isPageTransitioning}
                     onClick={handlePrevPage}
                   >
                     Previous
@@ -1125,7 +1166,7 @@ export default function AgentActivity() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!hasNextPage}
+                    disabled={!hasNextPage || isPageTransitioning}
                     onClick={handleNextPage}
                   >
                     Next
@@ -1160,7 +1201,12 @@ export default function AgentActivity() {
               <p className="text-gray-500 dark:text-gray-400 mb-4">
                 No matching results on this page. More results may exist.
               </p>
-              <Button variant="outline" size="sm" onClick={handleNextPage}>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isPageTransitioning}
+                onClick={handleNextPage}
+              >
                 Load next page
               </Button>
             </div>
