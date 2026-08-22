@@ -276,7 +276,7 @@ Hard rules for this section:
 - For **features** (no incident to describe): who wants what outcome, why it matters to them, and the approach in one line.
 - If you cannot write this section, you do not understand the issue well enough to file it yet.
 
-Why it exists: the technical sections below are for the agent that implements; this section is for the humans who triage, prioritize, review, and report to customers. Dense openings meant nobody could digest the backlog without re-reading code — the Aug 2026 SOPHOS batch (#4021–#4032) had to be retrofitted with these sections after the fact. The layering is deliberate: plain terms on top for people, full file-level detail below for agents. One does not replace the other.
+Why it exists: the technical sections below are for the agent that implements; this section is for the humans who triage, prioritize, review, and report to customers. Dense openings meant nobody could digest the backlog without re-reading code — an Aug 2026 batch of incident-report issues (#4021–#4032) had to be retrofitted with these sections after the fact. The layering is deliberate: plain terms on top for people, full file-level detail below for agents. One does not replace the other.
 
 ### 1. `## Description`
 What we're trying to achieve and why. One paragraph stating the goal in plain language, one paragraph on motivation (the problem this solves or the gap it closes). No implementation detail here — a product manager should be able to understand this section without reading the rest.
