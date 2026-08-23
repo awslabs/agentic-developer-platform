@@ -204,6 +204,28 @@ def _emit_identity_index_drift_metric() -> None:
         logger.warning("Failed to emit IdentityIndexDrift metric: %s", e)
 
 
+def _emit_auto_register_denied_metric() -> None:
+    """Emit CloudWatch metric when the tenant gate denies a backfill.
+
+    Issue #2724 (slice B): mirrors the handler's ``AutoRegisterDenied`` so denials
+    from either write path are countable. Best-effort.
+    """
+    try:
+        cw = _get_cloudwatch()
+        cw.put_metric_data(
+            Namespace="ADP/IdentityResolver",
+            MetricData=[
+                {
+                    "MetricName": "AutoRegisterDenied",
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:
+        logger.warning("Failed to emit AutoRegisterDenied metric: %s", e)
+
+
 def _resolve_user_from_new_table(sender_id: int) -> dict | None:
     """Attempt to resolve user from the new user-identity-index table."""
     try:
@@ -309,13 +331,40 @@ def resolve(
             # was added, or where the DDB write failed. On a Postgres hit we
             # backfill the DDB row so subsequent lookups are fast again.
             if _resolve_canonical_via_gateway_enabled():
-                from common.gateway_client import resolve_installation_by_id
+                from common.gateway_client import (
+                    installation_gate,
+                    resolve_installation_by_id,
+                )
 
                 pg_install = resolve_installation_by_id(str(installation_id)) or {}
-                # Issue #4046 (#2724 slice A): pg_install now carries a "state" of
-                # resolved / not_found / error. Behavior-neutral here — both
-                # non-resolved states keep today's outcome (unknown_installation).
-                # A resolved result always carries a non-empty tenant_id.
+                # Issue #4046 (#2724 slice A): pg_install carries a "state" of
+                # resolved / not_found / error. A resolved result always carries a
+                # non-empty tenant_id.
+                #
+                # Issue #2724 (slice B): this is the SECOND write path — it
+                # backfills a DDB identity row independently of the handler's
+                # _auto_register_installation, so gating only the handler would
+                # leave it trivially circumventable on any cold or evicted row.
+                # Run the same gate. A denied installation writes nothing and
+                # resolves as unknown_installation.
+                #
+                # Note this path only ever writes the *Postgres* tenant (there is
+                # no org_login fallback here), so the gate can only deny on an
+                # untrusted-provenance `resolved` result; not_found/error already
+                # fall through to unknown_installation below.
+                allowed, gate_reason = installation_gate(pg_install)
+                if not allowed:
+                    logger.warning(
+                        "AutoRegisterDenied (resolver backfill): installation_id=%d "
+                        "reason=%s created_via=%s — not a known ADP tenant, not "
+                        "backfilling",
+                        installation_id,
+                        gate_reason,
+                        pg_install.get("created_via", ""),
+                    )
+                    _emit_auto_register_denied_metric()
+                    return None, "unknown_installation"
+
                 if pg_install.get("tenant_id"):
                     pg_tenant = pg_install["tenant_id"]
                     logger.info(

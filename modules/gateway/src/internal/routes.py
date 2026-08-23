@@ -107,6 +107,14 @@ class ResolveInstallationRequest(BaseModel):
 
 class ResolveInstallationResponse(BaseModel):
     tenant_id: str
+    # Issue #2724 (slice B): provenance of the owning organization row — which
+    # path created it ("operator" | "register_flow" | "install_autocreate").
+    # The webhook auto-register gate denies on "install_autocreate" unless the
+    # deployment has opted into open onboarding, because that row could have
+    # been self-created by the installing party via the unauthenticated
+    # no-nonce install callback. Callers that predate this field must treat its
+    # absence as "unknown" and fail open, never as "untrusted".
+    created_via: str = "operator"
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +442,16 @@ async def resolve_installation(
     for org in result.scalars().all():
         ids = [str(i) for i in (org.github_installation_ids or [])]
         if installation_id in ids:
-            return ResolveInstallationResponse(tenant_id=org.id)
+            # Issue #2724: return provenance so the webhook gate can distinguish
+            # a deliberately-onboarded tenant from a self-created shell. We keep
+            # returning 200 for install_autocreate rows rather than 404 — the
+            # drift safety-net and adp-trigger resolution legitimately need the
+            # mapping; only the auto-register trust decision cares about
+            # provenance, and it is made by the caller.
+            return ResolveInstallationResponse(
+                tenant_id=org.id,
+                created_via=org.created_via or "operator",
+            )
 
     logger.info(
         "resolve-installation miss — no org owns installation_id=%s",

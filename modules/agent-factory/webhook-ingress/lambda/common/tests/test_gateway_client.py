@@ -241,7 +241,34 @@ class TestResolveInstallationById:
         ):
             result = gateway_client.resolve_installation_by_id("144082554")
 
-        assert result == {"state": "resolved", "tenant_id": "pranavsharma1000"}
+        # Issue #2724 (slice B): created_via is "" when the gateway response
+        # carries no provenance (not yet redeployed with the field).
+        assert result == {
+            "state": "resolved",
+            "tenant_id": "pranavsharma1000",
+            "created_via": "",
+        }
+        no_cloudwatch.assert_not_called()
+
+    def test_resolved_carries_created_via_provenance(self, no_cloudwatch):
+        """Issue #2724 (slice B): provenance is passed through to the gate."""
+        from common import gateway_client
+
+        gateway_client._internal_api_key = None
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_mock_200(
+                {"tenant_id": "acme", "created_via": "install_autocreate"}
+            ),
+        ):
+            result = gateway_client.resolve_installation_by_id("144082554")
+
+        assert result == {
+            "state": "resolved",
+            "tenant_id": "acme",
+            "created_via": "install_autocreate",
+        }
         no_cloudwatch.assert_not_called()
 
     def test_state_not_found_on_404(self, no_cloudwatch):
@@ -549,3 +576,142 @@ class TestPostProvenance:
             self._call()
 
         assert captured["timeout"] == 5
+
+
+class TestInstallationGate:
+    """Issue #2724 (slice B): the single choke point for the tenant-trust decision.
+
+    Both write paths call this — the handler's ``_auto_register_installation`` and
+    ``identity_resolver``'s independent DDB backfill — so it is tested directly
+    rather than only through them. It is a pure function of the gateway result
+    plus ``ORG_TENANT_AUTO_CREATE``.
+
+    The design rule it encodes: **deny only on an authoritative answer.** The gate
+    keys on PROVENANCE, not existence, because tenant existence is
+    attacker-creatable — the unauthenticated no-nonce install callback creates an
+    org shell itself, so "a tenant row exists" is a signal the attacker
+    manufactured by clicking Install.
+    """
+
+    def _gate(self, result):
+        from common import gateway_client
+
+        return gateway_client.installation_gate(result)
+
+    @pytest.mark.parametrize("created_via", ["operator", "register_flow"])
+    def test_allows_trusted_provenance(self, created_via):
+        """An operator- or authenticated-flow-onboarded tenant is trusted."""
+        allowed, reason = self._gate(
+            {"state": "resolved", "tenant_id": "acme", "created_via": created_via}
+        )
+        assert allowed is True
+        assert reason == "trusted_provenance"
+
+    def test_denies_not_found(self):
+        """An authoritative 404 is the deny the docstring promised since #2769."""
+        allowed, reason = self._gate({"state": "not_found"})
+        assert allowed is False
+        assert reason == "not_a_known_tenant"
+
+    def test_denies_self_created_shell_when_flag_off(self, monkeypatch):
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "false")
+        allowed, reason = self._gate(
+            {
+                "state": "resolved",
+                "tenant_id": "attacker",
+                "created_via": "install_autocreate",
+            }
+        )
+        assert allowed is False
+        assert reason == "self_created_shell"
+
+    def test_denies_self_created_shell_when_flag_unset(self, monkeypatch):
+        """Secure by default: absent env var must behave as false, not as true."""
+        monkeypatch.delenv("ORG_TENANT_AUTO_CREATE", raising=False)
+        allowed, _ = self._gate(
+            {
+                "state": "resolved",
+                "tenant_id": "attacker",
+                "created_via": "install_autocreate",
+            }
+        )
+        assert allowed is False
+
+    @pytest.mark.parametrize("value", ["true", "TRUE", "True"])
+    def test_allows_self_created_shell_when_flag_on(self, monkeypatch, value):
+        """Case-insensitive, so an operator setting TRUE in tfvars is not surprised."""
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", value)
+        allowed, reason = self._gate(
+            {
+                "state": "resolved",
+                "tenant_id": "hackathon",
+                "created_via": "install_autocreate",
+            }
+        )
+        assert allowed is True
+        assert reason == "open_onboarding"
+
+    def test_flag_is_read_per_call(self, monkeypatch):
+        """Env-only rollback: flipping the Lambda env var must take effect without
+        a code deploy, so the flag cannot be captured at import time."""
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "false")
+        payload = {
+            "state": "resolved",
+            "tenant_id": "x",
+            "created_via": "install_autocreate",
+        }
+        assert self._gate(payload)[0] is False
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "true")
+        assert self._gate(payload)[0] is True
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            {"state": "error", "reason": "http_500"},
+            {"state": "error", "reason": "gateway_url_not_configured"},
+            {"state": "some_state_this_version_predates"},
+            None,
+            {},
+        ],
+        ids=["error_5xx", "error_config", "unknown_state", "none", "empty"],
+    )
+    def test_fails_open_when_gate_cannot_be_evaluated(self, result, monkeypatch):
+        """Never deny on a non-answer, even with the flag off.
+
+        Denying on ``error`` would turn any gateway blip into "reject every new
+        customer installation" — the top row of this issue's own blast-radius
+        table. The caller compensates by marking the result non-authoritative and
+        emitting ``AutoRegisterGateUnavailable``.
+        """
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "false")
+        allowed, reason = self._gate(result)
+        assert allowed is True
+        assert reason == "gate_unavailable"
+
+    @pytest.mark.parametrize("created_via", ["", "some_future_value"])
+    def test_fails_open_on_absent_or_unknown_provenance(self, created_via, monkeypatch):
+        """Unknown is not untrusted.
+
+        Covers the rollout window where the Lambda ships before the gateway.
+        """
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "false")
+        allowed, reason = self._gate(
+            {"state": "resolved", "tenant_id": "acme", "created_via": created_via}
+        )
+        assert allowed is True
+        assert reason == "provenance_unavailable"
+
+    def test_only_vouching_reasons_are_trusted(self):
+        """``TRUSTED_GATE_REASONS`` is what callers key credential seeding off.
+
+        It must be strictly narrower than "allowed": the fail-open reasons allow
+        routing but must never authorise copying the platform App private key.
+        """
+        from common import gateway_client
+
+        assert gateway_client.TRUSTED_GATE_REASONS == {
+            "trusted_provenance",
+            "open_onboarding",
+        }
+        assert "gate_unavailable" not in gateway_client.TRUSTED_GATE_REASONS
+        assert "provenance_unavailable" not in gateway_client.TRUSTED_GATE_REASONS

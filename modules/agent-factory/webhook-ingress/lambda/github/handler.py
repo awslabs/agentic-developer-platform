@@ -20,7 +20,7 @@ import re
 from datetime import UTC, datetime
 import time
 import uuid
-from typing import Any
+from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -95,7 +95,30 @@ def _get_identity_resolver():
     return _identity_mod
 
 
-def _auto_register_installation(installation_id: int, org_login: str) -> str | None:
+class AutoRegisterResult(NamedTuple):
+    """Outcome of :func:`_auto_register_installation`.
+
+    Issue #2724 (slice B): the two fields are deliberately separate because
+    "we wrote a routable row" and "we know this org is a real ADP tenant" are
+    different facts, and conflating them is what let the platform GitHub App's
+    private key be copied for any org that installed the App.
+
+    tenant_id
+        The tenant that owns the installation, or ``None`` when nothing routable
+        was persisted (denied by the gate, or the write failed).
+    authoritative
+        True only when the tenant was established via the **authoritative**
+        path — an existing Postgres-owned row, or a gateway
+        ``resolve-installation`` hit. False when we fell back to the raw
+        ``org_login`` because the gate could not be evaluated. Callers MUST NOT
+        provision per-tenant credentials on a non-authoritative result.
+    """
+
+    tenant_id: str | None
+    authoritative: bool
+
+
+def _auto_register_installation(installation_id: int, org_login: str) -> AutoRegisterResult:
     """Write an installation_id → tenant row to the identity-index (guarded).
 
     Issue #2769: Postgres is the single source of truth for the
@@ -108,17 +131,44 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
          the stored org differs from this webhook's org login, emit
          ``InstallationTenantDrift`` (visibility only). Returns the stored
          tenant so downstream provisioning still works.
-      3. No row → resolve the installation to a *known ADP tenant* via the
-         gateway (``resolve-installation``; Postgres-authoritative, subsumes
-         #2724). On a match, write the **Postgres tenant** (not the raw org
-         login — that was the phantom-tenant bug) tagged ``auto_registered``,
-         using ``ConditionExpression=attribute_not_exists(auto_registered)`` on
-         the non-clobber path. On no match, skip → caller 403
-         ``unknown_installation`` (unchanged contract).
+      3. No row → **the tenant gate** (#2724 slice B, below).
       4. Row exists WITH ``auto_registered`` → idempotent refresh OK.
 
     The same guard is applied to the reverse-lookup ``org_installation`` row
     (#2336).
+
+    **The tenant gate (#2724 slice B).** Step 3 previously resolved the
+    installation via the gateway and then fell through to
+    ``tenant_id = org_login`` no matter what the gateway said — so ANY GitHub org
+    that installed the App became an ADP tenant with no operator involvement, got
+    the platform App's private key copied into ``adp/<env>/tenants/<org>/github-app``,
+    and could dispatch agent pods on the platform's EKS. (Worse than compute
+    theft: the installer then signs in and is auto-approved as ``org_admin`` of
+    the tenant they just created.) The docstring promised a skip since #2769; the
+    code never implemented one. It does now:
+
+      * Gate via :func:`common.gateway_client.installation_gate`, the single
+        choke point shared with ``identity_resolver``'s independent backfill path
+        so the gate cannot be bypassed by whichever writer fires first.
+      * **Denied** (authoritative gateway 404, or a self-created
+        ``install_autocreate`` shell while the deployment is not open-onboarding)
+        → write nothing, return no tenant → caller 403s ``unknown_installation``.
+        This is the contract the docstring has always claimed.
+      * **Allowed via the gateway** (``resolved``: trusted provenance, or an
+        ``install_autocreate`` shell in an explicitly open-onboarding deployment)
+        → write the **Postgres tenant**, not the raw org login (that was the
+        phantom-tenant bug), tagged ``auto_registered``, with
+        ``ConditionExpression=attribute_not_exists(auto_registered)`` on the
+        non-clobber path. ``authoritative=True``.
+      * **Allowed because the gate could not be evaluated** (gateway
+        unreachable/unconfigured, or provenance absent because the gateway has
+        not been redeployed) → fail OPEN but LOUD: keep today's ``org_login``
+        fallback so a gateway outage never becomes "reject every new
+        installation", emit ``AutoRegisterGateUnavailable``, and return
+        ``authoritative=False`` so the caller does NOT seed credentials.
+
+    Open onboarding is controlled by ``ORG_TENANT_AUTO_CREATE`` — the same single
+    flag the gateway reads. There is deliberately no second Lambda-only flag.
 
     **Partial writes (#4030).** The forward ``github_installation_id`` row is
     what dispatch routes on, so the two writes are not equivalent and their
@@ -137,11 +187,12 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
     resolves successfully, so the ``unknown_installation`` self-heal branch
     never fires again. That is the state the Acme PoV hit.
 
-    Returns the tenant/org_id owning the installation, or None if we couldn't
-    determine a known tenant / never persisted a routable mapping.
+    Returns an :class:`AutoRegisterResult`. ``tenant_id`` is None when the gate
+    denied or we never persisted a routable mapping; ``authoritative`` tells the
+    caller whether per-tenant credential provisioning is permitted.
     """
     if not org_login:
-        return None
+        return AutoRegisterResult(None, False)
     resolver = _get_identity_resolver()
     try:
         table = resolver._get_table()
@@ -171,48 +222,91 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
                     installation_id,
                     stored_org,
                 )
-            return stored_org or None
+            # A Postgres-owned row IS the authoritative answer — the gateway
+            # write-through created it, so provisioning downstream is permitted.
+            return AutoRegisterResult(stored_org or None, bool(stored_org))
 
-        # Step 3: no row → known-tenant check (Postgres is authoritative).
+        # Step 3: no row → the tenant gate (#2724 slice B). See the docstring.
         # A refresh of an existing auto_registered row (step 4) reuses the
         # already-stored tenant to stay idempotent.
         if existing is None:
             pg = _get_gateway_client().resolve_installation_by_id(str(installation_id))
             state = pg.get("state") if pg else None
-            # `and pg.get("tenant_id")` is belt-and-braces: the client guarantees a
-            # non-empty tenant on "resolved", but an empty one must fall back
-            # rather than write an empty org_id, exactly as before this slice.
-            if state == "resolved" and pg.get("tenant_id"):
-                tenant_id = pg["tenant_id"]
-            else:
-                # Issue #4046 (#2724 slice A): the client now distinguishes an
-                # authoritative gateway 404 ("not_found") from "we could not find
-                # out" ("error"). This slice is behavior-neutral — BOTH still fall
-                # back to the org_login, exactly as before. Slice B splits them:
-                # not_found → deny; error → fail open but loud.
-                #
-                # Fallback rationale (unchanged): if the gateway is unreachable
-                # (SigV4 auth on API GW, fresh deploy) or the tenant isn't in
-                # Postgres yet (user-namespace installs, new orgs), register using
-                # the org_login directly. This covers the case where a user
-                # installs the app on their personal account — no org-tenant shell
-                # exists in Postgres, but the install is legitimate (they clicked
-                # "Install" in GitHub). The org_login becomes the tenant_id; the
-                # user will still need to be approved before they can trigger
-                # agents.
-                logger.info(
-                    "Auto-register: gateway returned no tenant for installation_id=%d "
-                    "(org_login=%s, state=%s, reason=%s) — registering with org_login "
-                    "as tenant_id",
+            # `installation_gate` is a pure function and is imported directly (not
+            # via _get_gateway_client()) so the trust decision is made by the ONE
+            # shared implementation — the same one identity_resolver's backfill
+            # path calls. Lazy-imported to keep cold start cheap, matching the
+            # module's existing pattern.
+            from common.gateway_client import TRUSTED_GATE_REASONS, installation_gate
+
+            allowed, gate_reason = installation_gate(pg)
+
+            if not allowed:
+                # THE GATE. An authoritative "this is not a tenant we onboarded"
+                # — write nothing at all, so the caller 403s
+                # `unknown_installation` and no per-tenant secret is provisioned.
+                logger.warning(
+                    "AutoRegisterDenied: installation_id=%d org_login=%s reason=%s "
+                    "(state=%s, created_via=%s) — not a known ADP tenant, writing "
+                    "no identity rows",
                     installation_id,
                     org_login,
+                    gate_reason,
+                    state or "unknown",
+                    (pg or {}).get("created_via", ""),
+                )
+                _emit_metric("AutoRegisterDenied")
+                return AutoRegisterResult(None, False)
+
+            # Authoritative iff the gate could actually vouch for the tenant —
+            # NOT merely "allowed". The gate allows `provenance_unavailable` and
+            # `gate_unavailable` so an outage or a not-yet-redeployed gateway
+            # cannot reject legitimate installs, but in neither case do we know
+            # whose org this is, so neither may seed the platform App private key.
+            # `and pg.get("tenant_id")` is belt-and-braces: the client guarantees a
+            # non-empty tenant on "resolved", but an empty one must fall back
+            # rather than write an empty org_id.
+            if gate_reason in TRUSTED_GATE_REASONS and (pg or {}).get("tenant_id"):
+                tenant_id = pg["tenant_id"]
+                authoritative = True
+            else:
+                # Allowed, but NOT authoritatively: the gate could not be
+                # evaluated (gateway unreachable/unconfigured, or provenance
+                # absent because the gateway predates the field). Fail OPEN so a
+                # gateway outage never becomes "reject every new installation",
+                # but LOUD — and mark the result non-authoritative so the caller
+                # skips credential provisioning.
+                #
+                # Fallback rationale (unchanged from before the gate): if the
+                # gateway is unreachable (SigV4 auth on API GW, fresh deploy) or
+                # the tenant isn't in Postgres yet (user-namespace installs, new
+                # orgs), register using the org_login directly. This covers a user
+                # installing the app on their personal account — no org-tenant
+                # shell exists in Postgres, but the install is legitimate. The
+                # user still needs approval before they can trigger agents.
+                logger.warning(
+                    "AutoRegisterGateUnavailable: installation_id=%d org_login=%s "
+                    "reason=%s (state=%s, gateway reason=%s) — failing OPEN, "
+                    "registering with org_login as tenant_id, NOT provisioning "
+                    "per-tenant credentials",
+                    installation_id,
+                    org_login,
+                    gate_reason,
                     state or "unknown",
                     (pg or {}).get("reason", ""),
                 )
+                _emit_metric("AutoRegisterGateUnavailable")
                 tenant_id = org_login
+                authoritative = False
         else:
-            # Step 4: idempotent refresh of an auto_registered row.
+            # Step 4: idempotent refresh of an auto_registered row. Grandfathering
+            # (#2724 design item 5): the gate applies to NEW registrations only,
+            # so rows written before it existed keep working untouched — no
+            # gateway call, no provenance check. But the refresh is not
+            # authoritative on its own: an auto_registered row may itself be a
+            # pre-gate org_login fallback, so we do not re-seed credentials off it.
             tenant_id = existing.get("org_id") or org_login
+            authoritative = False
 
         now = datetime.now(UTC).isoformat()
         # Identity rows are authoritative; offboarding deletes them explicitly.
@@ -245,7 +339,9 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
                         "Postgres-owned row present, no-op",
                         installation_id,
                     )
-                    return tenant_id
+                    # The winner is a Postgres-owned row, so the mapping is
+                    # authoritative regardless of how we got here.
+                    return AutoRegisterResult(tenant_id, True)
                 raise
         else:
             table.put_item(Item=forward_item)
@@ -293,21 +389,23 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
                 rev_exc,
             )
             _emit_metric("AutoRegister.PartialWrite")
-            return tenant_id
+            return AutoRegisterResult(tenant_id, authoritative)
 
         logger.info(
-            "Auto-registered installation_id=%d → tenant=%s (forward + reverse)",
+            "Auto-registered installation_id=%d → tenant=%s (forward + reverse, "
+            "authoritative=%s)",
             installation_id,
             tenant_id,
+            authoritative,
         )
-        return tenant_id
+        return AutoRegisterResult(tenant_id, authoritative)
     except Exception as exc:  # noqa: BLE001
         # Reaching here means we never persisted a usable forward row (read,
         # gateway resolve, or the forward put_item itself failed). Returning
-        # None is correct: the caller must NOT treat this installation as
+        # no tenant is correct: the caller must NOT treat this installation as
         # registered, because nothing routes to it. Issue #4030.
         logger.warning("Failed to auto-register installation_id=%d: %s", installation_id, exc)
-        return None
+        return AutoRegisterResult(None, False)
 
 
 def _get_gateway_client():
@@ -1041,8 +1139,21 @@ def handler(event: dict, context) -> dict:
         org_login = (install.get("account") or {}).get("login", "")
         if install_id and org_login:
             registered = _auto_register_installation(install_id, org_login)
-            if registered:
-                _auto_provision_tenant_github_app_secret(registered, install_id)
+            # Issue #2724 (slice B): seed per-tenant credentials ONLY when the
+            # tenant was resolved via the authoritative path. "Registered" is not
+            # enough — a non-authoritative registration is the org_login fallback
+            # taken because the gate could not be evaluated, and seeding on it
+            # copies the platform App's private key for an org nobody vouched for.
+            if registered.tenant_id and registered.authoritative:
+                _auto_provision_tenant_github_app_secret(registered.tenant_id, install_id)
+            elif registered.tenant_id:
+                logger.warning(
+                    "Skipping per-tenant secret provisioning for installation_id=%d "
+                    "tenant=%s — registration was not authoritative (see "
+                    "AutoRegisterGateUnavailable)",
+                    install_id,
+                    registered.tenant_id,
+                )
         logger.info("Installation %s event — no agent dispatch, no identity check", action)
         return _response(200, {"status": "no_op", "reason": "installation_event"})
 
@@ -1077,8 +1188,21 @@ def handler(event: dict, context) -> dict:
         org_login = org_obj.get("login") or (repo_obj.get("owner") or {}).get("login") or ""
         if org_login:
             registered_org = _auto_register_installation(installation_id, org_login)
-            if registered_org:
-                _auto_provision_tenant_github_app_secret(registered_org, installation_id)
+            if registered_org.tenant_id:
+                # Issue #2724 (slice B): same rule as the installation-event path
+                # above — credentials only on an authoritative registration.
+                if registered_org.authoritative:
+                    _auto_provision_tenant_github_app_secret(
+                        registered_org.tenant_id, installation_id
+                    )
+                else:
+                    logger.warning(
+                        "Skipping per-tenant secret provisioning for installation_id=%d "
+                        "tenant=%s — registration was not authoritative (see "
+                        "AutoRegisterGateUnavailable)",
+                        installation_id,
+                        registered_org.tenant_id,
+                    )
                 # Retry resolution now that the row exists
                 resolved, outcome_reason = _get_identity_resolver().resolve(
                     installation_id, sender_id

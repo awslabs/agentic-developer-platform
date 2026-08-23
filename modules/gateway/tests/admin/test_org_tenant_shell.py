@@ -809,3 +809,493 @@ class TestAppVisibilityToggle:
             public=False,
         )
         assert manifest["public"] is False
+
+
+# ---------------------------------------------------------------------------
+# created_via provenance (Issue #2724 slice B)
+# ---------------------------------------------------------------------------
+
+
+class TestCreatedViaProvenance:
+    """Which path created an org row, recorded on the row itself.
+
+    Issue #2724: the webhook's auto-register gate cannot key on "does a tenant
+    row exist" because that signal is attacker-creatable — the *unauthenticated*
+    no-nonce install callback creates an org shell itself when a stranger clicks
+    Install on the public App. So the gate keys on provenance instead, and every
+    creating path must stamp it truthfully:
+
+      * ``operator``           — pre-existing rows (migration 025 server_default)
+      * ``register_flow``      — an authenticated ADP flow (nonce-validated)
+      * ``install_autocreate`` — the unauthenticated no-nonce install callback
+
+    Only the first two are trusted by the gate.
+    """
+
+    async def test_default_is_register_flow(self, db_session: AsyncSession):
+        """The default is the trusted value, so only the untrusted door must opt in.
+
+        Deliberate: every caller of _upsert_org_tenant_shell except the no-nonce
+        path is nonce-authenticated. A new authenticated caller added later
+        inherits the correct stamp; a new *unauthenticated* caller is a
+        security-relevant change that should be a conscious argument.
+        """
+        await _upsert_org_tenant_shell(
+            owner_login="Acme-Corp",
+            github_org_id="98765432",
+            github_app_id="12345",
+            db=db_session,
+        )
+
+        org = await db_session.get(Organization, "acme-corp")
+        assert org.created_via == "register_flow"
+
+    async def test_explicit_install_autocreate_is_stamped(self, db_session: AsyncSession):
+        await _upsert_org_tenant_shell(
+            owner_login="Public-Org",
+            github_org_id="44444444",
+            github_app_id="",
+            db=db_session,
+            created_via="install_autocreate",
+        )
+
+        org = await db_session.get(Organization, "public-org")
+        assert org.created_via == "install_autocreate"
+
+    async def test_idempotent_upsert_does_not_launder_provenance(self, db_session: AsyncSession):
+        """An install_autocreate shell is NOT upgraded by a later trusted call.
+
+        The laundering attack this closes: create the shell via the
+        unauthenticated door, then get any authenticated path to touch the same
+        org and inherit ``register_flow``. Provenance is create-only.
+        """
+        await _upsert_org_tenant_shell(
+            owner_login="Public-Org",
+            github_org_id="44444444",
+            github_app_id="",
+            db=db_session,
+            created_via="install_autocreate",
+        )
+        await _upsert_org_tenant_shell(
+            owner_login="Public-Org",
+            github_org_id="44444444",
+            github_app_id="99999",
+            db=db_session,
+            created_via="register_flow",
+        )
+
+        org = await db_session.get(Organization, "public-org")
+        assert org.created_via == "install_autocreate"
+        # The idempotent branch still did its real job.
+        assert org.github_app_id == "99999"
+
+    async def test_operator_row_is_not_downgraded(self, db_session: AsyncSession):
+        """The converse: a real tenant that later takes a public-App install stays trusted.
+
+        Without this, the no-nonce path would demote existing customers to
+        untrusted the first time someone re-installed the App, and the gate would
+        start denying live tenants.
+        """
+        org = Organization(
+            id="acme-corp",
+            name="Acme-Corp",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            created_via="operator",
+        )
+        db_session.add(org)
+        await db_session.commit()
+
+        await _upsert_org_tenant_shell(
+            owner_login="Acme-Corp",
+            github_org_id="98765432",
+            github_app_id="12345",
+            db=db_session,
+            created_via="install_autocreate",
+        )
+
+        refreshed = await db_session.get(Organization, "acme-corp")
+        assert refreshed.created_via == "operator"
+
+    async def test_no_nonce_install_stamps_install_autocreate(self, db_session: AsyncSession, _mock_env):
+        """End-to-end through the untrusted door: THE case this issue is about.
+
+        Nothing authenticated this caller — no nonce, no session — so the org row
+        it creates must be marked self-created.
+        """
+        gh = _mock_github_client(account_login="attacker-org", account_github_id=44444444)
+
+        with patch(
+            "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
+            new_callable=AsyncMock,
+        ):
+            with patch(
+                "src.admin.connections.service._get_github_app_credentials",
+                return_value=("12345", "fake-pem"),
+            ):
+                result = await install_callback(
+                    installation_id=666,
+                    setup_action="install",
+                    state="",  # no nonce
+                    db=db_session,
+                    github_client=gh,
+                )
+
+        assert result["no_nonce"] is True
+        org = await db_session.get(Organization, "attacker-org")
+        assert org.created_via == "install_autocreate"
+
+    async def test_nonce_install_stamps_register_flow(self, db_session: AsyncSession, caller_org, caller_user, _mock_env):
+        """The authenticated install-callback path stays trusted (no over-tightening)."""
+        await _write_nonce(db_session)
+        gh = _mock_github_client(account_login="new-org", account_github_id=55555555)
+
+        with patch(
+            "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
+            new_callable=AsyncMock,
+        ):
+            result = await install_callback(
+                installation_id=777,
+                setup_action="install",
+                state="test-jti-001",
+                db=db_session,
+                github_client=gh,
+            )
+
+        assert result["success"] is True
+        org = await db_session.get(Organization, "new-org")
+        assert org.created_via == "register_flow"
+
+    @patch("src.admin.connections.service._store_app_credentials", new_callable=AsyncMock)
+    @patch("src.admin.connections.service.get_github_app_provider")
+    @patch("src.admin.connections.service._invalidate_login_enabled_cache")
+    @patch("src.admin.connections.service.httpx.AsyncClient")
+    async def test_register_app_callback_stamps_register_flow(
+        self,
+        mock_httpx_cls,
+        mock_invalidate,
+        mock_provider,
+        mock_store,
+        db_session: AsyncSession,
+    ):
+        """App registration is operator-driven and nonce-authenticated → trusted."""
+        mock_store.return_value = True
+        mock_provider.return_value = MagicMock(invalidate=MagicMock())
+
+        mock_response = MagicMock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {
+            "id": 99999,
+            "slug": "acme-corp-adp-agent-platform",
+            "pem": "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----",
+            "client_id": "Iv1.abc123",
+            "client_secret": "secret123",
+            "webhook_secret": "whsec_xyz",
+            "owner": {"type": "Organization", "login": "Acme-Corp", "id": 98765432},
+        }
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_httpx_cls.return_value = mock_client
+
+        jti = "register-jti-prov"
+        now = datetime.now(UTC)
+        from src.admin.connections.service import _PROVIDER_GITHUB_APP_REGISTER
+
+        db_session.add(
+            MagicLinkNonce(
+                jti=jti,
+                provider=_PROVIDER_GITHUB_APP_REGISTER,
+                provider_user_id="sub-abc",
+                channel_context=None,
+                target_user_id="user-001",
+                expires_at=now + timedelta(minutes=15),
+                consumed_at=None,
+            )
+        )
+        await db_session.commit()
+
+        await register_app_callback(code="test-code", state=jti, db=db_session)
+
+        org = await db_session.get(Organization, "acme-corp")
+        assert org.created_via == "register_flow"
+
+    async def test_model_default_is_operator(self, db_session: AsyncSession):
+        """A row created without the column set defaults to operator.
+
+        This is the same grandfathering the migration's ``server_default`` gives
+        every pre-existing deployment: rows that predate provenance are treated
+        as operator-onboarded, so the gate does not evict live tenants.
+        """
+        org = Organization(
+            id="legacy-org",
+            name="Legacy Org",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+        )
+        db_session.add(org)
+        await db_session.commit()
+
+        refreshed = await db_session.get(Organization, "legacy-org")
+        assert refreshed.created_via == "operator"
+
+
+# ---------------------------------------------------------------------------
+# The real bypass chain (Issue #2724 slice B, review finding)
+# ---------------------------------------------------------------------------
+
+
+class TestNoNonceInstallPromotionGate:
+    """The gateway's own unauthenticated door must not promote a self-created shell.
+
+    Stamping ``install_autocreate`` is only half a gate: the *same* request that
+    creates the shell then performs both promoting side effects itself —
+
+      1. ``seed_tenant_github_app_secret`` copies the PLATFORM App's private key
+         into ``adp/<env>/tenants/<org>/github-app``, and
+      2. ``_write_installation_identity_index`` writes the routable
+         installation → tenant row the webhook resolver reads.
+
+    Neither involves the webhook Lambda, so the Lambda-side gate and its
+    ``authoritative`` flag are never consulted on this path. That made the
+    primary attack path — stranger clicks Install on the public App, GitHub
+    redirects their browser to the unauthenticated callback — immune to a
+    perfect Lambda-side fix.
+
+    These tests walk the real chain through ``install_callback`` rather than
+    unit-testing the guard, because the guard being correct in isolation is
+    exactly what the original slice B already had.
+    """
+
+    async def test_self_created_shell_is_not_promoted(self, db_session: AsyncSession, _mock_env):
+        """THE bypass: unauthenticated install of an unknown org promotes nothing.
+
+        The install itself still succeeds and the shell is still created — that is
+        what keeps the install UI working and preserves the provenance signal the
+        webhook gate reads. What must NOT happen is the platform vouching for the
+        org by handing it credentials and a routable identity.
+        """
+        gh = _mock_github_client(account_login="attacker-org", account_github_id=44444444)
+
+        with patch(
+            "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
+            new_callable=AsyncMock,
+        ) as mock_seed:
+            with patch(
+                "src.admin.connections.service._get_github_app_credentials",
+                return_value=("12345", "fake-pem"),
+            ):
+                result = await install_callback(
+                    installation_id=666,
+                    setup_action="install",
+                    state="",  # no nonce — nothing authenticated this caller
+                    db=db_session,
+                    github_client=gh,
+                )
+
+        # The install flow still succeeds (no user-visible breakage).
+        assert result["success"] is True
+        assert result["no_nonce"] is True
+
+        # The shell exists and is marked untrusted.
+        org = await db_session.get(Organization, "attacker-org")
+        assert org is not None
+        assert org.created_via == "install_autocreate"
+
+        # ...but the platform App private key was NOT copied for them.
+        mock_seed.assert_not_called()
+        # ...and no routable webhook identity was written. This is the row that
+        # made review findings 2 and 3 reachable: it is what let the attacker
+        # manufacture the "a DDB row exists, therefore Postgres owns it,
+        # therefore trust it" premise on the Lambda side.
+        _mock_env.assert_not_called()
+
+    async def test_operator_org_taking_public_install_is_still_promoted(self, db_session: AsyncSession, _mock_env):
+        """No over-tightening: a real tenant installing the public App is unaffected."""
+        org = Organization(
+            id="acme-corp",
+            name="acme-corp",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            github_org_id="98765432",
+            created_via="operator",
+        )
+        db_session.add(org)
+        await db_session.commit()
+
+        gh = _mock_github_client(account_login="acme-corp", account_github_id=98765432)
+
+        with patch(
+            "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
+            new_callable=AsyncMock,
+        ) as mock_seed:
+            with patch(
+                "src.admin.connections.service._get_github_app_credentials",
+                return_value=("12345", "fake-pem"),
+            ):
+                result = await install_callback(
+                    installation_id=888,
+                    setup_action="install",
+                    state="",
+                    db=db_session,
+                    github_client=gh,
+                )
+
+        assert result["success"] is True
+        mock_seed.assert_awaited_once_with("acme-corp", 888)
+        _mock_env.assert_called_once_with(installation_id=888, org_id="acme-corp")
+
+    async def test_absent_provenance_fails_open(self, db_session: AsyncSession, _mock_env):
+        """Unknown is not untrusted — an unrecognised value must not brick onboarding.
+
+        Mirrors the Lambda gate's ``provenance_unavailable`` fail-open. Migration
+        025's ``server_default`` means the only way to see an unrecognised value
+        is a row written by code newer than this reader; denying on it would
+        reject legitimate installs, the top row of this issue's blast-radius
+        table.
+        """
+        org = Organization(
+            id="legacy-org",
+            name="legacy-org",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            github_org_id="77777777",
+            created_via="some_future_value",
+        )
+        db_session.add(org)
+        await db_session.commit()
+
+        gh = _mock_github_client(account_login="legacy-org", account_github_id=77777777)
+
+        with patch(
+            "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
+            new_callable=AsyncMock,
+        ) as mock_seed:
+            with patch(
+                "src.admin.connections.service._get_github_app_credentials",
+                return_value=("12345", "fake-pem"),
+            ):
+                await install_callback(
+                    installation_id=999,
+                    setup_action="install",
+                    state="",
+                    db=db_session,
+                    github_client=gh,
+                )
+
+        mock_seed.assert_awaited_once_with("legacy-org", 999)
+        _mock_env.assert_called_once_with(installation_id=999, org_id="legacy-org")
+
+    async def test_reinstall_on_existing_shell_is_still_not_promoted(self, db_session: AsyncSession, _mock_env):
+        """Uninstall/reinstall does not launder the shell into a promotion.
+
+        The second install takes the ``org_by_github_id is not None`` branch, so
+        the guard must read the EXISTING row's provenance rather than assume that
+        "we did not create it in this request" means trusted.
+        """
+        org = Organization(
+            id="attacker-org",
+            name="attacker-org",
+            aws_accounts=[],
+            role_mappings={},
+            settings={},
+            github_org_id="44444444",
+            created_via="install_autocreate",
+        )
+        db_session.add(org)
+        await db_session.commit()
+
+        gh = _mock_github_client(account_login="attacker-org", account_github_id=44444444)
+
+        with patch(
+            "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
+            new_callable=AsyncMock,
+        ) as mock_seed:
+            with patch(
+                "src.admin.connections.service._get_github_app_credentials",
+                return_value=("12345", "fake-pem"),
+            ):
+                result = await install_callback(
+                    installation_id=1234,
+                    setup_action="install",
+                    state="",
+                    db=db_session,
+                    github_client=gh,
+                )
+
+        assert result["success"] is True
+        mock_seed.assert_not_called()
+        _mock_env.assert_not_called()
+
+    async def test_open_onboarding_deployment_can_still_promote(self, db_session: AsyncSession, _mock_env, monkeypatch):
+        """A deliberately-open deployment restores promotion via the webhook gate.
+
+        The gateway's refusal is unconditional by design: promotion of an
+        ``install_autocreate`` shell is the webhook Lambda's single trust decision
+        behind the single ``ORG_TENANT_AUTO_CREATE`` flag (#2724's BINDING
+        one-flag rule), and the Lambda's own gate allows it when that flag is on.
+        What this test pins is that the gateway's refusal is not *destructive* of
+        that path: ``github_installation_ids`` is still populated, so
+        ``resolve-installation`` answers 200 with ``install_autocreate`` and the
+        Lambda can make the call. Withholding it would make the Lambda see an
+        authoritative ``not_found`` and deny for the wrong reason.
+        """
+        gh = _mock_github_client(account_login="hackathon-org", account_github_id=66666666)
+
+        with patch(
+            "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
+            new_callable=AsyncMock,
+        ):
+            with patch(
+                "src.admin.connections.service._get_github_app_credentials",
+                return_value=("12345", "fake-pem"),
+            ):
+                await install_callback(
+                    installation_id=4321,
+                    setup_action="install",
+                    state="",
+                    db=db_session,
+                    github_client=gh,
+                )
+
+        org = await db_session.get(Organization, "hackathon-org")
+        assert org.created_via == "install_autocreate"
+        # The provenance signal the webhook gate reads is intact.
+        assert "4321" in [str(i) for i in org.github_installation_ids]
+
+    async def test_personal_install_promotes_nothing_either_way(self, db_session: AsyncSession, _mock_env):
+        """Regression: a personal (non-Organization) install resolves no org at all.
+
+        No org row resolves, so the promotion decision is never reached — behaviour
+        is unchanged from before the gate.
+        """
+        gh = _mock_github_client(
+            account_login="some-user",
+            account_type="User",
+            account_github_id=12121212,
+        )
+
+        with patch(
+            "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
+            new_callable=AsyncMock,
+        ) as mock_seed:
+            with patch(
+                "src.admin.connections.service._get_github_app_credentials",
+                return_value=("12345", "fake-pem"),
+            ):
+                result = await install_callback(
+                    installation_id=2468,
+                    setup_action="install",
+                    state="",
+                    db=db_session,
+                    github_client=gh,
+                )
+
+        assert result["no_nonce"] is True
+        mock_seed.assert_not_called()
+        _mock_env.assert_not_called()

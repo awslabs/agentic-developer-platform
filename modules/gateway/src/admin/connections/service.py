@@ -366,11 +366,15 @@ async def install_callback(
         elif os.environ.get("ORG_TENANT_AUTO_CREATE", "false").lower() == "true":
             # Issue #2952 (Rev 4 C): Install-time tenant upsert for unknown orgs.
             # On a public App, orgs install without ever registering.
+            # Issue #2724: this branch is reached only after nonce validation
+            # above (the nonce IS the authenticator), so an authenticated ADP
+            # user deliberately drove this install → register_flow (trusted).
             upserted_id = await _upsert_org_tenant_shell(
                 owner_login=account_login,
                 github_org_id=str(github_org_id),
                 github_app_id="",
                 db=db,
+                created_via="register_flow",
             )
             if upserted_id:
                 resolved_org_id = upserted_id
@@ -460,6 +464,56 @@ async def install_callback(
     }
 
 
+def _promotion_allowed_for_provenance(created_via: str | None) -> tuple[bool, str]:
+    """Whether an org may be promoted to a vouched-for tenant, by provenance.
+
+    Issue #2724 (slice B, review finding): the gateway's own unauthenticated
+    no-nonce install callback both creates the org shell AND performs the two
+    promoting side effects — copying the platform App's private key into
+    ``adp/<env>/tenants/<org>/github-app`` and writing the routable
+    installation → tenant identity-index row. Both ran before this, with no
+    webhook and therefore no Lambda gate involved, which left the primary attack
+    path open no matter how correct the Lambda side was.
+
+    This is the gateway-side counterpart of ``installation_gate`` in
+    webhook-ingress/lambda/common/gateway_client.py, and it mirrors that
+    function's asymmetry deliberately:
+
+    ==============================  ========  =========================
+    created_via                     promote   reason
+    ==============================  ========  =========================
+    operator / register_flow        True      trusted_provenance
+    install_autocreate              False     self_created_shell
+    absent / unrecognised           True      provenance_unavailable
+    ==============================  ========  =========================
+
+    **Unknown is not untrusted.** An absent or unrecognised value fails OPEN, for
+    the same reason the Lambda gate does: migration 025 stamps every pre-existing
+    row ``operator`` via ``server_default``, so the only way to see something else
+    is a row written by code newer than this reader — and bricking onboarding on
+    it would be the top row of this issue's own blast-radius table.
+
+    Note the split from the *creation* decision. The gateway's
+    ``ORG_TENANT_AUTO_CREATE`` still governs whether a shell may be created at
+    all, and stays ``"true"`` because the nonce-authenticated path needs it. Only
+    the promotion is refused here; the install itself still succeeds, the shell
+    is still created, and the UI still works. Whether an ``install_autocreate``
+    shell is ever promoted remains the webhook Lambda's single trust decision,
+    behind the single flag (per #2724's BINDING one-flag rule) — this function
+    only stops the gateway from pre-empting it.
+    """
+    from src.shared.models.organization import (
+        CREATED_VIA_INSTALL_AUTOCREATE,
+        TRUSTED_CREATED_VIA,
+    )
+
+    if created_via in TRUSTED_CREATED_VIA:
+        return True, "trusted_provenance"
+    if created_via == CREATED_VIA_INSTALL_AUTOCREATE:
+        return False, "self_created_shell"
+    return True, "provenance_unavailable"
+
+
 async def _handle_no_nonce_install(
     *,
     installation_id: int,
@@ -474,12 +528,22 @@ async def _handle_no_nonce_install(
     installation metadata via GitHub API. Create the tenant shell (upsert
     only, no user attachment, no caller_org_id). Return a generic success.
 
-    This path is safe because it only creates resources keyed by the
-    GitHub-verified installation ID and grants no session or access to anyone.
+    This path grants no session and no access to anyone, and only creates
+    resources keyed by the GitHub-verified installation ID. It is NOT, however,
+    authenticated as an ADP caller — so any org shell it creates is stamped
+    ``created_via="install_autocreate"`` (Issue #2724). Downstream trust
+    decisions must key on that provenance rather than on the row's existence.
+
+    Issue #2724 (slice B, review finding): this handler is itself such a
+    downstream decision, and it is the FIRST one — it runs on the attacker's
+    browser redirect, before any webhook exists. So it applies the gate to its
+    own two promoting side effects (per-tenant App credentials, routable
+    identity-index row) rather than leaving them to the webhook Lambda, which on
+    this path is never involved at all. See ``_promotion_allowed_for_provenance``.
     """
     from sqlalchemy import select
 
-    from src.shared.models.organization import Organization
+    from src.shared.models.organization import CREATED_VIA_INSTALL_AUTOCREATE, Organization
 
     # Fetch installation metadata from GitHub
     app_id, private_key = _get_github_app_credentials()
@@ -510,6 +574,11 @@ async def _handle_no_nonce_install(
 
     # For org installs, resolve or upsert the org tenant
     resolved_org_id: str | None = None
+    # Provenance of the row that actually resolved above — NOT of this request.
+    # An operator-onboarded org taking a public-App install is still `operator`;
+    # only a row this unauthenticated path had to create itself is untrusted.
+    # None means "no row resolved", which never reaches a promotion decision.
+    resolved_created_via: str | None = None
 
     if account_type == "Organization" and github_org_id is not None:
         # Try to find existing org by github_org_id
@@ -517,14 +586,25 @@ async def _handle_no_nonce_install(
 
         if org_by_github_id is not None:
             resolved_org_id = org_by_github_id.id
+            resolved_created_via = org_by_github_id.created_via
         elif os.environ.get("ORG_TENANT_AUTO_CREATE", "false").lower() == "true":
-            # Upsert the tenant shell for this unknown org
+            # Upsert the tenant shell for this unknown org.
+            #
+            # Issue #2724: THIS is the untrusted door. Nothing authenticated the
+            # caller — no nonce, no session — so the row is a self-created shell
+            # and is stamped install_autocreate. The webhook auto-register gate
+            # refuses to treat it as a known tenant unless the deployment has
+            # explicitly opted into open onboarding via ORG_TENANT_AUTO_CREATE
+            # on the webhook Lambda too.
             resolved_org_id = await _upsert_org_tenant_shell(
                 owner_login=account_login,
                 github_org_id=str(github_org_id),
                 github_app_id="",
                 db=db,
+                created_via=CREATED_VIA_INSTALL_AUTOCREATE,
             )
+            if resolved_org_id:
+                resolved_created_via = CREATED_VIA_INSTALL_AUTOCREATE
 
     if resolved_org_id:
         # Attach the install to the resolved org tenant
@@ -539,12 +619,35 @@ async def _handle_no_nonce_install(
             repositories=repositories,
         )
 
-        # Seed per-tenant secret
-        from .tenant_secret import seed_tenant_github_app_secret
+        # Issue #2724 (slice B): the two side effects below PROMOTE the org from
+        # "a row exists" to "a tenant the platform vouches for" — they hand it
+        # the platform App's private key and a routable webhook identity. Neither
+        # may fire for a shell this unauthenticated path created itself.
+        promote, deny_reason = _promotion_allowed_for_provenance(resolved_created_via)
 
-        await seed_tenant_github_app_secret(resolved_org_id, installation_id)
+        if promote:
+            # Seed per-tenant secret
+            from .tenant_secret import seed_tenant_github_app_secret
+
+            await seed_tenant_github_app_secret(resolved_org_id, installation_id)
+        else:
+            logger.warning(
+                "no-nonce install: NOT promoting org=%s (installation_id=%d, created_via=%s, reason=%s) — "
+                "no per-tenant GitHub App secret, no identity-index row. Onboard the org via an operator "
+                "or the authenticated install flow, or set ORG_TENANT_AUTO_CREATE=true on the webhook "
+                "Lambda for a deliberately-open deployment.",
+                resolved_org_id,
+                installation_id,
+                resolved_created_via,
+                deny_reason,
+            )
 
         if account_type == "Organization":
+            # Deliberately NOT gated: this populates the very column
+            # resolve-installation answers from, which is how the webhook gate
+            # learns the provenance. Withholding it would make the gate see an
+            # authoritative not_found instead — denying for the wrong reason, and
+            # breaking open-onboarding deployments that legitimately allow this.
             await _append_installation_id_to_org(
                 installation_id=installation_id,
                 caller_org_id=resolved_org_id,
@@ -552,10 +655,11 @@ async def _handle_no_nonce_install(
             )
 
         # DDB write uses the resolved org tenant
-        await _write_installation_identity_index(
-            installation_id=installation_id,
-            org_id=resolved_org_id,
-        )
+        if promote:
+            await _write_installation_identity_index(
+                installation_id=installation_id,
+                org_id=resolved_org_id,
+            )
 
     logger.info(
         "no-nonce install: installation_id=%d account=%s resolved_org=%s",
@@ -1687,11 +1791,15 @@ async def register_app_callback(
         owner_login = owner.get("login", "")
         owner_id = str(owner.get("id", ""))
         if owner_login:
+            # Issue #2724: register-app-callback also runs behind a consumed
+            # nonce (see the docstring above), so this is a deliberate,
+            # authenticated registration → register_flow (trusted).
             await _upsert_org_tenant_shell(
                 owner_login=owner_login,
                 github_org_id=owner_id,
                 github_app_id=app_id,
                 db=db,
+                created_via="register_flow",
             )
 
     # Issue #2952 (D9): Chained onboarding redirect — send the admin directly
@@ -2143,6 +2251,7 @@ async def _upsert_org_tenant_shell(
     github_org_id: str,
     github_app_id: str,
     db: AsyncSession,
+    created_via: str = "register_flow",
 ) -> str | None:
     """Upsert an org-tenant shell: Organization + Tenant + Department + Team.
 
@@ -2152,6 +2261,19 @@ async def _upsert_org_tenant_shell(
 
     Idempotent: if the org already exists (by slug id), updates github_org_id
     and github_app_id if previously unset and returns the existing id.
+
+    Issue #2724 (slice B): ``created_via`` records WHICH path created the row so
+    the webhook auto-register gate can tell a deliberately-onboarded tenant from
+    a shell the platform auto-created for whoever clicked Install on a public
+    App. Callers on a nonce-authenticated path leave the default
+    (``register_flow``); the unauthenticated no-nonce install callback MUST pass
+    ``install_autocreate``.
+
+    Provenance is stamped on **create only** — an existing row's provenance is
+    never rewritten. An operator-created org that later receives a public-App
+    install stays ``operator`` (it was always a real tenant), and an
+    ``install_autocreate`` shell is not laundered into a trusted one by a later
+    call on an authenticated path.
 
     Returns the tenant_id on success, None on failure.
     """
@@ -2177,10 +2299,14 @@ async def _upsert_org_tenant_shell(
             changed = True
         if changed:
             await db.commit()
+        # Issue #2724: created_via is deliberately NOT touched here — see the
+        # docstring. Rewriting it would let a later authenticated call launder an
+        # install_autocreate shell into a trusted tenant.
         logger.info(
-            "org-tenant-shell: org %s already exists (idempotent), updated=%s",
+            "org-tenant-shell: org %s already exists (idempotent), updated=%s created_via=%s (unchanged)",
             tenant_id,
             changed,
+            existing.created_via,
         )
         return tenant_id
 
@@ -2198,6 +2324,7 @@ async def _upsert_org_tenant_shell(
         cognito_client_ids=[],
         github_org_id=github_org_id,
         github_app_id=github_app_id,
+        created_via=created_via,
     )
     db.add(org)
 
@@ -2224,10 +2351,11 @@ async def _upsert_org_tenant_shell(
 
     await db.commit()
     logger.info(
-        "org-tenant-shell: created org=%s github_org_id=%s github_app_id=%s",
+        "org-tenant-shell: created org=%s github_org_id=%s github_app_id=%s created_via=%s",
         tenant_id,
         github_org_id,
         github_app_id,
+        created_via,
     )
     return tenant_id
 

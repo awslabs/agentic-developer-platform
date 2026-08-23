@@ -424,7 +424,13 @@ class TestInstallationPostgresFallback:
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
                 "common.gateway_client.resolve_installation_by_id",
-                return_value={"state": "resolved", "tenant_id": "pranavsharma1000"},
+                return_value={
+                    "state": "resolved",
+                    "tenant_id": "pranavsharma1000",
+                    # Issue #2724: an operator-onboarded tenant. The backfill gate
+                    # must not tighten this path — it is the normal #2950 case.
+                    "created_via": "operator",
+                },
             ):
                 with patch(
                     "common.gateway_client.resolve_user_by_identity",
@@ -682,4 +688,191 @@ class TestInstallationTenantDriftSafetyNet:
         assert reason == "ok"
         assert result is not None
         # DDB tenant retained
+        assert result.tenant_id == "pranavsharma1000"
+
+
+class TestInstallationBackfillGate:
+    """Issue #2724 (slice B): the resolver's backfill is the SECOND write path.
+
+    ``identity_resolver.resolve`` writes a DDB installation → tenant row on a
+    Postgres hit (the #2950 fallback), entirely independently of the handler's
+    ``_auto_register_installation``. Gating only the handler would leave the
+    trust boundary open on any cold or evicted row — whichever writer fires
+    first wins, and the resolver fires on every webhook, not just
+    ``installation created``. Both call the same ``installation_gate``.
+    """
+
+    def _ddb_missing_installation(self):
+        return _mock_ddb_get_item(
+            {
+                "adp-dev-identity-index": {},
+                "adp-dev-user-identity-index": {
+                    f"github|{SENDER_ID}": V2_USER_ITEM,
+                },
+            }
+        )
+
+    def _tracked(self, mock_ddb, writes):
+        original_table = mock_ddb.Table
+
+        def make_tracked_table(table_name):
+            table = original_table(table_name)
+            table.put_item = lambda Item=None: writes.append(Item)  # noqa: N803
+            return table
+
+        mock_ddb.Table = make_tracked_table
+        return mock_ddb
+
+    def test_denies_backfill_for_self_created_shell(self, monkeypatch):
+        """install_autocreate provenance + flag off → no backfill, unknown_installation.
+
+        This is the bypass the handler-only gate would have left: an attacker's
+        org has a Postgres shell (their own unauthenticated install callback made
+        it) but no DDB row, so any later webhook would have backfilled a routable
+        identity row without ever passing through ``_auto_register_installation``.
+        """
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "false")
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        writes = []
+        mock_ddb = self._tracked(self._ddb_missing_installation(), writes)
+
+        with (
+            patch("boto3.resource", return_value=mock_ddb),
+            patch("boto3.client", return_value=MagicMock()),
+            patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={
+                    "state": "resolved",
+                    "tenant_id": "attacker-org",
+                    "created_via": "install_autocreate",
+                },
+            ),
+            patch(
+                "common.gateway_client.resolve_user_by_identity",
+                return_value=PG_RESULT_CANONICAL,
+            ),
+        ):
+            result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        assert result is None
+        assert reason == "unknown_installation"
+        # Nothing routable was persisted.
+        assert writes == []
+
+    def test_allows_backfill_for_self_created_shell_when_open_onboarding_on(
+        self, monkeypatch
+    ):
+        """The same single flag reopens this path, exactly as it does the handler's."""
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "true")
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        writes = []
+        mock_ddb = self._tracked(self._ddb_missing_installation(), writes)
+
+        with (
+            patch("boto3.resource", return_value=mock_ddb),
+            patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={
+                    "state": "resolved",
+                    "tenant_id": "hackathon-org",
+                    "created_via": "install_autocreate",
+                },
+            ),
+            patch(
+                "common.gateway_client.resolve_user_by_identity",
+                return_value=PG_RESULT_CANONICAL,
+            ),
+        ):
+            result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        assert reason == "ok"
+        assert result is not None
+        assert result.tenant_id == "hackathon-org"
+        assert len(writes) == 1
+
+    def test_backfills_when_provenance_absent(self, monkeypatch):
+        """Rollout window: gateway not yet redeployed → unknown is not untrusted.
+
+        The Lambda and the gateway are separate deploy units, so between the
+        Lambda republish and the gateway redeploy a resolved result legitimately
+        carries no ``created_via``. Denying here would break routing for every
+        cold row in that window.
+        """
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "false")
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        writes = []
+        mock_ddb = self._tracked(self._ddb_missing_installation(), writes)
+
+        with (
+            patch("boto3.resource", return_value=mock_ddb),
+            patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"state": "resolved", "tenant_id": "pranavsharma1000"},
+            ),
+            patch(
+                "common.gateway_client.resolve_user_by_identity",
+                return_value=PG_RESULT_CANONICAL,
+            ),
+        ):
+            result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        assert reason == "ok"
+        assert result is not None
+        assert len(writes) == 1
+
+    def test_existing_ddb_row_is_never_gated(self, monkeypatch):
+        """Grandfathering: the gate runs on the DDB-miss branch only.
+
+        A tenant that already has an identity row keeps resolving regardless of
+        provenance — this change must not retroactively evict live tenants, only
+        refuse NEW untrusted registrations.
+        """
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "false")
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        mock_ddb = _mock_ddb_get_item(
+            {
+                "adp-dev-identity-index": {
+                    f"github_installation_id|{INSTALLATION_ID}": TENANT_ITEM,
+                },
+                "adp-dev-user-identity-index": {
+                    f"github|{SENDER_ID}": V2_USER_ITEM,
+                },
+            }
+        )
+
+        with (
+            patch("boto3.resource", return_value=mock_ddb),
+            patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={
+                    "state": "resolved",
+                    "tenant_id": "pranavsharma1000",
+                    "created_via": "install_autocreate",
+                },
+            ),
+            patch(
+                "common.gateway_client.resolve_user_by_identity",
+                return_value=PG_RESULT_CANONICAL,
+            ),
+        ):
+            result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        assert reason == "ok"
+        assert result is not None
         assert result.tenant_id == "pranavsharma1000"

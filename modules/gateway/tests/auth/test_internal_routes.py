@@ -331,6 +331,44 @@ class TestResolveInstallation:
         )
         assert resp.status_code == 200
         assert resp.json()["tenant_id"] == "org-acme"
+        # Issue #2724 (slice B): the response now also carries provenance, which
+        # is what the webhook's auto-register gate keys its trust decision on.
+        # Seeded orgs are operator-created (migration 025 backfills "operator").
+        assert resp.json()["created_via"] == "operator"
+
+    @patch("src.internal.routes.get_settings")
+    def test_exposes_install_autocreate_provenance(self, mock_settings, db: AsyncSession):
+        """A self-created org shell still resolves 200 — but says so.
+
+        Issue #2724: deliberately NOT a 404. The drift safety-net and
+        ``adp-trigger`` both need the installation → tenant mapping regardless of
+        how the org came to exist; only the auto-register *trust* decision cares
+        about provenance. Returning 404 here would break routing for orgs that are
+        legitimately open-onboarded.
+        """
+        from unittest.mock import MagicMock
+
+        settings = MagicMock()
+        settings.internal_api_key = _VALID_KEY
+        mock_settings.return_value = settings
+
+        async def _seed():
+            org = await db.get(Organization, "org-acme")
+            org.github_installation_ids = ["144082555"]
+            org.created_via = "install_autocreate"
+            await db.commit()
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+
+        client = _make_app(db)
+        resp = client.post(
+            "/internal/v1/resolve-installation",
+            json={"installation_id": "144082555"},
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["tenant_id"] == "org-acme"
+        assert resp.json()["created_via"] == "install_autocreate"
 
     @patch("src.internal.routes.get_settings")
     def test_unknown_installation_returns_404(self, mock_settings, db: AsyncSession):

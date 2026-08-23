@@ -108,7 +108,13 @@ class TestUnknownInstallation:
                 "ok",
             ),
         ]
-        mock_auto_reg.return_value = "acme-hackathon"
+        # Issue #2724: the return type is AutoRegisterResult(tenant_id,
+        # authoritative). Routing keys off tenant_id, so a fail-open (non-
+        # authoritative) registration must still resolve and dispatch — only
+        # credential provisioning is withheld.
+        from handler import AutoRegisterResult
+
+        mock_auto_reg.return_value = AutoRegisterResult("acme-hackathon", False)
         mock_log.return_value.log_event = MagicMock()
 
         # Patch downstream dispatch bits so the handler can complete

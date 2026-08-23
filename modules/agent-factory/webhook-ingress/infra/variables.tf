@@ -112,6 +112,28 @@ variable "internal_api_key_arn" {
   default     = ""
 }
 
+variable "org_tenant_auto_create" {
+  description = <<-EOT
+    Issue #2724: open-onboarding switch for the webhook auto-register tenant gate.
+    When false (default), a GitHub org that installs the App is only auto-registered
+    as an ADP tenant if an operator or an authenticated ADP flow onboarded it —
+    orgs whose only tenant row was self-created by the unauthenticated no-nonce
+    install callback are denied (403 unknown_installation, no per-tenant GitHub App
+    secret). When true, any installing org becomes a tenant (deliberately-open
+    deployments only: hackathons, demos).
+
+    Shares its name with the gateway's ORG_TENANT_AUTO_CREATE
+    (modules/gateway/k8s/configmap.yaml) on purpose: one trust decision behind two
+    different flag names drifts silently, and this drift is security-relevant. The
+    two units govern different halves — the gateway's controls whether the
+    unauthenticated install callback may CREATE a shell, this controls whether the
+    webhook may TRUST one. Set both true for open onboarding. Gateway true + this
+    false is the intended secure default, not a misconfiguration.
+  EOT
+  type        = bool
+  default     = false
+}
+
 # -----------------------------------------------------------------------------
 # EKS / KEDA ScaledJob
 # -----------------------------------------------------------------------------

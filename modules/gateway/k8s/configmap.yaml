@@ -136,6 +136,23 @@ data:
   # Read directly via os.environ in connections/service.py (NOT BG_-prefixed).
   # When "true", registering a GitHub Organization connection automatically
   # creates an org-tenant shell so members can later auto-join.
+  #
+  # Issue #2724: creating a shell no longer implies TRUSTING it. Shells created
+  # by the unauthenticated no-nonce install callback are stamped
+  # created_via="install_autocreate", and the webhook-ingress Lambda reads its
+  # own ORG_TENANT_AUTO_CREATE (same name, terraform var org_tenant_auto_create,
+  # default false) to decide whether such a shell counts as a real tenant for
+  # agent dispatch and per-tenant GitHub App credential seeding. Set that one
+  # true as well only for deliberately-open deployments (hackathons, demos).
+  #
+  # So "true" HERE does not mean "trust whoever installs". It means only "let
+  # the unauthenticated install callback create a shell so the install UI
+  # works". The gateway refuses to promote such a shell itself — no per-tenant
+  # App credentials, no routable identity-index row (see
+  # _promotion_allowed_for_provenance in connections/service.py) — and leaves
+  # promotion entirely to the webhook Lambda's gate. It must stay "true"
+  # because the nonce-authenticated install path also relies on it to onboard a
+  # signed-in user's not-yet-known org.
   # =============================================================================
   ORG_TENANT_AUTO_CREATE: "true"
 

@@ -6,6 +6,21 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TenantMixin, new_uuid, utcnow
 
+# Issue #2724 (slice B): organizations.created_via values — see the column
+# comment below. Mirrors the webhook Lambda's copy in
+# webhook-ingress/lambda/common/gateway_client.py; the two are deliberately
+# separate deploy units, so the values are a wire contract between them
+# (carried by POST /internal/v1/resolve-installation) and must not diverge.
+CREATED_VIA_OPERATOR = "operator"
+CREATED_VIA_REGISTER_FLOW = "register_flow"
+CREATED_VIA_INSTALL_AUTOCREATE = "install_autocreate"
+
+# Provenances meaning "an ADP operator or an authenticated ADP flow onboarded
+# this tenant". Anything outside this set is a self-created shell, which the
+# platform must not promote (no per-tenant App credentials, no routable
+# identity-index row) without a deliberate open-onboarding opt-in.
+TRUSTED_CREATED_VIA = frozenset({CREATED_VIA_OPERATOR, CREATED_VIA_REGISTER_FLOW})
+
 
 class Organization(Base):
     __tablename__ = "organizations"
@@ -40,6 +55,23 @@ class Organization(Base):
         nullable=False,
         default="auto_approve_org_members",
         server_default="auto_approve_org_members",
+    )
+    # Issue #2724 (slice B): provenance — WHICH path created this tenant row.
+    # The webhook auto-register gate reads this to decide whether an installing
+    # org is a tenant an ADP operator/flow onboarded, or one the platform
+    # auto-created for whoever clicked Install on a public App. Tenant
+    # *existence* is attacker-creatable (install-callback's unauthenticated
+    # no-nonce path upserts a shell); provenance is not.
+    #   "operator"           — pre-existing / operator-provisioned (trusted)
+    #   "register_flow"      — created by a nonce-authenticated ADP flow (trusted)
+    #   "install_autocreate" — self-created shell from the unauthenticated
+    #                          no-nonce install callback (NOT trusted)
+    # Defaults to "operator" so pre-migration rows grandfather in as trusted.
+    created_via: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="operator",
+        server_default="operator",
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

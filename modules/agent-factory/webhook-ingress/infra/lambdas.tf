@@ -55,6 +55,19 @@ resource "aws_lambda_function" "github_webhook" {
       TENANT_REGISTRY_TABLE         = aws_dynamodb_table.tenant_registry.name
       # Issue #3179 (cred-binding S5): marker signature verification key
       MARKER_SIGNING_KEY_SECRET_ARN = aws_secretsmanager_secret.marker_signing_key.arn
+      # Issue #2724 (slice B): open-onboarding switch for the auto-register
+      # tenant gate. Deliberately the SAME variable name the gateway reads
+      # (modules/gateway/k8s/configmap.yaml) rather than a second Lambda-only
+      # flag, because one trust decision behind two names drifts silently.
+      # The two deploy units govern different halves of it: the gateway's
+      # decides whether the unauthenticated install callback may CREATE an org
+      # shell; this one decides whether the webhook may TRUST such a shell as a
+      # tenant. An open-onboarding deployment sets both "true". Leaving the
+      # gateway "true" and this "false" (the default) is the intended secure
+      # posture, not drift: shells are still created so the install UI works,
+      # but they are not promoted to tenants and get no agent dispatch.
+      # Flipping this to "true" is the documented env-only rollback.
+      ORG_TENANT_AUTO_CREATE = tostring(var.org_tenant_auto_create)
     }
   }
 

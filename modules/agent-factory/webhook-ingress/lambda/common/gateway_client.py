@@ -42,6 +42,19 @@ INSTALLATION_RESOLVED = "resolved"
 INSTALLATION_NOT_FOUND = "not_found"
 INSTALLATION_ERROR = "error"
 
+# Issue #2724 (slice B): organizations.created_via values. Provenance records
+# WHICH path created the tenant row — the signal the auto-register gate trusts,
+# because tenant *existence* is creatable by the installing party (the
+# unauthenticated no-nonce install callback upserts a shell when the gateway's
+# own ORG_TENANT_AUTO_CREATE is on).
+CREATED_VIA_OPERATOR = "operator"
+CREATED_VIA_REGISTER_FLOW = "register_flow"
+CREATED_VIA_INSTALL_AUTOCREATE = "install_autocreate"
+
+# Provenances that mean "an ADP operator or an authenticated ADP flow onboarded
+# this tenant". Anything else is self-created and untrusted for auto-register.
+TRUSTED_PROVENANCE = frozenset({CREATED_VIA_OPERATOR, CREATED_VIA_REGISTER_FLOW})
+
 
 def _resolve_admin_token() -> str:
     """Resolve the platform admin token from Secrets Manager (cached)."""
@@ -209,9 +222,15 @@ def resolve_installation_by_id(installation_id: str) -> dict:
     Issue #4046 (#2724 slice A): returns one of three distinct states instead of
     collapsing everything except success into ``None``::
 
-        {"state": "resolved",  "tenant_id": <org_id>}   # 200 + non-empty tenant
+        {"state": "resolved",  "tenant_id": <org_id>, "created_via": <str>}
         {"state": "not_found"}                          # authoritative gateway 404
         {"state": "error", "reason": <str>}             # we could not find out
+
+    Issue #2724 (slice B): a ``resolved`` result also carries ``created_via``,
+    the provenance of the owning organization row. ``created_via`` is ``""`` when
+    the gateway predates the field (not yet redeployed) — callers must treat that
+    as "unknown", never as "untrusted". Use :func:`installation_gate` rather than
+    interpreting these fields directly.
 
     ``not_found`` is returned ONLY for a gateway 404 — the one answer that
     authoritatively means "this installation is not a known ADP tenant".
@@ -250,7 +269,14 @@ def resolve_installation_by_id(installation_id: str) -> dict:
                 data = json.loads(resp.read().decode("utf-8"))
                 tenant_id = data.get("tenant_id", "")
                 if tenant_id:
-                    return {"state": INSTALLATION_RESOLVED, "tenant_id": tenant_id}
+                    return {
+                        "state": INSTALLATION_RESOLVED,
+                        "tenant_id": tenant_id,
+                        # Issue #2724: "" when the gateway has not been redeployed
+                        # with the provenance field yet — the gate fails open on
+                        # that, loudly.
+                        "created_via": data.get("created_via", ""),
+                    }
                 # A 200 with no tenant_id is a malformed response, not an
                 # authoritative "not a tenant" — the gateway signals that with 404.
                 return _installation_error(installation_id, "empty_tenant_id")
@@ -268,6 +294,104 @@ def resolve_installation_by_id(installation_id: str) -> dict:
         return _installation_error(installation_id, f"http_{e.code}", str(e.reason))
     except Exception as e:  # noqa: BLE001
         return _installation_error(installation_id, "transport_error", str(e))
+
+
+def _open_onboarding_enabled() -> bool:
+    """Whether this deployment has opted into open onboarding.
+
+    Issue #2724: ``ORG_TENANT_AUTO_CREATE`` is the SINGLE source of truth for
+    "is this deployment open-onboarding", read by both the gateway (where it
+    lets the unauthenticated install callback create tenant shells) and here
+    (where it lets the webhook trust those shells). A second, Lambda-only flag
+    was explicitly rejected: two flags controlling one trust decision across two
+    deploy units drift silently, and the drift is security-relevant.
+
+    Read per call, not at import — the value must be flippable by an env-only
+    Lambda config update (the documented instant rollback) without a code deploy.
+    """
+    return os.environ.get("ORG_TENANT_AUTO_CREATE", "false").lower() == "true"
+
+
+# installation_gate() reasons. The two TRUSTED_GATE_REASONS are the only ones
+# that mean "we KNOW this is a real ADP tenant" — callers key credential
+# provisioning off that set, not off "allowed", because the gate deliberately
+# allows several cases it cannot vouch for (see installation_gate's table).
+GATE_TRUSTED_PROVENANCE = "trusted_provenance"
+GATE_OPEN_ONBOARDING = "open_onboarding"
+GATE_PROVENANCE_UNAVAILABLE = "provenance_unavailable"
+GATE_UNAVAILABLE = "gate_unavailable"
+GATE_NOT_A_KNOWN_TENANT = "not_a_known_tenant"
+GATE_SELF_CREATED_SHELL = "self_created_shell"
+
+TRUSTED_GATE_REASONS = frozenset({GATE_TRUSTED_PROVENANCE, GATE_OPEN_ONBOARDING})
+
+
+def installation_gate(result: dict | None) -> tuple[bool, str]:
+    """Decide whether an installation may be auto-registered as a tenant.
+
+    Issue #2724 (slice B): the tenant-existence check ``_auto_register_installation``
+    has promised in its docstring since #2769 but never performed. This is the
+    single choke point for that decision — both write paths (the handler's
+    auto-register and identity_resolver's independent DDB backfill) call it, so
+    the gate cannot be circumvented by whichever path happens to fire first.
+
+    Takes a :func:`resolve_installation_by_id` result and returns
+    ``(allowed, reason)``:
+
+    ======================================  =======  =========================
+    gateway result                          allowed  reason
+    ======================================  =======  =========================
+    resolved, trusted provenance            True     trusted_provenance
+    resolved, install_autocreate, flag on   True     open_onboarding
+    resolved, install_autocreate, flag off  False    self_created_shell
+    resolved, provenance missing/unknown    True     provenance_unavailable
+    not_found (authoritative 404)           False    not_a_known_tenant
+    error / None                            True     gate_unavailable
+    ======================================  =======  =========================
+
+    **Deny only on an authoritative answer.** ``error`` means we could not reach
+    the gateway (SigV4 at the API GW edge, unconfigured URL, cold RDS, timeout) —
+    denying on it would turn every gateway blip into "reject all new customer
+    installations", which is the exact blast radius this issue's own impact
+    analysis puts at the top of the table. Same for an unrecognised or absent
+    provenance: a gateway that has not been redeployed with the field yet must
+    not brick onboarding. Both fail OPEN and LOUD — the caller emits
+    ``AutoRegisterGateUnavailable`` so the window is visible rather than silent.
+
+    Note the asymmetry with ``not_found``: that IS authoritative (the gateway
+    looked and no organization claims the installation), so it denies. Legitimate
+    first-time installs are unaffected because the browser install-callback
+    creates the Postgres row and the DDB identity row itself; a webhook that
+    arrives before it has nothing to auto-register on behalf of anyone.
+    """
+    if not result:
+        # Defensive: pre-slice-A callers could see None. Never deny on it.
+        return True, GATE_UNAVAILABLE
+
+    state = result.get("state")
+
+    if state == INSTALLATION_NOT_FOUND:
+        return False, GATE_NOT_A_KNOWN_TENANT
+
+    if state != INSTALLATION_RESOLVED:
+        # INSTALLATION_ERROR, or a state this Lambda version does not know.
+        return True, GATE_UNAVAILABLE
+
+    created_via = result.get("created_via", "")
+
+    if created_via in TRUSTED_PROVENANCE:
+        return True, GATE_TRUSTED_PROVENANCE
+
+    if created_via == CREATED_VIA_INSTALL_AUTOCREATE:
+        if _open_onboarding_enabled():
+            # Deliberately-open deployment (hackathon/demo): the operator has
+            # accepted that anyone who installs the App becomes a tenant.
+            return True, GATE_OPEN_ONBOARDING
+        return False, GATE_SELF_CREATED_SHELL
+
+    # Empty or unrecognised provenance — gateway not yet redeployed, or a value
+    # this Lambda version predates. Unknown is not untrusted.
+    return True, GATE_PROVENANCE_UNAVAILABLE
 
 
 def post_provenance(

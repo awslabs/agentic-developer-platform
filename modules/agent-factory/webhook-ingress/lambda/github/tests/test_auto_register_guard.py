@@ -8,14 +8,25 @@ _auto_register_installation() must:
   3. Emit InstallationTenantDrift when a Postgres-owned row's org differs from
      the webhook org login.
 
-Issue #4046 (#2724 slice A): the gateway client now returns three states
-(resolved / not_found / error) instead of ``None`` for every non-success. The
-call-site mapping is behavior-neutral in this slice — BOTH not_found and error
-still fall back to the org_login, which the two
-``test_falls_back_to_org_login_*`` tests pin explicitly. There is deliberately
-NO "skips when not a known tenant" test here: the handler does not skip today.
-The old ``test_skips_when_not_known_tenant`` name asserted a behavior the code
-never had; slice B is where the deny actually lands.
+Issue #4046 (#2724 slice A): the gateway client returns three states
+(resolved / not_found / error) instead of ``None`` for every non-success.
+
+Issue #2724 (slice B): the deny has now landed, and the two states are no longer
+treated alike:
+
+  * ``not_found`` (authoritative gateway 404) → **DENY**: no rows written, no
+    tenant returned, caller 403s ``unknown_installation``. This is
+    ``TestTenantGate``, and it is the behavior the module docstring of
+    ``_auto_register_installation`` promised since #2769 without implementing.
+  * ``error`` (gateway unreachable) → fail OPEN but LOUD: the ``org_login``
+    fallback row is still written so an outage does not reject every new
+    install, but the result is marked NON-authoritative so the caller skips
+    per-tenant credential provisioning.
+
+``_auto_register_installation`` now returns an ``AutoRegisterResult(tenant_id,
+authoritative)`` rather than a bare string, because "we wrote a routable row" and
+"we know this org is a real tenant" are different facts — conflating them is what
+let the platform App's private key be copied for any org that installed the App.
 """
 
 import os
@@ -73,7 +84,10 @@ class TestAutoRegisterGuard:
 
         result = _auto_register_installation(144082554, "pranavsharma1000")
 
-        assert result == "pranavsharma1000"
+        assert result.tenant_id == "pranavsharma1000"
+        # Issue #2724: a Postgres-owned row IS the authoritative answer, so
+        # downstream credential provisioning stays permitted.
+        assert result.authoritative is True
         table.put_item.assert_not_called()
         # gateway not consulted — row already exists
         mock_gw.return_value.resolve_installation_by_id.assert_not_called()
@@ -96,24 +110,30 @@ class TestAutoRegisterGuard:
 
         result = _auto_register_installation(144082554, "aws-innovate")
 
-        assert result == "pranavsharma1000"  # Postgres tenant kept
+        assert result.tenant_id == "pranavsharma1000"  # Postgres tenant kept
+        assert result.authoritative is True
         table.put_item.assert_not_called()
         mock_metric.assert_called_once_with("InstallationTenantDrift")
 
+    @patch("handler._emit_metric")
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")
-    def test_falls_back_to_org_login_when_gateway_unknown(self, mock_resolver, mock_gw):
-        """DOCUMENTS (does not endorse) today's fallthrough: an unknown installation
-        is still registered, using the raw org_login as the tenant_id.
+    def test_denies_when_gateway_says_not_a_known_tenant(
+        self, mock_resolver, mock_gw, mock_metric
+    ):
+        """THE GATE (Issue #2724 slice B): an authoritative 404 writes NOTHING.
 
-        Renamed from ``test_skips_when_not_known_tenant`` (Issue #4046). The old
-        name claimed a skip while the body asserted the opposite — a webhook from
-        an installation the gateway does not know still gets a tenant row written.
-        That mismatch is how the gap survived a security review; see #2724.
+        Formerly ``test_falls_back_to_org_login_when_gateway_unknown``, which
+        pinned the vulnerable fallthrough (and before that
+        ``test_skips_when_not_known_tenant``, whose name claimed a skip its body
+        contradicted — the mismatch that let the gap survive a merge and a
+        security review). The deny has landed, so the expectation flips here
+        deliberately, exactly as slice A promised.
 
-        This test pins CURRENT behavior so slice A stays provably behavior-neutral.
-        Slice B (#2724) is where an authoritative ``not_found`` starts denying —
-        at which point this test's expectations change deliberately, not silently.
+        A gateway 404 means the gateway looked and no organization claims this
+        installation. No identity rows, no tenant returned → the caller 403s
+        ``unknown_installation``, which is the contract
+        ``_auto_register_installation``'s docstring promised since #2769.
         """
         from handler import _auto_register_installation
 
@@ -123,21 +143,84 @@ class TestAutoRegisterGuard:
 
         result = _auto_register_installation(555, "some-random-org")
 
-        # Falls back to using org_login as the tenant_id
-        assert result == "some-random-org"
-        # Forward + reverse rows written
-        assert table.put_item.call_count == 2
-        forward_item = table.put_item.call_args_list[0].kwargs["Item"]
-        assert forward_item["org_id"] == "some-random-org"
-        assert forward_item["auto_registered"] is True
+        # No tenant → caller 403s. The org_login NEVER becomes a tenant_id.
+        assert result.tenant_id is None
+        assert result.authoritative is False
+        # Neither the forward nor the reverse row is written.
+        table.put_item.assert_not_called()
+        mock_metric.assert_called_once_with("AutoRegisterDenied")
+
+    @patch("handler._emit_metric")
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_denies_self_created_shell_when_open_onboarding_off(
+        self, mock_resolver, mock_gw, mock_metric
+    ):
+        """A tenant the installer created themselves is not a known tenant.
+
+        Issue #2724: ``install_autocreate`` provenance means the only reason a
+        Postgres tenant row exists is that the *unauthenticated* no-nonce install
+        callback created it when this same party clicked Install. Trusting it
+        would make the gate self-satisfiable — the whole reason the gate keys on
+        provenance rather than existence.
+        """
+        from handler import _auto_register_installation
+
+        table = _mock_table_with()  # no existing rows
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "state": "resolved",
+            "tenant_id": "attacker-org",
+            "created_via": "install_autocreate",
+        }
+
+        with patch.dict(os.environ, {"ORG_TENANT_AUTO_CREATE": "false"}):
+            result = _auto_register_installation(555, "attacker-org")
+
+        assert result.tenant_id is None
+        assert result.authoritative is False
+        table.put_item.assert_not_called()
+        mock_metric.assert_called_once_with("AutoRegisterDenied")
 
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")
-    def test_falls_back_to_org_login_when_gateway_errors(self, mock_resolver, mock_gw):
-        """Issue #4046: an ``error`` state (gateway down) keeps today's fallthrough.
+    def test_allows_self_created_shell_when_open_onboarding_on(self, mock_resolver, mock_gw):
+        """The escape hatch: ORG_TENANT_AUTO_CREATE=true restores open onboarding.
 
-        This is the half slice B must NOT deny on — a gateway outage cannot become
-        a platform-wide "reject all new installations".
+        Issue #2724: deliberately-open deployments (hackathons, demos) opt in via
+        the SAME single flag the gateway reads — there is no second Lambda-only
+        flag. This is also the documented env-only instant rollback.
+        """
+        from handler import _auto_register_installation
+
+        table = _mock_table_with()  # no existing rows
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "state": "resolved",
+            "tenant_id": "hackathon-org",
+            "created_via": "install_autocreate",
+        }
+
+        with patch.dict(os.environ, {"ORG_TENANT_AUTO_CREATE": "true"}):
+            result = _auto_register_installation(555, "hackathon-org")
+
+        assert result.tenant_id == "hackathon-org"
+        # Resolved via the gateway, so provisioning is permitted.
+        assert result.authoritative is True
+        assert table.put_item.call_count == 2
+
+    @patch("handler._emit_metric")
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_fails_open_but_loud_when_gateway_errors(self, mock_resolver, mock_gw, mock_metric):
+        """An ``error`` state must NOT deny — but must not provision either.
+
+        Issue #2724 §3: a gateway outage cannot become "reject all new customer
+        installations" (the top row of this issue's own blast-radius table), so
+        the org_login fallback row is still written. But the result is marked
+        NON-authoritative so the caller skips the per-tenant secret — that seed
+        copies the platform App's private key, and we do not know whose org this
+        is. Loud: ``AutoRegisterGateUnavailable``.
         """
         from handler import _auto_register_installation
 
@@ -150,17 +233,52 @@ class TestAutoRegisterGuard:
 
         result = _auto_register_installation(555, "some-random-org")
 
-        # Identical outcome to the not_found case today (slice A is neutral).
-        assert result == "some-random-org"
+        # Fails OPEN: routing still works.
+        assert result.tenant_id == "some-random-org"
+        # But NOT authoritative: no credential provisioning.
+        assert result.authoritative is False
         assert table.put_item.call_count == 2
         forward_item = table.put_item.call_args_list[0].kwargs["Item"]
         assert forward_item["org_id"] == "some-random-org"
         assert forward_item["auto_registered"] is True
+        assert mock_metric.call_args_list[0].args[0] == "AutoRegisterGateUnavailable"
+
+    @patch("handler._emit_metric")
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_fails_open_when_gateway_provenance_absent(self, mock_resolver, mock_gw, mock_metric):
+        """A gateway not yet redeployed with created_via must not brick onboarding.
+
+        Issue #2724: unknown provenance is not untrusted. The Lambda and the
+        gateway deploy independently, so during the rollout window a resolved
+        result can legitimately carry no provenance. Fail open, loudly, and
+        without provisioning credentials.
+        """
+        from handler import _auto_register_installation
+
+        table = _mock_table_with()  # no existing rows
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "state": "resolved",
+            "tenant_id": "acme",
+            "created_via": "",
+        }
+
+        result = _auto_register_installation(555, "acme")
+
+        # Allowed, but via the non-authoritative fallback path.
+        assert result.tenant_id == "acme"
+        assert result.authoritative is False
+        assert mock_metric.call_args_list[0].args[0] == "AutoRegisterGateUnavailable"
 
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")
     def test_writes_postgres_tenant_when_known(self, mock_resolver, mock_gw):
-        """No row + gateway resolves a tenant → write the POSTGRES tenant, tagged auto_registered."""
+        """No row + gateway resolves a TRUSTED tenant → write the POSTGRES tenant.
+
+        Issue #2724: the no-over-tightening guard. An org an operator or an
+        authenticated ADP flow onboarded must keep working exactly as before.
+        """
         from handler import _auto_register_installation
 
         table = _mock_table_with()  # no existing rows
@@ -169,11 +287,13 @@ class TestAutoRegisterGuard:
         mock_gw.return_value.resolve_installation_by_id.return_value = {
             "state": "resolved",
             "tenant_id": "pranavsharma1000",
+            "created_via": "register_flow",
         }
 
         result = _auto_register_installation(144082554, "pranav-login")
 
-        assert result == "pranavsharma1000"
+        assert result.tenant_id == "pranavsharma1000"
+        assert result.authoritative is True
         # Two writes: forward + reverse
         assert table.put_item.call_count == 2
         forward_call = table.put_item.call_args_list[0]
@@ -223,7 +343,8 @@ class TestAutoRegisterGuard:
         result = _auto_register_installation(144240027, "aws-innovate")
 
         # Postgres tenant is kept; the phantom login never becomes the tenant.
-        assert result == "pranavsharma1000"
+        assert result.tenant_id == "pranavsharma1000"
+        assert result.authoritative is True
         # No write at all — the Postgres-owned row is untouched.
         table.put_item.assert_not_called()
         # Gateway is not consulted: an existing row short-circuits the resolve.
@@ -254,7 +375,12 @@ class TestAutoRegisterGuard:
 
         result = _auto_register_installation(144082554, "pranavsharma1000")
 
-        assert result == "pranavsharma1000"
+        assert result.tenant_id == "pranavsharma1000"
+        # Issue #2724 grandfathering: the refresh path neither consults the gateway
+        # nor checks provenance, so rows written before the gate existed keep
+        # routing. It is NOT authoritative though — an auto_registered row may
+        # itself be a pre-gate org_login fallback, so we do not re-seed on it.
+        assert result.authoritative is False
         # Refresh path does not consult the gateway
         mock_gw.return_value.resolve_installation_by_id.assert_not_called()
         # Forward write has no ConditionExpression (idempotent overwrite)
@@ -309,13 +435,16 @@ class TestPartialWriteSplit:
         table = self._table_failing_on("org_installation")
         mock_resolver.return_value._get_table.return_value = table
         mock_gw.return_value.resolve_installation_by_id.return_value = {
-            "tenant_id": "acme-internal"
+            "state": "resolved",
+            "tenant_id": "acme-internal",
+            "created_via": "operator",
         }
 
         result = _auto_register_installation(144082554, "acme-internal")
 
         # The key assertion: NOT None. Pre-#4030 this returned None.
-        assert result == "acme-internal"
+        assert result.tenant_id == "acme-internal"
+        assert result.authoritative is True
         mock_metric.assert_called_once_with("AutoRegister.PartialWrite")
         # Forward row was written before the reverse row blew up.
         forward_item = table.put_item.call_args_list[0].kwargs["Item"]
@@ -337,12 +466,15 @@ class TestPartialWriteSplit:
         table = self._table_failing_on("github_installation_id")
         mock_resolver.return_value._get_table.return_value = table
         mock_gw.return_value.resolve_installation_by_id.return_value = {
-            "tenant_id": "acme-internal"
+            "state": "resolved",
+            "tenant_id": "acme-internal",
+            "created_via": "operator",
         }
 
         result = _auto_register_installation(144082554, "acme-internal")
 
-        assert result is None
+        assert result.tenant_id is None
+        assert result.authoritative is False
         # PartialWrite is specifically "forward succeeded, reverse didn't".
         assert "AutoRegister.PartialWrite" not in [
             c.args[0] for c in mock_metric.call_args_list
@@ -375,11 +507,16 @@ class TestPartialWriteSplit:
 
         table.get_item = get_item
         mock_resolver.return_value._get_table.return_value = table
-        mock_gw.return_value.resolve_installation_by_id.return_value = {"tenant_id": "acme"}
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "state": "resolved",
+            "tenant_id": "acme",
+            "created_via": "operator",
+        }
 
         result = _auto_register_installation(999, "acme")
 
-        assert result == "acme"
+        assert result.tenant_id == "acme"
+        assert result.authoritative is True
         mock_metric.assert_called_once_with("AutoRegister.PartialWrite")
 
     @patch("handler._emit_metric")
@@ -402,11 +539,17 @@ class TestPartialWriteSplit:
 
         table.put_item = MagicMock(side_effect=ConditionalCheckFailedException("race lost"))
         mock_resolver.return_value._get_table.return_value = table
-        mock_gw.return_value.resolve_installation_by_id.return_value = {"tenant_id": "acme"}
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "state": "resolved",
+            "tenant_id": "acme",
+            "created_via": "operator",
+        }
 
         result = _auto_register_installation(999, "acme")
 
-        assert result == "acme"
+        assert result.tenant_id == "acme"
+        # A Postgres-owned row won the race, so the answer is authoritative.
+        assert result.authoritative is True
         mock_metric.assert_not_called()
         # Only the forward attempt; the reverse row is not written on a lost race.
         assert table.put_item.call_count == 1
