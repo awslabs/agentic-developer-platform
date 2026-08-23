@@ -282,6 +282,7 @@ adp/
 | Doc | Location |
 |-----|----------|
 | **Architecture (mental model)** | [ARCHITECTURE.md](ARCHITECTURE.md) — the four categories, the two skins, where new work goes |
+| **Operator Onboarding Walkthrough (start here)** | [docs/onboarding-walkthrough.md](docs/onboarding-walkthrough.md) — day-1 → week-1 path: setup, first agent run, governance, troubleshooting, best practices |
 | **Deploy Quick Start (authoritative)** | [docs/adp-platform-deployment/deploy-quickstart.md](docs/adp-platform-deployment/deploy-quickstart.md) — verified phase-by-phase procedure |
 | Self-Managed Deploy (full reference) | [docs/adp-platform-deployment/self-managed-deploy.md](docs/adp-platform-deployment/self-managed-deploy.md) |
 | Gateway README | [modules/gateway/README.md](modules/gateway/README.md) |
