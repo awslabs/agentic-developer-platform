@@ -69,6 +69,85 @@ def normalize_membership_role(role: str | None) -> str:
     return normalized or "member"
 
 
+async def set_membership_role(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    tenant_id: str,
+    role: str,
+    joined_via: str = "admin_role_update",
+) -> TenantMembership:
+    """Set ``user_id``'s role in ``tenant_id`` to exactly ``role``, up OR down.
+
+    Issue #4019. This is the deliberate counterpart to
+    :func:`upsert_tenant_membership`, which never *lowers* a stored role — a rule
+    that is correct for its own callers (idempotent onboarding/approval writes
+    that must heal stale rows without clobbering privilege) but fatal for an
+    explicit admin role change. Routing a demotion through that helper returns
+    success while the membership row keeps its old role, so the "demoted" user
+    retains full authority indefinitely: a silent privilege-revocation failure.
+    An explicit admin role change is the one case where lowering is the intent,
+    so it gets its own function rather than a flag on the idempotent one.
+
+    Platform-level strings are still normalized to ``org_admin`` before storage
+    (see :func:`normalize_membership_role`): a tenant-scoped row must never
+    confer unscoped platform authority (#3981).
+
+    Flushes but does NOT commit — the caller owns the transaction.
+
+    Args:
+        db: Session owning the enclosing transaction.
+        user_id: ``users.id`` (a Postgres UUID, NOT a Cognito sub).
+        tenant_id: ``organizations.id`` the membership is scoped to.
+        role: Desired role; normalized via :func:`normalize_membership_role`.
+        joined_via: Provenance tag (``String(32)``) used only when the row must
+            be created (a user with no prior membership in this tenant).
+
+    Returns:
+        The created or updated ``TenantMembership``.
+    """
+    desired_role = normalize_membership_role(role)
+
+    rows = (await db.execute(select(TenantMembership).where(TenantMembership.user_id == user_id))).scalars().all()
+    existing = next((m for m in rows if m.tenant_id == tenant_id), None)
+    has_other_active = any(m.is_active for m in rows if m.tenant_id != tenant_id)
+
+    if existing is not None:
+        if existing.role != desired_role:
+            logger.info(
+                "membership set_role: user=%s tenant=%s %r -> %r (joined_via=%s)",
+                user_id,
+                tenant_id,
+                existing.role,
+                desired_role,
+                joined_via,
+            )
+        existing.role = desired_role
+        if not existing.is_active and not has_other_active:
+            existing.is_active = True
+        await db.flush()
+        return existing
+
+    membership = TenantMembership(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        role=desired_role,
+        is_active=not has_other_active,
+        joined_via=joined_via,
+    )
+    db.add(membership)
+    await db.flush()
+    logger.info(
+        "membership set_role: created user=%s tenant=%s role=%s is_active=%s joined_via=%s",
+        user_id,
+        tenant_id,
+        desired_role,
+        membership.is_active,
+        joined_via,
+    )
+    return membership
+
+
 async def upsert_tenant_membership(
     db: AsyncSession,
     *,

@@ -15,6 +15,7 @@ import {
   updateTeam,
   deleteTeam,
   getUserRoles,
+  getAvailableRoles,
   assignUserRole,
   removeUserRole,
 } from '@/services/admin';
@@ -405,25 +406,67 @@ describe('Admin Service', () => {
       });
     });
 
+    describe('getAvailableRoles', () => {
+      it('returns the roles the backend says this caller may assign', async () => {
+        vi.mocked(apiClient.get).mockResolvedValue({ roles: ['member', 'dept_admin', 'org_admin'] });
+
+        const result = await getAvailableRoles();
+
+        expect(apiClient.get).toHaveBeenCalledWith('/admin/users/roles');
+        expect(result).toEqual(['member', 'dept_admin', 'org_admin']);
+      });
+    });
+
+    // Issue #4019: these two used to assert `rejects.toThrow(...)` placeholders.
     describe('assignUserRole', () => {
-      it('throws error since it should be done via user management', async () => {
-        // assignUserRole now throws an error directing to user management endpoints
+      it('PUTs the role to the org-scoped user endpoint', async () => {
+        vi.mocked(apiClient.put).mockResolvedValue({
+          id: 'user-1',
+          org_id: 'org-1',
+          role: 'org_admin',
+          created_at: '2024-01-01T00:00:00Z',
+        });
+
+        const result = await assignUserRole({
+          user_id: 'user-1',
+          role: AdminRole.ORG_ADMIN,
+          org_id: 'org-1',
+        });
+
+        expect(apiClient.put).toHaveBeenCalledWith('/admin/organizations/org-1/users/user-1', {
+          role: 'org_admin',
+        });
+        expect(result.userId).toBe('user-1');
+        expect(result.role).toBe('org_admin');
+        expect(result.orgId).toBe('org-1');
+      });
+
+      it('rejects without an org_id instead of calling an unscoped endpoint', async () => {
+        // The endpoint is org-scoped; a call without org_id would hit
+        // /admin/organizations/undefined/... and 404 with a confusing message.
         await expect(
-          assignUserRole({
-            user_id: 'user-1',
-            role: AdminRole.ORG_ADMIN,
-            org_id: 'org-1',
-          })
-        ).rejects.toThrow('User role assignment should be done via user management endpoints');
+          assignUserRole({ user_id: 'user-1', role: AdminRole.ORG_ADMIN })
+        ).rejects.toThrow('org_id is required');
+        expect(apiClient.put).not.toHaveBeenCalled();
       });
     });
 
     describe('removeUserRole', () => {
-      it('throws error since it should be done via user management', async () => {
-        // removeUserRole now throws an error directing to user management endpoints
-        await expect(removeUserRole('user-1')).rejects.toThrow(
-          'User role removal should be done via user management endpoints'
-        );
+      it('demotes to member rather than deleting the membership', async () => {
+        vi.mocked(apiClient.put).mockResolvedValue({});
+
+        await removeUserRole('user-1', 'org-1');
+
+        // A DELETE would leave a no-row principal; the contract is "demote".
+        expect(apiClient.delete).not.toHaveBeenCalled();
+        expect(apiClient.put).toHaveBeenCalledWith('/admin/organizations/org-1/users/user-1', {
+          role: 'member',
+        });
+      });
+
+      it('rejects without an org_id', async () => {
+        await expect(removeUserRole('user-1')).rejects.toThrow('org_id is required');
+        expect(apiClient.put).not.toHaveBeenCalled();
       });
     });
   });

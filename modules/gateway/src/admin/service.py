@@ -1,15 +1,17 @@
 """Admin service for organization CRUD, pool management, and configuration."""
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin.cognito_claims import sync_cognito_role_claims
 from src.admin.cognito_service import CognitoService, CognitoServiceError
 from src.admin.config import get_admin_config
 from src.admin.exceptions import PoolConfigurationError, ResourceConflictError, ResourceNotFoundError
-from src.admin.memberships import is_admin_level_role, upsert_tenant_membership
+from src.admin.memberships import is_admin_level_role, set_membership_role, upsert_tenant_membership
 from src.admin.schemas import (
     BudgetConfigResponse,
     BudgetConfigUpdateRequest,
@@ -32,6 +34,7 @@ from src.admin.schemas import (
 from src.shared.interfaces.budget import IBudgetService
 from src.shared.interfaces.ratelimit import IRateLimitService
 from src.shared.models.budget import BudgetConfig, BudgetUsage
+from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Department, Organization, ServiceAccount, Team, User
 from src.shared.models.usage import BedrockPoolAccount, RateLimitConfig
 from src.shared.schemas.admin import (
@@ -45,9 +48,26 @@ from src.shared.schemas.admin import (
     TeamUpdateRequest,
     UserCreateRequest,
     UserResponse,
+    UserUpdateRequest,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class UserAuthzState:
+    """A target user's identifiers plus the role that actually confers authority.
+
+    Issue #4019: returned by :meth:`AdminService.get_user_authz_state` so a route
+    can make an authz decision about a target user without reaching for
+    ``users.role``, which is a display mirror nothing in authz reads.
+    """
+
+    user_id: str
+    org_id: str
+    cognito_sub: str | None
+    users_role: str | None
+    membership_role: str | None
 
 
 class AdminService:
@@ -1392,6 +1412,141 @@ class AdminService:
                 for user in users
             ],
             total,
+        )
+
+    async def get_user_authz_state(self, org_id: str, user_id: str) -> UserAuthzState:
+        """Resolve a target user's *authoritative* role for an authz decision.
+
+        Issue #4019. ``users.role`` is a display mirror that nothing in authz
+        reads (see ``AccessControl._resolve_membership_role``), so a permission
+        check must not be made against it. This returns the membership role —
+        the store that actually confers org-level authority — alongside the
+        identifiers a role write needs.
+
+        ``membership_role`` is None when the user has no membership row in this
+        org; such a principal resolves to MEMBER (least privilege, #3987 PR 2).
+
+        Args:
+            org_id: Organization the user must belong to.
+            user_id: ``users.id`` of the target.
+
+        Returns:
+            The target's identifiers and resolved membership role.
+
+        Raises:
+            ResourceNotFoundError: If the user does not exist in this org.
+        """
+        user = (await self.db.execute(select(User).where(User.id == user_id, User.org_id == org_id))).scalar_one_or_none()
+        if not user:
+            raise ResourceNotFoundError("User", user_id)
+
+        membership = (
+            await self.db.execute(
+                select(TenantMembership).where(
+                    TenantMembership.user_id == user.id,
+                    TenantMembership.tenant_id == org_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+        return UserAuthzState(
+            user_id=user.id,
+            org_id=user.org_id,
+            cognito_sub=user.cognito_sub,
+            users_role=user.role,
+            membership_role=membership.role if membership else None,
+        )
+
+    async def update_user(
+        self,
+        org_id: str,
+        user_id: str,
+        request: UserUpdateRequest,
+    ) -> UserResponse:
+        """Update a user's role and/or display name.
+
+        Issue #4019. The authoritative write is ``tenant_memberships.role``:
+        post-#3998/#4026 that row is the only store conferring org-level
+        authority, so a change that touched only ``users.role`` + the Cognito
+        attribute would display as a promotion and grant nothing (and a demotion
+        would revoke nothing). Three stores are written, in deliberate order:
+
+        1. ``tenant_memberships.role`` — authority. Via
+           :func:`set_membership_role`, which lowers as well as raises;
+           ``upsert_tenant_membership`` refuses to lower and would make every
+           demotion a silent no-op.
+        2. ``users.role`` — the display mirror the admin UI reads back.
+        3. Cognito ``custom:role`` — the claims cache the pre-token-generation
+           Lambda copies into the next access token.
+
+        The DB transaction commits FIRST and the Cognito sync is best-effort
+        afterwards, mirroring ``onboarding/approval.py``. Cognito-first would
+        invert the risk: a Cognito success followed by a DB failure leaves a
+        token asserting authority the authoritative store never granted. This
+        way a sync failure leaves the authority correct and only the token stale
+        — self-healing on the next successful role write or token refresh.
+
+        Note ``users.role`` and ``tenant_memberships.role`` legitimately diverge
+        for platform-level values: the membership row stores ``org_admin``
+        because a tenant-scoped row must never confer platform authority
+        (#3981). The response echoes ``users.role`` so the UI reflects what was
+        requested.
+
+        Authorization (ceiling, target-rank, org scope) is enforced by the
+        caller — ``routes.py::update_user`` — before this runs.
+
+        Args:
+            org_id: Organization the user belongs to.
+            user_id: ``users.id`` of the target.
+            request: Fields to change; None means "leave unchanged".
+
+        Returns:
+            The updated user.
+
+        Raises:
+            ResourceNotFoundError: If the user does not exist in this org.
+        """
+        user = (await self.db.execute(select(User).where(User.id == user_id, User.org_id == org_id))).scalar_one_or_none()
+        if not user:
+            raise ResourceNotFoundError("User", user_id)
+
+        if request.name is not None:
+            user.name = request.name
+
+        if request.role is not None:
+            await set_membership_role(
+                self.db,
+                user_id=user.id,
+                tenant_id=org_id,
+                role=request.role,
+            )
+            user.role = request.role
+
+        await self.db.commit()
+        await self.db.refresh(user)
+
+        # Post-commit, best-effort: the authority is already durable.
+        if request.role is not None and user.cognito_sub:
+            sync_cognito_role_claims(
+                cognito_sub=user.cognito_sub,
+                org_id=org_id,
+                role=request.role,
+                team_id=user.team_id or "",
+                metric_namespace="ADP/Admin",
+                metric_prefix="UserRoleUpdate",
+            )
+
+        return UserResponse(
+            id=user.id,
+            org_id=user.org_id,
+            team_id=user.team_id,
+            email=user.email,
+            name=user.name,
+            cognito_sub=user.cognito_sub,
+            cognito_username=user.cognito_username,
+            role=user.role,
+            created_at=user.created_at,
+            updated_at=user.updated_at,
         )
 
     async def remove_user(

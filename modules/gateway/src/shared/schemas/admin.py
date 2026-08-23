@@ -102,7 +102,13 @@ class UserUpdateRequest(BaseModel):
     """Request schema for updating a user."""
 
     name: str | None = Field(None, min_length=1, max_length=255, description="User full name")
-    role: str | None = Field(None, description="User role (admin, user)")
+    # Issue #4019: this schema now backs PUT /organizations/{org_id}/users/{user_id},
+    # so the description is user-visible in the OpenAPI docs. The accepted values
+    # are ASSIGNABLE_ROLES (admin/config.py); "admin, user" was never accurate.
+    role: str | None = Field(
+        None,
+        description="User role: member, dept_admin, org_admin, or platform_admin",
+    )
 
 
 class UserResponse(BaseModel):

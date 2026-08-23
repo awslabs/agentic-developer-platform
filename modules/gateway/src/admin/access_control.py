@@ -345,6 +345,76 @@ class AccessControl:
                 user_role=role.value,
             )
 
+    async def require_modifiable_target(
+        self,
+        context: TokenContext,
+        target_current_role: str | None,
+        target_is_platform_admin: bool = False,
+    ) -> None:
+        """Enforce that the caller may modify a user who *currently* holds a role.
+
+        Issue #4019. :meth:`require_assignable_role` guards which role may be
+        *granted*; this guards whether the target may be *touched at all*. Both
+        are needed: without this, an org_admin could demote a platform admin to
+        ``member`` — every individual check passes (the caller may write to the
+        org, and ``member`` is below their ceiling) while the operation strips a
+        superior's privilege.
+
+        Deliberately a separate method rather than a second
+        ``require_assignable_role`` call: that function's errors read "Cannot
+        assign role 'X' above your own privilege level", which is actively
+        misleading when the rejection is about the target's *existing* role.
+
+        Args:
+            context: The authenticated caller's token context.
+            target_current_role: The target's current role, resolved from an
+                authoritative store (the membership row and/or Cognito) — NOT
+                from ``users.role``, which is a display mirror nothing in authz
+                reads.
+            target_is_platform_admin: True when the target holds platform
+                authority. Platform admin is not representable in Postgres
+                (#3981), so the caller must resolve it and pass it in.
+
+        Raises:
+            AccessDeniedError: The target outranks the caller, or the target is a
+                platform admin and the caller is not.
+        """
+        role, _, _ = await self.get_user_role(context)
+
+        # Platform admins may modify anyone.
+        if role == AdminRole.PLATFORM_ADMIN:
+            return
+
+        if target_is_platform_admin:
+            raise AccessDeniedError(
+                message="Cannot modify a platform administrator",
+                user_role=role.value,
+            )
+
+        normalized = (target_current_role or "").strip().lower()
+
+        # A target already holding a platform-level role is off limits to any
+        # non-platform caller, regardless of rank arithmetic.
+        if normalized in PLATFORM_LEVEL_ROLES:
+            raise AccessDeniedError(
+                message="Cannot modify a platform administrator",
+                user_role=role.value,
+            )
+
+        # Unknown/absent roles are treated as rank 0 (a no-membership principal
+        # resolves to MEMBER), so a plain member remains modifiable. This is the
+        # inverse of require_assignable_role's fail-closed treatment of unknown
+        # strings, and deliberately so: there, an unrecognized string might name
+        # a privilege we cannot bound, so granting it is refused; here the
+        # target's authority is what the resolved stores say it is, and the
+        # platform cases above are already handled explicitly.
+        target_rank = ROLE_RANK.get(normalized, 0)
+        if target_rank > CALLER_ROLE_RANK.get(role, 0):
+            raise AccessDeniedError(
+                message=f"Cannot modify a user whose role '{normalized}' is above your own privilege level",
+                user_role=role.value,
+            )
+
     async def validate_resource_access(
         self,
         context: TokenContext,

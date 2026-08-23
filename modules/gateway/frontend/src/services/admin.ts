@@ -1,5 +1,6 @@
 import { apiClient, buildQueryString } from './api';
 import type { PaginatedResponse } from '@/types/api';
+import { AdminRole } from '@/types';
 import type {
   Organization,
   OrganizationCreateRequest,
@@ -294,22 +295,53 @@ export async function getUserRoles(
   };
 }
 
-// Get available roles (static list from backend)
+// Get the roles the CURRENT CALLER may assign. Issue #4019: the backend now
+// ceiling-filters this list, so an org admin never sees `platform_admin` (which
+// it would be rejected for submitting).
 export async function getAvailableRoles(): Promise<string[]> {
   const response = await apiClient.get<{ roles: string[] }>('/admin/users/roles');
   return response.roles;
 }
 
-export async function assignUserRole(_data: UserRoleAssignRequest): Promise<UserRole> {
-  // Note: User role assignment is done via the user creation/update endpoints
-  // This function is a placeholder for future implementation
-  throw new Error('User role assignment should be done via user management endpoints');
+// Issue #4019: these two were `throw new Error(...)` placeholders, so role
+// management was unreachable through the product — role changes happened only
+// out-of-band via Cognito CLI scripts.
+//
+// Both go through PUT /admin/organizations/{orgId}/users/{userId}, which writes
+// the `tenant_memberships` row that actually confers authority (a Cognito-only
+// write would display as a promotion while granting nothing).
+export async function assignUserRole(data: UserRoleAssignRequest): Promise<UserRole> {
+  if (!data.org_id) {
+    throw new Error('org_id is required to change a user role');
+  }
+  const response = await apiClient.put<{
+    id: string;
+    org_id: string;
+    role: string | null;
+    created_at: string;
+  }>(`/admin/organizations/${data.org_id}/users/${data.user_id}`, { role: data.role });
+
+  return {
+    userId: response.id,
+    role: response.role as UserRole['role'],
+    orgId: response.org_id,
+    deptId: null,
+    permissions: [],
+    createdAt: response.created_at,
+  };
 }
 
-export async function removeUserRole(_userId: string): Promise<void> {
-  // Note: User role removal is done via the user deletion endpoint
-  // This function is a placeholder for future implementation
-  throw new Error('User role removal should be done via user management endpoints');
+// "Remove role" means DEMOTE TO MEMBER, never delete the membership row.
+// Deleting it makes the user a no-row principal, which log-spams
+// `rbac_role_fallback` on every request and would silently regain ORG_ADMIN if
+// the backend's least-privilege default were ever rolled back.
+export async function removeUserRole(userId: string, orgId?: string): Promise<void> {
+  if (!orgId) {
+    throw new Error('org_id is required to remove a user role');
+  }
+  await apiClient.put(`/admin/organizations/${orgId}/users/${userId}`, {
+    role: AdminRole.MEMBER,
+  });
 }
 
 // Transform functions

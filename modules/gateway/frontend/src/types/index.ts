@@ -3,6 +3,12 @@ export enum AdminRole {
   PLATFORM_ADMIN = 'platform_admin',
   ORG_ADMIN = 'org_admin',
   DEPT_ADMIN = 'dept_admin',
+  // Issue #4019: the least-privilege role (backend AdminRole.MEMBER). Without it
+  // a demotion was not representable in the type system at all — `UserRole.role`
+  // and `UserRoleAssignRequest.role` are both typed `AdminRole`, so "remove this
+  // user's admin role" could not be expressed even though it is the primary
+  // security use case of role management.
+  MEMBER = 'member',
 }
 
 // Permissions matching backend

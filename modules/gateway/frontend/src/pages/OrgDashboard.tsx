@@ -1,5 +1,5 @@
 import { useParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Tabs, TabsList, Tab, TabPanel, Alert } from '@/components/ui';
 import { StatCard } from '@/components/dashboard/StatCard';
 import { DepartmentList } from '@/components/org/DepartmentList';
@@ -9,14 +9,40 @@ import { UsageChart } from '@/components/org/UsageChart';
 import { ApprovalPolicyToggle } from '@/components/org/ApprovalPolicyToggle';
 import { CardSkeleton, TableSkeleton } from '@/components/LoadingScreen';
 import { getOrgDashboard } from '@/services/dashboard';
-import { getDepartments, getUserRoles, getOrganization } from '@/services/admin';
+import {
+  getDepartments,
+  getUserRoles,
+  getOrganization,
+  getAvailableRoles,
+  assignUserRole,
+  removeUserRole,
+} from '@/services/admin';
 import { getUsageTimeSeries } from '@/services/budget';
 import { formatCurrency, formatNumber, formatPercent } from '@/utils/format';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useToast } from '@/contexts/ToastContext';
+import { AdminRole, type UserRole } from '@/types';
+
+/**
+ * The API client throws the parsed error body (a plain object with `message`),
+ * not an `Error`, so `error instanceof Error` misses the useful text — which is
+ * exactly the 403 reason ("Cannot change your own role", "Cannot assign a role
+ * above your own") that an admin needs to see.
+ */
+function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message) return message;
+  }
+  return fallback;
+}
 
 export default function OrgDashboard() {
   const { orgId } = useParams<{ orgId: string }>();
   const { canManageUsers, canViewBudgets, canViewUsage, canAccessOrg } = usePermissions();
+  const queryClient = useQueryClient();
+  const toast = useToast();
 
   // Check access
   if (orgId && !canAccessOrg(orgId)) {
@@ -48,6 +74,37 @@ export default function OrgDashboard() {
     queryKey: ['userRoles', orgId],
     queryFn: () => getUserRoles(orgId),
     enabled: !!orgId && canManageUsers(),
+  });
+
+  // Issue #4019: the roles the CURRENT CALLER may assign. Backend-filtered, so
+  // an org admin is never offered `platform_admin` (submitting it would 403).
+  const { data: availableRoles } = useQuery({
+    queryKey: ['availableRoles'],
+    queryFn: getAvailableRoles,
+    enabled: canManageUsers(),
+  });
+
+  const changeRoleMutation = useMutation({
+    mutationFn: ({ user, role }: { user: UserRole; role: string }) =>
+      assignUserRole({ user_id: user.userId, role: role as AdminRole, org_id: orgId }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['userRoles', orgId] });
+      toast.success('Role updated');
+    },
+    onError: (error) => {
+      toast.error(errorMessage(error, 'Failed to update role'));
+    },
+  });
+
+  const removeRoleMutation = useMutation({
+    mutationFn: (user: UserRole) => removeUserRole(user.userId, orgId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['userRoles', orgId] });
+      toast.success('Role removed — user is now a member');
+    },
+    onError: (error) => {
+      toast.error(errorMessage(error, 'Failed to remove role'));
+    },
   });
 
   const { data: usageData } = useQuery({
@@ -159,7 +216,13 @@ export default function OrgDashboard() {
             {isUsersLoading ? (
               <TableSkeleton />
             ) : users ? (
-              <UserList users={users.items} canManage={canManageUsers()} />
+              <UserList
+                users={users.items}
+                canManage={canManageUsers()}
+                availableRoles={availableRoles}
+                onChangeRole={(user, role) => changeRoleMutation.mutateAsync({ user, role })}
+                onRemoveRole={(user) => removeRoleMutation.mutateAsync(user)}
+              />
             ) : null}
           </TabPanel>
         )}

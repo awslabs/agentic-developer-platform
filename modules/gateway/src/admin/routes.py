@@ -36,7 +36,15 @@ from src.admin.agent_schemas import (
 )
 from src.admin.agent_service import AgentService
 from src.admin.cognito_service import CognitoService
-from src.admin.config import Permission
+from src.admin.config import (
+    ASSIGNABLE_ROLES,
+    CALLER_ROLE_RANK,
+    PLATFORM_LEVEL_ROLES,
+    ROLE_RANK,
+    AdminRole,
+    Permission,
+)
+from src.admin.exceptions import AccessDeniedError
 from src.admin.log_service import LogService
 from src.admin.policy_scoping_schemas import (
     AgentTypesListResponse,
@@ -91,6 +99,7 @@ from src.shared.schemas.admin import (
     UserCreateRequest,
     UserListResponse,
     UserResponse,
+    UserUpdateRequest,
 )
 from src.shared.schemas.auth import TokenContext
 
@@ -856,6 +865,70 @@ async def list_users_team(
     )
 
 
+@router.put("/organizations/{org_id}/users/{user_id}", response_model=UserResponse)
+async def update_user(
+    org_id: str,
+    user_id: str,
+    request: UserUpdateRequest,
+    service: Annotated[AdminService, Depends(get_admin_service)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+) -> UserResponse:
+    """Change a user's role (and/or display name).
+
+    Issue #4019: role management previously had no endpoint at all — role changes
+    happened only out-of-band via Cognito CLI scripts.
+
+    Org-scoped to match ``remove_user`` below, which is what makes the
+    tenant-isolation check free: ``org_id`` is passed to ``check_permission`` as
+    ``target_org_id``, so an org_admin editing another org's user is rejected
+    before any user lookup or Cognito call happens.
+
+    Gate order matters and is asserted by tests:
+
+    1. ``USER_MANAGE`` + org scope — cross-org callers stop here.
+    2. Target lookup — 404 for a user outside this org.
+    3. :meth:`require_modifiable_target` — may the caller touch a user who
+       *currently* holds this role? (Stops an org_admin demoting a platform
+       admin.)
+    4. :meth:`require_assignable_role` — may the caller grant the *new* role?
+       (Stops escalation to platform_admin.)
+    5. Self-role-change block.
+
+    On (5): the issue originally specified a 409 when demoting the last platform
+    admin, but that guard is unimplementable as described — platform admin is
+    deliberately not representable in Postgres (#3981), so there is no store to
+    count, and a count over ``users.role`` alone would miss the bootstrap admin
+    whose authority comes from Cognito *group* membership. Blocking self-role-
+    change covers the realistic lockout (the sole admin clicking their own row)
+    with no extra API calls. A full Cognito-based count is tracked as follow-up.
+    """
+    await access.check_permission(current_user, Permission.USER_MANAGE, target_org_id=org_id)
+
+    target = await service.get_user_authz_state(org_id, user_id)
+
+    if request.role is not None:
+        # Platform authority is a token claim, not a DB row (#3981), so it cannot
+        # be resolved from the target's Postgres state. users.role is the only
+        # available signal and is a display mirror — treat it as advisory here
+        # (it can only ever make this check stricter, never weaker).
+        await access.require_modifiable_target(
+            current_user,
+            target.membership_role,
+            target_is_platform_admin=(target.users_role or "").strip().lower() in PLATFORM_LEVEL_ROLES,
+        )
+        await access.require_assignable_role(current_user, request.role, target_org_id=org_id)
+
+        # A caller changing their own role can only lock themselves out; there is
+        # no legitimate self-service path for it.
+        # The token's user_id is normally the Cognito sub, but some paths rewrite
+        # it to users.id in place (#3989), so compare against both forms.
+        if current_user.user_id in {target.cognito_sub, target.user_id}:
+            raise AccessDeniedError(message="Cannot change your own role")
+
+    return await service.update_user(org_id, user_id, request)
+
+
 @router.delete("/organizations/{org_id}/users/{user_id}", status_code=204)
 async def remove_user(
     org_id: str,
@@ -1075,18 +1148,36 @@ async def delete_agent(
 
 @router.get("/users/roles")
 async def get_available_roles(
+    access: Annotated[AccessControl, Depends(get_access_control)],
     current_user: Annotated[TokenContext, Depends(get_current_user)],
 ) -> dict[str, list[str]]:
-    """Get list of available user roles.
+    """Get the roles the CALLER may assign, for the admin UI's role picker.
 
-    Issue #179: Returns static list of available roles for the admin UI.
-    This is a simple endpoint that doesn't require database access.
+    Issue #179 returned a hardcoded ``["platform_admin", "org_admin", "user",
+    "service_account"]``, which was wrong three ways: it omitted ``dept_admin``
+    (so the UI could not offer a supported role), it included
+    ``service_account`` — absent from ``ROLE_RANK``, so
+    ``require_assignable_role`` raised ``InvalidRoleError`` for every
+    non-platform caller — and it was unfiltered, so an org_admin saw
+    ``platform_admin`` and got a 403 on submit.
 
-    Any authenticated user can access this endpoint.
+    Issue #4019 derives the list from ``ASSIGNABLE_ROLES`` and filters it by the
+    caller's own ceiling, so the picker only ever offers roles the server will
+    actually accept.
+
+    Any authenticated user can access this endpoint; the list narrows to what
+    their role permits (a member gets the member-level roles only).
     """
     from src.admin.schemas import AvailableRolesResponse
 
-    return AvailableRolesResponse(roles=["platform_admin", "org_admin", "user", "service_account"]).model_dump()
+    role, _, _ = await access.get_user_role(current_user)
+    if role == AdminRole.PLATFORM_ADMIN:
+        allowed = list(ASSIGNABLE_ROLES)
+    else:
+        ceiling = CALLER_ROLE_RANK.get(role, 0)
+        allowed = [r for r in ASSIGNABLE_ROLES if r not in PLATFORM_LEVEL_ROLES and ROLE_RANK.get(r, 0) <= ceiling]
+
+    return AvailableRolesResponse(roles=allowed).model_dump()
 
 
 # =============================================================================

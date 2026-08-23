@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from src.admin.access_control import AccessControl
+from src.admin.config import AdminRole
 from src.admin.routes import get_access_control, get_admin_service, get_current_user, router
 from src.admin.schemas import OrganizationResponse, PoolAccountResponse, PoolStatusResponse
 from src.admin.service import AdminService
@@ -47,6 +48,10 @@ def mock_access_control():
     ac.check_permission = AsyncMock(return_value=True)
     ac.get_accessible_organizations = AsyncMock(return_value=None)
     ac.require_platform_admin = MagicMock()
+    # Issue #4019: GET /admin/users/roles now ceiling-filters the role list, so it
+    # resolves the caller's role. The `client` fixture authenticates as a platform
+    # admin, so mirror that here.
+    ac.get_user_role = AsyncMock(return_value=(AdminRole.PLATFORM_ADMIN, None, None))
     return ac
 
 
@@ -603,17 +608,29 @@ class TestUserRolesEndpoint:
     """Tests for GET /admin/users/roles endpoint (Issue #179)."""
 
     def test_get_available_roles(self, client):
-        """Test GET /admin/users/roles returns static role list."""
+        """Test GET /admin/users/roles returns the caller's assignable roles.
+
+        Issue #4019 replaced the hardcoded list with a ROLE_RANK-derived,
+        ceiling-filtered one. Two assertions changed deliberately: ``user`` is gone
+        (``member`` is the canonical spelling of that privilege level — the old list
+        carried aliases, which made the picker offer one level twice), and
+        ``service_account`` is gone because it is absent from ROLE_RANK and so was
+        rejected by require_assignable_role for every non-platform caller — a
+        dropdown option that always failed. ``dept_admin`` is now present; its
+        absence made the supported member->dept_admin promotion unofferable.
+        """
         response = client.get("/admin/users/roles")
 
         assert response.status_code == 200
         data = response.json()
         assert "roles" in data
         assert isinstance(data["roles"], list)
+        # Caller is a platform admin, so the full assignable set is offered.
         assert "platform_admin" in data["roles"]
         assert "org_admin" in data["roles"]
-        assert "user" in data["roles"]
-        assert "service_account" in data["roles"]
+        assert "dept_admin" in data["roles"]
+        assert "member" in data["roles"]
+        assert "service_account" not in data["roles"]
 
 
 class TestUsageTimeseriesEndpoint:

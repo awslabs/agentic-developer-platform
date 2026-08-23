@@ -161,40 +161,34 @@ export const adminHandlers = [
     });
   }),
 
-  // User roles
-  http.get('/api/admin/users/roles', ({ request }) => {
-    const url = new URL(request.url);
-    const orgId = url.searchParams.get('org_id');
-    const page = parseInt(url.searchParams.get('page') || '1');
-    const pageSize = parseInt(url.searchParams.get('page_size') || '50');
-
-    let users = [...mockUsers];
-    if (orgId) {
-      users = users.filter((u) => u.org_id === orgId);
-    }
-
-    const start = (page - 1) * pageSize;
-    const items = users.slice(start, start + pageSize);
-
+  // Assignable roles for the current caller.
+  // Issue #4019: this used to return a paginated USER list, which matches
+  // neither the real endpoint nor either caller (getAvailableRoles and
+  // chats.ts both read `{ roles: string[] }`) — the role picker rendered empty
+  // in mock mode. The real endpoint is ceiling-filtered server-side; mock mode
+  // signs in as a platform admin, so it returns the full set.
+  http.get('/api/admin/users/roles', () => {
     return HttpResponse.json({
-      items,
-      total: users.length,
-      page,
-      page_size: pageSize,
-      has_more: start + pageSize < users.length,
+      roles: ['member', 'dept_admin', 'org_admin', 'platform_admin'],
     });
   }),
 
-  http.post('/api/admin/users/roles', async ({ request }) => {
-    const body = await request.json() as { user_id: string; role: string; org_id?: string; dept_id?: string };
+  // Role update. Issue #4019: replaces the POST/DELETE `/users/roles` stubs,
+  // which pointed at endpoints the backend never had. "Remove role" is a PUT to
+  // role=member here too — there is no delete path.
+  http.put('/api/admin/organizations/:orgId/users/:userId', async ({ params, request }) => {
+    const body = (await request.json()) as { role?: string };
     return HttpResponse.json({
-      ...body,
-      permissions: [],
-      created_at: new Date().toISOString(),
-    }, { status: 201 });
-  }),
-
-  http.delete('/api/admin/users/roles/:userId', () => {
-    return HttpResponse.json({ success: true });
+      id: params.userId as string,
+      org_id: params.orgId as string,
+      team_id: 'team-001',
+      email: `${params.userId}@example.com`,
+      name: String(params.userId).replace('user-', 'User '),
+      role: body.role ?? null,
+      cognito_sub: null,
+      cognito_username: null,
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: new Date().toISOString(),
+    });
   }),
 ];

@@ -138,6 +138,20 @@ ROLE_RANK: dict[str, int] = {
     "platform_admin": 3,
 }
 
+# Issue #4019: the canonical, alias-free roles the admin UI may offer, in
+# ascending privilege order. ROLE_RANK above is deliberately alias-rich (it must
+# recognize every string a caller might submit: "user"/"member"/"viewer" all mean
+# the same thing, "admin"/"platform_admin" likewise). A role *picker* must show
+# each privilege level exactly once, so it needs this narrower list rather than
+# ROLE_RANK.keys().
+#
+# Every entry MUST be a key of ROLE_RANK, or require_assignable_role would reject
+# an option the UI offered (the bug this replaces: get_available_roles returned a
+# hardcoded list that omitted dept_admin and included "service_account", which is
+# absent from ROLE_RANK and so raised InvalidRoleError for every non-platform
+# caller — a dropdown option that always failed).
+ASSIGNABLE_ROLES: tuple[str, ...] = ("member", "dept_admin", "org_admin", "platform_admin")
+
 # The privilege rank held by each admin role, used as the assignment ceiling.
 CALLER_ROLE_RANK: dict[AdminRole, int] = {
     AdminRole.PLATFORM_ADMIN: 3,

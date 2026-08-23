@@ -67,6 +67,10 @@ const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     Permission.LOGS_READ,
     Permission.USER_READ,
   ],
+  // Issue #4019: mirrors the backend's ROLE_PERMISSIONS[AdminRole.MEMBER]
+  // (src/admin/config.py) exactly. A member has no admin authority — granting
+  // anything more here would show admin nav to users the API will 403.
+  [AdminRole.MEMBER]: [Permission.USAGE_READ],
 };
 
 // ============================================================================
