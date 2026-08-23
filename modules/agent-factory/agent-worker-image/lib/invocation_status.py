@@ -43,6 +43,7 @@ def update_status(
     transcript_key: str | None = None,
     token_mode: str | None = None,
     error_message: str | None = None,
+    skip_reason: str | None = None,
 ) -> None:
     """Update the invocation row's status. Fail-soft: logs and returns on error.
 
@@ -60,6 +61,10 @@ def update_status(
             bootstrap left the row at ``webhook_received`` with no reason — and
             that status is filtered out of Activity entirely, which is why such
             failures looked like total silence rather than a failed run.
+        skip_reason: Issue #4020 — static enum explaining a deliberate,
+            non-failure skip (e.g. ``idempotency_merged_pr``). Distinct from
+            ``error_message``: nothing went wrong, so the UI renders it neutrally
+            rather than as an error. Truncated on the same bound for symmetry.
     """
     table = _table_name or os.environ.get("WEBHOOK_EVENTS_TABLE", "")
     if not table:
@@ -105,6 +110,11 @@ def update_status(
             expr_parts.append("#em = :error_message")
             expr_names["#em"] = "error_message"
             expr_values[":error_message"] = {"S": error_message[:_MAX_ERROR_MESSAGE_CHARS]}
+
+        if skip_reason:
+            expr_parts.append("#sr = :skip_reason")
+            expr_names["#sr"] = "skip_reason"
+            expr_values[":skip_reason"] = {"S": skip_reason[:_MAX_ERROR_MESSAGE_CHARS]}
 
         update_expr = "SET " + ", ".join(expr_parts)
 

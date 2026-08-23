@@ -17,7 +17,23 @@ const statuses: InvocationStatus[] = [
   'rejected',
   'rate_limited',
   'no_op',
+  // Issue #4020: the two new non-run statuses. Included here so the mock board
+  // exercises the reason rendering — they were the whole point of the change.
+  'blocked',
+  'skipped',
 ];
+
+/**
+ * Issue #4020: a plausible reason per non-run status.
+ *
+ * Only these three statuses ever carry one; anything else must be null, or the
+ * board would show "why nothing ran" beside a run that did.
+ */
+const skipReasons: Partial<Record<InvocationStatus, string>> = {
+  no_op: 'no_mention',
+  blocked: 'self_re_trigger',
+  skipped: 'idempotency_merged_pr',
+};
 
 const channels: InvocationChannel[] = ['github', 'github', 'github', 'slack', 'api'];
 
@@ -47,7 +63,9 @@ export function generateMockInvocations(count: number = 30): InvocationItem[] {
     const repo = repos[Math.floor(Math.random() * repos.length)];
     const issueNumber = channel === 'github' && repo ? Math.floor(Math.random() * 1500) + 1 : null;
     const invokedAt = new Date(Date.now() - Math.random() * 14 * 24 * 60 * 60 * 1000);
-    const isTerminal = ['complete', 'failed', 'rejected', 'rate_limited', 'no_op'].includes(status);
+    const isTerminal = ['complete', 'failed', 'rejected', 'rate_limited', 'no_op', 'blocked', 'skipped'].includes(
+      status
+    );
     const correlationId = correlationIds[Math.floor(Math.random() * correlationIds.length)];
 
     // Derive trigger_kind: first few items in a chain are human, rest are agent-triggered
@@ -98,6 +116,8 @@ export function generateMockInvocations(count: number = 30): InvocationItem[] {
       call_count: isTerminal ? Math.floor(Math.random() * 40) + 1 : null,
       // Error detail for failed runs (drives the detail view)
       error_message: status === 'failed' ? 'Model access error: throttled by Bedrock' : null,
+      // Issue #4020: why this trigger produced no run (non-run statuses only)
+      skip_reason: skipReasons[status] ?? null,
       // Issue #1653: run log link (Tier 2 — null until worker persists check_run_url)
       run_log_url: null,
       // Issue #3069: S3 transcript key (present for completed runs after #3061)

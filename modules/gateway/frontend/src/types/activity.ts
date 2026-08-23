@@ -14,7 +14,11 @@ export type InvocationStatus =
   | 'failed'
   | 'rejected'
   | 'rate_limited'
-  | 'no_op';
+  | 'no_op'
+  // Issue #4020: a loop/validation guard in the Lambda stopped the spawn.
+  | 'blocked'
+  // Issue #4020: the worker deduplicated a redelivery of already-completed work.
+  | 'skipped';
 
 /** Channel through which the invocation was triggered. */
 export type InvocationChannel = 'github' | 'slack' | 'api' | 'manual';
@@ -51,6 +55,13 @@ export interface InvocationItem {
   call_count: number | null;
   // Error detail surfaced in the row-detail view for failed invocations
   error_message: string | null;
+  /**
+   * Issue #4020: static enum explaining why this delivery produced no agent run
+   * (no_op / blocked / skipped). Null for runs that dispatched normally and for
+   * rows written before the field existed. Render via `describeSkipReason()` —
+   * never show the raw enum to the user.
+   */
+  skip_reason: string | null;
   // Issue #1653: Run log link (Tier 2 — null until worker persists it)
   run_log_url: string | null;
   // Issue #3069: S3 transcript key (null for pre-#3061 runs or upload failures)
@@ -122,7 +133,11 @@ export interface InvocationQueryParams {
   end_date?: string;
   limit?: number;
   last_key?: string;
-  /** Issue #1658: When false (default), exclude no_op and webhook_received rows. */
+  /**
+   * Issue #1658: When false (default), exclude non-triggering rows —
+   * webhook_received plus the non-run statuses (no_op, and since #4020 also
+   * blocked and skipped).
+   */
   include_non_triggering?: boolean;
   /** Issue #1662: View mode — 'runs' (flat list) or 'chains' (grouped by chain). */
   view?: 'runs' | 'chains';

@@ -12,6 +12,7 @@
 import { useState, useCallback } from 'react';
 import type { InvocationItem, InvocationStatus, TriggerKind } from '@/types/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
+import { describeSkipReason, isNonRunStatus } from '@/utils/skipReason';
 
 // ---------------------------------------------------------------------------
 // Status rendering (mirrors AgentActivity.tsx STATUS_CONFIG)
@@ -25,6 +26,9 @@ const STATUS_CONFIG: Record<InvocationStatus, { glyph: string; label: string; co
   rejected: { glyph: '✗', label: 'Rejected', colorClass: 'text-orange-600 dark:text-orange-400' },
   rate_limited: { glyph: '✗', label: 'Rate limited', colorClass: 'text-yellow-600 dark:text-yellow-400' },
   no_op: { glyph: '✗', label: 'No-op', colorClass: 'text-gray-500 dark:text-gray-400' },
+  // Issue #4020: non-run statuses, neutral-coloured like no_op.
+  blocked: { glyph: '✗', label: 'Blocked', colorClass: 'text-gray-500 dark:text-gray-400' },
+  skipped: { glyph: '✗', label: 'Skipped', colorClass: 'text-gray-500 dark:text-gray-400' },
 };
 
 const TRIGGER_CONFIG: Record<TriggerKind, { label: string; icon: string }> = {
@@ -51,6 +55,9 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
   const [isExpanded, setIsExpanded] = useState(false);
 
   const statusConfig = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.no_op;
+  // Issue #4020: on a non-run the reason is the only informative thing on the
+  // card, so it goes in the always-visible area rather than behind "More".
+  const skipReasonText = isNonRunStatus(item.status) ? describeSkipReason(item.skip_reason) : null;
   const triggerKind: TriggerKind = item.trigger_kind || 'human';
   const triggerConfig = TRIGGER_CONFIG[triggerKind];
 
@@ -103,7 +110,9 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
       onKeyDown={handleCardKeyDown}
       tabIndex={0}
       role="button"
-      aria-label={`Run: ${item.topic || 'untitled'}, Status: ${statusConfig.label}, ${formatRelativeTime(item.invoked_at)}`}
+      aria-label={`Run: ${item.topic || 'untitled'}, Status: ${statusConfig.label}${
+        skipReasonText ? ` (${skipReasonText})` : ''
+      }, ${formatRelativeTime(item.invoked_at)}`}
       data-testid={`activity-card-${item.invocation_id}`}
     >
       {/* Primary row: Topic + Status badge */}
@@ -118,6 +127,17 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
           <span>{statusConfig.label}</span>
         </span>
       </div>
+
+      {/* Issue #4020: reason line for non-runs — replaces the card's previously
+          unexplained "✗ No-op" badge with the actual cause. */}
+      {skipReasonText && (
+        <p
+          className="mt-1 text-xs text-gray-500 dark:text-gray-400"
+          data-testid={`activity-card-skip-reason-${item.invocation_id}`}
+        >
+          {skipReasonText}
+        </p>
+      )}
 
       {/* Secondary row: Time, Source, Cost */}
       <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-500 dark:text-gray-400">

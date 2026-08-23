@@ -12,6 +12,7 @@ import { useState } from 'react';
 import { Modal } from '@/components/ui';
 import { TranscriptContent } from '@/components/TranscriptViewer';
 import { formatDateTime, formatRelativeTime } from '@/utils/format';
+import { describeSkipReason, isNonRunStatus } from '@/utils/skipReason';
 import type { InvocationItem, InvocationStatus } from '@/types/activity';
 
 // ---------------------------------------------------------------------------
@@ -55,6 +56,10 @@ const STATUS_CONFIG: Record<InvocationStatus, { glyph: string; label: string; co
   rejected: { glyph: '✗', label: 'Rejected', colorClass: 'text-orange-600 dark:text-orange-400' },
   rate_limited: { glyph: '✗', label: 'Rate limited', colorClass: 'text-yellow-600 dark:text-yellow-400' },
   no_op: { glyph: '✗', label: 'No-op', colorClass: 'text-gray-500 dark:text-gray-400' },
+  // Issue #4020: non-runs, deliberately neutral-coloured — a guard block or a
+  // deduplicated redelivery is correct behaviour, not an error.
+  blocked: { glyph: '✗', label: 'Blocked', colorClass: 'text-gray-500 dark:text-gray-400' },
+  skipped: { glyph: '✗', label: 'Skipped', colorClass: 'text-gray-500 dark:text-gray-400' },
 };
 
 // ---------------------------------------------------------------------------
@@ -113,7 +118,11 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
   if (!item) return null;
 
   const statusConfig = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.no_op;
-  const isTerminal = ['complete', 'failed', 'rejected', 'rate_limited', 'no_op'].includes(item.status);
+  // Issue #4020: blocked/skipped are terminal — without them the modal would
+  // claim "Active — not yet terminal" on a row that will never move again.
+  const isTerminal = ['complete', 'failed', 'rejected', 'rate_limited', 'no_op', 'blocked', 'skipped'].includes(
+    item.status
+  );
 
   // ---------------------------------------------------------------------------
   // Row fragments — extracted for conditional ordering (Issue #3765)
@@ -150,6 +159,36 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
       ) : (
         <span className="text-gray-400 dark:text-gray-500 italic">
           No error details available
+        </span>
+      )}
+    </DetailRow>
+  ) : null;
+
+  /**
+   * Issue #4020: the "why didn't anything run" row.
+   *
+   * Only rendered for the three non-run statuses. Presented as a plain
+   * informational row, NOT through ErrorDisplay — the red error styling would
+   * misreport a correct guard decision (a loop that was stopped, a redelivery
+   * that was deduplicated) as a fault.
+   *
+   * When the reason is absent this still renders, saying so explicitly: rows
+   * written before this change carry no reason, and "we don't have a reason for
+   * this one" is a more honest answer than an absent row that looks identical to
+   * the old unexplained badge.
+   */
+  const skipReasonRow = isNonRunStatus(item.status) ? (
+    <DetailRow label="Reason">
+      {describeSkipReason(item.skip_reason) ? (
+        <div className="space-y-1">
+          <p className="text-gray-900 dark:text-white">{describeSkipReason(item.skip_reason)}</p>
+          {/* The enum itself is what appears in CloudWatch logs and metrics, so
+              showing it gives an operator the exact term to search on. */}
+          <p className="text-xs font-mono text-gray-400 dark:text-gray-500">{item.skip_reason}</p>
+        </div>
+      ) : (
+        <span className="text-gray-400 dark:text-gray-500 italic">
+          No reason recorded — this event predates reason tracking.
         </span>
       )}
     </DetailRow>
@@ -357,6 +396,10 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
               <>
                 {/* Default order (non-failed runs) */}
                 {statusRow}
+                {/* Issue #4020: directly under Status, mirroring where Error sits
+                    in the failed-run order — for a non-run the reason IS the
+                    headline fact, so it must not be buried below the ID block. */}
+                {skipReasonRow}
                 {identifierRows}
                 {timingRows}
                 {channelRow}

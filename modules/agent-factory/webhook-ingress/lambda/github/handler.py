@@ -1360,9 +1360,11 @@ def handler(event: dict, context) -> dict:
             )
 
     # 10. Parse intent (with correlation context for chain-aware bot logic)
-    from intent_parser import extract_intent
+    # Issue #4020: use the reason-returning entry point so a no-op's cause can be
+    # persisted on the Activity row instead of only reaching CloudWatch.
+    from intent_parser import extract_intent_with_reason
 
-    intent = extract_intent(
+    intent, skip_reason = extract_intent_with_reason(
         event_type,
         payload,
         correlation_ctx=correlation_ctx,
@@ -1400,8 +1402,15 @@ def handler(event: dict, context) -> dict:
                 correlation_ctx.get("parent_invocation_id") if correlation_ctx else None
             ),
             chain_depth=correlation_ctx.get("chain_depth") if correlation_ctx else None,
+            # Issue #4020: the reason the intent parser declined to dispatch.
+            skip_reason=skip_reason,
         )
-        return _response(200, {"status": "no_op"})
+        # Echo the reason in the body for parity with the guard-block response
+        # below, which has always included it.
+        body: dict = {"status": "no_op"}
+        if skip_reason:
+            body["reason"] = skip_reason
+        return _response(200, body)
 
     # 12. Intent is not None — delegate to spawn_persona() for guards + publish.
     # Issue #2151: All loop guards, pointer/provenance writes, envelope build,
@@ -1540,12 +1549,16 @@ def _capture_invocation_event(
     chain_depth: int | None = None,
     root_human_id: str | None = None,
     is_human_rooted: bool | None = None,
+    skip_reason: str | None = None,
 ) -> None:
     """Write enriched invocation row to DynamoDB (best-effort).
 
     Uses envelope's message_id/arrived_at as keys so the worker can UpdateItem
     on the same row. For terminal-at-ingress statuses (rate_limited, no_op),
     envelope is None and keys are auto-generated.
+
+    Issue #4020: ``skip_reason`` carries WHY a non-dispatching status happened,
+    so the Activity UI can explain a no_op row rather than showing a bare badge.
     """
     try:
         event_logger = _get_webhook_event_logger()
@@ -1592,6 +1605,7 @@ def _capture_invocation_event(
             chain_depth=chain_depth,
             root_human_id=root_human_id,
             is_human_rooted=is_human_rooted,
+            skip_reason=skip_reason,
         )
     except Exception as e:
         # Best-effort — never block the webhook response

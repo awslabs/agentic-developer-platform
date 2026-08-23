@@ -62,6 +62,8 @@ function makeInvocation(overrides: Partial<InvocationItem> = {}): InvocationItem
     root_human_id: 'user-001',
     is_human_rooted: true,
     correlation_id: 'chain-001',
+    // Issue #4020: only non-run statuses ever carry a reason
+    skip_reason: null,
     ...overrides,
   };
 }
@@ -292,6 +294,202 @@ describe('AgentActivity Page', () => {
     expect(table.getByText('Rejected')).toBeInTheDocument();
     expect(table.getByText('Rate limited')).toBeInTheDocument();
     expect(table.getByText('No-op')).toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue #4020: skip/block reasons on the board
+  // ---------------------------------------------------------------------------
+
+  describe('skip reasons (Issue #4020)', () => {
+    /**
+     * The summary cell, located relative to the topic it sits beside.
+     *
+     * Needed because the reason legitimately appears twice in a row — once in
+     * the badge's sr-only text and once here — so a table-wide text query is
+     * ambiguous and cannot tell the two apart.
+     */
+    function summaryCellFor(topic: string): HTMLElement {
+      const cells = within(screen.getByRole('table')).getAllByRole('cell');
+      const topicIdx = cells.findIndex((c) => c.textContent === topic);
+      expect(topicIdx).toBeGreaterThanOrEqual(0);
+      return cells[topicIdx + 1];
+    }
+
+    it('renders the two new non-run statuses', async () => {
+      mockGetMine.mockResolvedValue({
+        items: [
+          makeInvocation({
+            invocation_id: 'inv-b1',
+            status: 'blocked',
+            topic: 'blocked-topic',
+            skip_reason: 'self_re_trigger',
+          }),
+          makeInvocation({
+            invocation_id: 'inv-b2',
+            status: 'skipped',
+            topic: 'skipped-topic',
+            skip_reason: 'idempotency_merged_pr',
+          }),
+        ],
+        last_key: null,
+      });
+
+      await renderAgentActivityFlat();
+
+      // Scoped to the table — the status <select> renders the same labels.
+      const table = within(screen.getByRole('table'));
+      expect(table.getByText('Blocked')).toBeInTheDocument();
+      expect(table.getByText('Skipped')).toBeInTheDocument();
+    });
+
+    it('puts the reason in the badge tooltip', async () => {
+      mockGetMine.mockResolvedValue({
+        items: [
+          makeInvocation({
+            invocation_id: 'inv-r1',
+            status: 'no_op',
+            topic: 'noop-topic',
+            skip_reason: 'no_mention',
+          }),
+        ],
+        last_key: null,
+      });
+
+      await renderAgentActivityFlat();
+
+      // The badge label's parent <span> carries the title. Previously this was a
+      // bare "✗ No-op" with nothing to hover.
+      const badge = within(screen.getByRole('table')).getByText('No-op').closest('span')!;
+      expect(badge.parentElement).toHaveAttribute(
+        'title',
+        expect.stringContaining('No agent was mentioned'),
+      );
+    });
+
+    it('exposes the reason to screen readers, not only on hover', async () => {
+      // title= is mouse-only. Without the sr-only copy, keyboard and
+      // screen-reader users would be left with the original unexplained badge.
+      mockGetMine.mockResolvedValue({
+        items: [
+          makeInvocation({
+            invocation_id: 'inv-r2',
+            status: 'blocked',
+            topic: 'blocked-topic',
+            skip_reason: 'chain_depth_exceeded',
+          }),
+        ],
+        last_key: null,
+      });
+
+      await renderAgentActivityFlat();
+
+      expect(within(screen.getByRole('table')).getByText(/depth limit/)).toBeInTheDocument();
+    });
+
+    it('uses the reason as the summary cell for non-runs', async () => {
+      // A non-run has no work to summarize, so the cell used to be a bare
+      // em-dash — the reason makes the board scannable without opening rows.
+      mockGetMine.mockResolvedValue({
+        items: [
+          makeInvocation({
+            invocation_id: 'inv-r3',
+            status: 'no_op',
+            topic: 'noop-topic',
+            summary: null,
+            skip_reason: 'label_unmapped',
+          }),
+        ],
+        last_key: null,
+      });
+
+      await renderAgentActivityFlat();
+
+      expect(summaryCellFor('noop-topic')).toHaveTextContent(
+        /not mapped to any agent persona/,
+      );
+    });
+
+    it('prefers a real summary over the reason when both exist', async () => {
+      mockGetMine.mockResolvedValue({
+        items: [
+          makeInvocation({
+            invocation_id: 'inv-r4',
+            status: 'no_op',
+            topic: 'noop-topic',
+            summary: 'A real summary',
+            skip_reason: 'no_mention',
+          }),
+        ],
+        last_key: null,
+      });
+
+      await renderAgentActivityFlat();
+
+      const cell = summaryCellFor('noop-topic');
+      expect(cell).toHaveTextContent('A real summary');
+      // The reason still reaches the badge, but must not displace real content.
+      expect(cell).not.toHaveTextContent(/No agent was mentioned/);
+    });
+
+    it('never shows a reason next to a status that did run', async () => {
+      // Regression guard: a stale skip_reason on a completed row must not render
+      // "why nothing ran" beside a run that did.
+      mockGetMine.mockResolvedValue({
+        items: [
+          makeInvocation({
+            invocation_id: 'inv-r5',
+            status: 'complete',
+            topic: 'done-topic',
+            summary: null,
+            skip_reason: 'no_mention',
+          }),
+        ],
+        last_key: null,
+      });
+
+      await renderAgentActivityFlat();
+
+      expect(
+        within(screen.getByRole('table')).queryByText(/No agent was mentioned/),
+      ).not.toBeInTheDocument();
+    });
+
+    it.each(['blocked', 'skipped'])(
+      'status=%s from the URL requests non-triggering rows',
+      async (status) => {
+        // Without this the new filter options would always come back empty: the
+        // API excludes non-triggering statuses unless asked for them.
+        const queryClient = createTestQueryClient();
+        const { unmount } = render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={[`/activity?status=${status}`]}>
+              <AgentActivity />
+            </MemoryRouter>
+          </QueryClientProvider>,
+        );
+
+        await waitFor(() => {
+          expect(mockGetMine).toHaveBeenCalled();
+        });
+
+        const params = mockGetMine.mock.calls[0][0];
+        expect(params.status).toBe(status);
+        expect(params.include_non_triggering).toBe(true);
+
+        unmount();
+      },
+    );
+
+    it('offers Blocked and Skipped as status filter options', async () => {
+      mockGetMine.mockResolvedValue({ items: [], last_key: null });
+
+      await renderAgentActivityFlat();
+
+      const select = screen.getByLabelText(/status/i);
+      const values = Array.from(select.querySelectorAll('option')).map((o) => o.value);
+      expect(values).toContain('blocked');
+      expect(values).toContain('skipped');
+    });
   });
 
   it('renders source_url as clickable repo#N link; null shows "(no external link)"', async () => {

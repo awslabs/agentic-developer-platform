@@ -28,6 +28,7 @@ import os
 import re
 from dataclasses import dataclass
 
+from common import skip_reasons
 from common.personas import LABEL_TO_PERSONA, MENTION_TO_PERSONA
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ __all__ = [
     "CROSS_PERSONA_LOOP_THRESHOLD",
     "Intent",
     "extract_intent",
+    "extract_intent_with_reason",
 ]
 
 # Maximum chain depth before blocking bot-to-bot triggers (issue #1696).
@@ -75,6 +77,10 @@ def extract_intent(
 ) -> Intent | None:
     """Parse a GitHub webhook event into an actionable intent.
 
+    Thin backward-compatible wrapper over :func:`extract_intent_with_reason`.
+    Callers that need to know WHY a no-op happened (so it can be persisted to
+    the Activity row — issue #4020) should call that function instead.
+
     Args:
         event_type: Value of X-GitHub-Event header (e.g. "issues", "pull_request").
         payload: Parsed JSON body of the webhook.
@@ -83,6 +89,41 @@ def extract_intent(
 
     Returns:
         Intent if the event should trigger agent work, None for no-op events.
+    """
+    intent, _reason = extract_intent_with_reason(
+        event_type,
+        payload,
+        correlation_ctx=correlation_ctx,
+        resolved_identity=resolved_identity,
+    )
+    return intent
+
+
+def extract_intent_with_reason(
+    event_type: str,
+    payload: dict,
+    *,
+    correlation_ctx: dict | None = None,
+    resolved_identity=None,
+) -> tuple[Intent | None, str | None]:
+    """Parse a GitHub webhook event into an intent, or a reason for the no-op.
+
+    Issue #4020: the reason a delivery produced no run used to exist only in
+    CloudWatch. Every ``None`` return below now carries a static enum string from
+    ``common/skip_reasons.py`` so the handler can persist it on the DynamoDB row
+    that Agent Activity reads, turning a bare "✗ No-op" badge into an
+    explanation.
+
+    Args:
+        event_type: Value of X-GitHub-Event header (e.g. "issues", "pull_request").
+        payload: Parsed JSON body of the webhook.
+        correlation_ctx: Correlation context from determine_correlation() (Phase 2-c).
+        resolved_identity: ResolvedIdentity from identity resolver (Phase 2-c).
+
+    Returns:
+        ``(Intent, None)`` when the event should trigger agent work, or
+        ``(None, reason)`` for a no-op. The reason is always a static enum —
+        never interpolated payload content.
     """
     sender = payload.get("sender", {})
     action = payload.get("action", "")
@@ -109,14 +150,14 @@ def extract_intent(
                     event_type,
                     sender.get("login", "unknown"),
                 )
-                return None
+                return None, skip_reasons.NO_AIDLC_LABEL
         else:
             logger.info(
                 "Ignoring bot-generated %s event from %s",
                 event_type,
                 sender.get("login", "unknown"),
             )
-            return None
+            return None, skip_reasons.BOT_EVENT_IGNORED
 
     # Bot pull_request events: allowed through to _handle_pr_event, which gates
     # on the agent/issue-* branch filter + the synchronize dedup (issue #1716).
@@ -150,6 +191,7 @@ def extract_intent(
     if event_type == "issue_comment" and action == "created":
         return _handle_issue_comment(payload, correlation_ctx, resolved_identity)
 
+
     # installation + created → log only, no agent dispatch
     if event_type == "installation" and action == "created":
         logger.info(
@@ -157,9 +199,9 @@ def extract_intent(
             payload.get("installation", {}).get("id", 0),
             payload.get("installation", {}).get("account", {}).get("login", "unknown"),
         )
-        return None
+        return None, skip_reasons.INSTALLATION_EVENT
 
-    return None
+    return None, skip_reasons.EVENT_TYPE_UNHANDLED
 
 
 def _is_bot_sender(sender: dict) -> bool:
@@ -262,7 +304,7 @@ def _extract_all_mention_personas(body: str) -> list[str]:
     return personas
 
 
-def _handle_issue_opened(payload: dict) -> Intent | None:
+def _handle_issue_opened(payload: dict) -> tuple[Intent | None, str | None]:
     """Handle issues.opened event — dispatch AIDLC persona if template label present.
 
     Issue #3169: Only dispatches when the issue carries the `aidlc-intent` label
@@ -282,12 +324,12 @@ def _handle_issue_opened(payload: dict) -> Intent | None:
             "issues.opened without aidlc-intent label — no-op (issue #%s)",
             payload.get("issue", {}).get("number", "?"),
         )
-        return None
+        return None, skip_reasons.NO_AIDLC_LABEL
 
-    return Intent(persona="aidlc", trigger="issue_opened", label="aidlc-intent")
+    return Intent(persona="aidlc", trigger="issue_opened", label="aidlc-intent"), None
 
 
-def _handle_issue_labeled(payload: dict) -> Intent | None:
+def _handle_issue_labeled(payload: dict) -> tuple[Intent | None, str | None]:
     """Handle issues.labeled event — map the added label to a persona."""
     label = payload.get("label", {})
     label_name = label.get("name", "")
@@ -295,12 +337,14 @@ def _handle_issue_labeled(payload: dict) -> Intent | None:
     persona = LABEL_TO_PERSONA.get(label_name)
     if not persona:
         logger.debug("Label '%s' has no persona mapping — no-op", label_name)
-        return None
+        return None, skip_reasons.LABEL_UNMAPPED
 
-    return Intent(persona=persona, trigger="issue_labeled", label=label_name)
+    return Intent(persona=persona, trigger="issue_labeled", label=label_name), None
 
 
-def _handle_pr_event(payload: dict, action: str, sender: dict) -> Intent | None:
+def _handle_pr_event(
+    payload: dict, action: str, sender: dict
+) -> tuple[Intent | None, str | None]:
     """Handle pull_request opened/synchronize — assign reviewer persona.
 
     Issue #1696 guards:
@@ -316,7 +360,7 @@ def _handle_pr_event(payload: dict, action: str, sender: dict) -> Intent | None:
             "PR branch '%s' does not match agent/issue-* pattern — no reviewer trigger",
             head_ref,
         )
-        return None
+        return None, skip_reasons.PR_BRANCH_NOT_AGENT
 
     # Synchronize gate: bot senders only trigger on 'opened' (issue #1696).
     # Without this, every push to an agent PR branch (including the reviewer's
@@ -326,16 +370,16 @@ def _handle_pr_event(payload: dict, action: str, sender: dict) -> Intent | None:
             "Bot PR synchronize event from %s — blocking to prevent double-trigger",
             sender.get("login", "unknown"),
         )
-        return None
+        return None, skip_reasons.BOT_SYNCHRONIZE_DEDUP
 
-    return Intent(persona="reviewer", trigger=f"pr_{action}", label=None)
+    return Intent(persona="reviewer", trigger=f"pr_{action}", label=None), None
 
 
 def _handle_issue_comment(
     payload: dict,
     correlation_ctx: dict | None,
     resolved_identity,
-) -> Intent | None:
+) -> tuple[Intent | None, str | None]:
     """Handle issue_comment.created — dispatch-marker gate for bot comments.
 
     Issue #2149: Bot comments require an explicit `adp-dispatch:<persona>` marker.
@@ -358,13 +402,20 @@ def _handle_issue_comment(
     if not _is_bot_sender(sender):
         persona = _extract_mention_persona(body)
         if not persona:
-            return None
+            return None, skip_reasons.NO_MENTION
         # Issue #2279: Parse /model directive (human path only)
         model = _extract_model_directive(body)
         # Issue #3574: Parse /aws-label directive (human path only)
         aws_label = _extract_aws_label_directive(body)
-        return Intent(
-            persona=persona, trigger="mentioned", label=None, model=model, aws_label=aws_label
+        return (
+            Intent(
+                persona=persona,
+                trigger="mentioned",
+                label=None,
+                model=model,
+                aws_label=aws_label,
+            ),
+            None,
         )
 
     # --- Bot sender path (issue #2149) ---
@@ -386,7 +437,11 @@ def _handle_issue_comment(
                 bare_persona,
             )
             _emit_metric("BotMentionWithoutDispatchMarker", {"persona": bare_persona})
-        return None
+            return None, skip_reasons.BOT_MENTION_NO_DISPATCH_MARKER
+        # No marker AND no bare mention — the bot comment simply never mentioned
+        # an agent, which is the same "nothing asked for work" case as a human
+        # comment without a mention.
+        return None, skip_reasons.NO_MENTION
 
     # Bot sender: require correlation context (safe default blocks without it)
     if correlation_ctx is None:
@@ -395,11 +450,11 @@ def _handle_issue_comment(
             sender.get("login", "unknown"),
             persona,
         )
-        return None
+        return None, skip_reasons.BOT_DISPATCH_NO_CORRELATION
 
     # Issue #2151: Guards removed — spawn_persona() enforces them.
     # Return Intent so handler can call spawn_persona() with full context.
-    return Intent(persona=persona, trigger="mentioned", label=None)
+    return Intent(persona=persona, trigger="mentioned", label=None), None
 
 
 def _extract_dispatch_persona_from_marker(body: str) -> str | None:

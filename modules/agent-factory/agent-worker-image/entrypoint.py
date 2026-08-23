@@ -905,6 +905,21 @@ def main() -> int:
             message_id,
         )
         bootstrap_log.step_success(4, "idempotency_guard_skip", issue=issue)
+        # Issue #4020: transition the row off webhook_received. This exit used to
+        # write no status at all, so the run sat at webhook_received forever — a
+        # status Agent Activity filters out of its default view, making a
+        # correctly-deduplicated redelivery indistinguishable from a lost one.
+        # "skipped" (not "failed"): nothing went wrong, the work already landed.
+        update_invocation_status(
+            message_id,
+            arrived_at,
+            "skipped",
+            skip_reason="idempotency_merged_pr",
+            summary=(
+                "Skipped: a merged PR already exists on this issue's agent branch, "
+                "so this was a duplicate SQS delivery of completed work."
+            ),
+        )
         bootstrap_log.close()
         try:
             _delete_message(queue_url, region, receipt_handle)
@@ -1252,6 +1267,22 @@ def main() -> int:
                     aws_label,
                     exc,
                 )
+                # Issue #4020 (routed from the #4053 review): this exit fires
+                # BEFORE the in_progress write below, so #4053's five bootstrap
+                # status writes did not cover it — the run vanished from Activity
+                # exactly like the failures that issue fixed. The label is
+                # operator-supplied and already charset-validated in
+                # intent_parser (#3574), so echoing it is safe and is the single
+                # most useful detail for diagnosing the failure.
+                _fail_bootstrap_status(
+                    message_id,
+                    arrived_at,
+                    f"could not assume the AWS role for the /aws-label {aws_label!r} "
+                    "requested in the triggering comment — check that this label is "
+                    "linked in your vault and that its role trusts the platform: "
+                    f"{exc}",
+                )
+                bootstrap_log.close()
                 raise
             logger.warning("AWS role assumption failed (non-fatal): %s", exc)
 

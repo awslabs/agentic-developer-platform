@@ -74,6 +74,16 @@ class InvocationItem(BaseModel):
         default=None,
         description="Error message for failed invocations. Written to DDB by webhook-ingress.",
     )
+    # Issue #4020: why a delivery produced no agent run
+    skip_reason: str | None = Field(
+        default=None,
+        description=(
+            "Static enum explaining why this delivery produced no agent run "
+            "(no_op / blocked / skipped statuses) — e.g. 'no_mention', "
+            "'self_re_trigger', 'idempotency_merged_pr'. Null for runs that "
+            "dispatched normally and for rows written before this field existed."
+        ),
+    )
     completed_at: str | None = Field(
         default=None,
         description="ISO 8601 completion timestamp (= status_updated_at when status is terminal). Null for in-progress runs.",

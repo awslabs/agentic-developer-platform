@@ -48,6 +48,18 @@ _DEFAULT_TABLE_NAME = "adp-dev-webhook-events"
 # Maximum number of items to retrieve for a chain view (prevents unbounded reads).
 _CHAIN_DEPTH_CAP = 50
 
+# Statuses that represent a delivery which produced NO agent run. Hidden from the
+# board and from chain descendants unless the caller asks for them
+# (include_non_triggering / the "Show all events" toggle — issues #1658, #3708).
+#
+# Issue #4020 added `blocked` (loop/validation guard stopped the spawn) and
+# `skipped` (worker deduplicated a redelivery). Both are non-runs and belong in
+# the same bucket as no_op — the smoke test in #4020 expects them under
+# "Show all events". This list was previously duplicated at four call sites;
+# it is defined once so the set cannot drift between the flat list, the chain
+# view, and the descendant fetch.
+NON_TRIGGERING_STATUSES = ["no_op", "webhook_received", "blocked", "skipped"]
+
 
 def _get_table_name() -> str:
     return os.environ.get("WEBHOOK_EVENTS_TABLE", _DEFAULT_TABLE_NAME)
@@ -275,11 +287,10 @@ class ActivityService:
         if status:
             filter_expression = Attr("status").eq(status)
         elif not include_non_triggering:
-            # Default: exclude non-triggering statuses (no_op, webhook_received)
-            # so the board shows only actual agent runs. An explicit status filter
-            # takes precedence (the user chose to see that specific status).
-            _non_triggering = ["no_op", "webhook_received"]
-            cond = ~Attr("status").is_in(_non_triggering)
+            # Default: exclude non-triggering statuses so the board shows only
+            # actual agent runs. An explicit status filter takes precedence (the
+            # user chose to see that specific status).
+            cond = ~Attr("status").is_in(NON_TRIGGERING_STATUSES)
             filter_expression = cond
         if channel:
             cond = Attr("channel").eq(channel)
@@ -355,7 +366,18 @@ class ActivityService:
         """Map a raw DynamoDB item to the InvocationItem schema."""
         # Issue #1653: Derive completed_at from status_updated_at for terminal statuses
         status = item.get("status")
-        terminal_statuses = {"complete", "failed", "rejected", "rate_limited", "no_op"}
+        # Issue #4020: `blocked` (guard stopped the spawn) and `skipped` (worker
+        # deduplicated a redelivery) are terminal too — the row will never be
+        # updated again, so completed_at should be derived for them as well.
+        terminal_statuses = {
+            "complete",
+            "failed",
+            "rejected",
+            "rate_limited",
+            "no_op",
+            "blocked",
+            "skipped",
+        }
         completed_at = item.get("status_updated_at") if status in terminal_statuses else None
 
         return InvocationItem(
@@ -380,6 +402,8 @@ class ActivityService:
             run_id=item.get("run_id"),
             # Issue #1653: error_message, completed_at, run_log_url
             error_message=item.get("error_message"),
+            # Issue #4020: why a no_op/blocked/skipped delivery produced no run
+            skip_reason=item.get("skip_reason"),
             completed_at=completed_at,
             run_log_url=item.get("check_run_url"),
             # Issue #3069: S3 transcript key
@@ -441,8 +465,7 @@ class ActivityService:
         # Status filtering (non-triggering) is still applied at the DDB level.
         status_filter = None
         if not include_non_triggering:
-            _non_triggering = ["no_op", "webhook_received"]
-            status_filter = ~Attr("status").is_in(_non_triggering)
+            status_filter = ~Attr("status").is_in(NON_TRIGGERING_STATUSES)
 
         # Tenant scoping is still applied as a FilterExpression (tenant_id is
         # always present on every row, so it's safe as a per-row filter).
@@ -752,7 +775,7 @@ class ActivityService:
         protection backstop against unbounded DDB reads.
         """
         # Non-triggering statuses to exclude from descendants
-        _non_triggering_statuses = {"no_op", "webhook_received"}
+        _non_triggering_statuses = set(NON_TRIGGERING_STATUSES)
 
         # Issue #3723: Accumulate filtered descendants directly, applying
         # depth_cap to the POST-FILTER count so noise doesn't consume budget.

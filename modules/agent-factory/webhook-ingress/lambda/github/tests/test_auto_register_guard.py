@@ -399,6 +399,16 @@ class TestPartialWriteSplit:
     later webhook resolves fine and the ``unknown_installation`` self-heal branch
     never fires again, so the seed is never retried. That is the self-sustaining
     state the Acme PoV hit: dispatch worked, workers died on a missing secret.
+
+    Mock shape note (issue #4020, routed from the #4030 review): the
+    ``resolve_installation_by_id`` mocks below return the full three-state
+    envelope ``{"state": "resolved", "tenant_id": ...}`` that #4052 introduced.
+    They previously returned a bare ``{"tenant_id": ...}``, which has no ``state``
+    key — so ``state == "resolved"`` was False and the handler silently took the
+    *org_login fallback* branch instead of the gateway-resolved one. Every fixture
+    happened to pass ``org_login == tenant_id``, so the assertions still went
+    green while testing the wrong code path. Keep the ``state`` key on any mock
+    added here.
     """
 
     @staticmethod

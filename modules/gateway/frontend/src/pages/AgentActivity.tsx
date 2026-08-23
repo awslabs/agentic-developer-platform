@@ -32,6 +32,12 @@ import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { usePermissions } from '@/hooks/usePermissions';
 import { getMyInvocations, getMyChains, getAllInvocations, getMyInvocationDetail } from '@/services/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
+import {
+  describeSkipReason,
+  skipReasonLabel,
+  isNonRunStatus,
+  NON_RUN_STATUSES,
+} from '@/utils/skipReason';
 import type {
   InvocationItem,
   InvocationStatus,
@@ -53,14 +59,32 @@ const STATUS_CONFIG: Record<InvocationStatus, { glyph: string; label: string; co
   rejected: { glyph: '✗', label: 'Rejected', colorClass: 'text-orange-600 dark:text-orange-400' },
   rate_limited: { glyph: '✗', label: 'Rate limited', colorClass: 'text-yellow-600 dark:text-yellow-400' },
   no_op: { glyph: '✗', label: 'No-op', colorClass: 'text-gray-500 dark:text-gray-400' },
+  // Issue #4020: a guard stopped the spawn / the worker deduplicated a redelivery.
+  // Both are non-runs, styled like no_op rather than like a failure — nothing
+  // went wrong, so they must not read as red-alert states.
+  blocked: { glyph: '✗', label: 'Blocked', colorClass: 'text-gray-500 dark:text-gray-400' },
+  skipped: { glyph: '✗', label: 'Skipped', colorClass: 'text-gray-500 dark:text-gray-400' },
 };
 
-function StatusBadge({ status }: { status: InvocationStatus }) {
+/**
+ * Issue #4020: the badge now carries the reason.
+ *
+ * A bare "✗ No-op" told the operator only that nothing ran, which is exactly
+ * what they already knew. `title` puts the explanation one hover away without
+ * widening the column, and the same text goes in an sr-only span so it is not
+ * hover-only for keyboard and screen-reader users.
+ */
+function StatusBadge({ status, skipReason }: { status: InvocationStatus; skipReason?: string | null }) {
   const config = STATUS_CONFIG[status] ?? STATUS_CONFIG.no_op;
+  const reasonText = isNonRunStatus(status) ? skipReasonLabel(skipReason) : null;
   return (
-    <span className={`inline-flex items-center gap-1 font-medium text-sm ${config.colorClass}`}>
+    <span
+      className={`inline-flex items-center gap-1 font-medium text-sm ${config.colorClass}`}
+      title={reasonText ? `${config.label}: ${reasonText}` : undefined}
+    >
       <span aria-hidden="true">{config.glyph}</span>
       <span>{config.label}</span>
+      {reasonText && <span className="sr-only">: {reasonText}</span>}
     </span>
   );
 }
@@ -364,6 +388,10 @@ const STATUS_OPTIONS = [
   { value: 'rejected', label: 'Rejected' },
   { value: 'rate_limited', label: 'Rate limited' },
   { value: 'no_op', label: 'No-op' },
+  // Issue #4020: filterable so an operator can answer "show me everything a
+  // guard stopped" directly, instead of eyeballing the full event trail.
+  { value: 'blocked', label: 'Blocked' },
+  { value: 'skipped', label: 'Skipped' },
 ];
 
 const CHANNEL_OPTIONS = [
@@ -492,7 +520,11 @@ export default function AgentActivity() {
   // Issue #3723: A normal status filter (in_progress/complete/failed) must NOT
   // set include_non_triggering — otherwise chain descendants are unfiltered,
   // causing phantom children (the dashboard tile click sends ?status=in_progress).
-  const NON_TRIGGERING_STATUSES: InvocationStatus[] = ['no_op', 'webhook_received'];
+  // Issue #4020: `blocked` and `skipped` join no_op as non-runs. Composed from
+  // the shared NON_RUN_STATUSES rather than re-listed, so this stays in step with
+  // the backend's NON_TRIGGERING_STATUSES — a drift here would leave the operator
+  // filtering by a status the board then refuses to fetch.
+  const NON_TRIGGERING_STATUSES: InvocationStatus[] = ['webhook_received', ...NON_RUN_STATUSES];
   const shouldIncludeNonTriggering = showAllEvents ||
     (statusFilter ? NON_TRIGGERING_STATUSES.includes(statusFilter as InvocationStatus) : false);
   const queryParams: InvocationQueryParams = {
@@ -1111,13 +1143,20 @@ export default function AgentActivity() {
                           )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <StatusBadge status={item.status} />
+                          <StatusBadge status={item.status} skipReason={item.skip_reason} />
                         </td>
                         <td className="px-6 py-4 text-sm text-gray-900 dark:text-white max-w-xs truncate">
                           {item.topic || <span className="text-gray-400 italic">—</span>}
                         </td>
                         <td className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400 max-w-xs truncate">
-                          {item.summary || <span className="text-gray-400 italic">—</span>}
+                          {/* Issue #4020: a non-run has no summary of work done, so the
+                              cell used to be a bare em-dash. The skip reason is the most
+                              useful thing we can put there — it makes the board scannable
+                              without opening every row. */}
+                          {item.summary ||
+                            describeSkipReason(isNonRunStatus(item.status) ? item.skip_reason : null) || (
+                              <span className="text-gray-400 italic">—</span>
+                            )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right">
                           <CostBadge item={item} />

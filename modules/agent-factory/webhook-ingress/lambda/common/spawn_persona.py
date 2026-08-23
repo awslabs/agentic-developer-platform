@@ -17,6 +17,11 @@ The function performs, in order:
   10. SQS publish
 
 Returns SpawnResult indicating success (with message_id) or block (with reason).
+
+Issue #4020: a blocked spawn now also writes a ``status="blocked"`` webhook-events
+row carrying the block reason, so the Activity UI can explain the block instead of
+showing nothing at all. The guards evaluate exactly as before — only bookkeeping
+was added, and it is best-effort so it can never fail the webhook.
 """
 
 from __future__ import annotations
@@ -106,6 +111,14 @@ def spawn_persona(
         SpawnResult with success=True and message_id, or success=False and
         block_reason explaining why the spawn was blocked.
     """
+    # --- Guards 0-5 ---
+    # Each guard records a block_reason rather than returning directly, so every
+    # blocked spawn funnels through the SINGLE Activity-row write below.
+    # Issue #4020: these returns previously happened before
+    # _capture_invocation_event, so a guard-blocked trigger produced NO Activity
+    # row at all — the operator's @agent-... comment simply vanished.
+    block_reason: str | None = None
+
     # --- Guard 0: installation_id validation (Issue #2336) ---
     # Reject messages with installation_id=0/None before they reach SQS.
     # A dispatch with no valid installation will deterministically crash the
@@ -119,17 +132,16 @@ def spawn_persona(
             event_type,
         )
         _emit_metric("InvalidInstallationIdBlocked", {"persona": persona})
-        return SpawnResult(success=False, block_reason="invalid_installation_id")
+        block_reason = "invalid_installation_id"
 
     # --- Guard 1: Persona validation ---
-    if persona not in VALID_PERSONAS:
+    elif persona not in VALID_PERSONAS:
         logger.warning("spawn_persona: unknown persona %r — blocking", persona)
         _emit_metric("UnknownPersonaBlocked", {"persona": persona})
-        return SpawnResult(success=False, block_reason="unknown_persona")
+        block_reason = "unknown_persona"
 
     # --- Guards 2-5: Only apply to bot senders ---
-    is_bot = _is_bot_sender(sender)
-    if is_bot:
+    elif _is_bot_sender(sender):
         block = _apply_bot_guards(
             persona=persona,
             correlation_ctx=correlation_ctx,
@@ -137,7 +149,41 @@ def spawn_persona(
             sender=sender,
         )
         if block is not None:
-            return block
+            block_reason = block.block_reason
+
+    if block_reason is not None:
+        # Issue #4020: record the block in Activity so "why didn't my agent run"
+        # is answerable from the UI.
+        #
+        # Wrapped HERE, at the call site, and not only inside the helper. The
+        # property that matters is "a guard block cannot become a webhook 500" —
+        # a guard block is benign and returns 200, and GitHub retries 5xx, so a
+        # transient DDB problem would produce a redelivery storm (the issue's
+        # impact analysis calls this out explicitly). That property belongs where
+        # the response is decided, rather than depending on a helper's internals
+        # staying exhaustively guarded through future edits. The helper's own
+        # try/except remains, for the specific-reason log line.
+        try:
+            _capture_blocked_event(
+                tenant_id=tenant_id,
+                actor_user_id=actor_user_id,
+                sender=sender,
+                event_type=event_type,
+                action=action,
+                installation_id=installation_id,
+                repo=repo,
+                persona=persona,
+                payload=payload,
+                correlation_ctx=correlation_ctx,
+                block_reason=block_reason,
+            )
+        except Exception as e:  # noqa: BLE001 — bookkeeping must never fail the webhook
+            logger.warning(
+                "spawn_persona: blocked-row write raised for reason=%s (non-fatal): %s",
+                block_reason,
+                e,
+            )
+        return SpawnResult(success=False, block_reason=block_reason)
 
     # --- Step 6: Write pointer + provenance (fail-soft) ---
     _write_pointer_and_provenance(
@@ -610,6 +656,97 @@ def _capture_invocation_event(
         )
     except Exception as e:
         logger.warning("spawn_persona: capture_invocation_event failed: %s", e)
+
+
+def _capture_blocked_event(
+    *,
+    tenant_id: str,
+    actor_user_id: str,
+    sender: dict,
+    event_type: str,
+    action: str,
+    installation_id: int,
+    repo: str,
+    persona: str,
+    payload: dict,
+    correlation_ctx: dict,
+    block_reason: str,
+) -> None:
+    """Write a ``blocked`` Activity row for a guard-blocked spawn. Issue #4020.
+
+    The guard returns above used to fire BEFORE ``_capture_invocation_event``, so
+    a blocked trigger left no trace anywhere the operator could see — the Activity
+    feed showed nothing at all, and the only record was a CloudWatch log line and
+    a metric datapoint. "Why didn't my review run?" was unanswerable from the UI.
+
+    The row carries ``status="blocked"`` plus the guard's existing
+    ``block_reason`` verbatim (the reason strings are reused, not reinvented).
+
+    Best-effort by construction, and deliberately so: a guard block is a benign,
+    expected outcome that returns HTTP 200. If bookkeeping could raise, a DDB
+    blip would convert every blocked delivery into a 500 and GitHub would retry
+    it — turning an observability improvement into a redelivery storm. There is
+    no envelope, so the row gets an auto-generated event_id like the other
+    terminal-at-ingress statuses (no_op, rate_limited).
+    """
+    try:
+        from common.webhook_events import WebhookEventLogger
+
+        table_name = os.environ.get("EVENTS_TABLE", "")
+        if not table_name:
+            return
+
+        region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        event_logger = WebhookEventLogger(table_name=table_name, region=region)
+
+        # Issue #2042: attribute to the human root for human-rooted chains so the
+        # row lands in the originating human's Activity view, matching the
+        # successful-dispatch path.
+        root_human = correlation_ctx.get("root_human_id")
+        is_human_rooted = correlation_ctx.get("is_human_rooted")
+        effective_user_id = (
+            root_human if (is_human_rooted and root_human) else actor_user_id
+        )
+
+        issue_title = payload.get("issue", {}).get("title", "")
+        pr_title = payload.get("pull_request", {}).get("title", "")
+        topic = (issue_title or pr_title or "(untitled)")[:120]
+
+        issue_url = payload.get("issue", {}).get("html_url", "")
+        pr_url = payload.get("pull_request", {}).get("html_url", "")
+        source_url = issue_url or pr_url or None
+
+        issue_number = payload.get("issue", {}).get("number")
+        if issue_number is None:
+            issue_number = payload.get("pull_request", {}).get("number")
+
+        event_logger.log_event(
+            tenant_id=tenant_id,
+            channel="github",
+            event_type=event_type,
+            action=action,
+            installation_id=str(installation_id),
+            repo=repo,
+            status="blocked",
+            skip_reason=block_reason,
+            user_id=effective_user_id or "unattributed",
+            github_login=sender.get("login", "") or None,
+            persona=persona,
+            topic=topic,
+            source_url=source_url,
+            issue_number=issue_number,
+            correlation_id=correlation_ctx.get("correlation_id"),
+            parent_invocation_id=correlation_ctx.get("parent_invocation_id"),
+            chain_depth=correlation_ctx.get("chain_depth"),
+            root_human_id=root_human,
+            is_human_rooted=is_human_rooted,
+        )
+    except Exception as e:
+        logger.warning(
+            "spawn_persona: capture_blocked_event failed for reason=%s (non-fatal): %s",
+            block_reason,
+            e,
+        )
 
 
 def _emit_metric(metric_name: str, dimensions: dict[str, str]) -> None:

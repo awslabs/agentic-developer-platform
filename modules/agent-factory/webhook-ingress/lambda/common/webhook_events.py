@@ -75,6 +75,7 @@ class WebhookEventLogger:
         status: str = "webhook_received",
         processing_time_ms: int | None = None,
         error_message: str | None = None,
+        skip_reason: str | None = None,
         user_id: str = "unattributed",
         github_login: str | None = None,
         persona: str | None = None,
@@ -106,6 +107,11 @@ class WebhookEventLogger:
             status: Processing status lifecycle value.
             processing_time_ms: Lambda processing time in milliseconds.
             error_message: Error details if status is 'error'.
+            skip_reason: Issue #4020 — why this delivery produced no agent run.
+                A static enum from common/skip_reasons.py, or a SpawnResult
+                block_reason. Read by the Activity UI to explain a no_op /
+                blocked / skipped row instead of showing a bare "✗ No-op" badge.
+                MUST NOT contain webhook payload content (see skip_reasons.py).
             user_id: Platform user ID from identity resolver.
                 "unattributed" if resolution failed (never dropped).
             github_login: GitHub sender login (display only).
@@ -159,6 +165,11 @@ class WebhookEventLogger:
             item["processing_time_ms"] = processing_time_ms
         if error_message:
             item["error_message"] = error_message
+        # Issue #4020: the reason a delivery produced no run. Optional — rows
+        # written before this change simply lack the attribute, and the API
+        # serializes the absence as null.
+        if skip_reason:
+            item["skip_reason"] = skip_reason
         if github_login:
             item["github_login"] = github_login
         if persona:
