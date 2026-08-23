@@ -31,6 +31,30 @@ IDENTITY_INDEX_TABLE = os.environ.get("IDENTITY_INDEX_TABLE", "")
 USER_IDENTITY_INDEX_TABLE = os.environ.get("USER_IDENTITY_INDEX_TABLE", "")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 
+# ---------------------------------------------------------------------------
+# Cross-tenant trigger policy vocabulary (issue #3134)
+# ---------------------------------------------------------------------------
+# Issue #4029: these were bare string literals here and duplicated as bare
+# literals in the gateway's provenance authority gate
+# (modules/gateway/src/internal/provenance_routes.py). The two sides disagreed
+# about the DEFAULT, so the platform permitted a cross-tenant run to execute and
+# then refused to record its provenance — an audit hole exactly where
+# cross-tenant activity happens.
+#
+# They cannot share a module: package-lambdas.sh roots the Lambda zip at
+# lambda/, so nothing outside it is importable or readable at Lambda runtime.
+# The drift guard is therefore a lockstep test that imports both sides and
+# asserts these names and DEFAULT_TRIGGER_POLICY agree:
+#   modules/gateway/tests/internal/test_provenance_policy_lockstep.py
+# If you change the vocabulary or the default here, that test fails until the
+# gateway follows.
+TRIGGER_POLICY_ANY_ADP_USER = "any_adp_user"
+TRIGGER_POLICY_HOME_TENANT_ONLY = "home_tenant_only"
+
+# Absent attribute means any known ADP user may trigger. Load-bearing: it is the
+# posture of every tenant that never configured the setting.
+DEFAULT_TRIGGER_POLICY = TRIGGER_POLICY_ANY_ADP_USER
+
 _dynamodb = None
 _cloudwatch = None
 # Exposed for callers that need the tenant_item after resolve() completes
@@ -413,12 +437,12 @@ def resolve(
         # the DDB rows already fetched (tenant_item + user_item).
         if user_item["org_id"] != org_id:
             trigger_policy = (
-                tenant_item.get("trigger_policy", "any_adp_user")
+                tenant_item.get("trigger_policy", DEFAULT_TRIGGER_POLICY)
                 if tenant_item
-                else "any_adp_user"
+                else DEFAULT_TRIGGER_POLICY
             )
 
-            if trigger_policy == "home_tenant_only":
+            if trigger_policy == TRIGGER_POLICY_HOME_TENANT_ONLY:
                 # Check membership: user must have org_id in their member_org_ids
                 member_org_ids = user_item.get("member_org_ids", [user_item["org_id"]])
                 if org_id not in member_org_ids:

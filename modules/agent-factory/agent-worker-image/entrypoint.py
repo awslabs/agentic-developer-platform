@@ -2108,17 +2108,41 @@ def _write_outbound_correlation(repo: str, channel_suffix: str, action_kind: str
         logger.warning("Outbound correlation pointer write failed (non-fatal): %s", exc)
 
     # Provenance POST (fail-soft)
+    #
+    # Issue #4029: this call 422'd on every invocation. source_event must be a dict
+    # (the column is JSONB) and org_id must be a non-null tenant (the column is NOT
+    # NULL) — the previous call passed a bare string and omitted org_id entirely.
     try:
         user_id = os.environ.get("ADP_USER_ID", "")
-        post_provenance(
-            actor_user_id=user_id,
-            triggered_by=None,
-            root_human_id=root,
-            is_human_rooted=rooted,
-            action_kind=action_kind,
-            source_event="worker:entrypoint",
-            correlation_id=corr,
-        )
+        # Tenant comes from the run's server-resolved envelope (exported as
+        # ADP_TENANT_ID during bootstrap), never from anything the agent can influence.
+        tenant = os.environ.get("ADP_TENANT_ID", "")
+        if not tenant:
+            # Better to skip than to post a null org_id the gateway must reject.
+            logger.warning("No ADP_TENANT_ID in env — skipping provenance post")
+        else:
+            # Key vocabulary mirrors the webhook-ingress producer
+            # (spawn_persona.py) so JSONB consumers need no per-producer branches.
+            source_event = {
+                "source": "worker:entrypoint",
+                "event_type": action_kind,
+                "repo": repo,
+            }
+            if channel_suffix.startswith("issue:"):
+                source_event["issue"] = int(channel_suffix.split(":", 1)[1])
+            elif channel_suffix.startswith("pr:"):
+                source_event["branch"] = channel_suffix.split(":", 1)[1]
+
+            post_provenance(
+                actor_user_id=user_id,
+                triggered_by=None,
+                root_human_id=root,
+                is_human_rooted=rooted,
+                action_kind=action_kind,
+                source_event=source_event,
+                correlation_id=corr,
+                org_id=tenant,
+            )
     except Exception as exc:
         logger.warning("Outbound provenance post failed (non-fatal): %s", exc)
 

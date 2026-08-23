@@ -553,14 +553,30 @@ function writeOutboundCorrelation(channelSuffix: string, actionKind: string): vo
     log('WARN', `Correlation pointer write failed (non-fatal): ${(err as Error).message}`);
   });
 
+  // Issue #4029: org_id is required and non-null, and comes from the run's
+  // server-resolved tenant. Skip rather than post a null the gateway must reject.
+  const tenantId = process.env.ADP_TENANT_ID || '';
+  if (!tenantId) {
+    log('WARN', 'No ADP_TENANT_ID in env — skipping provenance post');
+    return;
+  }
+
   postProvenance({
     actorUserId: process.env.ADP_USER_ID || '',
     triggeredBy: null,
     rootHumanId,
     isHumanRooted,
     actionKind,
-    sourceEvent: 'worker:agent-runtime',
+    // source_event must be an object — the column is JSONB. Key vocabulary
+    // matches the other producers so JSONB consumers need no per-producer branch.
+    sourceEvent: {
+      source: 'worker:agent-runtime',
+      event_type: actionKind,
+      repo,
+      channel_suffix: channelSuffix,
+    },
     correlationId,
+    orgId: tenantId,
   }).catch(err => {
     log('WARN', `Provenance post failed (non-fatal): ${(err as Error).message}`);
   });

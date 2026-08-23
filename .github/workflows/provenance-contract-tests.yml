@@ -1,0 +1,92 @@
+name: Provenance Contract Tests
+
+# Issue #4029: every worker provenance write 422'd for months because the worker
+# client and the gateway endpoint disagreed about two fields of the request body,
+# and no CI job ran both sides. Each module's tests asserted its own assumption and
+# both were green.
+#
+# The fix pins all three producers to one shared artifact:
+#   contracts/provenance/v1/create-provenance-request.golden.json
+#
+# But a golden fixture prevents nothing if nothing executes it. The gateway half
+# (tests/internal/test_provenance_contract.py) runs in gateway-ci.yml, whose paths
+# filter now includes contracts/**. The two suites below ran in NO workflow at all
+# before this file existed:
+#   - modules/agent-factory/agent-worker-image/tests/  (Python worker producer)
+#   - modules/agent-factory/agent/src/**/*.test.ts     (Node runtime producer)
+#
+# So this workflow gates the producer side. Change a producer's payload and its
+# builder test fails here; change the fixture and all three fail until they agree.
+
+on:
+  pull_request:
+    paths:
+      # The shared contract artifact itself
+      - 'contracts/provenance/**'
+      # Python worker producer
+      - 'modules/agent-factory/agent-worker-image/lib/provenance_client.py'
+      - 'modules/agent-factory/agent-worker-image/entrypoint.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_provenance_client.py'
+      # Node runtime producer
+      - 'modules/agent-factory/agent/src/lib/provenanceClient.ts'
+      - 'modules/agent-factory/agent/src/lib/provenanceClient.test.ts'
+      - 'modules/agent-factory/agent/src/agent-worker.ts'
+      # This workflow
+      - '.github/workflows/provenance-contract-tests.yml'
+    branches:
+      - main
+
+concurrency:
+  group: provenance-contract-tests-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  worker-producer:
+    name: Python Worker Producer
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      # agent-worker-image has no pyproject.toml — its deps are inline in the
+      # Dockerfile, so they are installed explicitly here (same approach as the
+      # worker job in credential-path-tests.yml).
+      - name: Install dependencies
+        run: pip install pytest pytest-timeout 'boto3>=1.34'
+
+      - name: Assert the worker builds the golden payload
+        working-directory: modules/agent-factory/agent-worker-image
+        run: pytest tests/test_provenance_client.py -v --tb=short --timeout=60
+
+  node-producer:
+    name: Node Runtime Producer
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+
+      # --include=dev is explicit because NODE_ENV=production in the runner
+      # environment makes npm omit devDependencies, which silently strips
+      # jest and typescript and makes the steps below fail as "not found".
+      - name: Install dependencies
+        working-directory: modules/agent-factory/agent
+        run: npm ci --include=dev
+
+      - name: Typecheck
+        working-directory: modules/agent-factory/agent
+        run: npx tsc --noEmit
+
+      - name: Assert the Node runtime builds the golden payload
+        working-directory: modules/agent-factory/agent
+        run: npx jest src/lib/provenanceClient.test.ts

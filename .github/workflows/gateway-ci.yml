@@ -11,6 +11,16 @@ on:
       - 'modules/gateway/frontend/package*.json'
       - 'modules/gateway/frontend/tests/**'
       - 'libs/python/adp-common/**'
+      # Shared cross-module contract fixtures (#4029). tests/internal/
+      # test_provenance_contract.py validates these against the gateway's
+      # request schema, so a fixture edit must re-run gateway tests.
+      - 'contracts/**'
+      # Trigger-policy lockstep (#4029). tests/internal/
+      # test_provenance_policy_lockstep.py imports the webhook-ingress resolver and
+      # asserts its trigger_policy vocabulary + DEFAULT match the gateway's authority
+      # gate. A mismatched default is what silently dropped every cross-tenant
+      # provenance row, so a resolver-side edit must re-run the gateway suite.
+      - 'modules/agent-factory/webhook-ingress/lambda/common/identity_resolver.py'
       - 'platform/scripts/smoke_assertions.py'
       - 'platform/scripts/tests/test_smoke_assertions.py'
       - '.github/workflows/gateway-ci.yml'
