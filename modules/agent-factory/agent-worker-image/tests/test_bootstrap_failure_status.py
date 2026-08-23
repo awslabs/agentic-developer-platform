@@ -1,6 +1,6 @@
 """Bootstrap-failure status transitions (Issue #4030).
 
-The SOPHOS PoV outage: an operator commented `@agent-developer say hello`, the
+The Acme PoV outage: an operator commented `@agent-developer say hello`, the
 webhook dispatched, KEDA scaled a worker — and the worker died at bootstrap
 fetching a per-tenant secret that was never provisioned. Nothing surfaced. The
 run did not appear as "failed" in Agent Activity; it did not appear at all.
@@ -50,7 +50,7 @@ class TestFailBootstrapStatus:
         _fail_bootstrap_status(
             "msg-abc",
             "2026-08-22T10:00:00Z",
-            "tenant secret missing: adp/dev/tenants/sophos-internal/github-app",
+            "tenant secret missing: adp/dev/tenants/acme-internal/github-app",
         )
 
         mock_update.assert_called_once()
@@ -58,7 +58,7 @@ class TestFailBootstrapStatus:
         assert args[0] == "msg-abc"
         assert args[1] == "2026-08-22T10:00:00Z"
         assert args[2] == "failed"
-        assert "sophos-internal" in kwargs["error_message"]
+        assert "acme-internal" in kwargs["error_message"]
 
     @patch("entrypoint.update_invocation_status")
     def test_also_sets_summary(self, mock_update):
@@ -95,10 +95,10 @@ class TestFailBootstrapStatus:
 
 
 class TestDescribeVaultFetchFailure:
-    _PATH = "adp/dev/tenants/sophos-internal/github-app"
+    _PATH = "adp/dev/tenants/acme-internal/github-app"
 
     def test_missing_secret_names_path_and_repair(self):
-        """RNFE → the exact SOPHOS reason, with the secret path and a repair command."""
+        """RNFE → the exact Acme reason, with the secret path and a repair command."""
         reason = _describe_vault_fetch_failure(
             _client_error("ResourceNotFoundException"), self._PATH
         )

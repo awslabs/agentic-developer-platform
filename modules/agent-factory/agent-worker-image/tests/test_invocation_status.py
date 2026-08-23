@@ -324,13 +324,13 @@ class TestErrorMessage:
             event_id="msg-123",
             arrived_at="2026-06-13T22:00:00Z",
             status="failed",
-            error_message="tenant secret missing: adp/dev/tenants/sophos-internal/github-app",
+            error_message="tenant secret missing: adp/dev/tenants/acme-internal/github-app",
         )
 
         call_kwargs = mock_client.update_item.call_args[1]
         expr_values = call_kwargs["ExpressionAttributeValues"]
         assert expr_values[":error_message"] == {
-            "S": "tenant secret missing: adp/dev/tenants/sophos-internal/github-app"
+            "S": "tenant secret missing: adp/dev/tenants/acme-internal/github-app"
         }
         assert "error_message" in call_kwargs["ExpressionAttributeNames"].values()
 

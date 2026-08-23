@@ -903,7 +903,7 @@ class TestInstallCallbackWritesReverseRow:
         ):
             await real_fn(
                 installation_id=146123525,
-                org_id="sophos-hackathon",
+                org_id="acme-hackathon",
             )
 
         # Forward row: update_item call
@@ -917,7 +917,7 @@ class TestInstallCallbackWritesReverseRow:
         assert len(put_calls) == 1
         put_kwargs = put_calls[0][1]
         assert put_kwargs["Item"]["identity_type"] == {"S": "org_installation"}
-        assert put_kwargs["Item"]["identity_value"] == {"S": "sophos-hackathon"}
+        assert put_kwargs["Item"]["identity_value"] == {"S": "acme-hackathon"}
         assert put_kwargs["Item"]["installation_id"] == {"N": "146123525"}
         assert put_kwargs["Item"]["auto_registered"] == {"BOOL": True}
 
@@ -969,7 +969,7 @@ class TestInstallCallbackWritesReverseRow:
         mock_ddb_client.get_item.return_value = {
             "Item": {
                 "identity_type": {"S": "org_installation"},
-                "identity_value": {"S": "sophos-hackathon"},
+                "identity_value": {"S": "acme-hackathon"},
                 "installation_id": {"N": "146123525"},
                 "updated_at": {"S": "2026-07-12T00:00:00Z"},
                 "auto_registered": {"BOOL": True},
@@ -982,7 +982,7 @@ class TestInstallCallbackWritesReverseRow:
         ):
             await real_fn(
                 installation_id=146123525,
-                org_id="sophos-hackathon",
+                org_id="acme-hackathon",
             )
 
         # Both forward and reverse writes should fire
@@ -1016,7 +1016,7 @@ class TestInstallCallbackWritesReverseRow:
             # Should not raise — best-effort
             await real_fn(
                 installation_id=146123525,
-                org_id="sophos-hackathon",
+                org_id="acme-hackathon",
             )
 
 

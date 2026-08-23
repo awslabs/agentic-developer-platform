@@ -9,7 +9,7 @@
 # WHY THIS EXISTS: the previous Phase 9 check asserted that one secret
 # (`adp/gh-app-id`) was non-empty — a secret ID that exists nowhere in this
 # codebase — and the end-to-end check only asserted that a pod spawned. The
-# SOPHOS PoV-2 deployment PASSED that gate with dispatch 100% broken: the
+# Acme PoV-2 deployment PASSED that gate with dispatch 100% broken: the
 # per-tenant secret was missing, so worker pods spawned, crash-looped in
 # bootstrap step 2, and never replied. Every check here is one that failure
 # would have tripped.
@@ -255,7 +255,7 @@ fi
 echo ""
 
 # -----------------------------------------------------------------------------
-# Step 4 (HARD) — the per-tenant secret. THE SOPHOS PoV-2 FAILURE.
+# Step 4 (HARD) — the per-tenant secret. THE Acme PoV-2 FAILURE.
 #
 # The worker hard-requires this at bootstrap step 2 with no fallback: it fetches
 # only tenants/<tenant_id>/github-app and re-raises on any exception. There is no

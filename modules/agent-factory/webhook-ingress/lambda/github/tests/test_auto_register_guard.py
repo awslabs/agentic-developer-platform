@@ -272,7 +272,7 @@ class TestPartialWriteSplit:
     the caller skip secret provisioning. Because the mapping now exists, every
     later webhook resolves fine and the ``unknown_installation`` self-heal branch
     never fires again, so the seed is never retried. That is the self-sustaining
-    state the SOPHOS PoV hit: dispatch worked, workers died on a missing secret.
+    state the Acme PoV hit: dispatch worked, workers died on a missing secret.
     """
 
     @staticmethod
@@ -309,18 +309,18 @@ class TestPartialWriteSplit:
         table = self._table_failing_on("org_installation")
         mock_resolver.return_value._get_table.return_value = table
         mock_gw.return_value.resolve_installation_by_id.return_value = {
-            "tenant_id": "sophos-internal"
+            "tenant_id": "acme-internal"
         }
 
-        result = _auto_register_installation(144082554, "sophos-internal")
+        result = _auto_register_installation(144082554, "acme-internal")
 
         # The key assertion: NOT None. Pre-#4030 this returned None.
-        assert result == "sophos-internal"
+        assert result == "acme-internal"
         mock_metric.assert_called_once_with("AutoRegister.PartialWrite")
         # Forward row was written before the reverse row blew up.
         forward_item = table.put_item.call_args_list[0].kwargs["Item"]
         assert forward_item["identity_type"] == "github_installation_id"
-        assert forward_item["org_id"] == "sophos-internal"
+        assert forward_item["org_id"] == "acme-internal"
 
     @patch("handler._emit_metric")
     @patch("handler._get_gateway_client")
@@ -337,10 +337,10 @@ class TestPartialWriteSplit:
         table = self._table_failing_on("github_installation_id")
         mock_resolver.return_value._get_table.return_value = table
         mock_gw.return_value.resolve_installation_by_id.return_value = {
-            "tenant_id": "sophos-internal"
+            "tenant_id": "acme-internal"
         }
 
-        result = _auto_register_installation(144082554, "sophos-internal")
+        result = _auto_register_installation(144082554, "acme-internal")
 
         assert result is None
         # PartialWrite is specifically "forward succeeded, reverse didn't".

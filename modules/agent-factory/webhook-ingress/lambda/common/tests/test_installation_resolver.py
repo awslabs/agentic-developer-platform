@@ -153,20 +153,20 @@ class TestForwardScanFallback:
                 {
                     "identity_type": "github_installation_id",
                     "identity_value": "146123525",
-                    "org_id": "sophos-hackathon",
+                    "org_id": "acme-hackathon",
                     "updated_at": "2026-07-12T00:00:00Z",
                 }
             ]
         }
 
-        result = resolve_installation_for_tenant("sophos-hackathon")
+        result = resolve_installation_for_tenant("acme-hackathon")
 
         assert result == 146123525
         # Verify write-through was attempted
         table.put_item.assert_called_once()
         put_kwargs = table.put_item.call_args[1]
         assert put_kwargs["Item"]["identity_type"] == "org_installation"
-        assert put_kwargs["Item"]["identity_value"] == "sophos-hackathon"
+        assert put_kwargs["Item"]["identity_value"] == "acme-hackathon"
         assert put_kwargs["Item"]["installation_id"] == 146123525
         assert put_kwargs["Item"]["auto_registered"] is True
 
@@ -230,14 +230,14 @@ class TestForwardScanFallback:
                 {
                     "identity_type": "github_installation_id",
                     "identity_value": "146123525",
-                    "org_id": "sophos-hackathon",
+                    "org_id": "acme-hackathon",
                 }
             ]
         }
         # Write-through fails
         table.put_item.side_effect = Exception("DDB write error")
 
-        result = resolve_installation_for_tenant("sophos-hackathon")
+        result = resolve_installation_for_tenant("acme-hackathon")
 
         # Resolution still succeeds even though write-through failed
         assert result == 146123525

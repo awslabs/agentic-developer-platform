@@ -135,7 +135,7 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
     returned ``None`` *after* the forward row was already persisted. That made
     the caller skip downstream provisioning forever: every later webhook
     resolves successfully, so the ``unknown_installation`` self-heal branch
-    never fires again. That is the state the SOPHOS PoV hit.
+    never fires again. That is the state the Acme PoV hit.
 
     Returns the tenant/org_id owning the installation, or None if we couldn't
     determine a known tenant / never persisted a routable mapping.
@@ -278,7 +278,7 @@ def _auto_register_installation(installation_id: int, org_login: str) -> str | N
         except Exception as rev_exc:  # noqa: BLE001
             # Issue #4030: do NOT swallow this into a None return. The forward
             # row is already written, so the tenant genuinely routes — dropping
-            # it here is what left SOPHOS with a mapping whose downstream
+            # it here is what left Acme with a mapping whose downstream
             # provisioning never ran, permanently (all later events resolve, so
             # the caller's `unknown_installation` self-heal branch never fires
             # again). #3860 documents forward-row-only as degraded-but-usable:

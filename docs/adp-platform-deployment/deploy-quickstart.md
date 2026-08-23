@@ -859,7 +859,7 @@ What it asserts, and why each one matters:
 
 > **Why the script instead of a couple of inline commands.** A deployment can
 > pass "the App ID secret is non-empty" and "a worker pod spawned" while dispatch
-> is 100% broken — that is exactly what happened in the SOPHOS PoV. The worker
+> is 100% broken — that is exactly what happened in the Acme PoV. The worker
 > hard-requires the **per-tenant** secret (step 4) with no fallback; when it is
 > missing, pods spawn, die in bootstrap, and crash-loop. Step 5 asserts a reply
 > *landed*, because a pod spawning proves only that the webhook path works, not
