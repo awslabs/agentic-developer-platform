@@ -17,14 +17,17 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin.access_control import AccessControl
+from src.admin.config import AdminRole, Permission
+from src.admin.exceptions import InvalidScopeError
 from src.admin.memberships import upsert_tenant_membership
-from src.auth.dependencies import get_current_user, require_admin
+from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.models.onboarding import TenantAccessRequest, TenantMembership
 from src.shared.models.organization import Organization, User
 from src.shared.schemas.auth import TokenContext
 
-from .approval import approve_request, deny_request
+from .approval import approve_request, attach_approved_member, deny_request
 from .schemas import (
     RESERVED_TENANT_IDS,
     TENANT_ID_PATTERN,
@@ -335,10 +338,13 @@ async def _attach_user_to_existing_tenant(
 
     Creates a TenantAccessRequest row (for audit trail) + User row + UserIdentity rows.
     Respects the org's member_approval_policy.
-    """
-    from src.shared.models.base import new_uuid, utcnow
-    from src.shared.models.vault import UserIdentity
 
+    Issue #4018: the auto-approve tail (user + identities + membership) now lives
+    in ``approval.attach_approved_member`` so the org-scoped admin approval route
+    executes the identical write, with the *same* derived role. It is a shared
+    executor rather than two copies precisely so the role can never diverge
+    between the two paths.
+    """
     org = await db.get(Organization, org_id)
     if org is None:
         # Should not happen — caller verified it exists. Fall through to new-tenant flow.
@@ -354,8 +360,8 @@ async def _attach_user_to_existing_tenant(
     # Check approval policy
     auto_approve = org.member_approval_policy == "auto_approve_org_members"
 
-    # Create audit trail row
-    now = utcnow()
+    # Create the audit-trail row as pending; attach_approved_member is what flips
+    # it to approved, so the two paths share one state transition.
     request = TenantAccessRequest(
         cognito_sub=cognito_sub,
         provider="github",
@@ -363,9 +369,7 @@ async def _attach_user_to_existing_tenant(
         proposed_tenant_id=org_id,
         target_login=github_login,
         motivation=f"Auto-matched to org '{org.name}' via GitHub org membership",
-        status="approved" if auto_approve else "pending",
-        decided_by="system:org-member-match" if auto_approve else None,
-        decided_at=now if auto_approve else None,
+        status="pending",
     )
     db.add(request)
 
@@ -378,18 +382,23 @@ async def _attach_user_to_existing_tenant(
             eta_hours=24,
         )
 
-    # Auto-approve: create user + identities in the existing tenant
-    # Find the default team in this org
-    from src.shared.models.organization import Team
-
-    stmt = select(Team).where(Team.org_id == org_id)
-    result = await db.execute(stmt)
-    team = result.scalars().first()
-    if team is None:
-        # No team — can't attach. Fall through to pending.
-        request.status = "pending"
-        request.decided_by = None
-        request.decided_at = None
+    await db.flush()
+    try:
+        await attach_approved_member(
+            db,
+            request,
+            granted_role=role,
+            decided_by="system:org-member-match",
+            # This path is a login-time auto-match, not an admin decision, and
+            # has never synced Cognito claims; keeping it off preserves that
+            # behaviour (and keeps a Cognito round-trip off the sign-in path).
+            sync_cognito_claims=False,
+        )
+    except ValueError:
+        # No team in the org — can't attach. attach_approved_member validates
+        # before adding any row, so the session still holds only the pending
+        # request; commit it and let an admin decide.
+        logger.warning("auto-approve attach failed for org=%s login=%s; leaving request pending", org_id, github_login)
         await db.commit()
         await db.refresh(request)
         return AccessRequestResponse(
@@ -397,63 +406,6 @@ async def _attach_user_to_existing_tenant(
             request_id=request.id,
             eta_hours=24,
         )
-
-    user_id = new_uuid()
-    user = User(
-        id=user_id,
-        org_id=org_id,
-        team_id=team.id,
-        email=f"{github_login}@github.onboard",
-        name=github_login,
-        cognito_sub=cognito_sub,
-        role=role,
-    )
-    db.add(user)
-
-    # User identities: cognito + github
-    cognito_identity = UserIdentity(
-        id=new_uuid(),
-        user_id=user_id,
-        org_id=org_id,
-        team_id=team.id,
-        provider="cognito",
-        provider_user_id=cognito_sub,
-        provider_username=github_login,
-        verification_method="oauth",
-        verified_at=now,
-    )
-    db.add(cognito_identity)
-
-    github_identity = UserIdentity(
-        id=new_uuid(),
-        user_id=user_id,
-        org_id=org_id,
-        team_id=team.id,
-        provider="github",
-        provider_user_id=github_id,
-        provider_username=github_login,
-        verification_method="oauth",
-        verified_at=now,
-    )
-    db.add(github_identity)
-
-    # Issue #4006: write the home-tenant membership in the SAME transaction as the
-    # user row. The caller (submit_access_request) also calls
-    # _create_memberships_for_matches, but that commits separately — a crash
-    # between the two commits used to leave an org_admin users row with no
-    # membership, i.e. an admin whose authority depends on the legacy fallback.
-    # _create_memberships_for_matches skips tenants that already have a row, so
-    # this is additive, not duplicative.
-    await upsert_tenant_membership(
-        db,
-        user_id=user_id,
-        tenant_id=org_id,
-        role=role,
-        joined_via="org_membership",
-        github_org_id=org.name,
-    )
-
-    await db.commit()
 
     return AccessRequestResponse(
         status="approved",
@@ -842,19 +794,116 @@ async def submit_access_request(
 
 
 # ---------------------------------------------------------------------------
-# Admin routes (platform_admin role required)
+# Admin routes
 # ---------------------------------------------------------------------------
+#
+# Issue #4018: these three routes used to be gated on ``require_admin``, i.e.
+# PLATFORM admin only (``auth/dependencies.py`` deliberately excludes org_admin
+# from ``is_admin``, per #3981). Since the first approved user of any org is
+# created as org_admin, that org's own administrator could neither see nor drain
+# their own pending queue — every approval funnelled through the seeded
+# platform-admin account. They are now gated on ``Permission.USER_MANAGE`` with
+# an org-scope check, which admits platform_admin (all orgs) and org_admin
+# (their own org only) and still rejects dept_admin/member.
+#
+# TWO REQUEST CLASSES, opposite handling — the load-bearing distinction here:
+#
+#   (A) New-tenant requests (``submit_access_request``'s D6 fallback). By
+#       construction ``_pick_tenant_id`` returns None when the slug already
+#       exists in ``organizations``, so a class-A request's proposed_tenant_id
+#       names an org that DOES NOT EXIST YET; ``approve_request`` is what creates
+#       it. Nobody should be able to approve the creation of a tenant they don't
+#       own, so these stay PLATFORM-ADMIN-ONLY and are hidden from an org admin's
+#       list entirely.
+#
+#   (B) Join-existing-org requests (``_attach_user_to_existing_tenant`` under
+#       ``member_approval_policy != "auto_approve_org_members"``). Here
+#       proposed_tenant_id is a REAL, existing org, so it can be compared against
+#       the caller's own tenant. This class — and only this class — is what an
+#       org admin may decide.
+#
+# The class is derived server-side by looking the org up, never taken from the
+# client. ``_is_existing_org`` below is that test.
+
+
+async def _get_access_control(db: AsyncSession = Depends(get_db)) -> AccessControl:
+    """Provide a per-request AccessControl instance.
+
+    Mirrors ``admin/routes.py`` / ``admin/tenants/routes.py``. Per-request (not
+    module-level) so the TTL role cache inside AccessControl cannot serve a role
+    resolved for one caller to another.
+    """
+    return AccessControl(db)
+
+
+async def _resolve_decider_scope(
+    access: AccessControl,
+    caller: TokenContext,
+) -> tuple[AdminRole, str | None]:
+    """Resolve the caller's role and the single org they may decide requests for.
+
+    Authority comes from the caller's resolved ``tenant_memberships`` row via
+    ``AccessControl.get_user_role`` (#3987/#3998) — never from a token claim
+    (``custom:role`` reduces to ``is_admin`` only, per #3981).
+
+    Returns ``(role, allowed_org_id)``; ``allowed_org_id`` is None for a platform
+    admin, who is unscoped.
+
+    Known limitation (#4018): a user who administers several orgs resolves to
+    their single *active* tenant, so they see one queue at a time and must switch
+    tenants to drain another. Tracked as a follow-up rather than widening the
+    predicate, which would make the scope check multi-valued.
+    """
+    role, allowed_org_id, _ = await access.get_user_role(caller)
+    if role == AdminRole.PLATFORM_ADMIN:
+        return role, None
+    return role, allowed_org_id
+
+
+async def _is_existing_org(db: AsyncSession, tenant_id: str) -> bool:
+    """True when ``tenant_id`` names an org that already exists (a class-B request).
+
+    A class-A (new-tenant) request names an org that does not exist yet, so this
+    is False for it — which is what keeps class A platform-admin-only.
+    """
+    return (await db.get(Organization, tenant_id)) is not None
 
 
 @router.get("/admin/access-requests", response_model=AdminAccessRequestList)
 async def list_access_requests(
-    admin: TokenContext = Depends(require_admin),
+    admin: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
     db: AsyncSession = Depends(get_db),
 ) -> AdminAccessRequestList:
-    """List pending access requests for admin review."""
+    """List pending access requests the caller may decide.
+
+    Platform admin sees every pending request (both classes). An org admin sees
+    only class-B (join-existing-org) requests targeting their own org — the class
+    they are actually able to approve, so the list never shows a row that would
+    403 on click.
+    """
+    await access.check_permission(admin, Permission.USER_MANAGE)
+    role, allowed_org_id = await _resolve_decider_scope(access, admin)
+
     stmt = select(TenantAccessRequest).where(TenantAccessRequest.status == "pending")
+    if role != AdminRole.PLATFORM_ADMIN:
+        # check_permission already rejected an empty scope for USER_MANAGE (it is
+        # in _ORG_SCOPED_PERMISSIONS), so allowed_org_id is truthy here. The
+        # belt-and-braces guard keeps a future change to that frozenset from
+        # silently turning this into an unfiltered read.
+        if not allowed_org_id:
+            return AdminAccessRequestList(requests=[])
+        stmt = stmt.where(TenantAccessRequest.proposed_tenant_id == allowed_org_id)
+
     result = await db.execute(stmt)
     requests = result.scalars().all()
+
+    if role != AdminRole.PLATFORM_ADMIN:
+        # Class filter: only requests whose target org already exists. For a
+        # non-platform caller allowed_org_id IS an existing org, so this is
+        # normally a no-op — kept so the list can never expose a class-A request
+        # that happens to share a slug with the caller's org.
+        requests = [r for r in requests if await _is_existing_org(db, r.proposed_tenant_id)]
 
     items = [
         AdminAccessRequestItem(
@@ -873,21 +922,76 @@ async def list_access_requests(
     return AdminAccessRequestList(requests=items)
 
 
+async def _authorize_decision(
+    access: AccessControl,
+    db: AsyncSession,
+    caller: TokenContext,
+    request: TenantAccessRequest,
+) -> tuple[AdminRole, str | None]:
+    """Authorize a caller to approve/deny ``request``, or raise 403.
+
+    Enforced server-side on BOTH decision routes; the client never supplies the
+    scope. Raises ``AccessDeniedError`` / ``InvalidScopeError`` — both
+    ``BedrockGatewayError`` 403s handled globally in ``app.py``, so callers need
+    no try/except.
+
+    Order matters on the deny route: this runs before any Cognito client is
+    built, so a scope failure can never reach ``admin_delete_user`` (deny is
+    destructive — a scope bug there deletes an account rather than leaking a row).
+    """
+    # target_org_id makes check_permission itself enforce the cross-tenant
+    # boundary; USER_MANAGE is in _ORG_SCOPED_PERMISSIONS, so a caller with an
+    # empty scope is rejected rather than short-circuiting the comparison (#3989).
+    await access.check_permission(caller, Permission.USER_MANAGE, target_org_id=request.proposed_tenant_id)
+    role, allowed_org_id = await _resolve_decider_scope(access, caller)
+
+    if role != AdminRole.PLATFORM_ADMIN:
+        # Class A (new-tenant) requests name an org that does not exist yet.
+        # Creating a brand-new tenant is a platform-admin act, so refuse even
+        # when the slug happens to match the caller's own org id.
+        if not await _is_existing_org(db, request.proposed_tenant_id):
+            raise InvalidScopeError(
+                message="Only a platform administrator can approve a request for a new organization",
+                allowed_scope=f"org:{allowed_org_id}",
+                requested_scope=f"new-org:{request.proposed_tenant_id}",
+            )
+
+    return role, allowed_org_id
+
+
 @router.post("/admin/access-requests/{request_id}/approve")
 async def approve_access_request(
     request_id: str,
     body: AdminDecisionPayload | None = None,
-    admin: TokenContext = Depends(require_admin),
+    admin: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Approve a pending access request (admin only)."""
+    """Approve a pending access request.
+
+    Platform admin: unchanged — ``approve_request`` creates the new tenant for a
+    class-A request (or heals an already-existing one idempotently).
+
+    Org admin: class-B only, own org only, via ``attach_approved_member``.
+    ``approve_request`` is NOT used here — its existing-org branch hardcodes
+    ``role="org_admin"``, which would turn every member approval into a silent
+    co-admin grant. The granted role is derived server-side from GitHub org
+    membership instead (admin → org_admin, otherwise member).
+    """
     request = await db.get(TenantAccessRequest, request_id)
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
 
+    role, _ = await _authorize_decision(access, db, admin, request)
+
     # Idempotent: already approved
     if request.status == "approved":
         return {"status": "approved", "tenant_id": request.proposed_tenant_id}
+
+    if role != AdminRole.PLATFORM_ADMIN:
+        tenant_id = await _approve_as_org_admin(access, db, admin, request)
+        _log_decision(admin, role, request, "approve")
+        return {"status": "approved", "tenant_id": tenant_id}
 
     from src.admin.identity.identity_index_writer import IdentityIndexWriter
 
@@ -904,20 +1008,75 @@ async def approve_access_request(
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
+    _log_decision(admin, role, request, "approve")
     return {"status": "approved", "tenant_id": tenant_id}
+
+
+async def _approve_as_org_admin(
+    access: AccessControl,
+    db: AsyncSession,
+    caller: TokenContext,
+    request: TenantAccessRequest,
+) -> str:
+    """Approve a class-B request as an org admin, granting a derived role.
+
+    The role is derived from the requester's GitHub org membership — the SAME
+    function the auto-approve path uses — so an approval grants exactly what an
+    auto-approved join would have. ``require_assignable_role`` is then called as
+    defence-in-depth: it blocks platform-level role strings, but note it is NOT
+    what prevents an org_admin grant (ranks are equal there, and ``>`` does not
+    fire on equal ranks) — the derivation above is that control.
+    """
+    org = await db.get(Organization, request.proposed_tenant_id)
+    install_id = int(org.github_installation_ids[0]) if org and org.github_installation_ids else 0
+    granted_role = await _determine_role_for_matched_user(request.target_login, org.name if org else "", install_id)
+
+    await access.require_assignable_role(caller, granted_role, target_org_id=request.proposed_tenant_id)
+
+    try:
+        return await attach_approved_member(
+            db,
+            request,
+            granted_role=granted_role,
+            decided_by=caller.user_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+def _log_decision(caller: TokenContext, role: AdminRole, request: TenantAccessRequest, decision: str) -> None:
+    """Emit a greppable audit line for an access-request decision.
+
+    ``decided_by`` stores only the Cognito sub; with two classes of approver now
+    able to act, "who decided this and under what authority" must be answerable
+    from logs alone.
+    """
+    logger.info(
+        "access_request_decided actor=%s actor_role=%s request_id=%s tenant=%s decision=%s",
+        caller.user_id,
+        role.value,
+        request.id,
+        request.proposed_tenant_id,
+        decision,
+    )
 
 
 @router.post("/admin/access-requests/{request_id}/deny")
 async def deny_access_request(
     request_id: str,
     body: AdminDecisionPayload | None = None,
-    admin: TokenContext = Depends(require_admin),
+    admin: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Deny a pending access request and delete the user's Cognito account."""
     request = await db.get(TenantAccessRequest, request_id)
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
+
+    # Deny is DESTRUCTIVE (admin_delete_user below). Authorize first, before the
+    # Cognito client exists, so a scope failure cannot delete another org's user.
+    role, _ = await _authorize_decision(access, db, admin, request)
 
     # Get Cognito client for AdminDeleteUser
     cognito_client = None
@@ -945,4 +1104,5 @@ async def deny_access_request(
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
+    _log_decision(admin, role, request, "deny")
     return {"status": "denied", "request_id": request_id}

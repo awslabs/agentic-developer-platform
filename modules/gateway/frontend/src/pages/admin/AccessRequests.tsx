@@ -6,6 +6,25 @@ import {
   type AccessRequestItem,
 } from '@/services/onboarding';
 
+/** Error codes the gateway returns with HTTP 403 (src/admin/exceptions.py).
+ *
+ * Issue #4018: the api client throws the parsed body (`{error, message}`) and
+ * drops the HTTP status, so a permission failure has to be recognised by its
+ * error code rather than by `status === 403`. Anything else is a real fault
+ * (5xx, network) and gets the generic retry message.
+ */
+const FORBIDDEN_ERROR_CODES = new Set(['access_denied', 'invalid_scope']);
+
+function isForbidden(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'error' in err &&
+    typeof (err as { error: unknown }).error === 'string' &&
+    FORBIDDEN_ERROR_CODES.has((err as { error: string }).error)
+  );
+}
+
 export default function AccessRequests() {
   const [requests, setRequests] = useState<AccessRequestItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -23,8 +42,12 @@ export default function AccessRequests() {
       // Sort by created_at descending (newest first)
       items.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
       setRequests(items);
-    } catch {
-      setError('Failed to load access requests.');
+    } catch (err) {
+      setError(
+        isForbidden(err)
+          ? 'You do not have permission to review access requests. Ask an administrator of your organization if you need access.'
+          : 'Failed to load access requests.'
+      );
     } finally {
       setIsLoading(false);
     }
@@ -47,8 +70,12 @@ export default function AccessRequests() {
       await approveAccessRequest(item.id);
       setRequests((prev) => prev.filter((r) => r.id !== item.id));
       setToast(`Approved ${item.target_login} into tenant ${item.proposed_tenant_id}`);
-    } catch {
-      setError(`Failed to approve request for ${item.target_login}.`);
+    } catch (err) {
+      setError(
+        isForbidden(err)
+          ? `You do not have permission to approve the request for ${item.target_login}. Requests for a new organization can only be approved by a platform administrator.`
+          : `Failed to approve request for ${item.target_login}.`
+      );
     } finally {
       setActionInProgress(null);
     }
@@ -64,8 +91,12 @@ export default function AccessRequests() {
       await denyAccessRequest(item.id, denyNote || undefined);
       setRequests((prev) => prev.filter((r) => r.id !== item.id));
       setToast(`Denied ${item.target_login}`);
-    } catch {
-      setError(`Failed to deny request for ${item.target_login}.`);
+    } catch (err) {
+      setError(
+        isForbidden(err)
+          ? `You do not have permission to deny the request for ${item.target_login}. Requests for a new organization can only be decided by a platform administrator.`
+          : `Failed to deny request for ${item.target_login}.`
+      );
     } finally {
       setActionInProgress(null);
       setDenyModalId(null);

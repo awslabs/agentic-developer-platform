@@ -17,9 +17,15 @@ vi.mock('@/services/auth', () => ({
   getAccessToken: () => null,
 }));
 
-// Mock usePermissions — return a basic authenticated user (no admin roles)
+// Mock usePermissions — defaults to a basic authenticated user (no admin roles).
+// Individual tests override the role predicates via mockPermissions.
+const mockUsePermissions = vi.fn();
 vi.mock('@/hooks/usePermissions', () => ({
-  usePermissions: () => ({
+  usePermissions: () => mockUsePermissions(),
+}));
+
+function permissions(overrides: Record<string, unknown> = {}) {
+  return {
     isPlatformAdmin: () => false,
     isOrgAdmin: () => false,
     isDeptAdmin: () => false,
@@ -30,8 +36,9 @@ vi.mock('@/hooks/usePermissions', () => ({
     canViewPool: () => false,
     canViewBudgets: () => false,
     canViewRateLimits: () => false,
-  }),
-}));
+    ...overrides,
+  };
+}
 
 // Mock useFeatures — default: all features enabled, gitlab disabled (fail-closed)
 const mockUseFeatures = vi.fn();
@@ -50,6 +57,7 @@ function renderNavigation() {
 describe('Navigation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUsePermissions.mockReturnValue(permissions());
     // Default: all core features enabled, gitlab disabled (fail-closed)
     mockUseFeatures.mockReturnValue({
       chat: true,
@@ -144,6 +152,53 @@ describe('Navigation', () => {
       const gitlabLink = screen.getByText('GitLab').closest('a');
       expect(gitlabLink).not.toBeNull();
       expect(gitlabLink!.textContent).toContain('🦊');
+    });
+  });
+
+  // Issue #4018: org admins review the join-my-org requests for their own
+  // tenant, so the link is no longer platform-admin-only. This is a COSMETIC
+  // gate (it reads the `custom:role` claim); the server enforces the real
+  // scope, so these tests pin visibility only, never authority.
+  describe('Access Requests link (org-scoped, Issue #4018)', () => {
+    it('renders for a platform admin', () => {
+      mockUsePermissions.mockReturnValue(permissions({ isPlatformAdmin: () => true }));
+
+      renderNavigation();
+
+      expect(screen.getByText('Access Requests')).toBeInTheDocument();
+    });
+
+    it('renders for an org admin', () => {
+      mockUsePermissions.mockReturnValue(permissions({ isOrgAdmin: () => true }));
+
+      renderNavigation();
+
+      expect(screen.getByText('Access Requests')).toBeInTheDocument();
+    });
+
+    it('does NOT render for a dept admin', () => {
+      mockUsePermissions.mockReturnValue(permissions({ isDeptAdmin: () => true }));
+
+      renderNavigation();
+
+      expect(screen.queryByText('Access Requests')).not.toBeInTheDocument();
+    });
+
+    it('does NOT render for a plain member', () => {
+      renderNavigation();
+
+      expect(screen.queryByText('Access Requests')).not.toBeInTheDocument();
+    });
+
+    it('points at /admin/access-requests', () => {
+      mockUsePermissions.mockReturnValue(permissions({ isOrgAdmin: () => true }));
+
+      renderNavigation();
+
+      expect(screen.getByText('Access Requests').closest('a')).toHaveAttribute(
+        'href',
+        '/admin/access-requests'
+      );
     });
   });
 });

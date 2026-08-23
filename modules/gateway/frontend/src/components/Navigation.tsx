@@ -113,8 +113,16 @@ export function Navigation() {
     navItems.push({ to: '/admin/system', label: 'System Health', icon: '🖥️' });
   }
 
-  // Access Requests page for platform admins (Issue #545)
-  if (isPlatformAdmin()) {
+  // Access Requests page (Issue #545; org-scoped in #4018)
+  //
+  // Org admins see the link too: they can review the join-my-org requests
+  // targeting their own tenant. This check is COSMETIC only — it reads the
+  // `custom:role` ID-token claim, which is a display hint and confers no
+  // authority. The real control is server-side: every /admin/access-requests
+  // route gates on Permission.USER_MANAGE resolved from tenant_memberships,
+  // and new-tenant (class-A) requests stay platform-admin-only there. A member
+  // who forges the claim to reveal this link still gets 403 from the API.
+  if (isPlatformAdmin() || isOrgAdmin()) {
     navItems.push({ to: '/admin/access-requests', label: 'Access Requests', icon: '📋' });
   }
 

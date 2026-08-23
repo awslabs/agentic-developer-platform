@@ -93,9 +93,16 @@ async def app_client(db_engine, new_user_context):
 
 @pytest.fixture
 async def admin_app_client(db_engine, admin_context):
-    """Create test client with admin auth override."""
+    """Create test client with admin auth override.
+
+    Issue #4018: the access-request routes no longer depend on ``require_admin``
+    (they resolve authority via AccessControl), so overriding it here would be a
+    silent no-op. ``admin_context`` carries ``is_admin=True``, which resolves to
+    PLATFORM_ADMIN from the token claim — the platform-admin path these tests
+    exercise.
+    """
     from src.app import create_app
-    from src.auth.dependencies import get_current_user, require_admin
+    from src.auth.dependencies import get_current_user
     from src.shared.database import get_db
 
     app = create_app()
@@ -110,7 +117,6 @@ async def admin_app_client(db_engine, admin_context):
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_current_user] = override_auth
-    app.dependency_overrides[require_admin] = override_auth
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

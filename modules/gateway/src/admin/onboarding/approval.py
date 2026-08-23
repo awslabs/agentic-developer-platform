@@ -370,6 +370,130 @@ async def approve_request(
     return tenant_id
 
 
+async def attach_approved_member(
+    db: AsyncSession,
+    request: TenantAccessRequest,
+    *,
+    granted_role: str,
+    decided_by: str,
+    sync_cognito_claims: bool = True,
+) -> str:
+    """Approve a *join-existing-org* access request, granting ``granted_role``.
+
+    Issue #4018: this is the executor for the request class an org admin may
+    decide — one whose ``proposed_tenant_id`` names an org that ALREADY exists.
+    ``approve_request`` is deliberately NOT reused for it: that function's
+    ``existing_org is not None`` branch hardcodes ``role="org_admin"``, so
+    routing a member-join approval through it silently promotes the requester to
+    co-admin of the org (and syncs ``custom:role=org_admin`` onto their Cognito
+    user). The role is a *parameter* here precisely so the caller — which knows
+    whether the requester is a GitHub org admin — decides it, and so the
+    hardcoded grant cannot be reintroduced by accident.
+
+    Creates, in ONE transaction (mirroring the auto-approve tail of
+    ``_attach_user_to_existing_tenant``, which now delegates here): the ``users``
+    row, both ``user_identities`` rows, the ``tenant_memberships`` row carrying
+    ``granted_role``, and the request's approved status.
+
+    Args:
+        db: Session owning the transaction.
+        request: The pending request; ``proposed_tenant_id`` must be an existing org.
+        granted_role: Role to write onto the user + membership. Normalized for
+            storage by ``upsert_tenant_membership``.
+        decided_by: Audit value for ``tenant_access_requests.decided_by``.
+        sync_cognito_claims: Write role/org/team onto the Cognito user after the
+            commit. True for admin decisions (the approved member must be able to
+            log in with a correct token). The login-time auto-match path passes
+            False — it has never synced claims and keeping a Cognito round-trip
+            off the sign-in path preserves that.
+
+    Returns:
+        The tenant_id the user was attached to.
+
+    Raises:
+        ValueError: The request is not pending, the org does not exist, or the
+            org has no team to attach the user to. Raised before any row is
+            added, so a failure leaves nothing partially written.
+    """
+    if request.status != "pending":
+        raise ValueError(f"Request {request.id} is not pending (status={request.status})")
+
+    tenant_id = request.proposed_tenant_id
+    org = await db.get(Organization, tenant_id)
+    if org is None:
+        # Caller is expected to have scope-checked against an existing org, so
+        # this is a race or a mis-routed new-tenant request, not a normal path.
+        raise ValueError(f"Organization {tenant_id} does not exist; use approve_request to create a new tenant")
+
+    team = (await db.execute(select(Team).where(Team.org_id == tenant_id))).scalars().first()
+    if team is None:
+        raise ValueError(f"Organization {tenant_id} has no team to attach the user to")
+
+    now = utcnow()
+    user_id = new_uuid()
+    db.add(
+        User(
+            id=user_id,
+            org_id=tenant_id,
+            team_id=team.id,
+            email=f"{request.target_login}@github.onboard",
+            name=request.target_login,
+            cognito_sub=request.cognito_sub,
+            role=granted_role,
+        )
+    )
+
+    for provider, provider_user_id in (
+        ("cognito", request.cognito_sub),
+        ("github", request.provider_user_id),
+    ):
+        db.add(
+            UserIdentity(
+                id=new_uuid(),
+                user_id=user_id,
+                org_id=tenant_id,
+                team_id=team.id,
+                provider=provider,
+                provider_user_id=provider_user_id,
+                provider_username=request.target_login,
+                verification_method="oauth",
+                verified_at=now,
+            )
+        )
+
+    # Issue #4006: the membership lands in the SAME transaction as the users row —
+    # tenant_memberships.role is the authority the read side resolves org role
+    # from (#3987/#3998), so a users row without it is an authority-less principal.
+    await upsert_tenant_membership(
+        db,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        role=granted_role,
+        joined_via="org_membership",
+        github_org_id=org.name,
+    )
+
+    request.status = "approved"
+    request.decided_by = decided_by
+    request.decided_at = now
+
+    await db.commit()
+
+    # Post-commit, best-effort: the pre-token-generation Lambda reads Cognito
+    # attributes rather than Postgres, so without this the approved member logs
+    # in with an empty role/org and the SPA nav + dashboard break.
+    if sync_cognito_claims:
+        _sync_cognito_role_claims(
+            cognito_sub=request.cognito_sub,
+            org_id=tenant_id,
+            role=granted_role,
+            team_id=team.id,
+            department_id=team.department_id or "",
+        )
+
+    return tenant_id
+
+
 async def deny_request(
     db: AsyncSession,
     request: TenantAccessRequest,
