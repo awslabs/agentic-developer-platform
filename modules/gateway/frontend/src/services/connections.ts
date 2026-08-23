@@ -44,6 +44,39 @@ export interface PlatformVerification {
   login_credentials?: boolean | null;
   /** Whether the webhook secret is populated. false = every delivery 401s. */
   webhook_secret?: boolean | null;
+
+  // Issue #4017: GitHub App configuration drift. Same tri-state convention —
+  // null = could not determine, renders amber, NEVER red.
+
+  /** Whether the App's webhook URL on GitHub matches this deployment. false = no agent ever triggers. */
+  app_webhook_url_matches?: boolean | null;
+  /** Whether the App still grants every required permission. false = agent operations 403. */
+  app_permissions_match?: boolean | null;
+  /** Whether the App is still subscribed to every required event. false = triggers never fire. */
+  app_events_match?: boolean | null;
+  /**
+   * The callback URL this deployment sends as redirect_uri. INFORMATIONAL ONLY —
+   * GitHub exposes no API to read an App's callback URL back, so this can never
+   * be diffed and must never be rendered as a pass/fail check.
+   */
+  expected_callback_url?: string | null;
+  /** Deep-link to the App's OAuth settings page, for comparing the callback URL by eye. */
+  app_oauth_settings_url?: string | null;
+  /** Human-readable detail for any App-config check that did not pass. */
+  app_config_warnings?: string[];
+}
+
+/** Issue #4017: response from POST /admin/connections/github/app/revalidate. */
+export interface RevalidateAppResponse {
+  checked: boolean;
+  app_webhook_url_matches?: boolean | null;
+  app_permissions_match?: boolean | null;
+  app_events_match?: boolean | null;
+  expected_callback_url?: string | null;
+  app_oauth_settings_url?: string | null;
+  warnings: string[];
+  expected_config_recorded: boolean;
+  message: string;
 }
 
 export interface GitHubConnectionItem {
@@ -198,6 +231,17 @@ export async function startGitHubAppRegistration(
   return apiClient.post<RegisterAppStartResponse>(
     '/admin/connections/github/app/register-start',
     request,
+  );
+}
+
+/**
+ * Re-check the registered App's live configuration on GitHub (Issue #4017).
+ * Platform admin only. Read-only against GitHub — never touches credentials.
+ */
+export async function revalidateGitHubAppConfig(): Promise<RevalidateAppResponse> {
+  return apiClient.post<RevalidateAppResponse>(
+    '/admin/connections/github/app/revalidate',
+    {},
   );
 }
 

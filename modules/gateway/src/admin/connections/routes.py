@@ -14,6 +14,7 @@ Endpoints:
     GET    /admin/connections/github/app/register-callback  (platform_admin via state nonce)
     POST   /admin/connections/github/app/register-manual   (platform_admin only)
     GET    /admin/connections/github/app/status             (platform_admin only)
+    POST   /admin/connections/github/app/revalidate         (platform_admin only)
     POST   /admin/connections/github/app/rotate-key         (platform_admin only)
     POST   /admin/connections/github/app/disconnect         (platform_admin only)
 """
@@ -51,6 +52,7 @@ from .schemas import (
     RegisterAppStartResponse,
     RegisterManualRequest,
     RegisterManualResponse,
+    RevalidateAppResponse,
     RotateKeyResponse,
     SwitchTenantRequest,
     SwitchTenantResponse,
@@ -65,6 +67,7 @@ from .service import (
     register_app_callback,
     register_app_manual,
     register_app_start,
+    revalidate_app_config,
     rotate_app_key,
 )
 
@@ -638,6 +641,37 @@ async def github_app_status(
     except Exception as exc:
         logger.error("app-status failed for user=%s: %s", current_user.user_id, exc)
         raise HTTPException(status_code=500, detail="Failed to retrieve App status") from exc
+
+
+@router.post("/github/app/revalidate", response_model=RevalidateAppResponse)
+async def github_app_revalidate(
+    current_user: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
+) -> RevalidateAppResponse:
+    """Re-check the App's live configuration on GitHub (Issue #4017).
+
+    Platform-admin only. GitHub fires no event when an admin edits App settings,
+    so this is the operator's on-demand "is my App still configured correctly?"
+    action. Read-only against GitHub; the only thing it writes is the
+    expected-config record in the App metadata secret — never credentials, never
+    Lambda environment.
+    """
+    try:
+        access.require_platform_admin(current_user)
+    except AccessDeniedError:
+        raise HTTPException(
+            status_code=403,
+            detail="Platform administrator privileges required",
+        )
+
+    try:
+        result = await revalidate_app_config(actor=current_user.user_id)
+        return RevalidateAppResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("app-revalidate failed for user=%s: %s", current_user.user_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to re-validate App configuration") from exc
 
 
 @router.post("/github/app/rotate-key", response_model=RotateKeyResponse)

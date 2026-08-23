@@ -25,6 +25,7 @@ import {
   getGitHubAppStatus,
   listConnections,
   registerManualGitHubApp,
+  revalidateGitHubAppConfig,
   rotateGitHubAppKey,
   startGitHubAppRegistration,
   startGitHubInstall,
@@ -242,6 +243,42 @@ export default function Connections() {
   };
 
   // -------------------------------------------------------------------------
+  // Re-validate App config handler (Issue #4017)
+  //
+  // Refetches connections afterwards so the verification panel reflects the
+  // result the operator was just shown — the backend clears its caches, but the
+  // page holds its own copy of the last response.
+  // -------------------------------------------------------------------------
+
+  const handleRevalidateApp = async () => {
+    try {
+      const result = await revalidateGitHubAppConfig();
+      const drifted =
+        result.app_webhook_url_matches === false ||
+        result.app_permissions_match === false ||
+        result.app_events_match === false;
+      if (drifted) {
+        toast.error(result.message || "App configuration has drifted.");
+      } else if (!result.checked) {
+        // Not an error: unknown is not the same as broken.
+        toast.info(
+          result.message || "Could not read the App configuration from GitHub.",
+        );
+      } else {
+        toast.success(result.message || "App configuration matches.");
+      }
+      await loadConnections();
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to re-validate App configuration";
+      toast.error(message);
+      throw err;
+    }
+  };
+
+  // -------------------------------------------------------------------------
   // Disconnect app handler (Issue #2596)
   // -------------------------------------------------------------------------
 
@@ -429,6 +466,7 @@ export default function Connections() {
           onSwitchTenant={handleSwitchTenant}
           onRegisterManual={isPlatformAdmin ? handleRegisterManual : undefined}
           platformVerification={platformVerification}
+          onRevalidateApp={isPlatformAdmin ? handleRevalidateApp : undefined}
         />
 
         {/* Future integrations — placeholder tiles */}

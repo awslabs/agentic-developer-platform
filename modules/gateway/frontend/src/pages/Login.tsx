@@ -26,6 +26,20 @@ export default function Login() {
     null
   );
 
+  // Issue #4017: surface the error code the auth broker redirects back with.
+  // redirect_uri_mismatch is the ONLY observable signal that the GitHub App's
+  // callback URL has drifted (GitHub exposes no API to read it), so it gets a
+  // specific, actionable message instead of a generic failure.
+  useEffect(() => {
+    const brokerError = new URLSearchParams(window.location.search).get('error');
+    if (!brokerError) return;
+    setError(
+      brokerError === 'redirect_uri_mismatch'
+        ? 'GitHub rejected the sign-in because the App’s configured callback URL does not match this deployment. A platform administrator can fix this in Settings → Connections (“Re-validate config” shows the expected callback URL).'
+        : `Sign-in failed: ${brokerError}`
+    );
+  }, []);
+
   useEffect(() => {
     let active = true;
     fetchLoginOptions()

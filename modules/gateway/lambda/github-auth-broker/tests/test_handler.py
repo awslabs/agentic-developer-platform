@@ -7,6 +7,8 @@ Issue #520: Lambda broker for GitHub sign-in.
 import hashlib
 import hmac as hmac_module
 import json
+import logging
+import os
 import time
 from unittest.mock import MagicMock, patch
 
@@ -178,6 +180,75 @@ class TestCallbackEndpoint:
         response = handler.handler(event, None)
         assert response["statusCode"] == 302
         assert "error=" in response["headers"]["Location"]
+
+    def test_redirect_uri_mismatch_gets_a_distinct_error_code(self, mock_secrets):
+        """Issue #4017: GitHub exposes no API to read an App's callback URL, so
+        this error path is the ONLY signal that it has drifted. It must be
+        distinguishable from a generic github_error so the login page can tell
+        the operator what actually broke."""
+        import handler
+
+        event = {
+            "rawPath": "/callback",
+            "requestContext": {"http": {"method": "GET"}},
+            "queryStringParameters": {
+                "error": "redirect_uri_mismatch",
+                "error_description": "The redirect_uri MUST match the registered callback URL",
+            },
+            "cookies": [],
+        }
+        response = handler.handler(event, None)
+        assert response["statusCode"] == 302
+        assert "error=redirect_uri_mismatch" in response["headers"]["Location"]
+
+    def test_redirect_uri_mismatch_logs_the_callback_we_sent(self, mock_secrets, caplog):
+        """Without the sent value in the logs, the operator has nothing to compare
+        against the App's settings page."""
+        import handler
+
+        event = {
+            "rawPath": "/callback",
+            "requestContext": {
+                "http": {"method": "GET"},
+                "domainName": "abc123.execute-api.us-east-1.amazonaws.com",
+                "stage": "dev",
+            },
+            "queryStringParameters": {"error": "redirect_uri_mismatch"},
+            "cookies": [],
+        }
+        # Clear the env override so the runtime-derived value (#2708) is logged.
+        previous = handler.CALLBACK_URL
+        handler.CALLBACK_URL = ""
+        try:
+            with caplog.at_level(logging.ERROR):
+                handler.handler(event, None)
+        finally:
+            handler.CALLBACK_URL = previous
+
+        logged = "\n".join(r.getMessage() for r in caplog.records)
+        assert "oauth_callback_drift" in logged
+        assert "https://abc123.execute-api.us-east-1.amazonaws.com/dev/auth/github/callback" in logged
+
+    def test_redirect_uri_mismatch_does_not_pin_the_callback_url(self, mock_secrets):
+        """Issue #4017 / #2708: writing the derived value into CALLBACK_URL would
+        reverse the runtime derivation and pin a value that goes stale silently."""
+        import handler
+
+        before = handler.CALLBACK_URL
+        event = {
+            "rawPath": "/callback",
+            "requestContext": {
+                "http": {"method": "GET"},
+                "domainName": "abc123.execute-api.us-east-1.amazonaws.com",
+                "stage": "dev",
+            },
+            "queryStringParameters": {"error": "redirect_uri_mismatch"},
+            "cookies": [],
+        }
+        handler.handler(event, None)
+
+        assert handler.CALLBACK_URL == before
+        assert "CALLBACK_URL" not in os.environ or os.environ.get("CALLBACK_URL") == before
 
     @patch("handler.check_org_membership", return_value="allowed")
     @patch("handler.exchange_code_for_token")

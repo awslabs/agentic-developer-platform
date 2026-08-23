@@ -335,6 +335,25 @@ def _handle_callback(event: dict) -> dict:
 
     if error:
         error_desc = params.get("error_description", error)
+
+        # Issue #4017: redirect_uri_mismatch is the ONLY signal that the App's
+        # callback URL has drifted. GitHub exposes no API to read an App's
+        # callback URL back, so this error path is the sole place a mismatch
+        # becomes observable — every other check would be guesswork.
+        #
+        # We log the callback we actually sent so an operator can compare it
+        # against the App's settings page. We deliberately do NOT write the
+        # derived value into CALLBACK_URL or any other env: that would reverse
+        # #2708's runtime derivation and pin a value that goes stale silently.
+        if error == "redirect_uri_mismatch":
+            logger.error(
+                "event=oauth_callback_drift error=redirect_uri_mismatch sent_redirect_uri=%s detail=%s "
+                "remediation=update the GitHub App's Callback URL to match sent_redirect_uri",
+                _derive_callback_url(event) or "<unresolved>",
+                error_desc,
+            )
+            return _redirect_with_error("redirect_uri_mismatch")
+
         logger.error("GitHub returned error: %s", error_desc)
         return _redirect_with_error(f"github_error: {error_desc}")
 

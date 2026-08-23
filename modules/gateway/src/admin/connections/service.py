@@ -19,6 +19,7 @@ import logging
 import os
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -72,6 +73,37 @@ _LOGIN_ENABLED_TTL_SECONDS = 60
 def _is_placeholder(value: str) -> bool:
     """Return True if the value is the deploy-time placeholder, not a real credential."""
     return value.strip() == _PLACEHOLDER_SENTINEL
+
+
+# ---------------------------------------------------------------------------
+# Issue #4017: the deployment's expected GitHub App configuration.
+#
+# SINGLE SOURCE OF TRUTH. These were previously duplicated between
+# _build_app_manifest (what we ASK GitHub for) and register_app_manual's inline
+# validator (what we CHECK GitHub has) — plus a third copy in
+# register-github-app.sh which even carries a "mirrored from _build_app_manifest()"
+# comment. A drift checker built on a second copy can disagree with the manifest,
+# which would report drift on an App that is exactly what we asked for.
+#
+# The shell script's copy is out of Python's reach; these two are now unified.
+# ---------------------------------------------------------------------------
+
+_EXPECTED_APP_PERMISSIONS: dict[str, str] = {
+    "contents": "write",
+    "issues": "write",
+    "pull_requests": "write",
+    "checks": "write",
+    "metadata": "read",
+}
+
+_EXPECTED_APP_EVENTS: tuple[str, ...] = (
+    "issues",
+    "issue_comment",
+    "pull_request",
+    "pull_request_review",
+    "pull_request_review_comment",
+    "label",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +211,10 @@ def _invalidate_verification_cache() -> None:
     _tenant_secret_cache.clear()
     _identity_row_cache.clear()
     _platform_verification_cache = None
+    # Issue #4017: the App-config drift read hangs off the same compute path, so
+    # it must clear together with the rest — otherwise "Re-validate" appears to
+    # do nothing for up to its (longer) TTL.
+    _invalidate_app_config_drift_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -1479,9 +1515,598 @@ async def _compute_platform_verification() -> PlatformVerification:
         logger.info("verification: platform checks failed entirely: %s", exc)
         login_credentials, webhook_secret = None, None
 
-    result = PlatformVerification(login_credentials=login_credentials, webhook_secret=webhook_secret)
+    # Issue #4017: App-config drift rides this same compute path, so it inherits
+    # the admin gating, the fail-soft contract, and the single invalidation hook.
+    # It keeps its own longer minimum interval (GitHub is rate-limited); a cache
+    # hit there makes this effectively free.
+    try:
+        drift = await _compute_app_config_drift()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("verification: App-config drift checks unavailable: %s", exc)
+        drift = {}
+
+    result = PlatformVerification(
+        login_credentials=login_credentials,
+        webhook_secret=webhook_secret,
+        app_webhook_url_matches=drift.get("app_webhook_url_matches"),
+        app_permissions_match=drift.get("app_permissions_match"),
+        app_events_match=drift.get("app_events_match"),
+        expected_callback_url=drift.get("expected_callback_url"),
+        app_oauth_settings_url=drift.get("app_oauth_settings_url"),
+        app_config_warnings=drift.get("app_config_warnings") or [],
+    )
     _platform_verification_cache = (now + _VERIFICATION_TTL_SECONDS, result)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Issue #4017: GitHub App configuration drift.
+#
+# The App's settings on GitHub can be edited by any admin at any time, and no
+# webhook event fires when they are. Three of those settings are readable back
+# and therefore diffable; one — the OAuth callback URL — is NOT.
+#
+# WHAT IS DIFFABLE:
+#   webhook URL   → GET /app/hook/config   (NOT on GET /app)
+#   permissions   → GET /app
+#   events        → GET /app
+#
+# WHAT IS NOT, AND WHY IT IS HANDLED DIFFERENTLY:
+#   The user-authorization callback URL is write-only at manifest creation and
+#   thereafter UI-only. ``callback_urls`` appears nowhere in GitHub's REST API,
+#   and ``external_url`` on GET /app is the App's *Homepage* URL — diffing it
+#   against the broker callback would report drift on every healthy deployment.
+#   So the callback is REPORTED (expected value + deep-link for eyeball
+#   comparison), never diffed, and real mismatches are detected at login time
+#   from GitHub's ``redirect_uri_mismatch`` error (see the broker handler).
+#
+# Tri-state throughout, matching #4016: True = verified matching,
+# False = verified drifted, None = could not determine. A GitHub API failure or
+# an unresolvable expected value is None, NEVER False — a red "your App is
+# misconfigured" on an App nobody touched sends operators to fix a non-problem.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AppConfigCheck:
+    """Structured result of comparing the App's GitHub config to what we expect.
+
+    Replaces the prose-only ``warnings: list[str]`` that ``register_app_manual``
+    used to emit inline. ``warnings`` is still produced (unchanged wire contract
+    for RegisterManualResponse) but is now rendered FROM the structured fields
+    rather than being the only output.
+    """
+
+    reachable: bool = False
+    webhook_url_matches: bool | None = None
+    permissions_match: bool | None = None
+    events_match: bool | None = None
+    app_slug: str = ""
+    app_name: str = ""
+    actual_webhook_url: str = ""
+    actual_permissions: dict[str, str] = field(default_factory=dict)
+    actual_events: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def _read_ssm_string(param_name: str) -> str:
+    """Read an SSM parameter, returning "" unless it yields a real string.
+
+    Issue #4017: the ``isinstance(str)`` guard is load-bearing, not defensive
+    noise. These values get stored into a JSON payload, so a non-string here
+    (a mocked client, an SSM response shape change, a ``StringList``) would
+    raise inside ``json.dumps`` and take down the caller — which for
+    ``_store_app_credentials`` means failing a registration over an
+    unresolvable *optional* hint. Unresolvable reads as "unknown" instead.
+    """
+    try:
+        import boto3
+
+        region = os.environ.get("AWS_REGION", "us-east-1")
+        ssm = boto3.client("ssm", region_name=region)
+        value = ssm.get_parameter(Name=param_name)["Parameter"]["Value"]
+        return value if isinstance(value, str) else ""
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Could not read SSM parameter %s: %s", param_name, exc)
+        return ""
+
+
+def _resolve_expected_webhook_url() -> str:
+    """Resolve where this deployment's GitHub webhooks must be delivered.
+
+    ``WEBHOOK_URL`` env var, else the SSM parameter Terraform writes
+    (``/adp/<env>/webhook-ingress/endpoint``). Returns "" when neither resolves —
+    callers treat that as "unknown", never as drift.
+
+    Issue #4017: extracted from register_app_start / register_app_manual, which
+    each had their own copy of this lookup.
+    """
+    webhook_url = os.environ.get("WEBHOOK_URL", "")
+    if webhook_url:
+        return webhook_url
+
+    return _read_ssm_string(f"/adp/{_get_environment()}/webhook-ingress/endpoint")
+
+
+def _resolve_expected_oauth_callback_url() -> str:
+    """Resolve the OAuth callback URL the broker will send as ``redirect_uri``.
+
+    The broker derives this at runtime from the incoming request context (#2708),
+    so this is a RE-DERIVATION of the same value from the same SSM parameter
+    (``/adp/<env>/gateway/apigw-invoke-url``) that the manifest build uses. It is
+    reported to the operator for comparison against the App's settings page; it
+    is deliberately NOT written anywhere the broker reads, because pinning it
+    would defeat the runtime derivation that keeps it self-healing (#2708).
+
+    Returns "" when SSM cannot supply it.
+    """
+    apigw_url = _read_ssm_string(f"/adp/{_get_environment()}/gateway/apigw-invoke-url")
+    return f"{apigw_url}/auth/github/callback" if apigw_url else ""
+
+
+def _resolve_expected_app_config(*, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build the expected-config record to store in the App ``-meta`` secret.
+
+    Issue #4017: the baseline a later drift check reports against, plus the audit
+    record of what callback URL we told GitHub to use. Contains NO credentials.
+
+    Best-effort by design: a value we cannot resolve right now falls back to the
+    previously recorded one, and failing that is omitted entirely — an absent
+    expected value reads as "unknown" downstream, never as drift. Callers run
+    this inside a thread (it does SSM I/O).
+    """
+    prior = existing or {}
+
+    webhook_url = _resolve_expected_webhook_url() or prior.get("expected_webhook_url", "")
+    callback_url = _resolve_expected_oauth_callback_url() or prior.get("expected_callback_url", "")
+
+    record: dict[str, Any] = {
+        "expected_permissions": dict(_EXPECTED_APP_PERMISSIONS),
+        "expected_events": list(_EXPECTED_APP_EVENTS),
+    }
+    if webhook_url:
+        record["expected_webhook_url"] = webhook_url
+    if callback_url:
+        record["expected_callback_url"] = callback_url
+    return record
+
+
+def diff_app_config(
+    *,
+    app_slug: str = "",
+    app_name: str = "",
+    actual_webhook_url: str = "",
+    actual_permissions: dict[str, str] | None = None,
+    actual_events: list[str] | None = None,
+    expected_webhook_url: str = "",
+    reachable: bool = True,
+) -> AppConfigCheck:
+    """Diff an App's live GitHub config against what this deployment expects.
+
+    Issue #4017: the single comparison implementation, extracted from
+    ``register_app_manual``'s inline validator so registration and read-time
+    drift detection cannot disagree. PURE — no I/O, no writes, no raising.
+
+    The prose in ``warnings`` is byte-identical to what the manual-registration
+    flow emitted before this refactor, so ``RegisterManualResponse.warnings``
+    keeps its wire contract; the structured tri-state fields are the new output.
+
+    Only a comparison of two KNOWN values can be drift. If either side is
+    unresolvable the check is None ("unknown"), never False.
+    """
+    result = AppConfigCheck(
+        reachable=reachable,
+        app_slug=app_slug,
+        app_name=app_name,
+        actual_webhook_url=actual_webhook_url,
+        actual_permissions=actual_permissions or {},
+        actual_events=list(actual_events or []),
+    )
+
+    if not reachable:
+        return result
+
+    # --- webhook URL (GET /app/hook/config) --------------------------------
+    if expected_webhook_url and actual_webhook_url:
+        result.webhook_url_matches = actual_webhook_url == expected_webhook_url
+        if not result.webhook_url_matches:
+            result.warnings.append(
+                f"Webhook URL mismatch: App has '{actual_webhook_url}', "
+                f"deployment expects '{expected_webhook_url}'. "
+                "Update the App's webhook URL in GitHub Settings to receive events."
+            )
+    elif expected_webhook_url:
+        # Expected side known, actual side not → unknown, with a hint.
+        result.warnings.append(f"Could not verify webhook URL from GitHub API response. Ensure the App's webhook points to: {expected_webhook_url}")
+
+    # --- permissions (GET /app) --------------------------------------------
+    missing_perms: list[str] = []
+    for perm, level in _EXPECTED_APP_PERMISSIONS.items():
+        actual = result.actual_permissions.get(perm, "")
+        if not actual:
+            missing_perms.append(f"{perm}: {level}")
+        elif level == "write" and actual == "read":
+            missing_perms.append(f"{perm}: needs 'write', has 'read'")
+    result.permissions_match = not missing_perms
+    if missing_perms:
+        result.warnings.append("Missing or insufficient permissions: " + ", ".join(missing_perms) + ". Update in GitHub App Settings → Permissions.")
+
+    # --- events (GET /app) -------------------------------------------------
+    missing_events = set(_EXPECTED_APP_EVENTS) - set(result.actual_events)
+    result.events_match = not missing_events
+    if missing_events:
+        result.warnings.append(
+            "Missing event subscriptions: " + ", ".join(sorted(missing_events)) + ". Enable in GitHub App Settings → Subscribe to events."
+        )
+
+    return result
+
+
+async def check_app_config(
+    *,
+    app_id: str,
+    pem: str,
+    expected_webhook_url: str = "",
+) -> AppConfigCheck:
+    """Read the App's live config from GitHub and diff the readable fields.
+
+    Issue #4017: two App-JWT calls — ``GET /app`` (permissions, events, slug) and
+    ``GET /app/hook/config`` (the webhook URL, which ``GET /app`` does not
+    include) — then ``diff_app_config``.
+
+    READ-ONLY: writes nothing to GitHub or to our own storage. NEVER raises — an
+    unreachable GitHub yields ``reachable=False`` with all-None checks, because
+    this decorates a status surface and must not be able to break it. That is the
+    opposite contract to ``register_app_manual``, which deliberately fails loudly
+    on the same calls because the operator is waiting on a submit.
+    """
+    from .github_client import GITHUB_API_BASE, _mint_app_jwt
+
+    if not app_id or not pem:
+        return AppConfigCheck()
+
+    try:
+        token = _mint_app_jwt(app_id, pem)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("app-config check: could not mint App JWT: %s", exc)
+        return AppConfigCheck()
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{GITHUB_API_BASE}/app", headers=headers)
+            if resp.status_code != 200:
+                logger.info("app-config check: GET /app returned %d", resp.status_code)
+                return AppConfigCheck()
+
+            data = resp.json() or {}
+
+            # Separate endpoint, separate failure mode: a readable GET /app with
+            # an unreadable hook config leaves the webhook check unknown while
+            # permissions/events stay authoritative.
+            actual_webhook_url = ""
+            try:
+                hook_resp = await client.get(f"{GITHUB_API_BASE}/app/hook/config", headers=headers)
+                if hook_resp.status_code == 200:
+                    actual_webhook_url = (hook_resp.json() or {}).get("url", "") or ""
+            except Exception as hook_exc:  # noqa: BLE001
+                logger.debug("app-config check: could not fetch /app/hook/config: %s", hook_exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("app-config check: could not reach GitHub: %s", exc)
+        return AppConfigCheck()
+
+    return diff_app_config(
+        app_slug=data.get("slug", "") or "",
+        app_name=data.get("name", "") or "",
+        actual_webhook_url=actual_webhook_url,
+        actual_permissions=data.get("permissions", {}) or {},
+        actual_events=data.get("events", []) or [],
+        expected_webhook_url=expected_webhook_url,
+        reachable=True,
+    )
+
+
+# Issue #4017: the App-config drift read is the only check in this module that
+# calls a THIRD-PARTY, RATE-LIMITED API, so it gets a longer minimum interval
+# than the 60s Secrets-Manager/DynamoDB checks around it — two App-JWT calls per
+# pod per interval instead of per minute.
+#
+# It is still ONE gate on ONE read path, reached only from
+# _compute_platform_verification and cleared by the same
+# _invalidate_verification_cache() as every other verification cache. #3453 will
+# consume GET /app on this same path; it must reuse this marker rather than add
+# a second, unsynchronised one.
+_APP_CONFIG_DRIFT_TTL_SECONDS = 900  # 15 minutes
+_app_config_drift_cache: tuple[float, dict[str, Any]] | None = None
+
+
+def _invalidate_app_config_drift_cache() -> None:
+    global _app_config_drift_cache
+    _app_config_drift_cache = None
+
+
+async def _compute_app_config_drift() -> dict[str, Any]:
+    """Compute the App-config drift fields for the platform verification block.
+
+    Returns a dict of PlatformVerification field values. Fail-soft: any failure
+    yields all-None checks (rendered amber, "could not determine"), never False.
+    """
+    global _app_config_drift_cache
+
+    now = time.monotonic()
+    if _app_config_drift_cache is not None and now < _app_config_drift_cache[0]:
+        return _app_config_drift_cache[1]
+
+    result: dict[str, Any] = {
+        "app_webhook_url_matches": None,
+        "app_permissions_match": None,
+        "app_events_match": None,
+        "expected_callback_url": None,
+        "app_oauth_settings_url": None,
+        "app_config_warnings": [],
+    }
+
+    try:
+        app_id, pem = await asyncio.to_thread(_get_github_app_credentials)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("app-config drift: credentials unavailable: %s", exc)
+        app_id, pem = "", ""
+
+    if not app_id or not pem:
+        # No App registered (or creds unreadable) — nothing to diff. Cache the
+        # miss so an unregistered deployment does not retry every request.
+        _app_config_drift_cache = (now + _APP_CONFIG_DRIFT_TTL_SECONDS, result)
+        return result
+
+    stored = await asyncio.to_thread(_read_expected_app_config)
+
+    # Live resolution wins over the value recorded at registration: the recorded
+    # value is an audit record and a fallback, not the truth. If webhook-ingress
+    # was redeployed to a new endpoint, deliveries must go to the NEW one, and
+    # trusting the stored value would report "ok" on a genuinely broken App.
+    expected_webhook_url = await asyncio.to_thread(_resolve_expected_webhook_url)
+    if not expected_webhook_url:
+        expected_webhook_url = stored.get("expected_webhook_url", "") or ""
+
+    check = await check_app_config(app_id=app_id, pem=pem, expected_webhook_url=expected_webhook_url)
+
+    result["app_webhook_url_matches"] = check.webhook_url_matches
+    result["app_permissions_match"] = check.permissions_match
+    result["app_events_match"] = check.events_match
+    result["app_config_warnings"] = check.warnings
+
+    # Callback URL: reported, never diffed (see the section header).
+    expected_callback_url = await asyncio.to_thread(_resolve_expected_oauth_callback_url)
+    if not expected_callback_url:
+        expected_callback_url = stored.get("expected_callback_url", "") or ""
+    result["expected_callback_url"] = expected_callback_url or None
+
+    slug = check.app_slug or stored.get("app_slug", "") or ""
+    if slug:
+        result["app_oauth_settings_url"] = f"https://github.com/settings/apps/{slug}/oauth"
+
+    _app_config_drift_cache = (now + _APP_CONFIG_DRIFT_TTL_SECONDS, result)
+    return result
+
+
+def _read_expected_app_config() -> dict[str, Any]:
+    """Read the expected-config keys recorded in the App ``-meta`` secret.
+
+    Returns {} when the secret is absent, unreadable, or has no expected_* keys —
+    which is the normal state for a deployment registered before #4017. Callers
+    treat missing values as "unknown", never as drift.
+    """
+    import json
+
+    import boto3
+    from botocore.exceptions import ClientError
+
+    env = _get_environment()
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    meta_path = f"adp/{env}/github-app/adp-agent-platform-meta"
+
+    try:
+        sm = boto3.client("secretsmanager", region_name=region)
+        raw = sm.get_secret_value(SecretId=meta_path).get("SecretString", "")
+        if not raw:
+            return {}
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            return {}
+    except (ClientError, json.JSONDecodeError, TypeError) as exc:
+        logger.info("app-config drift: could not read %s: %s", meta_path, exc)
+        return {}
+
+    # Never return the credential-bearing keys to a caller that only needs
+    # expected config.
+    return {
+        "app_slug": parsed.get("app_slug", ""),
+        "expected_callback_url": parsed.get("expected_callback_url", ""),
+        "expected_webhook_url": parsed.get("expected_webhook_url", ""),
+        "expected_permissions": parsed.get("expected_permissions", {}),
+        "expected_events": parsed.get("expected_events", []),
+    }
+
+
+def _record_expected_app_config(*, actor: str) -> bool:
+    """Read-modify-write ONLY the ``expected_*`` keys of the App ``-meta`` secret.
+
+    Issue #4017, review §6 — the repair action's entire write surface. This
+    follows ``github_app_provider._write_back_slug`` and deliberately NOT
+    ``_store_app_credentials``: the latter writes six secrets plus two
+    write-throughs (the webhook-ingress secret and the broker OAuth secret), so
+    calling it from a "re-validate config" button could clobber live credentials
+    with empty strings. Here every pre-existing key is preserved and only the
+    expected-config keys are set.
+
+    NEVER touched by this function: the private key, ``client_id`` /
+    ``client_secret``, ``webhook_secret``, the broker OAuth secret, the
+    webhook-ingress secret, and Lambda environment. In particular the broker's
+    ``CALLBACK_URL`` is not written — that would reverse #2708's runtime
+    derivation and pin a value that goes stale with no self-heal.
+
+    Logs actor, timestamp, and the before/after of each key it changes.
+    Returns True when the record was written. Never raises.
+    """
+    import json
+
+    import boto3
+    from botocore.exceptions import ClientError
+
+    env = _get_environment()
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    meta_path = f"adp/{env}/github-app/adp-agent-platform-meta"
+
+    try:
+        sm = boto3.client("secretsmanager", region_name=region)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("revalidate-app: cannot create Secrets Manager client: %s", exc)
+        return False
+
+    meta: dict[str, Any] = {}
+    try:
+        raw = sm.get_secret_value(SecretId=meta_path).get("SecretString", "")
+        if raw:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                meta = parsed
+    except (ClientError, json.JSONDecodeError, TypeError) as exc:
+        logger.info("revalidate-app: could not read %s (%s); nothing to update", meta_path, exc)
+        return False
+
+    if not meta:
+        # No App metadata to attach an expected-config record to. Creating the
+        # secret here would invent App state the registration flow owns.
+        logger.info("revalidate-app: no App metadata at %s; skipping expected-config write", meta_path)
+        return False
+
+    expected_config = _resolve_expected_app_config(existing=meta)
+
+    changes: list[str] = []
+    for key, new_value in expected_config.items():
+        old_value = meta.get(key)
+        if old_value != new_value:
+            changes.append(f"{key}: {old_value!r} -> {new_value!r}")
+
+    if not changes:
+        logger.info(
+            "event=app_config_expected_record actor=%s timestamp=%s result=unchanged",
+            actor,
+            datetime.now(UTC).isoformat(),
+        )
+        return True
+
+    meta.update(expected_config)
+    try:
+        sm.put_secret_value(SecretId=meta_path, SecretString=json.dumps(meta))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("revalidate-app: could not write expected config to %s: %s", meta_path, exc)
+        return False
+
+    # Safe to log: expected_* keys hold URLs, permission names and event names —
+    # no credentials. Credential keys are never in `changes` because
+    # _resolve_expected_app_config never emits them.
+    logger.info(
+        "event=app_config_expected_record actor=%s timestamp=%s changed=[%s]",
+        actor,
+        datetime.now(UTC).isoformat(),
+        "; ".join(changes),
+    )
+    return True
+
+
+async def revalidate_app_config(*, actor: str) -> dict[str, Any]:
+    """Re-check the registered App's configuration against GitHub, on demand.
+
+    Issue #4017: the explicit re-sync/repair action behind
+    ``POST /github/app/revalidate``. GitHub fires no event when an admin edits
+    App settings, so without this the only signal is the next failure.
+
+    Read-only against GitHub. The only write is the expected-config record via
+    ``_record_expected_app_config`` (see its docstring for the constraints).
+    Bypasses the drift throttle deliberately — it is an operator-initiated,
+    admin-gated action, and a button that returned stale cached results would be
+    indistinguishable from a broken one. It clears the caches afterwards so the
+    settings page immediately agrees with what the operator just saw.
+    """
+    app_id, private_key = await asyncio.to_thread(_get_github_app_credentials)
+    if not app_id or not private_key:
+        return {
+            "checked": False,
+            "warnings": ["No GitHub App is registered for this deployment, so there is no configuration to validate."],
+            "expected_config_recorded": False,
+            "message": "No GitHub App registered.",
+        }
+
+    pem = _normalize_pem(private_key)
+    stored = await asyncio.to_thread(_read_expected_app_config)
+
+    # Live resolution wins; the stored value is a fallback (see
+    # _compute_app_config_drift for why that ordering matters).
+    expected_webhook_url = await asyncio.to_thread(_resolve_expected_webhook_url)
+    if not expected_webhook_url:
+        expected_webhook_url = stored.get("expected_webhook_url", "") or ""
+
+    check = await check_app_config(app_id=app_id, pem=pem, expected_webhook_url=expected_webhook_url)
+
+    warnings = list(check.warnings)
+    if not check.reachable:
+        warnings.append(
+            "Could not read the App's configuration from GitHub. The checks below are "
+            "unknown, not failed — retry, or verify the App still exists and its "
+            "credentials are valid."
+        )
+
+    expected_config_recorded = await asyncio.to_thread(_record_expected_app_config, actor=actor)
+
+    expected_callback_url = await asyncio.to_thread(_resolve_expected_oauth_callback_url)
+    if not expected_callback_url:
+        expected_callback_url = stored.get("expected_callback_url", "") or ""
+
+    slug = check.app_slug or stored.get("app_slug", "") or ""
+
+    # The operator just asked for the truth; make sure the next page load shows
+    # it rather than a pre-repair cached verdict.
+    _invalidate_verification_cache()
+
+    drifted = [
+        name
+        for name, state in (("webhook URL", check.webhook_url_matches), ("permissions", check.permissions_match), ("events", check.events_match))
+        if state is False
+    ]
+    if not check.reachable:
+        message = "Could not reach GitHub to validate the App configuration."
+    elif drifted:
+        message = "App configuration has drifted: " + ", ".join(drifted) + "."
+    else:
+        message = "App configuration matches this deployment."
+
+    logger.info(
+        "revalidate-app: actor=%s reachable=%s webhook=%s permissions=%s events=%s recorded=%s",
+        actor,
+        check.reachable,
+        check.webhook_url_matches,
+        check.permissions_match,
+        check.events_match,
+        expected_config_recorded,
+    )
+
+    return {
+        "checked": check.reachable,
+        "app_webhook_url_matches": check.webhook_url_matches,
+        "app_permissions_match": check.permissions_match,
+        "app_events_match": check.events_match,
+        "expected_callback_url": expected_callback_url or None,
+        "app_oauth_settings_url": f"https://github.com/settings/apps/{slug}/oauth" if slug else None,
+        "warnings": warnings,
+        "expected_config_recorded": expected_config_recorded,
+        "message": message,
+    }
 
 
 async def _find_orphaned_installations(
@@ -1995,21 +2620,10 @@ def _build_app_manifest(
         },
         "redirect_url": callback_url,
         "public": public,
-        "default_permissions": {
-            "contents": "write",
-            "issues": "write",
-            "pull_requests": "write",
-            "checks": "write",
-            "metadata": "read",
-        },
-        "default_events": [
-            "issues",
-            "issue_comment",
-            "pull_request",
-            "pull_request_review",
-            "pull_request_review_comment",
-            "label",
-        ],
+        # Issue #4017: read from the shared constants so the manifest we ASK for
+        # and the drift check that later VERIFIES it can never disagree.
+        "default_permissions": dict(_EXPECTED_APP_PERMISSIONS),
+        "default_events": list(_EXPECTED_APP_EVENTS),
     }
 
     # Issue #2607: Enable user-authorization OAuth so the App can perform
@@ -2486,63 +3100,26 @@ async def register_app_manual(
             detail=f"Failed to validate App credentials against GitHub: {exc}",
         ) from exc
 
-    # 3. Non-blocking configuration verification
-    # 3a. Webhook URL check
-    expected_webhook_url = os.environ.get("WEBHOOK_URL", "")
-    if not expected_webhook_url:
-        try:
-            import boto3
-
-            env = _get_environment()
-            region = os.environ.get("AWS_REGION", "us-east-1")
-            ssm = boto3.client("ssm", region_name=region)
-            param = ssm.get_parameter(Name=f"/adp/{env}/webhook-ingress/endpoint")
-            expected_webhook_url = param["Parameter"]["Value"]
-        except Exception:
-            pass
-
-    if expected_webhook_url and app_webhook_url:
-        if app_webhook_url != expected_webhook_url:
-            warnings.append(
-                f"Webhook URL mismatch: App has '{app_webhook_url}', "
-                f"deployment expects '{expected_webhook_url}'. "
-                "Update the App's webhook URL in GitHub Settings to receive events."
-            )
-    elif expected_webhook_url and not app_webhook_url:
-        warnings.append(f"Could not verify webhook URL from GitHub API response. Ensure the App's webhook points to: {expected_webhook_url}")
-
-    # 3b. Permissions check
-    expected_permissions = {
-        "contents": "write",
-        "issues": "write",
-        "pull_requests": "write",
-        "checks": "write",
-        "metadata": "read",
-    }
-    missing_perms = []
-    for perm, level in expected_permissions.items():
-        actual = app_permissions.get(perm, "")
-        if not actual:
-            missing_perms.append(f"{perm}: {level}")
-        elif level == "write" and actual == "read":
-            missing_perms.append(f"{perm}: needs 'write', has 'read'")
-    if missing_perms:
-        warnings.append("Missing or insufficient permissions: " + ", ".join(missing_perms) + ". Update in GitHub App Settings → Permissions.")
-
-    # 3c. Events check
-    expected_events = {
-        "issues",
-        "issue_comment",
-        "pull_request",
-        "pull_request_review",
-        "pull_request_review_comment",
-        "label",
-    }
-    missing_events = expected_events - set(app_events)
-    if missing_events:
-        warnings.append(
-            "Missing event subscriptions: " + ", ".join(sorted(missing_events)) + ". Enable in GitHub App Settings → Subscribe to events."
-        )
+    # 3. Non-blocking configuration verification.
+    #
+    # Issue #4017: the comparison itself now lives in diff_app_config() so that
+    # this flow and the read-time drift check share ONE implementation. A drift
+    # checker built on a second copy of the expected config could report drift on
+    # an App that is exactly what we asked GitHub for.
+    #
+    # We pass the data we already fetched above rather than calling
+    # check_app_config(): that would mint a second JWT and re-issue both GETs,
+    # and its fail-soft contract would swallow the credential errors this flow
+    # must raise.
+    config_check = diff_app_config(
+        app_slug=app_slug,
+        app_name=app_name,
+        actual_webhook_url=app_webhook_url,
+        actual_permissions=app_permissions,
+        actual_events=app_events,
+        expected_webhook_url=_resolve_expected_webhook_url(),
+    )
+    warnings.extend(config_check.warnings)
 
     # 3d. OAuth credentials warning
     if not client_id or not client_secret:
@@ -2645,15 +3222,31 @@ async def _store_app_credentials(
         # client_secret) are empty, merge with existing meta blob rather than
         # overwriting with blanks. This preserves values written by a prior
         # registration or manual setup.
+        #
+        # Issue #4017: this read is now UNCONDITIONAL (it used to be skipped when
+        # all three optional fields were supplied). The expected-config keys added
+        # below must survive a full re-registration, and the merge below is
+        # unchanged — `x or existing_meta.get(x)` only consults the existing blob
+        # when the incoming value is empty, so reading it always cannot alter
+        # #3360's behaviour.
         existing_meta: dict[str, str] = {}
-        if not webhook_secret or not client_id or not client_secret:
-            try:
-                existing_resp = sm.get_secret_value(SecretId=meta_path)
-                existing_raw = existing_resp.get("SecretString", "")
-                if existing_raw:
-                    existing_meta = json.loads(existing_raw)
-            except Exception:
-                pass  # No existing meta or unreadable — proceed with empty
+        try:
+            existing_resp = sm.get_secret_value(SecretId=meta_path)
+            existing_raw = existing_resp.get("SecretString", "")
+            if existing_raw:
+                existing_meta = json.loads(existing_raw)
+        except Exception:
+            pass  # No existing meta or unreadable — proceed with empty
+
+        # Issue #4017: record the configuration we asked GitHub for, so drift can
+        # later be reported against a known baseline and a support engineer can
+        # see what the callback URL was supposed to be. These are NOT credentials
+        # and are read back by the drift check and the status card.
+        #
+        # Resolved best-effort: an unresolvable value is simply not recorded
+        # (absent ⇒ "unknown" downstream, never "drift"). Existing values are
+        # preserved when a re-registration cannot re-resolve them.
+        expected_config = _resolve_expected_app_config(existing=existing_meta)
 
         meta_payload = json.dumps(
             {
@@ -2662,6 +3255,7 @@ async def _store_app_credentials(
                 "client_id": client_id or existing_meta.get("client_id", ""),
                 "client_secret": client_secret or existing_meta.get("client_secret", ""),
                 "webhook_secret": webhook_secret or existing_meta.get("webhook_secret", ""),
+                **expected_config,
             }
         )
 

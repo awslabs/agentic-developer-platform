@@ -102,6 +102,61 @@ class PlatformVerification(BaseModel):
         ),
     )
 
+    # -----------------------------------------------------------------------
+    # GitHub App configuration drift (Issue #4017)
+    #
+    # App settings on GitHub can be edited at any time and no webhook event
+    # fires when they are, so these are diffed at read time. Same tri-state
+    # convention as above: None = could not determine (amber), never red.
+    #
+    # These are deployment-wide by construction — one App, one -meta secret, one
+    # GET /app — so they live on PlatformVerification (admin-gated) rather than
+    # being duplicated onto every ConnectionVerification.
+    # -----------------------------------------------------------------------
+
+    app_webhook_url_matches: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the App's webhook URL on GitHub (GET /app/hook/config) matches "
+            "this deployment's webhook endpoint. False means GitHub is delivering "
+            "events somewhere else, so no agent is ever triggered. None when either "
+            "side could not be resolved."
+        ),
+    )
+    app_permissions_match: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the App still grants every permission the platform requires (GET /app). False means some agent operations will fail with 403."
+        ),
+    )
+    app_events_match: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the App is still subscribed to every event the platform needs (GET /app). False means some triggers silently never fire."
+        ),
+    )
+    expected_callback_url: str | None = Field(
+        default=None,
+        description=(
+            "The OAuth callback URL this deployment sends as redirect_uri. "
+            "INFORMATIONAL ONLY — GitHub exposes no API to read an App's callback "
+            "URL back, so this can never be diffed and must never render as a "
+            "pass/fail check. It is shown for comparison against the App's "
+            "settings page; a genuine mismatch surfaces at login time as "
+            "redirect_uri_mismatch."
+        ),
+    )
+    app_oauth_settings_url: str | None = Field(
+        default=None,
+        description="Deep-link to the App's OAuth settings page on GitHub, for comparing the callback URL by eye.",
+    )
+    app_config_warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Human-readable detail for the App-config checks above — the same prose the manual-registration flow returns in its warnings list."
+        ),
+    )
+
 
 class GitHubConnectionItem(BaseModel):
     """A single GitHub App installation connected to the caller's ADP tenant."""
@@ -292,6 +347,34 @@ class AppStatusResponse(BaseModel):
         default=None,
         description="ISO-8601 timestamp when the App secret was last written (if available)",
     )
+
+
+class RevalidateAppResponse(BaseModel):
+    """Response from POST /api/admin/connections/github/app/revalidate (Issue #4017).
+
+    The explicit "re-check the App's configuration" action. Read-only against
+    GitHub; the only thing it writes is the expected-config record in the App
+    ``-meta`` secret (never credentials, never Lambda environment).
+    """
+
+    checked: bool = Field(..., description="Whether the App's live configuration could be read from GitHub")
+    app_webhook_url_matches: bool | None = Field(default=None, description="Tri-state webhook URL check (see PlatformVerification)")
+    app_permissions_match: bool | None = Field(default=None, description="Tri-state permissions check")
+    app_events_match: bool | None = Field(default=None, description="Tri-state events check")
+    expected_callback_url: str | None = Field(
+        default=None,
+        description="The callback URL this deployment sends. Informational — not verifiable via the GitHub API.",
+    )
+    app_oauth_settings_url: str | None = Field(
+        default=None,
+        description="Deep-link to the App's OAuth settings page for comparing the callback URL by eye.",
+    )
+    warnings: list[str] = Field(default_factory=list, description="Human-readable detail for any check that did not pass")
+    expected_config_recorded: bool = Field(
+        default=False,
+        description=("Whether the expected-config record in the App metadata secret was (re)written. Credentials are never touched by this action."),
+    )
+    message: str = Field(..., description="Human-readable status message")
 
 
 class RotateKeyResponse(BaseModel):
