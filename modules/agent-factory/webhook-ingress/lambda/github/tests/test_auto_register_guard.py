@@ -31,8 +31,11 @@ let the platform App's private key be copied for any org that installed the App.
 
 import os
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 # Add parent directories to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -47,6 +50,7 @@ os.environ.setdefault(
 os.environ.setdefault("IDENTITY_INDEX_TABLE", "adp-dev-identity-index")
 os.environ.setdefault("RATE_LIMITS_TABLE", "adp-dev-rate-limits")
 os.environ.setdefault("AWS_REGION", "us-east-1")
+os.environ.setdefault("INSTALLATION_NEGATIVE_CACHE_TTL_SECONDS", "300")
 
 
 def _mock_table_with(forward_item=None, reverse_item=None):
@@ -146,8 +150,15 @@ class TestAutoRegisterGuard:
         # No tenant → caller 403s. The org_login NEVER becomes a tenant_id.
         assert result.tenant_id is None
         assert result.authoritative is False
-        # Neither the forward nor the reverse row is written.
-        table.put_item.assert_not_called()
+        # Slice C (#4047): an authoritative 404 IS negative-cached (one write to
+        # the distinct github_installation_negative key), but NEITHER identity
+        # row is written — the gate denies before any forward/reverse put_item.
+        written_types = [
+            c.kwargs["Item"]["identity_type"] for c in table.put_item.call_args_list
+        ]
+        assert "github_installation_id" not in written_types
+        assert "org_installation" not in written_types
+        assert written_types == ["github_installation_negative"]
         mock_metric.assert_called_once_with("AutoRegisterDenied")
 
     @patch("handler._emit_metric")
@@ -237,6 +248,9 @@ class TestAutoRegisterGuard:
         assert result.tenant_id == "some-random-org"
         # But NOT authoritative: no credential provisioning.
         assert result.authoritative is False
+        # Exactly two writes: forward + reverse. Issue #4047 must NOT add a
+        # negative-cache row on an error state — see
+        # TestNegativeCache.test_error_state_is_never_cached.
         assert table.put_item.call_count == 2
         forward_item = table.put_item.call_args_list[0].kwargs["Item"]
         assert forward_item["org_id"] == "some-random-org"
@@ -386,6 +400,318 @@ class TestAutoRegisterGuard:
         # Forward write has no ConditionExpression (idempotent overwrite)
         forward_call = table.put_item.call_args_list[0]
         assert "ConditionExpression" not in forward_call.kwargs
+
+
+class TestNegativeCache:
+    """Negative cache for unknown installations (Issue #4047, #2724 slice C).
+
+    The gateway resolve is the expensive step in _auto_register_installation
+    (``resolve-installation`` filters organizations in Python), and an unknown
+    installation re-asks it on every delivery. Caching the authoritative 404
+    bounds that; caching anything else breaks new-tenant onboarding.
+    """
+
+    NEGATIVE_TYPE = "github_installation_negative"
+
+    @classmethod
+    def _table_with_negative_row(cls, installation_id, offset=300):
+        """Mock table that misses the forward row but HAS a negative row."""
+        table = MagicMock()
+        row = {
+            "identity_type": cls.NEGATIVE_TYPE,
+            "identity_value": str(installation_id),
+            "ttl": int(time.time()) + offset,
+        }
+
+        def get_item(Key=None):  # noqa: N803
+            if Key["identity_type"] == cls.NEGATIVE_TYPE:
+                return {"Item": row}
+            return {}
+
+        table.get_item = get_item
+        return table
+
+    @classmethod
+    def _negative_writes(cls, table):
+        return [
+            c.kwargs["Item"]
+            for c in table.put_item.call_args_list
+            if c.kwargs["Item"]["identity_type"] == cls.NEGATIVE_TYPE
+        ]
+
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_not_found_writes_a_negative_row_with_ttl(self, mock_resolver, mock_gw):
+        """The authoritative 404 IS cached, with a TTL."""
+        from handler import _auto_register_installation
+
+        table = _mock_table_with()
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "state": "not_found"
+        }
+
+        _auto_register_installation(555, "some-random-org")
+
+        negative = self._negative_writes(table)
+        assert len(negative) == 1
+        assert negative[0]["identity_value"] == "555"
+        assert negative[0]["ttl"] > int(time.time())
+
+    @pytest.mark.parametrize(
+        "reason", ["http_500", "transport_error", "gateway_url_not_configured"]
+    )
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_error_state_is_never_cached(self, mock_resolver, mock_gw, reason):
+        """THE critical test for this slice.
+
+        An ``error`` state means the gateway could not be consulted. Caching it
+        would lock out every legitimate new tenant for the whole TTL window
+        during any gateway outage — inverting slice A's entire purpose (its
+        three-state split exists so a gate can fail OPEN on ``error``).
+        """
+        from handler import _auto_register_installation
+
+        table = _mock_table_with()
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "state": "error",
+            "reason": reason,
+        }
+
+        _auto_register_installation(555, "some-random-org")
+
+        assert not self._negative_writes(table)
+
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_resolved_state_is_never_cached(self, mock_resolver, mock_gw):
+        """A known tenant obviously must not get a negative row."""
+        from handler import _auto_register_installation
+
+        table = _mock_table_with()
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "state": "resolved",
+            "tenant_id": "pranavsharma1000",
+        }
+
+        _auto_register_installation(144082554, "pranav-login")
+
+        assert not self._negative_writes(table)
+
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_repeat_unknown_event_short_circuits_gateway(self, mock_resolver, mock_gw):
+        """The actual win: a live negative row means NO gateway call.
+
+        Unit-level equivalent of the issue's smoke test (second event from a
+        fake unknown installation produces no gateway resolve call).
+        """
+        from handler import _auto_register_installation
+
+        table = self._table_with_negative_row(555)
+        mock_resolver.return_value._get_table.return_value = table
+
+        result = _auto_register_installation(555, "some-random-org")
+
+        mock_gw.return_value.resolve_installation_by_id.assert_not_called()
+        # Behavior IDENTICAL to a freshly-received not_found. A cache hit must
+        # not invent a new outcome, so slice B's deny (now landed) covers cached
+        # and live not_found alike: the synthesized not_found feeds the same
+        # installation_gate, which denies. No tenant, caller 403s.
+        assert result.tenant_id is None
+        assert result.authoritative is False
+
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_expired_negative_row_still_calls_gateway(self, mock_resolver, mock_gw):
+        """DDB TTL deletion is lazy, so an expired row can still be returned."""
+        from handler import _auto_register_installation
+
+        table = self._table_with_negative_row(555, offset=-1)
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "state": "not_found"
+        }
+
+        _auto_register_installation(555, "some-random-org")
+
+        mock_gw.return_value.resolve_installation_by_id.assert_called_once()
+
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_bypass_invalidates_and_re_resolves(self, mock_resolver, mock_gw):
+        """installation.created must never inherit a stale 'unknown' verdict.
+
+        A user installs (negative row written while no tenant existed), then
+        the tenant is created. The `created` event must re-ask the gateway.
+        """
+        from handler import _auto_register_installation
+
+        table = self._table_with_negative_row(555)
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "state": "resolved",
+            "tenant_id": "now-a-real-tenant",
+            # Trusted provenance so slice B's gate returns the resolved tenant
+            # authoritatively — the point here is that the bypass RE-RESOLVED,
+            # not what the gate decides about an untrusted shell (covered above).
+            "created_via": "operator",
+        }
+
+        result = _auto_register_installation(
+            555, "some-org", bypass_negative_cache=True
+        )
+
+        # The cache did not decide the outcome...
+        mock_gw.return_value.resolve_installation_by_id.assert_called_once()
+        assert result.tenant_id == "now-a-real-tenant"
+        # ...and the stale row was invalidated (written back already-expired).
+        invalidations = self._negative_writes(table)
+        assert len(invalidations) == 1
+        assert invalidations[0]["ttl"] <= int(time.time())
+
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_existing_row_never_consults_the_cache(self, mock_resolver, mock_gw):
+        """A known installation short-circuits before the cache is relevant.
+
+        Regression guard: the cache read lives inside the `existing is None`
+        branch, so the idempotent-refresh path must be untouched.
+        """
+        from handler import _auto_register_installation
+
+        forward = {
+            "identity_type": "github_installation_id",
+            "identity_value": "144082554",
+            "org_id": "pranavsharma1000",
+            "auto_registered": True,
+        }
+        table = _mock_table_with(forward_item=forward)
+        mock_resolver.return_value._get_table.return_value = table
+
+        result = _auto_register_installation(144082554, "pranavsharma1000")
+
+        assert result.tenant_id == "pranavsharma1000"
+        mock_gw.return_value.resolve_installation_by_id.assert_not_called()
+        assert not self._negative_writes(table)
+
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_cache_write_failure_does_not_break_registration(
+        self, mock_resolver, mock_gw
+    ):
+        """A cache is an optimization — it must never fail a webhook."""
+        from handler import _auto_register_installation
+
+        table = _mock_table_with()
+
+        def put_item(Item=None, **kwargs):  # noqa: N803
+            if Item["identity_type"] == self.NEGATIVE_TYPE:
+                raise RuntimeError("DDB throttled writing negative row")
+            return {}
+
+        table.put_item = MagicMock(side_effect=put_item)
+        mock_resolver.return_value._get_table.return_value = table
+        mock_gw.return_value.resolve_installation_by_id.return_value = {
+            "state": "not_found"
+        }
+
+        result = _auto_register_installation(555, "some-random-org")
+
+        # The cache write raising must not propagate: record_not_found is
+        # best-effort, so the gate still runs and denies the not_found normally.
+        assert result.tenant_id is None
+
+    @patch("handler._get_gateway_client")
+    @patch("handler._get_identity_resolver")
+    def test_disabled_cache_restores_pre_slice_behaviour(
+        self, mock_resolver, mock_gw, monkeypatch
+    ):
+        """TTL=0 kill-switch: nothing read or written, gateway always asked."""
+        monkeypatch.setenv("INSTALLATION_NEGATIVE_CACHE_TTL_SECONDS", "0")
+        for mod in [
+            k for k in sys.modules if k.startswith("common.negative_cache")
+        ]:
+            del sys.modules[mod]
+        import handler
+
+        handler._negative_cache_mod = None
+        try:
+            table = _mock_table_with()
+            mock_resolver.return_value._get_table.return_value = table
+            mock_gw.return_value.resolve_installation_by_id.return_value = {
+                "state": "not_found"
+            }
+
+            result = handler._auto_register_installation(555, "some-random-org")
+
+            # Cache disabled → gateway still consulted (no short-circuit), and
+            # the authoritative not_found is denied by slice B: no rows written,
+            # negative or identity.
+            assert result.tenant_id is None
+            mock_gw.return_value.resolve_installation_by_id.assert_called_once()
+            assert table.put_item.call_count == 0
+        finally:
+            # Reset the lazy-import cache so later tests re-read the env.
+            handler._negative_cache_mod = None
+
+
+class TestInstallationEventBypass:
+    """The `installation.created` bypass wiring (Issue #4047).
+
+    `created` is a genuinely fresh install and must always re-resolve.
+    `new_permissions_accepted` fires on an EXISTING install (a scope change),
+    so it is not a fresh install and keeps using the cache.
+    """
+
+    @staticmethod
+    def _installation_event(action):
+        import hashlib
+        import hmac
+        import json as _json
+
+        body = _json.dumps(
+            {
+                "action": action,
+                "installation": {"id": 555, "account": {"login": "some-org"}},
+            }
+        )
+        sig = hmac.new(b"test-secret-123", body.encode(), hashlib.sha256).hexdigest()
+        return {
+            "headers": {
+                "x-github-event": "installation",
+                "x-hub-signature-256": f"sha256={sig}",
+                "x-github-delivery": "d-1",
+                "content-type": "application/json",
+            },
+            "body": body,
+        }
+
+    @pytest.mark.parametrize(
+        "action,expected_bypass",
+        [("created", True), ("new_permissions_accepted", False)],
+    )
+    @patch("handler._auto_provision_tenant_github_app_secret")
+    @patch("handler._auto_register_installation")
+    def test_bypass_only_for_created(
+        self, mock_register, mock_provision, action, expected_bypass
+    ):
+        import handler
+
+        handler._webhook_secret = "test-secret-123"
+        # Slice B: _auto_register_installation returns AutoRegisterResult, and
+        # the caller reads .tenant_id/.authoritative — a bare string would raise.
+        # This test only asserts the bypass kwarg, so the values are incidental.
+        mock_register.return_value = handler.AutoRegisterResult("some-org", False)
+
+        handler.handler(self._installation_event(action), None)
+
+        assert (
+            mock_register.call_args.kwargs["bypass_negative_cache"] is expected_bypass
+        )
 
 
 class TestPartialWriteSplit:

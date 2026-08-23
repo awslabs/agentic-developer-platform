@@ -331,16 +331,38 @@ def resolve(
             # was added, or where the DDB write failed. On a Postgres hit we
             # backfill the DDB row so subsequent lookups are fast again.
             if _resolve_canonical_via_gateway_enabled():
+                from common import negative_cache
                 from common.gateway_client import (
+                    INSTALLATION_NOT_FOUND,
                     installation_gate,
                     resolve_installation_by_id,
                 )
+
+                # Issue #4047 (#2724 slice C): this is the SECOND gateway-resolve
+                # path for an unknown installation (the architect ruling on #2724
+                # flagged that it bypasses _auto_register_installation entirely),
+                # so it needs the same negative cache or the mitigation is trivially
+                # sidestepped on any cold/evicted row. A live negative row means the
+                # gateway already answered "not a known tenant" within the TTL.
+                if negative_cache.is_negative_cached(table, installation_id):
+                    logger.info(
+                        "Unknown installation_id=%d — no identity-index entry and a "
+                        "live negative-cache row (gateway resolve skipped)",
+                        installation_id,
+                    )
+                    return None, "unknown_installation"
 
                 pg_install = resolve_installation_by_id(str(installation_id)) or {}
                 # Issue #4046 (#2724 slice A): pg_install carries a "state" of
                 # resolved / not_found / error. A resolved result always carries a
                 # non-empty tenant_id.
                 #
+                # Issue #4047: cache ONLY the authoritative not_found. An "error"
+                # means we could not find out, and caching it would lock out a
+                # legitimate new tenant for the whole TTL window.
+                if pg_install.get("state") == INSTALLATION_NOT_FOUND:
+                    negative_cache.record_not_found(table, installation_id)
+
                 # Issue #2724 (slice B): this is the SECOND write path — it
                 # backfills a DDB identity row independently of the handler's
                 # _auto_register_installation, so gating only the handler would

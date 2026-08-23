@@ -214,8 +214,13 @@ class TestAutoRegisterCallsProvision:
             result = handler(event, None)
 
         assert result["statusCode"] == 200
-        # auto_register called first, then provision
-        mock_register.assert_called_once_with(12345, "neworg")
+        # auto_register called first, then provision. Issue #4047 added the
+        # bypass_negative_cache kwarg (True here — `created` is a fresh install
+        # and must always re-resolve); TestInstallationEventBypass in
+        # test_auto_register_guard.py owns asserting that flag's value per action.
+        mock_register.assert_called_once_with(
+            12345, "neworg", bypass_negative_cache=True
+        )
         mock_provision.assert_called_once_with("neworg", 12345)
 
     @patch("handler._auto_provision_tenant_github_app_secret")

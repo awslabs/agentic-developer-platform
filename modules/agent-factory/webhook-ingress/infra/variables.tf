@@ -100,6 +100,18 @@ variable "identity_index_table_arn" {
   default     = ""
 }
 
+# Issue #4047 (#2724 slice C)
+variable "installation_negative_cache_ttl_seconds" {
+  description = "TTL (seconds) for negative-cache rows recording that the gateway authoritatively does not know an installation (identity_type=github_installation_negative in the identity-index, expired via that table's existing `ttl` attribute). Keep this short: it bounds how long a legitimate brand-new tenant can wait before their webhooks resolve. Set to 0 to disable the cache entirely (every unknown installation re-asks the gateway). No new IAM is needed — the Lambda already holds GetItem/PutItem on the identity-index."
+  type        = number
+  default     = 300
+
+  validation {
+    condition     = var.installation_negative_cache_ttl_seconds >= 0 && var.installation_negative_cache_ttl_seconds <= 3600
+    error_message = "installation_negative_cache_ttl_seconds must be between 0 (disabled) and 3600. A longer negative cache delays legitimate tenant onboarding past any plausible install flow."
+  }
+}
+
 variable "gateway_api_url" {
   description = "Internal Gateway API URL for auto-provisioning calls. Empty disables auto-provision."
   type        = string

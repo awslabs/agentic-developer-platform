@@ -5,6 +5,7 @@ kill-switches, and envelope correctness.
 """
 
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -25,6 +26,8 @@ def _reset_module(monkeypatch):
     monkeypatch.setenv("GATEWAY_API_URL", "http://gateway.internal:8080")
     monkeypatch.setenv("BG_INTERNAL_API_KEY", "test-key")
     monkeypatch.setenv("INTERNAL_API_KEY_ARN", "")
+    # Issue #4047: explicit TTL so tests do not depend on the ambient env.
+    monkeypatch.setenv("INSTALLATION_NEGATIVE_CACHE_TTL_SECONDS", "300")
 
     # Clear module caches
     mods_to_clear = [
@@ -32,6 +35,7 @@ def _reset_module(monkeypatch):
         for k in sys.modules
         if k.startswith("common.identity_resolver")
         or k.startswith("common.gateway_client")
+        or k.startswith("common.negative_cache")
     ]
     for mod in mods_to_clear:
         del sys.modules[mod]
@@ -41,6 +45,7 @@ def _reset_module(monkeypatch):
         for k in sys.modules
         if k.startswith("common.identity_resolver")
         or k.startswith("common.gateway_client")
+        or k.startswith("common.negative_cache")
     ]
     for mod in mods_to_clear:
         del sys.modules[mod]
@@ -689,6 +694,283 @@ class TestInstallationTenantDriftSafetyNet:
         assert result is not None
         # DDB tenant retained
         assert result.tenant_id == "pranavsharma1000"
+
+
+# ---------------------------------------------------------------------------
+# Negative cache on the DDB-miss backfill path (Issue #4047, #2724 slice C)
+# ---------------------------------------------------------------------------
+
+NEGATIVE_TYPE = "github_installation_negative"
+
+
+class TestInstallationNegativeCache:
+    """The resolver's DDB-miss → gateway fallback is the SECOND resolve path.
+
+    The #2724 architect ruling flagged it as bypassing
+    ``_auto_register_installation`` entirely, so without the same negative
+    cache here the mitigation is trivially sidestepped on any cold/evicted
+    row: an attacker's events would keep reaching the gateway through it.
+    """
+
+    @staticmethod
+    def _ddb(negative_row=None, forward_row=None):
+        """Mock DDB resource + a list accumulating every put_item Item.
+
+        The identity-index misses the forward row unless ``forward_row`` is
+        given, which is what sends resolve() down the gateway-fallback path.
+        """
+        writes = []
+        index = {}
+        if negative_row is not None:
+            index[f"{NEGATIVE_TYPE}|{INSTALLATION_ID}"] = negative_row
+        if forward_row is not None:
+            index[f"github_installation_id|{INSTALLATION_ID}"] = forward_row
+        items = {
+            "adp-dev-identity-index": index,
+            "adp-dev-user-identity-index": {f"github|{SENDER_ID}": V2_USER_ITEM},
+        }
+
+        mock_resource = MagicMock()
+
+        def make_table(table_name):
+            table = MagicMock()
+
+            def get_item(Key=None):  # noqa: N803
+                key_str = "|".join(str(v) for v in Key.values())
+                item = items.get(table_name, {}).get(key_str)
+                return {"Item": item} if item else {}
+
+            def put_item(Item=None, **kwargs):  # noqa: N803
+                writes.append(Item)
+                return {}
+
+            table.get_item = get_item
+            table.put_item = put_item
+            return table
+
+        mock_resource.Table = make_table
+        return mock_resource, writes
+
+    @staticmethod
+    def _negative_row(offset=300):
+        return {
+            "identity_type": NEGATIVE_TYPE,
+            "identity_value": str(INSTALLATION_ID),
+            "ttl": int(time.time()) + offset,
+        }
+
+    @staticmethod
+    def _negatives(writes):
+        return [w for w in writes if w["identity_type"] == NEGATIVE_TYPE]
+
+    def test_not_found_writes_negative_row(self):
+        """Authoritative 404 on this path IS cached, with a TTL."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, writes = self._ddb()
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"state": "not_found"},
+            ):
+                result, reason = identity_resolver.resolve(
+                    INSTALLATION_ID, SENDER_ID
+                )
+
+        assert result is None
+        assert reason == "unknown_installation"
+        negative = self._negatives(writes)
+        assert len(negative) == 1
+        assert negative[0]["identity_value"] == str(INSTALLATION_ID)
+        assert negative[0]["ttl"] > int(time.time())
+
+    @pytest.mark.parametrize(
+        "reason_str",
+        ["http_500", "transport_error", "gateway_url_not_configured"],
+    )
+    def test_error_state_is_never_cached(self, reason_str):
+        """THE critical invariant: never cache 'we could not find out'.
+
+        Caching an ``error`` would make a gateway outage lock out legitimate
+        new tenants for the whole TTL window.
+        """
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, writes = self._ddb()
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"state": "error", "reason": reason_str},
+            ):
+                result, reason = identity_resolver.resolve(
+                    INSTALLATION_ID, SENDER_ID
+                )
+
+        assert result is None
+        assert reason == "unknown_installation"
+        assert not self._negatives(writes)
+
+    def test_live_negative_row_short_circuits_the_gateway(self):
+        """The win: no gateway call, same unknown_installation outcome."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, _ = self._ddb(negative_row=self._negative_row())
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id"
+            ) as mock_resolve:
+                result, reason = identity_resolver.resolve(
+                    INSTALLATION_ID, SENDER_ID
+                )
+
+        mock_resolve.assert_not_called()
+        # Outcome unchanged from a live not_found — behavior-neutral.
+        assert result is None
+        assert reason == "unknown_installation"
+
+    def test_expired_negative_row_still_calls_the_gateway(self):
+        """DDB TTL deletion is lazy, so expiry must be enforced on read."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, _ = self._ddb(negative_row=self._negative_row(offset=-1))
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"state": "not_found"},
+            ) as mock_resolve:
+                identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        mock_resolve.assert_called_once()
+
+    def test_resolved_state_backfills_but_writes_no_negative_row(self):
+        """Regression: #2950 backfill still happens and stays uncontaminated."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, writes = self._ddb()
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"state": "resolved", "tenant_id": "pranavsharma1000"},
+            ):
+                with patch(
+                    "common.gateway_client.resolve_user_by_identity",
+                    return_value=PG_RESULT_CANONICAL,
+                ):
+                    result, reason = identity_resolver.resolve(
+                        INSTALLATION_ID, SENDER_ID
+                    )
+
+        assert reason == "ok"
+        assert result is not None
+        # Backfill of the FORWARD row still occurs (#2950)...
+        forward = [
+            w for w in writes if w["identity_type"] == "github_installation_id"
+        ]
+        assert forward
+        # ...and no negative row was written.
+        assert not self._negatives(writes)
+
+    def test_known_installation_never_touches_the_cache(self):
+        """A DDB hit resolves before the fallback — cache is off that path."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, writes = self._ddb(forward_row=TENANT_ITEM)
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"state": "resolved", "tenant_id": "pranavsharma1000"},
+            ):
+                with patch(
+                    "common.gateway_client.resolve_user_by_identity",
+                    return_value=PG_RESULT_CANONICAL,
+                ):
+                    result, reason = identity_resolver.resolve(
+                        INSTALLATION_ID, SENDER_ID
+                    )
+
+        assert reason == "ok"
+        assert not self._negatives(writes)
+
+    def test_cache_read_failure_degrades_to_a_gateway_call(self):
+        """A DDB failure on the cache read must not fail resolution."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, _ = self._ddb()
+        original = mock_ddb.Table
+
+        def make_table(table_name):
+            table = original(table_name)
+            inner = table.get_item
+
+            def get_item(Key=None):  # noqa: N803
+                if Key["identity_type"] == NEGATIVE_TYPE:
+                    raise RuntimeError("DDB throttled")
+                return inner(Key=Key)
+
+            table.get_item = get_item
+            return table
+
+        mock_ddb.Table = make_table
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"state": "not_found"},
+            ) as mock_resolve:
+                result, reason = identity_resolver.resolve(
+                    INSTALLATION_ID, SENDER_ID
+                )
+
+        mock_resolve.assert_called_once()
+        assert reason == "unknown_installation"
+
+    def test_disabled_cache_restores_pre_slice_behaviour(self, monkeypatch):
+        """TTL=0 kill-switch: gateway always consulted, nothing cached."""
+        monkeypatch.setenv("INSTALLATION_NEGATIVE_CACHE_TTL_SECONDS", "0")
+        for mod in [
+            k for k in sys.modules if k.startswith("common.negative_cache")
+        ]:
+            del sys.modules[mod]
+
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        # Even with a live row present, the disabled cache must not read it.
+        mock_ddb, writes = self._ddb(negative_row=self._negative_row())
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"state": "not_found"},
+            ) as mock_resolve:
+                result, reason = identity_resolver.resolve(
+                    INSTALLATION_ID, SENDER_ID
+                )
+
+        mock_resolve.assert_called_once()
+        assert reason == "unknown_installation"
+        assert not self._negatives(writes)
 
 
 class TestInstallationBackfillGate:

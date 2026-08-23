@@ -37,6 +37,7 @@ _signature_mod = None
 _secrets_mod = None
 _identity_mod = None
 _gateway_client_mod = None
+_negative_cache_mod = None
 _sqs_mod = None
 _events_log_mod = None
 _webhook_event_logger = None
@@ -95,6 +96,15 @@ def _get_identity_resolver():
     return _identity_mod
 
 
+def _get_negative_cache():
+    global _negative_cache_mod
+    if _negative_cache_mod is None:
+        from common import negative_cache
+
+        _negative_cache_mod = negative_cache
+    return _negative_cache_mod
+
+
 class AutoRegisterResult(NamedTuple):
     """Outcome of :func:`_auto_register_installation`.
 
@@ -118,7 +128,9 @@ class AutoRegisterResult(NamedTuple):
     authoritative: bool
 
 
-def _auto_register_installation(installation_id: int, org_login: str) -> AutoRegisterResult:
+def _auto_register_installation(
+    installation_id: int, org_login: str, *, bypass_negative_cache: bool = False
+) -> AutoRegisterResult:
     """Write an installation_id → tenant row to the identity-index (guarded).
 
     Issue #2769: Postgres is the single source of truth for the
@@ -187,6 +199,23 @@ def _auto_register_installation(installation_id: int, org_login: str) -> AutoReg
     resolves successfully, so the ``unknown_installation`` self-heal branch
     never fires again. That is the state the Acme PoV hit.
 
+    **Negative cache (#4047, #2724 slice C).** The step-3 gateway resolve is the
+    expensive part of this function (``resolve-installation`` filters
+    organizations in Python), and an unknown installation re-asks it on every
+    single delivery. When the gateway authoritatively answers ``not_found`` we
+    write a short-TTL row into the identity-index under a distinct
+    ``github_installation_negative`` key and skip the call while it is live.
+    Only ``not_found`` is cached — never ``error`` — so a gateway outage cannot
+    lock out a legitimate new tenant for the TTL window.
+
+    A cache hit synthesizes the same ``not_found`` state and feeds it to the one
+    shared ``installation_gate``, so slice B's deny applies to cached and live
+    ``not_found`` alike with no second decision point here.
+
+    ``bypass_negative_cache=True`` skips the read AND invalidates any existing
+    row — used for ``installation.created``, where a genuinely fresh install
+    must always re-resolve rather than inherit a stale "unknown" verdict.
+
     Returns an :class:`AutoRegisterResult`. ``tenant_id`` is None when the gate
     denied or we never persisted a routable mapping; ``authoritative`` tells the
     caller whether per-tenant credential provisioning is permitted.
@@ -229,8 +258,31 @@ def _auto_register_installation(installation_id: int, org_login: str) -> AutoReg
         # Step 3: no row → the tenant gate (#2724 slice B). See the docstring.
         # A refresh of an existing auto_registered row (step 4) reuses the
         # already-stored tenant to stay idempotent.
+        neg_cache = _get_negative_cache()
+        if bypass_negative_cache:
+            # A fresh install must never inherit a stale "unknown" verdict.
+            neg_cache.invalidate(table, installation_id)
+
         if existing is None:
-            pg = _get_gateway_client().resolve_installation_by_id(str(installation_id))
+            # Issue #4047 (#2724 slice C): a live negative row means the gateway
+            # already told us (authoritatively, within the TTL) that this
+            # installation is not a known tenant. Synthesize that same
+            # not_found state instead of re-asking.
+            # Annotated so the synthesized literal below (mixed str/bool values)
+            # does not narrow pg to dict[str, object], which would make
+            # pg["tenant_id"] an `object` and break tenant_id's str | None type.
+            pg: dict[str, Any]
+            if not bypass_negative_cache and neg_cache.is_negative_cached(
+                table, installation_id
+            ):
+                pg = {"state": "not_found", "cached": True}
+            else:
+                pg = _get_gateway_client().resolve_installation_by_id(str(installation_id))
+                # Cache ONLY the authoritative 404. An "error" state means we do
+                # not know — caching it would turn a gateway outage into a
+                # TTL-long lockout for legitimate new tenants.
+                if pg and pg.get("state") == "not_found":
+                    neg_cache.record_not_found(table, installation_id)
             state = pg.get("state") if pg else None
             # `installation_gate` is a pure function and is imported directly (not
             # via _get_gateway_client()) so the trust decision is made by the ONE
@@ -1138,7 +1190,16 @@ def handler(event: dict, context) -> dict:
         install_id = install.get("id", 0)
         org_login = (install.get("account") or {}).get("login", "")
         if install_id and org_login:
-            registered = _auto_register_installation(install_id, org_login)
+            # Issue #4047 (#2724 slice C): `created` is a genuinely fresh install,
+            # so it must always re-resolve — never inherit a negative-cache row
+            # written before the tenant existed. `new_permissions_accepted` fires
+            # on an EXISTING install (a scope change), so it is not a fresh
+            # install and keeps using the cache.
+            registered = _auto_register_installation(
+                install_id,
+                org_login,
+                bypass_negative_cache=(action == "created"),
+            )
             # Issue #2724 (slice B): seed per-tenant credentials ONLY when the
             # tenant was resolved via the authoritative path. "Registered" is not
             # enough — a non-authoritative registration is the org_login fallback
