@@ -30,6 +30,79 @@ class InstallStartResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Onboarding verification (Issue #4016)
+#
+# Every check is TRI-STATE: True = verified working, False = verified broken,
+# None = could not determine. None must render amber/grey and NEVER red — a
+# check that errored is not the same as a check that failed, and a
+# false-negative red makes operators "fix" a non-problem.
+#
+# The split into two models is deliberate (🔴-2): the platform checks read
+# deployment-global singletons with no tenant segment in their paths, so they
+# are admin-gated and returned once per response. The connection checks are
+# per-installation/per-tenant.
+# ---------------------------------------------------------------------------
+
+
+class ConnectionVerification(BaseModel):
+    """Per-connection onboarding health, computed read-only at request time."""
+
+    record_present: bool | None = Field(
+        default=None,
+        description=(
+            "Whether a Postgres ChannelTenantMap row backs this connection. False on a "
+            "synthetic entry surfaced from DynamoDB only — the install never reached the "
+            "gateway callback, so the platform cannot manage it."
+        ),
+    )
+    tenant_secret_seeded: bool | None = Field(
+        default=None,
+        description=(
+            "Whether adp/<env>/tenants/<tenant>/github-app exists. False means the first "
+            "agent worker for this tenant will die fetching its credentials."
+        ),
+    )
+    identity_index_row: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the forward DynamoDB row (installation → tenant) exists. False means "
+            "inbound webhooks for this installation are rejected as unknown_installation."
+        ),
+    )
+    reverse_identity_row: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the reverse DynamoDB row (tenant → installation) exists. False means "
+            "agent-to-agent dispatch (adp-trigger) cannot resolve this tenant. Repair is "
+            "owned by issue #3860; this is observation only."
+        ),
+    )
+
+
+class PlatformVerification(BaseModel):
+    """Deployment-wide onboarding health. Admin-scoped (Issue #4016, 🔴-2).
+
+    These read platform singletons (no tenant segment in the secret paths), so
+    they are returned only to callers who can manage connections — a tenant
+    member must not see, or try to "fix", global deployment state.
+    """
+
+    login_credentials: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the broker OAuth secret holds a real, non-placeholder client_id. False means 'Sign in with GitHub' is dead for everyone."
+        ),
+    )
+    webhook_secret: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the webhook-ingress secret has been populated with a real value. "
+            "False means every GitHub delivery fails signature validation with 401."
+        ),
+    )
+
+
 class GitHubConnectionItem(BaseModel):
     """A single GitHub App installation connected to the caller's ADP tenant."""
 
@@ -69,10 +142,21 @@ class GitHubConnectionItem(BaseModel):
         default=None,
         description="Whether this connection belongs to the caller's currently active tenant.",
     )
+    # Issue #4016: per-connection onboarding verification
+    verification: ConnectionVerification | None = Field(
+        default=None,
+        description="Read-only onboarding health checks for this connection.",
+    )
 
 
 class ConnectionsListResponse(BaseModel):
     connections: list[GitHubConnectionItem]
+    # Issue #4016: admin-scoped platform checks — omitted entirely for callers
+    # who cannot manage connections.
+    platform_verification: PlatformVerification | None = Field(
+        default=None,
+        description=("Deployment-wide onboarding health. Present only for callers who can manage connections."),
+    )
 
 
 # ---------------------------------------------------------------------------

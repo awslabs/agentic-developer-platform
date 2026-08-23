@@ -14,6 +14,7 @@ Design notes:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -40,10 +41,12 @@ from .github_client import GitHubAppClient
 from .schemas import (
     AppStatusResponse,
     ConnectionsListResponse,
+    ConnectionVerification,
     DeleteConnectionResponse,
     DisconnectAppResponse,
     GitHubConnectionItem,
     InstallStartResponse,
+    PlatformVerification,
     RegisterAppStartResponse,
     RotateKeyResponse,
 )
@@ -126,6 +129,56 @@ def _repo_cache_set(installation_id: int, data: list[str]) -> None:
 
 def _repo_cache_invalidate(installation_id: int) -> None:
     _repo_list_cache.pop(installation_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Issue #4016: Short-TTL caches for the onboarding verification checks.
+#
+# These bound the extra Secrets Manager + DynamoDB reads the connections card
+# adds. Reuses the 60s TTL pattern above.
+#
+# CAVEAT: these are per-pod, in-process dicts and the gateway runs replicas: 2,
+# so two pods can briefly disagree. That is acceptable for a status tile. It
+# must NEVER become a control signal — nothing may gate behaviour on these.
+# ---------------------------------------------------------------------------
+
+_VERIFICATION_TTL_SECONDS = 60
+
+# keyed by tenant/org id → (expires_at_monotonic, exists|None)
+_tenant_secret_cache: dict[str, tuple[float, bool | None]] = {}
+# keyed by (kind, key) → (expires_at_monotonic, present|None)
+_identity_row_cache: dict[tuple[str, str], tuple[float, bool | None]] = {}
+# platform-wide singleton checks → (expires_at_monotonic, PlatformVerification)
+_platform_verification_cache: tuple[float, Any] | None = None
+
+
+def _verification_cache_get(cache: dict, key: Any) -> tuple[bool, bool | None]:
+    """Return (hit, value) for a TTL verification cache."""
+    entry = cache.get(key)
+    if entry is None:
+        return False, None
+    expires_at, value = entry
+    if time.monotonic() >= expires_at:
+        del cache[key]
+        return False, None
+    return True, value
+
+
+def _verification_cache_set(cache: dict, key: Any, value: bool | None) -> None:
+    cache[key] = (time.monotonic() + _VERIFICATION_TTL_SECONDS, value)
+
+
+def _invalidate_verification_cache() -> None:
+    """Clear all onboarding-verification caches (Issue #4016).
+
+    Called after register / rotate / disconnect so the card reflects the
+    operator's action immediately instead of waiting out the TTL. Mirrors the
+    existing ``_invalidate_login_enabled_cache`` precedent.
+    """
+    global _platform_verification_cache
+    _tenant_secret_cache.clear()
+    _identity_row_cache.clear()
+    _platform_verification_cache = None
 
 
 # ---------------------------------------------------------------------------
@@ -260,11 +313,25 @@ async def install_callback(
     # by a non-ADP user. Safe because it only creates resources keyed by the
     # GitHub-verified installation ID and grants no session or access.
     if not state:
+        # Issue #4016: log the dispatch itself. Without this, a no-nonce install
+        # was indistinguishable in the logs from a nonce install, so an operator
+        # debugging a silent partial had no way to tell which path ran.
+        logger.info(
+            "event=install_callback_dispatch installation_id=%d setup_action=%s path=no_nonce",
+            installation_id,
+            setup_action or "(none)",
+        )
         return await _handle_no_nonce_install(
             installation_id=installation_id,
             db=db,
             github_client=github_client,
         )
+
+    logger.info(
+        "event=install_callback_dispatch installation_id=%d setup_action=%s path=nonce",
+        installation_id,
+        setup_action or "(none)",
+    )
 
     # 1. Look up nonce
     stmt = select(MagicLinkNonce).where(
@@ -328,6 +395,17 @@ async def install_callback(
     repository_selection = "selected"
     repositories: list[str] = []
 
+    if github_client is None:
+        # Issue #4016: without a client the account login/type stay at their
+        # "unknown"/"Organization" defaults, github_org_id stays None, and the
+        # org-resolution block below is skipped entirely — the install silently
+        # lands on the caller's own tenant. That was previously unlogged.
+        logger.error(
+            "event=install_callback_no_github_client installation_id=%d "
+            "outcome=metadata_unavailable detail=app_credentials_missing_install_attaches_to_caller_tenant",
+            installation_id,
+        )
+
     if github_client is not None:
         try:
             meta = await github_client.get_installation(installation_id)
@@ -383,6 +461,30 @@ async def install_callback(
                     account_login,
                     resolved_org_id,
                 )
+            else:
+                # Issue #4016: the upsert returned nothing, so the install falls
+                # back to the caller's own tenant instead of the org's. Silent
+                # before; it is the wrong-tenant-routing failure mode.
+                logger.error(
+                    "event=install_callback_upsert_failed installation_id=%d account=%s github_org_id=%s "
+                    "outcome=install_attached_to_caller_tenant fallback_tenant=%s",
+                    installation_id,
+                    account_login,
+                    github_org_id,
+                    resolved_org_id,
+                )
+        else:
+            # Issue #4016: unknown org and auto-create is off — the install
+            # attaches to the caller's personal tenant, not the org's. Operators
+            # read this as "installed for my org"; it is not.
+            logger.warning(
+                "event=install_callback_org_not_onboarded installation_id=%d account=%s github_org_id=%s "
+                "reason=org_tenant_auto_create_disabled outcome=install_attached_to_caller_tenant fallback_tenant=%s",
+                installation_id,
+                account_login,
+                github_org_id,
+                resolved_org_id,
+            )
 
     await _attach_org_installation(
         installation_id=installation_id,
@@ -401,6 +503,13 @@ async def install_callback(
     # resolve_tenant_app_credentials() never hits a missing-secret error.
     from .tenant_secret import seed_tenant_github_app_secret
 
+    # Issue #4016: log with installation_id so a seed can be tied back to the
+    # install that triggered it when reconstructing a broken onboarding.
+    logger.info(
+        "event=install_callback_seed_secret installation_id=%d tenant=%s",
+        installation_id,
+        resolved_org_id,
+    )
     await seed_tenant_github_app_secret(resolved_org_id, installation_id)
 
     # Issue #3072: Track the previously-active tenant for redirect params.
@@ -445,10 +554,20 @@ async def install_callback(
     # safety-net AFTER a DDB hit.
     # Issue #2952 (E): MUST use the resolved org tenant, not caller_org_id,
     # otherwise webhook routing points at the wrong tenant.
+    logger.info(
+        "event=install_callback_identity_index installation_id=%d tenant=%s",
+        installation_id,
+        resolved_org_id,
+    )
     await _write_installation_identity_index(
         installation_id=installation_id,
         org_id=resolved_org_id,
     )
+
+    # Issue #4016: the verification card must reflect the install immediately,
+    # not after the 60s TTL — an operator who just installed and clicks through
+    # to Settings would otherwise see stale reds for work that just succeeded.
+    _invalidate_verification_cache()
 
     # Issue #3072: Include switch info in the result so the route layer can
     # pass it to the frontend redirect. switched_from is None when no switch
@@ -587,6 +706,14 @@ async def _handle_no_nonce_install(
         if org_by_github_id is not None:
             resolved_org_id = org_by_github_id.id
             resolved_created_via = org_by_github_id.created_via
+            logger.info(
+                "event=no_nonce_install_org_resolved installation_id=%d account=%s github_org_id=%s tenant=%s created_via=%s",
+                installation_id,
+                account_login,
+                github_org_id,
+                resolved_org_id,
+                resolved_created_via,
+            )
         elif os.environ.get("ORG_TENANT_AUTO_CREATE", "false").lower() == "true":
             # Upsert the tenant shell for this unknown org.
             #
@@ -605,8 +732,48 @@ async def _handle_no_nonce_install(
             )
             if resolved_org_id:
                 resolved_created_via = CREATED_VIA_INSTALL_AUTOCREATE
+                logger.info(
+                    "event=no_nonce_install_org_upserted installation_id=%d account=%s github_org_id=%s tenant=%s created_via=%s",
+                    installation_id,
+                    account_login,
+                    github_org_id,
+                    resolved_org_id,
+                    CREATED_VIA_INSTALL_AUTOCREATE,
+                )
+            else:
+                logger.error(
+                    "event=no_nonce_install_upsert_failed installation_id=%d account=%s github_org_id=%s "
+                    "outcome=nothing_persisted detail=org_tenant_shell_upsert_returned_no_id",
+                    installation_id,
+                    account_login,
+                    github_org_id,
+                )
+        else:
+            logger.warning(
+                "event=no_nonce_install_unresolved installation_id=%d account=%s github_org_id=%s "
+                "reason=org_tenant_auto_create_disabled outcome=nothing_persisted",
+                installation_id,
+                account_login,
+                github_org_id,
+            )
+    else:
+        logger.warning(
+            "event=no_nonce_install_unresolved installation_id=%d account=%s account_type=%s github_org_id=%s "
+            "reason=not_an_org_install_or_no_github_org_id outcome=nothing_persisted",
+            installation_id,
+            account_login,
+            account_type,
+            github_org_id,
+        )
 
-    if resolved_org_id:
+    # Default: nothing resolved means nothing was promoted, so the outcome
+    # report below reads "failed" rather than dereferencing an unset flag.
+    promote = False
+
+    # Issue #4016 (🔴-3): the guard is `is not None`, not truthiness. An empty
+    # string org id is a resolution bug, not "no org" — the old truthy test
+    # silently skipped every write for it and still reported success.
+    if resolved_org_id is not None and resolved_org_id != "":
         # Attach the install to the resolved org tenant
         await _attach_org_installation(
             installation_id=installation_id,
@@ -629,6 +796,12 @@ async def _handle_no_nonce_install(
             # Seed per-tenant secret
             from .tenant_secret import seed_tenant_github_app_secret
 
+            logger.info(
+                "event=no_nonce_install_seed_secret installation_id=%d tenant=%s created_via=%s",
+                installation_id,
+                resolved_org_id,
+                resolved_created_via,
+            )
             await seed_tenant_github_app_secret(resolved_org_id, installation_id)
         else:
             logger.warning(
@@ -656,16 +829,83 @@ async def _handle_no_nonce_install(
 
         # DDB write uses the resolved org tenant
         if promote:
+            logger.info(
+                "event=no_nonce_install_identity_index installation_id=%d tenant=%s",
+                installation_id,
+                resolved_org_id,
+            )
             await _write_installation_identity_index(
                 installation_id=installation_id,
                 org_id=resolved_org_id,
             )
 
+    # -----------------------------------------------------------------------
+    # Issue #4016 (🔴-3): report the OUTCOME, not the fact that we ran.
+    #
+    # This used to return success=True unconditionally — including when nothing
+    # at all had been persisted (no org resolved, or resolution produced a
+    # promotion denial). The operator saw "Installation complete", the install
+    # existed on GitHub, and the platform knew nothing about it. That asymmetry
+    # with the nonce path (which raises on every failure) is the bug.
+    # -----------------------------------------------------------------------
+    persisted = resolved_org_id is not None and resolved_org_id != ""
+
+    if not persisted:
+        logger.error(
+            "event=no_nonce_install_failed installation_id=%d account=%s account_type=%s outcome=nothing_persisted error_code=org_not_resolved",
+            installation_id,
+            account_login,
+            account_type,
+        )
+        return {
+            "success": False,
+            "installation_id": installation_id,
+            "account_login": account_login,
+            "account_type": account_type,
+            "error_code": "org_not_resolved",
+            "error_message": (
+                "The GitHub App was installed, but this deployment could not match it to an ADP "
+                "workspace, so nothing was recorded. An operator must onboard the organisation "
+                "before the installation will do anything."
+            ),
+            "no_nonce": True,
+        }
+
+    if not promote:
+        logger.warning(
+            "event=no_nonce_install_partial installation_id=%d account=%s tenant=%s created_via=%s "
+            "outcome=recorded_but_not_promoted error_code=promotion_denied",
+            installation_id,
+            account_login,
+            resolved_org_id,
+            resolved_created_via,
+        )
+        # NOTE the deliberate difference from the branch above: success stays
+        # True. #2724 contracts a promotion refusal as a SUCCESSFUL install that
+        # is intentionally not vouched for — the row was written and the UI
+        # works. Flipping it to False would turn that designed security posture
+        # into an install failure. What #4016 adds is `partial`, so the page can
+        # stop claiming the installation is finished when it is not.
+        return {
+            "success": True,
+            "installation_id": installation_id,
+            "account_login": account_login,
+            "account_type": account_type,
+            "error_code": "promotion_denied",
+            "error_message": (
+                "The installation was recorded, but this deployment does not vouch for the "
+                "organisation, so no credentials or webhook routing were provisioned. Webhooks "
+                "for this installation will be rejected until an operator onboards it."
+            ),
+            "no_nonce": True,
+            "partial": True,
+        }
+
     logger.info(
-        "no-nonce install: installation_id=%d account=%s resolved_org=%s",
+        "event=no_nonce_install_complete installation_id=%d account=%s tenant=%s outcome=success",
         installation_id,
         account_login,
-        resolved_org_id or "(none)",
+        resolved_org_id,
     )
 
     return {
@@ -1083,6 +1323,223 @@ async def _write_installation_identity_index(
         )
 
 
+async def _check_tenant_secret_seeded(org_id: str) -> bool | None:
+    """Cached, read-only probe of the per-tenant GitHub App secret (Issue #4016)."""
+    hit, cached = _verification_cache_get(_tenant_secret_cache, org_id)
+    if hit:
+        return cached
+
+    from .tenant_secret import tenant_github_app_secret_exists
+
+    value = await tenant_github_app_secret_exists(org_id)
+    _verification_cache_set(_tenant_secret_cache, org_id, value)
+    return value
+
+
+async def _check_identity_rows(installation_id: int, org_id: str | None) -> tuple[bool | None, bool | None]:
+    """Cached, read-only probe of the forward + reverse identity-index rows.
+
+    Issue #4016: returns (forward_present, reverse_present), each tri-state.
+    A DDB error degrades to None ("could not determine"), not False — an
+    unreadable table must not render as a red "webhook routing is broken".
+
+    READ-ONLY. #3860 owns writing/self-healing the reverse row.
+    """
+    from src.admin.identity_index import IdentityIndexClient
+
+    fwd_key = ("forward", str(installation_id))
+    rev_key = ("reverse", org_id or "")
+
+    fwd_hit, fwd_cached = _verification_cache_get(_identity_row_cache, fwd_key)
+    rev_hit, rev_cached = _verification_cache_get(_identity_row_cache, rev_key)
+
+    if fwd_hit and (rev_hit or org_id is None):
+        return fwd_cached, (rev_cached if org_id is not None else None)
+
+    try:
+        client = IdentityIndexClient()
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "verification: could not construct identity-index client installation_id=%d: %s",
+            installation_id,
+            exc,
+        )
+        return None, None
+
+    tasks = [client.get_installation_identity(installation_id)]
+    if org_id:
+        tasks.append(client.get_reverse_installation_identity(org_id))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _present(result: Any) -> bool | None:
+        if isinstance(result, BaseException):
+            return None
+        return result is not None
+
+    forward = _present(results[0])
+    _verification_cache_set(_identity_row_cache, fwd_key, forward)
+
+    reverse: bool | None = None
+    if org_id:
+        reverse = _present(results[1])
+        _verification_cache_set(_identity_row_cache, rev_key, reverse)
+
+    return forward, reverse
+
+
+async def _compute_connection_verification(
+    *,
+    installation_id: int,
+    org_id: str | None,
+    record_present: bool,
+) -> ConnectionVerification:
+    """Compute the per-connection verification block (Issue #4016).
+
+    Read-only and fail-soft throughout: every check degrades to None rather than
+    raising, because this decorates the primary settings page and must never be
+    able to break it.
+    """
+    secret_task = _check_tenant_secret_seeded(org_id) if org_id else None
+    rows_task = _check_identity_rows(installation_id, org_id)
+
+    if secret_task is not None:
+        secret_result, rows_result = await asyncio.gather(secret_task, rows_task, return_exceptions=True)
+    else:
+        secret_result = None
+        (rows_result,) = await asyncio.gather(rows_task, return_exceptions=True)
+
+    tenant_secret: bool | None = secret_result if isinstance(secret_result, bool) else None
+    if isinstance(rows_result, tuple):
+        forward, reverse = rows_result
+    else:
+        forward, reverse = None, None
+
+    return ConnectionVerification(
+        record_present=record_present,
+        tenant_secret_seeded=tenant_secret,
+        identity_index_row=forward,
+        reverse_identity_row=reverse,
+    )
+
+
+async def _compute_platform_verification() -> PlatformVerification:
+    """Compute the admin-scoped platform verification block (Issue #4016).
+
+    Both checks read deployment-global singletons, so the result is cached once
+    for the whole pod rather than per connection. Callers MUST only return this
+    to a caller who can manage connections (🔴-2).
+    """
+    global _platform_verification_cache
+
+    now = time.monotonic()
+    if _platform_verification_cache is not None and now < _platform_verification_cache[0]:
+        return _platform_verification_cache[1]
+
+    env = _get_environment()
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    webhook_path = f"adp/{env}/webhook-ingress/github-webhook-secret"
+
+    def _read() -> tuple[bool | None, bool | None]:
+        import boto3
+        from botocore.exceptions import ClientError
+
+        sm = boto3.client("secretsmanager", region_name=region)
+
+        # Reuse the single source of truth for the login check (🔴-2) rather
+        # than writing a second implementation.
+        try:
+            login_ok: bool | None = _check_login_enabled(sm)
+        except Exception:  # noqa: BLE001
+            login_ok = None
+
+        # The webhook secret needs its VALUE, not just existence: Terraform
+        # seeds the secret so it always exists, and the failure mode is that it
+        # still holds the placeholder. Existence alone would report green.
+        webhook_ok: bool | None
+        try:
+            raw = (sm.get_secret_value(SecretId=webhook_path).get("SecretString") or "").strip()
+            webhook_ok = bool(raw) and raw != "PLACEHOLDER_REPLACE_WITH_ACTUAL_SECRET" and not _is_placeholder(raw)
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code == "ResourceNotFoundException":
+                webhook_ok = False
+            else:
+                logger.info("verification: could not read %s: %s", webhook_path, exc)
+                webhook_ok = None
+        except Exception as exc:  # noqa: BLE001
+            logger.info("verification: could not read %s: %s", webhook_path, exc)
+            webhook_ok = None
+
+        return login_ok, webhook_ok
+
+    try:
+        login_credentials, webhook_secret = await asyncio.to_thread(_read)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("verification: platform checks failed entirely: %s", exc)
+        login_credentials, webhook_secret = None, None
+
+    result = PlatformVerification(login_credentials=login_credentials, webhook_secret=webhook_secret)
+    _platform_verification_cache = (now + _VERIFICATION_TTL_SECONDS, result)
+    return result
+
+
+async def _find_orphaned_installations(
+    *,
+    tenant_ids: list[str],
+    known_installation_ids: set[int],
+) -> list[tuple[str, int]]:
+    """Find installations known to DynamoDB but with no Postgres row (Issue #4016, 🔴-1).
+
+    This is the whole reason verification cannot simply hang off ChannelTenantMap.
+    The webhook Lambda's auto-register path writes DynamoDB only — it never
+    writes Postgres — so the exact tenant this feature exists to diagnose has no
+    ChannelTenantMap row at all, and ``list_connections`` used to return an empty
+    list for it. The card would have rendered green on healthy deployments and
+    blank on the broken one.
+
+    Returns (tenant_id, installation_id) pairs to surface as synthetic entries.
+    Scoped to the caller's own tenants — no cross-org reads.
+    """
+    from src.admin.identity_index import IdentityIndexClient
+
+    if not tenant_ids:
+        return []
+
+    try:
+        client = IdentityIndexClient()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("verification: could not construct identity-index client for orphan scan: %s", exc)
+        return []
+
+    results = await asyncio.gather(
+        *(client.get_reverse_installation_identity(tid) for tid in tenant_ids),
+        return_exceptions=True,
+    )
+
+    orphans: list[tuple[str, int]] = []
+    for tenant_id, result in zip(tenant_ids, results, strict=True):
+        if isinstance(result, BaseException) or not result:
+            continue
+        raw_id = result.get("installation_id", {}).get("N")
+        if not raw_id:
+            continue
+        try:
+            install_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if install_id in known_installation_ids:
+            continue
+        logger.warning(
+            "event=connection_verification issue=orphaned_installation tenant_id=%s installation_id=%d detail=known_to_dynamodb_but_no_postgres_row",
+            tenant_id,
+            install_id,
+        )
+        orphans.append((tenant_id, install_id))
+
+    return orphans
+
+
 async def list_connections(
     *,
     caller_org_id: str,
@@ -1107,6 +1564,14 @@ async def list_connections(
     tenants and tags each connection with tenant_id, tenant_name, is_active_tenant.
 
     Issue #3073: Computes can_manage per connection (admin OR installer).
+
+    Issue #4016: Every returned connection carries a read-only ``verification``
+    block, and the response is computed over the UNION of Postgres
+    ChannelTenantMap rows and installations known only to DynamoDB — an install
+    that never reached the gateway callback used to be invisible here, which is
+    precisely the fail-soft this issue exists to close. Admin callers also get a
+    ``platform_verification`` block. All checks are read-only: nothing is
+    seeded, written, or healed from this path.
     """
     from sqlalchemy import select
 
@@ -1129,8 +1594,10 @@ async def list_connections(
     result = await db.execute(stmt)
     mappings = result.scalars().all()
 
-    if not mappings:
-        return ConnectionsListResponse(connections=[])
+    # Issue #4016: NO early return on an empty result set. A tenant whose
+    # installation was auto-registered by the webhook Lambda has DynamoDB rows
+    # and no ChannelTenantMap row at all; returning [] here rendered the settings
+    # page blank for exactly the broken case the card must diagnose.
 
     # For personal accounts in adp-default, filter to this user's installs only.
     # provider_scope_id format for personal: "personal:<github_id>:<adp_user_id>"
@@ -1215,7 +1682,79 @@ async def list_connections(
             )
         )
 
-    return ConnectionsListResponse(connections=connections)
+    # -----------------------------------------------------------------------
+    # Issue #4016: union in installations known only to DynamoDB (🔴-1), then
+    # decorate every entry with its verification block.
+    # -----------------------------------------------------------------------
+    known_install_ids = {c.installation_id for c in connections}
+    # adp-default is excluded from the orphan scan: its installs are per-USER
+    # and the reverse identity row is keyed per-TENANT, so a single row there
+    # cannot be attributed to a user and surfacing it would leak another
+    # personal-account holder's installation.
+    orphans = await _find_orphaned_installations(
+        tenant_ids=[t for t in tenant_ids_to_query if t != adp_default_id],
+        known_installation_ids=known_install_ids,
+    )
+    for tenant_id_o, install_id_o in orphans:
+        connections.append(
+            GitHubConnectionItem(
+                provider="github",
+                installation_id=install_id_o,
+                account_login="(not recorded)",
+                account_type="Organization",
+                repository_selection="selected",
+                repository_count=0,
+                repositories=[],
+                installed_at=None,
+                configure_url=f"https://github.com/settings/installations/{install_id_o}",
+                manage_url=f"https://github.com/settings/installations/{install_id_o}",
+                # Nothing to manage: with no Postgres row, disconnect has no row
+                # to delete. Surfacing it as manageable would offer a button
+                # that cannot work.
+                can_manage=False,
+                tenant_id=tenant_id_o if member_tenant_ids else None,
+                tenant_name=tenant_name_map.get(tenant_id_o) if member_tenant_ids else None,
+                is_active_tenant=(tenant_id_o == caller_org_id) if member_tenant_ids else None,
+            )
+        )
+
+    verifications = await asyncio.gather(
+        *(
+            _compute_connection_verification(
+                installation_id=c.installation_id,
+                org_id=c.tenant_id or caller_org_id,
+                record_present=c.installation_id in known_install_ids,
+            )
+            for c in connections
+        ),
+        return_exceptions=True,
+    )
+    for conn, verification in zip(connections, verifications, strict=True):
+        if isinstance(verification, ConnectionVerification):
+            conn.verification = verification
+        else:
+            # Fail-soft: an all-unknown block still renders, it just renders amber.
+            logger.info(
+                "verification: could not compute checks installation_id=%d: %s",
+                conn.installation_id,
+                verification,
+            )
+            conn.verification = ConnectionVerification()
+
+    # 🔴-2: platform checks read deployment-global singletons, so they go only
+    # to callers who can manage connections.
+    platform_verification: PlatformVerification | None = None
+    if caller_is_admin:
+        try:
+            platform_verification = await _compute_platform_verification()
+        except Exception as exc:  # noqa: BLE001
+            logger.info("verification: platform checks unavailable: %s", exc)
+            platform_verification = PlatformVerification()
+
+    return ConnectionsListResponse(
+        connections=connections,
+        platform_verification=platform_verification,
+    )
 
 
 async def _fetch_live_repos(
@@ -1775,6 +2314,8 @@ async def register_app_callback(
     # "Sign in with GitHub" button flips to enabled promptly after registration
     # instead of staying disabled until the TTL expires.
     _invalidate_login_enabled_cache()
+    # Issue #4016: same reasoning for the onboarding verification checks.
+    _invalidate_verification_cache()
 
     logger.info(
         "register-app-callback: App registered successfully id=%s slug=%s login_enabled=%s",
@@ -2029,6 +2570,8 @@ async def register_app_manual(
     # 5. Invalidate caches
     get_github_app_provider().invalidate()
     _invalidate_login_enabled_cache()
+    # Issue #4016: same reasoning for the onboarding verification checks.
+    _invalidate_verification_cache()
 
     logger.info(
         "register-app-manual: App imported successfully id=%s slug=%s login_enabled=%s warnings=%d",
@@ -2175,8 +2718,14 @@ async def _store_app_credentials(
                 sm.put_secret_value(SecretId=ingress_secret_path, SecretString=webhook_secret)
                 logger.info("Wrote webhook secret to ingress path: %s", ingress_secret_path)
             except ClientError as exc:
-                logger.warning(
-                    "Could not write webhook-ingress secret %s (webhook path not wired): %s",
+                # Issue #4016: ERROR, not WARNING. The consequence is that every
+                # single GitHub delivery for this deployment fails signature
+                # validation with a 401 — a total webhook outage that a WARNING
+                # buried in a successful registration's log stream. The
+                # verification card now also reports it via
+                # platform_verification.webhook_secret.
+                logger.error(
+                    "event=register_app_webhook_secret_write_failed path=%s outcome=webhook_deliveries_will_fail_401 error=%s",
                     ingress_secret_path,
                     exc,
                 )
@@ -2648,6 +3197,8 @@ async def rotate_app_key() -> RotateKeyResponse:
 
     # Invalidate cached credentials so runtime picks up the new key
     invalidate_app_credentials_cache()
+    # Issue #4016: the verification card's checks are now stale.
+    _invalidate_verification_cache()
 
     logger.info("rotate_app_key: key rotated for app_id=%s", app_id)
 
@@ -2735,6 +3286,8 @@ async def disconnect_app() -> DisconnectAppResponse:
 
     # Invalidate cached credentials
     invalidate_app_credentials_cache()
+    # Issue #4016: the App is gone, so every cached green check is now a lie.
+    _invalidate_verification_cache()
 
     logger.info("disconnect_app: app_id=%s disconnected, %d installations affected", app_id, affected_count)
 

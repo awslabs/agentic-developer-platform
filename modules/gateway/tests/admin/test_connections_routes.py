@@ -160,11 +160,17 @@ class TestInstallCallbackRoute:
         assert "success=1" in resp.headers["location"]
         assert "installation_id=124731131" in resp.headers["location"]
 
-    def test_missing_state_returns_generic_success_page(self, app, mock_db):
+    def test_missing_state_returns_html_page_not_an_error_redirect(self, app, mock_db):
         """Issue #2952: Missing state triggers the no-nonce public-App install path.
 
-        Returns a generic HTML success page (200) instead of an error redirect,
-        because public-App installs initiated from GitHub have no state nonce.
+        Returns an HTML page (200) rather than an error redirect, because
+        public-App installs initiated from GitHub have no state nonce and no ADP
+        session to redirect into.
+
+        Issue #4016: this case resolves NO org (nothing is persisted), so the
+        page must NOT say "Installation complete" — it previously did, which is
+        the fail-soft this issue removes. The success wording is asserted
+        separately below.
         """
         user = _make_user()
         client = _make_client(app, user=user, mock_db=mock_db)
@@ -174,7 +180,68 @@ class TestInstallCallbackRoute:
             follow_redirects=False,
         )
         assert resp.status_code == 200
+        assert "Installation complete" not in resp.text
+        assert "Installation needs attention" in resp.text
+        # The operator gets something actionable to quote to their platform team.
+        assert "100" in resp.text
+
+    def test_missing_state_success_page_shown_when_install_actually_landed(self, app, mock_db):
+        """Issue #4016: the honest page still says "complete" on a real success."""
+        user = _make_user()
+        client = _make_client(app, user=user, mock_db=mock_db)
+
+        with patch(
+            "src.admin.connections.routes.install_callback",
+            new=AsyncMock(
+                return_value={
+                    "success": True,
+                    "installation_id": 100,
+                    "account_login": "acme",
+                    "account_type": "Organization",
+                    "error_code": None,
+                    "error_message": None,
+                    "no_nonce": True,
+                }
+            ),
+        ):
+            resp = client.get(
+                "/admin/connections/github/install-callback?installation_id=100",
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 200
         assert "Installation complete" in resp.text
+
+    def test_missing_state_partial_install_does_not_claim_completion(self, app, mock_db):
+        """Issue #4016: a promotion refusal (#2724) is a successful-but-partial
+        install. success stays True by design, so the page must key on `partial`.
+        """
+        user = _make_user()
+        client = _make_client(app, user=user, mock_db=mock_db)
+
+        with patch(
+            "src.admin.connections.routes.install_callback",
+            new=AsyncMock(
+                return_value={
+                    "success": True,
+                    "installation_id": 100,
+                    "account_login": "acme",
+                    "account_type": "Organization",
+                    "error_code": "promotion_denied",
+                    "error_message": "The installation was recorded, but this deployment does not vouch for the organisation.",
+                    "no_nonce": True,
+                    "partial": True,
+                }
+            ),
+        ):
+            resp = client.get(
+                "/admin/connections/github/install-callback?installation_id=100",
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 200
+        assert "Installation complete" not in resp.text
+        assert "does not vouch for the organisation" in resp.text
 
     def test_expired_nonce_redirects_to_error(self, app, mock_db):
         user = _make_user()

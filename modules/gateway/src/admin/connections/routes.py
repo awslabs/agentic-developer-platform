@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import urllib.parse
+from html import escape
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
@@ -178,16 +179,46 @@ async def github_install_callback(
             state=state,
             db=db,
         )
-        # Issue #2952: No-nonce path returns a generic HTML success page
-        # (no redirect — the user has no ADP session to redirect into).
+        # Issue #2952: No-nonce path returns a generic HTML page (no redirect —
+        # the user has no ADP session to redirect into).
+        #
+        # Issue #4016: the page now reports the OUTCOME. It previously said
+        # "Installation complete" even when the handler had persisted nothing at
+        # all, so the one person who could have escalated the problem was
+        # actively told it had worked.
         if result.get("no_nonce"):
             from fastapi.responses import HTMLResponse
 
+            # `partial` is its own signal: #2724 contracts a promotion refusal as
+            # a successful-but-not-vouched-for install, so success stays True
+            # there. The page must still not say "complete".
+            if result.get("success") and not result.get("partial"):
+                return HTMLResponse(
+                    content=(
+                        "<html><body><h1>Installation complete</h1>"
+                        "<p>The GitHub App has been installed successfully. "
+                        "Sign in to ADP to get started.</p></body></html>"
+                    ),
+                    status_code=200,
+                )
+
+            detail = result.get("error_message") or "The installation could not be completed."
+            logger.warning(
+                "event=install_callback_no_nonce_incomplete installation_id=%d error_code=%s partial=%s",
+                installation_id,
+                result.get("error_code") or "unknown",
+                bool(result.get("partial")),
+            )
+            # 200, not an error status: GitHub has completed the install on its
+            # side and this is the operator's browser, not an API client. The
+            # honesty has to be in the page body, not the status code.
             return HTMLResponse(
                 content=(
-                    "<html><body><h1>Installation complete</h1>"
-                    "<p>The GitHub App has been installed successfully. "
-                    "Sign in to ADP to get started.</p></body></html>"
+                    "<html><body><h1>Installation needs attention</h1>"
+                    f"<p>{escape(detail)}</p>"
+                    "<p>The app is installed on GitHub, but this ADP deployment has not "
+                    "finished connecting it. Contact your platform operator and quote "
+                    f"installation ID <code>{installation_id}</code>.</p></body></html>"
                 ),
                 status_code=200,
             )
@@ -231,6 +262,13 @@ async def get_connections(
     the user is a member of (via tenant_memberships). Each connection is tagged
     with tenant_id, tenant_name, and is_active_tenant. Falls back to single-org
     behavior when no membership rows exist (legacy path).
+
+    Issue #4016: This is deliberately where onboarding verification is hosted,
+    rather than on /github/app/status — status is platform-admin-only, so it
+    hides the signal from the tenant admin who actually experiences the broken
+    install. Per-connection checks go to every caller; the deployment-wide
+    ``platform_verification`` block goes only to admins (the ``caller_is_admin``
+    argument below is what gates it).
     """
     from sqlalchemy import select
 

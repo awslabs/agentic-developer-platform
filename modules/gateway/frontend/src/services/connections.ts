@@ -17,6 +17,35 @@ export interface InstallStartResponse {
   expires_at: string;
 }
 
+/**
+ * Issue #4016: Read-only onboarding health checks.
+ *
+ * Every field is TRI-STATE: true = verified working, false = verified broken,
+ * null/undefined = could not determine. null MUST render amber/grey, never red —
+ * a check that errored is not a check that failed.
+ */
+export interface ConnectionVerification {
+  /** Whether a Postgres record backs this connection. false = DynamoDB-only orphan. */
+  record_present?: boolean | null;
+  /** Whether the per-tenant GitHub App secret exists. false = agent workers will crash. */
+  tenant_secret_seeded?: boolean | null;
+  /** Whether the forward installation → tenant row exists. false = webhooks rejected. */
+  identity_index_row?: boolean | null;
+  /** Whether the reverse tenant → installation row exists. false = adp-trigger fails. */
+  reverse_identity_row?: boolean | null;
+}
+
+/**
+ * Issue #4016: Deployment-wide onboarding health. Only present for callers who
+ * can manage connections — the API omits it entirely for everyone else.
+ */
+export interface PlatformVerification {
+  /** Whether the broker OAuth secret holds a real client_id. false = GitHub login dead. */
+  login_credentials?: boolean | null;
+  /** Whether the webhook secret is populated. false = every delivery 401s. */
+  webhook_secret?: boolean | null;
+}
+
 export interface GitHubConnectionItem {
   provider: string;
   installation_id: number;
@@ -37,10 +66,14 @@ export interface GitHubConnectionItem {
   tenant_name?: string | null;
   /** Issue #3018: Whether this connection belongs to the caller's active tenant. */
   is_active_tenant?: boolean | null;
+  /** Issue #4016: Read-only onboarding health checks for this connection. */
+  verification?: ConnectionVerification | null;
 }
 
 export interface ConnectionsListResponse {
   connections: GitHubConnectionItem[];
+  /** Issue #4016: Deployment-wide checks. Absent for non-admin callers. */
+  platform_verification?: PlatformVerification | null;
 }
 
 export interface DeleteConnectionResponse {

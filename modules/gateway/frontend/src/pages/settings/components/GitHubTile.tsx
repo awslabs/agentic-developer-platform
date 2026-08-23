@@ -14,8 +14,13 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { type GitHubConnectionItem } from '@/services/connections';
-import type { AppStatusResponse, RegisterManualResponse } from '@/services/connections';
+import type {
+  AppStatusResponse,
+  PlatformVerification,
+  RegisterManualResponse,
+} from '@/services/connections';
 import { InstallationCard } from './InstallationCard';
+import { VerificationRow, hasUnhealthyCheck } from './VerificationRow';
 
 interface GitHubTileProps {
   connections: GitHubConnectionItem[];
@@ -45,6 +50,12 @@ interface GitHubTileProps {
     client_id?: string;
     client_secret?: string;
   }) => Promise<RegisterManualResponse>;
+  /**
+   * Issue #4016: Deployment-wide onboarding checks. The API returns this only to
+   * callers who can manage connections, so null means "not available to me",
+   * not "healthy" — the panel is simply not rendered in that case.
+   */
+  platformVerification?: PlatformVerification | null;
 }
 
 export function GitHubTile({
@@ -61,6 +72,7 @@ export function GitHubTile({
   onDisconnectApp,
   onSwitchTenant,
   onRegisterManual,
+  platformVerification = null,
 }: GitHubTileProps) {
   // For non-platform-admins, appStatus is null (they can't call the status endpoint).
   // In that case, assume registered so the existing install UI is shown.
@@ -170,6 +182,11 @@ export function GitHubTile({
             </div>
           )}
 
+          {/* Issue #4016: deployment-wide onboarding checks. Rendered only when
+              something is not verified-green, so a healthy deployment sees no
+              new noise. */}
+          <PlatformVerificationPanel verification={platformVerification} />
+
           {/* App info (platform admin only) */}
           {isPlatformAdmin && appStatus && (
             <AppInfoPanel
@@ -190,6 +207,57 @@ export function GitHubTile({
         </>
       )}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PlatformVerificationPanel — deployment-wide onboarding health (Issue #4016)
+//
+// Only rendered when at least one check is not verified-green. The API already
+// gates this data to callers who can manage connections, so no role check is
+// repeated here — an absent prop simply renders nothing.
+// ---------------------------------------------------------------------------
+
+function PlatformVerificationPanel({
+  verification,
+}: {
+  verification?: PlatformVerification | null;
+}) {
+  if (!verification) return null;
+
+  const { login_credentials, webhook_secret } = verification;
+  if (!hasUnhealthyCheck([login_credentials, webhook_secret])) return null;
+
+  // Red only when something is authoritatively broken; amber when we merely
+  // could not verify it.
+  const hasDefinite = login_credentials === false || webhook_secret === false;
+  const boxClass = hasDefinite
+    ? 'border-red-200 bg-red-50 dark:border-red-700 dark:bg-red-900/20'
+    : 'border-amber-200 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20';
+  const titleClass = hasDefinite
+    ? 'text-red-800 dark:text-red-200'
+    : 'text-amber-800 dark:text-amber-200';
+
+  return (
+    <div className={`mt-4 rounded-lg border p-4 ${boxClass}`}>
+      <p className={`text-sm font-medium ${titleClass}`}>
+        {hasDefinite
+          ? 'This deployment is not fully wired for GitHub'
+          : 'Some deployment checks could not be verified'}
+      </p>
+      <ul className="mt-2 space-y-1.5">
+        <VerificationRow
+          label="GitHub sign-in credentials"
+          state={login_credentials}
+          brokenDetail="No OAuth credentials are stored, so “Sign in with GitHub” will fail for everyone."
+        />
+        <VerificationRow
+          label="Webhook signing secret"
+          state={webhook_secret}
+          brokenDetail="The secret is missing or still the deploy-time placeholder, so GitHub deliveries will be rejected and agents will never be triggered."
+        />
+      </ul>
+    </div>
   );
 }
 

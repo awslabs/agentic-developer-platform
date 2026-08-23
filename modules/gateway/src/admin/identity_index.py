@@ -409,6 +409,73 @@ class IdentityIndexClient:
         )
         return False
 
+    async def get_installation_identity(self, installation_id: int) -> dict | None:
+        """Read the forward row (github_installation_id → org_id). READ-ONLY.
+
+        Issue #4016: this client was write-only, so nothing could *observe*
+        whether webhook routing for an installation is actually resolvable. The
+        onboarding verification card needs that signal.
+
+        Deliberately read-only and non-healing: a missing row is reported, never
+        repaired. Repair is owned by #3860 (reverse row self-heal) and #3453
+        (systemic reconcile) — a verification read that also writes would have
+        two issues fighting over the same row.
+
+        No retries and no raise: this serves a status tile, so a transient DDB
+        error must degrade to "could not determine" (None), not fail the request.
+        Note that absence is a trustworthy signal here — rows carry no TTL
+        (DEFAULT_TTL_SECONDS = 0), so a missing row means "never written".
+
+        Returns the raw DDB item, or None when absent / unreadable.
+        """
+        return await self._get_item_soft(
+            key={
+                "identity_type": {"S": "github_installation_id"},
+                "identity_value": {"S": str(installation_id)},
+            },
+            label=f"github_installation_id/{installation_id}",
+        )
+
+    async def get_reverse_installation_identity(self, org_id: str) -> dict | None:
+        """Read the reverse row (org_installation/<org> → installation_id). READ-ONLY.
+
+        Issue #4016: this is the row `resolve_installation_for_tenant()` (used by
+        adp-trigger) reads. Its absence is why UI-installed tenants 422 on
+        agent-to-agent dispatch. Surfaced as an amber check on the connections
+        card; the write + self-heal stays owned by #3860.
+
+        Returns the raw DDB item, or None when absent / unreadable.
+        """
+        return await self._get_item_soft(
+            key={
+                "identity_type": {"S": "org_installation"},
+                "identity_value": {"S": org_id},
+            },
+            label=f"org_installation/{org_id}",
+        )
+
+    async def _get_item_soft(self, *, key: dict, label: str) -> dict | None:
+        """Single-shot GetItem that fails soft to None (Issue #4016).
+
+        Shared by the read-only verification getters above. Mirrors the shape of
+        ``UserIdentityIndexClient.get_user_identity``: ``asyncio.to_thread`` +
+        return the item or None, logging and swallowing ClientError.
+        """
+        try:
+            resp = await asyncio.to_thread(
+                self._client.get_item,
+                TableName=self._table_name,
+                Key=key,
+            )
+        except ClientError as e:
+            logger.warning(
+                "identity-index get_item failed for %s (verification degrades to unknown): %s",
+                label,
+                e.response["Error"]["Message"],
+            )
+            return None
+        return resp.get("Item")
+
     async def delete_identity(
         self,
         identity_type: IdentityType,

@@ -31,6 +31,7 @@ import {
   switchTenant,
   type AppStatusResponse,
   type GitHubConnectionItem,
+  type PlatformVerification,
   type RegisterManualResponse,
 } from "@/services/connections";
 import { GitHubTile } from "./components/GitHubTile";
@@ -46,6 +47,11 @@ export default function Connections() {
   const isPlatformAdmin = hasRole(AdminRole.PLATFORM_ADMIN);
 
   const [connections, setConnections] = useState<GitHubConnectionItem[]>([]);
+  // Issue #4016: deployment-wide onboarding checks. The API omits this for
+  // callers who cannot manage connections, so null means "not shown to me"
+  // rather than "everything is fine".
+  const [platformVerification, setPlatformVerification] =
+    useState<PlatformVerification | null>(null);
   const [appStatus, setAppStatus] = useState<AppStatusResponse | null>(null);
   const [appStatusError, setAppStatusError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -70,6 +76,7 @@ export default function Connections() {
     try {
       const data = await listConnections();
       setConnections(data?.connections ?? []);
+      setPlatformVerification(data?.platform_verification ?? null);
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Failed to load connections";
@@ -421,6 +428,7 @@ export default function Connections() {
           onDisconnectApp={handleDisconnectApp}
           onSwitchTenant={handleSwitchTenant}
           onRegisterManual={isPlatformAdmin ? handleRegisterManual : undefined}
+          platformVerification={platformVerification}
         />
 
         {/* Future integrations — placeholder tiles */}
